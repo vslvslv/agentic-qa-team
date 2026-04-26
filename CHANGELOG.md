@@ -5,6 +5,27 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.2.0.0 — 2026-04-26 — Expand qa-refine to community sources
+
+### Changed (`/qa-refine`)
+- Added Phase 1b: parallel community research alongside official docs — fetches
+  awesome lists (mxschmitt/awesome-playwright, grafana/awesome-k6,
+  webdriverio/awesome-webdriverio, saikrishna321/awesome-appium), official example
+  repos (grafana/k6/examples, wix/Detox/examples, microsoft/playwright-examples,
+  checkly/playwright-examples), and targeted WebSearch queries per tool
+- Replaced Anti-Pattern rubric dimension with Community Signal (0–25): rewards
+  production gotchas sourced from community blogs, GitHub Discussions, and awesome
+  lists — patterns the official docs don't document
+- Added `[community]` source tags to reference guide entries so readers know which
+  patterns are doc-blessed vs. battle-tested in production
+- Added "Real-World Gotchas" section to reference guide template (community-only)
+- Added gap→source-type lookup table in Phase 4 so each gap is filled from the
+  most appropriate source type
+- Updated final report to list sources used and annotate top findings by source
+- Updated k6 official doc URLs to grafana.com/docs/k6/latest (new canonical location)
+
+---
+
 ## v1.1.0.0 — 2026-04-26 — Add qa-refine skill
 
 ### Added
