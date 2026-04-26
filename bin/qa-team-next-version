@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# bin/qa-team-next-version — Calculate the next qa-agentic-team version.
+# Usage: qa-team-next-version [major|minor|patch|micro]
+# Reads VERSION from repo root and outputs the next version string.
+# Bump levels:
+#   major  → x+1.0.0.0
+#   minor  → x.y+1.0.0
+#   patch  → x.y.z+1.0  (default)
+#   micro  → x.y.z.w+1
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CURRENT="$(cat "$REPO_DIR/VERSION" | tr -d '[:space:]')"
+BUMP="${1:-patch}"
+
+IFS='.' read -r MAJOR MINOR PATCH MICRO <<< "$CURRENT"
+
+# Validate all parts are integers
+for part in "$MAJOR" "$MINOR" "$PATCH" "$MICRO"; do
+  if ! [[ "$part" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: VERSION file contains invalid version: $CURRENT" >&2
+    exit 1
+  fi
+done
+
+case "$BUMP" in
+  major) echo "$((MAJOR + 1)).0.0.0" ;;
+  minor) echo "$MAJOR.$((MINOR + 1)).0.0" ;;
+  patch) echo "$MAJOR.$MINOR.$((PATCH + 1)).0" ;;
+  micro) echo "$MAJOR.$MINOR.$PATCH.$((MICRO + 1))" ;;
+  *)
+    echo "Usage: $(basename "$0") [major|minor|patch|micro]" >&2
+    echo "Current: $CURRENT" >&2
+    exit 1
+    ;;
+esac

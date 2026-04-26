@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# bin/qa-team-update-check — Check whether a newer version of qa-agentic-team is available.
+# Reads the local VERSION file and compares against the raw file on GitHub main.
+# Exits 0 always (informational only). Outputs one of:
+#   UP_TO_DATE: <version>
+#   UPGRADE_AVAILABLE: <local> → <remote>
+#   UPDATE_CHECK_FAILED: <reason>
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERSION_FILE="$REPO_DIR/VERSION"
+
+# Derive GitHub repo from git remote, fall back to constant
+_remote_url() {
+  git -C "$REPO_DIR" remote get-url origin 2>/dev/null || echo ""
+}
+
+_github_repo() {
+  local url
+  url="$(_remote_url)"
+  # Convert SSH or HTTPS URL → owner/repo
+  echo "$url" \
+    | sed -E 's|git@github\.com:||; s|https://github\.com/||; s|\.git$||'
+}
+
+GITHUB_REPO="$(_github_repo)"
+if [ -z "$GITHUB_REPO" ]; then
+  echo "UPDATE_CHECK_FAILED: no git remote found"
+  exit 0
+fi
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/qa-agentic-team"
+CACHE_FILE="$CACHE_DIR/update-check"
+CACHE_TTL_UP_TO_DATE=3600      # 60 min
+CACHE_TTL_UPGRADE=43200         # 12 h
+
+mkdir -p "$CACHE_DIR"
+
+LOCAL_VERSION="$(cat "$VERSION_FILE" | tr -d '[:space:]')"
+
+# Check cache
+if [ -f "$CACHE_FILE" ]; then
+  CACHED="$(cat "$CACHE_FILE")"
+  CACHED_STATUS="$(echo "$CACHED" | cut -d: -f1 | tr -d ' ')"
+  CACHED_TIME="$(echo "$CACHED" | grep -o 'ts=[0-9]*' | cut -d= -f2 || echo 0)"
+  NOW="$(date +%s)"
+  AGE=$((NOW - CACHED_TIME))
+
+  if [ "$CACHED_STATUS" = "UP_TO_DATE" ] && [ "$AGE" -lt "$CACHE_TTL_UP_TO_DATE" ]; then
+    echo "UP_TO_DATE: $LOCAL_VERSION (cached)"
+    exit 0
+  fi
+  if [ "$CACHED_STATUS" = "UPGRADE_AVAILABLE" ] && [ "$AGE" -lt "$CACHE_TTL_UPGRADE" ]; then
+    REMOTE_VERSION="$(echo "$CACHED" | grep -o 'remote=[^ ]*' | cut -d= -f2 || echo '')"
+    echo "UPGRADE_AVAILABLE: $LOCAL_VERSION → $REMOTE_VERSION (cached)"
+    echo "  git -C \"$REPO_DIR\" pull"
+    exit 0
+  fi
+fi
+
+# Fetch remote VERSION
+RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/VERSION"
+REMOTE_VERSION="$(curl -fsSL --max-time 8 "$RAW_URL" 2>/dev/null | tr -d '[:space:]' || echo "")"
+
+if [ -z "$REMOTE_VERSION" ]; then
+  echo "UPDATE_CHECK_FAILED: could not fetch $RAW_URL"
+  exit 0
+fi
+
+NOW="$(date +%s)"
+
+if [ "$LOCAL_VERSION" = "$REMOTE_VERSION" ]; then
+  echo "UP_TO_DATE: ts=$NOW status=UP_TO_DATE remote=$REMOTE_VERSION" > "$CACHE_FILE"
+  echo "UP_TO_DATE: $LOCAL_VERSION"
+else
+  echo "UPGRADE_AVAILABLE: ts=$NOW status=UPGRADE_AVAILABLE remote=$REMOTE_VERSION" > "$CACHE_FILE"
+  echo "UPGRADE_AVAILABLE: $LOCAL_VERSION → $REMOTE_VERSION"
+  echo "  cd \"$REPO_DIR\" && git pull && bash bin/setup"
+fi

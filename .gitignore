@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Test output
+playwright-report/
+test-results/
+visual-baselines/
+*.png
+
+# k6 / perf artifacts
+k6-results/
+
+# Update check cache
+.cache/
+
+# Temp files from qa-* agents
+/tmp/qa-*.json
+/tmp/qa-*.txt
+/tmp/qa-*.md
+/tmp/pw-*.json
+/tmp/k6-*.json
+
+# Auth state (never commit)
+e2e/.auth/
+.auth/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp

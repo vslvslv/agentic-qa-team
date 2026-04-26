@@ -1,0 +1,14 @@
+# Normalize line endings
+* text=auto
+
+# Shell scripts must use LF
+bin/*        text eol=lf
+scripts/*.sh text eol=lf
+
+# YAML must use LF
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Markdown and JSON — auto-detect
+*.md   text
+*.json text

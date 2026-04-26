@@ -1,0 +1,307 @@
+---
+name: qa-perf
+preamble-tier: 3
+version: 1.0.0
+description: |
+  Performance test agent. Identifies critical user journeys and API endpoints,
+  generates k6 (or Locust) load test scripts, executes them, and analyzes
+  throughput, latency percentiles, and error rates. Works standalone or as a
+  sub-agent of /qa-team. Use when asked to "qa performance", "load test",
+  "stress test", "performance testing", "k6", "locust", "benchmark the api",
+  or "perf test agent". (qa-agentic-team)
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - AskUserQuestion
+  - Agent
+---
+
+## Preamble (run first)
+
+```bash
+_TMP="${TEMP:-${TMP:-/tmp}}"
+_DATE=$(date +%Y-%m-%d)
+_BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
+echo "BRANCH: $_BRANCH"
+
+# Detect base URLs
+_API_URL=$(grep -r "API_URL\|apiUrl\|BASE_URL" .env .env.local .env.test 2>/dev/null \
+  | grep -o 'http[s]*://[^"'"'"' ]*' | head -1)
+_API_URL="${_API_URL:-http://localhost:3001}"
+_WEB_URL="${WEB_URL:-http://localhost:3000}"
+echo "API_URL: $_API_URL"
+echo "WEB_URL: $_WEB_URL"
+
+# Check API/web liveness
+for url in "$_API_URL" "$_WEB_URL"; do
+  status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
+  echo "HEALTH $url: $status"
+done
+
+# Detect k6
+echo "--- K6 ---"
+which k6 2>/dev/null || echo "k6: not found"
+ls k6/ load-tests/ perf/ 2>/dev/null | head -10
+
+# Detect Locust
+echo "--- LOCUST ---"
+which locust 2>/dev/null || echo "locust: not found"
+ls locustfile.py locust/ 2>/dev/null | head -5
+
+# Existing perf test files
+echo "--- EXISTING PERF TESTS ---"
+find . \( -name "*.k6.js" -o -name "*.k6.ts" -o -name "load-test*.js" \
+  -o -name "locustfile.py" -o -name "*perf*.spec.ts" \) \
+  ! -path "*/node_modules/*" 2>/dev/null | head -10
+
+# Detect route files to identify endpoints
+echo "--- ENDPOINTS SAMPLE ---"
+grep -r "router\.\(get\|post\|put\|patch\|delete\)" --include="*.ts" --include="*.js" \
+  ! -path "*/node_modules/*" 2>/dev/null | \
+  grep -o '"[/][^"]*"' | sort -u | head -20
+```
+
+If neither `k6` nor `locust` is found and no existing perf tests exist: ask the user whether to:
+1. Install k6 (provide command: `winget install k6 / brew install k6 / snap install k6`)
+2. Generate k6 scripts only (without executing)
+3. Use Playwright for basic web performance timing instead
+
+## Phase 1 — Identify Test Targets
+
+Read API routes, existing load tests, and any perf documentation to build a **target inventory**:
+
+```bash
+# OpenAPI endpoints
+_SPEC=$(ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | head -1)
+[ -n "$_SPEC" ] && cat "$_SPEC" | grep -E "^\s*(get|post|put|patch|delete):|^\s+/[a-z]" | head -30
+
+# Find the heaviest/most critical endpoints from usage patterns
+grep -r "critical\|high-load\|frequent\|important" --include="*.md" \
+  ! -path "*/node_modules/*" 2>/dev/null | head -10
+
+# Find any existing performance benchmarks or SLA docs
+find . -name "*.md" ! -path "*/node_modules/*" 2>/dev/null | \
+  xargs grep -l "SLA\|latency\|throughput\|p95\|p99" 2>/dev/null | head -3
+```
+
+Build target list:
+- Endpoint/URL
+- Method
+- Expected load pattern (spike, sustained, ramp-up)
+- SLA target (p95 < Xms) if documented
+- Auth required: yes/no
+- Priority: `critical` | `important`
+
+Default target profiles if no SLA docs exist:
+- API reads (GET): p95 < 200ms under 50 concurrent users
+- API writes (POST/PUT): p95 < 500ms under 20 concurrent users
+- Web pages: LCP < 2.5s (Core Web Vitals good threshold)
+
+## Phase 2 — Generate k6 Scripts
+
+**Prefer k6** for API load testing. Use Playwright's `page.metrics()` for Web Vitals.
+
+**k6 script template:**
+
+```javascript
+// k6/scripts/api-load.js
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { Rate, Trend } from "k6/metrics";
+
+const errorRate = new Rate("errors");
+const loginDuration = new Trend("login_duration");
+
+export const options = {
+  stages: [
+    { duration: "30s", target: 10 },   // ramp up
+    { duration: "60s", target: 50 },   // sustained load
+    { duration: "20s", target: 0 },    // ramp down
+  ],
+  thresholds: {
+    http_req_duration: ["p(95)<200"],   // 95% of requests < 200ms
+    http_req_failed: ["rate<0.01"],     // error rate < 1%
+    errors: ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+// Obtain auth token once per VU
+export function setup() {
+  const res = http.post(`${BASE}/api/auth/login`, JSON.stringify({
+    email: __ENV.E2E_USER_EMAIL || "admin@example.com",
+    password: __ENV.E2E_USER_PASSWORD || "password123",
+  }), { headers: { "Content-Type": "application/json" } });
+
+  check(res, { "login ok": (r) => r.status === 200 });
+  return { token: res.json("token") };
+}
+
+export default function (data) {
+  const headers = {
+    Authorization: `Bearer ${data.token}`,
+    "Content-Type": "application/json",
+  };
+
+  // ── GET /api/users ─────────────────────────────────────────────────────────
+  const listRes = http.get(`${BASE}/api/users`, { headers });
+  check(listRes, {
+    "GET /api/users status 200": (r) => r.status === 200,
+    "GET /api/users has data": (r) => Array.isArray(r.json()),
+  });
+  errorRate.add(listRes.status !== 200);
+  loginDuration.add(listRes.timings.duration);
+
+  sleep(1);
+}
+```
+
+**Web Vitals with Playwright (fallback or supplement):**
+
+```typescript
+// perf/web-vitals.spec.ts
+import { test, expect } from "@playwright/test";
+
+const PAGES = [
+  { name: "Home", url: "/" },
+  { name: "Dashboard", url: "/dashboard" },
+  { name: "List", url: "/list" },
+];
+
+for (const { name, url } of PAGES) {
+  test(`Web Vitals: ${name}`, async ({ page }) => {
+    await page.goto(url);
+    await page.waitForLoadState("networkidle");
+
+    const metrics = await page.evaluate(() => {
+      return new Promise<Record<string, number>>((resolve) => {
+        const entries: Record<string, number> = {};
+        new PerformanceObserver((list) => {
+          for (const e of list.getEntries()) {
+            entries[e.entryType + "_" + e.name] = e.startTime + (e as any).duration;
+          }
+        }).observe({ entryTypes: ["largest-contentful-paint", "layout-shift", "longtask"] });
+
+        // Give time to collect metrics
+        setTimeout(() => {
+          const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming;
+          entries["ttfb"] = nav.responseStart - nav.requestStart;
+          entries["domContentLoaded"] = nav.domContentLoadedEventEnd - nav.startTime;
+          entries["load"] = nav.loadEventEnd - nav.startTime;
+          resolve(entries);
+        }, 2000);
+      });
+    });
+
+    // Log metrics
+    console.log(`[${name}]`, metrics);
+
+    // Assert TTFB < 600ms (Core Web Vitals "needs improvement" threshold)
+    expect(metrics["ttfb"] ?? 0).toBeLessThan(600);
+  });
+}
+```
+
+Read existing perf test files before writing; append only missing test scenarios.
+
+## Phase 3 — Execute Tests
+
+**k6:**
+
+```bash
+export API_URL="$_API_URL"
+export E2E_USER_EMAIL="${E2E_USER_EMAIL:-admin@example.com}"
+export E2E_USER_PASSWORD="${E2E_USER_PASSWORD:-password123}"
+
+_K6_SCRIPTS=$(find . \( -path "*/k6/*.js" -o -path "*/k6/*.ts" \
+  -o -path "*/load-tests/*.js" \) ! -path "*/node_modules/*" 2>/dev/null | head -5)
+
+if command -v k6 &>/dev/null && [ -n "$_K6_SCRIPTS" ]; then
+  for script in $_K6_SCRIPTS; do
+    echo "=== Running: $script ==="
+    k6 run \
+      --env API_URL="$API_URL" \
+      --env E2E_USER_EMAIL="$E2E_USER_EMAIL" \
+      --env E2E_USER_PASSWORD="$E2E_USER_PASSWORD" \
+      --summary-export "$_TMP/k6-summary-$(basename $script .js).json" \
+      "$script" 2>&1 | tee "$_TMP/k6-output-$(basename $script).txt"
+    echo "EXIT: $?"
+  done
+else
+  echo "k6 not available or no scripts found — skipping k6 execution"
+fi
+```
+
+**Playwright Web Vitals:**
+
+```bash
+_PERF_SPECS=$(find . -path "*/perf/*.spec.ts" ! -path "*/node_modules/*" 2>/dev/null | tr '\n' ' ')
+if [ -n "$_PERF_SPECS" ]; then
+  npx playwright test $_PERF_SPECS \
+    --project=chromium \
+    --reporter=json \
+    2>&1 > "$_TMP/qa-perf-pw-output.txt"
+  echo "PW_EXIT_CODE: $?"
+fi
+```
+
+Parse k6 summary:
+
+```bash
+for f in "$_TMP"/k6-summary-*.json; do
+  [ -f "$f" ] && python3 - << PYEOF
+import json, sys
+data = json.load(open("$f"))
+metrics = data.get("metrics", {})
+dur = metrics.get("http_req_duration", {}).get("values", {})
+fail = metrics.get("http_req_failed", {}).get("values", {})
+print(f"Script: $f")
+print(f"  p50: {dur.get('p(50)',0):.1f}ms  p95: {dur.get('p(95)',0):.1f}ms  p99: {dur.get('p(99)',0):.1f}ms")
+print(f"  req/s: {metrics.get('http_reqs',{}).get('values',{}).get('rate',0):.1f}")
+print(f"  errors: {fail.get('rate',0)*100:.2f}%")
+PYEOF
+done
+```
+
+## Phase 4 — Report
+
+Write report to `$_TMP/qa-perf-report.md`:
+
+```markdown
+# QA Performance Report — <date>
+
+## Summary
+- **Status**: ✅ / ⚠️ / ❌
+- All thresholds met: yes / no
+- Tool: k6 / Playwright Vitals / both
+
+## k6 Results
+| Script | p50 | p95 | p99 | req/s | Errors | Pass |
+|--------|-----|-----|-----|-------|--------|------|
+| api-load.js | 45ms | 120ms | 200ms | 85.3 | 0.0% | ✅ |
+
+## Web Vitals
+| Page | TTFB | DOM Ready | Load | LCP | Status |
+|------|------|-----------|------|-----|--------|
+| Home | 45ms | 230ms | 400ms | 1.2s | ✅ |
+
+## Threshold Violations
+<list any metrics that exceeded SLA thresholds>
+
+## Recommendations
+<top bottlenecks + suggested optimizations>
+```
+
+## Important Rules
+
+- **Never run against production** — always target localhost/staging; confirm URL before executing
+- **Ramp-up before full load** — always use staged load profiles (ramp-up → sustain → ramp-down)
+- **Auth in setup, not per iteration** — obtain tokens once in `setup()` to avoid auth endpoint overload
+- **Conservative defaults** — default to 50 VUs max; ask user before going above 200 VUs
+- **Report even without execution** — if k6 is missing, document installation steps + the generated scripts
+- **Cleanup after writes** — if any POST creates resources, add a `teardown()` to delete them

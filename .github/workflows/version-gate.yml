@@ -1,0 +1,60 @@
+name: Version Gate
+
+on:
+  pull_request:
+    paths:
+      - VERSION
+      - CHANGELOG.md
+      - package.json
+
+jobs:
+  version-gate:
+    name: Validate version bump
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read PR version
+        id: pr
+        run: echo "version=$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Read base version
+        id: base
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          BASE_VERSION=$(git show origin/${{ github.base_ref }}:VERSION 2>/dev/null | tr -d '[:space:]' || echo "0.0.0.0")
+          echo "version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check version was bumped
+        run: |
+          BASE="${{ steps.base.outputs.version }}"
+          PR="${{ steps.pr.outputs.version }}"
+          echo "Base: $BASE"
+          echo "PR:   $PR"
+
+          if [ "$BASE" = "$PR" ]; then
+            echo "ERROR: VERSION was not bumped. Expected a version greater than $BASE."
+            echo "Run: bash bin/qa-team-next-version [major|minor|patch|micro]"
+            exit 1
+          fi
+
+          # Validate 4-part format
+          if ! echo "$PR" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: VERSION must be in 4-part semver format: MAJOR.MINOR.PATCH.MICRO"
+            echo "Got: $PR"
+            exit 1
+          fi
+
+          echo "OK: version bumped $BASE → $PR"
+
+      - name: Check CHANGELOG was updated
+        run: |
+          PR="${{ steps.pr.outputs.version }}"
+          if ! grep -q "v$PR" CHANGELOG.md; then
+            echo "ERROR: CHANGELOG.md does not contain an entry for v$PR."
+            echo "Add a section: ## v$PR — $(date +%Y-%m-%d) — <summary>"
+            exit 1
+          fi
+          echo "OK: CHANGELOG.md contains entry for v$PR"

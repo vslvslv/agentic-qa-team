@@ -1,0 +1,30 @@
+name: Skill Docs Freshness
+
+on:
+  pull_request:
+    paths:
+      - "*/SKILL.md.tmpl"
+      - "scripts/gen-skill-docs.sh"
+
+jobs:
+  skill-docs:
+    name: Verify SKILL.md generated from .tmpl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Regenerate skill docs
+        run: bash scripts/gen-skill-docs.sh
+
+      - name: Check for stale generated files
+        run: |
+          if ! git diff --exit-code -- "*/SKILL.md"; then
+            echo ""
+            echo "ERROR: SKILL.md files are stale — they differ from their .tmpl sources."
+            echo ""
+            git diff --name-only -- "*/SKILL.md"
+            echo ""
+            echo "Run 'bash scripts/gen-skill-docs.sh' locally and commit the result."
+            exit 1
+          fi
+          echo "OK: all SKILL.md files are up to date."

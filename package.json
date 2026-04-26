@@ -1,0 +1,10 @@
+{
+  "name": "qa-agentic-team",
+  "version": "1.0.0",
+  "description": "Agentic QA team — Claude Code skills for web, API, mobile, performance and visual testing",
+  "scripts": {
+    "gen:skill-docs": "bash scripts/gen-skill-docs.sh",
+    "check:skill-docs": "bash scripts/check-skill-docs.sh"
+  },
+  "license": "MIT"
+}

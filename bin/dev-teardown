@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# bin/dev-teardown — Remove the qa-agentic-team dev symlink from ~/.claude/skills/
+set -euo pipefail
+
+CLAUDE_SKILLS="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+DEST="$CLAUDE_SKILLS/qa-agentic-team"
+
+echo "qa-agentic-team — Dev Teardown"
+echo "================================"
+
+if [ -L "$DEST" ]; then
+  TARGET="$(readlink "$DEST")"
+  rm "$DEST"
+  echo "  REMOVED: $DEST (was → $TARGET)"
+  echo ""
+  echo "Dev mode deactivated."
+else
+  echo "  Nothing to remove: $DEST is not a symlink."
+fi

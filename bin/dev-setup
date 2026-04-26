@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# bin/dev-setup — Developer mode: symlinks repo root into ~/.claude/skills/qa-agentic-team
+# Skills become accessible under the qa-agentic-team namespace.
+# Edits to SKILL.md.tmpl + regenerating docs take effect immediately (no re-install).
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLAUDE_SKILLS="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+DEST="$CLAUDE_SKILLS/qa-agentic-team"
+
+echo "qa-agentic-team — Dev Setup"
+echo "============================"
+echo "Repo: $REPO_DIR"
+echo "Link: $DEST"
+echo ""
+
+mkdir -p "$CLAUDE_SKILLS"
+
+if [ -L "$DEST" ]; then
+  OLD="$(readlink "$DEST")"
+  if [ "$OLD" = "$REPO_DIR" ]; then
+    echo "  Already linked: $DEST → $REPO_DIR"
+    echo ""
+    echo "Dev mode active. Skills available under qa-agentic-team namespace."
+    exit 0
+  fi
+  echo "  Removing stale link: $OLD"
+  rm "$DEST"
+elif [ -d "$DEST" ]; then
+  echo "ERROR: $DEST exists as a real directory (not a symlink). Remove it manually." >&2
+  exit 1
+fi
+
+ln -s "$REPO_DIR" "$DEST"
+echo "  LINKED: $DEST → $REPO_DIR"
+echo ""
+echo "Dev mode active. Edit SKILL.md.tmpl files and run:"
+echo "  bash scripts/gen-skill-docs.sh"
+echo "to regenerate SKILL.md. Changes are live immediately."
+echo ""
+echo "Run 'bash bin/dev-teardown' to remove the dev link."

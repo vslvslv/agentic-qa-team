@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# bin/setup — Install qa-agentic-team skills as symlinks into ~/.claude/skills/
+# Usage: bash bin/setup [--short-names | --namespaced]
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLAUDE_SKILLS="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+MODE="${1:---short-names}"
+
+_version() { cat "$REPO_DIR/VERSION" | tr -d '[:space:]'; }
+
+echo "qa-agentic-team $(_version) — Setup"
+echo "========================================"
+echo "Repo:   $REPO_DIR"
+echo "Skills: $CLAUDE_SKILLS"
+echo "Mode:   $MODE"
+echo ""
+
+mkdir -p "$CLAUDE_SKILLS"
+
+# Discover skill directories (dirs with a SKILL.md at the repo root)
+_skills() {
+  find "$REPO_DIR" -maxdepth 2 -name "SKILL.md" \
+    ! -path "*/node_modules/*" ! -path "*/.git/*" \
+    | while read -r f; do
+        skill_dir="$(dirname "$f")"
+        # Only top-level skill dirs (direct children of repo root)
+        parent="$(dirname "$skill_dir")"
+        [ "$parent" = "$REPO_DIR" ] && echo "$skill_dir"
+      done
+}
+
+INSTALLED=0
+UPDATED=0
+SKIPPED=0
+
+if [ "$MODE" = "--namespaced" ]; then
+  # Single symlink: ~/.claude/skills/qa-agentic-team → repo root
+  DEST="$CLAUDE_SKILLS/qa-agentic-team"
+  if [ -L "$DEST" ]; then
+    OLD_TARGET="$(readlink "$DEST")"
+    if [ "$OLD_TARGET" = "$REPO_DIR" ]; then
+      echo "  OK    qa-agentic-team (already linked)"
+      SKIPPED=1
+    else
+      rm "$DEST"
+      ln -s "$REPO_DIR" "$DEST"
+      echo "  UPDATE qa-agentic-team → $REPO_DIR"
+      UPDATED=1
+    fi
+  else
+    [ -d "$DEST" ] && rm -rf "$DEST"
+    ln -s "$REPO_DIR" "$DEST"
+    echo "  LINK  qa-agentic-team → $REPO_DIR"
+    INSTALLED=1
+  fi
+else
+  # Short names: one symlink per skill
+  while IFS= read -r skill_dir; do
+    skill_name="$(basename "$skill_dir")"
+    dest="$CLAUDE_SKILLS/$skill_name"
+
+    if [ -L "$dest" ]; then
+      OLD_TARGET="$(readlink "$dest")"
+      if [ "$OLD_TARGET" = "$skill_dir" ]; then
+        echo "  OK    /$skill_name (up to date)"
+        SKIPPED=$((SKIPPED + 1))
+        continue
+      fi
+      rm "$dest"
+      ln -s "$skill_dir" "$dest"
+      echo "  UPDATE /$skill_name → $skill_dir"
+      UPDATED=$((UPDATED + 1))
+    else
+      [ -d "$dest" ] && rm -rf "$dest"
+      ln -s "$skill_dir" "$dest"
+      echo "  LINK  /$skill_name → $skill_dir"
+      INSTALLED=$((INSTALLED + 1))
+    fi
+  done < <(_skills)
+fi
+
+echo ""
+echo "Done. Installed: $INSTALLED  Updated: $UPDATED  Skipped: $SKIPPED"
+echo ""
+echo "Available commands:"
+echo "  /qa-team    — Run all agents (auto-detects project type)"
+echo "  /qa-web     — Web E2E (Playwright)"
+echo "  /qa-api     — API contract tests (REST + GraphQL)"
+echo "  /qa-mobile  — Mobile tests (Detox / Appium)"
+echo "  /qa-perf    — Performance tests (k6 + Web Vitals)"
+echo "  /qa-visual  — Visual regression (Playwright screenshots)"
