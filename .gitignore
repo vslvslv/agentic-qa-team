@@ -37,3 +37,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Claude Code internal / eval workspace
+.claude/
+qa-refine-workspace/

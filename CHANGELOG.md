@@ -5,6 +5,18 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.1.0.0 — 2026-04-26 — Add qa-refine skill
+
+### Added
+- `/qa-refine` — Iterative research skill: fetches official docs for Playwright, k6, Detox,
+  Appium/WebDriverIO, scores the result against a 4-dimension quality rubric (0–100), and
+  runs an autoresearch-style loop (score → find gaps → targeted fetch → rewrite → re-score →
+  keep/revert) until score ≥ 80 or 3 iterations. Also makes surgical updates to the
+  corresponding skill's SKILL.md.tmpl. Includes scoring honesty enforcement to prevent
+  premature loop exit.
+
+---
+
 ## v1.0.0.0 — 2026-04-24 — Initial release
 
 ### Added

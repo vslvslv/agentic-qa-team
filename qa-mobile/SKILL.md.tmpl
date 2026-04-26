@@ -127,6 +127,8 @@ Build a **screen inventory**:
 
 ## Phase 3 — Generate Test Cases
 
+> Reference: [Detox patterns guide](references/detox-patterns.md)
+
 **Detox tests (React Native / Expo):**
 
 ```javascript
@@ -198,6 +200,16 @@ describe("Login Flow", () => {
 - Prefer `testID` / `accessibilityLabel` (set `testID` props in RN components)
 - Use `by.id()` for Detox, `$("~testId")` for Appium accessibility ID
 - Never use XPath — too brittle for mobile
+- Rank: `by.id(testID)` > `by.label()` > `by.type()` > `by.text()` (avoid for actions)
+
+**Flakiness / synchronization (Detox):**
+- Never use `setTimeout` or fixed `sleep` calls — use `waitFor(...).withTimeout(ms)` instead
+- Disable animations in CI builds via `launchArgs: { detoxDisableAnimations: 'true' }`
+- Reset app state in `beforeEach` with `device.reloadReactNative()` (JS-only reset, fast)
+  or `device.launchApp({ newInstance: true })` (full cold-boot, for native-storage tests)
+- Use `device.setURLBlacklist(patterns)` to suppress analytics/beacon timers that
+  confuse Detox's automatic idle detection
+- Organize tests using Page Object / Screen Object pattern (see reference guide)
 
 Read existing test files before writing; append only missing `describe` blocks.
 
@@ -293,6 +305,8 @@ Write report to `$_TMP/qa-mobile-report.md`:
 
 - **Build before test** — Detox requires a compiled binary; check before running
 - **Use testID accessors** — always prefer `testID`/`accessibilityLabel`; coordinate with app devs to add them
+- **No fixed sleeps** — use `waitFor(...).withTimeout(ms)` instead of `setTimeout`/`sleep`; hard-coded delays are the primary cause of CI flakiness
+- **Disable animations on CI** — pass `detoxDisableAnimations: 'true'` in `launchArgs` for the CI configuration
 - **Device availability first** — if no simulator/emulator is available, write tests only and note setup steps
 - **Platform-specific specs** — use separate describe blocks for iOS vs Android differences
 - **Clean state** — use `device.launchApp({ newInstance: true })` or equivalent to ensure fresh state

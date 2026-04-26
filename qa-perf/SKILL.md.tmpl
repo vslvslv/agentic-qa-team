@@ -103,7 +103,20 @@ Default target profiles if no SLA docs exist:
 
 ## Phase 2 — Generate k6 Scripts
 
+> Reference: [k6 patterns guide](references/k6-patterns.md)
+
 **Prefer k6** for API load testing. Use Playwright's `page.metrics()` for Web Vitals.
+
+Use the **`scenarios` API** (not the top-level `stages` shorthand) so each script can
+declare multiple concurrent load profiles with independent executors and per-scenario
+thresholds. Choose the executor that matches the test type:
+
+| Test type | Executor |
+|-----------|---------|
+| Ramp-up / load / stress | `ramping-vus` |
+| Fixed RPS / throughput | `constant-arrival-rate` |
+| Gradually increasing RPS / breakpoint | `ramping-arrival-rate` |
+| Smoke (single VU sanity) | `constant-vus` (1 VU, short duration) |
 
 **k6 script template:**
 
@@ -113,19 +126,32 @@ import http from "k6/http";
 import { check, sleep } from "k6";
 import { Rate, Trend } from "k6/metrics";
 
-const errorRate = new Rate("errors");
-const loginDuration = new Trend("login_duration");
+const errorRate    = new Rate("errors");
+const reqLatency   = new Trend("req_latency", true);
 
 export const options = {
-  stages: [
-    { duration: "30s", target: 10 },   // ramp up
-    { duration: "60s", target: 50 },   // sustained load
-    { duration: "20s", target: 0 },    // ramp down
-  ],
+  scenarios: {
+    api_load: {
+      executor: "ramping-vus",
+      startVUs: 0,
+      stages: [
+        { duration: "30s", target: 10 },   // warm-up
+        { duration: "1m",  target: 50 },   // ramp to target
+        { duration: "2m",  target: 50 },   // sustained load
+        { duration: "30s", target: 0 },    // ramp down
+      ],
+      gracefulRampDown: "10s",
+    },
+  },
   thresholds: {
-    http_req_duration: ["p(95)<200"],   // 95% of requests < 200ms
-    http_req_failed: ["rate<0.01"],     // error rate < 1%
-    errors: ["rate<0.01"],
+    // Scoped to this scenario — avoids cross-contamination in multi-scenario runs
+    "http_req_duration{scenario:api_load}": ["p(95)<200"],
+    "http_req_failed{scenario:api_load}":   [
+      { threshold: "rate<0.01", abortOnFail: true, delayAbortEval: "15s" },
+    ],
+    errors:      ["rate<0.01"],
+    req_latency: ["p(95)<200", "max<1000"],
+    checks:      ["rate>0.99"],
   },
 };
 
@@ -155,7 +181,7 @@ export default function (data) {
     "GET /api/users has data": (r) => Array.isArray(r.json()),
   });
   errorRate.add(listRes.status !== 200);
-  loginDuration.add(listRes.timings.duration);
+  reqLatency.add(listRes.timings.duration);
 
   sleep(1);
 }
@@ -208,6 +234,13 @@ for (const { name, url } of PAGES) {
 ```
 
 Read existing perf test files before writing; append only missing test scenarios.
+
+**Data parameterization:** Use `SharedArray` (from `k6/data`) for large test datasets — load once
+in init context, shared across all VUs. Do not call `.filter()` / `.map()` outside the constructor.
+
+**CI output:** Export results with `handleSummary()` (preferred over `--summary-export`) to write
+both a CI-friendly text summary to stdout and a machine-readable JSON artifact. k6 exits with
+code `99` when any threshold fails — this automatically fails CI pipeline steps.
 
 ## Phase 3 — Execute Tests
 
