@@ -5,6 +5,81 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.4.0.0 — 2026-04-26 — Multi-tool support per QA category
+
+### Added
+- **`qa-web/tools/playwright.md`** — Auth (storageState), POM fixture pattern, selector
+  ranking (getByRole > getByLabel > getByTestId), `page.route()` mocking, CI shard flags
+- **`qa-web/tools/cypress.md`** — `cy.session()` auth, `cy.intercept()` mocking, data-cy
+  selectors, Testing Library integration, headless CI flags, JSON reporter dispatch
+- **`qa-web/tools/selenium.md`** — `BaseTest` pattern, `By.*` selector hierarchy,
+  `WebDriverWait` explicit waits, Java/TS/Python examples, ChromeDriver pinning, headless mode
+- **`qa-perf/tools/k6.md`** — Executor selection table, scenario/threshold script template,
+  `SharedArray` parameterization, Web Vitals Playwright supplement, CI exit code 99 behavior
+- **`qa-perf/tools/jmeter.md`** — Thread Group config, minimal JMX template, JSON token
+  extractor, non-GUI `-n` mode, `-J` property overrides, JTL CSV parsing
+- **`qa-perf/tools/locust.md`** — `HttpUser` + `@task(weight)` template, multi-class pattern,
+  headless flags, `--csv` output, `--exit-code-on-error 1`, CSV stats parsing
+- **`qa-web/references/cypress-patterns.md`** — qa-refine-generated Cypress best practices
+- **`qa-web/references/selenium-patterns.md`** — qa-refine-generated Selenium best practices
+- **`qa-perf/references/jmeter-patterns.md`** — qa-refine-generated JMeter best practices
+- **`qa-perf/references/locust-patterns.md`** — qa-refine-generated Locust best practices
+- **`qa-mobile/references/maestro-patterns.md`** — qa-refine-generated Maestro best practices
+
+### Changed (`/qa-web`)
+- Preamble now detects all three frameworks: Playwright (`playwright.config.*`), Cypress
+  (`cypress.config.*`, `cypress/` dir, `"cypress"` in package.json), Selenium
+  (`"selenium-webdriver"` in package.json; `selenium` in pom.xml/requirements.txt)
+- Tool Selection Gate: exactly one → auto-select; zero or multiple → `AskUserQuestion`
+  with recommendations based on project stack
+- Phase 2 reads `qa-web/tools/<_WEB_TOOL>.md` sub-file after tool selection
+- Phase 3 execute dispatches to the correct runner per `_WEB_TOOL`
+
+### Changed (`/qa-perf`)
+- Preamble now detects k6 (scripts/CLI), JMeter (`.jmx` files/CLI), and Locust
+  (`locustfile.py`/CLI) with `_K6`, `_JMETER`, `_LOCUST` flags + JMX file count
+- Tool Selection Gate: same 3-state pattern as qa-web
+- Phase 2 reads `qa-perf/tools/<_PERF_TOOL>.md` sub-file
+- Phase 3 execute dispatches per `_PERF_TOOL`
+
+### Changed (`/qa-mobile`)
+- Added Maestro detection: `.maestro/` directory, `which maestro`, YAML with Maestro
+  commands (`appId:`, `tapOn:`, `assertVisible:`)
+- Tool Selection Gate updated for three tools: Detox / Appium / Maestro
+- Phase 3 adds inline Maestro YAML flow templates (login, invalid-login, suite runner)
+  with Maestro tips (tapOn matching, runFlow reuse, envFile secrets, scrollUntilVisible)
+- Phase 4 adds Maestro execute block (`maestro test --format junit --output`)
+- Phase 5 report updated: Framework now lists "Detox / Appium+WebDriverIO / Maestro"
+
+### Changed (`/qa-api`)
+- Preamble adds language detection setting `_API_TOOL`: pom.xml/build.gradle → `java`;
+  requirements.txt/conftest.py/pytest.ini/pyproject.toml → `python`; *.csproj/*.sln → `csharp`;
+  Gemfile → `ruby`; package.json (default) → `playwright`
+- Phase 3 replaced with 5 language-specific templates:
+  TypeScript/JS (Playwright request context), Java (REST Assured + JUnit 5),
+  Python (pytest + requests), C# (HttpClient + NUnit), Ruby (RSpec + Faraday)
+- Phase 4 execute dispatches to mvn/gradle (Java), pytest (Python), dotnet (C#),
+  rspec (Ruby), or npx playwright (JS/TS)
+- "Portable by default" rule updated to "Language-native by default"
+
+### Changed (`/qa-team`)
+- Preamble now detects Cypress, Selenium, JMeter, Maestro signals alongside existing ones
+- Adds `_WEB_TOOL`, `_PERF_TOOL`, `_MOB_TOOL` composite variables for orchestrator routing
+- Phase 0 auto-detection rules updated: Cypress/Selenium → qa-web, JMeter → qa-perf,
+  Maestro → qa-mobile
+- Phase 2 sub-agent prompt template now passes `Detected tool:` field so sub-agents
+  skip their tool selection gate when the orchestrator already knows the tool
+- Phase 4 report headers now show dynamic tool names per domain
+
+### Changed (`/qa-refine`)
+- Tool→skill mapping expanded from 4 to 9 rows: added Cypress, Selenium, JMeter,
+  Locust, Maestro — each with full pattern checklists and Phase 1a/1b source URLs
+- Tool-language exceptions updated: Cypress (always TS/JS), Locust (always Python),
+  Maestro (always YAML — skip TARGET_LANG detection, write flow files)
+- Phase 2 reference file paths table updated with 5 new output paths
+
+---
+
 ## v1.3.0.0 — 2026-04-26 — Multi-language qa-refine + new lang-refine skill
 
 ### Added (`/lang-refine`)

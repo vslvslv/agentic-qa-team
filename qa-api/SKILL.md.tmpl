@@ -5,10 +5,12 @@ version: 1.0.0
 description: |
   API test agent. Discovers REST and GraphQL endpoints from OpenAPI specs, route
   files, or live introspection. Generates and executes HTTP-level tests covering
-  status codes, schema validation, auth enforcement, and error handling. Works
-  standalone or as a sub-agent of /qa-team. Use when asked to "qa api",
-  "test the api", "api tests", "contract testing", "test endpoints", or
-  "rest/graphql testing". (qa-agentic-team)
+  status codes, schema validation, auth enforcement, and error handling. Uses the
+  idiomatic testing tool for the project's language: Playwright request context
+  (JS/TS), REST Assured (Java), pytest+requests (Python), HttpClient+NUnit (C#),
+  or RSpec+Faraday (Ruby). Works standalone or as a sub-agent of /qa-team. Use
+  when asked to "qa api", "test the api", "api tests", "contract testing",
+  "test endpoints", or "rest/graphql testing". (qa-agentic-team)
 allowed-tools:
   - Bash
   - Read
@@ -46,11 +48,20 @@ ls openapi.yaml openapi.json swagger.yaml swagger.json \
 # Detect route files
 echo "--- ROUTE FILES ---"
 find . \( -path "*/routes/*.ts" -o -path "*/routes/*.js" \
-  -o -path "*/controllers/*.ts" -o -path "*/controllers/*.js" \
+  -o -path "*/controllers/*.ts" -o -path "*/controllers/*.java" \
   -o -path "*/api/src/**/*.ts" \) \
   ! -path "*/node_modules/*" 2>/dev/null | head -20
 
-# Detect test runner
+# Detect project language → API tool
+echo "--- LANGUAGE DETECTION ---"
+_API_TOOL="playwright"  # default for JS/TS
+[ -f "pom.xml" ] || [ -f "build.gradle" ] || [ -f "build.gradle.kts" ] && _API_TOOL="java"
+[ -f "requirements.txt" ] || [ -f "conftest.py" ] || [ -f "pytest.ini" ] || [ -f "pyproject.toml" ] && _API_TOOL="python"
+[ -n "$(find . -maxdepth 3 \( -name '*.csproj' -o -name '*.sln' \) 2>/dev/null | head -1)" ] && _API_TOOL="csharp"
+[ -f "Gemfile" ] && _API_TOOL="ruby"
+echo "API_TOOL: $_API_TOOL"
+
+# Detect test runner (JS/TS)
 echo "--- TEST RUNNER ---"
 ls jest.config.ts jest.config.js vitest.config.ts vitest.config.js 2>/dev/null
 grep -l "supertest\|axios\|node-fetch\|got" package.json 2>/dev/null | head -1
@@ -107,7 +118,6 @@ except: pass
 " 2>/dev/null | head -30
 
 # Strategy 4: Live /docs
-curl -s "$_API_URL/api-docs" -o "$_TMP/api-docs.html" 2>/dev/null && echo "DOCS: fetched" || true
 curl -s "$_API_URL/swagger.json" 2>/dev/null | python3 -c "
 import sys, json
 try:
@@ -134,7 +144,7 @@ grep -r "Authorization\|Bearer\|jwt\|session" --include="*.ts" -l \
   ! -path "*/node_modules/*" 2>/dev/null | head -5
 
 # Find login endpoint
-grep -r "login\|signin\|auth/token\|auth/login" --include="*.ts" \
+grep -r "login\|signin\|auth/token\|auth/login" --include="*.ts" --include="*.java" \
   ! -path "*/node_modules/*" 2>/dev/null | grep -o '"[/][^"]*"' | head -5
 
 # Check for seeded credentials
@@ -155,48 +165,169 @@ _TOKEN=$(echo "$_AUTH_RESP" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
 
 ## Phase 3 — Generate API Tests
 
-**Test framework selection:**
-- If `vitest` in `package.json` → use Vitest + `@vitest/browser` or inline `fetch`
-- If `jest` in `package.json` → use Jest + `supertest`
-- Otherwise → use Playwright's `request` context (no extra dep needed)
+Use `_API_TOOL` to select the test template. Read existing test files before writing —
+append missing test blocks, never overwrite existing ones.
 
-Prefer Playwright request context for portability:
+**TypeScript / JavaScript — Playwright request context:**
 
 ```typescript
 // api-tests/endpoints.spec.ts
 import { test, expect } from "@playwright/test";
 
 const BASE = process.env.API_URL || "http://localhost:3001";
-
 let token: string;
 
 test.beforeAll(async ({ request }) => {
   const res = await request.post(`${BASE}/api/auth/login`, {
-    data: {
-      email: process.env.E2E_USER_EMAIL || "admin@example.com",
-      password: process.env.E2E_USER_PASSWORD || "password123",
-    },
+    data: { email: process.env.E2E_USER_EMAIL || "admin@example.com",
+            password: process.env.E2E_USER_PASSWORD || "password123" },
   });
-  const body = await res.json();
-  token = body.token;
+  token = (await res.json()).token;
 });
 
-// ── GET /api/users ────────────────────────────────────────────────────────────
 test.describe("GET /api/users", () => {
   test("returns 200 with array", async ({ request }) => {
     const res = await request.get(`${BASE}/api/users`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(res.status()).toBe(200);
-    const body = await res.json();
-    expect(Array.isArray(body)).toBe(true);
+    expect(Array.isArray(await res.json())).toBe(true);
   });
-
   test("returns 401 without auth", async ({ request }) => {
-    const res = await request.get(`${BASE}/api/users`);
-    expect(res.status()).toBe(401);
+    expect((await request.get(`${BASE}/api/users`)).status()).toBe(401);
   });
 });
+```
+
+**Java — REST Assured:**
+
+```java
+// src/test/java/api/UsersApiTest.java
+import io.restassured.RestAssured;
+import io.restassured.http.ContentType;
+import org.junit.jupiter.api.*;
+import static io.restassured.RestAssured.*;
+import static org.hamcrest.Matchers.*;
+
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+public class UsersApiTest {
+    static String token;
+
+    @BeforeAll static void setup() {
+        RestAssured.baseURI = System.getenv().getOrDefault("API_URL", "http://localhost:3001");
+        token = given().contentType(ContentType.JSON)
+            .body("{\"email\":\"admin@example.com\",\"password\":\"password123\"}")
+            .post("/api/auth/login")
+            .then().statusCode(200)
+            .extract().path("token");
+    }
+
+    @Test void getUsers_returns200WithList() {
+        given().header("Authorization", "Bearer " + token)
+            .get("/api/users")
+            .then().statusCode(200).body("$", instanceOf(java.util.List.class));
+    }
+
+    @Test void getUsers_returns401WithoutAuth() {
+        get("/api/users").then().statusCode(401);
+    }
+}
+```
+
+**Python — pytest + requests:**
+
+```python
+# tests/test_users_api.py
+import os, pytest, requests
+
+BASE = os.getenv("API_URL", "http://localhost:3001")
+
+@pytest.fixture(scope="session")
+def token():
+    r = requests.post(f"{BASE}/api/auth/login", json={
+        "email": os.getenv("E2E_USER_EMAIL", "admin@example.com"),
+        "password": os.getenv("E2E_USER_PASSWORD", "password123"),
+    })
+    r.raise_for_status()
+    return r.json()["token"]
+
+def test_get_users_returns_200(token):
+    r = requests.get(f"{BASE}/api/users", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+def test_get_users_401_without_auth():
+    assert requests.get(f"{BASE}/api/users").status_code == 401
+```
+
+**C# — HttpClient + NUnit:**
+
+```csharp
+// ApiTests/UsersApiTests.cs
+using NUnit.Framework;
+using System.Net.Http;
+using System.Net.Http.Json;
+using System.Threading.Tasks;
+
+[TestFixture]
+public class UsersApiTests {
+    static HttpClient _client = new HttpClient {
+        BaseAddress = new Uri(Environment.GetEnvironmentVariable("API_URL") ?? "http://localhost:3001")
+    };
+    static string _token = "";
+
+    [OneTimeSetUp] public async Task Setup() {
+        var res = await _client.PostAsJsonAsync("/api/auth/login",
+            new { email = "admin@example.com", password = "password123" });
+        var body = await res.Content.ReadFromJsonAsync<LoginResponse>();
+        _token = body?.Token ?? "";
+        _client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+    }
+
+    [Test] public async Task GetUsers_Returns200() {
+        var res = await _client.GetAsync("/api/users");
+        Assert.That((int)res.StatusCode, Is.EqualTo(200));
+    }
+
+    [Test] public async Task GetUsers_Returns401WithoutAuth() {
+        using var anon = new HttpClient { BaseAddress = _client.BaseAddress };
+        Assert.That((int)(await anon.GetAsync("/api/users")).StatusCode, Is.EqualTo(401));
+    }
+
+    record LoginResponse(string Token);
+}
+```
+
+**Ruby — RSpec + Faraday:**
+
+```ruby
+# spec/api/users_spec.rb
+require 'faraday'
+require 'json'
+
+BASE = ENV.fetch('API_URL', 'http://localhost:3001')
+
+RSpec.describe 'Users API' do
+  let(:conn) { Faraday.new(url: BASE) }
+  let(:token) do
+    res = conn.post('/api/auth/login') do |req|
+      req.headers['Content-Type'] = 'application/json'
+      req.body = JSON.dump(email: 'admin@example.com', password: 'password123')
+    end
+    JSON.parse(res.body)['token']
+  end
+
+  it 'GET /api/users returns 200 with array' do
+    res = conn.get('/api/users') { |r| r.headers['Authorization'] = "Bearer #{token}" }
+    expect(res.status).to eq(200)
+    expect(JSON.parse(res.body)).to be_a(Array)
+  end
+
+  it 'GET /api/users returns 401 without auth' do
+    expect(conn.get('/api/users').status).to eq(401)
+  end
+end
 ```
 
 **Coverage targets per endpoint:**
@@ -210,9 +341,7 @@ test.describe("GET /api/users", () => {
 - Required field missing: error in `errors[]`
 - Auth: unauthenticated → `UNAUTHENTICATED` error code
 
-Read existing API test files before writing — append only missing test blocks.
-
-**Type-check after writing:**
+**Type-check after writing (JS/TS only):**
 
 ```bash
 _TSC=$(find . -path "*/node_modules/.bin/tsc" ! -path "*/node_modules/*/node_modules/*" | head -1)
@@ -221,30 +350,52 @@ _TSC=$(find . -path "*/node_modules/.bin/tsc" ! -path "*/node_modules/*/node_mod
 
 ## Phase 4 — Execute Tests
 
+Dispatch to the correct runner based on `_API_TOOL`:
+
+**playwright (JS/TS):**
 ```bash
 export API_URL="$_API_URL"
-export E2E_USER_EMAIL="${E2E_USER_EMAIL:-admin@example.com}"
-export E2E_USER_PASSWORD="${E2E_USER_PASSWORD:-password123}"
-
-_SPEC_FILES=$(find . \( -path "*/api-tests/*.spec.ts" \
-  -o -path "*/tests/api*.spec.ts" -o -path "*/e2e/api*.spec.ts" \) \
+_SPEC_FILES=$(find . \( -path "*/api-tests/*.spec.ts" -o -path "*/tests/api*.spec.ts" \) \
   ! -path "*/node_modules/*" 2>/dev/null | tr '\n' ' ')
-
-if [ -n "$_SPEC_FILES" ]; then
-  _PW_JSON="$_TMP/qa-api-pw-results.json"
-  npx playwright test $_SPEC_FILES \
-    --project=chromium \
-    --reporter=json \
-    2>&1 > "$_TMP/qa-api-pw-output.txt"
-  _EXIT_CODE=$?
-  echo "PW_EXIT_CODE: $_EXIT_CODE"
-  cat "$_TMP/qa-api-pw-output.txt" | tail -20
-else
-  echo "No API spec files found — generation only mode"
-fi
+[ -n "$_SPEC_FILES" ] && \
+  npx playwright test $_SPEC_FILES --project=chromium --reporter=json \
+    2>&1 > "$_TMP/qa-api-output.txt" && \
+  echo "PW_EXIT_CODE: $?" || echo "No API spec files found — generation only mode"
 ```
 
-Parse results using the same Python snippet as qa-web (adapt path to `qa-api-pw-results.json`).
+**java:**
+```bash
+# Maven
+command -v mvn &>/dev/null && [ -f pom.xml ] && \
+  mvn test -pl . -Dtest="*ApiTest" 2>&1 | tee "$_TMP/qa-api-output.txt" && \
+  echo "MAVEN_EXIT_CODE: $?"
+# Gradle
+command -v gradle &>/dev/null && [ -f build.gradle ] && \
+  gradle test --tests "*ApiTest" 2>&1 | tee "$_TMP/qa-api-output.txt" && \
+  echo "GRADLE_EXIT_CODE: $?"
+```
+
+**python:**
+```bash
+export API_URL="$_API_URL"
+command -v pytest &>/dev/null && \
+  pytest tests/ -v -k "api" 2>&1 | tee "$_TMP/qa-api-output.txt" && \
+  echo "PYTEST_EXIT_CODE: $?"
+```
+
+**csharp:**
+```bash
+command -v dotnet &>/dev/null && \
+  dotnet test --filter "Category=Api" 2>&1 | tee "$_TMP/qa-api-output.txt" && \
+  echo "DOTNET_EXIT_CODE: $?"
+```
+
+**ruby:**
+```bash
+command -v rspec &>/dev/null && \
+  bundle exec rspec spec/api/ 2>&1 | tee "$_TMP/qa-api-output.txt" && \
+  echo "RSPEC_EXIT_CODE: $?"
+```
 
 ## Phase 5 — Report
 
@@ -257,6 +408,7 @@ Write report to `$_TMP/qa-api-report.md`:
 - **Status**: ✅ / ❌
 - Passed: N · Failed: N · Skipped: N
 - Endpoints tested: N
+- Language / Tool: <playwright | REST Assured | pytest | HttpClient | RSpec>
 - Auth: JWT / session / none
 
 ## Endpoint Coverage
@@ -277,9 +429,9 @@ Write report to `$_TMP/qa-api-report.md`:
 
 ## Important Rules
 
-- **Portable by default** — use Playwright request context; avoid test runners that require setup
-- **Auth first** — always obtain a token in `beforeAll`; never hard-code tokens
-- **Test the contract, not the implementation** — assert on status codes + response schema, not internal state
-- **Idempotent tests** — use unique IDs for created resources; clean up in `afterAll`
+- **Language-native by default** — use the idiomatic tool for the stack; avoid cross-language deps
+- **Auth first** — always obtain a token in setup; never hard-code tokens in test bodies
+- **Test the contract, not the implementation** — assert on status codes + response schema
+- **Idempotent tests** — use unique IDs for created resources; clean up in teardown
 - **Report even if execution fails** — always write the report regardless of exit code
 - **No destructive operations** — skip `DELETE /api/*` tests unless cleanup-only; flag them explicitly

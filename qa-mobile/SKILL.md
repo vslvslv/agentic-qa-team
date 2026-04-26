@@ -3,11 +3,12 @@ name: qa-mobile
 preamble-tier: 3
 version: 1.0.0
 description: |
-  Mobile test agent. Detects the mobile framework (React Native / Expo with Detox,
-  or native iOS/Android with Appium), generates test cases for critical user flows,
-  executes them against a simulator/emulator or physical device, and produces a
-  structured report. Works standalone or as a sub-agent of /qa-team. Use when
-  asked to "qa mobile", "test the app", "mobile tests", "detox", "appium",
+  Mobile test agent. Detects the mobile framework (React Native/Expo with Detox,
+  native iOS/Android with Appium/WebDriverIO, or cross-platform with Maestro),
+  generates test cases for critical user flows, executes them against a
+  simulator/emulator or physical device, and produces a structured report.
+  Works standalone or as a sub-agent of /qa-team. Use when asked to "qa mobile",
+  "test the app", "mobile tests", "detox", "appium", "maestro",
   "react native testing", or "ios/android test agent". (qa-agentic-team)
 allowed-tools:
   - Bash
@@ -36,12 +37,22 @@ cat package.json 2>/dev/null | grep -E '"react-native"|"expo"|"detox"|"appium"|"
 ls .detoxrc.js .detoxrc.ts .detoxrc.json 2>/dev/null
 
 # Detect Detox
-_DETOX=$(cat package.json 2>/dev/null | grep -c '"detox"' || echo 0)
+_DETOX=0
+grep -q '"detox"' package.json 2>/dev/null && _DETOX=1
 echo "DETOX_PRESENT: $_DETOX"
 
 # Detect Appium / WebDriverIO
-_APPIUM=$(cat package.json 2>/dev/null | grep -c '"appium"\|"@wdio"' || echo 0)
+_APPIUM=0
+grep -q '"appium"\|"@wdio"' package.json 2>/dev/null && _APPIUM=1
 echo "APPIUM_PRESENT: $_APPIUM"
+
+# Detect Maestro
+_MAESTRO=0
+[ -d ".maestro" ] && _MAESTRO=1
+which maestro > /dev/null 2>&1 && _MAESTRO=1
+find . -name "*.yaml" ! -path "*/node_modules/*" 2>/dev/null | \
+  xargs grep -l "appId:\|tapOn:\|assertVisible:" 2>/dev/null | head -1 | grep -q '.' && _MAESTRO=1
+echo "MAESTRO_PRESENT: $_MAESTRO"
 
 # Detect available simulators/emulators
 echo "--- DEVICES ---"
@@ -52,7 +63,7 @@ adb devices 2>/dev/null | head -5 || echo "Android adb: not available"
 echo "--- EXISTING TESTS ---"
 find . \( -path "*/e2e/*.test.js" -o -path "*/e2e/*.spec.js" \
   -o -path "*/e2e/*.test.ts" -o -path "*/e2e/*.spec.ts" \
-  -o -path "*/test/**/*.js" \) \
+  -o -path "*/.maestro/*.yaml" -o -path "*/test/**/*.js" \) \
   ! -path "*/node_modules/*" 2>/dev/null | head -15
 
 # App screens / navigation
@@ -62,9 +73,26 @@ find . \( -path "*/screens/*.tsx" -o -path "*/screens/*.jsx" \
   ! -path "*/node_modules/*" 2>/dev/null | head -20
 ```
 
-Stop and ask the user if:
-- Neither Detox nor Appium is detected and the project has `android/` or `ios/`
-- No simulator/emulator is available
+### Tool Selection Gate
+
+Count detected tools from `DETOX_PRESENT`, `APPIUM_PRESENT`, `MAESTRO_PRESENT`.
+
+**Exactly one detected** → use that tool automatically. Set `_MOB_TOOL` to `detox`,
+`appium`, or `maestro`.
+
+**Zero detected** → ask:
+> "No mobile testing tool detected. Which would you like to use?
+> 1. **Detox** (recommended for React Native/Expo — JS-native, fast, first-party)
+> 2. **Appium + WebDriverIO** (best for fully native iOS/Android or cross-language teams)
+> 3. **Maestro** (YAML-based, zero-code, cross-platform, rapid CI setup)
+>
+> Recommendation: Detox for React Native; Appium for native apps; Maestro for quick
+> cross-platform flows with minimal scripting."
+
+**Two or more detected** → list which were found, ask which to use for this run.
+
+If no simulator/emulator is available: warn the user. Ask whether to write tests only
+or resolve the device setup first.
 
 ## Phase 1 — Detect Framework and Configuration
 
@@ -72,7 +100,6 @@ Stop and ask the user if:
 
 ```bash
 cat .detoxrc.js .detoxrc.ts .detoxrc.json 2>/dev/null | head -40
-# Find which device config is set
 grep -r "device\|simulator\|emulator\|configuration" .detoxrc.js .detoxrc.ts 2>/dev/null | head -20
 ```
 
@@ -81,6 +108,14 @@ grep -r "device\|simulator\|emulator\|configuration" .detoxrc.js .detoxrc.ts 2>/
 ```bash
 cat wdio.conf.js wdio.conf.ts wdio.conf.mjs 2>/dev/null | head -40
 cat appium.config.js appium.config.ts 2>/dev/null | head -20
+```
+
+**If Maestro is present:**
+
+```bash
+find . -name "*.yaml" ! -path "*/node_modules/*" 2>/dev/null | \
+  xargs grep -l "appId:\|tapOn:\|assertVisible:" 2>/dev/null | head -10
+ls .maestro/ 2>/dev/null
 ```
 
 **React Native / Expo detection:**
@@ -105,8 +140,8 @@ Read navigation and screen files to build a flow inventory:
 
 ```bash
 # Navigation structure
-find . \( -path "*/navigation/*.tsx" -o -path "*Navigation*.tsx" \
-  -o -path "*Router*.tsx" -o -path "*Stack*.tsx" \) \
+find . \( -path "*/navigation/*.tsx" -o -name "*Navigation*.tsx" \
+  -o -name "*Router*.tsx" -o -name "*Stack*.tsx" \) \
   ! -path "*/node_modules/*" 2>/dev/null | head -5 | xargs cat 2>/dev/null | head -100
 
 # Screen names
@@ -119,38 +154,33 @@ find . \( -name "Login*.tsx" -o -name "Auth*.tsx" -o -name "Signin*.tsx" \) \
 ```
 
 Build a **screen inventory**:
-- Screen name
-- Route/navigation key
-- Purpose (one sentence)
+- Screen name · Route/navigation key · Purpose (one sentence)
 - Key interactions (text input, button tap, scroll, swipe)
 - Priority: `critical` | `important` | `nice-to-have`
 
 ## Phase 3 — Generate Test Cases
 
+Read existing test files first — append missing `describe`/flow blocks, never delete.
+
 **Detox tests (React Native / Expo):**
 
-```javascript
-// e2e/login.test.js (Detox)
-describe("Login Flow", () => {
-  beforeAll(async () => {
-    await device.launchApp({ newInstance: true });
-  });
+> Reference: [Detox patterns guide](references/detox-patterns.md)
 
-  beforeEach(async () => {
-    await device.reloadReactNative();
-  });
+```javascript
+// e2e/login.test.js
+describe("Login Flow", () => {
+  beforeAll(async () => { await device.launchApp({ newInstance: true }); });
+  beforeEach(async () => { await device.reloadReactNative(); });
 
   it("shows login screen on launch", async () => {
     await expect(element(by.id("login-screen"))).toBeVisible();
   });
-
   it("logs in with valid credentials", async () => {
     await element(by.id("email-input")).typeText("admin@example.com");
     await element(by.id("password-input")).typeText("password123");
     await element(by.id("login-button")).tap();
     await expect(element(by.id("home-screen"))).toBeVisible();
   });
-
   it("shows error with invalid credentials", async () => {
     await element(by.id("email-input")).typeText("wrong@example.com");
     await element(by.id("password-input")).typeText("wrongpass");
@@ -163,30 +193,75 @@ describe("Login Flow", () => {
 **Appium / WebDriverIO tests (Native iOS/Android):**
 
 ```typescript
-// test/specs/login.spec.ts (WebDriverIO + Appium)
+// test/specs/login.spec.ts
 import { $, browser } from "@wdio/globals";
 import { expect } from "expect-webdriverio";
 
 describe("Login Flow", () => {
   it("shows login screen on launch", async () => {
-    const loginScreen = await $("~login-screen");
-    await expect(loginScreen).toBeDisplayed();
+    await expect(await $("~login-screen")).toBeDisplayed();
   });
-
   it("logs in with valid credentials", async () => {
-    const emailInput = await $("~email-input");
-    const passwordInput = await $("~password-input");
-    const loginBtn = await $("~login-button");
-
-    await emailInput.setValue(process.env.E2E_USER_EMAIL || "admin@example.com");
-    await passwordInput.setValue(process.env.E2E_USER_PASSWORD || "password123");
-    await loginBtn.click();
-
-    const homeScreen = await $("~home-screen");
-    await expect(homeScreen).toBeDisplayed();
+    await (await $("~email-input")).setValue(process.env.E2E_USER_EMAIL || "admin@example.com");
+    await (await $("~password-input")).setValue(process.env.E2E_USER_PASSWORD || "password123");
+    await (await $("~login-button")).click();
+    await expect(await $("~home-screen")).toBeDisplayed();
   });
 });
 ```
+
+**Maestro flows (YAML — cross-platform):**
+
+> Reference: [Maestro patterns guide](references/maestro-patterns.md)
+
+```yaml
+# .maestro/login.yaml
+appId: com.example.myapp
+---
+- launchApp
+- tapOn:
+    text: "Email"
+- inputText: "${EMAIL:-admin@example.com}"
+- tapOn:
+    text: "Password"
+- inputText: "${PASSWORD:-password123}"
+- tapOn:
+    text: "Log In"
+- assertVisible:
+    text: "Welcome"
+- takeScreenshot: login_success
+```
+
+```yaml
+# .maestro/login_invalid.yaml
+appId: com.example.myapp
+---
+- launchApp
+- tapOn:
+    text: "Email"
+- inputText: "wrong@example.com"
+- tapOn:
+    text: "Password"
+- inputText: "wrongpass"
+- tapOn:
+    text: "Log In"
+- assertVisible:
+    text: "Invalid credentials"
+```
+
+```yaml
+# .maestro/_suite.yaml  (run all flows in order)
+flows:
+  - login.yaml
+  - login_invalid.yaml
+  - home.yaml
+```
+
+**Maestro tips:**
+- `tapOn` matches by text, id, or `{ id: "element-id" }` — prefer `testID`/`accessibilityLabel`
+- Use `runFlow: setup.yaml` for shared setup (e.g. login) reused across flow files
+- Pass secrets via `--env KEY=VALUE` or `envFile: .maestro.env`
+- `scrollUntilVisible` + `assertVisible` for long lists; `swipe` for drawer/carousel
 
 **Coverage targets per critical screen:**
 1. Screen renders without crash (smoke test)
@@ -194,12 +269,13 @@ describe("Login Flow", () => {
 3. Error/empty state handling
 4. Navigation: back, deep link if applicable
 
-**Selector strategy:**
-- Prefer `testID` / `accessibilityLabel` (set `testID` props in RN components)
-- Use `by.id()` for Detox, `$("~testId")` for Appium accessibility ID
-- Never use XPath — too brittle for mobile
+**Selector strategy (Detox/Appium):**
+- `by.id(testID)` > `by.label()` > `by.type()` > `by.text()` (Detox — avoid by.text for actions)
+- `$("~testId")` > `$("id=...")` > `$("xpath=...")` (Appium — avoid XPath)
 
-Read existing test files before writing; append only missing `describe` blocks.
+**Flakiness / synchronization (Detox):**
+- Use `waitFor(...).withTimeout(ms)` — never `setTimeout`/`sleep`
+- Disable animations in CI: `launchArgs: { detoxDisableAnimations: 'true' }`
 
 ## Phase 4 — Execute Tests
 
@@ -207,26 +283,14 @@ Read existing test files before writing; append only missing `describe` blocks.
 
 ```bash
 _DETOX_CONFIG=$(ls .detoxrc.js .detoxrc.ts .detoxrc.json 2>/dev/null | head -1)
-_DETOX_CONF_NAME=$(cat "$_DETOX_CONFIG" 2>/dev/null | grep -o '"configurations"' | head -1)
-
-# Build the app first if binary doesn't exist
-_BUILD_NEEDED=false
-[ ! -d "android/app/build" ] && [ ! -d "ios/build" ] && _BUILD_NEEDED=true
-
-if [ "$_BUILD_NEEDED" = "true" ]; then
-  echo "Building app for Detox..."
-  npx detox build --configuration ios.sim.debug 2>&1 | tail -20 || \
-  npx detox build --configuration android.emu.debug 2>&1 | tail -20
-fi
-
-# Run tests
+[ ! -d "android/app/build" ] && [ ! -d "ios/build" ] && \
+  npx detox build --configuration ios.sim.debug 2>&1 | tail -20
 npx detox test \
   --configuration ios.sim.debug \
   --reporter json \
   --artifacts-location "$_TMP/detox-artifacts" \
   2>&1 | tee "$_TMP/qa-mobile-output.txt"
-_EXIT_CODE=$?
-echo "DETOX_EXIT_CODE: $_EXIT_CODE"
+echo "DETOX_EXIT_CODE: $?"
 ```
 
 **Appium / WebDriverIO:**
@@ -235,8 +299,24 @@ echo "DETOX_EXIT_CODE: $_EXIT_CODE"
 npx wdio run wdio.conf.ts \
   --reporters json \
   2>&1 | tee "$_TMP/qa-mobile-output.txt"
-_EXIT_CODE=$?
-echo "WDIO_EXIT_CODE: $_EXIT_CODE"
+echo "WDIO_EXIT_CODE: $?"
+```
+
+**Maestro:**
+
+```bash
+_MAESTRO_DIR=$(ls -d .maestro/ maestro/ 2>/dev/null | head -1)
+_MAESTRO_DIR="${_MAESTRO_DIR:-.maestro}"
+if command -v maestro &>/dev/null && [ -d "$_MAESTRO_DIR" ]; then
+  echo "=== Running Maestro flows in $_MAESTRO_DIR ==="
+  maestro test "$_MAESTRO_DIR" \
+    --env EMAIL="${E2E_USER_EMAIL:-admin@example.com}" \
+    --env PASSWORD="${E2E_USER_PASSWORD:-password123}" \
+    --format junit \
+    --output "$_TMP/maestro-results.xml" \
+    2>&1 | tee "$_TMP/qa-mobile-output.txt"
+  echo "MAESTRO_EXIT_CODE: $?"
+fi
 ```
 
 Parse output:
@@ -245,16 +325,10 @@ Parse output:
 python3 - << 'PYEOF'
 import json, os, re
 tmp = os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"
-
-output_file = os.path.join(tmp, "qa-mobile-output.txt")
-if not os.path.exists(output_file):
-    print("No output file found"); exit()
-
-content = open(output_file).read()
-
-# Extract pass/fail counts from common reporter patterns
-passed = len(re.findall(r'✓|passing|PASS', content))
-failed = len(re.findall(r'✗|failing|FAIL|Error:', content))
+path = os.path.join(tmp, "qa-mobile-output.txt")
+content = open(path).read() if os.path.exists(path) else ""
+passed = len(re.findall(r'✓|passing|PASS|Flow Completed', content))
+failed = len(re.findall(r'✗|failing|FAIL|Flow Failed|Error:', content))
 print(json.dumps({"passed": passed, "failed": failed, "raw_summary": content[-500:]}))
 PYEOF
 ```
@@ -269,9 +343,9 @@ Write report to `$_TMP/qa-mobile-report.md`:
 ## Summary
 - **Status**: ✅ / ❌
 - Passed: N · Failed: N · Skipped: N
-- Framework: Detox / Appium+WebDriverIO
-- Platform: iOS / Android
-- Device: <simulator/emulator name>
+- Framework: Detox / Appium+WebDriverIO / Maestro
+- Platform: iOS / Android / Cross-platform
+- Device: <simulator/emulator/device name>
 
 ## Screen Coverage
 | Screen | Tests | Status |
@@ -293,8 +367,10 @@ Write report to `$_TMP/qa-mobile-report.md`:
 
 - **Build before test** — Detox requires a compiled binary; check before running
 - **Use testID accessors** — always prefer `testID`/`accessibilityLabel`; coordinate with app devs to add them
+- **No fixed sleeps** — use `waitFor(...).withTimeout(ms)`; hard-coded delays cause CI flakiness
+- **Disable animations on CI** — pass `detoxDisableAnimations: 'true'` in `launchArgs` (Detox)
 - **Device availability first** — if no simulator/emulator is available, write tests only and note setup steps
-- **Platform-specific specs** — use separate describe blocks for iOS vs Android differences
-- **Clean state** — use `device.launchApp({ newInstance: true })` or equivalent to ensure fresh state
+- **Platform-specific specs** — use separate describe blocks / flow files for iOS vs Android differences
+- **Clean state** — use `device.launchApp({ newInstance: true })` or `launchApp` (Maestro) for fresh state
 - **Report even if build fails** — document what was blocked and why
 - **Never run `adb root` or modify system settings** on physical devices without explicit confirmation

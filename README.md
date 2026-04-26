@@ -6,13 +6,13 @@ A suite of Claude Code skills that give any project an autonomous QA team. One c
 
 | Skill | Command | What it does |
 |-------|---------|--------------|
-| **Orchestrator** | `/qa-team` | Auto-detects project type, spawns all relevant agents in parallel, aggregates results into a unified quality report |
-| **Web E2E** | `/qa-web` | Discovers pages/routes, writes Playwright specs, executes against Chromium, reports coverage |
-| **API** | `/qa-api` | Reads OpenAPI/routes, generates HTTP contract tests (status codes, schema, auth), executes via Playwright request context |
-| **Mobile** | `/qa-mobile` | Detects RN/Expo (Detox) or native iOS/Android (Appium/WebDriverIO), generates screen tests, runs on simulator/emulator |
-| **Performance** | `/qa-perf` | Writes k6 load scripts + Playwright Web Vitals tests, runs with ramp-up profiles, reports p50/p95/p99 |
+| **Orchestrator** | `/qa-team` | Auto-detects project type and tools, spawns all relevant agents in parallel, aggregates results into a unified quality report |
+| **Web E2E** | `/qa-web` | Auto-detects Playwright, Cypress, or Selenium WebDriver; discovers pages/routes, writes specs, executes, reports coverage |
+| **API** | `/qa-api` | Language-driven: REST Assured (Java), pytest+requests (Python), HttpClient+NUnit (C#), RSpec+Faraday (Ruby), Playwright request context (JS/TS); reads OpenAPI/routes, generates contract tests |
+| **Mobile** | `/qa-mobile` | Auto-detects Detox (RN/Expo), Appium+WebDriverIO (native), or Maestro (cross-platform YAML); generates screen tests, runs on simulator/emulator |
+| **Performance** | `/qa-perf` | Auto-detects k6, JMeter, or Locust; writes load scripts, runs with ramp-up profiles, reports p50/p95/p99 |
 | **Visual** | `/qa-visual` | Captures Playwright screenshots, diffs against baselines, masks dynamic content, reports pixel regressions |
-| **QA Refine** | `/qa-refine` | Researches Playwright/k6/Detox/Appium best practices from official docs + community sources; iteratively scores and refines reference guides; supports TypeScript, Java, Python, C#, Ruby |
+| **QA Refine** | `/qa-refine` | Researches best practices for Playwright, Cypress, Selenium, k6, JMeter, Locust, Detox, Appium, Maestro from official docs + community sources; iteratively scores and refines reference guides; supports TypeScript, Java, Python, C#, Ruby |
 | **Lang Refine** | `/lang-refine` | Researches programming language best practices, design patterns (GoF, SOLID, Clean Code) and idioms; generates reference guides for general, TypeScript, JavaScript, Java, Python, C#, Kotlin, Ruby, Bash, and functional patterns |
 
 ## Install
@@ -82,16 +82,24 @@ Or run individual agents:
 ### All agents
 - Claude Code CLI
 - Node.js ≥ 18
-- `npx playwright install` (Playwright browsers)
+- `npx playwright install` (Playwright browsers — required by `/qa-web`, `/qa-visual`, `/qa-perf` Web Vitals)
+
+### `/qa-web`
+- **Playwright**: built-in (no extra install)
+- **Cypress**: `npm install -D cypress`
+- **Selenium WebDriver**: `npm install -D selenium-webdriver` + ChromeDriver
 
 ### `/qa-mobile`
 - **React Native / Expo**: [Detox](https://wix.github.io/Detox/) (`npm install -D detox`)
 - **Native iOS/Android**: [Appium](https://appium.io/) + [WebDriverIO](https://webdriver.io/) (`npm install -D appium @wdio/cli`)
+- **Cross-platform**: [Maestro](https://maestro.mobile.dev/) (`curl -Ls "https://get.maestro.mobile.dev" | bash`)
 - iOS Simulator (macOS only) or Android Emulator via Android Studio
 
 ### `/qa-perf`
 - [k6](https://k6.io/): `winget install k6` (Windows) · `brew install k6` (macOS) · `snap install k6` (Linux)
-- Or: Playwright Web Vitals tests (no extra install needed — falls back automatically)
+- [JMeter](https://jmeter.apache.org/): `brew install jmeter` (macOS) · download from jmeter.apache.org
+- [Locust](https://locust.io/): `pip install locust`
+- Or: Playwright Web Vitals tests (no extra install — falls back automatically if no perf tool found)
 
 ## Configuration
 
@@ -145,13 +153,32 @@ qa-agentic-team/
 ├── qa-team/              ← /qa-team orchestrator skill
 │   ├── SKILL.md          ← generated (do not edit)
 │   └── SKILL.md.tmpl     ← source (edit this)
-├── qa-web/               ← /qa-web Playwright E2E skill
+├── qa-web/               ← /qa-web E2E skill (Playwright/Cypress/Selenium)
 │   ├── SKILL.md
-│   └── SKILL.md.tmpl
-├── qa-api/               ← /qa-api REST + GraphQL skill
-├── qa-mobile/            ← /qa-mobile Detox / Appium skill
-├── qa-perf/              ← /qa-perf k6 + Web Vitals skill
+│   ├── SKILL.md.tmpl
+│   ├── tools/
+│   │   ├── playwright.md ← Playwright patterns + execute block
+│   │   ├── cypress.md    ← Cypress patterns + execute block
+│   │   └── selenium.md   ← Selenium patterns + execute block
+│   └── references/       ← qa-refine-generated deep-dive guides
+├── qa-api/               ← /qa-api REST + GraphQL skill (language-driven)
+├── qa-mobile/            ← /qa-mobile Detox / Appium / Maestro skill
+│   ├── SKILL.md
+│   ├── SKILL.md.tmpl
+│   └── references/
+│       ├── detox-patterns.md
+│       └── maestro-patterns.md
+├── qa-perf/              ← /qa-perf performance skill (k6/JMeter/Locust)
+│   ├── SKILL.md
+│   ├── SKILL.md.tmpl
+│   ├── tools/
+│   │   ├── k6.md         ← k6 patterns + execute block
+│   │   ├── jmeter.md     ← JMeter patterns + execute block
+│   │   └── locust.md     ← Locust patterns + execute block
+│   └── references/       ← qa-refine-generated deep-dive guides
 ├── qa-visual/            ← /qa-visual screenshot diffing skill
+├── qa-refine/            ← /qa-refine iterative research skill
+├── lang-refine/          ← /lang-refine language best-practices skill
 ├── bin/
 │   ├── setup             ← install: creates symlinks in ~/.claude/skills/
 │   ├── dev-setup         ← dev mode: single namespace symlink
@@ -164,7 +191,7 @@ qa-agentic-team/
 ├── .github/workflows/
 │   ├── version-gate.yml      ← validates VERSION + CHANGELOG on PRs
 │   └── skill-docs.yml        ← fails if SKILL.md is stale vs .tmpl
-├── VERSION               ← 4-part semver (1.0.0.0)
+├── VERSION               ← 4-part semver (1.4.0.0)
 ├── CHANGELOG.md
 ├── conductor.json
 └── package.json

@@ -2,20 +2,22 @@
 name: qa-refine
 version: 1.3.0.0
 description: |
-  Iteratively researches QA tools used in this project (Playwright, k6, Detox,
-  Appium, WebDriverIO) across official documentation AND community sources, then
-  generates test code examples in the project's actual language (TypeScript,
-  JavaScript, Java, Python, C#, Ruby, or any other). Runs an autoresearch-style
-  loop scoring against a 4-dimension rubric (0–100) until score ≥ 80 or 3 iterations.
-  Also makes surgical updates to the corresponding SKILL.md.tmpl.
+  Iteratively researches QA tools used in this project (Playwright, Cypress, Selenium,
+  k6, JMeter, Locust, Detox, Appium, WebDriverIO, Maestro) across official documentation
+  AND community sources, then generates test code examples in the project's actual
+  language (TypeScript, JavaScript, Java, Python, C#, Ruby, or any other). Runs an
+  autoresearch-style loop scoring against a 4-dimension rubric (0–100) until score ≥ 80
+  or 3 iterations. Also makes surgical updates to the corresponding SKILL.md.tmpl.
 
   Use this skill whenever the user asks to:
   - "research [tool] best practices / patterns / design"
   - "create a Page Object Model guide" or "set up POM for our tests"
   - "update qa-web / qa-perf / qa-mobile from the docs"
-  - "improve our Playwright selectors / k6 scripts / Detox tests"
+  - "improve our Playwright / Cypress / Selenium selectors or test structure"
+  - "improve our k6 / JMeter / Locust load test scripts"
+  - "improve our Detox / Appium / Maestro mobile tests"
   - "refresh QA skills from official documentation"
-  - "what are the latest best practices for Playwright / k6 / Detox / Appium?"
+  - "what are the latest best practices for [any QA tool]?"
   Proactively suggest running this skill after any conversation where the user mentions
   struggling with selectors, flakiness, auth patterns, or load test structure.
 allowed-tools:
@@ -56,6 +58,9 @@ Before fetching any docs, determine which language to use for code examples:
    - k6: always **JavaScript**
    - Detox: always **JavaScript**
    - WebDriverIO: always **TypeScript/JavaScript**
+   - Cypress: always **TypeScript/JavaScript**
+   - Locust: always **Python**
+   - Maestro: always **YAML** (no code language — skip TARGET_LANG detection, write flow files)
 
 Store the detected language as `TARGET_LANG` and use it throughout.
 
@@ -77,9 +82,14 @@ Target: **score ≥ 80** or **3 iterations** or **delta < 5** → stop.
 | Tool | Skill dir(s) | Pattern checklist |
 |------|-------------|-------------------|
 | Playwright | qa-web, qa-visual, qa-api | POM, fixture-based auth (storageState), locator rank, web-first assertions, API request context, network mocking, soft assertions, test sharding |
+| Cypress | qa-web | cy.session() auth, cy.intercept() mocking, data-cy selectors, custom commands, cy.request() API testing, Component Testing, cy.fixture(), retry-ability |
+| Selenium | qa-web | By.* selector hierarchy, Page Object Model (language-specific), explicit waits (WebDriverWait + ExpectedConditions), fluent waits, headless mode, screenshot on failure, Actions class |
 | k6 | qa-perf | Test type taxonomy, scenarios/executors, thresholds + abortOnFail, check() patterns, setup/teardown auth, custom metrics, handleSummary |
+| JMeter | qa-perf | Thread Group (ramp-up, loop count), HTTP Request Sampler, CSV Data Set Config, Response Assertion, Summary/Aggregate Report, JMeter properties for CI, Dashboard generation, distributed testing, non-GUI mode |
+| Locust | qa-perf | HttpUser vs FastHttpUser, @task with weight, on_start/on_stop, wait_time strategies, headless run flags, events hook for custom metrics, CSV output, environment parametrization |
 | Detox | qa-mobile | Matcher priority, auto-sync/disableSynchronization, waitFor idioms, beforeEach reset, CI animation disable, artifact collection |
 | Appium / WebDriverIO | qa-mobile | Page Object pattern, accessibility-id selector, mobile gestures, parallel device execution, CI Appium server config |
+| Maestro | qa-mobile | Flow YAML structure, appId, tapOn/inputText/assertVisible, runFlow (sub-flows), envFile for secrets, scroll/swipe, launchApp/stopApp, CI headless runner |
 
 ---
 
@@ -126,6 +136,47 @@ Pages to fetch (append to base URL):
 | C# | `https://appium.io/docs/en/2.0/guides/` + `https://github.com/appium/dotnet-client` README |
 | Ruby | `https://appium.io/docs/en/2.0/guides/` + `https://github.com/appium/ruby_lib` README |
 
+**Cypress (JS/TS only):**
+- `https://docs.cypress.io/guides/core-concepts/introduction-to-cypress`
+- `https://docs.cypress.io/guides/references/best-practices`
+- `https://docs.cypress.io/api/commands/session`
+- `https://docs.cypress.io/api/commands/intercept`
+- `https://docs.cypress.io/guides/end-to-end-testing/testing-strategies`
+- `https://docs.cypress.io/guides/component-testing/overview`
+
+**Selenium — URL set depends on TARGET_LANG:**
+
+| Language | Docs |
+|----------|------|
+| TypeScript / JavaScript | `https://www.selenium.dev/documentation/webdriver/`, `https://www.selenium.dev/documentation/test_practices/` |
+| Java | `https://www.selenium.dev/documentation/webdriver/`, `https://www.selenium.dev/documentation/test_practices/`, `https://github.com/SeleniumHQ/seleniumhq.github.io/tree/trunk/examples/java` |
+| Python | `https://www.selenium.dev/documentation/webdriver/`, `https://selenium-python.readthedocs.io/` |
+| C# | `https://www.selenium.dev/documentation/webdriver/`, `https://www.selenium.dev/documentation/test_practices/` |
+| Ruby | `https://www.selenium.dev/documentation/webdriver/`, `https://github.com/SeleniumHQ/selenium/tree/trunk/rb` |
+
+- `https://www.selenium.dev/documentation/webdriver/waits/` (all languages)
+- `https://www.selenium.dev/documentation/webdriver/elements/finders/` (all languages)
+
+**JMeter:**
+- `https://jmeter.apache.org/usermanual/get-started.html`
+- `https://jmeter.apache.org/usermanual/test_plan.html`
+- `https://jmeter.apache.org/usermanual/best-practices.html`
+- `https://jmeter.apache.org/usermanual/generating-dashboard.html`
+- `https://jmeter.apache.org/usermanual/remote-test.html`
+
+**Locust (Python only):**
+- `https://docs.locust.io/en/stable/writing-a-locustfile.html`
+- `https://docs.locust.io/en/stable/running-distributed.html`
+- `https://docs.locust.io/en/stable/configuration.html`
+- `https://docs.locust.io/en/stable/api.html`
+
+**Maestro (YAML only):**
+- `https://maestro.mobile.dev/getting-started/installing-maestro`
+- `https://maestro.mobile.dev/api-reference/commands`
+- `https://maestro.mobile.dev/getting-started/writing-your-first-flow`
+- `https://maestro.mobile.dev/platform-support/ci-integration`
+- `https://maestro.mobile.dev/advanced/nested-flows`
+
 If WebFetch is blocked, synthesize from training knowledge. Note the source in the
 file header.
 
@@ -159,6 +210,32 @@ Run **in parallel with Phase 1a**. Prompt for community fetches:
 - `https://github.com/saikrishna321/awesome-appium`
 - WebSearch: `appium webdriverio mobile testing best practices {TARGET_LANG} 2025`
 
+**Cypress — community:**
+- `https://github.com/cypress-io/awesome-cypress`
+- `https://github.com/cypress-io/cypress-realworld-app` (reference implementation)
+- WebSearch: `cypress best practices production scale 2025`
+- WebSearch: `cypress flaky tests solutions CI 2025`
+
+**Selenium — community:**
+- `https://github.com/SeleniumHQ/selenium/tree/trunk/examples`
+- WebSearch: `selenium webdriver best practices {TARGET_LANG} 2025`
+- WebSearch: `selenium page object model production pitfalls 2025`
+
+**JMeter — community:**
+- `https://github.com/abstracta/jmeter-java-dsl`
+- WebSearch: `jmeter load testing best practices CI 2025`
+- WebSearch: `jmeter performance test gotchas production 2025`
+
+**Locust — community:**
+- `https://github.com/locustio/locust/tree/master/examples`
+- WebSearch: `locust load testing production tips CI 2025`
+- WebSearch: `locust python performance testing patterns 2025`
+
+**Maestro — community:**
+- `https://github.com/mobile-dev-inc/maestro/tree/main/examples`
+- WebSearch: `maestro mobile testing best practices 2025`
+- WebSearch: `maestro CI integration react native 2025`
+
 **For non-JS/TS languages, also fetch the language-specific guide** from
 `lang-refine/references/<TARGET_LANG>-patterns.md` if it exists — it provides
 language idioms that test code examples should follow.
@@ -174,9 +251,14 @@ iteration 0 even if imperfect — the loop improves it.
 | Tool | Reference file |
 |------|---------------|
 | Playwright | `qa-web/references/playwright-patterns-<lang>.md` (or `playwright-patterns.md` for TS) |
+| Cypress | `qa-web/references/cypress-patterns.md` |
+| Selenium | `qa-web/references/selenium-patterns-<lang>.md` (or `selenium-patterns.md` for TS) |
 | k6 | `qa-perf/references/k6-patterns.md` |
+| JMeter | `qa-perf/references/jmeter-patterns.md` |
+| Locust | `qa-perf/references/locust-patterns.md` |
 | Detox | `qa-mobile/references/detox-patterns.md` |
 | Appium / WebDriverIO | `qa-mobile/references/appium-wdio-patterns-<lang>.md` (or base name for TS) |
+| Maestro | `qa-mobile/references/maestro-patterns.md` |
 
 For TypeScript/JavaScript (the default), use the existing base filename with no suffix.
 For other languages, append `-java`, `-python`, `-csharp`, `-ruby` etc. so guides

@@ -4,11 +4,11 @@ preamble-tier: 3
 version: 1.0.0
 description: |
   Performance test agent. Identifies critical user journeys and API endpoints,
-  generates k6 (or Locust) load test scripts, executes them, and analyzes
-  throughput, latency percentiles, and error rates. Works standalone or as a
-  sub-agent of /qa-team. Use when asked to "qa performance", "load test",
-  "stress test", "performance testing", "k6", "locust", "benchmark the api",
-  or "perf test agent". (qa-agentic-team)
+  generates load test scripts for the detected tool (k6, JMeter, or Locust),
+  executes them, and analyzes throughput, latency percentiles, and error rates.
+  Works standalone or as a sub-agent of /qa-team. Use when asked to "qa performance",
+  "load test", "stress test", "performance testing", "k6", "jmeter", "locust",
+  "benchmark the api", or "perf test agent". (qa-agentic-team)
 allowed-tools:
   - Bash
   - Read
@@ -42,266 +42,98 @@ for url in "$_API_URL" "$_WEB_URL"; do
   echo "HEALTH $url: $status"
 done
 
-# Detect k6
+# --- PERF TOOL DETECTION ---
 echo "--- K6 ---"
-which k6 2>/dev/null || echo "k6: not found"
-ls k6/ load-tests/ perf/ 2>/dev/null | head -10
+_K6=0
+which k6 2>/dev/null && _K6=1
+find . \( -path "*/k6/*.js" -o -path "*/k6/*.ts" -o -path "*/load-tests/*.k6.js" \) \
+  ! -path "*/node_modules/*" 2>/dev/null | head -5 | grep -q '.' && _K6=1
+echo "K6_PRESENT: $_K6"
 
-# Detect Locust
+echo "--- JMETER ---"
+_JMETER=0
+which jmeter 2>/dev/null && _JMETER=1
+_JMX_COUNT=$(find . -name "*.jmx" ! -path "*/node_modules/*" 2>/dev/null | wc -l)
+[ "$_JMX_COUNT" -gt 0 ] && _JMETER=1
+echo "JMETER_PRESENT: $_JMETER  JMX_FILES: $_JMX_COUNT"
+
 echo "--- LOCUST ---"
-which locust 2>/dev/null || echo "locust: not found"
-ls locustfile.py locust/ 2>/dev/null | head -5
+_LOCUST=0
+which locust 2>/dev/null && _LOCUST=1
+find . -name "locustfile.py" -o -name "locust*.py" ! -path "*/node_modules/*" 2>/dev/null | head -3 | grep -q '.' && _LOCUST=1
+echo "LOCUST_PRESENT: $_LOCUST"
 
 # Existing perf test files
 echo "--- EXISTING PERF TESTS ---"
 find . \( -name "*.k6.js" -o -name "*.k6.ts" -o -name "load-test*.js" \
-  -o -name "locustfile.py" -o -name "*perf*.spec.ts" \) \
+  -o -name "locustfile.py" -o -name "*.jmx" -o -name "*perf*.spec.ts" \) \
   ! -path "*/node_modules/*" 2>/dev/null | head -10
 
 # Detect route files to identify endpoints
 echo "--- ENDPOINTS SAMPLE ---"
 grep -r "router\.\(get\|post\|put\|patch\|delete\)" --include="*.ts" --include="*.js" \
-  ! -path "*/node_modules/*" 2>/dev/null | \
-  grep -o '"[/][^"]*"' | sort -u | head -20
+  ! -path "*/node_modules/*" 2>/dev/null | grep -o '"[/][^"]*"' | sort -u | head -20
 ```
 
-If neither `k6` nor `locust` is found and no existing perf tests exist: ask the user whether to:
-1. Install k6 (provide command: `winget install k6 / brew install k6 / snap install k6`)
-2. Generate k6 scripts only (without executing)
-3. Use Playwright for basic web performance timing instead
+### Tool Selection Gate
+
+Count detected tools from `K6_PRESENT`, `JMETER_PRESENT`, `LOCUST_PRESENT`.
+
+**Exactly one detected** → use that tool automatically. Set `_PERF_TOOL` to `k6`,
+`jmeter`, or `locust`.
+
+**Zero detected** → ask:
+> "No performance testing tool detected. Which would you like to use?
+> 1. **k6** (recommended — JS-native, CI-friendly, Grafana ecosystem, fast feedback)
+> 2. **JMeter** (best if you have existing .jmx plans or need a Java/GUI-based workflow)
+> 3. **Locust** (ideal for Python teams — readable Python DSL, easy to extend)
+>
+> Recommendation: k6 for new projects; JMeter if .jmx files exist or Java CI is required;
+> Locust for Python-heavy stacks."
+
+**Two or more detected** → list which were found, ask which to use for this run.
 
 ## Phase 1 — Identify Test Targets
-
-Read API routes, existing load tests, and any perf documentation to build a **target inventory**:
 
 ```bash
 # OpenAPI endpoints
 _SPEC=$(ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | head -1)
 [ -n "$_SPEC" ] && cat "$_SPEC" | grep -E "^\s*(get|post|put|patch|delete):|^\s+/[a-z]" | head -30
 
-# Find the heaviest/most critical endpoints from usage patterns
-grep -r "critical\|high-load\|frequent\|important" --include="*.md" \
-  ! -path "*/node_modules/*" 2>/dev/null | head -10
-
-# Find any existing performance benchmarks or SLA docs
+# Find any SLA docs
 find . -name "*.md" ! -path "*/node_modules/*" 2>/dev/null | \
   xargs grep -l "SLA\|latency\|throughput\|p95\|p99" 2>/dev/null | head -3
 ```
 
 Build target list:
-- Endpoint/URL
-- Method
-- Expected load pattern (spike, sustained, ramp-up)
-- SLA target (p95 < Xms) if documented
-- Auth required: yes/no
-- Priority: `critical` | `important`
+- Endpoint/URL, Method, Expected load pattern (spike, sustained, ramp-up)
+- SLA target (p95 < Xms) if documented, Auth required, Priority
 
-Default target profiles if no SLA docs exist:
+Default SLA profiles if no docs exist:
 - API reads (GET): p95 < 200ms under 50 concurrent users
 - API writes (POST/PUT): p95 < 500ms under 20 concurrent users
 - Web pages: LCP < 2.5s (Core Web Vitals good threshold)
 
-## Phase 2 — Generate k6 Scripts
+## Phase 2 — Load Tool Patterns & Generate Scripts
 
-> Reference: [k6 patterns guide](references/k6-patterns.md)
+Read the tool-specific patterns file for the selected `_PERF_TOOL`:
 
-**Prefer k6** for API load testing. Use Playwright's `page.metrics()` for Web Vitals.
-
-Use the **`scenarios` API** (not the top-level `stages` shorthand) so each script can
-declare multiple concurrent load profiles with independent executors and per-scenario
-thresholds. Choose the executor that matches the test type:
-
-| Test type | Executor |
-|-----------|---------|
-| Ramp-up / load / stress | `ramping-vus` |
-| Fixed RPS / throughput | `constant-arrival-rate` |
-| Gradually increasing RPS / breakpoint | `ramping-arrival-rate` |
-| Smoke (single VU sanity) | `constant-vus` (1 VU, short duration) |
-
-**k6 script template:**
-
-```javascript
-// k6/scripts/api-load.js
-import http from "k6/http";
-import { check, sleep } from "k6";
-import { Rate, Trend } from "k6/metrics";
-
-const errorRate    = new Rate("errors");
-const reqLatency   = new Trend("req_latency", true);
-
-export const options = {
-  scenarios: {
-    api_load: {
-      executor: "ramping-vus",
-      startVUs: 0,
-      stages: [
-        { duration: "30s", target: 10 },   // warm-up
-        { duration: "1m",  target: 50 },   // ramp to target
-        { duration: "2m",  target: 50 },   // sustained load
-        { duration: "30s", target: 0 },    // ramp down
-      ],
-      gracefulRampDown: "10s",
-    },
-  },
-  thresholds: {
-    // Scoped to this scenario — avoids cross-contamination in multi-scenario runs
-    "http_req_duration{scenario:api_load}": ["p(95)<200"],
-    "http_req_failed{scenario:api_load}":   [
-      { threshold: "rate<0.01", abortOnFail: true, delayAbortEval: "15s" },
-    ],
-    errors:      ["rate<0.01"],
-    req_latency: ["p(95)<200", "max<1000"],
-    checks:      ["rate>0.99"],
-  },
-};
-
-const BASE = __ENV.API_URL || "http://localhost:3001";
-
-// Obtain auth token once per VU
-export function setup() {
-  const res = http.post(`${BASE}/api/auth/login`, JSON.stringify({
-    email: __ENV.E2E_USER_EMAIL || "admin@example.com",
-    password: __ENV.E2E_USER_PASSWORD || "password123",
-  }), { headers: { "Content-Type": "application/json" } });
-
-  check(res, { "login ok": (r) => r.status === 200 });
-  return { token: res.json("token") };
-}
-
-export default function (data) {
-  const headers = {
-    Authorization: `Bearer ${data.token}`,
-    "Content-Type": "application/json",
-  };
-
-  // ── GET /api/users ─────────────────────────────────────────────────────────
-  const listRes = http.get(`${BASE}/api/users`, { headers });
-  check(listRes, {
-    "GET /api/users status 200": (r) => r.status === 200,
-    "GET /api/users has data": (r) => Array.isArray(r.json()),
-  });
-  errorRate.add(listRes.status !== 200);
-  reqLatency.add(listRes.timings.duration);
-
-  sleep(1);
-}
+```
+Read qa-perf/tools/<_PERF_TOOL>.md
 ```
 
-**Web Vitals with Playwright (fallback or supplement):**
+Also check the qa-refine reference guide if it exists:
+- k6: `qa-perf/references/k6-patterns.md`
+- JMeter: `qa-perf/references/jmeter-patterns.md`
+- Locust: `qa-perf/references/locust-patterns.md`
 
-```typescript
-// perf/web-vitals.spec.ts
-import { test, expect } from "@playwright/test";
-
-const PAGES = [
-  { name: "Home", url: "/" },
-  { name: "Dashboard", url: "/dashboard" },
-  { name: "List", url: "/list" },
-];
-
-for (const { name, url } of PAGES) {
-  test(`Web Vitals: ${name}`, async ({ page }) => {
-    await page.goto(url);
-    await page.waitForLoadState("networkidle");
-
-    const metrics = await page.evaluate(() => {
-      return new Promise<Record<string, number>>((resolve) => {
-        const entries: Record<string, number> = {};
-        new PerformanceObserver((list) => {
-          for (const e of list.getEntries()) {
-            entries[e.entryType + "_" + e.name] = e.startTime + (e as any).duration;
-          }
-        }).observe({ entryTypes: ["largest-contentful-paint", "layout-shift", "longtask"] });
-
-        // Give time to collect metrics
-        setTimeout(() => {
-          const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming;
-          entries["ttfb"] = nav.responseStart - nav.requestStart;
-          entries["domContentLoaded"] = nav.domContentLoadedEventEnd - nav.startTime;
-          entries["load"] = nav.loadEventEnd - nav.startTime;
-          resolve(entries);
-        }, 2000);
-      });
-    });
-
-    // Log metrics
-    console.log(`[${name}]`, metrics);
-
-    // Assert TTFB < 600ms (Core Web Vitals "needs improvement" threshold)
-    expect(metrics["ttfb"] ?? 0).toBeLessThan(600);
-  });
-}
-```
-
-Read existing perf test files before writing; append only missing test scenarios.
-
-**Data parameterization:** Use `SharedArray` (from `k6/data`) for large test datasets — load once
-in init context, shared across all VUs. Do not call `.filter()` / `.map()` outside the constructor.
-
-**CI output:** Export results with `handleSummary()` (preferred over `--summary-export`) to write
-both a CI-friendly text summary to stdout and a machine-readable JSON artifact. k6 exits with
-code `99` when any threshold fails — this automatically fails CI pipeline steps.
+Generate scripts covering all **critical** endpoints from Phase 1.
+Read existing perf test files first — append missing scenarios, never overwrite.
 
 ## Phase 3 — Execute Tests
 
-**k6:**
-
-```bash
-export API_URL="$_API_URL"
-export E2E_USER_EMAIL="${E2E_USER_EMAIL:-admin@example.com}"
-export E2E_USER_PASSWORD="${E2E_USER_PASSWORD:-password123}"
-
-_K6_SCRIPTS=$(find . \( -path "*/k6/*.js" -o -path "*/k6/*.ts" \
-  -o -path "*/load-tests/*.js" \) ! -path "*/node_modules/*" 2>/dev/null | head -5)
-
-if command -v k6 &>/dev/null && [ -n "$_K6_SCRIPTS" ]; then
-  for script in $_K6_SCRIPTS; do
-    echo "=== Running: $script ==="
-    k6 run \
-      --env API_URL="$API_URL" \
-      --env E2E_USER_EMAIL="$E2E_USER_EMAIL" \
-      --env E2E_USER_PASSWORD="$E2E_USER_PASSWORD" \
-      --no-color \
-      --out json="$_TMP/k6-raw-$(basename $script .js).json" \
-      "$script" 2>&1 | tee "$_TMP/k6-output-$(basename $script).txt"
-    # Note: use handleSummary() in the script for JSON/HTML output; --summary-export is deprecated
-    echo "EXIT: $?"
-  done
-else
-  echo "k6 not available or no scripts found — skipping k6 execution"
-fi
-```
-
-**Playwright Web Vitals:**
-
-```bash
-_PERF_SPECS=$(find . -path "*/perf/*.spec.ts" ! -path "*/node_modules/*" 2>/dev/null | tr '\n' ' ')
-if [ -n "$_PERF_SPECS" ]; then
-  npx playwright test $_PERF_SPECS \
-    --project=chromium \
-    --reporter=json \
-    2>&1 > "$_TMP/qa-perf-pw-output.txt"
-  echo "PW_EXIT_CODE: $?"
-fi
-```
-
-Parse k6 summary:
-
-```bash
-for f in "$_TMP"/k6-summary-*.json; do
-  [ -f "$f" ] && python3 - << PYEOF
-import json, sys
-data = json.load(open("$f"))
-metrics = data.get("metrics", {})
-dur = metrics.get("http_req_duration", {}).get("values", {})
-fail = metrics.get("http_req_failed", {}).get("values", {})
-print(f"Script: $f")
-print(f"  p50: {dur.get('p(50)',0):.1f}ms  p95: {dur.get('p(95)',0):.1f}ms  p99: {dur.get('p(99)',0):.1f}ms")
-print(f"  req/s: {metrics.get('http_reqs',{}).get('values',{}).get('rate',0):.1f}")
-print(f"  errors: {fail.get('rate',0)*100:.2f}%")
-PYEOF
-done
-```
+Dispatch to the correct runner based on `_PERF_TOOL` — the execute block is in
+`qa-perf/tools/<_PERF_TOOL>.md`. Run it now.
 
 ## Phase 4 — Report
 
@@ -313,17 +145,12 @@ Write report to `$_TMP/qa-perf-report.md`:
 ## Summary
 - **Status**: ✅ / ⚠️ / ❌
 - All thresholds met: yes / no
-- Tool: k6 / Playwright Vitals / both
+- Tool: k6 / JMeter / Locust
+- Target URL: <url>
 
-## k6 Results
-| Script | p50 | p95 | p99 | req/s | Errors | Pass |
-|--------|-----|-----|-----|-------|--------|------|
-| api-load.js | 45ms | 120ms | 200ms | 85.3 | 0.0% | ✅ |
-
-## Web Vitals
-| Page | TTFB | DOM Ready | Load | LCP | Status |
-|------|------|-----------|------|-----|--------|
-| Home | 45ms | 230ms | 400ms | 1.2s | ✅ |
+## Results
+| Endpoint | p50 | p95 | p99 | req/s | Errors | Pass |
+|----------|-----|-----|-----|-------|--------|------|
 
 ## Threshold Violations
 <list any metrics that exceeded SLA thresholds>
@@ -336,7 +163,7 @@ Write report to `$_TMP/qa-perf-report.md`:
 
 - **Never run against production** — always target localhost/staging; confirm URL before executing
 - **Ramp-up before full load** — always use staged load profiles (ramp-up → sustain → ramp-down)
-- **Auth in setup, not per iteration** — obtain tokens once in `setup()` to avoid auth endpoint overload
-- **Conservative defaults** — default to 50 VUs max; ask user before going above 200 VUs
-- **Report even without execution** — if k6 is missing, document installation steps + the generated scripts
-- **Cleanup after writes** — if any POST creates resources, add a `teardown()` to delete them
+- **Auth in setup, not per iteration** — obtain tokens once to avoid auth endpoint overload
+- **Conservative defaults** — default to 50 VUs/threads max; ask user before going above 200
+- **Report even without execution** — if the tool is missing, document installation steps + the generated scripts
+- **Cleanup after writes** — if any POST creates resources, add teardown logic to delete them

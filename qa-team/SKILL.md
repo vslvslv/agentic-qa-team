@@ -31,12 +31,41 @@ echo "TMP: $_TMP"
 
 # Detect project type signals
 echo "--- PROJECT SIGNALS ---"
-ls package.json pyproject.toml go.mod Cargo.toml 2>/dev/null | head -5
-ls playwright.config.ts playwright.config.js 2>/dev/null | head -2
-ls e2e/ tests/ spec/ cypress/ 2>/dev/null | head -5
+ls package.json pyproject.toml go.mod Cargo.toml pom.xml build.gradle Gemfile 2>/dev/null | head -6
 ls android/ ios/ app.json 2>/dev/null | head -3
-ls k6/ locustfile.py load-tests/ 2>/dev/null | head -3
 ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | head -2
+
+# Web E2E tool detection
+echo "--- WEB TOOLS ---"
+_WEB_TOOL=""
+ls playwright.config.ts playwright.config.js playwright.config.mts 2>/dev/null && _WEB_TOOL="playwright"
+{ ls cypress.config.ts cypress.config.js cypress.config.mjs 2>/dev/null || [ -d cypress ]; } && \
+  grep -q '"cypress"' package.json 2>/dev/null && _WEB_TOOL="${_WEB_TOOL:+$_WEB_TOOL,}cypress"
+grep -q '"selenium-webdriver"\|"@seleniumhq"' package.json 2>/dev/null && \
+  _WEB_TOOL="${_WEB_TOOL:+$_WEB_TOOL,}selenium"
+echo "WEB_TOOL: ${_WEB_TOOL:-none}"
+
+# Performance tool detection
+echo "--- PERF TOOLS ---"
+_PERF_TOOL=""
+{ ls k6/ load-tests/ 2>/dev/null | grep -q '.' || \
+  find . \( -path "*/k6/*.js" -o -path "*/k6/*.ts" \) ! -path "*/node_modules/*" 2>/dev/null | grep -q .; } && \
+  _PERF_TOOL="k6"
+find . -name "*.jmx" ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && \
+  _PERF_TOOL="${_PERF_TOOL:+$_PERF_TOOL,}jmeter"
+{ ls locustfile.py 2>/dev/null || find . -name "locust*.py" ! -path "*/node_modules/*" 2>/dev/null | grep -q .; } && \
+  _PERF_TOOL="${_PERF_TOOL:+$_PERF_TOOL,}locust"
+echo "PERF_TOOL: ${_PERF_TOOL:-none}"
+
+# Mobile tool detection
+echo "--- MOBILE TOOLS ---"
+_MOB_TOOL=""
+grep -q '"detox"' package.json 2>/dev/null && _MOB_TOOL="detox"
+grep -q '"appium"\|"@wdio"' package.json 2>/dev/null && \
+  _MOB_TOOL="${_MOB_TOOL:+$_MOB_TOOL,}appium"
+{ [ -d ".maestro" ] || which maestro > /dev/null 2>&1; } && \
+  _MOB_TOOL="${_MOB_TOOL:+$_MOB_TOOL,}maestro"
+echo "MOB_TOOL: ${_MOB_TOOL:-none}"
 
 # Detect running services
 echo "--- RUNNING SERVICES ---"
@@ -55,18 +84,19 @@ If no running services are found, warn the user and ask whether to proceed in of
 Use `AskUserQuestion` to confirm which agents to run. Default to auto-detecting based on project signals.
 
 **Auto-detection rules:**
-- `playwright.config.*` or `e2e/` → include **qa-web**
+- `playwright.config.*` or `e2e/` or `cypress.config.*` or `cypress/` or `selenium-webdriver` in package.json → include **qa-web**
 - `openapi.*` or `swagger.*` or `api/` routes → include **qa-api**
-- `android/` or `ios/` or `app.json` (Expo) → include **qa-mobile**
-- `k6/` or `locustfile.py` or `load-tests/` → include **qa-perf**
+- `android/` or `ios/` or `app.json` (Expo) or `.maestro/` → include **qa-mobile**
+- `k6/` or `locustfile.py` or `load-tests/` or `*.jmx` files → include **qa-perf**
 - `playwright.config.*` + any `screenshots/` or `visual/` dir → include **qa-visual**
 
 Present detected domains and ask for confirmation. Allow overriding.
 
-Record selected domains:
+Record selected domains and detected tools:
 
 ```bash
 echo "SELECTED_DOMAINS: web api mobile perf visual"  # adjust to confirmed selection
+echo "DETECTED: WEB=${_WEB_TOOL:-none} PERF=${_PERF_TOOL:-none} MOB=${_MOB_TOOL:-none}"
 ```
 
 ## Phase 1 — Project Analysis
@@ -97,12 +127,13 @@ Summarize findings:
 - Base URL (from env or config)
 - List of key pages / endpoints / screens
 - Auth mechanism (JWT, session, OAuth)
+- Detected tools per domain (from Preamble `_WEB_TOOL`, `_PERF_TOOL`, `_MOB_TOOL`)
 
 Save summary to `$_TMP/qa-team-context.md` for sub-agents to reference.
 
 ## Phase 2 — Spawn Sub-Agents (Parallel)
 
-Spawn one Agent per selected domain. Pass the project context summary as part of each sub-agent's prompt. Sub-agents run concurrently.
+Spawn one Agent per selected domain. Pass the project context summary and detected tool as part of each sub-agent's prompt. Sub-agents run concurrently.
 
 **Template for each sub-agent call:**
 
@@ -111,16 +142,18 @@ Project context: <contents of $_TMP/qa-team-context.md>
 Target: <web | api | mobile | perf | visual>
 Working directory: <cwd>
 Base URL: <detected base URL>
+Detected tool: <value of _WEB_TOOL | _PERF_TOOL | _MOB_TOOL — skip if "none" or empty>
 Report output: $_TMP/qa-<domain>-report.md
 
-Run /qa-<domain> with the above context. Write the final report to the output path above.
+Run /qa-<domain> with the above context. If "Detected tool" is provided, skip the
+tool selection gate and use that tool directly. Write the final report to the output path.
 ```
 
 Sub-agents to spawn (skip domains not in Phase 0 selection):
-- `/qa-web`   → `$_TMP/qa-web-report.md`
-- `/qa-api`   → `$_TMP/qa-api-report.md`
+- `/qa-web`    → `$_TMP/qa-web-report.md`
+- `/qa-api`    → `$_TMP/qa-api-report.md`
 - `/qa-mobile` → `$_TMP/qa-mobile-report.md`
-- `/qa-perf`  → `$_TMP/qa-perf-report.md`
+- `/qa-perf`   → `$_TMP/qa-perf-report.md`
 - `/qa-visual` → `$_TMP/qa-visual-report.md`
 
 Wait for all sub-agents to complete before proceeding.
@@ -153,19 +186,20 @@ Write `qa-report-<date>.md` to the project root (or `reports/` if it exists):
 - **Overall Status**: ✅ Pass / ⚠️ Partial / ❌ Fail
 - **Total Tests**: N (passed: N, failed: N, skipped: N)
 - **Domains Tested**: web · api · mobile · perf · visual
+- **Tools Used**: <e.g. Playwright · REST Assured · Detox · k6>
 
 ## Domain Results
 
-### Web (Playwright)
+### Web (<detected tool: Playwright / Cypress / Selenium>)
 <paste qa-web summary>
 
-### API
+### API (<detected language tool>)
 <paste qa-api summary>
 
-### Mobile
+### Mobile (<detected tool: Detox / Appium / Maestro>)
 <paste qa-mobile summary>
 
-### Performance
+### Performance (<detected tool: k6 / JMeter / Locust>)
 <paste qa-perf summary>
 
 ### Visual
