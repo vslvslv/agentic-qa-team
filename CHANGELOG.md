@@ -5,6 +5,24 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.5.2.0 — 2026-04-26 — Auto-update check on every skill invocation
+
+### Changed (all 10 skills)
+- Added `## Version check` section to every `SKILL.md.tmpl` — runs before the Preamble on
+  every skill invocation
+- Calls `bin/qa-team-update-check` (existing script) to compare local vs remote VERSION
+- If `UPGRADE_AVAILABLE`, uses `AskUserQuestion`: "Update before running?" with
+  "Yes — update now (recommended)" / "No — run with current version" options
+- If user selects "Yes": runs `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup"`
+- 10-minute cooldown flag (`$_TMP/.qa-update-asked`) prevents repeated prompts when
+  qa-team spawns multiple sub-agents in parallel within the same run
+- Repo root resolved via `readlink ~/.claude/skills/<skill-name>` (short-names install)
+  with fallback to `readlink ~/.claude/skills/qa-agentic-team` (namespaced/dev install)
+- Applies to: `qa-team`, `qa-web`, `qa-api`, `qa-mobile`, `qa-perf`, `qa-visual`,
+  `qa-audit`, `qa-refine`, `qa-methodology-refine`, `lang-refine`
+
+---
+
 ## v1.5.1.0 — 2026-04-26 — Bash fetch fallback for WebFetch-restricted environments
 
 ### Changed (`/qa-refine`, `/qa-methodology-refine`)
