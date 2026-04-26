@@ -1,5 +1,5 @@
-# Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 0 | score: ?/100 | date: 2026-04-26 -->
+# Test Data Strategy — QA Methodology Guide
+<!-- lang: TypeScript | topic: test-data | iteration: 3 | score: 93/100 | date: 2026-04-26 -->
 <!-- sources: training-knowledge (WebFetch blocked, WebSearch API unavailable; synthesized from training knowledge per skill fallback rule) -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html -->
 
@@ -239,11 +239,39 @@ beforeEach(() => {
 ```
 
 **Locale support for international data:**
+
+When testing internationalisation (i18n) logic, form validation, or address parsing, use
+locale-specific faker instances to generate realistic data in the target locale.
+
 ```typescript
-import { fakerDE as faker } from '@faker-js/faker'; // German locale
-// or
-import { faker } from '@faker-js/faker';
-faker.setLocale('ja'); // Japanese names/addresses
+// factories/international.factory.ts
+import { fakerDE, fakerJA, fakerPT_BR, faker as fakerEN } from '@faker-js/faker';
+import { Address } from '../domain/address';
+
+// Each locale instance is fully independent — no global locale mutation
+export function buildGermanAddress(overrides: Partial<Address> = {}): Address {
+  return {
+    id: fakerDE.string.uuid(),
+    street: fakerDE.location.streetAddress(),
+    city: fakerDE.location.city(),
+    postalCode: fakerDE.location.zipCode(),   // German PLZ format: 5 digits
+    country: 'DE',
+    phoneNumber: fakerDE.phone.number(),
+    ...overrides,
+  };
+}
+
+export function buildJapaneseAddress(overrides: Partial<Address> = {}): Address {
+  return {
+    id: fakerJA.string.uuid(),
+    street: fakerJA.location.streetAddress(),
+    city: fakerJA.location.city(),
+    postalCode: fakerJA.location.zipCode(),   // Japanese 〒 format: NNN-NNNN
+    country: 'JP',
+    phoneNumber: fakerJA.phone.number(),
+    ...overrides,
+  };
+}
 ```
 
 ---
@@ -284,6 +312,65 @@ export const OrderWithUserFactory = makeFactory({
   user: each(() => buildUser()),
 });
 ```
+
+---
+
+### `fishery` — Factory Library with DB Persistence Hooks  [community]
+
+`fishery` (by Thoughtbot) is a TypeScript factory library designed for integration tests that need to persist objects to a database. Its `afterCreate` hook fires only on `.create()` calls, keeping in-memory `.build()` calls fast and side-effect-free.
+
+**Why it matters:** The explicit `build` vs `create` contract prevents accidental DB writes in unit tests while making DB-persisted integration test setup ergonomic and type-safe.
+
+```typescript
+// factories/user.factory.ts (fishery)
+import { Factory } from 'fishery';
+import { faker } from '@faker-js/faker';
+import { db } from '../db';
+import { User } from '../domain/user';
+
+export const userFactory = Factory.define<User>(({ sequence }) => ({
+  id: faker.string.uuid(),
+  // sequence guarantees uniqueness even without faker
+  email: `user-${sequence}@${faker.internet.domainName()}`,
+  name: faker.person.fullName(),
+  status: 'active' as const,
+  subscriptionTier: 'free' as const,
+  createdAt: new Date(),
+  paymentMethodId: null,
+}));
+
+// In-memory only — no DB side-effects (safe for unit tests)
+const user = userFactory.build({ status: 'suspended' });
+
+// Persists to DB via afterCreate hook (for integration tests)
+const savedUser = await userFactory.create({ subscriptionTier: 'premium' });
+
+// Build a list of 5 in-memory users
+const users = userFactory.buildList(5);
+
+// Create a list of 3 persisted users with unique emails
+const savedUsers = await userFactory.createList(3);
+```
+
+---
+
+### Factory Library Comparison for TypeScript
+
+Use this table to choose the right tool for your project's scale and test type.
+
+| Library | Type Safety | `build()` vs `create()` | Sequences | Locale Support | Best For |
+|---|---|---|---|---|---|
+| `@faker-js/faker` v9 | n/a (primitive) | n/a | Manual | 70+ locales | All projects; use as data primitive inside builders |
+| `factory-ts` | Full (generics) | `build` / `buildList` only | Via `each()` | Via faker | Mid-size TS projects; no DB persistence hooks |
+| `fishery` | Full (generics) | `build` + `create` (with hooks) | `sequence` param | Via faker | Integration tests needing DB persistence; Thoughtbot-quality API |
+| `zod-fixture` | Schema-driven | `build` only | None | None | Zod-first codebases; zero-maintenance for schema-aligned mocks |
+| Plain builder class | Full | Manual | Manual | Manual | Zero-dependency projects; team-readable, no abstraction overhead |
+
+**Decision guide:**
+- Unit tests only → plain builder or `factory-ts`
+- Integration + DB persistence → `fishery`
+- Zod-first domain → `zod-fixture` + `fishery` for persistence
+- Need realistic locale data → any library + `@faker-js/faker`
 
 ---
 
