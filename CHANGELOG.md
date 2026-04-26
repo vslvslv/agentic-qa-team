@@ -5,6 +5,64 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.5.0.0 — 2026-04-26 — QA methodology layer: /qa-methodology-refine + /qa-audit
+
+### Added (`/qa-methodology-refine`)
+- New `/qa-methodology-refine` skill: runs the same autoresearch loop as `/qa-refine`
+  but for QA methodology topics rather than tool-specific patterns
+- Covers 12 methodology topics: `test-pyramid`, `tdd`, `bdd`, `test-isolation`,
+  `test-data`, `contract-testing`, `flakiness`, `coverage`, `ci-cd-testing`,
+  `accessibility`, `shift-left`, `exploratory`
+- Step 0 topic detection: matches trigger phrases to topic key; prompts if unclear
+- Step 0 language detection: same as `/qa-refine` — project signals → TARGET_LANG
+- Phase 1a official sources per topic: martinfowler.com, cucumber.io, docs.pact.io,
+  xunitpatterns.com, deque axe, WCAG quickref, Google Testing Blog, IBM shift-left
+- Phase 1b community sources: Google Testing Blog, martinfowler.com/testing/,
+  WebSearch per topic (production experience, anti-patterns, 2025)
+- Quality rubric: Principle Coverage (topic checklist) · Code Examples (TARGET_LANG)
+  · Tradeoffs & Context · Community Signal — same 0–100 scale as /qa-refine
+- Per-topic concept checklist (drives Principle Coverage score): pyramid ratios,
+  red-green-refactor, Feature file structure, FIRST principles, Object Mother, Pact
+  workflow, flakiness root causes taxonomy, mutation testing tools, fail-fast CI
+  ordering, WCAG 2.1 AA, cost-of-defects curve, SBTM charter format
+- Output: `qa-methodology/references/<topic>-guide.md` (consumed by /qa-audit)
+
+### Added (`/qa-audit`)
+- New `/qa-audit` skill: static analysis of a project's test suite against methodology
+  best practices, producing a scored report (0–100) with ranked recommendations
+- 5-dimension scoring × 20 pts each: Pyramid Balance · Test Isolation · Test Data
+  Strategy · Naming Quality · CI/Coverage Configuration
+- Phase 1 test inventory: auto-classifies test files into unit / integration / e2e /
+  unclassified using path patterns + import heuristics; computes pyramid ratios
+- Phase 2 static checks: test naming quality (grep for vague names), AAA/GWT structure
+  markers, shared mutable state detection, sleep/timing dependency count + locations,
+  hardcoded test data vs factory/fixture ratio, coverage config & threshold presence,
+  CI integration signals
+- Phase 3 guide loading: reads `qa-methodology/references/` guides if present; maps
+  each finding type to the relevant guide for enriched, sourced recommendations;
+  graceful fallback to built-in knowledge when guides not yet generated
+- Phase 5 audit report: per-dimension score table, test inventory table, up to 5
+  ranked recommendations each with before/after code example and guide reference,
+  flakiness risk summary, BDD signals, list of available methodology guides
+- Works standalone or as qa-team sub-agent (writes to `$_TMP/qa-audit-report.md`)
+
+### Changed (`/qa-team`)
+- Preamble now detects test files (`*.spec.*`, `*.test.*`, `*_test.*`, `*Test.java`)
+  and sets `_HAS_TESTS=1` flag
+- Phase 0 auto-detection: any project with test files → include **qa-audit** domain
+- Phase 0 `SELECTED_DOMAINS` and `DETECTED` echo updated to include `audit` and
+  `AUDIT=${_HAS_TESTS}`
+- Phase 2 sub-agent list: added `/qa-audit` → `$_TMP/qa-audit-report.md`
+- Phase 3 aggregate loop: `for domain in web api mobile perf visual audit`
+- Phase 4 report: added "Methodology Audit" section after Visual; updated "Domains
+  Tested" line to include `audit`
+
+### Changed (`bin/setup`)
+- Echo section updated: reflects all 10 available skills with multi-tool descriptions;
+  added `/qa-audit`, `/qa-methodology-refine`, `/qa-refine`, `/lang-refine` entries
+
+---
+
 ## v1.4.0.0 — 2026-04-26 — Multi-tool support per QA category
 
 ### Added

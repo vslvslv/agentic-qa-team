@@ -67,6 +67,17 @@ grep -q '"appium"\|"@wdio"' package.json 2>/dev/null && \
   _MOB_TOOL="${_MOB_TOOL:+$_MOB_TOOL,}maestro"
 echo "MOB_TOOL: ${_MOB_TOOL:-none}"
 
+# Methodology: detect whether the project has any test files
+echo "--- TEST FILES ---"
+_HAS_TESTS=0
+find . \( \
+  -name "*.spec.ts" -o -name "*.spec.js" \
+  -o -name "*.test.ts" -o -name "*.test.js" \
+  -o -name "*_test.py" -o -name "test_*.py" \
+  -o -name "*Test.java" -o -name "*_spec.rb" \
+  \) ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _HAS_TESTS=1
+echo "HAS_TESTS: $_HAS_TESTS"
+
 # Detect running services
 echo "--- RUNNING SERVICES ---"
 for port in 3000 3001 4000 4001 5000 5001 8000 8080; do
@@ -89,14 +100,15 @@ Use `AskUserQuestion` to confirm which agents to run. Default to auto-detecting 
 - `android/` or `ios/` or `app.json` (Expo) or `.maestro/` → include **qa-mobile**
 - `k6/` or `locustfile.py` or `load-tests/` or `*.jmx` files → include **qa-perf**
 - `playwright.config.*` + any `screenshots/` or `visual/` dir → include **qa-visual**
+- any `*.spec.*`, `*.test.*`, `*_test.*`, or `*Test.java` files found → include **qa-audit**
 
 Present detected domains and ask for confirmation. Allow overriding.
 
 Record selected domains and detected tools:
 
 ```bash
-echo "SELECTED_DOMAINS: web api mobile perf visual"  # adjust to confirmed selection
-echo "DETECTED: WEB=${_WEB_TOOL:-none} PERF=${_PERF_TOOL:-none} MOB=${_MOB_TOOL:-none}"
+echo "SELECTED_DOMAINS: web api mobile perf visual audit"  # adjust to confirmed selection
+echo "DETECTED: WEB=${_WEB_TOOL:-none} PERF=${_PERF_TOOL:-none} MOB=${_MOB_TOOL:-none} AUDIT=${_HAS_TESTS}"
 ```
 
 ## Phase 1 — Project Analysis
@@ -155,6 +167,7 @@ Sub-agents to spawn (skip domains not in Phase 0 selection):
 - `/qa-mobile` → `$_TMP/qa-mobile-report.md`
 - `/qa-perf`   → `$_TMP/qa-perf-report.md`
 - `/qa-visual` → `$_TMP/qa-visual-report.md`
+- `/qa-audit`  → `$_TMP/qa-audit-report.md`
 
 Wait for all sub-agents to complete before proceeding.
 
@@ -163,7 +176,7 @@ Wait for all sub-agents to complete before proceeding.
 Read each sub-agent's report and merge into a single quality scorecard:
 
 ```bash
-for domain in web api mobile perf visual; do
+for domain in web api mobile perf visual audit; do
   f="$_TMP/qa-$domain-report.md"
   [ -f "$f" ] && echo "=== $domain ===" && cat "$f" || echo "=== $domain: not run ==="
 done
@@ -185,7 +198,7 @@ Write `qa-report-<date>.md` to the project root (or `reports/` if it exists):
 ## Executive Summary
 - **Overall Status**: ✅ Pass / ⚠️ Partial / ❌ Fail
 - **Total Tests**: N (passed: N, failed: N, skipped: N)
-- **Domains Tested**: web · api · mobile · perf · visual
+- **Domains Tested**: web · api · mobile · perf · visual · audit
 - **Tools Used**: <e.g. Playwright · REST Assured · Detox · k6>
 
 ## Domain Results
@@ -204,6 +217,9 @@ Write `qa-report-<date>.md` to the project root (or `reports/` if it exists):
 
 ### Visual
 <paste qa-visual summary>
+
+### Methodology Audit
+<paste qa-audit summary — score, pyramid balance, top recommendations>
 
 ## Critical Failures
 <list only failed tests, with error snippet>

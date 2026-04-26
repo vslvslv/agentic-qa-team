@@ -1,18 +1,20 @@
 # QA Agentic Team
 
-A suite of Claude Code skills that give any project an autonomous QA team. One command launches specialized agents for web, API, mobile, performance, and visual testing — each discovering your app's structure, generating test specs, executing them, and reporting results.
+A suite of Claude Code skills that give any project an autonomous QA team. One command launches specialized agents for web, API, mobile, performance, visual testing, and methodology auditing — each discovering your app's structure, generating test specs, executing them, and reporting results.
 
 ## Skills
 
 | Skill | Command | What it does |
 |-------|---------|--------------|
-| **Orchestrator** | `/qa-team` | Auto-detects project type and tools, spawns all relevant agents in parallel, aggregates results into a unified quality report |
+| **Orchestrator** | `/qa-team` | Auto-detects project type and tools, spawns all relevant agents in parallel (including methodology audit), aggregates results into a unified quality report |
 | **Web E2E** | `/qa-web` | Auto-detects Playwright, Cypress, or Selenium WebDriver; discovers pages/routes, writes specs, executes, reports coverage |
 | **API** | `/qa-api` | Language-driven: REST Assured (Java), pytest+requests (Python), HttpClient+NUnit (C#), RSpec+Faraday (Ruby), Playwright request context (JS/TS); reads OpenAPI/routes, generates contract tests |
 | **Mobile** | `/qa-mobile` | Auto-detects Detox (RN/Expo), Appium+WebDriverIO (native), or Maestro (cross-platform YAML); generates screen tests, runs on simulator/emulator |
 | **Performance** | `/qa-perf` | Auto-detects k6, JMeter, or Locust; writes load scripts, runs with ramp-up profiles, reports p50/p95/p99 |
 | **Visual** | `/qa-visual` | Captures Playwright screenshots, diffs against baselines, masks dynamic content, reports pixel regressions |
+| **Methodology Audit** | `/qa-audit` | Scores the existing test suite across 5 dimensions: pyramid balance, test isolation, test data strategy, naming quality, CI/coverage. Produces ranked recommendations with before/after code examples |
 | **QA Refine** | `/qa-refine` | Researches best practices for Playwright, Cypress, Selenium, k6, JMeter, Locust, Detox, Appium, Maestro from official docs + community sources; iteratively scores and refines reference guides; supports TypeScript, Java, Python, C#, Ruby |
+| **Methodology Refine** | `/qa-methodology-refine` | Researches QA methodology topics (test pyramid, TDD, BDD, test isolation, flakiness, coverage, contract testing, CI/CD, accessibility, shift-left, exploratory) and generates scored reference guides consumed by `/qa-audit` |
 | **Lang Refine** | `/lang-refine` | Researches programming language best practices, design patterns (GoF, SOLID, Clean Code) and idioms; generates reference guides for general, TypeScript, JavaScript, Java, Python, C#, Kotlin, Ruby, Bash, and functional patterns |
 
 ## Install
@@ -75,6 +77,7 @@ Or run individual agents:
 /qa-mobile       # Mobile tests only
 /qa-perf         # Load/performance tests only
 /qa-visual       # Visual regression only
+/qa-audit        # Methodology audit only
 ```
 
 ## Requirements
@@ -100,6 +103,13 @@ Or run individual agents:
 - [JMeter](https://jmeter.apache.org/): `brew install jmeter` (macOS) · download from jmeter.apache.org
 - [Locust](https://locust.io/): `pip install locust`
 - Or: Playwright Web Vitals tests (no extra install — falls back automatically if no perf tool found)
+
+### `/qa-audit`
+- No extra install required — reads existing test files and config
+- Richer recommendations if methodology guides are pre-generated: run `/qa-methodology-refine <topic>` first
+
+### `/qa-methodology-refine`
+- No extra install required — uses WebFetch/WebSearch + writes markdown files
 
 ## Configuration
 
@@ -177,7 +187,15 @@ qa-agentic-team/
 │   │   └── locust.md     ← Locust patterns + execute block
 │   └── references/       ← qa-refine-generated deep-dive guides
 ├── qa-visual/            ← /qa-visual screenshot diffing skill
-├── qa-refine/            ← /qa-refine iterative research skill
+├── qa-audit/             ← /qa-audit methodology audit skill
+│   ├── SKILL.md
+│   └── SKILL.md.tmpl
+├── qa-refine/            ← /qa-refine iterative tool research skill
+├── qa-methodology-refine/ ← /qa-methodology-refine iterative methodology research skill
+│   ├── SKILL.md
+│   └── SKILL.md.tmpl
+├── qa-methodology/       ← methodology reference guides (written by /qa-methodology-refine)
+│   └── references/       ← <topic>-guide.md files consumed by /qa-audit
 ├── lang-refine/          ← /lang-refine language best-practices skill
 ├── bin/
 │   ├── setup             ← install: creates symlinks in ~/.claude/skills/
@@ -191,7 +209,7 @@ qa-agentic-team/
 ├── .github/workflows/
 │   ├── version-gate.yml      ← validates VERSION + CHANGELOG on PRs
 │   └── skill-docs.yml        ← fails if SKILL.md is stale vs .tmpl
-├── VERSION               ← 4-part semver (1.4.0.0)
+├── VERSION               ← 4-part semver (1.5.0.0)
 ├── CHANGELOG.md
 ├── conductor.json
 └── package.json
