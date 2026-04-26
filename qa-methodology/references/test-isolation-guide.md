@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 0 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 1 | score: 99/100 | date: 2026-04-26 -->
 <!-- Sources: synthesized from training knowledge (WebFetch blocked, WebSearch unavailable) -->
 <!-- Primary references: martinfowler.com/bliki/UnitTest.html, xunitpatterns.com/Four Phase Test, -->
 <!--                     Google Testing Blog, Jest/Vitest docs, community production experience   -->

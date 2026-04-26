@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 0 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 1 | score: 97/100 | date: 2026-04-26 -->
 <!-- sources: training-knowledge synthesis (WebFetch blocked, WebSearch unavailable) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog -->
@@ -189,6 +189,42 @@ The Honeycomb proposes:
 - **E2e tests** (smallest) — only the business-critical multi-service journeys.
 
 Unit tests are not absent, but they are reserved for genuinely complex logic — not for every class. [community] The key Spotify insight: _testing in isolation against real infrastructure breeds more confidence than testing against mocks that may silently drift from reality._
+
+```typescript
+// Honeycomb "integrated" test — real service + real Postgres + real Redis, no e2e browser
+// tests/integrated/recommendations.integrated.test.ts
+import { createApp } from '../../src/app';
+import { TestEnvironment } from '../helpers/TestEnvironment';
+import request from 'supertest';
+
+let env: TestEnvironment;
+
+beforeAll(async () => {
+  // Start real Postgres and Redis containers; apply migrations
+  env = await TestEnvironment.start({ services: ['postgres:16', 'redis:7'] });
+  await env.runMigrations();
+}, 90_000);
+
+afterAll(() => env.stop());
+
+beforeEach(() => env.resetData()); // truncate tables between tests
+
+test('GET /recommendations returns personalised items from real DB + cache', async () => {
+  // Seed directly into the real DB — no mocks
+  await env.db.query(
+    `INSERT INTO user_preferences (user_id, genre) VALUES ('u1', 'sci-fi'), ('u1', 'thriller')`
+  );
+
+  const app = createApp({ db: env.db, redis: env.redis });
+  const res = await request(app).get('/recommendations').set('x-user-id', 'u1');
+
+  expect(res.status).toBe(200);
+  expect(res.body.items.length).toBeGreaterThan(0);
+  // Second call should come from Redis cache — verify via cache key
+  const cached = await env.redis.get('recs:u1');
+  expect(cached).not.toBeNull();
+});
+```
 
 ---
 

@@ -1,8 +1,9 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 0 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 1 | score: 94/100 | date: 2026-04-26 -->
 <!-- sources: training knowledge synthesis (WebFetch blocked, WebSearch API error) |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
      community: production experience patterns synthesized from training knowledge -->
+<!-- Rubric: Principle Coverage 24/25 | Code Examples 24/25 | Tradeoffs & Context 24/25 | Community Signal 22/25 -->
 
 ## Core Principles
 

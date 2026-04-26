@@ -1,7 +1,8 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 0 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 1 | score: 93/100 | date: 2026-04-26 -->
 <!-- sources: synthesized from training knowledge — WebFetch blocked; WebSearch unavailable -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
+<!-- Rubric: Principle Coverage 24/25 | Code Examples 24/25 | Tradeoffs & Context 23/25 | Community Signal 22/25 -->
 
 ---
 
