@@ -5,6 +5,19 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.5.1.0 — 2026-04-26 — Bash fetch fallback for WebFetch-restricted environments
+
+### Changed (`/qa-refine`, `/qa-methodology-refine`)
+- Added `_fetch_text` bash helper to Phase 1a of both research skills
+- Helper tries Node 18+ built-in `fetch()` first (repo requires Node ≥ 18), falls back
+  to Python3 `urllib.request`, strips HTML tags + entities + whitespace, truncates to 6000 chars
+- Parallel fetch supported via `{ _fetch_text URL1 & _fetch_text URL2 & wait; }`
+- Updated "if blocked" note at end of Phase 1a and Phase 1b to reference the helper
+- Fixes research agents running as background subagents where WebFetch tool permission
+  is restricted but outbound HTTP via Bash is still available
+
+---
+
 ## v1.5.0.0 — 2026-04-26 — QA methodology layer: /qa-methodology-refine + /qa-audit
 
 ### Added (`/qa-methodology-refine`)

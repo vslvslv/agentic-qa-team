@@ -114,6 +114,43 @@ Prompt for every WebFetch:
 > examples in TARGET_LANG, (3) common anti-patterns with explanations, (4) tradeoffs
 > and when this methodology does NOT apply."
 
+**If WebFetch is unavailable**, use Bash as a fallback. Node 18+ (required by this repo)
+has built-in `fetch()` which can retrieve and strip HTML without extra dependencies:
+
+```bash
+# Fetch a URL and extract readable text — use when WebFetch is blocked
+_fetch_text() {
+  local url="$1"
+  node --input-type=module <<EOF 2>/dev/null || python3 -c "
+import urllib.request, html as ht, re
+req = urllib.request.Request('$url', headers={'User-Agent':'Mozilla/5.0'})
+try:
+  with urllib.request.urlopen(req, timeout=15) as r:
+    c = r.read().decode('utf-8','ignore')
+  c = re.sub(r'<script[\s\S]*?</script>','',c,flags=re.I)
+  c = re.sub(r'<style[\s\S]*?</style>','',c,flags=re.I)
+  c = re.sub(r'<[^>]+>',' ',c)
+  print(ht.unescape(re.sub(r'\s+',' ',c).strip())[:6000])
+except Exception as e: print('FETCH_FAILED:', e)
+"
+const res = await fetch('$url', { headers: { 'User-Agent': 'Mozilla/5.0' } });
+const html = await res.text();
+const text = html
+  .replace(/<script[\s\S]*?<\/script>/gi, '')
+  .replace(/<style[\s\S]*?<\/style>/gi, '')
+  .replace(/<[^>]+>/g, ' ')
+  .replace(/&amp;|&lt;|&gt;|&quot;/g, ' ')
+  .replace(/\s+/g, ' ').trim().slice(0, 6000);
+console.log(text);
+EOF
+}
+
+# Run multiple in parallel: { _fetch_text URL1 & _fetch_text URL2 & wait; }
+```
+
+After fetching (by either method), synthesize against the prompt above.
+If both methods fail, synthesize from training knowledge and note the source in the file header.
+
 | Topic | URLs to fetch |
 |-------|--------------|
 | `test-pyramid` | `https://martinfowler.com/bliki/TestPyramid.html` · `https://martinfowler.com/articles/practical-test-pyramid.html` |
@@ -166,6 +203,10 @@ Prompt:
 
 **For non-JS/TS languages**, read `lang-refine/references/<TARGET_LANG>-patterns.md` if it
 exists — use it to make code examples idiomatic for TARGET_LANG.
+
+**If WebSearch is unavailable** and WebFetch is blocked, use the `_fetch_text` bash
+helper from Phase 1a to fetch community URLs directly (GitHub READMEs, blog posts).
+Use WebSearch queries as additional Bash search terms when synthesizing from training knowledge.
 
 ---
 
