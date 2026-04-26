@@ -5,6 +5,45 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.3.0.0 — 2026-04-26 — Multi-language qa-refine + new lang-refine skill
+
+### Added (`/lang-refine`)
+- New `/lang-refine` skill: researches programming language best practices using the same
+  autoresearch loop as `/qa-refine` — official docs + community sources → score against a
+  4-dimension rubric (Principle Coverage, Code Examples, Language Idioms, Community Signal)
+  → iterative refinement until score ≥ 80 or 3 iterations
+- Covers 10 language categories: `general` (SOLID, GoF, DRY/KISS/YAGNI, Law of Demeter,
+  Composition over Inheritance), `typescript`, `javascript`, `java`, `python`, `csharp`,
+  `kotlin`, `ruby`, `bash`, `functional`
+- Per-language principle checklists in the rubric (e.g. Python: PEP 8, comprehensions,
+  generators, context managers, type hints, dataclasses, EAFP vs LBYL)
+- Phase 1a official sources per language (refactoring.guru, typescriptlang.org, peps.python.org,
+  kotlinlang.org/docs/idioms, google styleguides, shellcheck.net, etc.)
+- Phase 1b community sources per language (iluwatar/java-design-patterns 90k★,
+  goldbergyoni/nodebestpractices 91k★, vinta/awesome-python, KotlinBy/awesome-kotlin, etc.)
+- Output: `lang-refine/references/<language>-patterns.md` — standalone reference guides
+  consumed by `/qa-refine` when a language idiom mismatch is identified
+
+### Changed (`/qa-refine`)
+- Added Step 0 — language detection: scans project signals (pom.xml → Java,
+  conftest.py/requirements.txt → Python, *.csproj → C#, Gemfile → Ruby,
+  package.json → JS/TS); k6, Detox, and WebDriverIO remain JS-only
+- Added `TARGET_LANG` variable propagated through all phases
+- Phase 1a Playwright URLs now language-specific (playwright.dev/java/docs/,
+  playwright.dev/python/docs/, playwright.dev/dotnet/docs/)
+- Phase 1a Appium client docs now language-specific (appium/java-client,
+  appium/python-client, appium/dotnet-client, appium/ruby_lib)
+- Phase 1b WebSearch queries now interpolate `{TARGET_LANG}` for targeted community research
+- Phase 2 reference files now language-suffixed for non-TS languages
+  (playwright-patterns-java.md, playwright-patterns-python.md) to coexist without overwriting
+- Code example rule strengthened: must use actual TARGET_LANG API names, never TypeScript
+  syntax in Java/Python examples
+- Phase 4 gap→source table now includes "Language idiom mismatch →
+  lang-refine/references/<TARGET_LANG>-patterns.md" for cross-skill knowledge transfer
+- Phase 6 report now shows Language and Sources used fields
+
+---
+
 ## v1.2.0.0 — 2026-04-26 — Expand qa-refine to community sources
 
 ### Changed (`/qa-refine`)

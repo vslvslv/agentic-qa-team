@@ -12,6 +12,8 @@ A suite of Claude Code skills that give any project an autonomous QA team. One c
 | **Mobile** | `/qa-mobile` | Detects RN/Expo (Detox) or native iOS/Android (Appium/WebDriverIO), generates screen tests, runs on simulator/emulator |
 | **Performance** | `/qa-perf` | Writes k6 load scripts + Playwright Web Vitals tests, runs with ramp-up profiles, reports p50/p95/p99 |
 | **Visual** | `/qa-visual` | Captures Playwright screenshots, diffs against baselines, masks dynamic content, reports pixel regressions |
+| **QA Refine** | `/qa-refine` | Researches Playwright/k6/Detox/Appium best practices from official docs + community sources; iteratively scores and refines reference guides; supports TypeScript, Java, Python, C#, Ruby |
+| **Lang Refine** | `/lang-refine` | Researches programming language best practices, design patterns (GoF, SOLID, Clean Code) and idioms; generates reference guides for general, TypeScript, JavaScript, Java, Python, C#, Kotlin, Ruby, Bash, and functional patterns |
 
 ## Install
 
