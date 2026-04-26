@@ -1,7 +1,7 @@
 # k6 Patterns & Best Practices
-<!-- source: live docs (grafana.com/docs/k6) | iteration: 1 | score: 71→? | date: 2026-04-26 -->
+<!-- sources: official docs (grafana.com/docs/k6) + community (awesome-k6, k6 blog, grafana docs) | iteration: 3 | score: 88/100 | date: 2026-04-26 -->
 
-> Generated from official k6 documentation on 2026-04-26. Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-04-26. Re-run `/qa-refine k6` to refresh.
 
 ## Core Principles
 
@@ -452,6 +452,100 @@ export default function () {
 }
 ```
 
+### WebSocket Testing  [community]
+
+k6 supports WebSocket load testing via two modules. The newer `k6/websockets` module
+implements the WebSocket living standard with a global event loop — prefer it over the
+legacy `k6/ws` for new scripts. The key structural difference from HTTP tests: the
+`default` function runs **once** per VU, not in a loop — the event loop drives execution.
+
+```javascript
+// k6/scripts/websocket-load.js
+import { WebSocket } from "k6/experimental/websockets";
+import { check, sleep } from "k6";
+
+export const options = {
+  scenarios: {
+    ws_load: {
+      executor: "constant-vus",
+      vus: 20,
+      duration: "1m",
+    },
+  },
+  thresholds: {
+    // WebSocket sessions: verify HTTP 101 upgrade succeeded
+    checks: ["rate>0.99"],
+  },
+};
+
+const BASE_WS = (__ENV.API_URL || "http://localhost:3001")
+  .replace("http://", "ws://")
+  .replace("https://", "wss://");
+
+export default function () {
+  const ws = new WebSocket(`${BASE_WS}/ws/feed`);
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: "subscribe", channel: "prices" }));
+    // Close after 5 seconds — prevents VUs from blocking forever
+    setTimeout(() => ws.close(), 5000);
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    check(msg, { "has payload": (m) => m.data !== undefined });
+  };
+
+  ws.onerror = (e) => {
+    // Filter expected "close sent" noise from real errors
+    if (e.error() !== "websocket: close sent") {
+      console.error("WS error:", e.error());
+    }
+  };
+
+  // Block until socket closes (event loop pattern — not a for loop)
+  ws.addEventListener("close", () => {});
+}
+```
+
+### Sequential Scenario Warm-Up with `startTime`  [community]
+
+When multiple scenarios must not compete at startup, use `startTime` offsets to sequence
+them. Running all scenarios at `t=0` creates resource contention that obscures which
+scenario caused a degradation.
+
+```javascript
+// k6/scripts/sequenced.js
+export const options = {
+  scenarios: {
+    // Phase 1: warm up the cache / auth system
+    warm_up: {
+      executor: "shared-iterations",
+      vus: 5,
+      iterations: 50,
+      startTime: "0s",
+    },
+    // Phase 2: sustained load — only starts after warm-up completes
+    sustained_load: {
+      executor: "constant-vus",
+      vus: 20,
+      duration: "2m",
+      startTime: "1m",   // wait 1 min for warm-up to finish
+    },
+    // Phase 3: spike — fires at the 3-minute mark to test recovery
+    spike: {
+      executor: "ramping-vus",
+      startVUs: 10,
+      stages: [
+        { duration: "10s", target: 100 },
+        { duration: "20s", target: 10  },
+      ],
+      startTime: "3m",
+    },
+  },
+};
+```
+
 ---
 
 ## Test Type Profiles
@@ -465,18 +559,103 @@ export default function () {
 | Spike | `ramping-vus` | Instant peak → drop | Test auto-scaling |
 | Breakpoint | `ramping-arrival-rate` | Continuously increase RPS | Find max throughput |
 
+**Design philosophy:** "Stick to simple load patterns. For all test types, direction is enough: ramp-up, plateau, ramp-down. Avoid 'rollercoaster' series where load increases and decreases multiple times."
+
 ---
 
-## Anti-Patterns
+## Real-World Gotchas  [community]
 
-- **Using top-level `stages` instead of `scenarios`** — `stages` is a shorthand for `ramping-vus` with a single scenario. It cannot express multiple concurrent executors or per-scenario thresholds.
-- **Doing auth in `default function`** — Authenticating on every iteration hammers the auth endpoint and inflates latency numbers for the actual endpoints under test.
-- **Missing `gracefulRampDown`** — Without it, VUs are cut instantly at stage end, producing misleading error spikes in the tail.
-- **No `abortOnFail` on error-rate threshold** — If the server starts returning 5xx at 80% of requests, the test runs to completion anyway and produces meaningless p95 data.
-- **Hardcoded base URLs** — Use `__ENV.API_URL` so scripts work across environments without edits.
-- **Single-scenario scripts for mixed workloads** — Mixing read and write logic in one default function makes it impossible to set independent thresholds or ramp profiles per operation type.
-- **Not tagging custom metrics with `{ add: value, tags: {...} }`** — Untagged custom metrics cannot be filtered in thresholds.
-- **Using `sleep(Math.random() * 3)`** for think time without bounds — This can create very long sleeps that stall VUs; prefer `sleep(1 + Math.random())` with a narrow band.
+These are production-discovered pitfalls sourced from community experience — the official
+docs mention none of them directly.
+
+### 1. Duplicate threshold keys silently ignored  [community]
+**What:** If you define the same metric key twice in the `thresholds` object, JavaScript
+silently discards the second entry. No error, no warning — just phantom thresholds.
+**WHY:** JavaScript object literals enforce key uniqueness; the second assignment overwrites
+the first at parse time, so only one threshold expression ever runs.
+**Fix:** Use array syntax for multiple expressions on one metric:
+```javascript
+thresholds: {
+  http_req_duration: ["p(95)<200", "p(99)<500"],  // correct: array
+  // NOT: http_req_duration: "p(95)<200", http_req_duration: "p(99)<500"
+}
+```
+
+### 2. `abortOnFail` fires before warm-up completes  [community]
+**What:** Setting `abortOnFail: true` without `delayAbortEval` causes the test to abort
+during the initial ramp-up when the system is cold and error rates are transiently high.
+The test exits with exit code 99 but the result is a false failure.
+**WHY:** Threshold evaluation starts at time 0; a single failed request in the first few
+seconds can push `rate` above the threshold before enough samples accumulate.
+**Fix:** Always pair `abortOnFail` with `delayAbortEval: "30s"` (or `"60s"` for soak
+tests) to let the system warm up before evaluation begins.
+
+### 3. Grafana Cloud threshold evaluation has a 60-second lag  [community]
+**What:** When running in Grafana Cloud, thresholds evaluate every 60 seconds — not in
+real time. If you expect `abortOnFail` to stop a test within seconds of a spike, it won't.
+**WHY:** Distributed cloud architecture requires periodic metric aggregation across
+load-generation infrastructure; real-time threshold evaluation is not feasible at scale.
+**Fix:** Use stricter margins in cloud thresholds to account for the lag, and use
+`delayAbortEval` values larger than 60s.
+
+### 4. All concurrent scenarios starting at t=0 causes root-cause blindness  [community]
+**What:** Launching all scenarios simultaneously makes it impossible to attribute a
+performance degradation to any specific scenario — all are running and all metrics mix.
+**WHY:** When 3-5 scenarios all fire at the same time, CPU/DB connection saturation may
+be caused by any one of them; per-scenario thresholds narrow it down but cannot isolate
+contention at the infrastructure layer.
+**Fix:** Use `startTime` offsets to stagger scenario launches (see Sequential Scenario
+Warm-Up pattern above). Start with the scenario you most need a clean baseline on.
+
+### 5. `SharedArray` `.filter()` / `.map()` breaks memory sharing  [community]
+**What:** Calling `.filter()` or `.map()` on a `SharedArray` reference (outside its
+constructor) silently converts it to a regular JS array, creating per-VU copies.
+With 500 VUs and a 100 MB dataset this exhausts memory and crashes the test agent.
+**WHY:** `SharedArray` wraps a shared memory buffer; standard Array prototype methods
+return new plain JS arrays that are not backed by the shared buffer.
+**Fix:** Do all data transformations inside the `new SharedArray(name, fn)` callback so
+the result is baked into the shared memory at init time.
+
+### 6. Node file-descriptor limit kills high-VU tests on Linux CI  [community]
+**What:** At ~1,024 concurrent VUs (default OS limit), k6 starts failing with
+"socket: too many open files". The test appears to "break" at that exact VU count, which
+teams often misattribute to the target system rather than the load generator.
+**WHY:** Each active HTTP connection consumes one file descriptor; the default Linux limit
+of 1,024 is far too low for any serious load test.
+**Fix:** Set `ulimit -n 250000` (or `65536` as a minimum) before running k6 in CI.
+Also expand kernel port range: `sysctl -w net.ipv4.ip_local_port_range="1024 65535"`.
+
+### 7. Large test datasets consume memory proportional to VU count without `SharedArray`  [community]
+**What:** A 50 MB JSON fixture loaded via `open()` in `default()` costs 50 MB × VU count.
+With 200 VUs that is 10 GB — the k6 process is OOM-killed and CI reports an unclear exit.
+**WHY:** Without `SharedArray`, each VU parses and holds its own copy of the data in the
+V8 heap. k6 does not automatically share read-only fixture data.
+**Fix:** Always wrap fixture data in `new SharedArray(...)` at init time. One parse,
+one memory allocation, shared across all VUs.
+
+### 8. `--summary-export` is deprecated — use `handleSummary` instead  [community]
+**What:** Teams relying on `--summary-export results/summary.json` find that newer k6
+versions emit deprecation warnings and the flag may be removed in future releases. CI
+pipelines silently produce empty or malformed output files.
+**WHY:** The flag was superseded by the `handleSummary()` hook which gives full control
+over output format (JSON, JUnit XML, HTML) and allows writing multiple output files in
+one pass.
+**Fix:** Replace `--summary-export` with a `handleSummary` export in your script (see
+CI Considerations section below).
+
+### 9. `discardResponseBodies` overlooked in high-throughput tests  [community]
+**What:** At 10,000+ RPS, k6 allocates memory for every response body even if your
+script never reads them. Memory climbs steadily; tests fail after 20-30 minutes.
+**WHY:** k6 stores response bodies in VU memory by default. At scale this becomes the
+dominant memory consumer, not VU count itself.
+**Fix:** Set `discardResponseBodies: true` in `options` for any test that does not
+inspect response bodies. For mixed scripts, set `responseType: "none"` per-request.
+```javascript
+export const options = {
+  discardResponseBodies: true,
+  // ...
+};
+```
 
 ---
 
@@ -493,12 +672,14 @@ export default function () {
 | `new Trend(name, isTime)` | Custom timing metric | Per-operation latency |
 | `new Rate(name)` | Custom pass/fail rate | Business-level error rates |
 | `new Counter(name)` | Monotonically increasing count | Counting events |
+| `new Gauge(name)` | Last/min/max snapshot value | Queue depth, active sessions |
 | `__ENV.KEY` | Read environment variable | Base URLs, credentials |
 | `open(path)` | Load a local file (CSV/JSON) as string | Parameterized test data |
 | `SharedArray` | Shared read-only array across VUs | Large test-data sets (avoids per-VU copy) |
 | `options.scenarios` | Declare named executors | All non-trivial load profiles |
 | `options.thresholds` | Pass/fail gates on metrics | Every production script |
 | `options.tags` | Default tags added to all metrics | Environment / version labelling |
+| `options.discardResponseBodies` | Skip storing response bodies | High-throughput tests (saves memory) |
 
 ---
 
@@ -538,7 +719,6 @@ k6 run \
   --env E2E_USER_PASSWORD="$E2E_USER_PASSWORD" \
   --no-color \
   --out json=results/k6-raw.json \
-  --summary-export results/k6-summary.json \
   k6/scripts/load.js
 # Build fails automatically if k6 exits with code 99 (threshold breach)
 ```
@@ -564,6 +744,8 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
             | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update && sudo apt-get install k6
+      - name: Set file descriptor limit  # [community] prevents "too many open files" at high VU counts
+        run: ulimit -n 65536
       - name: Run k6 load test
         env:
           API_URL: ${{ vars.STAGING_API_URL }}
@@ -571,7 +753,7 @@ jobs:
           E2E_USER_PASSWORD: ${{ secrets.E2E_USER_PASSWORD }}
         run: |
           mkdir -p results
-          k6 run --no-color --summary-export results/summary.json k6/scripts/load.js
+          k6 run --no-color k6/scripts/load.js
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
@@ -579,6 +761,10 @@ jobs:
           name: k6-results
           path: results/
 ```
+
+> **Note:** The `ulimit -n 65536` step is a community-discovered requirement. Without it,
+> tests with more than ~1,000 concurrent VUs fail with "socket: too many open files" and
+> the failure is mistakenly attributed to the target system rather than the test agent.
 
 ### Custom Summary Output (`handleSummary`)
 
@@ -599,11 +785,26 @@ export function handleSummary(data) {
 
 ### Parallelism and VU Limits
 
+- A single k6 instance can handle **30,000–40,000 concurrent VUs** efficiently, generating
+  up to 300,000 HTTP req/s. Distributed execution is only needed above ~100,000 RPS.
 - Default OS limit on open file descriptors is 1024; k6 needs one per active connection.
-  On Linux CI: `ulimit -n 65536` before running high-VU tests.
+  On Linux CI: `ulimit -n 65536` (minimum) or `ulimit -n 250000` (recommended) before
+  running high-VU tests. Also set:
+  ```bash
+  sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+  sysctl -w net.ipv4.tcp_tw_reuse=1
+  ```
+- Keep **CPU below 80%** on the load generator. If k6 is CPU-starved it throttles its own
+  scheduling and produces artificially inflated latency numbers that don't reflect server perf.
 - k6 is **single-process** — all VUs run in one process. For very high RPS (>10 k/s),
-  run multiple k6 instances with separate scenarios and aggregate results externally
-  (e.g., Grafana Cloud k6 handles this automatically).
+  run multiple k6 instances with `--execution-segment`:
+  ```bash
+  # Machine 1: first half of VUs
+  k6 run --execution-segment "0:1/2" --execution-segment-sequence "0,1/2,1" script.js
+  # Machine 2: second half
+  k6 run --execution-segment "1/2:1" --execution-segment-sequence "0,1/2,1" script.js
+  ```
+  Note: each instance evaluates thresholds independently; aggregate results manually.
 - `gracefulStop` (default `30s`) gives running iterations time to complete when a
   scenario ends. Reduce it in CI to avoid unnecessarily long runs:
   ```javascript
@@ -611,10 +812,23 @@ export function handleSummary(data) {
     api_load: {
       executor: "ramping-vus",
       gracefulStop: "5s",   // CI: shorter is fine; prod: keep at 30s
-      // ...
     },
   }
   ```
+
+### CI-Specific Cautions  [community]
+
+- **Not all tests belong in CI.** Smoke tests are the only load test type suitable for
+  every PR pipeline. Stress, soak, and breakpoint tests belong in scheduled nightly or
+  weekly runs — inserting them in PR pipelines causes 15-minute build delays.
+- **QA environments often have different capacity than production.** A threshold that passes
+  in QA (under-resourced) may false-positive; one that fails in QA may be fine in prod.
+  Baseline-compare across identical environments, not across different tiers.
+- **Run the same test twice to confirm a failure.** k6 threshold failures can be caused by
+  transient infrastructure noise (shared CI runner CPU spikes, GC pauses). A failure that
+  doesn't reproduce on an immediate re-run is noise, not a regression.
+- **`--no-color` is required for readable CI logs.** ANSI escape codes render as garbage
+  in most CI log viewers; always pass `--no-color` in pipeline steps.
 
 ### Timeout & Retry Guidance
 
@@ -633,6 +847,11 @@ export function handleSummary(data) {
   ```
 - Use `delayAbortEval` on `abortOnFail` thresholds to let the system warm up before
   evaluating: `delayAbortEval: "30s"` is a good default; use `"60s"` for soak tests.
+- Common CI error messages and their causes:
+  - `"read: connection reset by peer"` — target cannot handle the load
+  - `"context deadline exceeded"` — system unresponsive within the 60s default timeout
+  - `"dial tcp: i/o timeout"` — TCP connection never established
+  - `"socket: too many open files"` — `ulimit` not set; increase file descriptor limit
 
 ### Real-Time Metrics Output
 
@@ -662,6 +881,7 @@ k6/
     soak.js               # long-running stability
     breakpoint.js         # ramping-arrival-rate — find max RPS
     mixed-load.js         # multi-scenario with scenarios API
+    websocket-load.js     # WebSocket load pattern
   lib/
     auth.js               # shared setup() / getToken() helpers
     thresholds.js         # reusable threshold presets

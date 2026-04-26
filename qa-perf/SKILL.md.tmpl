@@ -261,8 +261,10 @@ if command -v k6 &>/dev/null && [ -n "$_K6_SCRIPTS" ]; then
       --env API_URL="$API_URL" \
       --env E2E_USER_EMAIL="$E2E_USER_EMAIL" \
       --env E2E_USER_PASSWORD="$E2E_USER_PASSWORD" \
-      --summary-export "$_TMP/k6-summary-$(basename $script .js).json" \
+      --no-color \
+      --out json="$_TMP/k6-raw-$(basename $script .js).json" \
       "$script" 2>&1 | tee "$_TMP/k6-output-$(basename $script).txt"
+    # Note: use handleSummary() in the script for JSON/HTML output; --summary-export is deprecated
     echo "EXIT: $?"
   done
 else
