@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# bin/dev-nightly-refine — Nightly refinement schedule manifest for qa-agentic-team dev repo.
+#
+# WHAT:   Runs qa-methodology-refine (12 topics), qa-refine (5 core tools), and
+#         lang-refine (5 core languages) as parallel Claude Code agents — 10 iterations each.
+#
+# WHEN:   Daily at 02:17 local time via Claude Code durable scheduler.
+#         NOTE: Claude Code durable cron jobs auto-expire after 7 days.
+#               Re-register by opening Claude Code in this repo and running:
+#               "register nightly refinement"   (or: bash bin/dev-nightly-refine --register)
+#
+# STATUS: Check logs/ for nightly-refine-YYYY-MM-DD.md files.
+#
+# MANUAL: Open Claude Code in this repo and say "run nightly refinement now"
+#         or ask Claude to execute this script's documented task directly.
+
+set -euo pipefail
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+echo "qa-agentic-team — Nightly Refinement Schedule"
+echo "============================================="
+echo "Repo:  $REPO_DIR"
+echo "Logs:  $REPO_DIR/logs/"
+echo ""
+echo "=== SCHEDULE (runs at 02:17 local time, 10 iterations each) ==="
+echo ""
+echo "BATCH A — qa-methodology-refine (12 topics, parallel):"
+echo "  test-pyramid  · tdd         · bdd          · test-isolation"
+echo "  test-data     · contract-testing            · flakiness"
+echo "  coverage      · ci-cd-testing               · accessibility"
+echo "  shift-left    · exploratory"
+echo ""
+echo "BATCH B — qa-refine core tools (5 tools, parallel):"
+echo "  Playwright (TypeScript)  · k6 (JavaScript)  · Cypress (TypeScript)"
+echo "  Detox (JavaScript)       · Appium/WebDriverIO (TypeScript)"
+echo ""
+echo "BATCH C — lang-refine core languages (5 languages, parallel):"
+echo "  typescript  · javascript  · java  · python  · csharp"
+echo ""
+echo "Outputs:"
+echo "  qa-methodology/references/<topic>-guide.md"
+echo "  qa-web/references/playwright-patterns.md  qa-web/references/cypress-patterns.md"
+echo "  qa-perf/references/k6-patterns.md"
+echo "  qa-mobile/references/detox-patterns.md    qa-mobile/references/appium-wdio-patterns.md"
+echo "  lang-refine/references/<lang>-patterns.md"
+echo "  logs/nightly-refine-\$(date +%Y-%m-%d).md"
+echo ""
+
+# --register flag: prints the instruction for re-registering the Claude Code cron job
+if [ "${1:-}" = "--register" ]; then
+  echo "=== REGISTER SCHEDULER ==="
+  echo "Open Claude Code in this directory and paste the following prompt:"
+  echo ""
+  echo "  Register a nightly qa-agentic-team refinement cron job (durable, 10 iterations)"
+  echo "  using the schedule documented in bin/dev-nightly-refine."
+  echo ""
+  echo "Note: durable cron jobs expire after 7 days — re-run this command to renew."
+fi
