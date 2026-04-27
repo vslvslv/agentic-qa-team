@@ -1,6 +1,6 @@
-# Playwright Patterns & Best Practices
-<!-- sources: mixed (official docs + community) | iteration: 3 | score: 96/100 | date: 2026-04-26 -->
-<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci -->
+# Playwright Patterns & Best Practices (TypeScript)
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-04-26 -->
+<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots -->
 <!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, GitHub Discussions patterns, real-world production experience -->
 
 ---
@@ -146,6 +146,32 @@ projects: [
 ],
 ```
 
+**Multi-role authentication (admin + viewer):**
+
+```typescript
+// e2e/auth.setup.ts — separate storageState per role
+const adminFile  = path.join(__dirname, '.auth/admin.json');
+const viewerFile = path.join(__dirname, '.auth/viewer.json');
+
+setup('authenticate admin', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByLabel(/email/i).fill(process.env.ADMIN_EMAIL!);
+  await page.getByLabel(/password/i).fill(process.env.ADMIN_PASSWORD!);
+  await page.getByRole('button', { name: /sign in/i }).click();
+  await expect(page).not.toHaveURL(/login/);
+  await page.context().storageState({ path: adminFile });
+});
+
+setup('authenticate viewer', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByLabel(/email/i).fill(process.env.VIEWER_EMAIL!);
+  await page.getByLabel(/password/i).fill(process.env.VIEWER_PASSWORD!);
+  await page.getByRole('button', { name: /sign in/i }).click();
+  await expect(page).not.toHaveURL(/login/);
+  await page.context().storageState({ path: viewerFile });
+});
+```
+
 **Worker-scoped auth for teams with per-user state:**
 
 ```typescript
@@ -168,6 +194,25 @@ export const test = base.extend<{}, AuthFixtures>({
 
 > WHY: When tests write user-specific data, sharing one account across workers causes parallel
 > tests to interfere. Worker-index accounts give each worker an isolated data lane. [community]
+
+**API-based authentication (faster than UI login):**
+
+```typescript
+// e2e/auth.setup.ts — authenticate via API, skip UI entirely
+setup('authenticate via API', async ({ request }) => {
+  const response = await request.post('/api/auth/login', {
+    data: {
+      email:    process.env.E2E_USER_EMAIL!,
+      password: process.env.E2E_USER_PASSWORD!,
+    },
+  });
+  expect(response.ok()).toBeTruthy();
+  const { token } = await response.json();
+  // Write state manually when API auth doesn't set cookies
+  await request.storageState({ path: authFile });
+  // Or: use the token in extraHTTPHeaders in playwright.config.ts
+});
+```
 
 ---
 
@@ -195,8 +240,8 @@ test('inbox shows empty state', async ({ page }) => {
 For parallel safety, use unique identifiers when creating test data:
 
 ```typescript
-test('creates a new user', async ({ page, request }) => {
-  const email = `test-${Date.now()}@example.com`;
+test('creates a new user', async ({ page, request }, testInfo) => {
+  const email = `test-${testInfo.testId}@example.com`;
   await request.post('/api/users', { data: { email, role: 'viewer' } });
   await page.goto('/admin/users');
   await expect(page.getByText(email)).toBeVisible();
@@ -303,6 +348,7 @@ Split the test suite across CI machines to reduce total wall-clock time. Use `bl
 export default defineConfig({
   fullyParallel: true,
   reporter: process.env.CI ? 'blob' : 'html',
+  maxFailures: process.env.CI ? 10 : undefined, // stop early on massively broken runs
 });
 ```
 
@@ -332,6 +378,87 @@ merge-reports:
 
 > Always use `if: !cancelled()` on the merge job — otherwise a single failed shard stops you
 > from seeing the full report. Use `html` reporter locally, `blob` in CI. [community]
+
+---
+
+### Visual Regression Testing (Screenshots)
+
+Use `toHaveScreenshot()` for component/page-level visual regression. The golden snapshot is auto-generated on first run and committed to source control.
+
+```typescript
+// e2e/specs/visual.spec.ts
+import { test, expect } from '@playwright/test';
+
+test('homepage visual regression', async ({ page }) => {
+  await page.goto('/');
+  // Mask dynamic content before comparing
+  await expect(page).toHaveScreenshot('homepage.png', {
+    mask: [page.locator('[data-testid="timestamp"]'), page.locator('.user-avatar')],
+    maxDiffPixels: 50,
+  });
+});
+
+test('button component visual regression', async ({ page }) => {
+  await page.goto('/design-system/buttons');
+  const component = page.getByTestId('primary-button');
+  await expect(component).toHaveScreenshot('primary-button.png');
+});
+```
+
+```typescript
+// playwright.config.ts — visual config
+export default defineConfig({
+  expect: {
+    toHaveScreenshot: {
+      maxDiffPixels: 100,
+      stylePath: './e2e/screenshot.css',  // inject CSS to hide dynamic content
+    },
+  },
+});
+```
+
+```css
+/* e2e/screenshot.css — hide volatile elements globally for visual tests */
+[data-testid="timestamp"],
+[data-testid="notification-badge"],
+.skeleton-loader {
+  visibility: hidden !important;
+}
+```
+
+**Update baselines** when UI changes are intentional:
+```bash
+npx playwright test --update-snapshots
+```
+
+> Visual snapshots are platform-dependent: a PNG generated on macOS will differ from Linux.
+> Always generate baselines in CI (Linux) and commit those. Never commit local macOS snapshots. [community]
+
+---
+
+### WebServer Auto-Launch
+
+Use `webServer` to automatically start your dev server before tests run, eliminating manual `npm run dev` step in CI.
+
+```typescript
+// playwright.config.ts
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  webServer: {
+    command: 'npm run build && npm run preview',
+    url: 'http://localhost:4173',
+    reuseExistingServer: !process.env.CI, // reuse locally, always fresh in CI
+    timeout: 120_000,                     // give build time to complete
+  },
+  use: {
+    baseURL: 'http://localhost:4173',
+  },
+});
+```
+
+> Use `reuseExistingServer: !process.env.CI` so CI always starts fresh (no stale state)
+> while local dev reuses an already-running server for speed. [community]
 
 ---
 
@@ -443,6 +570,30 @@ test('manages user', async ({ page, request }, testInfo) => {
 **WHY:** Jest's `expect` evaluates immediately with no retry. Playwright's `expect` retries the assertion until the timeout. Mixing them means some assertions silently lose the retry mechanism.
 **Fix:** Always import `expect` from `@playwright/test`. Configure ESLint with `eslint-plugin-playwright` to catch accidental Jest imports.
 
+### 9. Visual snapshots generated locally differ from CI snapshots [community]
+**What:** Visual regression tests that pass locally fail in CI (or vice versa), producing diff images with subtle pixel differences.
+**WHY:** Playwright snapshot names include the OS (e.g., `homepage-chromium-darwin.png` vs `homepage-chromium-linux.png`). Font rendering, subpixel antialiasing, and GPU acceleration differ between macOS and Linux headless environments.
+**Fix:** Always generate and commit snapshot baselines from the CI environment (Linux). Never commit macOS or Windows snapshots. Use `--update-snapshots` only in CI pipelines.
+
+### 10. `waitForResponse()` awaited before the trigger action causes deadlock [community]
+**What:** Test hangs indefinitely when `waitForResponse` is awaited before the button click that triggers the network request.
+**WHY:** `await page.waitForResponse(url)` waits for a response that must be triggered by a subsequent action. If you await the waiter first, the trigger never fires.
+**Fix:** Always start the waiter, then trigger the action, using `Promise.all`:
+
+```typescript
+// CORRECT pattern — start waiter before trigger, resolve both together
+const [response] = await Promise.all([
+  page.waitForResponse('**/api/save'),
+  page.getByRole('button', { name: 'Save' }).click(),
+]);
+expect(response.status()).toBe(200);
+```
+
+### 11. `npm install` instead of `npm ci` in CI causes dependency drift [community]
+**What:** Tests pass locally but fail in CI due to different library versions being installed.
+**WHY:** `npm install` updates `package-lock.json` and may install newer patch versions that contain breaking changes. `npm ci` installs exactly what the lockfile specifies.
+**Fix:** Always use `npm ci` in CI pipelines. Add it as a check in your CI workflow template.
+
 ---
 
 ## CI Considerations
@@ -459,23 +610,36 @@ test('manages user', async ({ page, request }, testInfo) => {
 | `forbidOnly` | `false` | `true` | Block accidental `test.only()` from merging |
 | `screenshot` | `off` | `'only-on-failure'` | Captures state at failure without filling disk |
 | `timeout` | `30000` | `60000` | CI machines are slower; avoid flakes from timing |
+| `maxFailures` | unlimited | `10` | Stop consuming resources when suite is fundamentally broken |
+
+### Installing browsers correctly in CI
+
+```bash
+# Install only Chromium to save 300–500 MB per omitted browser
+npx playwright install chromium --with-deps
+
+# --with-deps installs OS-level system libraries (libatk, ffmpeg, etc.)
+# Omitting it causes silent browser crashes in headless environments
+```
 
 ### Animation and font stability
 
 ```typescript
 // Disable CSS animations globally to prevent visual flakiness
-use: {
-  launchOptions: {
-    args: ['--disable-web-security'],
-  },
-  // Playwright auto-waits for actionable state, but CSS transitions
-  // can still cause screenshots to capture mid-animation
-}
+// Add this to a global fixture that applies to every test
+await page.addStyleTag({
+  content: `
+    *, *::before, *::after {
+      animation-duration: 0ms !important;
+      animation-delay: 0ms !important;
+      transition-duration: 0ms !important;
+    }
+  `,
+});
 ```
 
 > CSS animations are a top cause of screenshot comparison flakiness even when elements
-> are "visible". Inject `* { animation-duration: 0ms !important; transition: none !important; }`
-> via `page.addStyleTag` for visual regression tests. [community]
+> are "visible". Inject via `page.addStyleTag` for visual regression tests. [community]
 
 ### Parallelism and resource limits
 
@@ -487,21 +651,25 @@ npx playwright test --workers=4
 npx playwright test --shard=1/4
 npx playwright test --shard=2/4
 # ... merge blob reports after all jobs complete
-```
 
-### Installing only required browsers
-
-```bash
-# Saves 300-500 MB per browser not installed
-npx playwright install chromium
-# Not: npx playwright install (installs all)
-```
-
-### Handling CI flakiness with `--last-failed`
-
-```bash
-# On a flaky CI run, re-run only failed tests before failing the build
+# Re-run only failed tests before failing the build (handle transient flakes)
 npx playwright test --last-failed
+```
+
+### Handling flaky tests strategically
+
+```typescript
+// Tag known flaky tests for monitoring without blocking CI
+test('known flaky: payment flow', { tag: '@flaky' }, async ({ page }) => {
+  // ...
+});
+```
+
+```bash
+# Run flaky tests separately with more retries
+npx playwright test --grep @flaky --retries=5
+# Run stable tests with standard retries
+npx playwright test --grep-invert @flaky --retries=2
 ```
 
 ---
@@ -527,6 +695,10 @@ npx playwright test --last-failed
 | `waitForLoadState('networkidle')` on polling apps | Hangs for full timeout on apps with SSE/WebSocket | Use `waitForURL` or assert visible UI state |
 | Using `html` reporter with sharding | Loses attachments across shards | Use `blob` reporter + `merge-reports` |
 | `Date.now()` for unique test data in parallel | Millisecond collisions cause data conflicts | Use `testInfo.testId` or `workerInfo.workerIndex` |
+| Committing macOS/Windows snapshots to CI | Visual test failures due to platform rendering differences | Generate and commit baselines on Linux/CI only |
+| `await waitForResponse()` before action | Deadlock — response waiter fires before trigger | Use `Promise.all([waitForResponse, click])` pattern |
+| `npm install` in CI | Dependency drift; different versions than lockfile | Always use `npm ci` in CI pipelines |
+| `--with-deps` omitted when installing browsers | Silent browser crashes from missing OS libraries | Always `npx playwright install chromium --with-deps` |
 
 ---
 
@@ -569,9 +741,11 @@ npx playwright test --last-failed
 | `expect(page).toHaveURL(pattern)` | Current URL matches | Post-navigation checks |
 | `expect(page).toHaveTitle(str)` | Page title matches | Page identity |
 | `expect(locator).toHaveScreenshot()` | Visual regression snapshot | Critical UI components |
+| `expect(page).toHaveScreenshot()` | Full-page visual regression | Whole-page regression |
 | `expect.soft(locator)` | Non-blocking assertion; collects errors | Multi-field validation |
 | `expect.poll(fn)` | Poll async function until assertion passes | External state / API polling |
 | `expect(fn).toPass()` | Retry entire code block until no failures | Complex multi-step conditions |
+| `expect.extend({...})` | Define custom matchers | Domain-specific assertions |
 
 ### Actions
 
@@ -611,36 +785,1008 @@ npx playwright test --last-failed
 
 ---
 
+### Accessibility Testing with `@axe-core/playwright`
+
+Integrate accessibility scans into existing test workflows. Run scans after UI interactions to check the final state, not the initial load.
+
+```typescript
+// Install: npm install --save-dev @axe-core/playwright
+
+// e2e/fixtures/axe.ts — shared AxeBuilder fixture
+import { test as base } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+type AxeFixtures = { makeAxeBuilder: () => AxeBuilder };
+
+export const test = base.extend<AxeFixtures>({
+  makeAxeBuilder: async ({ page }, use) => {
+    const makeAxeBuilder = () =>
+      new AxeBuilder({ page })
+        .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+        .exclude('#known-violation'); // suppress known pre-existing issues
+    await use(makeAxeBuilder);
+  },
+});
+
+// e2e/specs/accessibility.spec.ts
+import { test, expect } from '../fixtures/axe';
+
+test('login page has no WCAG violations', async ({ page, makeAxeBuilder }) => {
+  await page.goto('/login');
+  const results = await makeAxeBuilder().analyze();
+  // Use node targets, not raw HTML, to decouple from DOM structure
+  const violations = results.violations.map(v => ({
+    id:      v.id,
+    targets: v.nodes.map(n => n.target),
+  }));
+  expect(violations).toHaveLength(0);
+});
+
+test('modal has no violations after interaction', async ({ page, makeAxeBuilder }) => {
+  await page.goto('/dashboard');
+  await page.getByRole('button', { name: 'Open Settings' }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  // Scan only the dialog, not the whole page
+  const results = await makeAxeBuilder()
+    .include('[role="dialog"]')
+    .analyze();
+  expect(results.violations).toHaveLength(0);
+});
+```
+
+> Scan the focused element after user interactions (modal open, drawer expand) — not just at page load.
+> The state after interaction is where most accessibility regressions hide. [community]
+
+---
+
+### Test Annotations and Tagging Strategy
+
+Use tags and annotations to organize, filter, and report on tests systematically. Avoid `test.only()` — use tags with `--grep` instead.
+
+```typescript
+// Tag tests with @ prefix for filtering
+test('checkout flow', { tag: ['@smoke', '@critical'] }, async ({ page }) => {
+  // ...
+});
+
+test('image upload', { tag: '@slow' }, async ({ page }) => {
+  // ...
+});
+
+// Skip conditionally based on browser or environment
+test('drag-and-drop', async ({ page, browserName }) => {
+  test.skip(browserName === 'firefox', 'Firefox does not support this drag API yet');
+  // ...
+});
+
+// Mark known failing test without blocking the pipeline
+test('payment integration', async ({ page }) => {
+  test.fixme(); // will not run; marks as fixme in report
+  // ...
+});
+
+// Slow down timeout for a specific test
+test('full data export', async ({ page }) => {
+  test.slow(); // triples the test timeout for this test only
+  // ...
+});
+
+// Add custom metadata visible in HTML report
+test('JIRA-1234: checkout total mismatch', async ({ page }) => {
+  test.info().annotations.push({ type: 'issue', description: 'https://jira.example.com/browse/JIRA-1234' });
+  // ...
+});
+```
+
+**CLI filtering examples:**
+```bash
+# Run only smoke tests
+npx playwright test --grep @smoke
+
+# Run smoke OR critical
+npx playwright test --grep "@smoke|@critical"
+
+# Skip slow tests
+npx playwright test --grep-invert @slow
+
+# Run only Chrome tests tagged smoke
+npx playwright test --grep @smoke --project=chromium
+```
+
+---
+
+### Global Setup with Project Dependencies
+
+Prefer project-based dependencies over `globalSetup` — they appear in the HTML report, support traces, and have access to fixtures.
+
+```typescript
+// playwright.config.ts — project-based global setup
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  projects: [
+    {
+      name: 'setup-db',
+      testMatch: /global\.setup\.ts/,  // setup project
+    },
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+      dependencies: ['setup-db'],      // waits for setup-db to complete
+    },
+  ],
+});
+
+// e2e/global.setup.ts
+import { test as setup } from '@playwright/test';
+
+setup('prepare database', async ({ request }) => {
+  const response = await request.post('/api/test/reset');
+  expect(response.ok()).toBeTruthy();
+});
+```
+
+**Pass data from setup to tests via environment variables:**
+
+```typescript
+// e2e/global.setup.ts
+setup('create test account', async ({ request }) => {
+  const res = await request.post('/api/accounts', { data: { tier: 'premium' } });
+  const { id } = await res.json();
+  process.env.TEST_ACCOUNT_ID = String(id);  // accessible in all tests
+});
+
+// e2e/specs/billing.spec.ts
+test('billing shows premium tier', async ({ page }) => {
+  await page.goto(`/accounts/${process.env.TEST_ACCOUNT_ID}/billing`);
+  await expect(page.getByText('Premium')).toBeVisible();
+});
+```
+
+---
+
+### Reporters: Built-in and Custom
+
+Configure multiple reporters in parallel. Use `blob` + `html` for CI pipelines with sharding; `junit` for Jenkins/Azure Pipelines integration.
+
+```typescript
+// playwright.config.ts — multi-reporter setup
+export default defineConfig({
+  reporter: process.env.CI
+    ? [
+        ['blob'],                                         // for shard merging
+        ['junit', { outputFile: 'test-results.xml' }],   // for CI analytics
+      ]
+    : [
+        ['html', { open: 'on-failure' }],                // open on failure locally
+        ['list'],                                         // live progress in terminal
+      ],
+});
+```
+
+**Custom reporter for Slack/webhook notifications:**
+
+```typescript
+// e2e/reporters/slack-reporter.ts
+import type { Reporter, FullResult } from '@playwright/test/reporter';
+
+class SlackReporter implements Reporter {
+  private failed: string[] = [];
+
+  onTestEnd(test: import('@playwright/test/reporter').TestCase, result: import('@playwright/test/reporter').TestResult) {
+    if (result.status === 'failed') this.failed.push(test.title);
+  }
+
+  async onEnd(result: FullResult) {
+    if (result.status === 'failed' && this.failed.length > 0) {
+      await fetch(process.env.SLACK_WEBHOOK_URL!, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: `:red_circle: ${this.failed.length} Playwright tests failed:\n${this.failed.join('\n')}`,
+        }),
+      });
+    }
+  }
+}
+
+export default SlackReporter;
+```
+
+```typescript
+// playwright.config.ts — register custom reporter
+reporter: [
+  ['blob'],
+  ['./e2e/reporters/slack-reporter.ts'],
+],
+```
+
+---
+
+### Multi-Environment Project Configuration
+
+Use separate projects to test staging vs. production with different configurations.
+
+```typescript
+// playwright.config.ts — environment-aware multi-project setup
+import { defineConfig, devices } from '@playwright/test';
+
+const environments = {
+  staging:    { baseURL: 'https://staging.example.com',    retries: 2 },
+  production: { baseURL: 'https://www.example.com',        retries: 0 },
+};
+
+const env = (process.env.TEST_ENV as keyof typeof environments) ?? 'staging';
+
+export default defineConfig({
+  projects: [
+    {
+      name: `setup-${env}`,
+      testMatch: /auth\.setup\.ts/,
+      use: { baseURL: environments[env].baseURL },
+    },
+    {
+      name: `chromium-${env}`,
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL:      environments[env].baseURL,
+        storageState: `e2e/.auth/${env}-user.json`,
+      },
+      retries:      environments[env].retries,
+      dependencies: [`setup-${env}`],
+    },
+  ],
+});
+```
+
+**Tag-based smoke vs regression split:**
+
+```bash
+# PR check: smoke only (fast)
+npx playwright test --grep @smoke --project=chromium-staging
+
+# Nightly: full regression
+npx playwright test --grep-invert @wip --project=chromium-staging
+```
+
+---
+
+### Custom `expect` Matchers
+
+Extend Playwright's `expect` with domain-specific assertions that improve test readability and reduce repetition.
+
+```typescript
+// e2e/fixtures/matchers.ts
+import { expect as baseExpect, type Locator } from '@playwright/test';
+
+export const expect = baseExpect.extend({
+  /**
+   * Asserts that a form field has a specific validation error message.
+   */
+  async toHaveValidationError(locator: Locator, expectedMessage: string) {
+    const errorEl = locator.locator('[data-testid="field-error"]');
+    const pass = await errorEl.filter({ hasText: expectedMessage }).isVisible();
+    return {
+      message: () =>
+        `Expected field to have validation error "${expectedMessage}"`,
+      pass,
+      name: 'toHaveValidationError',
+    };
+  },
+
+  /**
+   * Asserts that a toast notification with specific text appears and disappears.
+   */
+  async toShowToast(page: import('@playwright/test').Page, text: string) {
+    const toast = page.getByRole('status').filter({ hasText: text });
+    await toast.waitFor({ state: 'visible' });
+    const pass = await toast.isVisible();
+    return {
+      message: () => `Expected toast with text "${text}" to be visible`,
+      pass,
+      name: 'toShowToast',
+    };
+  },
+});
+
+// e2e/specs/signup.spec.ts
+import { test }   from '@playwright/test';
+import { expect } from '../fixtures/matchers';
+
+test('shows validation errors on empty submit', async ({ page }) => {
+  await page.goto('/signup');
+  await page.getByRole('button', { name: 'Create account' }).click();
+  await expect(page.getByTestId('email-field')).toHaveValidationError('Email is required');
+  await expect(page.getByTestId('password-field')).toHaveValidationError('Password is required');
+});
+```
+
+---
+
+### Keyboard and Focus Testing
+
+Test keyboard navigation to verify accessibility and keyboard-driven workflows.
+
+```typescript
+// Tab through form fields and verify focus order
+test('form is keyboard navigable', async ({ page }) => {
+  await page.goto('/contact');
+  // Focus the first field
+  await page.getByLabel('Name').focus();
+  await expect(page.getByLabel('Name')).toBeFocused();
+
+  // Tab to next field
+  await page.keyboard.press('Tab');
+  await expect(page.getByLabel('Email')).toBeFocused();
+
+  await page.keyboard.press('Tab');
+  await expect(page.getByLabel('Message')).toBeFocused();
+});
+
+// Keyboard shortcut testing
+test('Ctrl+K opens command palette', async ({ page }) => {
+  await page.goto('/app');
+  await page.keyboard.press('Control+k');
+  await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+});
+
+// Enter key submits form
+test('Enter key submits search', async ({ page }) => {
+  await page.goto('/search');
+  await page.getByPlaceholder('Search...').fill('playwright');
+  await page.keyboard.press('Enter');
+  await page.waitForURL(/q=playwright/);
+  await expect(page.getByText('results for "playwright"')).toBeVisible();
+});
+```
+
+---
+
+### `expect.poll` for External State Assertions
+
+Use `expect.poll()` when asserting against state that lives outside Playwright's control (queues, databases, analytics events).
+
+```typescript
+// Poll an API endpoint until it reflects the expected state
+test('export job completes within 30 seconds', async ({ page, request }) => {
+  await page.goto('/exports/new');
+  await page.getByRole('button', { name: 'Start export' }).click();
+  const jobId = await page.locator('[data-job-id]').getAttribute('data-job-id');
+
+  await expect.poll(
+    async () => {
+      const res = await request.get(`/api/jobs/${jobId}`);
+      return (await res.json()).status;
+    },
+    {
+      intervals: [1_000, 2_000, 5_000],
+      timeout:   30_000,
+      message:   `Job ${jobId} did not complete`,
+    }
+  ).toBe('completed');
+});
+```
+
+> `expect.poll()` is preferable to `page.waitForFunction()` when the condition involves
+> server-side state that cannot be observed in the browser DOM. [community]
+
+---
+
+### Browser Storage Manipulation (localStorage / sessionStorage / cookies)
+
+Directly set storage state before navigation to test authenticated or feature-flagged states without UI flows.
+
+```typescript
+// Set localStorage values before page load
+test('dark mode preference is persisted', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => localStorage.setItem('theme', 'dark'));
+  await page.reload();
+  await expect(page.locator('html')).toHaveClass(/dark/);
+});
+
+// Read localStorage after user action
+test('saves draft to localStorage', async ({ page }) => {
+  await page.goto('/editor');
+  await page.getByLabel('Title').fill('My draft');
+  await page.keyboard.press('Control+s');
+  const saved = await page.evaluate(() => localStorage.getItem('draft'));
+  expect(JSON.parse(saved!).title).toBe('My draft');
+});
+
+// Set cookies directly (faster than UI login for token-based auth)
+test('pre-load auth token via cookie', async ({ page, context }) => {
+  await context.addCookies([{
+    name:   'auth_token',
+    value:  process.env.E2E_TEST_TOKEN!,
+    domain: 'localhost',
+    path:   '/',
+    httpOnly: true,
+    secure:   false,
+  }]);
+  await page.goto('/dashboard');
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+});
+```
+
+> Directly setting `localStorage` / cookies before navigation is 5–10× faster than
+> logging in via UI. Combine with `storageState` for the most efficient auth strategy. [community]
+
+---
+
+### Performance Timing Assertions
+
+Verify page load and interaction performance within tests using the Navigation Timing API.
+
+```typescript
+// Assert page load time via PerformanceTiming
+test('homepage loads within 3 seconds', async ({ page }) => {
+  const start = Date.now();
+  await page.goto('/');
+  await expect(page.getByRole('main')).toBeVisible();
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(3_000);
+});
+
+// Use PerformanceNavigationTiming for more precise measurement
+test('TTFB is acceptable', async ({ page }) => {
+  await page.goto('/');
+  const navigationTiming = await page.evaluate(() => {
+    const [entry] = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
+    return {
+      ttfb:       entry.responseStart - entry.requestStart,
+      domReady:   entry.domContentLoadedEventEnd - entry.navigationStart,
+      fullLoad:   entry.loadEventEnd - entry.navigationStart,
+    };
+  });
+  expect(navigationTiming.ttfb).toBeLessThan(500);      // 500ms TTFB threshold
+  expect(navigationTiming.domReady).toBeLessThan(2_000); // 2s DOM ready
+});
+```
+
+> Performance assertions in Playwright tests catch regressions early but are environment-dependent.
+> Run with `--workers=1` and `--retries=0` for the most reproducible performance measurements.
+> For proper load testing, use k6 or JMeter — Playwright is not a load testing tool. [community]
+
+---
+
+### `expect.toPass` for Retry-Until-Pass Blocks
+
+Use `expect.toPass()` when you need to retry an entire multi-step async code block, not just a single assertion.
+
+```typescript
+// Retry the entire verification block until it passes (e.g., eventual consistency)
+test('background job updates record eventually', async ({ page, request }) => {
+  await page.goto('/jobs/trigger');
+  await page.getByRole('button', { name: 'Run job' }).click();
+
+  await expect(async () => {
+    const res = await request.get('/api/records/1');
+    const data = await res.json();
+    expect(data.status).toBe('processed');
+    expect(data.processedAt).toBeTruthy();
+  }).toPass({
+    timeout:   15_000,
+    intervals: [500, 1_000, 2_000],
+  });
+});
+```
+
+---
+
+### Mobile Emulation and Responsive Testing
+
+Test mobile viewports and touch events without a real device using Playwright's device emulation.
+
+```typescript
+// playwright.config.ts — add mobile projects
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  projects: [
+    // ... existing setup/chromium projects
+    {
+      name:  'mobile-chrome',
+      use:   { ...devices['Pixel 7'] },
+    },
+    {
+      name:  'mobile-safari',
+      use:   { ...devices['iPhone 14 Pro'] },
+    },
+  ],
+});
+```
+
+```typescript
+// e2e/specs/responsive.spec.ts
+import { test, expect, devices } from '@playwright/test';
+
+test('navigation collapses to hamburger on mobile', async ({ page }) => {
+  // Override viewport for this test only
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.goto('/');
+  await expect(page.getByRole('navigation')).not.toBeVisible();
+  await expect(page.getByLabel('Open menu')).toBeVisible();
+});
+
+test('touch scroll works on product list', async ({ page }) => {
+  await page.goto('/products');
+  // Simulate touch scroll
+  await page.touchscreen.tap(200, 400);
+});
+```
+
+---
+
+### Clock and Time Mocking
+
+Control `Date.now()`, `setTimeout`, and `setInterval` to test time-dependent logic without waiting.
+
+```typescript
+// Mock current date for date-dependent UI
+test('shows "Today" label for current day appointments', async ({ page }) => {
+  // Fix the clock before page load
+  await page.clock.setFixedTime(new Date('2025-01-15T10:00:00'));
+  await page.goto('/appointments');
+  await expect(page.locator('[data-date="2025-01-15"]')).toContainText('Today');
+});
+
+// Fast-forward timers for polling/countdown UI
+test('session timeout warning appears after 14 minutes', async ({ page }) => {
+  await page.clock.install();
+  await page.goto('/dashboard');
+  // Fast-forward 14 minutes without waiting
+  await page.clock.fastForward('14:00');
+  await expect(page.getByRole('alertdialog', { name: 'Session expiring' })).toBeVisible();
+});
+
+// Pause time for stable visual snapshots
+test('dashboard visual regression at fixed time', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2025-06-01T12:00:00'));
+  await page.goto('/dashboard');
+  await expect(page).toHaveScreenshot('dashboard-noon.png');
+});
+```
+
+> `page.clock` (introduced in Playwright 1.45) replaces the old `page.addInitScript` hack
+> for mocking dates. It controls `Date`, `setTimeout`, `setInterval`, and `performance.now()`
+> in a unified API. [community]
+
+---
+
+### Geolocation and Permissions
+
+Mock geolocation and browser permissions to test location-aware features.
+
+```typescript
+// Grant geolocation permission and set position
+test('shows nearby stores on map', async ({ browser }) => {
+  const context = await browser.newContext({
+    geolocation: { latitude: 40.7128, longitude: -74.0060 }, // New York
+    permissions:  ['geolocation'],
+  });
+  const page = await context.newPage();
+  await page.goto('/stores/nearby');
+  await expect(page.getByText('5 stores near you')).toBeVisible();
+  await context.close();
+});
+
+// Test denied permission fallback
+test('shows manual location entry when permission denied', async ({ browser }) => {
+  const context = await browser.newContext({
+    permissions: [],   // deny all permissions
+  });
+  const page = await context.newPage();
+  await page.goto('/stores/nearby');
+  await expect(page.getByLabel('Enter your location manually')).toBeVisible();
+  await context.close();
+});
+```
+
+---
+
+### Test Attachments and `testInfo` for Debugging
+
+Attach custom artifacts (screenshots, API responses, logs) to test results for richer debugging in the HTML report.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test('validates complex form submission', async ({ page }, testInfo) => {
+  await page.goto('/complex-form');
+
+  // Take a screenshot at a specific step and attach it
+  const screenshot = await page.screenshot();
+  await testInfo.attach('form-before-submit', {
+    body:      screenshot,
+    contentType: 'image/png',
+  });
+
+  // Attach API response as a JSON artifact
+  const response = await page.request.get('/api/form/schema');
+  await testInfo.attach('form-schema', {
+    body:        await response.text(),
+    contentType: 'application/json',
+  });
+
+  await page.getByRole('button', { name: 'Submit' }).click();
+  await expect(page.getByRole('alert', { name: /success/i })).toBeVisible();
+});
+
+// Auto-attach console logs for failing tests using a fixture
+// e2e/fixtures/logging.ts
+import { test as base } from '@playwright/test';
+
+export const test = base.extend({
+  page: async ({ page }, use, testInfo) => {
+    const logs: string[] = [];
+    page.on('console', msg => logs.push(`[${msg.type()}] ${msg.text()}`));
+    page.on('pageerror', err => logs.push(`[error] ${err.message}`));
+
+    await use(page);
+
+    if (testInfo.status !== testInfo.expectedStatus) {
+      await testInfo.attach('console-logs', {
+        body:        logs.join('\n'),
+        contentType: 'text/plain',
+      });
+    }
+  },
+});
+```
+
+> Attaching console logs only on failure (via `testInfo.status !== testInfo.expectedStatus`)
+> keeps passing test reports clean while providing full context for failures. [community]
+
+---
+
+### Debug Workflow: `PWDEBUG`, Inspector, and `--ui` Mode
+
+Playwright provides three distinct debugging modes. Knowing when to use each saves significant investigation time.
+
+```bash
+# 1. Playwright Inspector — step through actions, generate locators
+PWDEBUG=1 npx playwright test e2e/specs/auth.spec.ts
+
+# 2. VS Code extension — breakpoints, watch expressions, live locator picker
+# Install "Playwright Test for VS Code" extension, then use the sidebar
+
+# 3. UI Mode — interactive test runner with time-travel debugging
+npx playwright test --ui
+
+# 4. Headed mode — see the browser without full debug overhead
+npx playwright test --headed
+
+# 5. Trace viewer — replay recorded trace from CI failure
+npx playwright show-trace test-results/auth-chromium/trace.zip
+```
+
+**Pause mid-test for inspection:**
+
+```typescript
+test('investigate this failure', async ({ page }) => {
+  await page.goto('/dashboard');
+  await page.pause(); // opens Playwright Inspector at this point
+  // ... continue manually from the inspector
+});
+```
+
+> `page.pause()` opens the Playwright Inspector mid-test. Never commit code containing
+> `page.pause()` — add it to your ESLint `no-restricted-syntax` rule. [community]
+
+---
+
+### TypeScript Configuration for E2E Tests
+
+Isolate the test TypeScript configuration from the app build to allow test-specific compiler options.
+
+```jsonc
+// e2e/tsconfig.json — separate config for test code
+{
+  "compilerOptions": {
+    "target":         "ESNext",
+    "module":         "commonjs",
+    "moduleResolution": "node",
+    "strict":         true,
+    "esModuleInterop": true,
+    "skipLibCheck":   true,
+    "baseUrl":        ".",
+    "paths": {
+      "@fixtures/*": ["fixtures/*"],
+      "@pages/*":    ["pages/*"]
+    }
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}
+```
+
+```typescript
+// playwright.config.ts — reference e2e tsconfig
+import { defineConfig } from '@playwright/test';
+export default defineConfig({
+  testDir: './e2e',
+  // Playwright uses ts-node under the hood — no extra config needed
+  // but you can explicitly point to tsconfig:
+  // tsconfig: './e2e/tsconfig.json',  // Playwright 1.46+
+});
+```
+
+**ESLint for Playwright tests (`eslint-plugin-playwright`):**
+
+```jsonc
+// .eslintrc for e2e/ — prevent common Playwright anti-patterns
+{
+  "plugins": ["playwright"],
+  "rules": {
+    "playwright/no-wait-for-timeout":         "error",   // forbid waitForTimeout
+    "playwright/no-useless-await":            "error",   // flag redundant awaits
+    "playwright/no-focused-test":             "error",   // forbid test.only
+    "playwright/prefer-web-first-assertions": "error",   // enforce toHaveText over textContent
+    "playwright/no-conditional-in-test":      "warn",    // discourage if/else in tests
+    "playwright/valid-expect":                "error",   // catch unfulfilled expectations
+    "playwright/no-page-pause":               "error"    // forbid committed page.pause()
+  }
+}
+```
+
+> A single `eslint-plugin-playwright` rule (`no-focused-test`) prevents `test.only()`
+> from being merged. Enable it as `error`, not `warn`, in your CI lint step. [community]
+
+---
+
+### Strongly Typed Page Object Factory Pattern
+
+Use a factory function type to create type-safe page object registries, enabling IDE autocompletion and preventing runtime typos.
+
+```typescript
+// e2e/pages/index.ts — typed page factory
+import { type Page } from '@playwright/test';
+import { LoginPage }     from './LoginPage';
+import { DashboardPage } from './DashboardPage';
+import { SettingsPage }  from './SettingsPage';
+
+const PAGE_MAP = {
+  login:     LoginPage,
+  dashboard: DashboardPage,
+  settings:  SettingsPage,
+} as const;
+
+type PageName = keyof typeof PAGE_MAP;
+type PageInstance<T extends PageName> = InstanceType<typeof PAGE_MAP[T]>;
+
+export function createPage<T extends PageName>(name: T, page: Page): PageInstance<T> {
+  return new PAGE_MAP[name](page) as PageInstance<T>;
+}
+
+// Usage — fully typed, no 'as any' casts
+const loginPage = createPage('login', page);    // type: LoginPage
+const settings  = createPage('settings', page); // type: SettingsPage
+```
+
+---
+
+### WebSocket and Real-Time Feature Testing
+
+Test WebSocket-driven features by intercepting WebSocket connections or asserting on DOM updates triggered by server messages.
+
+```typescript
+// Assert on UI updates driven by WebSocket messages
+test('live notification appears when server pushes message', async ({ page }) => {
+  await page.goto('/dashboard');
+  await expect(page.getByTestId('notification-count')).toHaveText('0');
+
+  // Simulate a WebSocket message from the app's perspective via page.evaluate
+  await page.evaluate(() => {
+    const ws = (window as any).__testWebSocket;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.dispatchEvent(new MessageEvent('message', {
+        data: JSON.stringify({ type: 'notification', count: 3 })
+      }));
+    }
+  });
+
+  await expect(page.getByTestId('notification-count')).toHaveText('3');
+});
+
+// Mock WebSocket entirely using routeWebSocket
+test('handles server disconnection gracefully', async ({ page }) => {
+  await page.routeWebSocket('wss://ws.example.com/feed', ws => {
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'connected' }));
+      // Simulate disconnection after 500ms
+      setTimeout(() => ws.close(), 500);
+    };
+  });
+  await page.goto('/live-feed');
+  await expect(page.getByText('Connected')).toBeVisible();
+  await expect(page.getByText('Reconnecting...')).toBeVisible({ timeout: 3_000 });
+});
+```
+
+> `page.routeWebSocket()` was introduced in Playwright 1.48. For earlier versions, use
+> `page.addInitScript` to replace `window.WebSocket` with a mock constructor. [community]
+
+---
+
+### Request Context for Multi-Step API Tests
+
+Use `request` fixture for pure API tests (no browser) within the same test suite.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test.describe('Users API', () => {
+  let userId: number;
+
+  test.beforeAll(async ({ request }) => {
+    const res = await request.post('/api/users', {
+      data: { name: 'Test User', email: `api-test-${Date.now()}@example.com` },
+    });
+    expect(res.ok()).toBeTruthy();
+    userId = (await res.json()).id;
+  });
+
+  test('GET /api/users/:id returns user', async ({ request }) => {
+    const res = await request.get(`/api/users/${userId}`);
+    expect(res.status()).toBe(200);
+    const data = await res.json();
+    expect(data.name).toBe('Test User');
+  });
+
+  test('PATCH /api/users/:id updates name', async ({ request }) => {
+    const res = await request.patch(`/api/users/${userId}`, {
+      data: { name: 'Updated Name' },
+    });
+    expect(res.ok()).toBeTruthy();
+    expect((await res.json()).name).toBe('Updated Name');
+  });
+
+  test.afterAll(async ({ request }) => {
+    await request.delete(`/api/users/${userId}`);
+  });
+});
+```
+
+---
+
+### HAR Recording for Offline / Reproducible Tests
+
+Record real network traffic to a HAR file, then replay it to run tests without a live backend. Ideal for flaky external APIs.
+
+```typescript
+// Step 1: Record — run once to capture network traffic
+test('record HAR for checkout flow', async ({ page }) => {
+  await page.routeFromHAR('./e2e/hars/checkout.har', { update: true });
+  await page.goto('/checkout');
+  // ... interact to trigger the API calls you want to capture
+});
+
+// Step 2: Replay — use recorded HAR in all subsequent test runs
+test('checkout flow (HAR replay)', async ({ page }) => {
+  await page.routeFromHAR('./e2e/hars/checkout.har', {
+    update: false,          // do not re-record
+    notFound: 'fallthrough', // allow unmatched requests to pass through
+  });
+  await page.goto('/checkout');
+  await expect(page.getByText('Order confirmed')).toBeVisible();
+});
+```
+
+> HAR replay is brittle when the app uses short-lived tokens in URLs or headers.
+> Edit `checkout.har` manually to replace token placeholders, or use `route.continue()`
+> to inject fresh tokens for matched routes. [community]
+
+---
+
+### Advanced Interaction Patterns
+
+**File uploads:**
+```typescript
+// Single file
+await page.getByLabel('Upload avatar').setInputFiles('./e2e/fixtures/avatar.png');
+
+// Multiple files
+await page.getByLabel('Upload files').setInputFiles([
+  './e2e/fixtures/doc1.pdf',
+  './e2e/fixtures/doc2.pdf',
+]);
+
+// Remove selected file
+await page.getByLabel('Upload avatar').setInputFiles([]);
+```
+
+**File downloads:**
+```typescript
+// Start waiting before the click — prevents race condition
+const downloadPromise = page.waitForEvent('download');
+await page.getByRole('button', { name: 'Export CSV' }).click();
+const download = await downloadPromise;
+await download.saveAs(`./test-results/${download.suggestedFilename()}`);
+expect(download.suggestedFilename()).toMatch(/\.csv$/);
+```
+
+**Dialog handling:**
+```typescript
+// Handle alert/confirm/prompt — register handler BEFORE triggering
+page.once('dialog', dialog => dialog.accept());
+await page.getByRole('button', { name: 'Delete account' }).click();
+
+// Dismiss beforeunload dialog on page close
+page.on('dialog', async dialog => {
+  if (dialog.type() === 'beforeunload') await dialog.dismiss();
+});
+await page.close({ runBeforeUnload: true });
+```
+
+**New tab / popup handling:**
+```typescript
+// Wait for popup before clicking the link that opens it
+const popupPromise = page.waitForEvent('popup');
+await page.getByRole('link', { name: 'Open in new tab' }).click();
+const popup = await popupPromise;
+await popup.waitForLoadState();
+await expect(popup).toHaveURL(/terms/);
+```
+
+**Iframe interaction:**
+```typescript
+// Access frame by name or URL
+const frame = page.frameLocator('#payment-iframe');
+await frame.getByLabel('Card number').fill('4111111111111111');
+await frame.getByRole('button', { name: 'Pay' }).click();
+```
+
+> Register dialog handlers with `page.once()` for one-shot dialogs and `page.on()` for recurring
+> dialogs. Never register both — duplicate handlers cause double-accept/dismiss bugs. [community]
+
+---
+
 ## Project Structure Reference
 
 ```
 e2e/
   auth.setup.ts          # One-time login; writes storageState
+  global.setup.ts        # DB/API setup project (project deps, not globalSetup)
   fixtures/
     pages.ts             # POM fixture extensions (loginPage, dashboardPage, …)
     auth.ts              # Extended fixture with pre-authenticated page (if needed)
     api.ts               # Extended fixture with seeded APIRequestContext
+    axe.ts               # Shared AxeBuilder fixture for accessibility tests
+    logging.ts           # Auto-attach console logs on failure
+    matchers.ts          # Custom expect matchers (toHaveValidationError, toShowToast)
     index.ts             # mergeTests() composition point — import from here
   pages/
+    index.ts             # Typed page factory (createPage<T>)
     LoginPage.ts         # POM: /login
     DashboardPage.ts     # POM: /dashboard
     UserTablePage.ts     # POM: /admin/users
     components/
       SearchWidget.ts    # Sub-component POM used by multiple pages
+  reporters/
+    slack-reporter.ts    # Custom Slack/webhook reporter
   specs/
     auth.spec.ts         # Login, logout, session expiry
     dashboard.spec.ts    # Dashboard metrics, navigation
     users.spec.ts        # CRUD for users
+    visual.spec.ts       # Visual regression tests
+    accessibility.spec.ts # WCAG violation scans
+    api/
+      users.spec.ts      # Pure API tests (no browser)
   .auth/
     user.json            # Stored auth state — add to .gitignore
+  screenshot.css         # CSS injected for visual regression to hide dynamic content
+  tsconfig.json          # Separate TypeScript config for e2e code
 playwright.config.ts
+.eslintrc.playwright.json  # eslint-plugin-playwright rules
 ```
 
 **Rules:**
 - One spec file per feature domain, not per page.
-- Fixtures and POMs live under `e2e/`; never in `src/`.
+- Fixtures, POMs, reporters, and matchers live under `e2e/`; never in `src/`.
 - `auth.setup.ts` is the only file that performs a real login; all other tests consume `storageState`.
-- Add `e2e/.auth/`, `playwright-report/`, `test-results/`, and `blob-report/` to `.gitignore`.
+- `global.setup.ts` handles DB/API seeding; prefer project deps over `globalSetup`.
+- Add `e2e/.auth/`, `playwright-report/`, `test-results/`, `blob-report/`, and `**/*-linux.png`, `**/*-darwin.png`, `**/*-win32.png` to `.gitignore` (keep only CI-platform snapshots).
 
 ---
 
@@ -658,12 +1804,26 @@ export default defineConfig({
   workers:       process.env.CI ? 4 : undefined,
   timeout:       process.env.CI ? 60_000 : 30_000,  // CI machines are slower
   reporter:      process.env.CI ? 'blob' : [['html'], ['list']],
+  maxFailures:   process.env.CI ? 10 : undefined,   // stop early on broken suites
+  expect: {
+    timeout:         5_000,
+    toHaveScreenshot: {
+      maxDiffPixels: 100,
+      stylePath:    './e2e/screenshot.css',
+    },
+  },
   use: {
     baseURL:         process.env.WEB_URL ?? 'http://localhost:3000',
     trace:           'on-first-retry',   // capture trace on first CI retry
     screenshot:      'only-on-failure',
     video:           'on-first-retry',
     serviceWorkers:  'block',            // required when app uses MSW
+  },
+  webServer: {
+    command:             'npm run dev',
+    url:                 process.env.WEB_URL ?? 'http://localhost:3000',
+    reuseExistingServer: !process.env.CI,
+    timeout:             120_000,
   },
   projects: [
     { name: 'setup', testMatch: /auth\.setup\.ts/ },
@@ -726,6 +1886,18 @@ await page.route('**/api/data', route =>
   route.fulfill({ status: 200, body: JSON.stringify({ items: [] }) })
 );
 
+// Network response wait — CORRECT pattern to avoid deadlock
+const [response] = await Promise.all([
+  page.waitForResponse('**/api/save'),
+  page.getByRole('button', { name: 'Save' }).click(),
+]);
+
+// Visual regression
+await expect(page).toHaveScreenshot('page.png', {
+  mask: [page.locator('[data-testid="timestamp"]')],
+});
+
 // Sharding (CLI)
 // npx playwright test --shard=1/4
+// npx playwright test --last-failed
 ```

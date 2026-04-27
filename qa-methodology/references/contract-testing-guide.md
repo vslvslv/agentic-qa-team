@@ -1,5 +1,5 @@
 # Contract Testing (Consumer-Driven) — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 5 | score: 99/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 7 | score: 100/100 | date: 2026-04-26 -->
 
 ## Core Principles
 
@@ -378,7 +378,91 @@ describe('NotificationService consumes OrderCreated events', () => {
 
 ---
 
-### OpenAPI Contract Validation (lighter alternative) [community]
+### Shared Provider State Constants (TypeScript — prevents silent mismatches)
+
+```typescript
+// pact-states.ts — shared constants file imported by both consumer and provider
+// Place in a shared package or committed to a contract repository
+
+export const InventoryStates = {
+  SKU_IN_STOCK: (sku: string, qty: number) =>
+    `SKU ${sku} exists with ${qty} units in stock`,
+  SKU_NOT_FOUND: (sku: string) =>
+    `SKU ${sku} does not exist`,
+  WAREHOUSE_OFFLINE: (warehouseId: string) =>
+    `Warehouse ${warehouseId} is temporarily offline`,
+} as const;
+
+// In consumer test — import and use the constant
+import { InventoryStates } from '../shared/pact-states';
+
+await provider
+  .given(InventoryStates.SKU_IN_STOCK('ABC-123', 10))
+  .uponReceiving('a stock-level request')
+  // ...
+
+// In provider stateHandlers — same constant, no string drift
+import { InventoryStates } from '../shared/pact-states';
+
+const stateHandlers = {
+  [InventoryStates.SKU_IN_STOCK('ABC-123', 10)]: async () => {
+    await db.seed({ sku: 'ABC-123', available: 10, warehouseId: 'WH-001' });
+  },
+  [InventoryStates.SKU_NOT_FOUND('UNKNOWN-999')]: async () => {
+    await db.clear('UNKNOWN-999');
+  },
+};
+```
+
+**Key points:**
+- String-based provider states are the #1 cause of silent CDC test failures: consumer renames a state string, handler silently stops matching
+- Exporting typed functions (not raw strings) means a typo is a TypeScript compilation error, not a silent test pass
+- The shared package can also export response schemas, making contract drift visible at the type level
+
+---
+
+### Pact V4 / pact-js v13 Migration Note
+
+pact-js v12 (used in examples above) uses the **Pact V3 specification** and a Node.js-native mock server. pact-js v13+ is a **Rust FFI-based** implementation (Pact V4 spec) that supports:
+- `V4` interaction types with cleaner async/sync separation
+- Better plugin architecture (gRPC, GraphQL, protobuf via community plugins)
+- More accurate matching for complex matchers
+
+**Migration path:**
+
+```typescript
+// pact-js v13 (Pact V4) — PactV4 class, otherwise API-compatible
+import { PactV4, MatchersV3 } from '@pact-foundation/pact';
+
+const provider = new PactV4({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  // V4 no longer uses `port` for mock server — it auto-assigns
+  logLevel: 'warn',
+});
+
+// Interaction builder is slightly different in V4:
+await provider
+  .addInteraction()
+  .given('SKU ABC-123 exists')
+  .uponReceiving('a stock request')
+  .withRequest('GET', '/inventory/ABC-123')
+  .willRespondWith(200, (builder) => {
+    builder.jsonBody({ sku: MatchersV3.string('ABC-123') });
+  })
+  .executeTest(async (mockServer) => {
+    const client = new OrderClient(mockServer.url);
+    const result = await client.getStock('ABC-123');
+    expect(result.sku).toBe('ABC-123');
+  });
+```
+
+**When to migrate:** If you're starting a new project, use pact-js v13 (V4). For existing V3 pact files, V4 is backward-compatible — the Pact Broker accepts both spec versions.
+
+---
+
+
 
 ```typescript
 // openapi-validation.spec.ts — validate provider response against spec
@@ -523,6 +607,173 @@ The tradeoff: bi-directional contracts don't run real code, so they cannot catch
 | `fromProviderState(expr, value)` | `MatchersV3` | Value injected from provider state | `fromProviderState('${orderId}', 'ORD-001')` |
 
 `fromProviderState` is especially useful for dynamic IDs — the provider state handler generates the ID and injects it into the response, so the consumer matcher references the state variable.
+
+#### `fromProviderState` in action (TypeScript)
+
+```typescript
+// order-details.consumer.pact.spec.ts
+// Scenario: the consumer fetches an order by its server-assigned ID.
+// The exact ID is unknown at test-write time; the provider state handler
+// creates the record and injects the ID via a state variable.
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { OrderClient } from '../src/order-client';
+
+const { fromProviderState, like, string, integer } = MatchersV3;
+
+const provider = new PactV3({
+  consumer: 'CheckoutService',
+  provider: 'OrderService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8082,
+  logLevel: 'warn',
+});
+
+describe('CheckoutService → OrderService contract', () => {
+  it('fetches a specific order by server-assigned ID', async () => {
+    await provider
+      .given('an order exists', { orderId: 'ORD-DYNAMIC-001' })
+      .uponReceiving('a request for order details')
+      .withRequest({
+        method: 'GET',
+        // fromProviderState: path uses the value the provider injects
+        path: fromProviderState('/orders/${orderId}', '/orders/ORD-DYNAMIC-001'),
+        headers: { Accept: 'application/json' },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          id: fromProviderState('${orderId}', 'ORD-DYNAMIC-001'),
+          status: string('PENDING'),
+          totalAmount: like(99.99),
+          lineItems: like([{ sku: string('SKU-1'), qty: integer(2) }]),
+        },
+      })
+      .executeTest(async (mockServer) => {
+        const client = new OrderClient(mockServer.url);
+        const result = await client.getOrder('ORD-DYNAMIC-001');
+        expect(result.id).toBe('ORD-DYNAMIC-001');
+        expect(result.status).toBeDefined();
+      });
+  });
+});
+```
+
+**Key points:**
+- `fromProviderState('${orderId}', 'ORD-DYNAMIC-001')` tells Pact: "during consumer test, use the fallback value; during provider verification, replace it with the state variable `orderId` injected by the state handler"
+- The provider state handler receives `{ orderId: 'ORD-DYNAMIC-001' }` as parameters and seeds the database, then returns `{ orderId: createdRecord.id }` — Pact injects this into the interaction at replay time
+- This pattern eliminates hardcoded IDs in pact files, making provider state handlers simpler and pacts reusable across environments
+
+---
+
+### GitHub Actions CI Pipeline for Pact (full workflow)
+
+```yaml
+# .github/workflows/pact.yml
+# Consumer pipeline: generate + publish pacts
+# Provider pipeline: verify pacts + publish results
+name: Pact Contract Tests
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+
+env:
+  PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
+  PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+
+jobs:
+  # ── Consumer side ──────────────────────────────────────────────────────────
+  consumer-pact:
+    name: Consumer — generate pacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run consumer pact tests
+        run: npx jest --testPathPattern="\.pact\.spec\." --forceExit
+        env:
+          CI: true
+
+      - name: Publish pacts to broker
+        run: |
+          npx pact-broker publish ./pacts \
+            --consumer-app-version "${{ github.sha }}" \
+            --branch "${{ github.ref_name }}" \
+            --broker-base-url "$PACT_BROKER_URL" \
+            --broker-token "$PACT_BROKER_TOKEN"
+
+  # ── Provider side ──────────────────────────────────────────────────────────
+  provider-pact:
+    name: Provider — verify pacts
+    runs-on: ubuntu-latest
+    needs: []            # runs independently; broker decouples consumer/provider CI
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Start provider test server
+        run: npm run start:test &
+        env:
+          PORT: 3001
+
+      - name: Wait for server to be ready
+        run: npx wait-on http://localhost:3001/health --timeout 30000
+
+      - name: Run provider verification
+        run: npx jest --testPathPattern="\.provider\.pact\." --forceExit
+        env:
+          PACT_BROKER_URL: ${{ env.PACT_BROKER_URL }}
+          PACT_BROKER_TOKEN: ${{ env.PACT_BROKER_TOKEN }}
+          GIT_COMMIT: ${{ github.sha }}
+          GIT_BRANCH: ${{ github.ref_name }}
+          PUBLISH_VERIFICATION_RESULTS: 'true'
+
+  # ── Deploy gate ────────────────────────────────────────────────────────────
+  can-i-deploy:
+    name: can-i-deploy check
+    runs-on: ubuntu-latest
+    needs: [consumer-pact]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm install -g @pact-foundation/pact-cli
+
+      - name: Check if safe to deploy to production
+        run: |
+          pact-broker can-i-deploy \
+            --pacticipant OrderService \
+            --version "${{ github.sha }}" \
+            --to-environment production \
+            --broker-base-url "$PACT_BROKER_URL" \
+            --broker-token "$PACT_BROKER_TOKEN" \
+            --retry-while-unknown 5 \
+            --retry-interval 15
+```
+
+**Key points:**
+- Consumer and provider CI jobs are **independent** — they don't `needs` each other; the Pact Broker is the coupling point
+- `can-i-deploy` runs in a separate job gated on the consumer job completing and only on `main` branch pushes (i.e., before deploy)
+- `PUBLISH_VERIFICATION_RESULTS` is passed as an env var so local provider verification runs don't accidentally publish results
+- `wait-on` ensures the test server is ready before verification starts — a common source of false failures
 
 ---
 

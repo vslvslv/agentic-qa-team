@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java) | community (practitioner synthesis, Effective Java principles, awesome-java) | mixed | iteration: 0 | score: 100/100 | date: 2026-04-26 -->
+<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java) | community (practitioner synthesis, Effective Java principles, awesome-java) | mixed | iteration: 2 | score: 100/100 | date: 2026-04-26 -->
 
 ## Core Philosophy
 
@@ -95,7 +95,7 @@ String displayName = userRepository.findById(id)
 ```
 
 ### Streams API — Declarative Data Processing
-The Streams API (java.util.stream) transforms sequential data processing from imperative loops to a pipeline of composable operations. Lazy evaluation means intermediate operations cost nothing unless a terminal operation is invoked.
+The Streams API (java.util.stream) transforms sequential data processing from imperative loops to a pipeline of composable operations. Lazy evaluation means intermediate operations cost nothing unless a terminal operation is invoked. `flatMap` flattens nested structures; `mapMulti` (Java 16+) is a performant alternative for conditional expansion.
 
 ```java
 import java.util.List;
@@ -103,6 +103,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 record Order(String customerId, double total, String status) {}
+record Customer(String id, List<Order> orders) {}
 
 public class OrderAnalysis {
     public Map<String, Double> totalsByCustomer(List<Order> orders) {
@@ -126,6 +127,14 @@ public class OrderAnalysis {
             .limit(limit)
             .map(Map.Entry::getKey)
             .toList();   // Java 16+ unmodifiable list
+    }
+
+    // flatMap — flatten nested collections into a single stream
+    public List<Order> allOrdersForCustomers(List<Customer> customers) {
+        return customers.stream()
+            .flatMap(c -> c.orders().stream())   // Customer → Stream<Order>
+            .filter(o -> o.total() > 0)
+            .toList();
     }
 }
 ```
@@ -416,6 +425,68 @@ String msg = String.format("User %s has %d notifications", user.name(), count);
 String msg = "User %s has %d notifications".formatted(user.name(), count);
 ```
 
+### Comparator Chaining
+`Comparator.comparing()` plus `.thenComparing()` builds multi-key sort order declaratively without nested if/else.
+
+```java
+import java.util.Comparator;
+import java.util.List;
+
+record Employee(String department, String lastName, int salary) {}
+
+List<Employee> employees = fetchEmployees();
+
+// Primary: department ascending, secondary: salary descending, tertiary: name ascending
+List<Employee> sorted = employees.stream()
+    .sorted(Comparator.comparing(Employee::department)
+        .thenComparing(Comparator.comparingInt(Employee::salary).reversed())
+        .thenComparing(Employee::lastName))
+    .toList();  // Java 16+ — unmodifiable list; use Collectors.toList() if mutation needed
+```
+
+### Functional Interfaces and Lambda Composition
+Java's `java.util.function` package provides `Function`, `Predicate`, `Consumer`, and `Supplier`. Compose them with `andThen`, `compose`, and `and`/`or`/`negate` instead of writing imperative wrappers.
+
+```java
+import java.util.function.Function;
+import java.util.function.Predicate;
+
+// Build a reusable validation pipeline
+Predicate<String> notBlank   = s -> s != null && !s.isBlank();
+Predicate<String> validEmail = s -> s.contains("@") && s.contains(".");
+Predicate<String> validInput = notBlank.and(validEmail);
+
+// Function composition — reads left-to-right with andThen
+Function<String, String> trim       = String::trim;
+Function<String, String> toLowerCase = String::toLowerCase;
+Function<String, String> normalize   = trim.andThen(toLowerCase);
+
+List<String> emails = rawEmails.stream()
+    .map(normalize)
+    .filter(validInput)
+    .toList();
+```
+
+### SequencedCollection (Java 21)
+`SequencedCollection` is a new interface in Java 21 that gives `List`, `Deque`, and `LinkedHashSet` a uniform API for accessing/removing first and last elements — no more `list.get(0)` vs `deque.peekFirst()` inconsistency.
+
+```java
+import java.util.ArrayList;
+import java.util.SequencedCollection;
+
+SequencedCollection<String> items = new ArrayList<>(List.of("a", "b", "c", "d"));
+
+String first = items.getFirst();   // "a" — replaces list.get(0)
+String last  = items.getLast();    // "d" — replaces list.get(list.size() - 1)
+
+items.addFirst("z");               // insert at head
+items.removeLast();                // remove tail
+
+// reversed() returns a reversed view without copying
+SequencedCollection<String> reversed = items.reversed();
+reversed.forEach(System.out::println);  // z, a, b, c
+```
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -485,6 +556,59 @@ try {
 **8. Raw Types Instead of Generics [community]**
 Using raw types (e.g., `List` instead of `List<String>`) bypasses compile-time type checking, re-introducing the ClassCastExceptions that generics were designed to prevent. Raw types exist only for backward compatibility. Fix: always parameterize generic types; enable `-Xlint:unchecked` in your build to surface existing raw type usage.
 
+**9. Confusing `Stream.toList()` (Java 16+) with a Mutable List [community]**
+`Stream.toList()` returns an **unmodifiable** list (any `add`/`set` throws `UnsupportedOperationException`), whereas `Collectors.toList()` returns a `java.util.ArrayList`. The root cause is that the two methods look identical at a glance and the javadoc distinction is easy to miss. Fix: use `Stream.toList()` when you only need to read results; use `.collect(Collectors.toList())` explicitly when you need to mutate the result list after collection.
+
+```java
+// GOOD — read-only result; fast and clear intent
+List<String> names = users.stream().map(User::name).toList();
+
+// GOOD — mutable result needed
+List<String> mutableNames = users.stream()
+    .map(User::name)
+    .collect(Collectors.toList());  // returns ArrayList
+mutableNames.add("ExtraName");      // safe
+```
+
+**10. Blocking Virtual Threads on Synchronized Blocks (Java 21) [community]**
+Virtual threads (introduced in Java 21) are cheap and designed for blocking I/O, but a `synchronized` block on a virtual thread **pins it to its carrier OS thread** — negating the scalability benefit. The root cause is that Java 21's virtual thread scheduler cannot unmount a pinned virtual thread. Fix: replace `synchronized` with `java.util.concurrent.locks.ReentrantLock` inside code paths that run on virtual threads, or wait for Java 24+ which lifts the pinning restriction.
+
+```java
+// BAD on virtual threads — pins carrier thread
+synchronized (lock) {
+    result = remoteService.fetchData();  // blocking I/O while pinned
+}
+
+// GOOD — ReentrantLock allows the virtual thread scheduler to unmount
+private final ReentrantLock lock = new ReentrantLock();
+
+lock.lock();
+try {
+    result = remoteService.fetchData();  // virtual thread can unmount here
+} finally {
+    lock.unlock();
+}
+```
+
+**11. Storing `Optional<T>` in a Field or Collection [community]**
+`Optional` was designed as a return type only — not as a field type, parameter type, or collection element. Storing it in a field means it can itself be `null` (breaking its null-safety promise), it's not `Serializable`, and it adds heap allocation for every absent value. Fix: store `null` or a sentinel value in fields; use `@Nullable` annotations + `Objects.requireNonNull` at API boundaries; never put `Optional` in a `List` or `Map`.
+
+```java
+// BAD — Optional as field adds allocation and serialisation problems
+public class UserProfile {
+    private Optional<String> nickname;  // can itself be null!
+}
+
+// GOOD — store null; expose Optional only at the return boundary
+public class UserProfile {
+    private String nickname;  // null means absent
+
+    public Optional<String> getNickname() {
+        return Optional.ofNullable(nickname);
+    }
+}
+```
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -506,3 +630,6 @@ Using raw types (e.g., `List` instead of `List<String>`) bypasses compile-time t
 | Catching `Exception`/`Throwable` broadly | Swallows `InterruptedException`, hides JVM errors | Catch the narrowest type; handle `InterruptedException` properly |
 | `new Thread()` without pool | Uncontrolled thread creation; OOM under load | Use `ExecutorService` / virtual threads (Java 21) |
 | Blocking inside reactive/async code | Defeats concurrency model; stalls thread pools | Use non-blocking APIs; offload to separate executor |
+| `synchronized` in virtual threads (Java 21) | Pins carrier OS thread; kills scalability | Use `ReentrantLock` instead of `synchronized` blocks |
+| Assuming `Stream.toList()` is mutable | `UnsupportedOperationException` at runtime | Use `Collectors.toList()` when mutation is needed |
+| `Optional<T>` as a field or collection element | Not Serializable; can itself be null; adds heap pressure | Store `null`/sentinel in fields; expose `Optional` only at return boundaries |

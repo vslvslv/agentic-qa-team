@@ -192,6 +192,7 @@ Read existing test files first — append missing `describe`/flow blocks, never 
 **Detox tests (React Native / Expo):**
 
 > Reference: [Detox patterns guide](references/detox-patterns.md)
+> Key patterns: testID selectors · waitFor idioms · CI-aware timeouts · disableSynchronization (narrow scope) · artifact collection · setURLBlacklist for analytics · deep link testing · push notification simulation · platform-conditional logic · parallel sharding
 
 ```javascript
 // e2e/login.test.js
@@ -219,6 +220,8 @@ describe("Login Flow", () => {
 
 **Appium / WebDriverIO tests (Native iOS/Android):**
 
+> Reference: [Appium/WebDriverIO patterns guide](references/appium-wdio-patterns.md)
+
 ```typescript
 // test/specs/login.spec.ts
 import { $, browser } from "@wdio/globals";
@@ -226,13 +229,13 @@ import { expect } from "expect-webdriverio";
 
 describe("Login Flow", () => {
   it("shows login screen on launch", async () => {
-    await expect(await $("~login-screen")).toBeDisplayed();
+    await expect($("~login-screen")).toBeDisplayed();
   });
   it("logs in with valid credentials", async () => {
-    await (await $("~email-input")).setValue(process.env.E2E_USER_EMAIL || "admin@example.com");
-    await (await $("~password-input")).setValue(process.env.E2E_USER_PASSWORD || "password123");
-    await (await $("~login-button")).click();
-    await expect(await $("~home-screen")).toBeDisplayed();
+    await $("~email-input").setValue(process.env.E2E_USER_EMAIL || "admin@example.com");
+    await $("~password-input").setValue(process.env.E2E_USER_PASSWORD || "password123");
+    await $("~login-button").click();
+    await expect($("~home-screen")).toBeDisplayed();
   });
 });
 ```
@@ -303,6 +306,9 @@ flows:
 **Flakiness / synchronization (Detox):**
 - Use `waitFor(...).withTimeout(ms)` — never `setTimeout`/`sleep`
 - Disable animations in CI: `launchArgs: { detoxDisableAnimations: 'true' }`
+- Use `replaceText()` instead of `typeText()` to avoid appended-text gotcha
+- Blacklist analytics URLs with `device.setURLBlacklist([...])` to prevent idle-detection hangs
+- Narrow `disableSynchronization()` to smallest scope; always pair with `try/finally { enableSynchronization() }`
 
 ## Phase 4 — Execute Tests
 

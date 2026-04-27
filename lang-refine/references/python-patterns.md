@@ -1,5 +1,12 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 0 | score: 100/100 | date: 2026-04-26 -->
+<!-- sources: mixed (official + community) | iteration: 3 | score: 100/100 | date: 2026-04-26 -->
+<!-- iteration trace:
+     Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
+     Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
+     Iter 2: 100/100 (+0) — added functools (lru_cache/partial) and itertools (chain/islice/groupby) idioms
+     Iter 3: 100/100 (+0) — added Protocol structural typing deep-dive with @runtime_checkable (PEP 544)
+     STOP: delta < 3 for two consecutive iterations (iter 2 and iter 3)
+-->
 
 ## Core Philosophy
 
@@ -82,7 +89,8 @@ for n in fibonacci(100):
     print(n)
 
 # Generator expression — lazy equivalent of a list comprehension
-log_lines = ("ERROR" in line for line in open("app.log"))
+# (never materialises the full file in memory)
+log_lines = ("ERROR" in line for line in open("app.log", encoding="utf-8"))
 any_errors = any(log_lines)   # Stops at first match; never reads the whole file
 ```
 
@@ -319,6 +327,60 @@ import os
 
 ---
 
+### Structural Subtyping with `Protocol`
+`Protocol` enables duck typing with static analysis. Unlike `ABC`, the implementing class does not need to inherit from `Protocol` — any class with the required attributes satisfies it. This is Python's mechanism for structural typing (PEP 544).
+
+```python
+from typing import Protocol, runtime_checkable
+
+# Define the interface structurally
+@runtime_checkable
+class Drawable(Protocol):
+    """Any object that has a draw() method satisfies this protocol."""
+    def draw(self, x: int, y: int) -> None: ...
+
+    @property
+    def colour(self) -> str: ...
+
+# Implementors need NOT inherit from Drawable
+class Circle:
+    def __init__(self, radius: float, colour: str) -> None:
+        self.radius = radius
+        self._colour = colour
+
+    @property
+    def colour(self) -> str:
+        return self._colour
+
+    def draw(self, x: int, y: int) -> None:
+        print(f"Circle r={self.radius} at ({x},{y})")
+
+class Square:
+    def __init__(self, side: float, colour: str) -> None:
+        self.side = side
+        self._colour = colour
+
+    @property
+    def colour(self) -> str:
+        return self._colour
+
+    def draw(self, x: int, y: int) -> None:
+        print(f"Square s={self.side} at ({x},{y})")
+
+def render_all(shapes: list[Drawable], origin: tuple[int, int]) -> None:
+    for shape in shapes:
+        shape.draw(*origin)
+
+# Both satisfy Drawable without inheriting it
+shapes: list[Drawable] = [Circle(5.0, "red"), Square(3.0, "blue")]
+render_all(shapes, (10, 20))
+
+# @runtime_checkable enables isinstance checks (structural only)
+assert isinstance(Circle(1.0, "green"), Drawable)
+```
+
+---
+
 ## Language Idioms
 
 These are features unique to Python that make code more expressive. They are not just patterns — they are idiomatic Python.
@@ -370,13 +432,20 @@ import re
 text = "Error: connection timeout on port 8080"
 if match := re.search(r"port (\d+)", text):
     port = match.group(1)
-    print(f"Failing port: {port}")
+    print(f"Failing port: {port}")  # Failing port: 8080
 
-# Also useful in while loops
-data = b"initial"
-while chunk := data[:4]:
-    process(chunk)
-    data = data[4:]
+# Also useful in while loops — process a buffer in fixed-size chunks
+def process_chunks(data: bytes, chunk_size: int = 4) -> list[bytes]:
+    """Return list of non-empty chunks."""
+    chunks = []
+    offset = 0
+    while chunk := data[offset : offset + chunk_size]:
+        chunks.append(chunk)
+        offset += chunk_size
+    return chunks
+
+result = process_chunks(b"hello world")
+print(result)  # [b'hell', b'o wo', b'rld']
 ```
 
 ### `collections` Module Idioms
@@ -413,6 +482,69 @@ debug = f"{value = }"           # "value = 3.14159265" (Python 3.8+ self-documen
 # Alignment and padding
 for label, num in [("Tax", 12.5), ("Subtotal", 99.99), ("Total", 112.49)]:
     print(f"{label:<10} {num:>8.2f}")
+```
+
+### `functools` Caching and Partial Application
+```python
+from functools import lru_cache, partial, cache
+
+# lru_cache — memoize expensive pure functions
+@lru_cache(maxsize=128)
+def fibonacci(n: int) -> int:
+    if n < 2:
+        return n
+    return fibonacci(n - 1) + fibonacci(n - 2)
+
+print(fibonacci(50))  # Computed once; subsequent calls are O(1) cache hits
+
+# cache — unbounded LRU (Python 3.9+); simpler when memory is not a concern
+@cache
+def expensive_lookup(key: str) -> str:
+    return key.upper()  # Imagine this hits a database
+
+# partial — fix some arguments of a callable to create a specialised version
+def power(base: float, exponent: float) -> float:
+    return base ** exponent
+
+square = partial(power, exponent=2)
+cube   = partial(power, exponent=3)
+print(square(5), cube(3))  # 25.0  27.0
+```
+
+### `itertools` Pipeline Idioms
+```python
+import itertools
+
+# chain — flatten heterogeneous iterables without building a list
+a, b, c = [1, 2], [3, 4], [5, 6]
+for x in itertools.chain(a, b, c):
+    print(x, end=" ")  # 1 2 3 4 5 6
+
+# islice — take the first N from any iterator (no memory allocation)
+def natural_numbers():
+    n = 1
+    while True:
+        yield n
+        n += 1
+
+first_ten = list(itertools.islice(natural_numbers(), 10))
+# [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+# groupby — group sorted data without a loop (requires pre-sorted input)
+from dataclasses import dataclass
+
+@dataclass
+class Order:
+    region: str
+    amount: float
+
+orders = [
+    Order("East", 100.0), Order("East", 200.0),
+    Order("West", 150.0), Order("West", 50.0),
+]
+for region, group in itertools.groupby(orders, key=lambda o: o.region):
+    total = sum(o.amount for o in group)
+    print(f"{region}: ${total:.2f}")
 ```
 
 ---
@@ -522,12 +654,12 @@ type_ = get_entity_type()
 
 ### 6. Forgetting `pathlib` — Using `os.path` String Manipulation  [community]
 **Problem:** Concatenating paths with string addition (`path + "/" + filename`) breaks on Windows (`\` vs `/`), misses edge cases with trailing slashes, and is hard to read.
-**Why:** Practitioners learned this through cross-platform bugs where code written on macOS broke on Windows CI.
-**Fix:** Use `pathlib.Path` everywhere. The `/` operator handles separator differences automatically.
+**Why:** Practitioners learned this through cross-platform bugs where code written on macOS broke on Windows CI. `os.path.join` avoids the separator problem but returns a string, which means you still need `os.path.exists()`, `os.path.dirname()`, etc. for every subsequent operation — a maintenance trap.
+**Fix:** Use `pathlib.Path` everywhere. The `/` operator handles separator differences automatically and all operations are methods on the same object.
 
 ### 7. Not Using `__slots__` for High-Volume Objects  [community]
 **Problem:** Plain classes store instance attributes in a `__dict__`, using roughly 200–400 bytes per instance. When you create millions of small objects (e.g., in a data pipeline), memory balloons silently.
-**Why:** Python's dynamic attribute model defaults to dict-backed storage. `__slots__` replaces the per-instance dict with a fixed-layout structure.
+**Why:** Python's dynamic attribute model defaults to dict-backed storage. `__slots__` replaces the per-instance dict with a fixed-layout structure, reducing per-instance size by 4–5×.
 **Fix:** Add `__slots__` to data-heavy classes, or use `@dataclass(slots=True)` (Python 3.10+).
 ```python
 # Without slots: ~280 bytes per instance
@@ -548,6 +680,38 @@ from dataclasses import dataclass
 class FastPoint:
     x: float
     y: float
+```
+
+### 8. Returning `None` Implicitly After Mutation  [community]
+**Problem:** A method mutates an object and returns `None` (Python's default). Callers then write `result = items.sort()` expecting the sorted list, receiving `None` instead and wondering why the next operation crashes.
+**Why:** Python's Command/Query separation convention means mutating methods return `None` to signal "side-effect only". Built-in types follow this consistently (`list.sort()`, `list.append()`), but practitioners frequently forget when writing their own classes, mixing mutation and return values.
+**Fix:** Either return `self` explicitly to support chaining, or return `None` and document it. Never return a half-mutated object silently.
+```python
+# BAD — user expects the sorted list
+items = [3, 1, 2]
+sorted_items = items.sort()   # sorted_items is None!
+print(sorted_items[0])        # TypeError: 'NoneType' object is not subscriptable
+
+# GOOD option A — use the built-in sorted() which returns a new list
+sorted_items = sorted(items)
+
+# GOOD option B — mutate in-place, don't capture
+items.sort()
+print(items[0])  # 1
+
+# For custom classes: document clearly and return self if chaining is desired
+class QueryBuilder:
+    def __init__(self) -> None:
+        self._filters: list[str] = []
+
+    def where(self, condition: str) -> "QueryBuilder":
+        self._filters.append(condition)
+        return self  # Explicit chaining support
+
+    def build(self) -> str:
+        return " AND ".join(self._filters) or "1=1"
+
+query = QueryBuilder().where("age > 18").where("active = 1").build()
 ```
 
 ---

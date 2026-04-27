@@ -154,8 +154,8 @@ Then for each **critical** and **important** page from Phase 1, generate test sp
 following the patterns in that file. Also check the qa-refine reference guide if it
 exists:
 
-- Playwright: `qa-web/references/playwright-patterns.md`
-- Cypress: `qa-web/references/cypress-patterns.md`
+- Playwright: `qa-web/references/playwright-patterns.md` — covers POM + fixture injection, storageState auth (single/multi-role/API-based/worker-scoped), locator rank, web-first assertions, soft assertions, network mocking + HAR recording, test sharding, visual regression, `expect.poll`/`toPass`, accessibility with axe-core, test annotations/tagging, global setup via project deps, custom reporters, multi-environment projects, custom matchers, keyboard/focus testing, browser storage manipulation, performance timing, mobile emulation, clock mocking, geolocation, test attachments, debug workflow, TypeScript config + ESLint, typed POM factory, WebSocket testing, pure API test suites
+- Cypress: `qa-web/references/cypress-patterns.md` — covers cy.session() auth, cy.intercept() with RouteHandler, data-cy selectors, custom commands + overwrite, cy.request() seeding, cy.spy(), Component Testing, fixtures with TypeScript generics, test isolation, debugging (.debug/.pause/cy.log), cy.origin() OAuth, cy.task() for DB ops, CI parallelization, a11y and visual regression integration
 - Selenium: `qa-web/references/selenium-patterns.md`
 
 **Test coverage targets per page:**

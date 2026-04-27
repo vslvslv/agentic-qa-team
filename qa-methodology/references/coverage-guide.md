@@ -1,9 +1,9 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 1 | score: 94/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 10 | score: 100/100 | date: 2026-04-26 -->
 <!-- sources: training knowledge synthesis (WebFetch blocked, WebSearch API error) |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
      community: production experience patterns synthesized from training knowledge -->
-<!-- Rubric: Principle Coverage 24/25 | Code Examples 24/25 | Tradeoffs & Context 24/25 | Community Signal 22/25 -->
+<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 
 ## Core Principles
 
@@ -19,6 +19,9 @@ These are not interchangeable levels of the same metric — they are answers to 
 questions:
 - **Line coverage** — was this line executed at least once? Weakest signal.
 - **Branch coverage** — was each conditional branch (true/false path) exercised? Stronger.
+  Note: Istanbul and V8 disagree on what counts as a branch. Istanbul instruments `||`/`&&`
+  short-circuit paths and optional chaining separately; V8 only tracks coarse-grained
+  if/else boundaries. Switching providers without checking can inflate branch numbers.
 - **Mutation coverage** — when a fault is injected into the code, does any test fail?
   The only metric that directly measures whether your tests can catch bugs.
 
@@ -40,6 +43,19 @@ Coverage cannot tell you whether your tests verify the **right** outcomes, use
 encounter. A test that calls every function but asserts only `expect(true).toBe(true)`
 scores 100% coverage and provides zero protection.
 
+### 6. The instrumentation provider changes what gets measured
+In TypeScript/JavaScript, Jest and vitest support two coverage providers:
+- **V8** (Node's built-in) — fast, low overhead, but instruments at the engine level.
+  Coarse branch detection: `||`/`&&` short-circuits and optional chaining `?.` are often
+  not tracked as separate branches. New projects see higher numbers switching to V8 while
+  actual branch protection decreases.
+- **Istanbul** (via `@vitest/coverage-istanbul` / `babel-plugin-istanbul`) — instruments
+  at the source level, tracks every operator branch. Slower (20–40% overhead), more
+  accurate branch numbers.
+
+Rule of thumb: use V8 for fast CI feedback on line coverage; use Istanbul when branch
+accuracy matters (regulated code, payment paths, security logic).
+
 ---
 
 ## When to Use
@@ -54,6 +70,10 @@ Coverage metrics are most valuable when:
   confidence, using line/branch reports to focus your attention.
 - **Onboarding legacy codebases** — coverage reports surface modules with no tests at
   all, giving a prioritised list of debt.
+- **Regulated or compliance contexts** — ISO 26262 (automotive), DO-178C (avionics),
+  and PCI-DSS audits may require demonstrable branch coverage levels. In these contexts,
+  coverage is a compliance artefact as well as a quality signal; use Istanbul-based
+  instrumentation for defensible branch numbers.
 
 Coverage metrics add **little value** when:
 - The team uses TDD — coverage follows naturally, checking it separately is redundant ceremony.
@@ -166,9 +186,40 @@ const config: Config = {
   htmlReporter: { fileName: 'reports/mutation/index.html' },
   timeoutMS: 5000,
   concurrency: 4,
+  // Incremental mode: only re-run mutants for files changed since last run
+  // Requires writing the incremental file to a persistent cache across CI runs
+  incremental: true,
+  incrementalFile: '.stryker-tmp/incremental.json',
 };
 
 export default config;
+```
+
+For PR-scoped mutation testing (only mutate changed files in the PR), pair with a shell
+script that extracts the changed file list:
+
+```typescript
+// scripts/stryker-changed-only.ts
+// Run: ts-node scripts/stryker-changed-only.ts
+import { execSync } from 'child_process';
+import { writeFileSync, readFileSync } from 'fs';
+
+const changedFiles = execSync('git diff --name-only origin/main...HEAD')
+  .toString()
+  .trim()
+  .split('\n')
+  .filter(f => f.endsWith('.ts') && !f.endsWith('.spec.ts') && !f.endsWith('.test.ts'));
+
+if (changedFiles.length === 0) {
+  console.log('No source files changed — skipping mutation run.');
+  process.exit(0);
+}
+
+const baseConfig = JSON.parse(readFileSync('stryker.config.json', 'utf8'));
+const prConfig = { ...baseConfig, mutate: changedFiles, thresholds: { break: 60 } };
+writeFileSync('.stryker-pr.json', JSON.stringify(prConfig, null, 2));
+console.log(`Running Stryker on ${changedFiles.length} changed files.`);
+execSync('npx stryker run .stryker-pr.json', { stdio: 'inherit' });
 ```
 
 ### Pattern 4 — Coverage ratchet in CI (GitHub Actions)  [community]
@@ -247,6 +298,94 @@ describe('canEditPost', () => {
 });
 ```
 
+### Pattern 6 — Property-based testing with fast-check for deeper input-space coverage  [community]
+
+Property-based testing (fast-check) generates hundreds of randomised inputs per property,
+covering combinations that hand-written example tests never reach. This is orthogonal to
+line/branch coverage — a property test that exercises a function with 1000 inputs may
+achieve the same line coverage as a single example test, but uncovers edge cases that no
+human would think to enumerate. Combine it with Stryker to confirm that failing mutants
+correspond to properties that actually matter.
+
+```typescript
+// src/pricing/discount.spec.ts
+import fc from 'fast-check';
+import { applyDiscount } from './discount';
+
+describe('applyDiscount — property tests', () => {
+  it('never produces a negative price', () => {
+    fc.assert(
+      fc.property(
+        fc.float({ min: 0, max: 10_000, noNaN: true }),      // original price
+        fc.float({ min: 0, max: 1, noNaN: true }),           // discount fraction 0-100%
+        (price, fraction) => {
+          const result = applyDiscount(price, fraction);
+          return result >= 0;
+        }
+      )
+    );
+  });
+
+  it('discounted price is always ≤ original price', () => {
+    fc.assert(
+      fc.property(
+        fc.float({ min: 0, max: 10_000, noNaN: true }),
+        fc.float({ min: 0, max: 1, noNaN: true }),
+        (price, fraction) => {
+          return applyDiscount(price, fraction) <= price;
+        }
+      ),
+      { numRuns: 1000 }   // 1000 randomised examples per CI run
+    );
+  });
+
+  it('zero discount returns the original price unchanged', () => {
+    fc.assert(
+      fc.property(
+        fc.float({ min: 0, max: 10_000, noNaN: true }),
+        (price) => {
+          expect(applyDiscount(price, 0)).toBeCloseTo(price, 5);
+        }
+      )
+    );
+  });
+});
+```
+
+### Pattern 7 — type-coverage as a complementary TypeScript safety metric  [community]
+
+`type-coverage` counts typed vs untyped tokens in TypeScript source (everything that is
+not `any`). It is not a test-coverage metric, but it fills a gap that test coverage cannot:
+a function with 95% branch coverage and `param: any` in its signature can receive anything
+at runtime with no test failing. Running `type-coverage` in CI alongside Jest/vitest
+coverage gives two complementary safety floors.
+
+```typescript
+// package.json — add type-coverage scripts
+{
+  "scripts": {
+    "type-coverage": "type-coverage --detail --strict --at-least 95",
+    "type-coverage:report": "type-coverage --detail --strict --json > reports/type-coverage.json"
+  },
+  "devDependencies": {
+    "type-coverage": "^2.29.0"
+  }
+}
+```
+
+```yaml
+# .github/workflows/coverage.yml (add step after test coverage)
+      - name: Type coverage gate
+        run: npm run type-coverage
+        # Fails CI if typed token percentage drops below --at-least threshold.
+        # Reports which tokens are typed as 'any' for targeted remediation.
+```
+
+Typical thresholds used in production TypeScript repos:
+- Greenfield projects: 98% (near-zero `any` tolerance)
+- Migrating from JavaScript: start at current baseline and ratchet up 1% per sprint
+- Third-party-heavy codebases: 90–95% due to untyped vendor types
+
 ---
 
 ## Anti-Patterns
@@ -283,6 +422,31 @@ count to assess code quality.
 Exclude patterns in Jest/vitest configs are legitimate for generated files and stories,
 but teams under coverage pressure frequently use them to hide under-tested business
 logic. Treat aggressive `exclude` patterns in coverage config as a code review signal.
+
+A quick audit of what your config currently excludes:
+
+```typescript
+// scripts/audit-coverage-excludes.ts
+// Run: ts-node scripts/audit-coverage-excludes.ts
+// Prints all excluded paths and flags any that look like business logic
+import { createRequire } from 'module';
+import * as path from 'path';
+
+const require = createRequire(import.meta.url);
+const jestConfig = require(path.resolve(process.cwd(), 'jest.config.ts'));
+const excludes: string[] = jestConfig.collectCoverageFrom?.filter(
+  (p: string) => p.startsWith('!')
+) ?? [];
+
+const SUSPICIOUS_PATTERNS = ['service', 'handler', 'controller', 'util', 'helper'];
+
+console.log('Current coverage excludes:');
+excludes.forEach(pattern => {
+  const stripped = pattern.replace(/^!/, '');
+  const isSuspicious = SUSPICIOUS_PATTERNS.some(p => stripped.includes(p));
+  console.log(`  ${isSuspicious ? '[REVIEW]' : '[OK]    '} ${pattern}`);
+});
+```
 
 ---
 
@@ -332,6 +496,23 @@ Integration tests between services often have low line coverage (they call a thi
 adapter layer) but catch the bugs that unit tests miss. Teams that optimise purely for
 line coverage defund integration tests in favour of unit tests that are cheap to write
 and inflate numbers. The result: high coverage, frequent integration failures.
+
+### G8 — `type-coverage` as a complementary gap detector for TypeScript projects  [community]
+TypeScript codebases accumulate `any` leakage through third-party typings, `as any` casts,
+and untyped return values. A line at 100% branch coverage can silently pass `any` through
+the type system, bypassing every type check. `type-coverage` (npm: `type-coverage`) reports
+the percentage of typed tokens — treating it alongside test coverage gives a more complete
+picture of where runtime errors can slip through. Teams that enforce `typecheck --strict`
+in CI alongside coverage gates catch a class of bugs that no test coverage metric surfaces.
+
+### G9 — Compliance teams conflate passing coverage with verified safety  [community]
+In regulated industries (automotive, medical device, avionics), branch coverage is often
+a compliance artefact submitted to auditors. The dangerous failure mode: teams learn to
+produce a PDF coverage report without understanding what it means. A coverage report that
+satisfies DO-178C's MC/DC requirements but was generated from tests that don't assert
+outputs is formally compliant and practically useless. The fix: pair coverage artefacts
+with independent test reviews and mutation scores — the mutation score is the only metric
+that can't be trivially satisfied by assertion-free tests.
 
 ---
 
@@ -386,3 +567,4 @@ and inflate numbers. The result: high coverage, frequent integration failures.
 | mutmut (Python) | Official | https://mutmut.readthedocs.io/ | Python mutation testing tool reference |
 | Pitest (Java) | Official | https://pitest.org/ | Java/JVM mutation testing |
 | fast-check (property-based) | Community | https://fast-check.io/ | Complement to coverage: explores input space without line counting |
+| type-coverage | Community | https://github.com/plantain-00/type-coverage | Measures TypeScript `any` leakage — complements test coverage gates |

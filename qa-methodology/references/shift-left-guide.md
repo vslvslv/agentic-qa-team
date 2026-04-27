@@ -1,5 +1,5 @@
 # Shift-Left Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 7 | score: 95/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 10 | score: 97/100 | date: 2026-04-26 -->
 
 ## Core Principles
 
@@ -309,6 +309,95 @@ jobs:
           sarif_file: semgrep.sarif
 ```
 
+### Secret Scanning (Gitleaks / GitHub Secret Scanning)
+
+Secret scanning is a distinct shift-left category from SAST. It detects API keys, tokens, passwords, and private keys accidentally committed to the repository — a class of vulnerability SAST tools do not target.
+
+```yaml
+# .github/workflows/secret-scan.yml — runs on every push and PR
+name: Secret Scan
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  gitleaks:
+    name: Gitleaks Secret Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Full history: scan all commits in the push, not just HEAD
+
+      - name: Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}  # Optional: for enterprise features
+        # Scans diff between base and HEAD for all commits in the PR
+        # Config: .gitleaks.toml in repo root allows custom rules and allowlisting
+
+  github-secret-scanning:
+    # GitHub's native secret scanning runs automatically for all public repos
+    # and GitHub Advanced Security private repos — no workflow needed.
+    # Enable in: Settings → Code security → Secret scanning → Push protection
+    # Push protection BLOCKS the push before the secret reaches remote.
+    name: GitHub Push Protection (informational)
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "GitHub Secret Scanning push protection is enabled at the org level."
+```
+
+```toml
+# .gitleaks.toml — custom rules for project-specific secret patterns
+[extend]
+# Extend the default ruleset
+useDefault = true
+
+[[rules]]
+id = "custom-internal-api-key"
+description = "Internal API key pattern"
+regex = '''MYAPP_[A-Z0-9]{32}'''
+tags = ["internal", "api-key"]
+
+[allowlist]
+  description = "Allowed patterns (test fixtures, example values)"
+  regexes = [
+    '''EXAMPLE_KEY_[A-Z]{8}''',           # Placeholder values in docs
+    '''test-secret-[a-z]{6}''',            # Test fixture tokens
+  ]
+  paths = [
+    '''tests/fixtures/.*''',
+    '''docs/examples/.*''',
+  ]
+  commits = [
+    "abc123def456",   # Historical commit with false positive, cannot be rewritten
+  ]
+```
+
+> [community] **Gotcha**: The most common secret leak pattern is `.env` files committed during initial project setup. Add `.env`, `.env.local`, `.env.*` to `.gitignore` before the first commit, and add a pre-commit check that rejects any file matching `^\.env`:
+
+```typescript
+// scripts/check-no-env-files.ts — run as a pre-commit check via lint-staged
+import { execSync } from 'child_process';
+
+const stagedFiles = execSync('git diff --cached --name-only', { encoding: 'utf8' })
+  .trim()
+  .split('\n')
+  .filter(Boolean);
+
+const envFiles = stagedFiles.filter(f => /^\.env(\.|$)/.test(f.split('/').pop() ?? ''));
+
+if (envFiles.length > 0) {
+  console.error(`ERROR: Attempting to commit .env file(s):\n  ${envFiles.join('\n  ')}`);
+  console.error('Remove from staging: git reset HEAD <file>');
+  process.exit(1);
+}
+```
+
+> [community] **Gotcha (GitGuardian State of Secrets Sprawl 2024)**: 12.8 million secrets were detected in public GitHub commits in 2023. The most commonly leaked secrets in Node.js/TypeScript projects are: Google API keys (committed via `.env` or hardcoded in tests), AWS credentials (from local `~/.aws/credentials` accidentally included), and JWT secrets (hardcoded in `config.ts` for "convenience"). **Pre-commit secret scanning and GitHub push protection together stop > 90% of accidental commits before they reach remote**.
+
 ### PR-Level Required Status Checks
 
 ```yaml
@@ -610,6 +699,7 @@ Track these metrics to quantify whether your shift-left investment is working:
 6. **Treating shift-left as shift-only**: Removing or skipping production monitoring because "we have 80% test coverage" leads to blind spots in real user behavior.
 7. **Running DAST on every PR**: OWASP ZAP full-scan takes 15–45 minutes. Run it on schedule (nightly) or on merges to main, not every PR. Use SAST for PR gates.
 8. **Shifting integration tests left into unit tests**: Some teams mock every external dependency in "unit" tests and then have no integration tests. Mocking a database client in every test makes unit tests fast but means no test ever validates the SQL queries, migrations, or connection pooling behavior. Keep a meaningful integration test layer.
+9. **Security theater via checkbox compliance**: Installing SAST, secret scanning, and DAST tools but routing their findings to a separate "security backlog" that no one triages is not shift-left — it is shift-later with extra steps. Shift-left only works when findings block the pipeline AND developers act on them within the same sprint they are raised.
 
 ### SAST Tuning Workflow
 
@@ -698,6 +788,28 @@ const value = safeConfig[validatedKey];
 
 ---
 
+## Shift-Left Maturity Model
+
+Use this model to assess and advance your team's shift-left posture. Each level builds on the previous — do not skip levels.
+
+| Level | Name | Characteristics | Key Evidence |
+|-------|------|----------------|--------------|
+| **L1** | Ad-Hoc | Tests written after code or not at all; no pre-commit hooks; testing is a manual phase | No CI test gate; defects found in staging or production |
+| **L2** | Established | Unit tests exist and run in CI; TypeScript strict mode; basic ESLint; PR requires CI to pass | CI green required to merge; coverage tracked (even if not thresholded) |
+| **L3** | Automated | Pre-commit hooks with lint-staged; coverage thresholds enforced; SAST (ESLint security, Semgrep) running on PRs; `npm audit` as gate; secret scanning enabled | MTTD < 15 min for code bugs; pre-commit catches format/lint issues |
+| **L4** | Security-Integrated | CodeQL or Semgrep with custom rules; Zod validation at all API boundaries; Snyk + license compliance; nightly DAST; contract tests for service interactions | SAST:production CVE ratio > 10:1; no unscanned PRs |
+| **L5** | Comprehensive | IaC scanning (Checkov/Trivy); container image scanning; SBOM generation + attestation; error budgets defined; full shift-right complement (canary, feature flags, synthetic monitoring) | Defect escape rate measured and decreasing; `--no-verify` usage near zero; MTTD trending down quarter-over-quarter |
+
+**Transition guidance:**
+- **L1 → L2**: Enable TypeScript strict mode + ESLint + CI gate. Takes 1–3 sprints on an existing codebase; plan for fixing type errors.
+- **L2 → L3**: Add Husky + lint-staged + Semgrep. Takes 1 sprint. The majority of shift-left ROI comes from L2→L3.
+- **L3 → L4**: Add CodeQL + Zod + Snyk + DAST. Takes 2–3 sprints. Requires security champion on team to tune rules.
+- **L4 → L5**: Add IaC/container scanning + SBOM + full observability. Ongoing investment; plan 1 sprint per tool.
+
+> [community] **Lesson (engineering maturity research, DORA 2024)**: Teams at L3+ (automated gates, SAST, coverage thresholds) deploy 4× more frequently and have 7× lower change failure rates than L1–L2 teams. The L2→L3 transition is where most of the DORA elite performer gains come from — not from L4/L5 sophistication. Invest in getting everyone to L3 before optimizing beyond it.
+
+---
+
 ## Quick Reference — Shift-Left Checklist
 
 Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
@@ -707,6 +819,8 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 - [ ] ESLint with `@typescript-eslint/recommended` + `eslint-plugin-security`
 - [ ] Husky pre-commit hook with lint-staged (lint + format + type check)
 - [ ] Conventional commits enforced via commit-msg hook
+- [ ] `.env` files in `.gitignore` + pre-commit `.env` file guard
+- [ ] Secret scanning pre-commit check (Gitleaks or custom script)
 
 **PR Gate Layer (CI — must pass before merge)**
 - [ ] `tsc --noEmit` in required status check
@@ -714,6 +828,8 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 - [ ] ESLint + security lint at `--max-warnings=0`
 - [ ] `npm audit --audit-level=high --omit=dev`
 - [ ] Semgrep or CodeQL SAST scan
+- [ ] Gitleaks secret scanning (PR-level)
+- [ ] GitHub Secret Scanning push protection enabled at org/repo level
 - [ ] Zod validation at all external API boundaries
 
 **Pipeline / Nightly Layer**
@@ -730,22 +846,195 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 
 ---
 
+## Infrastructure-as-Code (IaC) Scanning
+
+Shift-left extends beyond application code to the infrastructure configuration that defines it. IaC misconfigurations (open S3 buckets, missing encryption, overly permissive IAM roles) are production vulnerabilities whose root cause is in a configuration file — and they are caught most cheaply before the `terraform apply`.
+
+### Checkov (Terraform/CloudFormation/Kubernetes)
+
+```yaml
+# .github/workflows/iac-scan.yml — runs on changes to IaC files
+name: IaC Security Scan
+on:
+  pull_request:
+    paths:
+      - 'infrastructure/**'
+      - '**/*.tf'
+      - '**/*.yaml'
+      - '**/*.yml'
+      - 'Dockerfile*'
+      - 'docker-compose*.yml'
+
+jobs:
+  checkov:
+    name: Checkov IaC Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan Terraform / CloudFormation / K8s / Docker
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: terraform,cloudformation,kubernetes,dockerfile,docker_compose
+          quiet: true
+          soft_fail: false           # Hard fail on HIGH severity findings
+          skip_check: CKV_AWS_18    # Example: skip specific check with documented reason
+          output_format: sarif
+          output_file_path: checkov.sarif
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov.sarif
+
+  trivy-config:
+    name: Trivy Misconfiguration Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-config.sarif'
+          severity: 'HIGH,CRITICAL'
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-config.sarif
+```
+
+```yaml
+# .github/workflows/container-scan.yml — scan Docker images before pushing
+name: Container Image Scan
+on:
+  push:
+    paths: ['Dockerfile*', 'docker-compose*.yml']
+
+jobs:
+  trivy-image:
+    name: Trivy Container Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image for scanning (do not push yet)
+        run: docker build -t app:scan-${{ github.sha }} .
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'app:scan-${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-image.sarif'
+          severity: 'HIGH,CRITICAL'
+          # Exit code 1 on findings — stops the push
+          exit-code: '1'
+          ignore-unfixed: true    # Skip CVEs with no patch available
+          vuln-type: 'os,library'
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+```
+
+> [community] **Gotcha**: IaC scanners have very high false-positive rates on resource-level checks (e.g., "S3 bucket has no access logs" is flagged even for intentionally public buckets). Maintain a `.checkov.yaml` or `.trivyignore` file that documents suppressed checks with reasons — treat it as a living security decision log, reviewed quarterly.
+
+---
+
+## Software Bill of Materials (SBOM)
+
+An SBOM is a structured inventory of all software components in a project — first-party code, direct dependencies, and transitive dependencies. SBOM generation is a shift-left practice: producing it at build time, not after an incident.
+
+**Why SBOMs matter**: When a new CVE drops (e.g., Log4Shell, XZ Utils backdoor), teams with SBOMs can answer "are we affected?" in minutes by querying the SBOM. Teams without them spend hours grepping dependency trees under incident pressure.
+
+```yaml
+# .github/workflows/sbom.yml — generate SBOM on every release build
+name: Generate SBOM
+on:
+  push:
+    tags: ['v*']
+  release:
+    types: [published]
+
+jobs:
+  sbom:
+    name: Generate and Attest SBOM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write     # Required for OIDC-based attestation
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci --omit=dev
+
+      # Generate SBOM in CycloneDX format (preferred for vulnerability databases)
+      - name: Generate SBOM (CycloneDX)
+        run: npx @cyclonedx/cyclonedx-npm --output-file sbom.json --output-format JSON
+        # Output includes: component name, version, purl, licenses, hashes, VEX data
+
+      # Also generate SPDX for regulatory compliance (NTIA minimum elements)
+      - name: Generate SBOM (SPDX)
+        run: npx spdx-sbom-generator -p . -o sbom-spdx.spdx
+
+      # Scan the generated SBOM for known vulnerabilities using Grype
+      - name: Scan SBOM for vulnerabilities (Grype)
+        uses: anchore/scan-action@v3
+        with:
+          sbom: 'sbom.json'
+          fail-build: true
+          severity-cutoff: high
+
+      # Attach SBOM as a GitHub release asset and create a signed attestation
+      - uses: actions/attest-sbom@v1
+        with:
+          subject-path: './dist'    # Attest the built artifact
+          sbom-path: 'sbom.json'
+
+      - uses: actions/upload-release-asset@v1
+        env: { GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: sbom.json
+          asset_name: sbom-${{ github.ref_name }}.json
+          asset_content_type: application/json
+```
+
+> [community] **Gotcha (CISA SBOM guidance)**: Generating an SBOM without consuming it is security theater. Pair SBOM generation with a Grype or OSV-scanner scan in CI so the SBOM serves double duty: compliance artifact and vulnerability query surface.
+
+---
+
 ## Key Resources
 
-- [IBM: Shift-Left Testing](https://www.ibm.com/topics/shift-left-testing)
-- [OWASP DevSecOps Guideline](https://owasp.org/www-project-devsecops-guideline/)
-- [OWASP ZAP](https://www.zaproxy.org/)
-- [Semgrep Rules Registry](https://semgrep.dev/r)
-- [CodeQL Documentation](https://codeql.github.com/docs/)
-- [Husky Documentation](https://typicode.github.io/husky/)
-- [lint-staged](https://github.com/lint-staged/lint-staged)
-- [Snyk for Node.js](https://docs.snyk.io/scan-using-snyk/snyk-open-source/snyk-open-source-supported-languages-and-package-managers/snyk-for-javascript-node.js)
-- [Zod Documentation](https://zod.dev/)
-- [TypeScript Strict Mode](https://www.typescriptlang.org/tsconfig#strict)
-- [Google SRE Book — Testing for Reliability](https://sre.google/sre-book/testing-reliability/)
-- [ThoughtWorks Technology Radar — Shift Left on Security](https://www.thoughtworks.com/radar/techniques/shift-left-on-security)
-- [NIST: Cost Advantage of Early Defect Detection](https://www.nist.gov/system/files/documents/director/planning/report02-3.pdf)
-- [Pact Consumer-Driven Contract Testing](https://docs.pact.io/)
-- [Vitest Documentation](https://vitest.dev/guide/)
-- [eslint-plugin-security](https://github.com/eslint-community/eslint-plugin-security)
-- [Renovate Bot (Dependabot alternative)](https://docs.renovatebot.com/)
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| IBM: Shift-Left Testing | Official | https://www.ibm.com/topics/shift-left-testing | Foundational definitions and cost-of-defects curve |
+| OWASP DevSecOps Guideline | Official | https://owasp.org/www-project-devsecops-guideline/ | Security testing pipeline integration patterns |
+| OWASP ZAP | Official | https://www.zaproxy.org/ | DAST tool for runtime security testing |
+| Semgrep Rules Registry | Tool | https://semgrep.dev/r | Curated SAST rulesets for TypeScript/Node.js/OWASP |
+| CodeQL Documentation | Official | https://codeql.github.com/docs/ | Deep data-flow taint analysis for security bugs |
+| Husky Documentation | Tool | https://typicode.github.io/husky/ | Pre-commit hook setup for Node.js projects |
+| lint-staged | Tool | https://github.com/lint-staged/lint-staged | Run linters on staged files only (fast pre-commit) |
+| Snyk for Node.js | Tool | https://docs.snyk.io/scan-using-snyk/snyk-open-source/snyk-open-source-supported-languages-and-package-managers/snyk-for-javascript-node.js | Dependency vulnerability + license scanning |
+| Zod Documentation | Tool | https://zod.dev/ | Runtime schema validation + TypeScript type inference |
+| TypeScript Strict Mode | Official | https://www.typescriptlang.org/tsconfig#strict | Compiler-level shift-left via strict type checking |
+| Google SRE Book — Testing for Reliability | Book | https://sre.google/sre-book/testing-reliability/ | Production testing philosophy from Google |
+| ThoughtWorks Technology Radar — Shift Left on Security | Community | https://www.thoughtworks.com/radar/techniques/shift-left-on-security | Industry adoption signal and maturity guidance |
+| NIST: Cost Advantage of Early Defect Detection | Research | https://www.nist.gov/system/files/documents/director/planning/report02-3.pdf | Empirical data behind the cost-of-defects curve |
+| Pact Consumer-Driven Contract Testing | Tool | https://docs.pact.io/ | Contract tests as mid-pipeline shift-left integration checks |
+| Vitest Documentation | Tool | https://vitest.dev/guide/ | Fast TypeScript-native test runner for pre-commit and CI |
+| eslint-plugin-security | Tool | https://github.com/eslint-community/eslint-plugin-security | ESLint rules for Node.js security vulnerabilities |
+| Renovate Bot | Tool | https://docs.renovatebot.com/ | Automated dependency updates with configurable automerge |
+| Gitleaks | Tool | https://github.com/gitleaks/gitleaks | Pre-commit and CI secret detection in git history |
+| GitHub Secret Scanning | Official | https://docs.github.com/en/code-security/secret-scanning | Native push protection for committed secrets |
+| Checkov (IaC Scanner) | Tool | https://www.checkov.io/ | Policy-as-code scanning for Terraform/K8s/Dockerfile |
+| Trivy | Tool | https://aquasecurity.github.io/trivy/ | Container image + IaC misconfiguration vulnerability scanner |
+| CycloneDX SBOM Generator | Tool | https://cyclonedx.org/ | SBOM generation standard for vulnerability querying |
+| Grype (SBOM Vulnerability Scanner) | Tool | https://github.com/anchore/grype | Scan SBOMs for known CVEs against multiple vulnerability DBs |

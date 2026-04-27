@@ -1,5 +1,5 @@
 # Behavior-Driven Development (BDD) — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 6 | score: 99/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: bdd | iteration: 10 | score: 100/100 | date: 2026-04-26 -->
 
 ## Core Principles
 
@@ -225,10 +225,32 @@ Then(
 );
 ```
 
-**Setup:**
+**Full project bootstrap (TypeScript + Cucumber.js + Playwright):**
 
 ```bash
-npm install --save-dev @cucumber/cucumber ts-node typescript
+# 1. Install dependencies
+npm install --save-dev @cucumber/cucumber @playwright/test ts-node typescript
+npx playwright install chromium
+
+# 2. Required TypeScript configuration
+```
+
+`tsconfig.json`:
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["src/**/*", "features/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
 ```
 
 `cucumber.json`:
@@ -241,6 +263,27 @@ npm install --save-dev @cucumber/cucumber ts-node typescript
     "publish": false
   }
 }
+```
+
+**Recommended directory structure:**
+
+```
+project-root/
+├── features/                    # Gherkin feature files
+│   ├── shopping-cart/
+│   │   └── checkout.feature
+│   └── account/
+│       └── registration.feature
+├── src/
+│   ├── steps/                   # Step definition files
+│   │   ├── checkout.steps.ts
+│   │   └── auth.steps.ts
+│   └── support/                 # World, hooks, helpers
+│       ├── world.ts
+│       └── hooks.ts
+├── reports/                     # Generated reports (gitignored)
+├── cucumber.json
+└── tsconfig.json
 ```
 
 **Step definition file** (`src/steps/checkout.steps.ts`):
@@ -525,9 +568,196 @@ npx cucumber-js --tags "@payments and @negative"
 
 
 
-### Living Documentation
+### BDD for REST APIs (Without Browser Automation)
 
-Living documentation is the concept that feature files serve as the definitive, always-current description of system behavior — because they are the tests. Unlike a Wiki page or a Word document that ages independently of the code, a passing feature file proves the described behavior exists today.
+BDD is not limited to browser testing. Many of the most valuable BDD scenarios target
+API behavior directly — they run in milliseconds, not seconds, and validate the contract
+between services in language the product team can review.
+
+```gherkin
+# features/api/orders.feature
+Feature: Order management API
+  As an API consumer
+  I want to manage orders through the REST API
+  So that client applications can build order workflows reliably
+
+  Background:
+    Given I have a valid API authentication token
+
+  Scenario: Creating an order returns 201 with order ID
+    Given I have the following order payload:
+      """json
+      {
+        "customerId": "cust-001",
+        "items": [{ "productId": "prod-42", "quantity": 2 }],
+        "shippingAddress": { "city": "Berlin", "country": "DE" }
+      }
+      """
+    When I POST to "/api/v1/orders"
+    Then the response status is 201
+    And the response body contains a field "orderId" matching /^ORD-[A-Z0-9]{8}$/
+    And the response body contains "status" equal to "pending"
+
+  Scenario: Fetching a non-existent order returns 404
+    When I GET "/api/v1/orders/ORD-DOESNOTEXIST"
+    Then the response status is 404
+    And the response body contains "error" equal to "Order not found"
+```
+
+```typescript
+// src/steps/api.steps.ts — API BDD without a browser
+import { Given, When, Then } from '@cucumber/cucumber';
+import { expect } from 'chai';
+import supertest from 'supertest';
+import { app } from '../../src/app';
+import { ApiWorld } from '../support/api-world';
+
+const api = supertest(app);
+
+Given('I have a valid API authentication token', async function(this: ApiWorld) {
+  const res = await api.post('/api/auth/token').send({
+    clientId: process.env.TEST_CLIENT_ID,
+    clientSecret: process.env.TEST_CLIENT_SECRET,
+  });
+  expect(res.status).to.equal(200);
+  this.authToken = res.body.accessToken;
+});
+
+Given('I have the following order payload:', function(this: ApiWorld, docString: string) {
+  this.requestBody = JSON.parse(docString);
+});
+
+When('I POST to {string}', async function(this: ApiWorld, path: string) {
+  this.response = await api
+    .post(path)
+    .set('Authorization', `Bearer ${this.authToken}`)
+    .set('Content-Type', 'application/json')
+    .send(this.requestBody);
+});
+
+When('I GET {string}', async function(this: ApiWorld, path: string) {
+  this.response = await api
+    .get(path)
+    .set('Authorization', `Bearer ${this.authToken}`);
+});
+
+Then('the response status is {int}', function(this: ApiWorld, expectedStatus: number) {
+  expect(this.response.status).to.equal(expectedStatus,
+    `Expected HTTP ${expectedStatus} but got ${this.response.status}. ` +
+    `Body: ${JSON.stringify(this.response.body)}`
+  );
+});
+
+Then(
+  'the response body contains a field {string} matching {word}',
+  function(this: ApiWorld, field: string, pattern: string) {
+    const regex = new RegExp(pattern.replace(/^\/|\/$/g, ''));
+    expect(this.response.body[field]).to.match(regex);
+  }
+);
+
+Then(
+  'the response body contains {string} equal to {string}',
+  function(this: ApiWorld, field: string, value: string) {
+    expect(this.response.body[field]).to.equal(value);
+  }
+);
+```
+
+**Why API BDD matters**: Browser tests are 10–50x slower than API tests. By pushing
+behavioral verification to the API layer wherever possible, teams keep BDD suites fast
+enough to run in PR pipelines. The rule: use browser automation only for scenarios where
+the UI interaction itself is the thing being tested (visual feedback, accessibility,
+client-side validation). For all business logic reachable via API, use API-level BDD.
+
+### CI/CD Integration and Report Publishing
+
+BDD suites that run in CI without publishing readable reports lose the "living
+documentation" value immediately: failures become log noise rather than traceable
+business-behavior regressions. The minimum viable CI integration publishes the
+Cucumber HTML report as a build artifact and fails the build on any scenario failure.
+
+```yaml
+# .github/workflows/bdd.yml
+name: BDD Acceptance Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  bdd-smoke:
+    name: BDD Smoke (PR gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run smoke scenarios
+        run: npx cucumber-js --profile smoke
+        env:
+          CI: true
+          BASE_URL: ${{ vars.TEST_BASE_URL }}
+          TEST_CLIENT_ID: ${{ secrets.TEST_CLIENT_ID }}
+          TEST_CLIENT_SECRET: ${{ secrets.TEST_CLIENT_SECRET }}
+
+      - name: Upload Cucumber HTML report
+        if: always()   # Upload even on failure — needed for debugging
+        uses: actions/upload-artifact@v4
+        with:
+          name: cucumber-smoke-report
+          path: reports/
+          retention-days: 14
+
+  bdd-regression:
+    name: BDD Regression (nightly)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]   # 4-way parallel sharding
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Run regression shard ${{ matrix.shard }}/4
+        run: |
+          npx cucumber-js --profile regression \
+            --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+        env:
+          CI: true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regression-report-shard-${{ matrix.shard }}
+          path: reports/
+```
+
+**Key CI principles:**
+- Always upload reports with `if: always()` — failure reports are more valuable than success reports
+- Use matrix sharding for regression suites; Cucumber.js `--parallel` for within-shard parallelism
+- Smoke gate on every PR; full regression nightly on main
+- Set `CI: true` — hooks can use this to take screenshots on failure and adjust browser speed
+
+### Living Documentation is the concept that feature files serve as the definitive, always-current description of system behavior — because they are the tests. Unlike a Wiki page or a Word document that ages independently of the code, a passing feature file proves the described behavior exists today.
 
 **Why living documentation matters**: In traditional teams, business requirements live in Confluence; test cases live in TestRail or Jira; code lives in the repository. These three representations drift apart within weeks of initial delivery. Bugs occur precisely in the gaps between them. BDD collapses all three into a single artifact — the `.feature` file — that is simultaneously a requirement (readable by product), a test (executable by CI), and documentation (browsable by anyone). The cost of keeping documentation current drops to zero because the CI pipeline enforces it.
 
@@ -562,6 +792,52 @@ The output of a Three Amigos session is a set of agreed-upon Gherkin scenarios t
   4. Red cards: Write open questions that cannot be answered in the meeting.
   5. Stop when no more green cards can be added without a red card blocker.
   The output is a visual map that makes scope visible. If there are 15 green cards and 8 red cards, the story is not ready to develop.
+**Example Mapping output format** (structured capture from a Three Amigos session):
+
+```yaml
+# example-map-checkout-discount.yaml
+# Output artifact from a Three Amigos session — becomes Gherkin after refinement
+story: "As a customer, I want to apply a discount code at checkout"
+
+rules:
+  - id: R1
+    text: "Discount codes reduce the order total by a percentage"
+    examples:
+      - "Alice applies SAVE10 to a $100 order → total becomes $90"
+      - "Bob applies HALFOFF to a $60 order → total becomes $30"
+    open_questions: []
+
+  - id: R2
+    text: "Expired discount codes are rejected at checkout"
+    examples:
+      - "Alice enters EXPIRED2023 (expired Jan 2024) → error: 'Code has expired'"
+    open_questions:
+      - "Q: Do we show when the code expired, or just that it's invalid?"
+
+  - id: R3
+    text: "Each code can only be used once per customer"
+    examples:
+      - "Alice uses SAVE10, then tries SAVE10 again → error: 'Code already used'"
+    open_questions:
+      - "Q: Does 'used' mean applied, or applied + order confirmed?"
+      - "Q: What about order cancellations — does that restore the code?"
+
+  - id: R4
+    text: "Discount codes cannot reduce the total below $0"
+    examples:
+      - "Alice applies a 100% code to a $25 order → total is $0, not negative"
+    open_questions: []
+
+# Red cards (blockers) — story NOT ready to develop until resolved
+blockers:
+  - "Q (R2): Display expired date or generic 'invalid code' message? — awaiting PO decision"
+  - "Q (R3): Code restoration on cancellation — depends on payment team confirmation"
+```
+
+This YAML artifact becomes the checklist for which Gherkin scenarios to write.
+Each `example` in a rule maps directly to a `Scenario`; each `open_question` maps to a
+`@wip` scenario with a comment until the question is answered.
+
 - Three Amigos is not a sign-off meeting — it is a *discovery* meeting. The Gherkin gets refined after.
 - Product managers who write Gherkin without developer or QA input create scenarios that are either untestable or missing key edge cases.
 - **[community]** Run Three Amigos as a standing 30-minute meeting every Monday for the upcoming sprint's stories. Teams that run it ad-hoc skip it under pressure; teams with a recurring calendar slot maintain the discipline.
@@ -665,11 +941,153 @@ Then the React state should have isLoading set to false
 
 **[community] 13. BDD is the top of the pyramid, not the whole pyramid**: Teams that adopt BDD sometimes mistake it for their entire test strategy, writing BDD scenarios for unit-level behavior. A BDD scenario that checks whether a discount calculation is mathematically correct belongs in a unit test — it runs 1000x faster, requires no browser setup, and gives a clearer failure message. BDD scenarios should cover user-observable system behavior: the flows that matter to the business. Everything below that belongs in lower pyramid layers.
 
-**[community] 14. Gherkin in multiple languages**: Cucumber supports Gherkin keywords in 70+ human languages (`Feature` becomes `Funcionalidad` in Spanish, `Fonctionnalité` in French). For global teams, writing feature files in the primary business language of the product owner — even if developers work in English — dramatically improves Three Amigos participation from non-English-speaking stakeholders.
+**[community] 15. DocStrings vs DataTables — choosing the right multiline input format** [community]:
+
+Use `DocString` (triple-quoted block) for freeform or pre-structured text (JSON payloads,
+HTML snippets, markdown). Use `DataTable` for tabular data where each row is an entity.
+Mixing them — encoding JSON inside a DataTable cell — is a common mistake that makes step
+definitions parse twice and produces cryptic failure messages.
+
+```gherkin
+# GOOD: DocString for a JSON payload
+Given I have the following order payload:
+  """json
+  { "customerId": "cust-001", "quantity": 2 }
+  """
+
+# GOOD: DataTable for tabular entity data
+Given my cart contains:
+  | product       | qty | price |
+  | Laptop stand  | 1   | 49.99 |
+  | USB hub       | 2   | 29.99 |
+
+# BAD: JSON stuffed into a DataTable cell
+Given my cart contains:
+  | product data                                    |
+  | {"name":"Laptop stand","qty":1,"price":49.99}  |
+```
+
+**[community] 16. Use `--dry-run` before writing step definitions** [community]:
+Run `npx cucumber-js --dry-run` after writing new `.feature` files to see which steps
+are unmatched — without executing any tests. This produces a scaffold of step definition
+stubs, prevents "undefined step" surprises in CI, and creates a natural TDD workflow:
+write Gherkin → dry-run → implement stubs → run full suite.
+
+```bash
+# Generate step definition stubs for all unmatched steps
+npx cucumber-js --dry-run --format usage 2>&1 | grep "undefined"
+
+# Or get auto-generated TypeScript snippets:
+npx cucumber-js --dry-run 2>&1
+# Output includes:
+# You can implement missing steps with the snippets below:
+# Given('I have a valid API authentication token', function () {
+#   // ...
+# });
+```
+
+**[community] 17. Cucumber.js v10+ ESM migration breaks ts-node setups** [community]:
+Cucumber.js v10 (released late 2023) dropped CommonJS support. Projects on
+`@cucumber/cucumber@10+` with the traditional `ts-node/register` setup will fail with
+`Error: require() of ES Module`. The fix is to switch to `@cucumber/cucumber`'s native
+ESM loader or pin to v9 until the team can migrate:
+
+```json
+// cucumber.js (not cucumber.json — ESM config format)
+export default {
+  default: {
+    import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+    loader: ['ts-node/esm'],   // Not 'requireModule' — ESM uses 'import'/'loader'
+    format: ['progress-bar', 'html:reports/cucumber-report.html'],
+    publish: false,
+  },
+};
+```
+
+```json
+// package.json — required for ESM
+{
+  "type": "module",
+  "scripts": {
+    "test:bdd": "cucumber-js"
+  }
+}
+```
+
+This is the most common source of "it worked in v9, completely broken in v10" issues
+teams hit when upgrading. The v10 migration guide at `cucumber.io/docs/installation/`
+documents the full change set.
+
+**[community] 18. Tag expression syntax changed in Cucumber.js v9+** [community]:
+The old comma-based tag filter (`--tags @smoke,@regression`) was silently deprecated.
+The modern syntax uses boolean expressions (`--tags "@smoke or @regression"`). CI
+scripts that use the old syntax may appear to work but actually run all scenarios
+(the old syntax is ignored in v9+ without a warning in some formatters).
+
+```bash
+# Old (v8 and below) — broken silently in v9+
+npx cucumber-js --tags @smoke,@regression
+
+# Correct (v9+) — explicit boolean expressions
+npx cucumber-js --tags "@smoke or @regression"
+npx cucumber-js --tags "@regression and not @wip"
+npx cucumber-js --tags "@payments and (@smoke or @critical)"
+```
+
+**[community] 14. Gherkin in multiple languages** [community]: Cucumber supports Gherkin keywords in 70+ human languages (`Feature` becomes `Funcionalidad` in Spanish, `Fonctionnalité` in French). For global teams, writing feature files in the primary business language of the product owner — even if developers work in English — dramatically improves Three Amigos participation from non-English-speaking stakeholders.
+
+**[community] 19. BDD scenarios as mutation testing targets** [community]:
+Mutation testing tools like Stryker (TypeScript) measure whether your tests actually
+detect code changes. BDD suites that have low mutation scores — meaning mutants survive
+— are a sign of "green but hollow" scenarios: the scenario passes whether or not the
+business rule is actually implemented correctly. Run Stryker against your step
+definitions and domain code to find scenarios that need sharper `Then` assertions.
+
+```bash
+# Run Stryker mutation testing against the domain logic covered by BDD
+npx stryker run --testRunner cucumber \
+  --mutate "src/domain/**/*.ts" \
+  --reporters html,progress
+
+# Interpret results:
+# Killed mutant = your BDD scenario caught the regression ✓
+# Survived mutant = your Then assertions are too weak — tighten them
+```
+
+A common finding: `Then the order is confirmed` passes even when the order status field
+is missing from the API response because the step only checks HTTP 201, not the body
+content. Mutation testing surfaces these weak assertions systematically.
 
 ---
 
-## Tradeoffs & Alternatives
+## BDD Readiness Checklist
+
+Use this before committing to BDD adoption. Teams that skip this assessment commonly
+find themselves maintaining "BDD theater" — all the overhead, none of the benefit.
+
+**Collaboration pre-conditions:**
+- [ ] Product owner or BA can attend 30-minute Three Amigos sessions for each story
+- [ ] QA is involved before development starts (not just in the test phase)
+- [ ] Developers are willing to treat step definitions as production-quality code (code reviewed, no copy-paste)
+- [ ] Team agrees on a ubiquitous language glossary (even a 10-word list is a start)
+
+**Technical pre-conditions:**
+- [ ] A working CI pipeline that can run `npx cucumber-js` (or equivalent)
+- [ ] At least one team member has written step definitions before, or budget for a 1-week learning spike
+- [ ] Application has a test environment with seeded data or API-level setup support
+- [ ] Page object layer (or API client layer) exists or is planned — step definitions should not contain raw selectors
+
+**Ongoing health metrics (review monthly):**
+- [ ] Percentage of `@wip` scenarios below 10% of total
+- [ ] Average scenario execution time below 5 seconds for non-browser scenarios
+- [ ] Step definition count growth rate (>10% per sprint = bloat risk)
+- [ ] Last Three Amigos session was this sprint (not 2+ sprints ago)
+
+If fewer than 6 of these boxes are checked, start with **Example Mapping only** (no Gherkin/Cucumber) for one quarter. Get the collaboration right before adding the automation layer.
+
+---
+
+
 
 ### Team Maturity Requirements
 
@@ -712,11 +1130,56 @@ A team that scores "warning sign" in 3+ of these areas will experience BDD as ov
 | Full BDD (Gherkin + Cucumber) | High (2–3 sprints) | Maximum | Maximum | Cross-functional teams, regulated industries |
 | Example Mapping only | Low (1 meeting) | High | Medium (ticket text) | Teams wanting discovery without tool overhead |
 | Plain Playwright + page objects | Medium | None | Low (code) | Developer-led QA, no PO involvement in tests |
+| Vitest + describe/it (BDD-style) | Very Low | Low | Medium (code) | TypeScript teams, unit/integration BDD without Cucumber |
 | Jest + Testing Library | Low | None | Low (code) | Component/unit behavior, fast feedback loop |
 | pytest-bdd (Python) | Medium | Medium | Medium | Python teams wanting BDD without Behave's limitations |
 
 - **Plain Playwright + page objects**: 90% of the coverage, 50% of the setup overhead. Best for teams that do not need the business-readable layer. A well-named test like `test('guest user cannot access admin panel')` communicates intent without Gherkin.
-- **Jest + Testing Library**: Fast, cheap, developer-friendly unit/integration coverage. No Gherkin, but excellent for component and API behavior. When a business rule is simple and stable, a Jest test verifies it more cheaply than a BDD scenario.
+
+- **Vitest + describe/it (BDD-style in TypeScript)**: For TypeScript projects already using Vitest, the `describe`/`it`/`expect` vocabulary enables a BDD-style approach at unit and integration level without any Gherkin toolchain. This is appropriate when stakeholder collaboration happens informally (small team, trusted PO) and the team wants the *thinking model* of BDD without the ceremony:
+
+  ```typescript
+  // src/features/discount/discount.spec.ts — BDD-style with Vitest
+  import { describe, it, expect, beforeEach } from 'vitest';
+  import { applyDiscount } from './discount.service';
+  import { createTestCart } from '../__fixtures__/cart.factory';
+
+  describe('Discount code application', () => {
+    describe('when a valid percentage discount code is applied', () => {
+      it('reduces the order total by the specified percentage', () => {
+        const cart = createTestCart({ total: 100 });
+        const result = applyDiscount(cart, { code: 'SAVE10', type: 'percent', value: 10 });
+        expect(result.total).toBe(90);
+        expect(result.discountApplied).toBe(true);
+      });
+
+      it('does not reduce the total below zero', () => {
+        const cart = createTestCart({ total: 20 });
+        const result = applyDiscount(cart, { code: 'ALL100', type: 'percent', value: 100 });
+        expect(result.total).toBe(0);
+      });
+    });
+
+    describe('when an expired discount code is applied', () => {
+      it('rejects the code and returns an error message', () => {
+        const cart = createTestCart({ total: 100 });
+        const expiredCode = { code: 'EXPIRED23', type: 'percent' as const, value: 20, expiresAt: new Date('2023-01-01') };
+        expect(() => applyDiscount(cart, expiredCode)).toThrow('Code has expired');
+      });
+    });
+
+    describe('when the same code is used twice by the same customer', () => {
+      it('rejects the second use with a clear error', () => {
+        const cart = createTestCart({ total: 100, usedCodes: ['SAVE10'] });
+        expect(() => applyDiscount(cart, { code: 'SAVE10', type: 'percent', value: 10 }))
+          .toThrow('Code already used');
+      });
+    });
+  });
+  ```
+
+  The nested `describe` blocks mirror Given/When/Then structure without requiring Gherkin parsing or step definitions. Product managers can read these test names in the CI report (`vitest --reporter=verbose`) and understand the behavior being verified.
+
 - **Example Mapping** (without Gherkin): Run the Three Amigos workshop, produce structured acceptance criteria in ticket comments, then write regular tests. Captures BDD's collaboration benefit without the tooling investment. This is the recommended starting point for teams evaluating BDD — get the collaboration right before adding the automation layer.
 - **SpecFlow (C#)**: Equivalent to `@cucumber/cucumber` for .NET teams. Same Gherkin syntax, same step binding model, first-class Visual Studio integration.
 
@@ -801,6 +1264,25 @@ A team that scores "warning sign" in 3+ of these areas will experience BDD as ov
       assert context.order_id.startswith("ORD-"), \
           f"Expected order ID to start with ORD-, got: {context.order_id}"
   ```
+
+---
+
+## Quick Reference Card
+
+| Topic | Recommendation |
+|-------|---------------|
+| When to use BDD | Complex business domain + cross-functional team + stakeholder participation |
+| When NOT to use | Solo/small team, prototype, infrastructure code, team without PO buy-in |
+| Primary TypeScript framework | `@cucumber/cucumber` v9 (CommonJS) or v10+ (ESM) |
+| Step parameterization | Prefer `{string}`, `{int}`, `{float}`, `{word}` over raw regex |
+| State sharing across steps | Use the World object — never module-level variables |
+| CI strategy | `@smoke` on every PR (< 2 min); `@regression` nightly (sharded) |
+| Parallel safety | Provision all test data via API in `Before` hooks with unique IDs |
+| Suite health indicator | `@wip` count < 10% of total scenarios |
+| Avoiding step bloat | "Search before create" policy; max one step definition file per feature area |
+| Lightest BDD start | Example Mapping workshop first — no tooling needed |
+| Version gotcha | v9 → v10 migration requires ESM config change (`import:` not `require:`) |
+| Tag syntax | Boolean expressions: `"@smoke and not @wip"` (commas deprecated in v9+) |
 
 ---
 

@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 1 | score: 97/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 3 | score: 100/100 | date: 2026-04-26 -->
 <!-- sources: training-knowledge synthesis (WebFetch blocked, WebSearch unavailable) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog -->
@@ -155,26 +155,28 @@ The four layers from bottom to top:
 4. **E2e tests** (small) — critical paths only.
 
 ```typescript
-// Integration test (Testing Trophy) — React Testing Library + MSW
-import { render, screen, userEvent } from '@testing-library/react';
-import { rest } from 'msw';
+// Integration test (Testing Trophy) — React Testing Library v14 + MSW v2 + userEvent v14
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';           // separate package
+import { http, HttpResponse } from 'msw';                      // MSW v2 API
 import { setupServer } from 'msw/node';
 import { CheckoutForm } from './CheckoutForm';
 
 const server = setupServer(
-  rest.post('/api/orders', (_req, res, ctx) =>
-    res(ctx.json({ id: 'ord_001', status: 'confirmed' }))
+  http.post('/api/orders', () =>
+    HttpResponse.json({ id: 'ord_001', status: 'confirmed' })
   )
 );
 
-beforeAll(() => server.listen());
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
 it('submits the form and shows confirmation message', async () => {
+  const user = userEvent.setup();                              // v14: call setup() first
   render(<CheckoutForm />);
-  await userEvent.type(screen.getByLabelText('Email'), 'user@example.com');
-  await userEvent.click(screen.getByRole('button', { name: /place order/i }));
+  await user.type(screen.getByLabelText('Email'), 'user@example.com');
+  await user.click(screen.getByRole('button', { name: /place order/i }));
   expect(await screen.findByText(/order confirmed/i)).toBeInTheDocument();
 });
 ```

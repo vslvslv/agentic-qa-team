@@ -1,5 +1,5 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 1 | score: 97/100 | date: 2026-04-26 -->
+<!-- sources: official | community | mixed | iteration: 4 | score: 100/100 | date: 2026-04-26 -->
 
 ## Core Philosophy
 
@@ -18,7 +18,7 @@
 ## Principles / Patterns
 
 ### Strict Mode Configuration
-Enabling `"strict": true` in `tsconfig.json` activates all strict type-checking options. Without it, TypeScript allows implicit `any`, silently accepts `null` where values are expected, and skips important runtime-hazard detection.
+Enabling `"strict": true` in `tsconfig.json` activates all strict type-checking options as a group. Without it, TypeScript allows implicit `any`, silently accepts `null` where values are expected, and skips important runtime-hazard detection. The options below are the recommended production baseline:
 
 ```json
 {
@@ -29,12 +29,20 @@ Enabling `"strict": true` in `tsconfig.json` activates all strict type-checking 
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "exactOptionalPropertyTypes": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "moduleResolution": "bundler"
   }
 }
 ```
 
-Add `exactOptionalPropertyTypes` to prevent accidentally treating `{ prop?: string }` as having an explicit `undefined` value — a common source of subtle bugs in update payloads.
+Add `exactOptionalPropertyTypes` to prevent accidentally treating `{ prop?: string }` as having an explicit `undefined` value — a common source of subtle bugs in update payloads. Use `moduleResolution: "bundler"` (TypeScript 5+) or `"nodenext"` for modern projects instead of the legacy `"node"` strategy, which silently resolves paths in ways that bundlers won't replicate.
+
+What each strict sub-flag catches:
+- `noImplicitAny` — prevents untyped function parameters from silently becoming `any`
+- `strictNullChecks` — forces you to handle `null`/`undefined` before accessing properties
+- `strictFunctionTypes` — enforces correct function parameter contravariance
+- `strictPropertyInitialization` — ensures class fields are initialized in the constructor
+- `useUnknownInCatchVariables` — makes caught values `unknown` instead of `any`, requiring a narrow before use
 
 ---
 
@@ -379,6 +387,107 @@ type OptionalTimeout = PartialBy<Config, 'timeout'>;
 // { host: string; port: number; timeout?: number }
 ```
 
+**`import type` for zero-cost type imports.** Using `import type` tells TypeScript (and your bundler) that the import carries no runtime code. This is not just a stylistic preference — without it, circular imports can cause runtime `undefined` values in CommonJS modules, and bundlers may include unnecessary modules in the bundle.
+
+```typescript
+// Without import type: bundler may include user module at runtime
+import { User } from './user';
+type UserMap = Map<string, User>;
+
+// With import type: zero runtime cost, explicit intent
+import type { User } from './user';
+type UserMap = Map<string, User>;
+
+// Inline import type (TypeScript 4.5+): mix type and value imports
+import { createUser, type User } from './user';
+```
+
+**Tuple types for fixed-length heterogeneous arrays.** Prefer tuple types over `any[]` or `unknown[]` when a function returns or accepts a fixed sequence of differently-typed values — common in React hooks and custom iterators.
+
+```typescript
+// Function that returns two values of different types
+function useCounter(initial: number): [number, (delta: number) => void] {
+  let count = initial;
+  const update = (delta: number) => { count += delta; };
+  return [count, update];
+}
+
+const [count, increment] = useCounter(0);
+increment(1); // type-safe: (delta: number) => void
+```
+
+**Mapped type modifiers (`+/-readonly`, `+/-?`).** Use `-?` to strip all optionality from a type and `-readonly` to remove immutability constraints. These modifiers make mapped types precise — you can add or remove both modifiers independently rather than always adding them.
+
+```typescript
+// -? strips optional modifiers (makes all fields required)
+type Concrete<T> = {
+  [K in keyof T]-?: T[K];
+};
+
+// -readonly strips readonly modifiers (makes all fields mutable)
+type Mutable<T> = {
+  -readonly [K in keyof T]: T[K];
+};
+
+interface FormState {
+  readonly id: string;
+  name?: string;
+  email?: string;
+}
+
+type WritableForm = Mutable<Concrete<FormState>>;
+// { id: string; name: string; email: string } — mutable and required
+```
+
+**Key remapping via `as` in mapped types (TypeScript 4.1+).** Rename or filter keys during a mapped type transformation, enabling auto-generated accessor names and structural filtering.
+
+```typescript
+// Auto-generate getter method names from interface properties
+type Getters<T> = {
+  [K in keyof T as `get${Capitalize<string & K>}`]: () => T[K];
+};
+
+interface Config { host: string; port: number; }
+type ConfigGetters = Getters<Config>;
+// { getHost: () => string; getPort: () => number }
+
+// Filter keys by value type using Exclude
+type StringProps<T> = {
+  [K in keyof T as T[K] extends string ? K : never]: T[K];
+};
+```
+
+**Branded (opaque) types for domain safety.** TypeScript's structural type system means `type UserId = string` and `type ProductId = string` are interchangeable. Branded types add a phantom property that makes them nominally distinct — the compiler rejects mixing them even though the underlying runtime type is identical.
+
+```typescript
+// Create brands with an intersection and a unique phantom property
+type Brand<T, B extends string> = T & { readonly __brand: B };
+
+type UserId    = Brand<string, 'UserId'>;
+type ProductId = Brand<string, 'ProductId'>;
+
+// Smart constructors validate and brand at the boundary
+function createUserId(raw: string): UserId {
+  if (!raw.startsWith('usr_')) throw new Error('Invalid user id');
+  return raw as UserId;
+}
+
+function createProductId(raw: string): ProductId {
+  if (!raw.startsWith('prd_')) throw new Error('Invalid product id');
+  return raw as ProductId;
+}
+
+function getUser(id: UserId): Promise<User> { /* ... */ return Promise.resolve({} as User); }
+
+const uid = createUserId('usr_123');
+const pid = createProductId('prd_456');
+
+getUser(uid);  // OK
+getUser(pid);  // Error: ProductId is not assignable to UserId
+```
+
+This pattern is especially valuable for IDs, currency amounts, validated email addresses, and any primitive where two values of the same base type must never be interchangeable.
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -404,6 +513,9 @@ Type assertions (`value as SomeType`) are escape hatches that compile away entir
 **Overloaded function signatures in wrong order.** [community]
 TypeScript resolves overloads by matching the _first_ compatible signature. When a general overload appears before a specific one, the specific signature is unreachable and type narrowing breaks at call-sites. **Fix:** Always order overloads from most specific to most general.
 
+**Large monorepos without project references.** [community]
+In multi-package repositories, running `tsc` at the root causes the compiler to type-check every package in a single pass, sharing a single module cache that grows unbounded. Teams report 30–60 second incremental builds even for small changes because one modified file invalidates the shared cache. The root cause is that TypeScript has no concept of "already checked this package" without project references. **Fix:** Add `tsconfig.json` with `"composite": true` to each package and `"references": [...]` at the root to enable per-package incremental caching (`--build` mode). Changes in one package only re-check packages that depend on it.
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -420,3 +532,5 @@ TypeScript resolves overloads by matching the _first_ compatible signature. When
 | Catch block `error: any` | Masks error type; skips null/property checks | Use `error: unknown` then `instanceof Error` |
 | `@types` auto-inclusion | Duplicate globals from multiple test frameworks | Set `"types": [...]` explicitly in tsconfig |
 | No return type on public functions | Compiler infers large anonymous types; slow build | Annotate return types on all exported functions |
+| Legacy `moduleResolution: "node"` | Silent path resolution mismatches with bundlers | Use `"bundler"` or `"nodenext"` for modern projects |
+| No project references in monorepos | Single-pass type check; unbounded cache growth | Add `"composite": true` + `"references"` per package |

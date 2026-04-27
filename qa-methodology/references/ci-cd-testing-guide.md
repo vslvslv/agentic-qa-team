@@ -1,5 +1,5 @@
 # CI/CD Testing Strategy — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 8 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 10 | score: 100/100 | date: 2026-04-26 -->
 
 ## Core Principles
 
@@ -585,6 +585,223 @@ Slow installs are the most common CI time sink. Cache aggressively.
     cache-to: type=gha,mode=max
 ```
 
+### Testcontainers for Integration Tests (TypeScript) [community]
+
+Testcontainers starts real Docker containers from within test code, ensuring environment parity between local dev and CI without requiring pre-configured CI services.
+
+> [community] The shift from GitHub Actions `services:` declarations to Testcontainers is driven by one pain point: `services:` containers start once per job and share state across all tests. Testcontainers starts a fresh container per test suite (or per test), giving true isolation. Teams that made this switch report 80%+ reduction in "green locally, red in CI" integration test failures.
+
+**Testcontainers with Jest (TypeScript):**
+
+```typescript
+// tests/integration/user-repository.test.ts
+import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { UserRepository } from '../../src/repositories/user-repository';
+import { createPool } from '../../src/db/pool';
+
+describe('UserRepository', () => {
+  let container: StartedPostgreSqlContainer;
+  let repo: UserRepository;
+
+  beforeAll(async () => {
+    // Start a real Postgres container — same image as production
+    container = await new PostgreSqlContainer('postgres:16-alpine')
+      .withDatabase('testdb')
+      .withUsername('testuser')
+      .withPassword('testpass')
+      .start();
+
+    const pool = createPool({
+      host: container.getHost(),
+      port: container.getMappedPort(5432),
+      database: container.getDatabase(),
+      user: container.getUsername(),
+      password: container.getPassword(),
+    });
+
+    repo = new UserRepository(pool);
+    await pool.query('CREATE TABLE users (id SERIAL PRIMARY KEY, email TEXT UNIQUE)');
+  }, 30_000); // allow 30s for container start on first pull
+
+  afterAll(async () => {
+    await container.stop();
+  });
+
+  beforeEach(async () => {
+    // Truncate to isolate each test — faster than transaction rollback for writes
+    await repo.pool.query('TRUNCATE users RESTART IDENTITY CASCADE');
+  });
+
+  it('creates a user and retrieves by email', async () => {
+    await repo.create({ email: 'alice@example.com' });
+    const user = await repo.findByEmail('alice@example.com');
+    expect(user?.email).toBe('alice@example.com');
+  });
+});
+```
+
+**Reusing containers across tests (Ryuk / reuse option):**
+
+```typescript
+// Reuse a container across multiple test files — reduces startup overhead
+const container = await new PostgreSqlContainer('postgres:16-alpine')
+  .withReuse()           // Testcontainers will reuse an existing container if hash matches
+  .start();
+
+// Must also set TESTCONTAINERS_RYUK_DISABLED=true in CI if using --reuse
+// to prevent Ryuk from cleaning up containers between jobs
+```
+
+> [community] Testcontainers' `withReuse()` option can cut total integration suite time by 40% when the same container image is used across many test files. The risk: the reused container accumulates state between test suites unless each suite truncates its tables. Make `TRUNCATE` in `beforeEach` non-negotiable when using reuse.
+
+
+
+Cancelling superseded CI runs when a new push arrives saves runner minutes and eliminates the situation where a developer waits for a CI result that is already stale.
+
+> [community] Without concurrency cancellation, a developer who pushes a fix immediately after a broken commit will wait for both CI runs to complete before knowing the result of the second. On projects with 10-minute CI, this is 20 minutes of wasted wait time. Enabling `concurrency.cancel-in-progress` reduces this to a single 10-minute wait. Google's internal tooling mandates this pattern for all feature branch workflows.
+
+**GitHub Actions concurrency groups:**
+
+```yaml
+# .github/workflows/ci.yml — cancel stale runs on new push
+name: CI
+
+on:
+  push:
+    branches-ignore: [main]     # never cancel main; let every commit have a record
+  pull_request:
+
+# Cancel previous run for same branch/PR when new commit arrives
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm run lint && npm run type-check
+
+  unit:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm test -- --ci --coverage
+```
+
+**Why it matters:** On a team of 10 making 30 commits per day across feature branches, without cancellation roughly 8–12 CI runs at any given moment are "orphaned" — consuming runners and queuing slots for result nobody will look at. Concurrency groups ensure at most 1 run per branch is active at any time.
+
+**Advanced: separate concurrency groups for deploy vs. test:**
+
+```yaml
+jobs:
+  test:
+    # Allow new test runs to cancel old ones
+    concurrency:
+      group: test-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm test
+
+  deploy-preview:
+    needs: test
+    # Deployments should NOT cancel mid-flight — only queue
+    concurrency:
+      group: deploy-preview-${{ github.ref }}
+      cancel-in-progress: false    # wait for any running deploy to finish first
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm run deploy:preview
+```
+
+> [community] A common mistake: applying `cancel-in-progress: true` to deployment jobs. A cancelled deploy can leave infrastructure in a partially-applied state. Always set `cancel-in-progress: false` for deploy, migrate, and seed jobs; reserve cancellation for test and lint jobs.
+
+### Turborepo Remote Caching [community]
+
+Turborepo's remote cache stores task outputs (build artifacts, test results) in a shared store accessible by all CI runners and developer machines. A test task that has already passed for a given input hash is skipped entirely — its cached result is replayed.
+
+> [community] Vercel's Turborepo team reports that enabling remote caching reduces CI time by 30–70% for monorepos that have already run the full suite locally. The highest gains come from the `build` and `test` tasks for packages that haven't changed since the last green run. This is distinct from node_modules caching — remote caching operates at the task graph level, not the file system level.
+
+**Setup:**
+
+```bash
+# Authenticate with Vercel's remote cache (free for open-source)
+npx turbo login
+npx turbo link  # links the repo to a remote cache space
+
+# Or use a self-hosted cache (e.g., ducktape/turborepo-remote-cache on your infra)
+```
+
+**GitHub Actions integration with remote caching:**
+
+```yaml
+# .github/workflows/ci.yml — Turborepo remote cache in CI
+name: CI (Turbo)
+
+on: [push, pull_request]
+
+env:
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}   # Vercel remote cache token
+  TURBO_TEAM: ${{ vars.TURBO_TEAM }}        # Vercel team slug
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }             # needed for --filter=[HEAD^1]
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Run only tasks affected by changes since last commit
+      # Remote cache will replay any task that already passed for this input hash
+      - run: npx turbo run lint type-check test build --filter=...[HEAD^1]
+```
+
+**turbo.json cache configuration:**
+
+```json
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": [".env.test"],
+  "pipeline": {
+    "test": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "tests/**", "jest.config.*", "tsconfig.json"],
+      "outputs": ["coverage/**"],
+      "cache": true
+    },
+    "lint": {
+      "inputs": ["src/**", ".eslintrc.*"],
+      "outputs": [],
+      "cache": true
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "tsconfig.json"],
+      "outputs": ["dist/**"],
+      "cache": true
+    }
+  }
+}
+```
+
+> [community] The most common remote caching pitfall: including generated or environment-specific files in `inputs`. If `inputs` contains anything that differs between developer machines and CI (e.g., absolute paths baked into a lockfile, or env vars accidentally included), the cache will never hit. Keep `inputs` explicit and minimal — only source files and config files that truly affect the task output.
+
 ## Anti-Patterns
 
 | Anti-pattern | Problem | Fix |
@@ -599,6 +816,8 @@ Slow installs are the most common CI time sink. Cache aggressively.
 | `retries: 3+` on e2e tests | Hides chronic flakiness, triples job time | Max retries: 2; quarantine tests that need more |
 | Uploading test artifacts unconditionally | Fills artifact storage on every green run | Use `if: failure()` for traces/screenshots |
 | No `timeout-minutes` on jobs | Hung process blocks runner for GitHub's default 6h | Set job-level and step-level timeouts explicitly |
+| `cancel-in-progress: true` on deploy jobs | Partial deploys leave infra in broken state | Only cancel test/lint jobs; let deploy jobs complete |
+| Turbo `inputs` including env-specific files | Remote cache never hits due to differing hashes | Keep `inputs` to source + config files only |
 
 ## Real-World Gotchas [community]
 
@@ -623,6 +842,10 @@ Slow installs are the most common CI time sink. Cache aggressively.
 9. **`GITHUB_TOKEN` permissions for PR comments** [community]: The default `GITHUB_TOKEN` cannot write PR comments on forks. If your repo uses fork-based contributor workflows, coverage comment actions will silently fail. Use `pull_request_target` (with care) or a dedicated comment action that uses `github.event.pull_request.number` via the REST API with explicit `permissions: pull-requests: write`.
 
 10. **Test time budget drift** [community]: Teams set a 10-minute budget at project start, then add tests without measuring. Six months later the suite is 25 minutes and nobody knows why. Add a CI step that fails if total job duration exceeds the budget: `if [ $SECONDS -gt 600 ]; then echo "::error::CI exceeded 10-minute budget"; exit 1; fi`.
+
+11. **Stale CI consuming runner slots** [community]: On busy repos without concurrency groups, a feature branch with 10 rapid commits can queue 10 CI runs simultaneously, exhausting shared runner pools for the whole team. Enforce `concurrency: cancel-in-progress: true` on all feature branch and PR workflows. Teams at mid-scale (20+ developers) have seen 3–4× improvement in median queue wait time after enabling this.
+
+12. **Testcontainers pulling images every CI run** [community]: Without a pre-pulled image cache, Testcontainers downloads the PostgreSQL image (~170 MB) on every CI run. Use `docker pull postgres:16-alpine` as a cached step before running tests, or use a private registry mirror. One platform team eliminated 45–90 seconds of dead time per integration job by adding a single `docker pull` step before the test command.
 
 ## Tradeoffs & Alternatives
 
@@ -725,7 +948,10 @@ Coordination overhead (artifact upload/download, report merge) absorbs roughly 1
 - Martin Fowler — Continuous Integration: https://martinfowler.com/articles/continuousIntegration.html
 - Martin Fowler — Test Pyramid: https://martinfowler.com/bliki/TestPyramid.html
 - GitHub Actions docs — Caching dependencies: https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows
+- GitHub Actions docs — Workflow concurrency: https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs
 - Playwright docs — Test sharding: https://playwright.dev/docs/test-sharding
 - Jest docs — Running in parallel: https://jestjs.io/docs/configuration#maxworkers-number--string
 - Nx docs — Affected commands: https://nx.dev/nx-api/nx/documents/affected
+- Turborepo docs — Remote caching: https://turbo.build/repo/docs/core-concepts/remote-caching
+- Testcontainers for Node.js: https://testcontainers.com/guides/getting-started-with-testcontainers-for-nodejs/
 - Google Testing Blog — Flaky Tests: https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html

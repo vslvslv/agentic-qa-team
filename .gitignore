@@ -42,5 +42,3 @@ Thumbs.db
 .claude/
 qa-refine-workspace/
 
-# Nightly refinement logs
-logs/

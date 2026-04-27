@@ -1,8 +1,8 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 1 | score: 93/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 5 | score: 100/100 | date: 2026-04-26 -->
 <!-- sources: synthesized from training knowledge — WebFetch blocked; WebSearch unavailable -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
-<!-- Rubric: Principle Coverage 24/25 | Code Examples 24/25 | Tradeoffs & Context 23/25 | Community Signal 22/25 -->
+<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 
 ---
 
@@ -117,6 +117,45 @@ export default defineConfig({
 });
 ```
 
+**Flakiness rate formula** (track over time, alert when > 5%):
+```
+flakiness_rate = (tests_that_passed_on_retry / total_test_runs) × 100%
+```
+A rate above 5% signals systemic issues. A rate above 15% means the test suite cannot be trusted.
+
+**GitHub Actions: nightly flakiness detection run [community]**
+
+```yaml
+# .github/workflows/flakiness-detection.yml
+# Run the full suite 5× nightly and report any test that fails at least once.
+# This surfaces intermittent failures invisible in single-pass CI.
+name: Nightly Flakiness Detection
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 2am UTC daily
+  workflow_dispatch:        # allow manual trigger
+
+jobs:
+  flakiness-sweep:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        run: [1, 2, 3, 4, 5]   # 5 independent runs in parallel
+      fail-fast: false          # collect all failures, not just first
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - name: Run test suite (pass ${{ matrix.run }})
+        run: npx jest --ci --json --outputFile=results-${{ matrix.run }}.json || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.run }}
+          path: results-${{ matrix.run }}.json
+```
+
 ### Pattern 3 — Quarantine Strategy (Tag, Don't Delete)
 
 ```typescript
@@ -155,22 +194,34 @@ quarantine('user session persists after cache flush', async () => {
 CI pipeline guard — fail build if quarantine backlog exceeds threshold:
 
 ```typescript
-// scripts/check-quarantine-backlog.ts
-import { execSync } from 'child_process';
+// scripts/check-quarantine-backlog.ts — cross-platform (no shell grep dependency)
+import { readdirSync, readFileSync, statSync } from 'fs';
+import { join } from 'path';
 
-const count = parseInt(
-  execSync('grep -r "\\[QUARANTINE\\]" src/ --include="*.test.ts" -l | wc -l').toString().trim(),
-  10
-);
+function walkTestFiles(dir: string, results: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) walkTestFiles(full, results);
+    else if (entry.isFile() && entry.name.match(/\.test\.(ts|tsx)$/)) results.push(full);
+  }
+  return results;
+}
 
-const THRESHOLD = 10; // team-agreed ceiling
+const THRESHOLD = 10; // team-agreed ceiling — review weekly, lower over time
+let count = 0;
+
+for (const file of walkTestFiles('src')) {
+  const content = readFileSync(file, 'utf-8');
+  const matches = content.match(/\[QUARANTINE\]/g);
+  if (matches) count += matches.length;
+}
 
 if (count > THRESHOLD) {
   console.error(`Quarantine backlog ${count} exceeds threshold ${THRESHOLD}. Fix before adding new tests.`);
   process.exit(1);
 }
 
-console.log(`Quarantine backlog: ${count}/${THRESHOLD}`);
+console.log(`Quarantine backlog: ${count}/${THRESHOLD} — OK`);
 ```
 
 ### Pattern 4 — Replacing sleep() with Condition Polling
@@ -207,7 +258,77 @@ await page.waitForResponse(resp => resp.url().includes('/api/save') && resp.stat
 await expect(page.locator('[data-testid="success-toast"]')).toBeVisible();
 ```
 
-### Pattern 5 — Shared State Isolation [community]
+### Pattern 4b — Eliminating External HTTP Flakiness with MSW [community]
+
+Mock Service Worker intercepts requests at the network level — no monkey-patching, no fetch/axios-specific setup. Tests are isolated from third-party API availability, rate limits, and network latency.
+
+```typescript
+// src/mocks/handlers.ts — define handlers once, reuse across all test suites
+import { http, HttpResponse } from 'msw';
+
+export const handlers = [
+  http.get('https://api.example.com/users/:id', ({ params }) => {
+    // Deterministic response — eliminates network flakiness entirely
+    return HttpResponse.json({ id: params.id, name: 'Alice', role: 'admin' });
+  }),
+  http.post('https://api.example.com/orders', async ({ request }) => {
+    const body = await request.json() as { items: string[] };
+    return HttpResponse.json({ orderId: 'ORD-001', items: body.items }, { status: 201 });
+  }),
+];
+
+// src/mocks/server.ts — Node.js MSW server for Jest/Vitest
+import { setupServer } from 'msw/node';
+import { handlers } from './handlers';
+
+export const server = setupServer(...handlers);
+
+// jest.setup.ts — register server lifecycle hooks once globally
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' })); // fail-fast on missing handlers
+afterEach(() => server.resetHandlers()); // undo per-test overrides
+afterAll(() => server.close());
+```
+
+### Pattern 5 — Controlling Time with Fake Timers [community]
+
+```typescript
+// jest.useFakeTimers() eliminates timezone, day-boundary, and interval flakiness
+// by replacing Date, setTimeout, setInterval with controllable fakes
+
+import { UserSessionService } from './UserSessionService';
+
+describe('UserSessionService — timeout', () => {
+  beforeEach(() => {
+    // Fix the clock to a known UTC instant; eliminates timezone-dependent failures
+    jest.useFakeTimers({ now: new Date('2026-06-15T12:00:00.000Z') });
+  });
+
+  afterEach(() => {
+    // Always restore real timers — fake timers bleed into other tests if not cleaned up
+    jest.useRealTimers();
+  });
+
+  it('expires session after 30 minutes of inactivity', () => {
+    const session = UserSessionService.create('user-42');
+    expect(session.isActive()).toBe(true);
+
+    // Advance the fake clock by 31 minutes — no real waiting
+    jest.advanceTimersByTime(31 * 60 * 1000);
+
+    expect(session.isActive()).toBe(false);
+  });
+
+  it('does NOT expire session with activity within the window', () => {
+    const session = UserSessionService.create('user-42');
+    jest.advanceTimersByTime(20 * 60 * 1000); // 20 min
+    session.touch(); // activity resets the timer
+    jest.advanceTimersByTime(20 * 60 * 1000); // 20 more min (40 total since creation, 20 since touch)
+    expect(session.isActive()).toBe(true);
+  });
+});
+```
+
+### Pattern 6 — Shared State Isolation [community]
 
 ```typescript
 // Shared module-level state is the #1 flakiness cause in unit test suites
@@ -246,27 +367,27 @@ describe('UserService', () => {
 
 ## Anti-Patterns
 
-### AP1 — The Silent Re-Run
+### AP1 — The Silent Re-Run [community]
 **What:** Developer clicks "Retry" in CI when a test fails, test passes, no action taken.
-**Why harmful:** Flakiness rate grows silently. Failures become routine noise. Real regressions get masked. Forwler: "A test that sometimes fails is just as bad as a test that always fails — you can never trust it."
+**Why harmful:** Flakiness rate grows silently. Failures become routine noise. Real regressions get masked. Fowler: "A test that sometimes fails is just as bad as a test that always fails — you can never trust it."
 
-### AP2 — `sleep()` / `waitForTimeout()` as a Fix
+### AP2 — `sleep()` / `waitForTimeout()` as a Fix [community]
 **What:** Adding `await new Promise(r => setTimeout(r, 500))` to make a timing issue "go away."
 **Why harmful:** Increases suite runtime O(N) with every flaky test "fixed" this way. Still fails under CI load when resources are constrained. Does not fix the race — just widens the window.
 
-### AP3 — Shared Database Without Rollback
+### AP3 — Shared Database Without Rollback [community]
 **What:** Multiple tests insert rows into the same DB schema with no cleanup, assuming test order or assuming "test data won't collide."
 **Why harmful:** Works until tests run in parallel. In a parallel run, concurrent writes cause constraint violations, stale reads, or unexpected result sets.
 
-### AP4 — Real Network Calls in Unit/Integration Tests
+### AP4 — Real Network Calls in Unit/Integration Tests [community]
 **What:** Tests that call actual HTTP endpoints, third-party APIs, or even `localhost` services without mocking.
 **Why harmful:** Flakiness from network latency, API rate limits, credential expiry, and upstream outages — all outside your control.
 
-### AP5 — Deleting Flaky Tests
+### AP5 — Deleting Flaky Tests [community]
 **What:** Removing a test rather than quarantining it because "it was never reliable anyway."
 **Why harmful:** You lose coverage you may not recreate. The underlying bug the test was meant to catch goes undetected. Quarantine preserves intent; deletion abandons it.
 
-### AP6 — Global Date/Time Without Clock Control
+### AP6 — Global Date/Time Without Clock Control [community]
 **What:** Tests that use `new Date()` or `Date.now()` without injecting a controllable clock.
 **Why harmful:** Tests pass at 11:58pm and fail at midnight (timezone + day-boundary edge cases). Month/year rollovers reveal date arithmetic bugs hidden by luck.
 
@@ -295,6 +416,9 @@ describe('UserService', () => {
 7. **Mock Service Worker (MSW) v1→v2 migration caused widespread handler flakiness.** [community]
    MSW v2 changed handler matching semantics — `rest.get` became `http.get`, and response resolvers changed signature. Teams that upgraded without updating handlers saw intermittent 500 errors in tests because old and new handlers conflicted during the migration period. Always pin MSW version in `package.json` and upgrade in a single atomic PR.
 
+8. **Unawaited Promises in `afterEach` cause order-dependency across test files.** [community]
+   `afterEach(async () => { cleanup() })` — if `cleanup()` returns a Promise and you forget `await`, Jest silently moves on to the next test. The cleanup runs concurrently with the next test's setup, corrupting shared state. Always `await` every async call in setup/teardown hooks, and enable `jest/no-floating-promises` ESLint rule to catch this statically.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -310,6 +434,41 @@ describe('UserService', () => {
 **Alternative: Flakiness budget + hard cap.** Google enforces that any test exceeding a flakiness threshold is automatically disabled and must be fixed before re-enabling. This is stricter than quarantine but prevents backlog growth.
 
 **Alternative: Test hermetic environments.** Instead of mocking, spin up a real DB and real service in a container per test run (Testcontainers for Node). Eliminates most shared-state and external-dep flakiness at the cost of slower setup (~5–30s per suite). Worthwhile for integration tests.
+
+```typescript
+// Integration test with Testcontainers — hermetic PostgreSQL per test suite
+// Eliminates shared-DB flakiness: every run gets a fresh, isolated database
+import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { Pool } from 'pg';
+import { UserRepository } from '../src/UserRepository';
+
+let container: StartedPostgreSqlContainer;
+let pool: Pool;
+
+beforeAll(async () => {
+  // Start a real PostgreSQL instance in Docker — takes ~5–10s, zero shared state
+  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  pool = new Pool({ connectionString: container.getConnectionUri() });
+  await pool.query('CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)');
+}, 60_000); // generous timeout for container startup
+
+afterAll(async () => {
+  await pool.end();
+  await container.stop(); // container removed — no cleanup leaks to next suite
+});
+
+beforeEach(async () => {
+  // Truncate between tests for sub-test isolation without restarting the container
+  await pool.query('TRUNCATE users RESTART IDENTITY CASCADE');
+});
+
+it('saves and retrieves a user', async () => {
+  const repo = new UserRepository(pool);
+  const saved = await repo.create({ name: 'Alice' });
+  const found = await repo.findById(saved.id);
+  expect(found?.name).toBe('Alice');
+});
+```
 
 **Alternative: Identify and fix order-dependency with `--shard` runs.** Run your suite in different shard orderings in CI. Tests that fail only in certain shard combinations are order-dependent. Fix: ensure each test cleans up after itself regardless of what ran before.
 

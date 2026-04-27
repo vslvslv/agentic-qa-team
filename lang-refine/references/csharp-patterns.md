@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: mixed | iteration: 0 | score: 95/100 | date: 2026-04-26 -->
+<!-- sources: mixed | iteration: 3 | score: 100/100 | date: 2026-04-26 -->
 
 ## Core Philosophy
 
@@ -32,19 +32,46 @@ var seattleOrders =
     where customer.City == "Seattle"
     orderby order.CreatedAt descending
     select new { CustomerName = customer.Name, order.Total };
+
+// GroupBy with aggregation — use method syntax for clarity
+var salesByRegion = orders
+    .GroupBy(o => o.Region)
+    .Select(g => new
+    {
+        Region = g.Key,
+        TotalSales = g.Sum(o => o.Total),
+        OrderCount = g.Count(),
+        AverageOrder = g.Average(o => o.Total)
+    })
+    .OrderByDescending(r => r.TotalSales)
+    .ToList();
+
+// SelectMany — flatten nested collections
+var allTags = posts
+    .SelectMany(p => p.Tags)
+    .Distinct()
+    .OrderBy(t => t)
+    .ToList();
+
+// Zip — pair two sequences element-by-element
+var names = new[] { "Alice", "Bob", "Carol" };
+var scores = new[] { 95, 87, 92 };
+var leaderboard = names.Zip(scores, (name, score) => $"{name}: {score}");
 ```
 
-### async/await + ConfigureAwait
+### async/await + ConfigureAwait + CancellationToken
 
-The Task Asynchronous Programming (TAP) model lets you write non-blocking I/O-bound code that reads like synchronous code. Await tasks instead of blocking with `.Result` or `.Wait()`. Start independent tasks before awaiting them to enable true concurrency. Use `ConfigureAwait(false)` in library code to avoid capturing the synchronization context.
+The Task Asynchronous Programming (TAP) model lets you write non-blocking I/O-bound code that reads like synchronous code. Await tasks instead of blocking with `.Result` or `.Wait()`. Start independent tasks before awaiting them to enable true concurrency. Use `ConfigureAwait(false)` in library code to avoid capturing the synchronization context. Pass `CancellationToken` through the entire async call chain to support cooperative cancellation.
 
 ```csharp
 // Good: start independent tasks concurrently, then await results
-public async Task<DashboardData> GetDashboardAsync(int userId)
+public async Task<DashboardData> GetDashboardAsync(
+    int userId,
+    CancellationToken cancellationToken = default)
 {
-    var userTask = _userService.GetUserAsync(userId);
-    var ordersTask = _orderService.GetRecentOrdersAsync(userId);
-    var notificationsTask = _notificationService.GetUnreadAsync(userId);
+    var userTask = _userService.GetUserAsync(userId, cancellationToken);
+    var ordersTask = _orderService.GetRecentOrdersAsync(userId, cancellationToken);
+    var notificationsTask = _notificationService.GetUnreadAsync(userId, cancellationToken);
 
     // Await all at once — runs in ~max(each) time, not sum
     await Task.WhenAll(userTask, ordersTask, notificationsTask);
@@ -57,12 +84,30 @@ public async Task<DashboardData> GetDashboardAsync(int userId)
     };
 }
 
-// Library code: avoid capturing the synchronization context
-public async Task<string> FetchDataAsync(string url)
+// Library code: ConfigureAwait(false) avoids sync context capture
+public async Task<string> FetchDataAsync(string url, CancellationToken ct = default)
 {
-    var response = await _httpClient.GetAsync(url).ConfigureAwait(false);
+    var response = await _httpClient.GetAsync(url, ct).ConfigureAwait(false);
     response.EnsureSuccessStatusCode();
-    return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+    return await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+}
+
+// Linked cancellation: combine caller token with an internal timeout
+public async Task<Report> GenerateReportAsync(
+    ReportRequest request,
+    CancellationToken externalToken)
+{
+    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+        externalToken, timeoutCts.Token);
+    try
+    {
+        return await _reportBuilder.BuildAsync(request, linkedCts.Token);
+    }
+    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+    {
+        throw new TimeoutException("Report generation exceeded 30 seconds.");
+    }
 }
 ```
 
@@ -89,6 +134,14 @@ public void ProcessProfile(UserProfile profile)
         Console.WriteLine(profile.Bio.Trim());
     }
 }
+
+// ThrowIfNull guard for public API entry points
+public void UpdateProfile(UserProfile profile, string newBio)
+{
+    ArgumentNullException.ThrowIfNull(profile);
+    ArgumentException.ThrowIfNullOrWhiteSpace(newBio);
+    // safe to use profile and newBio below without null checks
+}
 ```
 
 ### Records — Immutable Value Objects
@@ -105,14 +158,22 @@ public record Order(int Id, string Status, Address DeliveryAddress);
 var original = new Order(1, "Pending", new Address("123 Main St", "Seattle", "98101"));
 var updated = original with { Status = "Shipped" };
 
-Console.WriteLine(original.Status);   // Pending
-Console.WriteLine(updated.Status);    // Shipped
+Console.WriteLine(original.Status);     // Pending
+Console.WriteLine(updated.Status);      // Shipped
 Console.WriteLine(original == updated); // False — value equality compares all properties
 
 // Record with computed property — compute on access, not initialization
 public record Circle(double Radius)
 {
-    public double Area => Math.PI * Radius * Radius;  // NOT: = Math.PI * Radius * Radius
+    // Correct: re-computed on each access after 'with' mutation
+    public double Area => Math.PI * Radius * Radius;
+    // Wrong: = Math.PI * Radius * Radius — cached at init, stale after 'with'
+}
+
+// Record struct for value type (stack-allocated, no heap pressure)
+public readonly record struct Point(double X, double Y)
+{
+    public double Distance => Math.Sqrt(X * X + Y * Y);
 }
 ```
 
@@ -127,12 +188,14 @@ public class OrderService(
     ILogger<OrderService> logger,
     IEventBus eventBus)
 {
-    public async Task<Order> CreateOrderAsync(CreateOrderRequest request)
+    public async Task<Order> CreateOrderAsync(
+        CreateOrderRequest request,
+        CancellationToken cancellationToken = default)
     {
         logger.LogInformation("Creating order for customer {CustomerId}", request.CustomerId);
         var order = new Order(request.CustomerId, request.Items);
-        await repository.SaveAsync(order);
-        await eventBus.PublishAsync(new OrderCreatedEvent(order.Id));
+        await repository.SaveAsync(order, cancellationToken);
+        await eventBus.PublishAsync(new OrderCreatedEvent(order.Id), cancellationToken);
         return order;
     }
 }
@@ -155,9 +218,22 @@ public static class StringExtensions
         System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(value.ToLower());
 }
 
-// Usage reads naturally as a method on the string
-string title = "hello world".ToTitleCase();                  // "Hello World"
-string preview = "Long article body text here".Truncate(10); // "Long artic..."
+// Fluent builder extension on IServiceCollection — makes DI registration readable
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection AddOrderProcessing(this IServiceCollection services)
+    {
+        services.AddScoped<IOrderRepository, SqlOrderRepository>();
+        services.AddScoped<IOrderService, OrderService>();
+        services.AddSingleton<IEventBus, InMemoryEventBus>();
+        return services;
+    }
+}
+
+// Usage reads naturally
+builder.Services.AddOrderProcessing();
+string title = "hello world".ToTitleCase();
+string preview = "Long article body text here".Truncate(10);
 ```
 
 ### Pattern Matching
@@ -183,7 +259,6 @@ string ClassifyBmi(double bmi) => bmi switch
     >= 18.5 and < 25.0 => "Normal",
     >= 25.0 and < 30.0 => "Overweight",
     >= 30.0 => "Obese",
-    double.NaN => "Invalid",
     _ => "Unknown"
 };
 
@@ -193,7 +268,18 @@ decimal ParseTransaction(string[] fields) => fields switch
     [_, "DEPOSIT", _, var amount]     => decimal.Parse(amount),
     [_, "WITHDRAWAL", .., var amount] => -decimal.Parse(amount),
     [_, "FEE", var fee]               => -decimal.Parse(fee),
-    _ => throw new InvalidOperationException($"Unknown transaction format")
+    _ => throw new InvalidOperationException("Unknown transaction format")
+};
+
+// Type pattern — dispatch by runtime type without casting
+string Describe(object shape) => shape switch
+{
+    Circle c when c.Radius > 100 => $"Large circle, area={c.Area:F2}",
+    Circle c               => $"Circle, radius={c.Radius}",
+    Point { X: 0, Y: 0 }  => "Origin",
+    Point p                => $"Point at ({p.X}, {p.Y})",
+    null                   => "null",
+    _                      => shape.GetType().Name
 };
 ```
 
@@ -211,17 +297,21 @@ builder.Services.AddTransient<IEmailSender, SmtpEmailSender>();
 builder.Services.AddKeyedSingleton<IPaymentProcessor, StripeProcessor>("stripe");
 builder.Services.AddKeyedSingleton<IPaymentProcessor, PayPalProcessor>("paypal");
 
-// Consumer — receives the correct implementation via constructor injection
-public class CheckoutService(
-    IOrderService orderService,
-    [FromKeyedServices("stripe")] IPaymentProcessor paymentProcessor,
-    ILogger<CheckoutService> logger)
+// BackgroundService needs IServiceScopeFactory to access scoped services safely
+public sealed class ReportWorker(
+    ILogger<ReportWorker> logger,
+    IServiceScopeFactory scopeFactory)
+    : BackgroundService
 {
-    public async Task<CheckoutResult> ProcessAsync(CartSummary cart)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Processing checkout for cart {CartId}", cart.Id);
-        var order = await orderService.CreateOrderAsync(cart);
-        return await paymentProcessor.ChargeAsync(order);
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            using var scope = scopeFactory.CreateScope();
+            var service = scope.ServiceProvider.GetRequiredService<IReportService>();
+            await service.GenerateDailyReportAsync(stoppingToken);
+            await Task.Delay(TimeSpan.FromHours(24), stoppingToken);
+        }
     }
 }
 ```
@@ -240,13 +330,16 @@ Prefer `$"..."` over `string.Format(...)` or concatenation. For multi-line strin
 string name = "World";
 string greeting = $"Hello, {name}!";
 
-// Raw string literal — no escaping needed for \n, \t, JSON, regex
+// Raw string literal — no escaping needed for \n, \t, JSON, regex, C# code
 string json = """
     {
         "message": "Hello\nWorld",
         "regex": "^\d{3}-\d{4}$"
     }
     """;
+
+// New in C# 13: \e escape sequence for ANSI escape codes
+string bold = $"\e[1mBold text\e[0m";
 ```
 
 ### Collection Expressions (C# 12)
@@ -261,6 +354,37 @@ List<int> primes = [2, 3, 5, 7, 11];
 int[] first = [1, 2, 3];
 int[] second = [4, 5, 6];
 int[] combined = [..first, ..second];  // [1, 2, 3, 4, 5, 6]
+```
+
+### params Collections (C# 13)
+
+`params` is no longer limited to arrays. Use it with `ReadOnlySpan<T>` for zero-allocation variadic arguments in hot paths.
+
+```csharp
+// C# 13: params on Span avoids array allocation at call site
+public static int Sum(params ReadOnlySpan<int> values)
+{
+    int total = 0;
+    foreach (var v in values) total += v;
+    return total;
+}
+
+// Callers pass values naturally — no array created
+int result = Sum(1, 2, 3, 4, 5);
+```
+
+### New `Lock` Type (C# 13 / .NET 9)
+
+The new `System.Threading.Lock` type provides better thread synchronization semantics than locking on `object`. The `lock` statement recognizes `Lock` and uses the efficient `EnterScope()` API.
+
+```csharp
+// Old: lock on object — no semantic meaning, can be accidentally locked elsewhere
+private readonly object _syncRoot = new();
+lock (_syncRoot) { /* ... */ }
+
+// New in .NET 9: Lock type — semantically clear, supports using pattern
+private readonly Lock _lock = new();
+lock (_lock) { /* compiler generates Lock.EnterScope(), not Monitor.Enter() */ }
 ```
 
 ### File-Scoped Namespaces
@@ -280,13 +404,13 @@ public class InvoiceService { }
 The braceless `using` declaration disposes the resource at the end of the enclosing scope without extra indentation.
 
 ```csharp
-// Old: using statement with braces
+// Old: using statement with braces adds a nesting level
 using (var connection = new SqlConnection(connectionString))
 {
     // ...
 }
 
-// New: using declaration — disposed at end of method
+// New: using declaration — disposed at end of method/scope
 using var connection = new SqlConnection(connectionString);
 using var command = new SqlCommand(query, connection);
 await connection.OpenAsync();
@@ -298,9 +422,9 @@ var result = await command.ExecuteScalarAsync();
 Use `var` when the type is evident from the right-hand side (constructor calls, casts, LINQ projections). Use explicit types in `foreach` loops and when the type is not obvious from context.
 
 ```csharp
-var user = new User { Id = 1, Name = "Alice" };          // obvious: constructor
-var count = users.Count(u => u.IsActive);                 // NOT obvious → use int
-foreach (User user in GetActiveUsers()) { }               // explicit type in foreach
+var user = new User { Id = 1, Name = "Alice" };           // obvious: constructor
+var count = users.Count(u => u.IsActive);                  // NOT obvious → use int
+foreach (User u in GetActiveUsers()) { }                   // explicit type in foreach
 var projection = users.Select(u => new { u.Id, u.Name }); // required for anonymous
 ```
 
@@ -322,6 +446,60 @@ var request = new OrderRequest
     Items = [new OrderItem("SKU-001", 2)]
 };
 // request.CustomerId = 99;  // Compile error: init-only property
+```
+
+### `using` Aliases for Complex Types (C# 12)
+
+In C# 12, `using` aliases can alias any type including tuples, arrays, and generic constructions — not just named types. Use this for self-documenting complex signatures.
+
+```csharp
+// Alias a tuple type for readable use throughout the file
+using Coordinate = (double Latitude, double Longitude);
+using ErrorCode = int;
+using StringList = System.Collections.Generic.List<string>;
+
+Coordinate home = (47.6062, -122.3321);
+Console.WriteLine($"Lat: {home.Latitude}, Lon: {home.Longitude}");
+```
+
+### Index and Range Operators
+
+Use `^` (from-end) and `..` (range) operators for expressive slice operations on arrays, spans, and strings.
+
+```csharp
+int[] numbers = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+int last     = numbers[^1];         // 9
+int[] last3  = numbers[^3..];       // [7, 8, 9]
+int[] middle = numbers[2..5];       // [2, 3, 4]
+int[] copy   = numbers[..];         // full copy
+
+string path = "src/main/Program.cs";
+string file = path[path.LastIndexOf('/') + 1..]; // "Program.cs"
+```
+
+### `ValueTask` for High-Throughput Async APIs
+
+`ValueTask` is a struct that avoids heap allocation when an async operation completes synchronously (common in cache-hit scenarios, tight loops, etc.). Use it in hot paths. Constraints: a `ValueTask` can only be awaited once; do not store it and await it multiple times.
+
+```csharp
+// Use ValueTask when the operation often completes synchronously
+public ValueTask<User?> GetUserAsync(int id, CancellationToken ct = default)
+{
+    // Cache hit — synchronous path, no heap allocation
+    if (_cache.TryGetValue(id, out var cached))
+        return ValueTask.FromResult<User?>(cached);
+
+    // Cache miss — fall through to async path
+    return FetchFromDatabaseAsync(id, ct);
+}
+
+private async ValueTask<User?> FetchFromDatabaseAsync(int id, CancellationToken ct)
+{
+    var user = await _db.Users.FindAsync(id, ct).ConfigureAwait(false);
+    if (user is not null) _cache[id] = user;
+    return user;
+}
 ```
 
 ---
@@ -437,6 +615,112 @@ string result = sb.ToString();
 string joined = string.Join(", ", items);
 ```
 
+### **Missing CancellationToken in Async Methods**  [community]
+
+Defining public async methods without a `CancellationToken` parameter makes them non-cooperative. WHY it causes problems: in web APIs and background services, requests can be cancelled (e.g., client disconnects, timeout). Without the token, the operation keeps running after the response is already abandoned, wasting CPU, DB connections, and memory. Fix: always add `CancellationToken ct = default` to every public async method signature and thread it through all downstream calls.
+
+```csharp
+// BAD: cannot be cancelled — keeps running even after HTTP client disconnects
+public async Task<IEnumerable<Product>> SearchAsync(string query)
+{
+    var items = await _db.Products.Where(p => p.Name.Contains(query)).ToListAsync();
+    return items;
+}
+
+// GOOD: caller passes token; downstream DB and HTTP calls respect it
+public async Task<IEnumerable<Product>> SearchAsync(
+    string query,
+    CancellationToken cancellationToken = default)
+{
+    return await _db.Products
+        .Where(p => p.Name.Contains(query))
+        .ToListAsync(cancellationToken);
+}
+```
+
+### **Record Immutability Is Shallow**  [community]
+
+Records with `init`-only properties appear immutable but are only shallowly so. WHY it causes problems: a property of type `List<T>` or `string[]` on a record can have its contents mutated from outside, breaking the invariant that the record is a stable snapshot. Fix: use immutable collection types (`IReadOnlyList<T>`, `ImmutableArray<T>`) for collection properties on records, or copy on construction.
+
+```csharp
+// BAD: record appears immutable, but list is mutable from outside
+public record Order(int Id, List<OrderItem> Items);
+var order = new Order(1, new List<OrderItem> { new("SKU-1") });
+order.Items.Add(new OrderItem("SKU-2")); // mutates "immutable" record!
+
+// GOOD: use IReadOnlyList or ImmutableArray
+public record Order(int Id, IReadOnlyList<OrderItem> Items);
+```
+
+### **ValueTask Awaited Multiple Times**  [community]
+
+`ValueTask` is a struct that can wrap either a completed result or an `IValueTaskSource`. Awaiting it more than once gives undefined behavior. WHY it causes problems: the underlying `IValueTaskSource` implementation may reuse the object for a different operation by the time you await it a second time, leading to wrong results or exceptions. Fix: if you need to await the same operation's result multiple times, call `.AsTask()` once and store the `Task`.
+
+```csharp
+// BAD: ValueTask awaited twice — undefined behavior
+ValueTask<int> vt = GetValueAsync();
+int a = await vt;
+int b = await vt;  // BUG: vt may be stale or recycled
+
+// GOOD: convert to Task when multiple awaits are needed
+Task<int> t = GetValueAsync().AsTask();
+int a = await t;
+int b = await t;  // safe — Task caches the result
+```
+
+### **IDisposable Not Cascaded — Resource Leak**  [community]
+
+A class that holds an `IDisposable` field and doesn't implement `IDisposable` itself leaks the held resource until the GC finalizes it (non-deterministic, may never happen for OS handles). WHY it causes problems: connection pool exhaustion, file handle leaks, and memory leaks accumulate silently under load. Fix: implement `IDisposable` on any class that owns `IDisposable` fields, and cascade `Dispose()` to each owned resource.
+
+```csharp
+// BAD: SqlConnection never explicitly disposed — connection pool exhausted over time
+public class DataLoader
+{
+    private readonly SqlConnection _conn = new(connectionString);
+    public async Task<List<Row>> LoadAsync(CancellationToken ct) { /* uses _conn */ return []; }
+}
+
+// GOOD: implement IDisposable and cascade
+public sealed class DataLoader : IDisposable
+{
+    private readonly SqlConnection _conn = new(connectionString);
+    public async Task<List<Row>> LoadAsync(CancellationToken ct) { /* uses _conn */ return []; }
+    public void Dispose() => _conn.Dispose();
+}
+// Caller: using var loader = new DataLoader();
+```
+
+### **IAsyncEnumerable — Async Streams**  [community]
+
+Returning `Task<List<T>>` for streaming data loads all records into memory before the first item can be processed. `IAsyncEnumerable<T>` with `await foreach` lets consumers process items as they arrive, reducing memory usage and improving time-to-first-result. WHY it matters: a paginated API that returns 10,000 rows does not need to buffer everything — stream each page as it arrives.
+
+```csharp
+// Producer: yield individual items from paginated API
+public async IAsyncEnumerable<Issue> GetIssuesAsync(
+    string repo,
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    string? cursor = null;
+    bool hasMore = true;
+    while (hasMore)
+    {
+        var page = await _api.FetchPageAsync(repo, cursor, ct);
+        foreach (var issue in page.Items)
+            yield return issue;
+        hasMore = page.HasNextPage;
+        cursor = page.NextCursor;
+    }
+}
+
+// Consumer: process items as they arrive — no buffering
+await foreach (var issue in _service.GetIssuesAsync("dotnet/docs", ct)
+    .WithCancellation(ct)
+    .ConfigureAwait(false))
+{
+    await ProcessIssueAsync(issue, ct);
+}
+```
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -453,3 +737,8 @@ string joined = string.Join(", ", items);
 | `string` concatenation in loops | O(N^2) allocations, GC pressure | Use `StringBuilder` or `string.Join` |
 | Mutable public properties on domain objects | Invariants broken from outside the aggregate | Use `init`-only or private setters; expose methods |
 | Using `dynamic` to avoid type complexity | Loses all compile-time safety and IDE tooling | Use generics, interfaces, or pattern matching |
+| Public async method without `CancellationToken` | Cannot be cancelled; wastes resources after request ends | Add `CancellationToken ct = default` to every async signature |
+| Locking on `this` or public objects | External code can acquire the same lock, causing deadlocks | Use a private `readonly object` field or `Lock` (.NET 9+) |
+| Returning `Task<List<T>>` for large result sets | Buffers entire result in memory before first item is returned | Use `IAsyncEnumerable<T>` with `await foreach` for streaming |
+| Awaiting `ValueTask` more than once | Undefined behavior — underlying source may be recycled | Call `.AsTask()` once and store the `Task` if multiple awaits needed |
+| Class owns `IDisposable` but doesn't implement it | Resource leak — GC finalization is non-deterministic | Implement `IDisposable` and cascade `Dispose()` to owned fields |
