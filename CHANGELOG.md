@@ -55,8 +55,10 @@ re-confirming identical scope on every invocation.
   sticky-scope-is-a-default-not-a-lock.
 
 ### Notes
-- No change to `bin/qa-team-history`, `bin/qa-team-suggest-rerun`, or `bin/setup`
-  — delta mode is invoked through the skill, not via CLI tools.
+- No change to `bin/qa-team-history` or `bin/setup` — delta mode is invoked through
+  the skill, not via CLI tools. `bin/qa-team-suggest-rerun` is touched only to fix a
+  pre-existing test-file regex bug (subdir Python tests) and add a sync-comment
+  cross-referencing the SKILL.md duplicates — no behavioural change to the hook.
 - `schema_version` stays at `1.0`. The `delta_mode` field is additive; consumers that
   pin to 1.0 will see it as an unknown extra field and must tolerate it (per JSON
   contract conventions).

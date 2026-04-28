@@ -66,18 +66,22 @@ echo "DATE: $_DATE"
 echo "TMP: $_TMP"
 
 # Validate --since up front so sub-agents can't be spawned with a bogus ref.
+# Resolve to FULL hash (short hashes can collide on large repos); derive a short
+# form separately for display.
 _SINCE_SHA=""
+_SINCE_SHA_SHORT=""
 if [ -n "$_SINCE_REF" ]; then
-  _SINCE_SHA=$(git rev-parse --short --verify "$_SINCE_REF^{commit}" 2>/dev/null || true)
+  _SINCE_SHA=$(git rev-parse --verify "$_SINCE_REF^{commit}" 2>/dev/null || true)
   if [ -z "$_SINCE_SHA" ]; then
     echo "ERROR: --since=$_SINCE_REF does not resolve to a git commit. Aborting." >&2
     exit 1
   fi
+  _SINCE_SHA_SHORT=$(git rev-parse --short "$_SINCE_SHA" 2>/dev/null || echo "$_SINCE_SHA")
   if ! git merge-base --is-ancestor "$_SINCE_SHA" HEAD 2>/dev/null; then
-    echo "ERROR: --since=$_SINCE_REF ($_SINCE_SHA) is not an ancestor of HEAD. Aborting." >&2
+    echo "ERROR: --since=$_SINCE_REF ($_SINCE_SHA_SHORT) is not an ancestor of HEAD. Aborting." >&2
     exit 1
   fi
-  echo "DELTA_MODE: enabled (since $_SINCE_REF → $_SINCE_SHA)"
+  echo "DELTA_MODE: enabled (since $_SINCE_REF → $_SINCE_SHA_SHORT)"
 fi
 
 # Detect project type signals
@@ -118,14 +122,22 @@ grep -q '"appium"\|"@wdio"' package.json 2>/dev/null && \
   _MOB_TOOL="${_MOB_TOOL:+$_MOB_TOOL,}maestro"
 echo "MOB_TOOL: ${_MOB_TOOL:-none}"
 
-# Methodology: detect whether the project has any test files
+# Methodology: detect whether the project has any test files.
+# CANONICAL test-file globs — must match the regex in:
+#   bin/qa-team-suggest-rerun (_is_test_file_pattern)
+#   qa-audit/SKILL.md         (Preamble delta regex + non-delta find globs)
+#   qa-team/SKILL.md          (Phase 5 regex below)
+# Drift = qa-audit gets silently skipped on Go/C# projects despite having tests.
 echo "--- TEST FILES ---"
 _HAS_TESTS=0
 find . \( \
-  -name "*.spec.ts" -o -name "*.spec.js" \
-  -o -name "*.test.ts" -o -name "*.test.js" \
-  -o -name "*_test.py" -o -name "test_*.py" \
-  -o -name "*Test.java" -o -name "*_spec.rb" \
+  -name "*.spec.ts"  -o -name "*.spec.tsx"  -o -name "*.spec.js"  -o -name "*.spec.jsx" \
+  -o -name "*.test.ts"  -o -name "*.test.tsx"  -o -name "*.test.js"  -o -name "*.test.jsx" \
+  -o -name "*_test.py"  -o -name "test_*.py" \
+  -o -name "*Test.cs"   -o -name "*Tests.cs" \
+  -o -name "*Test.java" -o -name "*Tests.java" \
+  -o -name "*_test.go" \
+  -o -name "*_spec.rb" \
   \) ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _HAS_TESTS=1
 echo "HAS_TESTS: $_HAS_TESTS"
 
@@ -167,7 +179,7 @@ need to re-select identical domains across runs on the same project.
 - `android/` or `ios/` or `app.json` (Expo) or `.maestro/` → include **qa-mobile**
 - `k6/` or `locustfile.py` or `load-tests/` or `*.jmx` files → include **qa-perf**
 - `playwright.config.*` + any `screenshots/` or `visual/` dir → include **qa-visual**
-- any `*.spec.*`, `*.test.*`, `*_test.*`, or `*Test.java` files found → include **qa-audit**
+- any `*.spec.*`, `*.test.*`, `*_test.*`, `test_*.py`, `*Test.cs`/`*Tests.cs`, `*Test.java`/`*Tests.java`, `*_test.go`, or `*_spec.rb` files found → include **qa-audit** (driven by `_HAS_TESTS` from the Preamble — same glob set as the Phase 5 regex)
 
 Present detected domains and ask for confirmation. Allow overriding.
 
@@ -342,7 +354,11 @@ if [ -n "$_PRIOR_AUDIT" ] && [ -f "$_PRIOR_AUDIT" ]; then
   _PRIOR_COMMIT=$(jq -r '.commit // empty' "$_PRIOR_AUDIT" 2>/dev/null)
 fi
 
-# Compute scope of changes since the last recorded run
+# Compute scope of changes since the last recorded run.
+# CANONICAL test-file regex — must match the globs/regex in:
+#   bin/qa-team-suggest-rerun (_is_test_file_pattern)
+#   qa-audit/SKILL.md         (delta regex + non-delta find globs)
+#   qa-team/SKILL.md          (Preamble _HAS_TESTS detection above)
 _CHANGED_TEST_FILES=""
 if [ -n "$_PRIOR_COMMIT" ] && [ "$_PRIOR_COMMIT" != "$(git rev-parse --short HEAD)" ]; then
   _CHANGED_TEST_FILES=$(git diff --name-only "$_PRIOR_COMMIT"...HEAD 2>/dev/null \
@@ -358,7 +374,7 @@ fi
 3. **Test files changed since last run**: this is the case that matters. Use `AskUserQuestion`:
    - Question: "You've changed N test files since the last QA report (commit `$_PRIOR_COMMIT`). Re-run sub-agents now to measure delta?"
    - Options:
-     - "Yes — re-run `qa-audit --since=$_PRIOR_COMMIT` (cheap, Recommended)" — spawns only `/qa-audit` in delta mode, scoping to the changed-file subset. Fastest option; ideal for per-PR verification.
+     - "Yes — re-run `/qa-audit --since=$_PRIOR_COMMIT` (cheap, Recommended)" — spawns only `/qa-audit` in delta mode, scoping to the changed-file subset. Fastest option; ideal for per-PR verification.
      - "Yes — re-run affected sub-agents (full)" — re-spawns the sub-agents whose domain matches the changed files (e.g. `/qa-audit` and `/qa-api` if only test/api code changed), all in full-scan mode.
      - "Yes — re-run full /qa-team"
      - "No — skip verification"

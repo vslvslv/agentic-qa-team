@@ -76,14 +76,18 @@ _CHANGED_TEST_FILES=""
 echo "BRANCH: $_BRANCH"
 
 # --- Delta-mode resolution ---
+_SINCE_SHA_SHORT=""
 if [ -n "$_SINCE_REF" ]; then
-  _SINCE_SHA=$(git rev-parse --short --verify "$_SINCE_REF^{commit}" 2>/dev/null || true)
+  # Resolve to FULL hash for validation/diffing — short hashes can collide on large
+  # repos. Derive the short form separately purely for human-readable display.
+  _SINCE_SHA=$(git rev-parse --verify "$_SINCE_REF^{commit}" 2>/dev/null || true)
   if [ -z "$_SINCE_SHA" ]; then
     echo "ERROR: --since=$_SINCE_REF does not resolve to a git commit. Aborting." >&2
     exit 1
   fi
+  _SINCE_SHA_SHORT=$(git rev-parse --short "$_SINCE_SHA" 2>/dev/null || echo "$_SINCE_SHA")
   if ! git merge-base --is-ancestor "$_SINCE_SHA" HEAD 2>/dev/null; then
-    echo "ERROR: --since=$_SINCE_REF ($_SINCE_SHA) is not an ancestor of HEAD. Aborting." >&2
+    echo "ERROR: --since=$_SINCE_REF ($_SINCE_SHA_SHORT) is not an ancestor of HEAD. Aborting." >&2
     exit 1
   fi
   # Test-file pattern matches qa-team-suggest-rerun + Phase 5 verify loop.
@@ -92,12 +96,59 @@ if [ -n "$_SINCE_REF" ]; then
     || true)
   _CHANGED_COUNT=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -c . || true)
   _DELTA_MODE=1
-  echo "DELTA_MODE: enabled (since $_SINCE_REF → $_SINCE_SHA)"
+  echo "DELTA_MODE: enabled (since $_SINCE_REF → $_SINCE_SHA_SHORT)"
   echo "DELTA_CHANGED_TEST_FILES: $_CHANGED_COUNT"
+
   if [ "${_CHANGED_COUNT:-0}" -eq 0 ]; then
-    echo "No test files changed since $_SINCE_REF — emitting no-op result and exiting."
-    # Skip Phases 1-4 (nothing to score). Still write the JSON/report so consumers
-    # see the run. Phase 5 will branch on _DELTA_MODE + _CHANGED_COUNT==0.
+    # Dedicated delta-no-op exit. Without this, _ALL_TESTS=0 below would trigger the
+    # "no tests found" branch — producing a misleading report that says the project
+    # has no tests, when really the *delta scope* has none. Write a clearly-labelled
+    # no-op artifact and exit before Phase 1 runs. Skip persistence (delta runs are
+    # transient by design — see Phase 5c).
+    _COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
+    _TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    cat > "$_TMP/qa-audit-report.md" <<EOF
+# QA Audit Report — $_DATE — $_BRANCH
+
+> ⚠ **Delta scope (no-op):** no test files changed since \`$_SINCE_REF\` (\`$_SINCE_SHA_SHORT\`).
+> No scoring was performed because there is nothing in scope.
+>
+> This is **not** the same as "the project has no tests" — full audit results are at
+> \`<repo>/.qa-team/qa-audit-latest.json\` (run \`/qa-audit\` without \`--since\` to refresh).
+
+## Status
+
+- **Mode:** delta
+- **Since ref:** \`$_SINCE_REF\` → \`$_SINCE_SHA_SHORT\`
+- **Changed test files in scope:** 0
+- **Score:** N/A (no-op)
+EOF
+
+    cat > "$_TMP/qa-audit-score.json" <<EOF
+{
+  "schema_version": "1.0",
+  "skill": "qa-audit",
+  "branch": "$_BRANCH",
+  "commit": "$_COMMIT",
+  "timestamp": "$_TIMESTAMP",
+  "status": "delta-no-op",
+  "overall": null,
+  "rating": null,
+  "delta_mode": {
+    "enabled": true,
+    "since_ref": "$_SINCE_REF",
+    "base_sha": "$_SINCE_SHA",
+    "changed_files_count": 0
+  },
+  "report_md_path": "$_TMP/qa-audit-report.md"
+}
+EOF
+
+    echo "STATUS: delta-no-op (0 changed test files)"
+    echo "REPORT: $_TMP/qa-audit-report.md"
+    echo "SCORE:  $_TMP/qa-audit-score.json"
+    exit 0
   fi
 fi
 
@@ -127,11 +178,19 @@ else
     -o -name "*.e2e.spec.*" -o -name "*.e2e.test.*" \
     -o -path "*/tests/e2e*" \
     \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+  # CANONICAL test-file globs — must match the regex in:
+  #   bin/qa-team-suggest-rerun (_is_test_file_pattern)
+  #   qa-audit/SKILL.md         (delta-mode regex above)
+  #   qa-team/SKILL.md          (Preamble _HAS_TESTS + Phase 5 regex)
+  # Drift between these = silent under-counting / wrong domain auto-selection.
   _ALL_TESTS=$(find . \( \
-    -name "*.spec.ts" -o -name "*.spec.js" \
-    -o -name "*.test.ts" -o -name "*.test.js" \
-    -o -name "*_test.py" -o -name "test_*.py" \
-    -o -name "*Test.java" -o -name "*_spec.rb" \
+    -name "*.spec.ts"  -o -name "*.spec.tsx"  -o -name "*.spec.js"  -o -name "*.spec.jsx" \
+    -o -name "*.test.ts"  -o -name "*.test.tsx"  -o -name "*.test.js"  -o -name "*.test.jsx" \
+    -o -name "*_test.py"  -o -name "test_*.py" \
+    -o -name "*Test.cs"   -o -name "*Tests.cs" \
+    -o -name "*Test.java" -o -name "*Tests.java" \
+    -o -name "*_test.go" \
+    -o -name "*_spec.rb" \
     \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
   echo "UNIT: $_UNIT  INTEGRATION: $_INTEG  E2E: $_E2E  TOTAL: $_ALL_TESTS"
 fi
@@ -360,7 +419,7 @@ Write to `$_TMP/qa-audit-report.md` AND print to console. **In delta mode, prepe
 # QA Audit Report — <date> — <branch>
 
 <!-- if _DELTA_MODE=1: -->
-> ⚠ **Delta scope:** scored only the <N> test file(s) changed since `<_SINCE_REF>` (`<_SINCE_SHA>`).
+> ⚠ **Delta scope:** scored only the <N> test file(s) changed since `<_SINCE_REF>` (`<_SINCE_SHA_SHORT>`).
 > The `Overall Score` below is **not** comparable to a full-audit score in
 > `<repo>/.qa-team/qa-audit-latest.json`. Use `bin/qa-team-history` for full-audit trend.
 
