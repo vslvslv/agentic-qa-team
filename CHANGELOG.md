@@ -33,9 +33,10 @@ re-confirming identical scope on every invocation.
 ### Added (`qa-team`) — propagation + sticky scope + Phase 5 wiring
 
 - **`--since=<ref>` propagation:** qa-team accepts the same arg, validates it once in
-  Phase 1, and threads it through to `qa-audit` in Phase 2's sub-agent template.
-  Sub-agents that don't support delta mode (`qa-api`, `qa-web`, `qa-visual`, `qa-perf`,
-  `qa-mobile`) ignore the flag harmlessly — their scoring is already incremental.
+  the Preamble (before Phase 0), and threads it through to `qa-audit` in Phase 2's
+  sub-agent template. Sub-agents that don't support delta mode (`qa-api`, `qa-web`,
+  `qa-visual`, `qa-perf`, `qa-mobile`) ignore the flag harmlessly — their scoring is
+  already incremental.
 - **Sticky scope (Impact 8):** Phase 0 reads `<repo>/.qa-team/last-scope` if present
   and offers it as the **first** option in `AskUserQuestion` ("Re-run last scope
   (Recommended)"). Confirmed scope is persisted back to the same file at the end of

@@ -27,7 +27,10 @@ HIST_DIR="$REPO_ROOT/.qa-team"
 CURRENT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null)" || exit 0
 
 # Pattern for "test file" — covers JS/TS, Python, C#, Java, Ruby, Go.
-_is_test_file_pattern='\.(test|spec)\.[jt]sx?$|_test\.py$|^test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$'
+# Python `test_*.py` requires `(^|/)` so we match basenames (`test_foo.py`,
+# `tests/test_foo.py`) without false-matching `bla_test_foo.py`. Pattern is
+# duplicated in qa-audit/SKILL.md and qa-team/SKILL.md Phase 5 — keep them in sync.
+_is_test_file_pattern='\.(test|spec)\.[jt]sx?$|_test\.py$|(^|/)test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$'
 
 NUDGES=()
 for latest in "$HIST_DIR"/qa-*-latest.json; do

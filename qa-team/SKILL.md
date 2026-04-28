@@ -346,7 +346,7 @@ fi
 _CHANGED_TEST_FILES=""
 if [ -n "$_PRIOR_COMMIT" ] && [ "$_PRIOR_COMMIT" != "$(git rev-parse --short HEAD)" ]; then
   _CHANGED_TEST_FILES=$(git diff --name-only "$_PRIOR_COMMIT"...HEAD 2>/dev/null \
-    | grep -E '\.(test|spec)\.[jt]sx?$|_test\.py$|test_.*\.py$|Tests?\.cs$|_spec\.rb$' \
+    | grep -E '\.(test|spec)\.[jt]sx?$|_test\.py$|(^|/)test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$' \
     | head -20)
 fi
 ```

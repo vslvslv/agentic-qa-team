@@ -79,16 +79,16 @@ echo "BRANCH: $_BRANCH"
 if [ -n "$_SINCE_REF" ]; then
   _SINCE_SHA=$(git rev-parse --short --verify "$_SINCE_REF^{commit}" 2>/dev/null || true)
   if [ -z "$_SINCE_SHA" ]; then
-    echo "ERROR: --since=$_SINCE_REF does not resolve to a git commit. Aborting."
+    echo "ERROR: --since=$_SINCE_REF does not resolve to a git commit. Aborting." >&2
     exit 1
   fi
   if ! git merge-base --is-ancestor "$_SINCE_SHA" HEAD 2>/dev/null; then
-    echo "ERROR: --since=$_SINCE_REF ($_SINCE_SHA) is not an ancestor of HEAD. Aborting."
+    echo "ERROR: --since=$_SINCE_REF ($_SINCE_SHA) is not an ancestor of HEAD. Aborting." >&2
     exit 1
   fi
   # Test-file pattern matches qa-team-suggest-rerun + Phase 5 verify loop.
   _CHANGED_TEST_FILES=$(git diff --name-only "$_SINCE_SHA"..HEAD 2>/dev/null \
-    | grep -E '\.(test|spec)\.[jt]sx?$|_test\.py$|^test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$' \
+    | grep -E '\.(test|spec)\.[jt]sx?$|_test\.py$|(^|/)test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$' \
     || true)
   _CHANGED_COUNT=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -c . || true)
   _DELTA_MODE=1
@@ -103,38 +103,37 @@ fi
 
 # --- Test file discovery by layer ---
 echo "--- TEST INVENTORY ---"
-_UNIT=$(find . \( \
-  -path "*/unit/*.spec.*" -o -path "*/unit/*.test.*" \
-  -o -name "*.unit.spec.*" -o -name "*.unit.test.*" \
-  -o -path "*/__tests__/unit*" \
-  \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
-_INTEG=$(find . \( \
-  -path "*/integration/*.spec.*" -o -path "*/integration/*.test.*" \
-  -o -name "*.integration.spec.*" -o -name "*.integration.test.*" \
-  -o -path "*/__tests__/integration*" \
-  \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
-_E2E=$(find . \( \
-  -path "*/e2e/*.spec.*" -o -path "*/e2e/*.test.*" \
-  -o -name "*.e2e.spec.*" -o -name "*.e2e.test.*" \
-  -o -path "*/tests/e2e*" \
-  \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
-_ALL_TESTS=$(find . \( \
-  -name "*.spec.ts" -o -name "*.spec.js" \
-  -o -name "*.test.ts" -o -name "*.test.js" \
-  -o -name "*_test.py" -o -name "test_*.py" \
-  -o -name "*Test.java" -o -name "*_spec.rb" \
-  \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
-echo "UNIT: $_UNIT  INTEGRATION: $_INTEG  E2E: $_E2E  TOTAL: $_ALL_TESTS"
-
-# --- Delta-mode inventory override ---
-# In delta mode, the relevant tests are *only* the ones that changed since _SINCE_SHA.
-# Override the counts so Phase 4 scores against that subset.
 if [ "$_DELTA_MODE" = "1" ]; then
+  # Delta mode: counts are derived from the changed-file list only.
+  # Skipping the find-based scan is the whole performance point of --since.
   _ALL_TESTS=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -c . || true)
   _UNIT=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -cE '/unit/|\.unit\.' || true)
   _INTEG=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -cE '/integration/|\.integration\.' || true)
   _E2E=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -cE '/e2e/|\.e2e\.' || true)
-  echo "DELTA_OVERRIDE: UNIT: $_UNIT  INTEGRATION: $_INTEG  E2E: $_E2E  TOTAL: $_ALL_TESTS"
+  echo "DELTA_INVENTORY: UNIT: $_UNIT  INTEGRATION: $_INTEG  E2E: $_E2E  TOTAL: $_ALL_TESTS"
+else
+  _UNIT=$(find . \( \
+    -path "*/unit/*.spec.*" -o -path "*/unit/*.test.*" \
+    -o -name "*.unit.spec.*" -o -name "*.unit.test.*" \
+    -o -path "*/__tests__/unit*" \
+    \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+  _INTEG=$(find . \( \
+    -path "*/integration/*.spec.*" -o -path "*/integration/*.test.*" \
+    -o -name "*.integration.spec.*" -o -name "*.integration.test.*" \
+    -o -path "*/__tests__/integration*" \
+    \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+  _E2E=$(find . \( \
+    -path "*/e2e/*.spec.*" -o -path "*/e2e/*.test.*" \
+    -o -name "*.e2e.spec.*" -o -name "*.e2e.test.*" \
+    -o -path "*/tests/e2e*" \
+    \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+  _ALL_TESTS=$(find . \( \
+    -name "*.spec.ts" -o -name "*.spec.js" \
+    -o -name "*.test.ts" -o -name "*.test.js" \
+    -o -name "*_test.py" -o -name "test_*.py" \
+    -o -name "*Test.java" -o -name "*_spec.rb" \
+    \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+  echo "UNIT: $_UNIT  INTEGRATION: $_INTEG  E2E: $_E2E  TOTAL: $_ALL_TESTS"
 fi
 
 # --- Framework detection ---
