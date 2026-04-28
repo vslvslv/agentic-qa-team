@@ -262,6 +262,52 @@ Print the report path and overall pass/fail status.
 
 If there are critical failures: "Found N critical failures. Run /investigate to diagnose?"
 
+## Phase 5 — Verify After Fixes (close the loop)
+
+A QA report is only useful if the user re-runs it after applying fixes. Most users
+(and most agents) forget. This phase makes re-runs the default expectation.
+
+```bash
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+_HIST_DIR="${_REPO_ROOT:+$_REPO_ROOT/.qa-team}"
+_PRIOR_AUDIT="${_HIST_DIR:+$_HIST_DIR/qa-audit-latest.json}"
+
+_PRIOR_COMMIT=""
+if [ -n "$_PRIOR_AUDIT" ] && [ -f "$_PRIOR_AUDIT" ]; then
+  _PRIOR_COMMIT=$(jq -r '.commit // empty' "$_PRIOR_AUDIT" 2>/dev/null)
+fi
+
+# Compute scope of changes since the last recorded run
+_CHANGED_TEST_FILES=""
+if [ -n "$_PRIOR_COMMIT" ] && [ "$_PRIOR_COMMIT" != "$(git rev-parse --short HEAD)" ]; then
+  _CHANGED_TEST_FILES=$(git diff --name-only "$_PRIOR_COMMIT"...HEAD 2>/dev/null \
+    | grep -E '\.(test|spec)\.[jt]sx?$|_test\.py$|test_.*\.py$|Tests?\.cs$|_spec\.rb$' \
+    | head -20)
+fi
+```
+
+**Decision tree:**
+
+1. **No prior history** (`_PRIOR_AUDIT` missing): nothing to verify against. Skip Phase 5.
+2. **Prior commit equals HEAD**: report was already against the current code. Skip Phase 5.
+3. **Test files changed since last run**: this is the case that matters. Use `AskUserQuestion`:
+   - Question: "You've changed N test files since the last QA report (commit `$_PRIOR_COMMIT`). Re-run sub-agents now to measure delta?"
+   - Options:
+     - "Yes — re-run affected sub-agents (Recommended)" — re-spawn only the sub-agents whose domain matches the changed files (e.g. only `/qa-audit` and `/qa-api` if only test/api code changed)
+     - "Yes — re-run full /qa-team"
+     - "No — skip verification"
+   - If the user picks a re-run option, jump back to Phase 2 with the narrowed scope and complete the loop.
+4. **No test files changed but production code did**: nudge gently — "Production code changed since last audit but no test files. Consider whether the changes need new test coverage."
+
+**Score-delta hint**: if the re-run completes, read both the prior and current `qa-audit-score.json`, compute `overall_delta = current - prior`, and surface it in the new report's Executive Summary:
+
+```
+Audit score: 76 → 84 (+8 since 0939d0b)
+```
+
+This is the closed-loop signal that turns the QA harness from one-shot triage into a
+measurement instrument the user can trust.
+
 ## Important Rules
 
 - **Never run destructive operations** — read-only analysis unless explicitly running test suites
@@ -269,6 +315,7 @@ If there are critical failures: "Found N critical failures. Run /investigate to 
 - **Sub-agents are independent** — do not share state between them beyond the context summary
 - **Report even if tests fail** — always produce the aggregated report regardless of exit codes
 - **Idempotent** — safe to re-run; overwrites `$_TMP/qa-*-report.md` and the root report
+- **Close the loop** — Phase 5 is the difference between triage and a measurement instrument. Do not skip it when there is prior history; ask the user explicitly via `AskUserQuestion` rather than assuming silence means "no"
 
 ## Telemetry (run last)
 

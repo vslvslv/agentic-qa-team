@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# bin/qa-team-history — Print the QA score trend for the current repo.
+# Reads .qa-team/qa-audit-*.json files and renders a one-line-per-run summary.
+#
+# Usage:
+#   bash bin/qa-team-history                # Last 10 runs, oldest first
+#   bash bin/qa-team-history --limit=20     # Last 20 runs
+#   bash bin/qa-team-history --json         # Raw JSON array (for hooks/CI)
+#   bash bin/qa-team-history --delta        # Show delta against prior run
+#
+# Exit codes:
+#   0  success
+#   1  no .qa-team/ directory found in repo
+#   2  jq not installed
+#
+# Designed to be cheap to call from hooks (no network, no LLM).
+
+set -euo pipefail
+
+LIMIT=10
+MODE="table"
+
+for arg in "$@"; do
+  case "$arg" in
+    --limit=*) LIMIT="${arg#--limit=}" ;;
+    --json)    MODE="json" ;;
+    --delta)   MODE="delta" ;;
+    -h|--help)
+      sed -n '2,15p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "qa-team-history: jq is required (brew install jq / apt install jq)" >&2
+  exit 2
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$REPO_ROOT" ]; then
+  echo "qa-team-history: not in a git repo" >&2
+  exit 1
+fi
+
+HIST_DIR="$REPO_ROOT/.qa-team"
+if [ ! -d "$HIST_DIR" ]; then
+  echo "qa-team-history: no .qa-team/ history found at $HIST_DIR" >&2
+  echo "  Run /qa-audit (or /qa-team) at least once to seed history." >&2
+  exit 1
+fi
+
+# Collect audit JSON files, oldest first by modification time.
+# Use a portable while-read loop so this works on macOS bash 3.2 (no `mapfile`).
+# `stat` flags differ between BSD (macOS) and GNU (Linux); try BSD first, fall back to GNU.
+_stat_mtime() {
+  stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null
+}
+
+FILES=()
+while IFS= read -r f; do
+  [ -n "$f" ] && FILES+=("$f")
+done < <(
+  for f in "$HIST_DIR"/qa-audit-*.json; do
+    if [ ! -e "$f" ]; then continue; fi
+    if [ "$(basename "$f")" = "qa-audit-latest.json" ]; then continue; fi
+    mtime=$(_stat_mtime "$f")
+    if [ -n "$mtime" ]; then printf '%s\t%s\n' "$mtime" "$f"; fi
+  done | sort -n | awk -F'\t' '{print $2}' | tail -n "$LIMIT"
+)
+
+if [ "${#FILES[@]}" -eq 0 ]; then
+  echo "qa-team-history: no audit history files in $HIST_DIR" >&2
+  exit 1
+fi
+
+if [ "$MODE" = "json" ]; then
+  jq -s '.' "${FILES[@]}"
+  exit 0
+fi
+
+# Table / delta modes
+PRIOR_OVERALL=""
+PRIOR_COMMIT=""
+
+printf "%-9s  %-19s  %-7s  %-7s  %s\n" "COMMIT" "TIMESTAMP" "OVERALL" "DELTA" "RATING"
+printf '%s\n' "----------------------------------------------------------------------"
+
+for f in "${FILES[@]}"; do
+  COMMIT=$(jq -r '.commit // "unknown"' "$f")
+  TIMESTAMP=$(jq -r '.timestamp // "unknown"' "$f")
+  OVERALL=$(jq -r '.overall // 0' "$f")
+  RATING=$(jq -r '.rating // ""' "$f")
+
+  DELTA="—"
+  if [ -n "$PRIOR_OVERALL" ] && [ "$OVERALL" != "$PRIOR_OVERALL" ]; then
+    if [ "$OVERALL" -gt "$PRIOR_OVERALL" ]; then
+      DELTA="+$((OVERALL - PRIOR_OVERALL))"
+    else
+      DELTA="-$((PRIOR_OVERALL - OVERALL))"
+    fi
+  fi
+
+  if [ "$MODE" = "delta" ] && [ -z "$PRIOR_COMMIT" ]; then
+    PRIOR_OVERALL="$OVERALL"
+    PRIOR_COMMIT="$COMMIT"
+    continue
+  fi
+
+  printf "%-9s  %-19s  %-7s  %-7s  %s\n" \
+    "${COMMIT:0:9}" \
+    "${TIMESTAMP:0:19}" \
+    "$OVERALL" \
+    "$DELTA" \
+    "$RATING"
+
+  PRIOR_OVERALL="$OVERALL"
+  PRIOR_COMMIT="$COMMIT"
+done
