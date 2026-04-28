@@ -361,6 +361,77 @@ OR
 "No methodology guides generated yet. Run `/qa-methodology-refine <topic>` to enrich future audits."
 ```
 
+## Phase 5b — Machine-Readable Sidecar
+
+After the markdown report, also write `$_TMP/qa-audit-score.json` with the same numbers
+in a parseable shape. Hooks, CI gates, and `bin/qa-team-history` consume this file to
+detect score regressions, render trends, and gate merges.
+
+```bash
+_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
+_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+cat > "$_TMP/qa-audit-score.json" <<JSON
+{
+  "schema_version": "1.0",
+  "skill": "qa-audit",
+  "skill_version": "<read from $_QA_ROOT/VERSION>",
+  "branch": "$_BRANCH",
+  "commit": "$_COMMIT",
+  "timestamp": "$_TIMESTAMP",
+  "overall": <score 0-100>,
+  "rating": "<Excellent | Good | Fair | Needs Work>",
+  "dimensions": {
+    "pyramid": <0-20>,
+    "isolation": <0-20>,
+    "test_data": <0-20>,
+    "naming": <0-20>,
+    "ci_coverage": <0-20>
+  },
+  "counts": {
+    "unit": <N>,
+    "integration": <N>,
+    "e2e": <N>,
+    "unclassified": <N>,
+    "total": <N>
+  },
+  "flakiness": {
+    "sleep_calls": <N>,
+    "retry_marks": <N>,
+    "risk": "<LOW | MEDIUM | HIGH>"
+  },
+  "critical_count": <N>,
+  "report_md_path": "$_TMP/qa-audit-report.md"
+}
+JSON
+```
+
+Replace every `<...>` placeholder with the actual values computed in Phases 1–4. Validate
+the file is parseable JSON before continuing (`jq . "$_TMP/qa-audit-score.json" >/dev/null`)
+— if the assistant emitted invalid JSON, fix it and rewrite. Hooks depend on this contract.
+
+## Phase 5c — Persist to Project History
+
+Copy the JSON sidecar (and the markdown report) into a project-local history directory so
+trend analysis and per-commit comparisons survive across runs. Skip silently when the
+working directory is not a git repo.
+
+```bash
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "$_REPO_ROOT" ]; then
+  _HIST_DIR="$_REPO_ROOT/.qa-team"
+  mkdir -p "$_HIST_DIR"
+  _HIST_KEY="qa-audit-${_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)"
+  cp "$_TMP/qa-audit-score.json"  "$_HIST_DIR/${_HIST_KEY}.json"  2>/dev/null || true
+  cp "$_TMP/qa-audit-report.md"   "$_HIST_DIR/${_HIST_KEY}.md"    2>/dev/null || true
+  ln -sf "${_HIST_KEY}.json" "$_HIST_DIR/qa-audit-latest.json"    2>/dev/null || true
+  echo "HISTORY: persisted to $_HIST_DIR/${_HIST_KEY}.{json,md}"
+fi
+```
+
+The first run on a project creates `.qa-team/`. Add it to `.gitignore` if you do not want
+the history committed; or commit it deliberately to track score over time alongside code.
+
 ## Important Rules
 
 - **Read actual test files** — scan content, not just file counts; a directory named `unit/` may contain integration tests
@@ -368,7 +439,8 @@ OR
 - **Report even with 0 tests** — produce the report; recommend starting with `/qa-methodology-refine test-pyramid`
 - **No judgment on score** — a low score means opportunity, not blame; frame positively
 - **Link to guides** — when a methodology guide exists for a finding, reference it explicitly
-- **Idempotent** — safe to re-run; always overwrites `$_TMP/qa-audit-report.md`
+- **Idempotent** — safe to re-run; always overwrites `$_TMP/qa-audit-report.md` and `$_TMP/qa-audit-score.json`
+- **JSON contract is load-bearing** — `qa-audit-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by user-defined CI hooks. Do not change field names without bumping `schema_version` and updating consumers
 
 ## Telemetry (run last)
 
