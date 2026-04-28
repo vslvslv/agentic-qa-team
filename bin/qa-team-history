@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 # bin/qa-team-history — Print the QA score trend for the current repo.
-# Reads .qa-team/qa-audit-*.json files and renders a one-line-per-run summary.
+# Reads .qa-team/qa-<skill>-*.json files and renders a one-line-per-run summary.
 #
 # Usage:
-#   bash bin/qa-team-history                # Last 10 runs, oldest first
-#   bash bin/qa-team-history --limit=20     # Last 20 runs
-#   bash bin/qa-team-history --json         # Raw JSON array (for hooks/CI)
-#   bash bin/qa-team-history --delta        # Show delta against prior run
+#   bash bin/qa-team-history                     # qa-audit history, last 10
+#   bash bin/qa-team-history --skill=qa-api      # qa-api history
+#   bash bin/qa-team-history --skill=all         # All skills, side-by-side per commit
+#   bash bin/qa-team-history --limit=20          # Last 20 runs
+#   bash bin/qa-team-history --json              # Raw JSON array (for hooks/CI)
+#   bash bin/qa-team-history --delta             # Skip the first row (anchor)
+#
+# Recognised skills: qa-audit, qa-api, qa-web, qa-visual, qa-perf, qa-mobile.
+# qa-audit reports an `overall` score (0-100); other skills report a `status`
+# (pass/warn/fail) plus skill-specific counts. The table renders both shapes.
 #
 # Exit codes:
 #   0  success
-#   1  no .qa-team/ directory found in repo
+#   1  no .qa-team/ directory or no matching history files
 #   2  jq not installed
+#   3  unknown --skill argument
 #
 # Designed to be cheap to call from hooks (no network, no LLM).
 
@@ -19,14 +26,17 @@ set -euo pipefail
 
 LIMIT=10
 MODE="table"
+SKILL="qa-audit"
+KNOWN_SKILLS="qa-audit qa-api qa-web qa-visual qa-perf qa-mobile"
 
 for arg in "$@"; do
   case "$arg" in
     --limit=*) LIMIT="${arg#--limit=}" ;;
+    --skill=*) SKILL="${arg#--skill=}" ;;
     --json)    MODE="json" ;;
     --delta)   MODE="delta" ;;
     -h|--help)
-      sed -n '2,15p' "$0"
+      sed -n '2,25p' "$0"
       exit 0
       ;;
     *)
@@ -35,6 +45,19 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# Validate --skill argument.
+if [ "$SKILL" != "all" ]; then
+  found=0
+  for s in $KNOWN_SKILLS; do
+    if [ "$s" = "$SKILL" ]; then found=1; break; fi
+  done
+  if [ "$found" -eq 0 ]; then
+    echo "qa-team-history: unknown skill '$SKILL'." >&2
+    echo "  Recognised: $KNOWN_SKILLS, or 'all'." >&2
+    exit 3
+  fi
+fi
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "qa-team-history: jq is required (brew install jq / apt install jq)" >&2
@@ -54,70 +77,117 @@ if [ ! -d "$HIST_DIR" ]; then
   exit 1
 fi
 
-# Collect audit JSON files, oldest first by modification time.
-# Use a portable while-read loop so this works on macOS bash 3.2 (no `mapfile`).
-# `stat` flags differ between BSD (macOS) and GNU (Linux); try BSD first, fall back to GNU.
+# `stat` flags differ between BSD (macOS) and GNU (Linux); try BSD first.
 _stat_mtime() {
   stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null
 }
 
-FILES=()
-while IFS= read -r f; do
-  [ -n "$f" ] && FILES+=("$f")
-done < <(
-  for f in "$HIST_DIR"/qa-audit-*.json; do
-    if [ ! -e "$f" ]; then continue; fi
-    if [ "$(basename "$f")" = "qa-audit-latest.json" ]; then continue; fi
-    mtime=$(_stat_mtime "$f")
-    if [ -n "$mtime" ]; then printf '%s\t%s\n' "$mtime" "$f"; fi
-  done | sort -n | awk -F'\t' '{print $2}' | tail -n "$LIMIT"
-)
+# _collect_files <skill>  →  populates FILES[] with sorted-oldest-first JSONs.
+_collect_files() {
+  local skill="$1"
+  FILES=()
+  while IFS= read -r f; do
+    [ -n "$f" ] && FILES+=("$f")
+  done < <(
+    for f in "$HIST_DIR"/${skill}-*.json; do
+      if [ ! -e "$f" ]; then continue; fi
+      if [ "$(basename "$f")" = "${skill}-latest.json" ]; then continue; fi
+      mtime=$(_stat_mtime "$f")
+      if [ -n "$mtime" ]; then printf '%s\t%s\n' "$mtime" "$f"; fi
+    done | sort -n | awk -F'\t' '{print $2}' | tail -n "$LIMIT"
+  )
+}
 
-if [ "${#FILES[@]}" -eq 0 ]; then
-  echo "qa-team-history: no audit history files in $HIST_DIR" >&2
-  exit 1
-fi
+# _render_table <skill>  →  prints the per-skill table.
+_render_table() {
+  local skill="$1"
+  _collect_files "$skill"
 
+  if [ "${#FILES[@]}" -eq 0 ]; then
+    echo "  (no $skill history yet)"
+    return 0
+  fi
+
+  if [ "$skill" = "qa-audit" ]; then
+    printf "  %-9s  %-19s  %-7s  %-7s  %s\n" "COMMIT" "TIMESTAMP" "OVERALL" "DELTA" "RATING"
+    printf '  %s\n' "------------------------------------------------------------------"
+    local PRIOR_OVERALL="" PRIOR_COMMIT=""
+    for f in "${FILES[@]}"; do
+      local COMMIT TIMESTAMP OVERALL RATING DELTA
+      COMMIT=$(jq -r '.commit // "unknown"' "$f")
+      TIMESTAMP=$(jq -r '.timestamp // "unknown"' "$f")
+      OVERALL=$(jq -r '.overall // 0' "$f")
+      RATING=$(jq -r '.rating // ""' "$f")
+      DELTA="—"
+      if [ -n "$PRIOR_OVERALL" ] && [ "$OVERALL" != "$PRIOR_OVERALL" ]; then
+        if [ "$OVERALL" -gt "$PRIOR_OVERALL" ]; then
+          DELTA="+$((OVERALL - PRIOR_OVERALL))"
+        else
+          DELTA="-$((PRIOR_OVERALL - OVERALL))"
+        fi
+      fi
+      if [ "$MODE" = "delta" ] && [ -z "$PRIOR_COMMIT" ]; then
+        PRIOR_OVERALL="$OVERALL"; PRIOR_COMMIT="$COMMIT"
+        continue
+      fi
+      printf "  %-9s  %-19s  %-7s  %-7s  %s\n" \
+        "${COMMIT:0:9}" "${TIMESTAMP:0:19}" "$OVERALL" "$DELTA" "$RATING"
+      PRIOR_OVERALL="$OVERALL"; PRIOR_COMMIT="$COMMIT"
+    done
+  else
+    printf "  %-9s  %-19s  %-6s  %-22s  %s\n" "COMMIT" "TIMESTAMP" "STATUS" "COUNTS" "TOOL"
+    printf '  %s\n' "----------------------------------------------------------------------"
+    for f in "${FILES[@]}"; do
+      local COMMIT TIMESTAMP STATUS PASSED FAILED SKIPPED TOTAL TOOL COUNTS
+      COMMIT=$(jq -r '.commit // "unknown"' "$f")
+      TIMESTAMP=$(jq -r '.timestamp // "unknown"' "$f")
+      STATUS=$(jq -r '.status // "?"' "$f")
+      PASSED=$(jq -r '.counts.passed // 0' "$f")
+      FAILED=$(jq -r '.counts.failed // 0' "$f")
+      SKIPPED=$(jq -r '.counts.skipped // 0' "$f")
+      TOTAL=$(jq -r '.counts.total // 0' "$f")
+      TOOL=$(jq -r '.tool // ""' "$f")
+      COUNTS="${PASSED}p/${FAILED}f/${SKIPPED}s of ${TOTAL}"
+      printf "  %-9s  %-19s  %-6s  %-22s  %s\n" \
+        "${COMMIT:0:9}" "${TIMESTAMP:0:19}" "$STATUS" "$COUNTS" "$TOOL"
+    done
+  fi
+}
+
+# JSON mode: dump everything for the requested skill (or all)
 if [ "$MODE" = "json" ]; then
-  jq -s '.' "${FILES[@]}"
+  if [ "$SKILL" = "all" ]; then
+    JSON_FILES=()
+    for s in $KNOWN_SKILLS; do
+      _collect_files "$s"
+      if [ "${#FILES[@]}" -gt 0 ]; then
+        for f in "${FILES[@]}"; do JSON_FILES+=("$f"); done
+      fi
+    done
+    if [ "${#JSON_FILES[@]}" -eq 0 ]; then
+      echo "qa-team-history: no history files in $HIST_DIR" >&2
+      exit 1
+    fi
+    jq -s '.' "${JSON_FILES[@]}"
+  else
+    _collect_files "$SKILL"
+    if [ "${#FILES[@]}" -eq 0 ]; then
+      echo "qa-team-history: no $SKILL history files in $HIST_DIR" >&2
+      exit 1
+    fi
+    jq -s '.' "${FILES[@]}"
+  fi
   exit 0
 fi
 
-# Table / delta modes
-PRIOR_OVERALL=""
-PRIOR_COMMIT=""
-
-printf "%-9s  %-19s  %-7s  %-7s  %s\n" "COMMIT" "TIMESTAMP" "OVERALL" "DELTA" "RATING"
-printf '%s\n' "----------------------------------------------------------------------"
-
-for f in "${FILES[@]}"; do
-  COMMIT=$(jq -r '.commit // "unknown"' "$f")
-  TIMESTAMP=$(jq -r '.timestamp // "unknown"' "$f")
-  OVERALL=$(jq -r '.overall // 0' "$f")
-  RATING=$(jq -r '.rating // ""' "$f")
-
-  DELTA="—"
-  if [ -n "$PRIOR_OVERALL" ] && [ "$OVERALL" != "$PRIOR_OVERALL" ]; then
-    if [ "$OVERALL" -gt "$PRIOR_OVERALL" ]; then
-      DELTA="+$((OVERALL - PRIOR_OVERALL))"
-    else
-      DELTA="-$((PRIOR_OVERALL - OVERALL))"
-    fi
-  fi
-
-  if [ "$MODE" = "delta" ] && [ -z "$PRIOR_COMMIT" ]; then
-    PRIOR_OVERALL="$OVERALL"
-    PRIOR_COMMIT="$COMMIT"
-    continue
-  fi
-
-  printf "%-9s  %-19s  %-7s  %-7s  %s\n" \
-    "${COMMIT:0:9}" \
-    "${TIMESTAMP:0:19}" \
-    "$OVERALL" \
-    "$DELTA" \
-    "$RATING"
-
-  PRIOR_OVERALL="$OVERALL"
-  PRIOR_COMMIT="$COMMIT"
-done
+# Table / delta mode
+if [ "$SKILL" = "all" ]; then
+  for s in $KNOWN_SKILLS; do
+    echo "=== $s ==="
+    _render_table "$s"
+    echo ""
+  done
+else
+  echo "=== $SKILL ==="
+  _render_table "$SKILL"
+fi

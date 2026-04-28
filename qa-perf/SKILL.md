@@ -193,6 +193,68 @@ Write report to `$_TMP/qa-perf-report.md`:
 
 ## Recommendations
 <top bottlenecks + suggested optimizations>
+
+## After this run
+- For functional correctness of the same endpoints: → `/qa-api`
+- For up-to-date load-tool patterns (k6, JMeter, Locust): → `/qa-refine`
+- After applying optimizations: re-run `/qa-perf` to confirm thresholds — history at `<repo>/.qa-team/qa-perf-*.json`
+```
+
+## Phase 4b — Machine-Readable Sidecar
+
+After the markdown report, also write `$_TMP/qa-perf-score.json`. Shares the envelope
+schema with `qa-audit-score.json`.
+
+```bash
+_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
+_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+cat > "$_TMP/qa-perf-score.json" <<JSON
+{
+  "schema_version": "1.0",
+  "skill": "qa-perf",
+  "skill_version": "<read from $_QA_ROOT/VERSION>",
+  "branch": "$_BRANCH",
+  "commit": "$_COMMIT",
+  "timestamp": "$_TIMESTAMP",
+  "status": "<pass | warn | fail>",
+  "tool": "<k6 | jmeter | locust>",
+  "target_url": "<url under test>",
+  "thresholds_met": <true | false>,
+  "threshold_violations_count": <N>,
+  "scenarios": {
+    "total": <N>,
+    "passed": <N>,
+    "failed": <N>
+  },
+  "metrics": {
+    "p50_ms": <N or null>,
+    "p95_ms": <N or null>,
+    "p99_ms": <N or null>,
+    "rps": <N or null>,
+    "error_rate_pct": <N or null>
+  },
+  "report_md_path": "$_TMP/qa-perf-report.md"
+}
+JSON
+```
+
+Validate it parses (`jq . "$_TMP/qa-perf-score.json" >/dev/null`). Use `null` (not 0)
+for metrics that were not measured — that distinction matters for trend analysis.
+
+## Phase 4c — Persist to Project History
+
+```bash
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "$_REPO_ROOT" ]; then
+  _HIST_DIR="$_REPO_ROOT/.qa-team"
+  mkdir -p "$_HIST_DIR"
+  _HIST_KEY="qa-perf-${_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)"
+  cp "$_TMP/qa-perf-score.json" "$_HIST_DIR/${_HIST_KEY}.json" 2>/dev/null || true
+  cp "$_TMP/qa-perf-report.md"  "$_HIST_DIR/${_HIST_KEY}.md"   2>/dev/null || true
+  ln -sf "${_HIST_KEY}.json" "$_HIST_DIR/qa-perf-latest.json"  2>/dev/null || true
+  echo "HISTORY: persisted to $_HIST_DIR/${_HIST_KEY}.{json,md}"
+fi
 ```
 
 ## Important Rules
@@ -203,3 +265,4 @@ Write report to `$_TMP/qa-perf-report.md`:
 - **Conservative defaults** — default to 50 VUs/threads max; ask user before going above 200
 - **Report even without execution** — if the tool is missing, document installation steps + the generated scripts
 - **Cleanup after writes** — if any POST creates resources, add teardown logic to delete them
+- **JSON contract is load-bearing** — `qa-perf-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by CI hooks. Field renames or removals require bumping `schema_version` and updating consumers.

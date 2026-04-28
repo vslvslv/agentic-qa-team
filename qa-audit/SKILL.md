@@ -359,6 +359,11 @@ Ranked by impact (CRITICAL → IMPORTANT → NICE-TO-HAVE):
 <list qa-methodology/references/*.md with one-line descriptions>
 OR
 "No methodology guides generated yet. Run `/qa-methodology-refine <topic>` to enrich future audits."
+
+## After this audit
+- If a recommendation cites a methodology you don't fully grasp: → `/qa-methodology-refine <topic>` to research it before fixing
+- If a recommendation needs language-specific patterns (e.g. Testcontainers, FluentAssertions, mocking libs): → `/qa-refine`
+- After applying fixes: re-run `/qa-audit` (or `/qa-team`) to measure delta — `bin/qa-team-history` renders the score trend from `<repo>/.qa-team/`
 ```
 
 ## Phase 5b — Machine-Readable Sidecar

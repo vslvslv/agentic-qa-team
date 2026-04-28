@@ -5,6 +5,69 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.5.5.0 — 2026-04-28 — Extend JSON sidecar pattern to all sub-skills
+
+### Added (sub-skills)
+Every sub-skill now emits a parseable score file alongside its existing markdown report,
+sharing the `schema_version: "1.0"` envelope (skill, branch, commit, timestamp, status,
+report_md_path) introduced for `qa-audit` in v1.5.4.0:
+
+- **qa-api:** Phase 5b/5c — `qa-api-score.json` with `tool`, `auth`, `counts{passed,
+  failed, skipped, total}`, `endpoints{discovered, tested, missing}`, `schema_gaps_count`.
+  History persisted to `<repo>/.qa-team/qa-api-*.{json,md}`.
+- **qa-web:** Phase 4b/4c — `qa-web-score.json` with `tool`, `base_url`, `counts`,
+  `pages{discovered, tested, missing}`, `failure_count`. Same history pattern.
+- **qa-visual:** Phase 6b/6c — `qa-visual-score.json` with `tool`, `counts`,
+  `screenshots{baselines, viewports_count}`, `regressions_count`,
+  `baseline_update_required_count`. Same history pattern.
+- **qa-perf:** Phase 4b/4c — `qa-perf-score.json` with `tool`, `target_url`,
+  `thresholds_met`, `threshold_violations_count`, `scenarios{total, passed, failed}`,
+  `metrics{p50_ms, p95_ms, p99_ms, rps, error_rate_pct}` (null = not measured).
+  Same history pattern.
+- **qa-mobile:** Phase 5b/5c — `qa-mobile-score.json` with `tool`, `platform`, `device`,
+  `counts`, `screens{discovered, tested, missing}`, `failure_count`. Same history pattern.
+
+Each skill's "Important Rules" gained a load-bearing entry: the JSON contract is consumed
+by `qa-team` Phase 5 and `bin/qa-team-history`, so renames or removals require bumping
+`schema_version` and updating consumers.
+
+### Added (cross-link footers — Impact 5 from the original audit)
+Every sub-skill's report now ends with an "After this run" block pointing at the next
+relevant skill:
+- `qa-audit` → `/qa-methodology-refine` for unfamiliar methodology, `/qa-refine` for
+  language-specific patterns, re-run for delta
+- `qa-api` → `/qa-audit` for methodology, `/qa-refine` for tooling, re-run for delta
+- `qa-web` → `/qa-visual` for visual regression, `/qa-refine` for selectors, `/qa-audit`
+- `qa-visual` → `/qa-web` for functional, `/qa-refine` for masking, `--update-snapshots`
+  + re-run after intentional changes
+- `qa-perf` → `/qa-api` for correctness, `/qa-refine` for tool patterns
+- `qa-mobile` → `/qa-refine` for framework patterns, `/qa-audit` for methodology
+
+This addresses the original audit's #5 finding: skill discovery has been pull-only;
+inline cross-links make follow-ups self-evident in the report itself.
+
+### Changed (bin/qa-team-history)
+- New `--skill=<name>` flag. Recognised: `qa-audit`, `qa-api`, `qa-web`, `qa-visual`,
+  `qa-perf`, `qa-mobile`, or `all`. Default unchanged: shows `qa-audit` history.
+- New `--skill=all` mode renders one section per skill, with a placeholder when a skill
+  has no history yet.
+- Per-skill table shape:
+  - `qa-audit`: `COMMIT · TIMESTAMP · OVERALL · DELTA · RATING` (existing)
+  - others: `COMMIT · TIMESTAMP · STATUS · COUNTS · TOOL` (new, since these skills
+    report `status` + `counts` rather than a 0–100 `overall`)
+- Bash 3.2 portability fixes (`set -u` array-empty guard, `case` → `if` inside
+  process-substitution loops). Smoke-tested with synthetic multi-skill history.
+- New exit code `3` for unknown `--skill` argument.
+
+### Notes
+- The verify-after-fixes loop in `qa-team` (added in v1.5.4.0) now applies to every
+  domain, not only audit. Any sub-skill whose JSON sits in `.qa-team/` can be diffed
+  by commit and rendered in the trend table.
+- Sub-skills that previously emitted only markdown continue to do so — the JSON is
+  strictly additive. No existing consumer breaks.
+
+---
+
 ## v1.5.4.0 — 2026-04-28 — Machine-readable score sidecar and verify-after-fixes loop
 
 ### Added (qa-audit)

@@ -452,6 +452,67 @@ Write report to `$_TMP/qa-api-report.md`:
 
 ## Schema Gaps
 <fields or responses not validated>
+
+## After this run
+- For methodology issues (pyramid, isolation, naming): → `/qa-audit`
+- For up-to-date tooling patterns (HTTP clients, schema libs, mocking): → `/qa-refine`
+- After applying fixes: re-run `/qa-api` (or `/qa-team`) to measure delta — score history at `<repo>/.qa-team/qa-api-*.json`
+```
+
+## Phase 5b — Machine-Readable Sidecar
+
+After the markdown report, also write `$_TMP/qa-api-score.json` with the same numbers
+in a parseable shape. Shares the envelope schema with `qa-audit-score.json` so hooks
+and CI can consume both uniformly.
+
+```bash
+_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
+_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+cat > "$_TMP/qa-api-score.json" <<JSON
+{
+  "schema_version": "1.0",
+  "skill": "qa-api",
+  "skill_version": "<read from $_QA_ROOT/VERSION>",
+  "branch": "$_BRANCH",
+  "commit": "$_COMMIT",
+  "timestamp": "$_TIMESTAMP",
+  "status": "<pass | warn | fail>",
+  "tool": "<playwright | rest_assured | pytest | httpclient | rspec>",
+  "auth": "<jwt | session | apikey | none>",
+  "counts": {
+    "passed": <N>,
+    "failed": <N>,
+    "skipped": <N>,
+    "total": <N>
+  },
+  "endpoints": {
+    "discovered": <N>,
+    "tested": <N>,
+    "missing": <N>
+  },
+  "schema_gaps_count": <N>,
+  "report_md_path": "$_TMP/qa-api-report.md"
+}
+JSON
+```
+
+Validate it parses (`jq . "$_TMP/qa-api-score.json" >/dev/null`). Replace every `<...>`
+with the actual computed value. If `jq` reports invalid JSON, fix and rewrite.
+
+## Phase 5c — Persist to Project History
+
+```bash
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "$_REPO_ROOT" ]; then
+  _HIST_DIR="$_REPO_ROOT/.qa-team"
+  mkdir -p "$_HIST_DIR"
+  _HIST_KEY="qa-api-${_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)"
+  cp "$_TMP/qa-api-score.json" "$_HIST_DIR/${_HIST_KEY}.json" 2>/dev/null || true
+  cp "$_TMP/qa-api-report.md"  "$_HIST_DIR/${_HIST_KEY}.md"   2>/dev/null || true
+  ln -sf "${_HIST_KEY}.json" "$_HIST_DIR/qa-api-latest.json"  2>/dev/null || true
+  echo "HISTORY: persisted to $_HIST_DIR/${_HIST_KEY}.{json,md}"
+fi
 ```
 
 ## Important Rules
@@ -462,3 +523,4 @@ Write report to `$_TMP/qa-api-report.md`:
 - **Idempotent tests** — use unique IDs for created resources; clean up in teardown
 - **Report even if execution fails** — always write the report regardless of exit code
 - **No destructive operations** — skip `DELETE /api/*` tests unless cleanup-only; flag them explicitly
+- **JSON contract is load-bearing** — `qa-api-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by CI hooks. Field renames or removals require bumping `schema_version` and updating consumers.
