@@ -90,10 +90,9 @@ if [ -n "$_SINCE_REF" ]; then
     echo "ERROR: --since=$_SINCE_REF ($_SINCE_SHA_SHORT) is not an ancestor of HEAD. Aborting." >&2
     exit 1
   fi
-  # Test-file pattern matches qa-team-suggest-rerun + Phase 5 verify loop.
-  _CHANGED_TEST_FILES=$(git diff --name-only "$_SINCE_SHA"..HEAD 2>/dev/null \
-    | grep -E '\.(test|spec)\.[jt]sx?$|_test\.py$|(^|/)test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$' \
-    || true)
+  # Delegate test-file detection to the canonical helper. This is the only place
+  # in the harness where the regex/glob set is defined — single source of truth.
+  _CHANGED_TEST_FILES=$(bash "$_QA_ROOT/bin/qa-team-test-files" --since="$_SINCE_REF" 2>/dev/null || true)
   _CHANGED_COUNT=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -c . || true)
   _DELTA_MODE=1
   echo "DELTA_MODE: enabled (since $_SINCE_REF → $_SINCE_SHA_SHORT)"
@@ -178,20 +177,8 @@ else
     -o -name "*.e2e.spec.*" -o -name "*.e2e.test.*" \
     -o -path "*/tests/e2e*" \
     \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
-  # CANONICAL test-file globs — must match the regex in:
-  #   bin/qa-team-suggest-rerun (_is_test_file_pattern)
-  #   qa-audit/SKILL.md         (delta-mode regex above)
-  #   qa-team/SKILL.md          (Preamble _HAS_TESTS + Phase 5 regex)
-  # Drift between these = silent under-counting / wrong domain auto-selection.
-  _ALL_TESTS=$(find . \( \
-    -name "*.spec.ts"  -o -name "*.spec.tsx"  -o -name "*.spec.js"  -o -name "*.spec.jsx" \
-    -o -name "*.test.ts"  -o -name "*.test.tsx"  -o -name "*.test.js"  -o -name "*.test.jsx" \
-    -o -name "*_test.py"  -o -name "test_*.py" \
-    -o -name "*Test.cs"   -o -name "*Tests.cs" \
-    -o -name "*Test.java" -o -name "*Tests.java" \
-    -o -name "*_test.go" \
-    -o -name "*_spec.rb" \
-    \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+  # Total test count via the canonical helper (single source of truth for globs).
+  _ALL_TESTS=$(bash "$_QA_ROOT/bin/qa-team-test-files" --list 2>/dev/null | grep -c . || true)
   echo "UNIT: $_UNIT  INTEGRATION: $_INTEG  E2E: $_E2E  TOTAL: $_ALL_TESTS"
 fi
 
@@ -501,6 +488,7 @@ cat > "$_TMP/qa-audit-score.json" <<JSON
   "branch": "$_BRANCH",
   "commit": "$_COMMIT",
   "timestamp": "$_TIMESTAMP",
+  "status": "<pass | warn | delta-no-op>",
   "overall": <score 0-100>,
   "rating": "<Excellent | Good | Fair | Needs Work>",
   "delta_mode": {
@@ -533,6 +521,17 @@ cat > "$_TMP/qa-audit-score.json" <<JSON
 }
 JSON
 ```
+
+`status` mapping (uniform contract across all skills with sidecars):
+- `"pass"` — full audit completed and `critical_count == 0`
+- `"warn"` — full audit completed but `critical_count > 0`
+- `"delta-no-op"` — emitted **only** by the delta-mode early exit in the Preamble
+  (when `_DELTA_MODE=1` and `_CHANGED_COUNT=0`). The delta-no-op JSON sets
+  `overall: null` and `rating: null` since there was nothing to score; consumers
+  must treat it as "scope was empty", not as "score was zero".
+
+The same `status` field is consumed by `bin/qa-team-cost-log` so cost telemetry
+mirrors the sidecar automatically — no second source of truth.
 
 Replace every `<...>` placeholder with the actual values computed in Phases 1–4. Validate
 the file is parseable JSON before continuing (`jq . "$_TMP/qa-audit-score.json" >/dev/null`)
@@ -592,4 +591,15 @@ alongside code.
 ~/.claude/skills/gstack/bin/gstack-timeline-log \
   '{"skill":"qa-audit","event":"completed","branch":"'"$_BRANCH"'","date":"'"$_DATE"'"}' \
   2>/dev/null || true
+
+# Per-run cost log (consumed by bin/qa-team-cost). Status is derived from the
+# JSON sidecar's `.status` field — single source of truth, no drift between
+# the sidecar and the cost log. Falls back to "warn" if jq is missing or the
+# sidecar wasn't written. Possible values: pass | warn | delta-no-op.
+_QA_STATUS=$(jq -r '.status // "warn"' "$_TMP/qa-audit-score.json" 2>/dev/null || echo "warn")
+case "$_QA_STATUS" in
+  pass|warn|delta-no-op) ;;
+  *) _QA_STATUS="warn" ;;
+esac
+bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-audit" "$_QA_STATUS" 2>/dev/null || true
 ```

@@ -356,4 +356,7 @@ Used by: /qa-audit (reads qa-methodology/references/ for enriched recommendation
 ~/.claude/skills/gstack/bin/gstack-timeline-log \
   '{"skill":"qa-methodology-refine","event":"completed","topic":"'"$TARGET_TOPIC"'","lang":"'"$TARGET_LANG"'","date":"'"$(date +%Y-%m-%d)"'"}' \
   2>/dev/null || true
+
+# Per-run cost log (consumed by bin/qa-team-cost).
+bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-methodology-refine" "pass" 2>/dev/null || true
 ```

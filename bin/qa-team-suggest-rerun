@@ -26,11 +26,10 @@ HIST_DIR="$REPO_ROOT/.qa-team"
 
 CURRENT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null)" || exit 0
 
-# Pattern for "test file" — covers JS/TS, Python, C#, Java, Ruby, Go.
-# Python `test_*.py` requires `(^|/)` so we match basenames (`test_foo.py`,
-# `tests/test_foo.py`) without false-matching `bla_test_foo.py`. Pattern is
-# duplicated in qa-audit/SKILL.md and qa-team/SKILL.md Phase 5 — keep them in sync.
-_is_test_file_pattern='\.(test|spec)\.[jt]sx?$|_test\.py$|(^|/)test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$'
+# Canonical test-file detection lives in bin/qa-team-test-files.
+# This script is a sibling, so resolve via $0's directory rather than $_QA_ROOT.
+_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+_TEST_FILES_SCRIPT="$_BIN_DIR/qa-team-test-files"
 
 NUDGES=()
 for latest in "$HIST_DIR"/qa-*-latest.json; do
@@ -53,16 +52,11 @@ for latest in "$HIST_DIR"/qa-*-latest.json; do
   SKILL_NAME=$(basename "$latest")
   SKILL_NAME="${SKILL_NAME%-latest.json}"
 
-  # Count test files changed in the range PRIOR_COMMIT..HEAD.
-  # If the prior commit isn't reachable (e.g. user rewrote history), skip silently.
-  if ! git merge-base --is-ancestor "$PRIOR_COMMIT" HEAD 2>/dev/null; then
-    continue
-  fi
-
-  CHANGED=$(git diff --name-only "$PRIOR_COMMIT"..HEAD 2>/dev/null \
-    | grep -E "$_is_test_file_pattern" 2>/dev/null \
-    | wc -l \
-    | tr -d ' ')
+  # Delegate ancestor check + test-file regex to the canonical helper.
+  # It exits 3 on bad/unreachable ref; we treat that as "skip silently"
+  # (e.g. user rewrote history, prior commit no longer reachable).
+  CHANGED_LIST=$(bash "$_TEST_FILES_SCRIPT" --since="$PRIOR_COMMIT" 2>/dev/null) || continue
+  CHANGED=$(printf '%s\n' "$CHANGED_LIST" | grep -c . || true)
 
   if [ "${CHANGED:-0}" -gt 0 ]; then
     NUDGES+=("$CHANGED test file(s) changed since /$SKILL_NAME at $PRIOR_COMMIT — re-run /$SKILL_NAME to measure delta")

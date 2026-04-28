@@ -524,3 +524,17 @@ fi
 - **Report even if execution fails** — always write the report regardless of exit code
 - **No destructive operations** — skip `DELETE /api/*` tests unless cleanup-only; flag them explicitly
 - **JSON contract is load-bearing** — `qa-api-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by CI hooks. Field renames or removals require bumping `schema_version` and updating consumers.
+
+## Telemetry (run last)
+
+```bash
+# Per-run cost log (consumed by bin/qa-team-cost). Status is derived from the
+# just-written JSON sidecar — single source of truth. Falls back to "warn" if
+# jq is missing or the sidecar wasn't written. Valid: pass | warn | fail.
+_QA_STATUS=$(jq -r '.status // "warn"' "$_TMP/qa-api-score.json" 2>/dev/null || echo "warn")
+case "$_QA_STATUS" in
+  pass|warn|fail) ;;
+  *) _QA_STATUS="warn" ;;
+esac
+bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-api" "$_QA_STATUS" 2>/dev/null || true
+```

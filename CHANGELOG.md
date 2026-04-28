@@ -5,6 +5,91 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.5.8.0 — 2026-04-28 — Extract test-file pattern + cost telemetry
+
+Closes the **Impact 9** test-file-pattern duplication directly responsible for
+three Copilot review rounds on PR #4, and ships the **Impact 6** cost telemetry
+that was the last open item from the original audit.
+
+### Added (`bin/qa-team-test-files`) — single source of truth
+
+Multi-mode helper that owns the canonical "what is a test file?" definition.
+Five modes:
+
+- `--regex` — print the canonical `grep -E` pattern
+- `--globs` — print the canonical `find -name` glob list (one per line)
+- `--list` — list all test files in the cwd via `find`
+- `--has-tests` — exit 0 if any test file found, 1 otherwise
+- `--since=<git-ref>` — print test files changed since `<ref>` (validates ref,
+  rejects unreachable refs with exit 3)
+
+Canonical pattern: `\.(test|spec)\.[jt]sx?$|_test\.py$|(^|/)test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$`
+plus the corresponding 16 find globs. Bash 3.2 compatible. No external deps
+beyond git + grep + find.
+
+### Changed — five drift sites collapsed to one
+
+The same test-file pattern previously lived in five places:
+- `qa-audit/SKILL.md` Preamble (delta regex)
+- `qa-audit/SKILL.md` non-delta `_ALL_TESTS` find globs
+- `qa-team/SKILL.md` Preamble `_HAS_TESTS` find globs
+- `qa-team/SKILL.md` Phase 5 verify-loop regex
+- `bin/qa-team-suggest-rerun` regex
+
+All five now call `bin/qa-team-test-files` instead. Net deletion of inline
+regex/globs in the SKILL.md files. The cross-reference comments added in
+PR #4's fixups are gone — the helper is now the documentation. Future
+extensions (e.g. Kotlin tests, Rust tests) only need to update the helper.
+
+### Added (`bin/qa-team-cost-log` + `bin/qa-team-cost`) — cost observability
+
+- **`bin/qa-team-cost-log <skill> <status> [duration_seconds]`** — appends one
+  JSONL line per skill run to `<repo>/.qa-team/runs.jsonl`. Schema:
+  `{timestamp, skill, status, branch, commit, duration_seconds}`. Silent on
+  bad args, outside-of-git, and write failures (telemetry never blocks the
+  wrapping skill). Always exits 0.
+
+- **`bin/qa-team-cost`** — aggregator that reads `runs.jsonl` and prints a
+  per-skill summary table:
+
+  ```
+    SKILL                    RUNS   PASS   WARN   FAIL  OTHER     WALL(s)  LAST
+    ----------------------------------------------------------------------------
+    qa-audit                    4      2      0      1      1          99  2026-04-28T08:38:29
+    qa-api                      1      0      1      0      0          13  2026-04-28T08:38:29
+    qa-team                     1      1      0      0      0         180  2026-04-28T08:38:29
+  ```
+
+  Flags: `--since=<N>h|<N>d` (time-window filter), `--skill=<name>` (single-
+  skill filter), `--json` (raw aggregate for hooks/CI). Bash 3.2 compatible.
+  Requires `jq` (errors with exit 2 if missing).
+
+### Added (all 10 skill telemetry tails)
+
+Every skill now invokes `bin/qa-team-cost-log` after its existing
+`gstack-timeline-log` call. Three skills already had a `## Telemetry` section
+(`qa-team`, `qa-audit`, `qa-methodology-refine`) — extended in place. The
+other seven (`qa-api`, `qa-web`, `qa-visual`, `qa-perf`, `qa-mobile`,
+`qa-refine`, `lang-refine`) had no telemetry tail before; one was added.
+
+The cost-log call uses `2>/dev/null || true` so a misconfigured environment
+never breaks a successful skill run.
+
+### Notes
+
+- **Deferred to a future PR (still under Impact 9):** version-check extraction
+  (10 SKILL.md files repeat the same ~12-line block), JSON sidecar persistence
+  extraction (6 sub-skills repeat the same ~10-line `cp + ln -sf` block).
+  These are real duplication but lower drift risk than the test-file pattern,
+  and touching all 10 SKILL.md files for a mechanical extraction is heavy
+  review surface for marginal benefit. Tracked for a follow-up PR.
+- **Schema for cost JSONL is informal** — it's a private telemetry stream
+  consumed only by `bin/qa-team-cost`. If we eventually expose it as a
+  public contract (e.g. CI dashboards), we should add a `schema_version`
+  field at that point.
+
+---
+
 ## v1.5.7.0 — 2026-04-28 — Delta mode + sticky scope
 
 Closes **Impact 4** (`--since=<ref>` delta mode) and **Impact 8** (sticky scope) from the

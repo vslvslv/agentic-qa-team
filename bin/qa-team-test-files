@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# bin/qa-team-test-files — Canonical test-file detection.
+#
+# Single source of truth for "what is a test file?" across the qa-team harness.
+# Three Copilot review rounds on PR #4 caught the same kind of drift between
+# duplicated regex/glob definitions; this script collapses them into one.
+#
+# Usage:
+#   bash bin/qa-team-test-files --regex            # Print the canonical grep -E regex
+#   bash bin/qa-team-test-files --globs            # Print the canonical find -name args (one per line)
+#   bash bin/qa-team-test-files --list             # List all test files in cwd (find ... | output)
+#   bash bin/qa-team-test-files --has-tests        # Exit 0 if any test file found, 1 otherwise
+#   bash bin/qa-team-test-files --since=<git-ref>  # Print test files changed since <ref> (newline-separated)
+#
+# Exit codes:
+#   0  success (or "any test file found" for --has-tests; "ref valid" for --since)
+#   1  --has-tests: no tests found
+#   2  invalid arguments / no matching mode
+#   3  --since: ref does not resolve OR is not an ancestor of HEAD
+#
+# Designed to be cheap to call from hooks and from inline SKILL.md bash blocks.
+# Bash 3.2 compatible. No external deps beyond git + grep + find.
+
+set -e
+
+# ---- Canonical pattern definition (the only place this should live) -----------
+#
+# Matches test files across JS/TS, Python, C#, Java, Ruby, Go.
+# Python `test_*.py` requires `(^|/)` so we match basenames (`test_foo.py`,
+# `tests/test_foo.py`) without false-matching `bla_test_foo.py` or
+# `contest_results.py`. The plural Java/C# forms (`*Tests.java`, `*Tests.cs`)
+# are intentional — both `Test`/`Tests` suffixes are common conventions.
+_CANONICAL_REGEX='\.(test|spec)\.[jt]sx?$|_test\.py$|(^|/)test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$'
+
+# Find globs that produce the same set of files as the regex above.
+# Listed one-per-line so callers can use them with `find . \( -name X -o -name Y ... \)`.
+_canonical_globs() {
+  cat <<'GLOBS'
+*.spec.ts
+*.spec.tsx
+*.spec.js
+*.spec.jsx
+*.test.ts
+*.test.tsx
+*.test.js
+*.test.jsx
+*_test.py
+test_*.py
+*Test.cs
+*Tests.cs
+*Test.java
+*Tests.java
+*_test.go
+*_spec.rb
+GLOBS
+}
+
+# Build the find command-line: `( -name "*.spec.ts" -o -name "*.spec.tsx" ... )`
+_find_args() {
+  local first=1
+  while IFS= read -r glob; do
+    if [ "$first" -eq 1 ]; then
+      printf '\\( -name "%s"' "$glob"
+      first=0
+    else
+      printf ' -o -name "%s"' "$glob"
+    fi
+  done < <(_canonical_globs)
+  printf ' \\)'
+}
+
+_list_test_files() {
+  # eval is necessary here because the find args contain shell-quoted globs.
+  # Safe: input is a fixed canonical list, not user-provided.
+  eval "find . $(_find_args) ! -path '*/node_modules/*' 2>/dev/null"
+}
+
+# ---- Argument parsing ---------------------------------------------------------
+MODE=""
+SINCE_REF=""
+
+if [ "$#" -eq 0 ]; then
+  echo "ERROR: missing mode flag." >&2
+  sed -n '8,16p' "$0" >&2
+  exit 2
+fi
+
+for arg in "$@"; do
+  case "$arg" in
+    --regex)     MODE="regex" ;;
+    --globs)     MODE="globs" ;;
+    --list)      MODE="list" ;;
+    --has-tests) MODE="has-tests" ;;
+    --since=*)   MODE="since"; SINCE_REF="${arg#--since=}" ;;
+    -h|--help)
+      sed -n '2,18p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown argument: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# ---- Mode dispatch ------------------------------------------------------------
+case "$MODE" in
+  regex)
+    printf '%s\n' "$_CANONICAL_REGEX"
+    ;;
+  globs)
+    _canonical_globs
+    ;;
+  list)
+    _list_test_files
+    ;;
+  has-tests)
+    if _list_test_files | grep -q '.'; then
+      exit 0
+    else
+      exit 1
+    fi
+    ;;
+  since)
+    if [ -z "$SINCE_REF" ]; then
+      echo "ERROR: --since= requires a git ref" >&2
+      exit 2
+    fi
+
+    # Validate ref. Resolve to FULL hash for ancestor check (short hashes can
+    # collide on large repos). Output the short form would be the caller's job
+    # if they need it for display.
+    SINCE_SHA=$(git rev-parse --verify "$SINCE_REF^{commit}" 2>/dev/null || true)
+    if [ -z "$SINCE_SHA" ]; then
+      echo "ERROR: --since=$SINCE_REF does not resolve to a git commit." >&2
+      exit 3
+    fi
+    if ! git merge-base --is-ancestor "$SINCE_SHA" HEAD 2>/dev/null; then
+      echo "ERROR: --since=$SINCE_REF is not an ancestor of HEAD." >&2
+      exit 3
+    fi
+
+    # Diff and filter through the canonical regex. `|| true` suppresses grep's
+    # exit code 1 when no lines match (legitimate empty result, not an error).
+    git diff --name-only "$SINCE_SHA"..HEAD 2>/dev/null \
+      | grep -E "$_CANONICAL_REGEX" || true
+    ;;
+  *)
+    echo "ERROR: no mode selected" >&2
+    exit 2
+    ;;
+esac
