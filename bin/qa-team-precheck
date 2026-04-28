@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# bin/qa-team-precheck — Centralized version check + prompt-cooldown for skills.
+#
+# Extracts the ~12-line block previously duplicated in 10 SKILL.md files.
+# Prints two stdout markers the agent reads to decide whether to prompt the
+# user about an available update:
+#
+#   VERSION_STATUS: <output of qa-team-update-check, or UP_TO_DATE>
+#   SKIP_UPDATE_PROMPT: 0|1
+#
+# When SKIP_UPDATE_PROMPT=1, the agent should NOT show the update prompt
+# (a recent prompt already fired within the cooldown window — prevents
+# repeated prompts when qa-team spawns multiple sub-agents in parallel).
+#
+# This script is invoked from each SKILL.md as:
+#   bash "$_QA_ROOT/bin/qa-team-precheck"
+#
+# (the SKILL.md resolves $_QA_ROOT itself via readlink — necessary because
+# subsequent bash blocks in the same SKILL.md need that variable too).
+#
+# Exit codes:
+#   0  always (never blocks the wrapping skill, even on update-check failure)
+#
+# Bash 3.2 compatible. No external deps beyond bash + date + cat.
+
+set -e
+
+# Resolve repo root from this script's location. Cleaner than depending on the
+# caller's environment — works whether invoked as `bash bin/qa-team-precheck`
+# or via the `$_QA_ROOT/bin/qa-team-precheck` form skills use.
+QA_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP_DIR="${TEMP:-${TMP:-/tmp}}"
+
+# 1. Run the update check. If it fails for any reason (network down, script
+#    missing), surface a sentinel that the agent can recognise — never block.
+if [ -x "$QA_ROOT/bin/qa-team-update-check" ] || [ -f "$QA_ROOT/bin/qa-team-update-check" ]; then
+  VER_STATUS=$(bash "$QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
+    || echo "UPDATE_CHECK_FAILED: script returned non-zero")
+else
+  VER_STATUS="UPDATE_CHECK_FAILED: not found at $QA_ROOT/bin/qa-team-update-check"
+fi
+echo "VERSION_STATUS: $VER_STATUS"
+
+# 2. Check the prompt-cooldown file. If a prompt fired in the last 10 minutes,
+#    suppress the next one (avoids re-prompting across parallel sub-agents).
+COOLDOWN_FILE="$TMP_DIR/.qa-update-asked"
+SKIP=0
+if [ -f "$COOLDOWN_FILE" ]; then
+  AGE=$(( $(date +%s) - $(cat "$COOLDOWN_FILE" 2>/dev/null | tr -d ' ' || echo 0) ))
+  if [ "$AGE" -lt 600 ]; then
+    SKIP=1
+  fi
+fi
+echo "SKIP_UPDATE_PROMPT: $SKIP"
+
+exit 0
