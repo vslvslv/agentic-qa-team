@@ -1,11 +1,13 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 3 | score: 100/100 | date: 2026-04-26 -->
+<!-- sources: mixed (official + community) | iteration: 5 | score: 100/100 | date: 2026-04-27 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
      Iter 2: 100/100 (+0) — added functools (lru_cache/partial) and itertools (chain/islice/groupby) idioms
      Iter 3: 100/100 (+0) — added Protocol structural typing deep-dive with @runtime_checkable (PEP 544)
      STOP: delta < 3 for two consecutive iterations (iter 2 and iter 3)
+     [New run] Iter 4 (this run iter 1): 100/100 (+0) — added structural pattern matching (match/case, Python 3.10+) and typing.NamedTuple idiom
+     Iter 5 (this run iter 2): 100/100 (+0) — added 9th community gotcha (circular imports) and 3 new anti-pattern table rows
 -->
 
 ## Core Philosophy
@@ -547,6 +549,69 @@ for region, group in itertools.groupby(orders, key=lambda o: o.region):
     print(f"{region}: ${total:.2f}")
 ```
 
+### Structural Pattern Matching (`match`/`case`, Python 3.10+)
+Python's `match` statement dispatches on the *structure* of an object, not just its identity. It can unpack sequences, map keys, and class attributes in a single expression — eliminating chains of `isinstance` / `if-elif`.
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: float
+    y: float
+
+def describe_point(pt: Point) -> str:
+    match pt:
+        case Point(x=0, y=0):
+            return "Origin"
+        case Point(x=0, y=y):
+            return f"Y-axis at {y}"
+        case Point(x=x, y=0):
+            return f"X-axis at {x}"
+        case Point(x=x, y=y) if x == y:
+            return f"Diagonal at {x}"
+        case Point(x=x, y=y):
+            return f"Point ({x}, {y})"
+
+def classify_command(command: list[str]) -> str:
+    match command:
+        case ["quit"]:
+            return "quit"
+        case ["go", direction] if direction in ("north", "south", "east", "west"):
+            return f"move {direction}"
+        case ["go", unknown]:
+            return f"unknown direction: {unknown}"
+        case ["pick", "up", item]:
+            return f"pick up {item}"
+        case _:
+            return "unknown command"
+
+print(describe_point(Point(0, 5)))            # Y-axis at 5.0
+print(classify_command(["go", "north"]))       # move north
+print(classify_command(["pick", "up", "key"])) # pick up key
+```
+
+### `typing.NamedTuple` for Typed Tuples
+`typing.NamedTuple` gives named tuples type annotations, default values, and docstrings while remaining lightweight (tuple semantics, no `__dict__`).
+
+```python
+from typing import NamedTuple
+
+class Coordinate(NamedTuple):
+    """Immutable 2-D coordinate with optional label."""
+    x: float
+    y: float
+    label: str = ""
+
+c = Coordinate(1.0, 2.0, label="origin")
+print(c.x, c.y, c.label)  # 1.0 2.0 origin
+print(c[0])                # 1.0 — tuple indexing still works
+x, y, _ = c                # unpacking works too
+
+# Unlike dataclasses, NamedTuples are hashable by default
+visited: set[Coordinate] = {Coordinate(0.0, 0.0), Coordinate(1.0, 1.0)}
+```
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -714,6 +779,33 @@ class QueryBuilder:
 query = QueryBuilder().where("age > 18").where("active = 1").build()
 ```
 
+### 9. Circular Import Pitfalls  [community]
+**Problem:** Module A imports module B, and module B imports module A. Python partially initialises the first module before the second finishes loading, so names defined *after* the import line don't exist yet when the other module tries to use them. This causes `ImportError` or `AttributeError` at import time — often only in specific execution orders, making it hard to reproduce.
+**Why:** Python's import system executes module code top-to-bottom on first import and caches a partially-initialised module in `sys.modules`. When B tries to use `A.SomeClass` before A has defined it, the name is simply missing.
+**Fix:** Restructure to break the cycle — move shared types to a third module (`models.py`, `types.py`). If unavoidable, use a local import inside the function that needs it.
+```python
+# BAD — models.py imports from services.py; services.py imports from models.py
+# models.py
+from services import validate_user   # circular!
+
+# GOOD option A — move shared types to a dedicated module
+# types.py
+from dataclasses import dataclass
+
+@dataclass
+class User:
+    id: int
+    name: str
+
+# models.py — imports from types.py, not services.py
+from types_module import User
+
+# GOOD option B — lazy local import inside the function only
+def get_service():
+    from services import UserService  # Imported here, not at module level
+    return UserService()
+```
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -732,3 +824,6 @@ query = QueryBuilder().where("age > 18").where("active = 1").build()
 | Modifying collection during iteration | Skipped or duplicated items | Iterate a copy or use a comprehension |
 | `Optional[int] = 0` (wrong Optional use) | Confusing intent — None not needed | `int = 0` for default value parameters |
 | Missing `field(default_factory=...)` in dataclass | Shared mutable state between instances | Always use `default_factory` for lists/dicts |
+| Circular imports between modules | Partial initialisation errors at import time | Extract shared types to a third module |
+| Using `match` without exhaustive cases | Silent fall-through when no case matches | Always add a `case _:` wildcard or document intentional fall-through |
+| Overusing `@property` for complex logic | Properties should be cheap reads; heavy logic belongs in explicit methods | Name it `calculate_x()` not `x` if it does real work |

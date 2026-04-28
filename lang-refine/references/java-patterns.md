@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java) | community (practitioner synthesis, Effective Java principles, awesome-java) | mixed | iteration: 2 | score: 100/100 | date: 2026-04-26 -->
+<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java) | community (practitioner synthesis, Effective Java principles, awesome-java) | mixed | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
 
 ## Core Philosophy
 
@@ -135,6 +135,18 @@ public class OrderAnalysis {
             .flatMap(c -> c.orders().stream())   // Customer → Stream<Order>
             .filter(o -> o.total() > 0)
             .toList();
+    }
+
+    // mapMulti (Java 16+) — more efficient than flatMap for conditional multi-expansion
+    // Push 0, 1, or N elements per input without allocating intermediate streams
+    public List<String> expandTags(List<Order> orders) {
+        return orders.<String>mapMulti((order, downstream) -> {
+            downstream.accept(order.customerId());
+            if (order.total() > 100) {
+                downstream.accept("HIGH_VALUE:" + order.customerId());
+            }
+            // emit nothing for orders with zero total
+        }).distinct().toList();
     }
 }
 ```
@@ -312,11 +324,116 @@ var result = process(data);   // What type is result?
 users.stream().map((var u) -> u.getName());  // prefer: .map(User::getName)
 ```
 
+### Virtual Threads (Java 21) — Scalable Concurrency Without Reactor Complexity
+Virtual threads are lightweight threads managed by the JVM rather than the OS. They enable thread-per-request style code (blocking I/O, familiar `try/catch` error handling) to scale to millions of concurrent operations without the callback complexity of reactive frameworks. The JVM automatically mounts/unmounts virtual threads on carrier OS threads when they block.
+
+```java
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.List;
+
+public class VirtualThreadDemo {
+
+    // Create a virtual-thread-per-task executor — recommended for I/O-bound workloads
+    public List<String> fetchAll(List<String> urls) throws Exception {
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<Future<String>> futures = urls.stream()
+                .map(url -> executor.submit(() -> fetchContent(url)))
+                .toList();
+
+            List<String> results = new ArrayList<>();
+            for (Future<String> f : futures) {
+                results.add(f.get());  // blocks virtual thread, not OS thread
+            }
+            return results;
+        }
+    }
+
+    // Structured concurrency (Java 21 preview) — scoped, bounded task lifetimes
+    public Result processOrder(long orderId) throws Exception {
+        try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+            Future<User>    user    = scope.fork(() -> userService.findById(orderId));
+            Future<Product> product = scope.fork(() -> productService.findByOrder(orderId));
+
+            scope.join().throwIfFailed();   // waits for both; cancels on first failure
+            return new Result(user.resultNow(), product.resultNow());
+        }
+    }
+
+    private String fetchContent(String url) throws Exception {
+        // Blocking HTTP call — safe on a virtual thread
+        var client = java.net.http.HttpClient.newHttpClient();
+        var request = java.net.http.HttpRequest.newBuilder()
+            .uri(java.net.URI.create(url)).build();
+        return client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString()).body();
+    }
+}
+```
+
+### CompletableFuture — Async Composition
+`CompletableFuture<T>` enables non-blocking async pipelines by composing async operations with `thenApply`, `thenCompose`, and `exceptionally`. It is the standard approach for async composition in pre-virtual-thread codebases and remains useful when you need explicit async execution control.
+
+```java
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class AsyncOrderService {
+    private final ExecutorService ioPool = Executors.newFixedThreadPool(10);
+
+    public CompletableFuture<OrderSummary> buildSummary(long orderId) {
+        CompletableFuture<Order> orderFuture =
+            CompletableFuture.supplyAsync(() -> orderRepo.findById(orderId), ioPool);
+
+        CompletableFuture<User> userFuture =
+            orderFuture.thenComposeAsync(
+                order -> CompletableFuture.supplyAsync(
+                    () -> userRepo.findById(order.userId()), ioPool));
+
+        return orderFuture.thenCombine(userFuture,
+            (order, user) -> new OrderSummary(order, user))
+            .exceptionally(ex -> {
+                log.error("Failed to build order summary for {}", orderId, ex);
+                return OrderSummary.empty(orderId);
+            });
+    }
+}
+```
+
 ---
 
 ## Language Idioms
 
 Java idioms are features or conventions that experienced Java developers use to write expressive, maintainable code — not just patterns expressed in Java but capabilities unique to the language.
+
+### Pattern Matching for instanceof (Java 16+)
+Eliminates the redundant cast after an `instanceof` check. The binding variable is scoped to the branch where the check succeeds, preventing accidental use outside the guarded block.
+
+```java
+// Old style — redundant cast, easy to mismatch type
+Object obj = getPayload();
+if (obj instanceof String) {
+    String s = (String) obj;     // cast needed despite check
+    System.out.println(s.length());
+}
+
+// New style — binding variable eliminates the cast
+if (obj instanceof String s) {
+    System.out.println(s.length());   // s is in scope here only
+}
+
+// Combining with switch (Java 21 pattern matching for switch)
+public String describe(Object obj) {
+    return switch (obj) {
+        case Integer i when i < 0  -> "negative int: " + i;
+        case Integer i             -> "positive int: " + i;
+        case String  s when s.isBlank() -> "blank string";
+        case String  s             -> "string: " + s;
+        case null                  -> "null";
+        default                    -> "other: " + obj.getClass().getSimpleName();
+    };
+}
+```
 
 ### Method References
 Instead of writing a lambda that only delegates to a single method, use a method reference. It reads closer to English, signals intent more clearly, and avoids shadowing the argument name.
@@ -607,6 +724,37 @@ public class UserProfile {
         return Optional.ofNullable(nickname);
     }
 }
+```
+
+**12. Breaking the equals/hashCode Contract [community]**
+If you override `equals` without overriding `hashCode`, objects that are logically equal will hash to different buckets in `HashMap`/`HashSet`, causing silent lookup failures. The root cause is that Java's `Object.hashCode()` uses object identity by default — a perfectly equal object by your definition will not be found via hash-based lookup unless both methods agree. Fix: always override both together; use `record` which auto-generates a correct contract, or IDE "Generate equals() and hashCode()" — and include the same fields in both.
+
+```java
+// BAD — only equals overridden; HashSet/HashMap will break
+public class OrderId {
+    private final String value;
+    public OrderId(String value) { this.value = value; }
+
+    @Override
+    public boolean equals(Object o) {
+        if (!(o instanceof OrderId other)) return false;
+        return value.equals(other.value);
+    }
+    // hashCode NOT overridden — uses identity hash!
+}
+
+Set<OrderId> ids = new HashSet<>();
+ids.add(new OrderId("ORD-1"));
+System.out.println(ids.contains(new OrderId("ORD-1")));  // FALSE — different hash!
+
+// GOOD — record auto-generates correct equals + hashCode
+public record OrderId(String value) {}
+
+// GOOD — manual implementation: same fields in both methods
+@Override public boolean equals(Object o) {
+    return o instanceof OrderId other && value.equals(other.value);
+}
+@Override public int hashCode() { return Objects.hash(value); }
 ```
 
 ---

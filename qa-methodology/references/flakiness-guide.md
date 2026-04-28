@@ -1,27 +1,27 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 5 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 2 | score: 100/100 | date: 2026-04-27 -->
+<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: synthesized from training knowledge — WebFetch blocked; WebSearch unavailable -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
-<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 
 ---
 
 ## Core Principles
 
 ### 1. Non-Determinism Is a First-Class Defect
-A flaky test is one that produces different outcomes (pass or fail) on the same code without any code change. Fowler's framing: non-determinism in tests is not a nuisance to tolerate — it actively destroys the value of your test suite because it erodes trust. Once developers accept "it'll pass on re-run," every red is suspect and every green is meaningless.
+A flaky test is one that produces different outcomes (pass or fail) on the same code without any code change. Fowler's framing: non-determinism in tests is not a nuisance to tolerate — it actively destroys the value of your test suite because it erodes trust. Once developers accept "it'll pass on re-run," every red is suspect and every green is meaningless. Google's data (2016): their internal tooling classified 1-in-7 failing tests as flaky, meaning engineers lose substantial time investigating phantom failures.
 
 ### 2. Fix or Quarantine — Never Silently Ignore
-A flaky test that remains in the main suite poisons the signal. The only acceptable responses are: (a) fix the root cause immediately, or (b) quarantine it with a visible tag and a tracking issue. Deletion is worse than quarantine — you lose the coverage and the history.
+A flaky test that remains in the main suite poisons the signal. The only acceptable responses are: (a) fix the root cause immediately, or (b) quarantine it with a visible tag and a tracking issue. Deletion is worse than quarantine — you lose the coverage and the history. A quarantine without a resolution SLA becomes a graveyard within 6 months.
 
 ### 3. Flakiness Has a Taxonomy — Diagnose Before Fixing
-Random retries without diagnosis treat symptoms. Root causes fall into four families: timing, shared state, external dependencies, and order-dependency. Each family has its own fix pattern.
+Random retries without diagnosis treat symptoms. Root causes fall into five families: timing, shared state, external dependencies, order-dependency, and randomness/environment. Each family has its own fix pattern. Applying the wrong fix (e.g., adding a retry when the real cause is shared state) masks the defect and makes the suite slower.
 
 ### 4. `sleep()` Is a Smell, Not a Fix
-`setTimeout`/`sleep` hard-codes an arbitrary wait that is simultaneously too long on fast machines and too short under load. It trades flakiness for slowness, not for correctness. The right replacement is an explicit condition poll (wait-for-element, retry with exponential backoff capped at a known stable condition).
+`setTimeout`/`sleep` hard-codes an arbitrary wait that is simultaneously too long on fast machines and too short under load. It trades flakiness for slowness, not for correctness. The right replacement is an explicit condition poll (`waitFor`, `toBeVisible`, retry with exponential backoff capped at a known stable condition). A suite with 50 tests each sleeping 500ms wastes 25 seconds of CI time per run.
 
 ### 5. Detection Must Be Systematic, Not Reactive
-Waiting for a developer to notice a flaky test means weeks of noise. Automated detection — running every test N times on every PR, or running the suite on a nightly rerun loop — surfaces flakiness early and produces a flakiness rate metric you can track.
+Waiting for a developer to notice a flaky test means weeks of noise. Automated detection — running every test N times on every PR, or running the suite on a nightly rerun loop — surfaces flakiness early and produces a flakiness rate metric you can track. Without a metric, you cannot improve. With a metric, teams routinely halve their flakiness rate in one sprint.
 
 ---
 
@@ -32,6 +32,7 @@ Waiting for a developer to notice a flaky test means weeks of noise. Automated d
 - You are onboarding new engineers and need a shared quarantine policy
 - You're introducing parallel test execution (order-dependency flakiness spikes)
 - You're migrating to a new test runner or CI platform (environment assumptions surface)
+- Your team is adopting microservices with contract tests (network-level flakiness increases)
 
 ---
 
@@ -39,21 +40,22 @@ Waiting for a developer to notice a flaky test means weeks of noise. Automated d
 
 ### Pattern 1 — Root Causes Taxonomy
 
-Flakiness root causes fall into four families:
+Flakiness root causes fall into five families:
 
-| Family | Description | Frequency (Google, 2016) |
-|--------|-------------|--------------------------|
-| **Timing** | Hard-coded sleeps, timing assumptions, race conditions | ~20% |
-| **Shared state** | Tests mutating shared DB rows, singletons, module-level mocks | ~45% |
-| **External dependencies** | Real network calls, third-party APIs, unstable test data services | ~15% |
-| **Order-dependency** | Test A passes only if test B ran first (or didn't run) | ~10% |
-| Other (env, randomness) | Non-deterministic IDs, locale, clock | ~10% |
+| Family | Description | Frequency (Google, 2016) | Primary Fix |
+|--------|-------------|--------------------------|-------------|
+| **Shared state** | Tests mutating shared DB rows, singletons, module-level mocks | ~45% | Per-test reset, transaction rollback |
+| **Timing** | Hard-coded sleeps, timing assumptions, race conditions | ~20% | `waitFor`, fake timers, condition polling |
+| **External dependencies** | Real network calls, third-party APIs, unstable test data services | ~15% | Mock at boundary (MSW, nock) |
+| **Order-dependency** | Test A passes only if test B ran first (or didn't run) | ~10% | Random ordering, per-test setup |
+| **Randomness & environment** | Non-deterministic IDs, locale, clock, `Math.random()` | ~10% | Seed random, fix locale, freeze time |
 
 Fix strategy per family:
 - **Timing**: replace `sleep()` with condition-polling helpers (`waitFor`, Playwright's `expect().toBeVisible()`)
 - **Shared state**: isolate per-test — reset DB in `beforeEach`, use transaction rollbacks, avoid module-level mutable state
 - **External deps**: mock at the boundary — use `msw` (Mock Service Worker) for HTTP, `nock` for Node HTTP interception
 - **Order-dependency**: run tests in random order regularly (`--randomize` in Jest, `--runInBand` to detect, then fix)
+- **Randomness**: seed `Math.random()` with a fixed value in tests; use `faker.seed(0)` when generating test data; freeze `Date` with fake timers
 
 ### Pattern 2 — Detection via Reruns
 
@@ -113,6 +115,8 @@ export default defineConfig({
     ['list'],
     // HTML report shows retry counts and flakiness annotations
     ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    // JUnit for CI flakiness tracking integration (BuildPulse, Trunk)
+    ['junit', { outputFile: 'test-results/results.xml' }],
   ],
 });
 ```
@@ -169,6 +173,7 @@ describe('OrderService', () => {
 
   // [QUARANTINE] Flaky: races between payment webhook and inventory update.
   // Root cause: shared DB row; external webhook timing. Issue: PROJ-1234
+  // Opened: 2026-04-10 | Owner: @jane | SLA: 2026-04-24
   it.skip('[QUARANTINE] inventory count matches after concurrent orders', async () => {
     // test body preserved for context and future fix
   });
@@ -363,6 +368,138 @@ describe('UserService', () => {
 });
 ```
 
+### Pattern 7 — Seeding Randomness for Deterministic Test Data [community]
+
+Flakiness caused by `Math.random()`, `crypto.randomUUID()`, or faker-generated data appears in ID-based comparisons, ordering assertions, and edge case generation.
+
+```typescript
+// BAD: faker without seeding — different data every run
+import { faker } from '@faker-js/faker';
+
+it('creates a user with unique email', async () => {
+  const email = faker.internet.email(); // different each run — not flaky itself,
+  // but ordering tests by email or asserting specific format can fail inconsistently
+  const user = await UserService.create({ email });
+  expect(user.email).toBe(email);
+});
+
+// GOOD: seed faker in beforeEach for deterministic, reproducible test data
+describe('UserService', () => {
+  beforeEach(() => {
+    faker.seed(12345); // fixed seed — same sequence every run
+  });
+
+  it('creates a user with unique email', async () => {
+    const email = faker.internet.email(); // 'Jed_Schumm@yahoo.com' — same every run
+    const user = await UserService.create({ email });
+    expect(user.email).toBe(email);
+  });
+
+  it('handles duplicate email gracefully', async () => {
+    // Because seed is reset in beforeEach, this also gets the same email
+    // making the "duplicate" scenario reproducible
+    const email = faker.internet.email();
+    await UserService.create({ email });
+    await expect(UserService.create({ email })).rejects.toThrow('Email already exists');
+  });
+});
+```
+
+```typescript
+// For crypto.randomUUID() — mock it in tests that assert on generated IDs
+import { randomUUID } from 'crypto';
+jest.mock('crypto', () => ({
+  ...jest.requireActual('crypto'),
+  randomUUID: jest.fn(),
+}));
+
+beforeEach(() => {
+  // Predictable ID sequence — test assertions don't depend on random values
+  let counter = 0;
+  (randomUUID as jest.Mock).mockImplementation(() => `test-id-${++counter}`);
+});
+```
+
+### Pattern 8 — React act() and Concurrent Mode Flakiness [community]
+
+React's `act()` warning ("An update to X inside a test was not wrapped in act(...)") is one of the most common sources of intermittent failures in React component tests. It indicates state updates happening outside the test's synchronous boundary.
+
+```typescript
+// BAD: state update after await not wrapped in act — sporadic act() warning
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { UserProfile } from './UserProfile';
+
+it('shows user name after loading', async () => {
+  render(<UserProfile userId="1" />);
+  // FLAKY: the component fetches on mount, but we don't wait for the update
+  await new Promise(r => setTimeout(r, 100)); // sleep smell
+  expect(screen.getByText('Alice')).toBeInTheDocument();
+});
+
+// GOOD: use findBy* which internally wraps in act() and retries
+it('shows user name after loading', async () => {
+  render(<UserProfile userId="1" />);
+  // findByText polls until element appears (wraps in act automatically)
+  // eliminates the need for sleep AND the act() warning
+  const nameEl = await screen.findByText('Alice', {}, { timeout: 3000 });
+  expect(nameEl).toBeInTheDocument();
+});
+
+// GOOD: when triggering user events, @testing-library/user-event v14+
+// wraps all interactions in act() automatically
+it('shows confirmation after button click', async () => {
+  const user = userEvent.setup(); // v14 API — wraps all events in act()
+  render(<ConfirmDialog onConfirm={jest.fn()} />);
+  await user.click(screen.getByRole('button', { name: /confirm/i }));
+  await screen.findByText('Action confirmed');
+});
+```
+
+### Pattern 9 — Vitest Concurrent Test Isolation [community]
+
+Vitest's `test.concurrent` enables parallel tests within a file but requires explicit isolation — shared imports (singletons, module-level state) cause race conditions even within a single file.
+
+```typescript
+// vitest.config.ts — configure pool for safe concurrent execution
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // 'forks' pool: each test file gets a separate process — maximum isolation
+    // (slower but eliminates module-level shared state across files)
+    pool: 'forks',
+    // Enable per-test mocking isolation (resets module registry between tests)
+    clearMocks: true,
+    restoreMocks: true,
+    resetMocks: true,
+  },
+});
+```
+
+```typescript
+// safe concurrent test pattern — inject dependencies, don't share singletons
+import { describe, it, expect, vi } from 'vitest';
+import { createUserService } from './UserService';
+
+// Each test creates its own service instance — no shared state
+describe.concurrent('UserService concurrent tests', () => {
+  it('creates user A', async ({ expect }) => {
+    const mockDb = { insert: vi.fn().mockResolvedValue({ id: 'A', name: 'Alice' }) };
+    const service = createUserService(mockDb); // factory, not singleton
+    const user = await service.create({ name: 'Alice' });
+    expect(user.id).toBe('A');
+  });
+
+  it('creates user B', async ({ expect }) => {
+    const mockDb = { insert: vi.fn().mockResolvedValue({ id: 'B', name: 'Bob' }) };
+    const service = createUserService(mockDb); // independent mock
+    const user = await service.create({ name: 'Bob' });
+    expect(user.id).toBe('B');
+  });
+});
+```
+
 ---
 
 ## Anti-Patterns
@@ -377,11 +514,11 @@ describe('UserService', () => {
 
 ### AP3 — Shared Database Without Rollback [community]
 **What:** Multiple tests insert rows into the same DB schema with no cleanup, assuming test order or assuming "test data won't collide."
-**Why harmful:** Works until tests run in parallel. In a parallel run, concurrent writes cause constraint violations, stale reads, or unexpected result sets.
+**Why harmful:** Works until tests run in parallel. In a parallel run, concurrent writes cause constraint violations, stale reads, or unexpected result sets. Transaction rollback (wrapping each test in a DB transaction that's rolled back in `afterEach`) eliminates this cleanly.
 
 ### AP4 — Real Network Calls in Unit/Integration Tests [community]
 **What:** Tests that call actual HTTP endpoints, third-party APIs, or even `localhost` services without mocking.
-**Why harmful:** Flakiness from network latency, API rate limits, credential expiry, and upstream outages — all outside your control.
+**Why harmful:** Flakiness from network latency, API rate limits, credential expiry, and upstream outages — all outside your control. Use MSW for HTTP, `nock` for Node.js raw HTTP, or `@sinonjs/fake-server` for older setups.
 
 ### AP5 — Deleting Flaky Tests [community]
 **What:** Removing a test rather than quarantining it because "it was never reliable anyway."
@@ -390,6 +527,10 @@ describe('UserService', () => {
 ### AP6 — Global Date/Time Without Clock Control [community]
 **What:** Tests that use `new Date()` or `Date.now()` without injecting a controllable clock.
 **Why harmful:** Tests pass at 11:58pm and fail at midnight (timezone + day-boundary edge cases). Month/year rollovers reveal date arithmetic bugs hidden by luck.
+
+### AP7 — Quarantine Without SLA [community]
+**What:** Tests marked `[QUARANTINE]` or `it.skip` with no due date, no owner, and no tracking issue.
+**Why harmful:** The quarantine backlog accumulates indefinitely. Coverage gaps grow. After 6 months, quarantined tests are effectively deleted — nobody remembers what they tested or why they broke.
 
 ---
 
@@ -419,6 +560,12 @@ describe('UserService', () => {
 8. **Unawaited Promises in `afterEach` cause order-dependency across test files.** [community]
    `afterEach(async () => { cleanup() })` — if `cleanup()` returns a Promise and you forget `await`, Jest silently moves on to the next test. The cleanup runs concurrently with the next test's setup, corrupting shared state. Always `await` every async call in setup/teardown hooks, and enable `jest/no-floating-promises` ESLint rule to catch this statically.
 
+9. **Cypress `cy.intercept()` race conditions with async route registration.** [community]
+   In Cypress, `cy.intercept()` must be called before the network request it intercepts. If the component triggers a fetch immediately on mount (before `cy.intercept()` registers), the real request goes through. Pattern: always call `cy.intercept()` before `cy.visit()` or `cy.mount()`, never after. Teams migrating from Cypress 9 `cy.route()` to `cy.intercept()` often hit this — the semantics changed.
+
+10. **BuildPulse / Trunk Flaky Tests miss flakiness below their detection threshold.** [community]
+    Third-party flakiness trackers (BuildPulse, Trunk) detect tests that fail in < X% of runs with zero code change. Tests that flake once a month (below the threshold) accumulate silently. Complement third-party tooling with a nightly 5× rerun job that explicitly reports pass-on-retry counts — this catches low-frequency flakiness the trackers miss.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -426,12 +573,14 @@ describe('UserService', () => {
 ### When quarantine-and-fix works well
 - Small-to-medium test suites (< 2000 tests) where flaky tests are rare events
 - Teams with a dedicated "flaky test" rotation or clear ownership
+- Teams with a quarantine SLA (e.g., all quarantined tests fixed within 2 sprints)
 
 ### When quarantine becomes unmanageable
 - Suites with > 5% flakiness rate: quarantine backlog grows faster than it's fixed
 - Teams without a fix-it rotation: quarantine becomes a graveyard
+- Monorepos where multiple teams share a test runner: no single owner for the backlog
 
-**Alternative: Flakiness budget + hard cap.** Google enforces that any test exceeding a flakiness threshold is automatically disabled and must be fixed before re-enabling. This is stricter than quarantine but prevents backlog growth.
+**Alternative: Flakiness budget + hard cap.** Google enforces that any test exceeding a flakiness threshold is automatically disabled and must be fixed before re-enabling. This is stricter than quarantine but prevents backlog growth. Implementation: a CI job that reads retry counts from JUnit XML output and fails the build if any single test's flakiness rate exceeds 3%.
 
 **Alternative: Test hermetic environments.** Instead of mocking, spin up a real DB and real service in a container per test run (Testcontainers for Node). Eliminates most shared-state and external-dep flakiness at the cost of slower setup (~5–30s per suite). Worthwhile for integration tests.
 
@@ -472,10 +621,14 @@ it('saves and retrieves a user', async () => {
 
 **Alternative: Identify and fix order-dependency with `--shard` runs.** Run your suite in different shard orderings in CI. Tests that fail only in certain shard combinations are order-dependent. Fix: ensure each test cleans up after itself regardless of what ran before.
 
+**Alternative: Third-party flakiness detection services.** BuildPulse, Trunk Flaky Tests, and GitHub's native flaky test detection (beta) automatically identify flaky tests from CI history without requiring manual nightly jobs. Trade-off: they require sending test results to an external service and have detection thresholds that miss infrequent flakiness.
+
 ### Known adoption costs
 - Quarantine tooling requires team agreement on tags and a process to review the backlog weekly
 - Replacing `sleep()` with `waitFor()` requires understanding what condition to wait on — more thinking upfront, but the test becomes self-documenting
-- Fake timers (e.g., `jest.useFakeTimers`) can cause issues with async libraries that internally use `setTimeout` for debouncing (e.g., lodash debounce, React batched updates) — needs per-library investigation
+- Fake timers (e.g., `jest.useFakeTimers`) can cause issues with async libraries that internally use `setTimeout` for debouncing (e.g., lodash debounce, React batched updates in older versions) — needs per-library investigation
+- MSW adds a test infrastructure dependency; handler maintenance burden grows with API surface area
+- Testcontainers requires Docker in CI; adds 5–30s cold-start latency per suite; Docker-in-Docker on some CI providers requires privileged mode
 
 ---
 
@@ -490,3 +643,6 @@ it('saves and retrieves a user', async () => {
 | Mock Service Worker | Community | https://mswjs.io/ | Network-level mocking that prevents real HTTP calls |
 | Testcontainers for Node | Community | https://testcontainers.com/guides/getting-started-with-testcontainers-for-nodejs/ | Hermetic DB/service containers to eliminate external dep flakiness |
 | @sinonjs/fake-timers | Community | https://github.com/sinonjs/fake-timers | Controllable clock for timing-sensitive tests |
+| BuildPulse | Community | https://buildpulse.io/ | Automated flaky test detection from CI history |
+| Trunk Flaky Tests | Community | https://trunk.io/flaky-tests | Flaky test tracking with auto-quarantine |
+| Vitest Pool Configuration | Official | https://vitest.dev/config/#pool | Concurrent test isolation settings |

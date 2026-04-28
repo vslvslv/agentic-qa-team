@@ -192,7 +192,7 @@ Read existing test files first — append missing `describe`/flow blocks, never 
 **Detox tests (React Native / Expo):**
 
 > Reference: [Detox patterns guide](references/detox-patterns.md)
-> Key patterns: testID selectors · waitFor idioms · CI-aware timeouts · disableSynchronization (narrow scope) · artifact collection · setURLBlacklist for analytics · deep link testing · push notification simulation · platform-conditional logic · parallel sharding
+> Key patterns: testID selectors · waitFor idioms · CI-aware timeouts · disableSynchronization (narrow scope) · artifact collection · setURLBlacklist for analytics · deep link testing · push notification simulation · platform-conditional logic · parallel sharding · element.getAttributes() · biometrics simulation (matchFace/unmatchFace) · Expo-specific setup · React Navigation ghost screen · WebSocket sync · Android lock screen · orientation testing · flakiness decision tree
 
 ```javascript
 // e2e/login.test.js
@@ -221,6 +221,7 @@ describe("Login Flow", () => {
 **Appium / WebDriverIO tests (Native iOS/Android):**
 
 > Reference: [Appium/WebDriverIO patterns guide](references/appium-wdio-patterns.md)
+> Key patterns: TypeScript POM with BasePage · accessibility-id selector hierarchy · explicit waits (waitForDisplayed/waitUntil/waitForStable) · mobile gestures (W3C Actions API) · parallel device execution with typed capabilities · auth bypass via API token + deep-link · network mock (browser.mock) · beforeEach app reset (terminateApp/activateApp) · CI Appium 2 driver installation + pin + wait-on · animation disable (Android ADB + iOS processArguments) · performance tuning (snapshotMaxDepth, elementResponseAttributes) · visual regression (@wdio/visual-service) · device farm integration (BrowserStack/Sauce Labs) · Cucumber BDD option · retry/flake quarantine
 
 ```typescript
 // test/specs/login.spec.ts

@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: mixed | iteration: 3 | score: 100/100 | date: 2026-04-26 -->
+<!-- sources: official | community | mixed | iteration: 1 | score: 100/100 | date: 2026-04-27 -->
 
 ## Core Philosophy
 

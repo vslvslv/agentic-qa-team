@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 3 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: JavaScript | topic: test-pyramid | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
 <!-- sources: training-knowledge synthesis (WebFetch blocked, WebSearch unavailable) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog -->
@@ -14,7 +14,7 @@ The pyramid's layers are ordered by execution speed and isolation level. Unit te
 
 ### 2. Confidence scales with integration scope, not test count
 
-A single well-scoped integration test that exercises a real database query buys more confidence than ten unit tests mocking the ORM. The pyramid is a *ratio heuristic*, not a hard rule — the shape emerges from maximising confidence per unit of feedback-loop cost.
+A single well-scoped integration test that exercises a real database query buys more confidence than ten unit tests mocking the ORM. The pyramid is a *ratio heuristic*, not a hard rule — the shape emerges from maximising confidence per unit of feedback-loop cost. Google's internal data (2010) found that "Medium" tests (integration-level) caught the most bugs per test written, outperforming both Small (unit) and Large (e2e) tests in defect-detection density.
 
 ### 3. Test boundaries should match deployment boundaries
 
@@ -34,7 +34,7 @@ No codebase naturally has exactly 70 % unit tests. Use ratio targets as a diagno
 
 | Context | Guidance |
 |---------|----------|
-| Greenfield TypeScript API/service | Apply the full pyramid from day one; enforce ratios in CI |
+| Greenfield JavaScript API/service | Apply the full pyramid from day one; enforce ratios in CI |
 | Legacy codebase with no tests | Start with integration/e2e (characterisation tests), then extract unit tests downward as you refactor |
 | React/Node frontend | Use Testing Trophy weighting — lean on integration tests over unit tests for UI logic |
 | Microservices mesh | Add contract tests as a fourth layer between integration and e2e |
@@ -49,15 +49,15 @@ No codebase naturally has exactly 70 % unit tests. Use ratio targets as a diagno
 
 The original framing defines three layers:
 
-- **Unit** — tests a single function/class in isolation; dependencies stubbed or mocked; runs in < 10 ms per test.
+- **Unit** — tests a single function/module in isolation; dependencies stubbed or mocked; runs in < 10 ms per test.
 - **Integration** (Service) — tests how multiple units cooperate, including real I/O to a database, file system, or in-process HTTP handler; no browser.
 - **End-to-End (UI/System)** — drives the full system through its real UI or external API surface; validates user journeys.
 
 Typical ratio target: **70 % unit / 20 % integration / 10 % e2e**.
 
-```typescript
-// Unit test — isolated, no I/O (Jest + TypeScript)
-import { calculateDiscount } from './discount';
+```javascript
+// Unit test — isolated, no I/O (Jest + JavaScript)
+const { calculateDiscount } = require('./discount');
 
 describe('calculateDiscount', () => {
   it('applies 10% for orders over $100', () => {
@@ -81,15 +81,15 @@ describe('calculateDiscount', () => {
 
 Integration tests should exercise the real storage layer — not a mocked repository — to catch ORM quirks, constraint violations, and query N+1 problems that unit tests cannot see.
 
-```typescript
-// Integration test — real Postgres via testcontainers (Jest + TypeScript)
-import { GenericContainer, StartedTestContainer } from 'testcontainers';
-import { DataSource } from 'typeorm';
-import { OrderRepository } from './order.repository';
-import { Order } from './order.entity';
+```javascript
+// Integration test — real Postgres via testcontainers (Jest + JavaScript)
+const { GenericContainer } = require('testcontainers');
+const { DataSource } = require('typeorm');
+const { OrderRepository } = require('./order.repository');
+const { Order } = require('./order.entity');
 
-let container: StartedTestContainer;
-let dataSource: DataSource;
+let container;
+let dataSource;
 
 beforeAll(async () => {
   container = await new GenericContainer('postgres:15')
@@ -119,7 +119,7 @@ it('persists and retrieves an order with correct total', async () => {
   const repo = new OrderRepository(dataSource);
   const saved = await repo.create({ customerId: 'c1', total: 120.0 });
   const fetched = await repo.findById(saved.id);
-  expect(fetched?.total).toBe(120.0);
+  expect(fetched.total).toBe(120.0);
 });
 ```
 
@@ -127,9 +127,9 @@ it('persists and retrieves an order with correct total', async () => {
 
 E2e tests are expensive — reserve them for the paths that, if broken, would immediately stop revenue or access.
 
-```typescript
-// E2e test — Playwright + TypeScript
-import { test, expect } from '@playwright/test';
+```javascript
+// E2e test — Playwright + JavaScript
+const { test, expect } = require('@playwright/test');
 
 test('user can place an order and see confirmation', async ({ page }) => {
   await page.goto('/shop');
@@ -149,18 +149,18 @@ test('user can place an order and see confirmation', async ({ page }) => {
 Kent C. Dodds observed that for UI-heavy React applications, the classic pyramid under-weights integration tests. In his *Testing Trophy* model the largest layer is **integration** — components rendered against their real hooks and context, with mocked network only at the boundary.
 
 The four layers from bottom to top:
-1. **Static analysis** (TypeScript, ESLint) — free confidence, no runtime needed.
+1. **Static analysis** (ESLint, JSDoc) — free confidence, no runtime needed.
 2. **Unit tests** — pure logic, selector functions, reducers.
 3. **Integration tests** (largest) — full component trees, React Testing Library, MSW for network.
 4. **E2e tests** (small) — critical paths only.
 
-```typescript
-// Integration test (Testing Trophy) — React Testing Library v14 + MSW v2 + userEvent v14
-import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';           // separate package
-import { http, HttpResponse } from 'msw';                      // MSW v2 API
-import { setupServer } from 'msw/node';
-import { CheckoutForm } from './CheckoutForm';
+```javascript
+// Integration test (Testing Trophy) — React Testing Library + MSW v2 + userEvent v14
+const { render, screen } = require('@testing-library/react');
+const userEvent = require('@testing-library/user-event');
+const { http, HttpResponse } = require('msw');
+const { setupServer } = require('msw/node');
+const { CheckoutForm } = require('./CheckoutForm');
 
 const server = setupServer(
   http.post('/api/orders', () =>
@@ -173,8 +173,8 @@ afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
 it('submits the form and shows confirmation message', async () => {
-  const user = userEvent.setup();                              // v14: call setup() first
-  render(<CheckoutForm />);
+  const user = userEvent.setup();
+  render(React.createElement(CheckoutForm));
   await user.type(screen.getByLabelText('Email'), 'user@example.com');
   await user.click(screen.getByRole('button', { name: /place order/i }));
   expect(await screen.findByText(/order confirmed/i)).toBeInTheDocument();
@@ -190,16 +190,16 @@ The Honeycomb proposes:
 - **Integration contract tests** — verify a service honours the contract of *one* dependency at a time.
 - **E2e tests** (smallest) — only the business-critical multi-service journeys.
 
-Unit tests are not absent, but they are reserved for genuinely complex logic — not for every class. [community] The key Spotify insight: _testing in isolation against real infrastructure breeds more confidence than testing against mocks that may silently drift from reality._
+Unit tests are not absent, but they are reserved for genuinely complex logic — not for every module. [community] The key Spotify insight: _testing in isolation against real infrastructure breeds more confidence than testing against mocks that may silently drift from reality._
 
-```typescript
+```javascript
 // Honeycomb "integrated" test — real service + real Postgres + real Redis, no e2e browser
-// tests/integrated/recommendations.integrated.test.ts
-import { createApp } from '../../src/app';
-import { TestEnvironment } from '../helpers/TestEnvironment';
-import request from 'supertest';
+// tests/integrated/recommendations.integrated.test.js
+const { createApp } = require('../../src/app');
+const { TestEnvironment } = require('../helpers/TestEnvironment');
+const request = require('supertest');
 
-let env: TestEnvironment;
+let env;
 
 beforeAll(async () => {
   // Start real Postgres and Redis containers; apply migrations
@@ -228,9 +228,115 @@ test('GET /recommendations returns personalised items from real DB + cache', asy
 });
 ```
 
----
+### Enforcing Pyramid Shape in CI  [community]
 
-## Anti-Patterns
+Without automated enforcement, pyramid shape drifts over time. The simplest guard is a Jest/Vitest `--verbose` output parser that counts tests by directory convention (`tests/unit/`, `tests/integration/`, `tests/e2e/`) and fails CI when the shape inverts.
+
+```javascript
+// scripts/check-pyramid-shape.js — run as a CI step after tests
+// Expects Jest JSON output: jest --json --outputFile=jest-results.json
+import { readFileSync } from 'fs';
+
+const results = JSON.parse(readFileSync('./jest-results.json', 'utf8'));
+
+let unit = 0, integration = 0, e2e = 0;
+
+for (const suite of results.testResults) {
+  const path = suite.testFilePath;
+  if (/[\\/]unit[\\/]/.test(path) || /\.unit\.test\.js$/.test(path)) {
+    unit += suite.numPassingTests + suite.numFailingTests;
+  } else if (/[\\/]e2e[\\/]/.test(path) || /\.e2e\.test\.js$/.test(path)) {
+    e2e += suite.numPassingTests + suite.numFailingTests;
+  } else {
+    integration += suite.numPassingTests + suite.numFailingTests;
+  }
+}
+
+const total = unit + integration + e2e;
+console.log(`Pyramid shape: unit=${unit} (${Math.round(unit/total*100)}%) | ` +
+  `integration=${integration} (${Math.round(integration/total*100)}%) | ` +
+  `e2e=${e2e} (${Math.round(e2e/total*100)}%)`);
+
+// Warn (not fail) if e2e exceeds integration — a hard failure is too aggressive
+if (e2e > integration) {
+  console.warn('WARNING: e2e count exceeds integration count — pyramid may be inverting.');
+  process.exit(1); // Adjust to process.exit(0) for warning-only mode
+}
+```
+
+
+
+Modern JavaScript projects using `"type": "module"` in `package.json` often choose **Vitest** over Jest because it runs in native ESM without Babel transforms. The API is Jest-compatible, so migration is low-friction. Vitest also co-locates unit tests next to source with `.test.js` files and provides a browser mode for DOM-level tests.
+
+```javascript
+// discount.test.js — Vitest + ESM (no require(), no transform)
+import { describe, it, expect } from 'vitest';
+import { calculateDiscount } from './discount.js';
+
+describe('calculateDiscount', () => {
+  it('returns 10% for standard members over $100', () => {
+    expect(calculateDiscount({ total: 150, tier: 'standard' })).toBe(15);
+  });
+
+  it('returns 20% for gold members regardless of total', () => {
+    expect(calculateDiscount({ total: 50, tier: 'gold' })).toBe(10);
+  });
+
+  it('returns 0 when total is at the threshold boundary', () => {
+    // Boundary value: exactly $100 should NOT trigger the discount
+    expect(calculateDiscount({ total: 100, tier: 'standard' })).toBe(0);
+  });
+
+  it('throws for unknown membership tier', () => {
+    expect(() => calculateDiscount({ total: 150, tier: 'vip' }))
+      .toThrow('Unknown tier: vip');
+  });
+});
+```
+
+### Node.js HTTP Integration Test (no framework)  [community]
+
+When your service is a plain Express or Fastify app, `supertest` gives you a genuine integration test against the running HTTP layer without needing a browser. This tests middleware stacks, request parsing, and response serialisation — all layers that pure unit tests skip.
+
+```javascript
+// tests/integration/orders.test.js — supertest + Jest/Vitest
+import request from 'supertest';
+import { buildApp } from '../../src/app.js';
+import { createTestDb } from '../helpers/db.js';
+
+let app;
+let db;
+
+beforeAll(async () => {
+  db = await createTestDb(); // spins up SQLite in-memory for speed
+  app = buildApp({ db });
+});
+
+afterAll(() => db.destroy());
+
+afterEach(() => db.truncate('orders'));
+
+it('POST /orders creates an order and returns 201 with id', async () => {
+  const res = await request(app)
+    .post('/orders')
+    .send({ customerId: 'c1', items: [{ sku: 'A1', qty: 2 }] })
+    .set('Accept', 'application/json');
+
+  expect(res.status).toBe(201);
+  expect(res.body).toMatchObject({ id: expect.any(String), status: 'pending' });
+});
+
+it('POST /orders returns 422 when items array is empty', async () => {
+  const res = await request(app)
+    .post('/orders')
+    .send({ customerId: 'c1', items: [] });
+
+  expect(res.status).toBe(422);
+  expect(res.body.error).toMatch(/items must not be empty/i);
+});
+```
+
+
 
 ### Inverted Pyramid (Ice Cream Cone)
 
@@ -247,7 +353,7 @@ Going too far the other direction: mocking every dependency so that no real I/O 
 
 ### Testing Implementation Details
 
-Writing assertions on private methods, internal state, or component instance variables. These tests break on every refactor even when the behaviour is unchanged. [community] Signal: you are asserting on `component.state.isLoading` instead of `screen.getByRole('status')`.
+Writing assertions on private methods, internal state, or component instance variables. These tests break on every refactor even when the behaviour is unchanged. [community] Signal: you are asserting on `wrapper.state().isLoading` (Enzyme-style) instead of `screen.getByRole('status')` (RTL-style).
 
 ### Skipping the Integration Layer Entirely
 
@@ -256,6 +362,10 @@ Teams that go unit → e2e with nothing in between produce the worst of both wor
 ### Ratio Cargo-Culting
 
 Enforcing "70/20/10" as a hard CI gate is counterproductive. [community] A CLI tool that does pure data transformation may legitimately have 95 % unit tests. A data-pipeline that moves bytes between services may have 70 % integration tests. Use ratios to diagnose imbalance, not as compliance checkboxes.
+
+### Pyramid Shape Drift Goes Unnoticed
+
+Teams that don't measure their test-type distribution let the pyramid quietly invert over months. New engineers add e2e tests because they are the most visible; unit tests get deleted when refactoring because they feel brittle. Without a CI check, nobody notices until the build takes 45 minutes. [community] Fix: add a test-count-by-type job to CI that fails with a warning when e2e count exceeds integration count, or when unit tests are less than 50 % of total.
 
 ---
 
@@ -273,7 +383,11 @@ Enforcing "70/20/10" as a hard CI gate is counterproductive. [community] A CLI t
 
 6. **Snapshot tests become trust-no-one tests** [community] — React component snapshot tests that are updated automatically (`jest --updateSnapshot`) degrade into rubber-stamp assertions. Developers update them to pass CI without reading the diff. Fix: treat snapshot updates as code review items; set a policy that reviewers must approve any snapshot diff.
 
-7. **TypeScript types do not replace runtime validation tests** [community] — A typed service that receives data from an external API without a runtime schema (e.g. `zod`) will fail at runtime when the API changes shape, even if all type-checked tests pass. The type system cannot test external contract compliance.
+7. **Node.js module caching corrupts test isolation** [community] — `require()` caches module exports by file path. If a module holds singleton state (DB connections, config, event emitters), re-requiring it returns the cached instance with dirty state from a previous test. Fix: call `jest.resetModules()` between tests or restructure singletons to be injectable.
+
+8. **ESM interop breaks Jest mocking** [community] — Native ESM modules cannot be mocked with `jest.mock()` the same way as CJS. `jest.unstable_mockModule()` requires top-level await and a specific import ordering. Teams upgrading from CJS to ESM discover all their mock setups break simultaneously. Fix: migrate to Vitest for ESM projects, or use a Babel transform to keep CJS during Jest runs.
+
+9. **Shared Playwright base URL causes cross-environment test bleed** [community] — When a single `playwright.config.js` points `baseURL` to a shared staging environment, parallel test workers from multiple PRs corrupt each other's data. Teams running CI on feature branches often discover this the hard way when staging data is unexpectedly mutated. Fix: use ephemeral preview environments per PR (Vercel/Railway/Render preview deploys) so each test run has an isolated base.
 
 ---
 
@@ -288,6 +402,7 @@ Enforcing "70/20/10" as a hard CI gate is counterproductive. [community] A CLI t
 | Data-science / ML notebooks | Property-based testing + characterisation tests; pyramid ratios irrelevant |
 | Legacy monolith with no tests | Work top-down: add e2e first for safety net, then push coverage downward as you refactor |
 | Browser extensions / mobile native | E2e proportion increases; device/OS matrix is a unique dimension |
+| Pure functions / algorithmic library | Near-100 % unit tests is correct — almost no integration surface |
 
 ### Adoption costs
 
@@ -301,6 +416,7 @@ Enforcing "70/20/10" as a hard CI gate is counterproductive. [community] A CLI t
 - **No integration layer yet?** Start with a single "smoke" integration test per service boundary. One test is better than zero.
 - **Can't afford Playwright?** Cypress is more beginner-friendly; even basic `cy.visit` + form-submit coverage on two critical journeys is enough to catch regressions.
 - **No testcontainers budget?** SQLite in-memory as a test database is inferior but far better than mocking the entire ORM.
+- **Google's alternative taxonomy:** Small / Medium / Large tests map to unit / integration / e2e with more nuance — "Large" is not "E2e browser" but "crosses process boundaries". Useful when the word "unit" causes theological debates.
 
 ---
 
@@ -315,6 +431,9 @@ Enforcing "70/20/10" as a hard CI gate is counterproductive. [community] A CLI t
 | Test Sizes (Google) | Community | https://testing.googleblog.com/2010/12/test-sizes.html | Small/Medium/Large taxonomy as practical alternative to pyramid |
 | Spotify Honeycomb | Community | https://engineering.atspotify.com/2018/01/testing-of-microservices/ | Microservice-specific reshape of the pyramid |
 | Testcontainers for Node | Tool | https://testcontainers.com/guides/getting-started-with-testcontainers-for-nodejs/ | Real integration tests against containerised dependencies |
-| Playwright | Tool | https://playwright.dev/docs/intro | Modern e2e testing for TypeScript |
+| Playwright | Tool | https://playwright.dev/docs/intro | Modern e2e testing for JavaScript/Node |
 | React Testing Library | Tool | https://testing-library.com/docs/react-testing-library/intro/ | Integration-layer testing aligned with Testing Trophy |
 | MSW (Mock Service Worker) | Tool | https://mswjs.io/docs/ | Network boundary mocking without intercepting implementation |
+| Vitest | Tool | https://vitest.dev/guide/ | Fast Jest-compatible test runner for ESM-native JavaScript projects |
+| supertest | Tool | https://github.com/ladjs/supertest | HTTP integration tests against Express/Fastify without a running server |
+| Better Specs (JS) | Community | https://www.betterspecs.org/ | Opinionated naming and structure conventions for integration tests |

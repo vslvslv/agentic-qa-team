@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 4 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: JavaScript | topic: test-isolation | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
 <!-- Sources: synthesized from training knowledge (WebFetch blocked, WebSearch unavailable) -->
 <!-- Primary references: martinfowler.com/bliki/UnitTest.html, xunitpatterns.com/Four Phase Test, -->
 <!--                     Google Testing Blog, Jest/Vitest docs, community production experience   -->
@@ -102,8 +102,8 @@ optional — it is the foundation that makes the entire test suite trustworthy.
 Each phase is separated by a blank line and never interleaved. The Act phase contains exactly one
 call. The Assert phase verifies the outcome of that single call.
 
-```typescript
-import { calculateDiscount } from './pricing';
+```javascript
+const { calculateDiscount } = require('./pricing');
 
 describe('calculateDiscount', () => {
   it('applies 20% discount when customer is premium and cart exceeds $100', () => {
@@ -138,13 +138,12 @@ Never share a mutable object across tests inside a `describe` block. Declare the
 `describe` scope but re-initialize it inside `beforeEach`. This pattern is the most impactful
 single change teams make when eliminating flakiness from an existing suite.
 
-```typescript
-import { ShoppingCart } from './ShoppingCart';
-import { Product } from './Product';
+```javascript
+const { ShoppingCart } = require('./ShoppingCart');
 
 describe('ShoppingCart', () => {
   // Declared at describe scope — but reset every test
-  let cart: ShoppingCart;
+  let cart;
 
   beforeEach(() => {
     // Fresh instance per test: no leftover items from a previous test
@@ -156,7 +155,7 @@ describe('ShoppingCart', () => {
   });
 
   it('adds a product and increases item count', () => {
-    const product: Product = { id: 'p1', name: 'Widget', price: 9.99 };
+    const product = { id: 'p1', name: 'Widget', price: 9.99 };
 
     cart.add(product);
 
@@ -164,7 +163,7 @@ describe('ShoppingCart', () => {
   });
 
   it('removes a product by id', () => {
-    const product: Product = { id: 'p2', name: 'Gadget', price: 19.99 };
+    const product = { id: 'p2', name: 'Gadget', price: 19.99 };
     cart.add(product);
 
     cart.remove('p2');
@@ -174,29 +173,26 @@ describe('ShoppingCart', () => {
 });
 ```
 
-### Pattern 3: Dependency injection + Jest mock for time-dependent behavior  [community]
+### Pattern 3: Dependency injection + Jest fake clock for time-dependent behavior  [community]
 
 Clock-dependent code (`Date.now()`, `new Date()`, `setTimeout`) is a classic source of
 non-repeatable tests. Inject a clock abstraction and provide a controlled fake in tests. Using
 `jest.useFakeTimers()` as a per-test setup (with `afterEach(() => jest.useRealTimers())`) isolates
 timer state between tests.
 
-```typescript
-// production code — clock injected, not imported
-export interface Clock {
-  now(): number;
-}
-
-export function isWithinBusinessHours(clock: Clock): boolean {
+```javascript
+// production code — clock injected, not hardcoded
+function isWithinBusinessHours(clock) {
   const hour = new Date(clock.now()).getHours();
   return hour >= 9 && hour < 17;
 }
+module.exports = { isWithinBusinessHours };
 
 // test — controlled clock, no wall-clock dependency
-import { isWithinBusinessHours, Clock } from './businessHours';
+const { isWithinBusinessHours } = require('./businessHours');
 
 describe('isWithinBusinessHours', () => {
-  const makeClockAt = (isoString: string): Clock => ({
+  const makeClockAt = (isoString) => ({
     now: () => new Date(isoString).getTime(),
   });
 
@@ -209,6 +205,61 @@ describe('isWithinBusinessHours', () => {
     const clock = makeClockAt('2026-04-26T08:59:00.000Z');
     expect(isWithinBusinessHours(clock)).toBe(false);
   });
+
+  it('returns false at 5:00 PM', () => {
+    const clock = makeClockAt('2026-04-26T17:00:00.000Z');
+    expect(isWithinBusinessHours(clock)).toBe(false);
+  });
+});
+```
+
+### Pattern 3b: jest.useFakeTimers() for setTimeout/setInterval isolation  [community]
+
+When testing code that uses `setTimeout`, `setInterval`, or `Date.now()` directly (not via an
+injected clock), use `jest.useFakeTimers()` to take control of the timer system. Always pair with
+`jest.useRealTimers()` in `afterEach` to prevent timer state from leaking into subsequent tests or
+other test files running in the same worker.
+
+```javascript
+const { scheduledNotifier } = require('./scheduledNotifier');
+
+describe('scheduledNotifier', () => {
+  beforeEach(() => {
+    // Take over all timer functions: setTimeout, setInterval, Date, etc.
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    // CRITICAL: restore real timers — failure to do this leaks into other tests
+    jest.useRealTimers();
+  });
+
+  it('does not fire callback before the delay expires', () => {
+    const callback = jest.fn();
+
+    scheduledNotifier(callback, 5000); // fires after 5 seconds
+
+    jest.advanceTimersByTime(4999);   // advance clock by 4.999s
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it('fires callback exactly once when delay expires', () => {
+    const callback = jest.fn();
+
+    scheduledNotifier(callback, 5000);
+
+    jest.advanceTimersByTime(5000);   // advance past the threshold
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires interval callback multiple times as clock advances', () => {
+    const callback = jest.fn();
+
+    scheduledNotifier.repeat(callback, 1000); // fires every 1 second
+
+    jest.advanceTimersByTime(3500);   // 3 full intervals have elapsed
+    expect(callback).toHaveBeenCalledTimes(3);
+  });
 });
 ```
 
@@ -218,24 +269,31 @@ Tests that set environment variables must restore them. Failing to do so is a cl
 order-dependent failures that only appear in CI (where test files run in a different order than
 locally). The `afterEach` restore pattern is mandatory when mutating `process.env`.
 
-```typescript
+```javascript
+const { loadConfig } = require('./config');
+
 describe('config loader', () => {
-  const originalEnv = { ...process.env };
+  const originalEnv = Object.assign({}, process.env);
 
   afterEach(() => {
     // Restore environment state regardless of test pass/fail
-    process.env = { ...originalEnv };
+    Object.keys(process.env).forEach((key) => delete process.env[key]);
+    Object.assign(process.env, originalEnv);
   });
 
   it('uses LOG_LEVEL=debug when set in environment', () => {
     process.env.LOG_LEVEL = 'debug';
+
     const config = loadConfig();
+
     expect(config.logLevel).toBe('debug');
   });
 
   it('defaults to LOG_LEVEL=info when not set', () => {
     delete process.env.LOG_LEVEL;
+
     const config = loadConfig();
+
     expect(config.logLevel).toBe('info');
   });
 });
@@ -245,19 +303,18 @@ describe('config loader', () => {
 
 When the code under test uses a module-level singleton (e.g., a cache, connection pool, or
 registry), `jest.resetModules()` in `beforeEach` ensures each test gets a fresh module instance.
-This is necessary when the singleton is initialized at import time. Use dynamic `import()` (not
-`require()`) for proper TypeScript ESM compatibility.
+This is necessary when the singleton is initialized at import time. Use dynamic `require()` after
+the reset to force re-evaluation of the module.
 
-```typescript
+```javascript
 describe('userRegistry (module singleton)', () => {
-  // Type reference only — actual import happens inside beforeEach
-  let userRegistry: typeof import('./userRegistry');
+  let userRegistry;
 
-  beforeEach(async () => {
-    // Clear module cache so the singleton reinitializes on next import
+  beforeEach(() => {
+    // Clear module cache so the singleton reinitializes on next require
     jest.resetModules();
-    // Dynamic import re-evaluates the module fresh each test
-    userRegistry = await import('./userRegistry');
+    // Dynamic require re-evaluates the module fresh each test
+    userRegistry = require('./userRegistry');
   });
 
   it('starts with an empty registry', () => {
@@ -266,6 +323,7 @@ describe('userRegistry (module singleton)', () => {
 
   it('registers a user and increments count without leaking to next test', () => {
     userRegistry.register({ id: 'u1', name: 'Alice' });
+
     expect(userRegistry.count()).toBe(1);
     // After this test, beforeEach resets the module — next test sees count 0
   });
@@ -283,12 +341,11 @@ pattern wraps each test in a database transaction that is rolled back in `afterE
 database in exactly the state it was in before the test ran. This is faster than truncating tables
 and avoids needing test-specific seed data cleanup logic.
 
-```typescript
-import { DataSource, QueryRunner } from 'typeorm';
-import { dataSource } from '../src/db/dataSource';
+```javascript
+const { dataSource } = require('../src/db/dataSource');
 
 describe('UserRepository integration', () => {
-  let queryRunner: QueryRunner;
+  let queryRunner;
 
   beforeAll(async () => {
     await dataSource.initialize();
@@ -313,7 +370,7 @@ describe('UserRepository integration', () => {
 
   it('creates and retrieves a user within the same transaction', async () => {
     // Arrange
-    const repo = queryRunner.manager.getRepository(User);
+    const repo = queryRunner.manager.getRepository('User');
     const input = { name: 'Alice', email: 'alice@example.com' };
 
     // Act
@@ -321,7 +378,7 @@ describe('UserRepository integration', () => {
     const found = await repo.findOneBy({ id: created.id });
 
     // Assert
-    expect(found?.name).toBe('Alice');
+    expect(found.name).toBe('Alice');
     // Rolled back in afterEach — no cleanup code needed
   });
 });
@@ -334,15 +391,14 @@ causes `EADDRINUSE` errors when tests run in parallel (multiple Jest workers) or
 local dev server is already running on that port. The fix: bind on port `0` to let the OS choose a
 free port, then read the assigned port from the listening handle.
 
-```typescript
-import express from 'express';
-import type { Server } from 'http';
-import supertest from 'supertest';
-import { createRouter } from '../src/routes';
+```javascript
+const express = require('express');
+const supertest = require('supertest');
+const { createRouter } = require('../src/routes');
 
 describe('API integration — server on dynamic port', () => {
-  let server: Server;
-  let request: ReturnType<typeof supertest>;
+  let server;
+  let request;
 
   beforeAll((done) => {
     const app = express();
@@ -362,6 +418,7 @@ describe('API integration — server on dynamic port', () => {
 
   it('GET /api/users returns 200 and empty array initially', async () => {
     const response = await request.get('/api/users');
+
     expect(response.status).toBe(200);
     expect(response.body).toEqual([]);
   });
@@ -370,10 +427,39 @@ describe('API integration — server on dynamic port', () => {
     const response = await request
       .post('/api/users')
       .send({ name: 'Bob', email: 'bob@example.com' });
+
     expect(response.status).toBe(201);
     expect(response.body).toHaveProperty('id');
   });
 });
+```
+
+### Pattern 8: Recommended Jest config baseline for maximum isolation  [community]
+
+Enabling these config flags at the project level ensures isolation-safe defaults without requiring
+per-test manual resets. `clearMocks` resets call counts and instances; `restoreMocks` restores all
+spied-on originals after each test. Teams typically choose `clearMocks` + `restoreMocks` (preserving
+manual mock implementations) or `resetMocks` + `restoreMocks` (full reset every test).
+
+```javascript
+// jest.config.js
+/** @type {import('jest').Config} */
+module.exports = {
+  // Reset mock call history and instances between every test
+  clearMocks: true,
+  // Restore all spied-on originals after each test (prevents spy leaks)
+  restoreMocks: true,
+  // Do NOT set resetMocks: true alongside restoreMocks on first adoption —
+  // resetMocks removes manual mock implementations which breaks jest.mock() factories.
+  // Choose: clearMocks (safe default) OR resetMocks (aggressive, verify first).
+
+  // Run tests in random order within files to expose order dependencies
+  // Uncomment for periodic CI runs (not every run — flakiness diagnostics only)
+  // randomize: true,
+
+  // Limit workers to avoid port collisions in integration suites
+  maxWorkers: '50%',
+};
 ```
 
 ---
@@ -381,7 +467,7 @@ describe('API integration — server on dynamic port', () => {
 ## Anti-Patterns
 
 ### 1. Shared mutable object declared and initialized at describe scope
-```typescript
+```javascript
 // BAD — cart is shared across all tests; second test sees leftover state from first
 const cart = new ShoppingCart();
 it('adds item', () => { cart.add(item); expect(cart.itemCount()).toBe(1); });
@@ -391,7 +477,7 @@ it('is empty', () => { expect(cart.itemCount()).toBe(0); }); // FAILS if run aft
 becomes brittle to reordering, parallelism, or new tests being added.
 
 ### 2. Test-to-test data handoff via module-level variables
-Storing the output of one test (`const result = null; it('creates user', () => { result = ... })`)
+Storing the output of one test (`let result = null; it('creates user', () => { result = ... })`)
 and reading it in a later test violates the Independent property and makes the suite order-dependent.
 
 ### 3. Missing teardown for external resources
@@ -415,7 +501,7 @@ one test body violates both the AAA pattern and Self-validating. When it fails, 
 which step broke without reading through the whole test.
 
 ### 7. Relying on test file execution order in CI
-Configuring CI to run test files in a specific order (e.g., `jest auth.test.ts db.test.ts app.test.ts`)
+Configuring CI to run test files in a specific order (e.g., `jest auth.test.js db.test.js app.test.js`)
 and having later files depend on side effects from earlier files creates a hidden order dependency at
 the file level. Jest's `--testSequencer`, `--randomize`, or shard-based parallelism will break this.
 Each test file must be fully self-contained from setup to teardown.
@@ -433,9 +519,9 @@ Each test file must be fully self-contained from setup to teardown.
    `try/finally` patterns in `beforeAll` for expensive resource setup that needs guaranteed cleanup.
 
 3. **`jest.mock()` hoisting surprises.** [community] Jest hoists `jest.mock()` calls to the top of the
-   file at compile time. A mock set up in one `describe` block is visible in all blocks in the same
-   file unless explicitly reset. Use `jest.resetAllMocks()` or `clearMocks: true` in Jest config to
-   prevent mock state leaking between tests.
+   file at compile time (via Babel). A mock set up in one `describe` block is visible in all blocks
+   in the same file unless explicitly reset. Use `jest.resetAllMocks()` or `clearMocks: true` in
+   Jest config to prevent mock state leaking between tests.
 
 4. **Environment variables in CI differ from local.** [community] Tests that pass locally but fail in CI
    are frequently caused by environment variables set in the developer's shell that are not set in
@@ -454,7 +540,7 @@ Each test file must be fully self-contained from setup to teardown.
    parallelism configurations.
 
 7. **Vitest's `vi.spyOn` auto-restoration vs. Jest's manual reset.** [community] Vitest restores
-   spies automatically when `restoreMocks: true` is set in `vite.config.ts`. Teams migrating from
+   spies automatically when `restoreMocks: true` is set in `vite.config.js`. Teams migrating from
    Jest to Vitest often forget to add this config flag, recreating the mock-leak problem in a new
    framework.
 
@@ -478,6 +564,18 @@ Each test file must be fully self-contained from setup to teardown.
     surface hidden order dependencies without having to read test code. Many teams only discover
     order-dependent failures after a CI framework upgrade that changes worker scheduling — adding
     a weekly `--randomize` run to CI catches this earlier.
+
+11. **`require()` caching causes singleton leakage in Jest CJS projects.** [community] Node's module
+    cache means that once a CJS module is loaded, all subsequent `require()` calls return the cached
+    version. In a Jest test suite, if two test files load the same singleton module without
+    `jest.resetModules()`, they share the same instance. The symptom is tests that pass when run
+    individually but fail when run together — even without explicit shared state code.
+
+12. **`Object.assign({}, process.env)` does not deep-clone.** [community] The standard env-restore
+    pattern `const saved = Object.assign({}, process.env)` is safe for flat string values, but
+    mutating a nested object inside `process.env` (rare but possible in test helpers that inject
+    objects) can still leak. Use `JSON.parse(JSON.stringify(process.env))` or only mutate string
+    properties for guaranteed isolation.
 
 ---
 
@@ -504,8 +602,8 @@ primary source of E2E flakiness.
   cost in medium-to-large codebases, but teams should expect an upfront refactoring phase.
 
 - **`jest.resetModules()` is slow.** Resetting the module registry per test forces re-evaluation of
-  all `require`/`import` chains and is significantly slower than per-instance reset. Use only when
-  the singleton-at-import-time pattern cannot be refactored away.
+  all `require()`/`import()` chains and is significantly slower than per-instance reset. Use only
+  when the singleton-at-import-time pattern cannot be refactored away.
 
 - **Strict isolation can make tests verbose.** Fully isolated tests with complete `beforeEach`
   setup can be long. The Arrange-Act-Assert pattern helps, but teams sometimes push back on the
@@ -516,50 +614,18 @@ primary source of E2E flakiness.
 
 - **Test-scoped state with `describe` + `let` + `beforeEach`** (already covered above) is the
   minimum viable isolation for most projects.
-- **Functional pure functions** eliminate the need for test doubles entirely — if the SUT has no
+- **Pure functions** eliminate the need for test doubles entirely — if the SUT has no
   side effects and no dependencies, it is isolated by construction.
 
 ### Named alternatives to Jest/Vitest isolation features
 
 | Problem | Jest mechanism | Vitest equivalent |
 |---------|---------------|-------------------|
-| Mock reset between tests | `clearMocks: true` in `jest.config` | `clearMocks: true` in `vite.config` |
+| Mock reset between tests | `clearMocks: true` in `jest.config.js` | `clearMocks: true` in `vite.config.js` |
 | Spy auto-restore | `restoreMocks: true` | `restoreMocks: true` |
 | Timer isolation | `jest.useFakeTimers()` / `jest.useRealTimers()` | `vi.useFakeTimers()` / `vi.useRealTimers()` |
 | Module singleton reset | `jest.resetModules()` | `vi.resetModules()` |
 | Per-test module isolation | `jest.isolateModules()` | `vi.isolateModules()` |
-
-### Recommended Jest config baseline for maximum isolation
-
-Enabling these three config flags at the project level ensures isolation-safe defaults without
-requiring per-test manual resets. `clearMocks` resets call counts; `resetMocks` removes
-implementations; `restoreMocks` restores all spied-on originals. Teams typically choose `clearMocks`
-+ `restoreMocks` (preserving manual mock implementations) or `resetMocks` + `restoreMocks`
-(full reset every test).
-
-```typescript
-// jest.config.ts
-import type { Config } from 'jest';
-
-const config: Config = {
-  // Reset mock call history and instances between every test
-  clearMocks: true,
-  // Restore all spied-on originals after each test (prevents spy leaks)
-  restoreMocks: true,
-  // Do NOT set resetMocks: true alongside restoreMocks — resetMocks removes
-  // manual mock implementations, which often breaks jest.mock() factory mocks.
-  // Choose: clearMocks (safe default) or resetMocks (aggressive, verify first).
-
-  // Run tests in random order within files to expose order dependencies
-  // Uncomment for periodic CI runs (not every run — flakiness diagnostics only)
-  // randomize: true,
-
-  // Limit workers to avoid port collisions in integration suites
-  maxWorkers: '50%',
-};
-
-export default config;
-```
 
 ---
 
@@ -574,4 +640,4 @@ export default config;
 | Vitest Docs — Mocking | Official | https://vitest.dev/guide/mocking | Vitest equivalents for Jest isolation APIs |
 | Martin Fowler — Non-Determinism in Tests | Official | https://martinfowler.com/articles/nonDeterminism.html | Deep analysis of why tests become non-deterministic; covers shared state as root cause |
 | Jest Docs — Configuration Reference | Official | https://jestjs.io/docs/configuration | Authoritative reference for `clearMocks`, `restoreMocks`, `resetMocks`, `randomize` options |
-| Supertest — HTTP assertion library | Community | https://github.com/ladjs/supertest | Standard TypeScript library for integration-testing Express/Fastify servers without binding a port |
+| Supertest — HTTP assertion library | Community | https://github.com/ladjs/supertest | Standard JavaScript library for integration-testing Express/Fastify servers without binding a port |

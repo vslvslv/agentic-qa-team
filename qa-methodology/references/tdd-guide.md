@@ -1,5 +1,5 @@
 # Test-Driven Development (TDD) — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 10 | score: 98/100 | date: 2026-04-26 -->
+<!-- lang: JavaScript | topic: tdd | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
 
 ## Core Principles
 
@@ -11,7 +11,7 @@ Coined and popularised by Kent Beck as part of Extreme Programming (XP), TDD is 
 
 The canonical TDD loop has exactly three phases:
 
-1. **Red** — Write a test that fails (and fails for the right reason: the code does not exist yet). If the test fails because of a compile error or a missing import, fix that first before calling it "Red." A test that cannot run is not a Red test; it is a broken test.
+1. **Red** — Write a test that fails (and fails for the right reason: the code does not exist yet). If the test fails because of a missing import, fix that first before calling it "Red." A test that cannot run is not a Red test; it is a broken test.
 2. **Green** — Write the minimal production code that makes the test pass. Correctness is the only goal here; elegance is irrelevant. "Minimal" means exactly that: do not add code for features that have no test yet. Adding untested code during Green undermines the design feedback loop.
 3. **Refactor** — Clean up both the production code and the test without changing observable behaviour. All tests must still pass after refactoring. The key insight: refactoring is only safe when there is a complete test suite catching regressions — which is exactly what TDD provides.
 
@@ -39,13 +39,13 @@ Without triangulation, there is a temptation to over-abstract too early. With it
 
 A legitimate TDD technique: return a hardcoded constant to make the first test pass, then let subsequent tests force real implementation. This is not cheating — it keeps the Green phase trivially short and makes the Red→Green→Refactor rhythm visible and fast.
 
-**Why it matters:** Fake-it forces the discipline of "write only enough to pass." It also validates that your test infrastructure works (the test runner, the assertion, the imports) before you invest in real logic. A test that runs and passes — even on a hardcoded value — is more valuable than a test that compiles but has never been seen to pass. Fake-it makes the Red→Green transition explicit and visible to a pair or reviewer.
+**Why it matters:** Fake-it forces the discipline of "write only enough to pass." It also validates that your test infrastructure works (the test runner, the assertion, the imports) before you invest in real logic. A test that runs and passes — even on a hardcoded value — is more valuable than a test that compiles but has never been seen to pass.
 
-```typescript
+```javascript
 // ------ RED: write the first failing test ------
 // The function doesn't exist yet; this test defines the expected API.
 import { describe, it, expect } from 'vitest';
-import { passwordStrength } from './passwordStrength';
+import { passwordStrength } from './passwordStrength.js';
 
 describe('passwordStrength', () => {
   it('rates an empty string as "weak"', () => {
@@ -54,7 +54,8 @@ describe('passwordStrength', () => {
 });
 
 // ------ GREEN (fake it): minimal code to pass — hardcode the result ------
-export function passwordStrength(_password: string): 'weak' | 'medium' | 'strong' {
+// passwordStrength.js
+export function passwordStrength(_password) {
   return 'weak'; // hardcoded; passes the single test, nothing more
 }
 
@@ -71,7 +72,7 @@ it('rates an 8-char mixed-case password as "medium"', () => {
 });
 
 // ------ GREEN (real logic, generalised by triangulation): ------
-export function passwordStrength(password: string): 'weak' | 'medium' | 'strong' {
+export function passwordStrength(password) {
   if (password.length < 6) return 'weak';
   const hasMixed = /[A-Z]/.test(password) && /[a-z]/.test(password);
   const hasDigit = /\d/.test(password);
@@ -124,10 +125,11 @@ TDD works best when:
 
 ### Red-Green-Refactor Cycle
 
-```typescript
+```javascript
 // Step 1 — RED: write a failing test
+// ShoppingCart.test.js
 import { describe, it, expect } from 'vitest';
-import { ShoppingCart } from './ShoppingCart';
+import { ShoppingCart } from './ShoppingCart.js';
 
 describe('ShoppingCart', () => {
   it('starts empty', () => {
@@ -137,8 +139,9 @@ describe('ShoppingCart', () => {
 });
 
 // Step 2 — GREEN: write minimal code
+// ShoppingCart.js
 export class ShoppingCart {
-  total(): number {
+  total() {
     return 0; // fake it — only one test so far
   }
 }
@@ -152,21 +155,21 @@ it('totals one item', () => {
 
 // Step 4 — GREEN
 export class ShoppingCart {
-  private items: Array<{ price: number; qty: number }> = [];
+  #items = [];
 
-  add(item: { price: number; qty: number }): void {
-    this.items.push(item);
+  add(item) {
+    this.#items.push(item);
   }
 
-  total(): number {
-    return this.items.reduce((sum, i) => sum + i.price * i.qty, 0);
+  total() {
+    return this.#items.reduce((sum, i) => sum + i.price * i.qty, 0);
   }
 }
 ```
 
 ### Baby Steps
 
-```typescript
+```javascript
 // ------ BAD: starting with a complex test that requires full implementation ------
 it('applies tiered discounts, shipping caps, and coupon codes', () => {
   const cart = new Cart();
@@ -177,7 +180,7 @@ it('applies tiered discounts, shipping caps, and coupon codes', () => {
 
 // ------ GOOD: baby steps — each test adds exactly one new behaviour ------
 
-// Step 1: empty cart returns 0 (defines the type signature and constructor)
+// Step 1: empty cart returns 0 (defines the constructor and total() API)
 it('returns 0 for an empty cart', () => {
   const cart = new Cart();
   expect(cart.total()).toBe(0);
@@ -207,8 +210,9 @@ it('applies 10% discount when subtotal exceeds 100', () => {
 
 ### Triangulation
 
-```typescript
+```javascript
 // ------ Step 1: First example — fake it (hardcoded return passes) ------
+// formatCurrency.test.js
 describe('formatCurrency', () => {
   it('formats 10 USD', () => {
     expect(formatCurrency(10, 'USD')).toBe('$10.00');
@@ -216,7 +220,8 @@ describe('formatCurrency', () => {
 });
 
 // Minimal GREEN — just make it pass with a constant:
-export function formatCurrency(_amount: number, _currency: string): string {
+// formatCurrency.js
+export function formatCurrency(_amount, _currency) {
   return '$10.00'; // hardcoded; passes the first test, nothing more
 }
 
@@ -233,7 +238,7 @@ it('formats 5 EUR', () => {
 });
 
 // GREEN (real, general implementation forced by 3 examples):
-export function formatCurrency(amount: number, currency: string): string {
+export function formatCurrency(amount, currency) {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency,
@@ -250,12 +255,19 @@ See the `passwordStrength` example in the **Core Principles → Fake-It-Til-You-
 
 Before writing any implementation code, write the test as if the ideal API already exists. If the test feels awkward to write, the API is awkward to use. This is a signal to redesign.
 
-```typescript
+```javascript
 // Good API discovered through test-first
-it('sends a welcome email', async () => {
+// onboarding.test.js
+import { describe, it, expect } from 'vitest';
+import { OnboardingService } from './OnboardingService.js';
+import { FakeMailer } from './test-doubles/FakeMailer.js';
+
+it('sends a welcome email on user registration', async () => {
   const mailer = new FakeMailer();
   const onboarding = new OnboardingService(mailer);
+
   await onboarding.registerUser({ email: 'user@example.com', name: 'Alice' });
+
   expect(mailer.sent).toContainEqual(
     expect.objectContaining({ to: 'user@example.com', subject: 'Welcome!' })
   );
@@ -270,11 +282,11 @@ Outside-in TDD (also called the "London School" or "Mockist" style) drives imple
 
 This approach is favoured in teams doing BDD or building layered architectures (HTTP handler → service → repository) because it ensures every unit of code is created in response to a real user need, not speculated future need.
 
-```typescript
-// ---- OUTER LOOP: failing acceptance test (e.g., Supertest for an Express route) ----
+```javascript
+// ---- OUTER LOOP: failing acceptance test (Supertest for an Express route) ----
 // This test stays RED until the entire feature is implemented.
 import request from 'supertest';
-import { app } from '../app';
+import { app } from '../app.js';
 
 describe('POST /users/register (acceptance)', () => {
   it('returns 201 and sends a welcome email', async () => {
@@ -310,12 +322,12 @@ describe('UserService.register', () => {
 
 The outer acceptance test is only deleted when it passes — meaning all inner TDD cycles have completed and the feature works end-to-end. This prevents the common failure mode of "all unit tests pass but the feature is broken."
 
-### TDD Inner Loop with Vitest Watch Mode (TypeScript)
+### TDD Inner Loop with Vitest Watch Mode (JavaScript)
 
-The TDD cycle depends on a fast, always-on test feedback loop. In TypeScript projects using Vite or modern bundlers, Vitest's `--watch` mode provides near-instant re-runs on file save, making the Red-Green-Refactor cycle tactile and immediate. Configure your project for maximum TDD ergonomics:
+The TDD cycle depends on a fast, always-on test feedback loop. In JavaScript projects using Vite or modern bundlers, Vitest's `--watch` mode provides near-instant re-runs on file save, making the Red-Green-Refactor cycle tactile and immediate.
 
-```typescript
-// vitest.config.ts — optimised for TDD inner loop
+```javascript
+// vitest.config.js — optimised for TDD inner loop
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -336,11 +348,6 @@ export default defineConfig({
       provider: 'v8',
       thresholds: { branches: 80, functions: 80, lines: 80 },
     },
-
-    // Type-check in CI; skip during watch to keep the inner loop fast
-    typecheck: {
-      enabled: process.env.CI === 'true',
-    },
   },
 });
 ```
@@ -350,7 +357,7 @@ export default defineConfig({
 npx vitest --watch
 
 # Run a single test file during a focused TDD session
-npx vitest --watch src/domain/cart/Cart.test.ts
+npx vitest --watch src/domain/cart/Cart.test.js
 
 # Run tests matching a pattern (useful when drilling into one failing test)
 npx vitest --watch -t "totals one item"
@@ -362,18 +369,17 @@ The `bail: 1` setting is intentional during TDD: seeing one red test name clearl
 
 The hardest part of TDD is managing side effects (I/O, network, time). Gary Bernhardt's "Functional Core, Imperative Shell" architecture separates pure decision logic (easy to TDD) from side-effectful orchestration (hard to TDD). The core is a set of pure functions — all inputs explicit, all outputs return values. The shell is thin: it reads from the world, calls the core, writes results back.
 
-```typescript
+```javascript
 // ---- FUNCTIONAL CORE: pure, no I/O — easy to TDD with zero mocking ----
+// cart-logic.js
 // All business rules live here; this is where TDD provides maximum leverage.
-export type CartItem = { sku: string; price: number; qty: number };
-export type Discount = { type: 'pct'; value: number } | { type: 'flat'; value: number };
 
-export function applyDiscount(subtotal: number, discount: Discount): number {
+export function applyDiscount(subtotal, discount) {
   if (discount.type === 'pct') return subtotal * (1 - discount.value / 100);
   return Math.max(0, subtotal - discount.value);
 }
 
-export function calculateTotal(items: CartItem[], discount: Discount | null): number {
+export function calculateTotal(items, discount) {
   const subtotal = items.reduce((sum, i) => sum + i.price * i.qty, 0);
   return discount ? applyDiscount(subtotal, discount) : subtotal;
 }
@@ -399,11 +405,14 @@ describe('calculateTotal', () => {
 
 // ---- IMPERATIVE SHELL: thin orchestrator — integration tested, not unit TDD'd ----
 // I/O lives here; it is tested at the HTTP/integration level, not unit-TDD'd.
-export async function checkoutHandler(req: Request, db: Database): Promise<Response> {
-  const items = await db.getCartItems(req.userId);        // I/O
+// checkout-handler.js
+import { calculateTotal } from './cart-logic.js';
+
+export async function checkoutHandler(req, db) {
+  const items = await db.getCartItems(req.userId);         // I/O
   const coupon = await db.findCoupon(req.body.couponCode); // I/O
   const total = calculateTotal(items, coupon?.discount ?? null); // pure core
-  await db.createOrder({ userId: req.userId, total });    // I/O
+  await db.createOrder({ userId: req.userId, total });     // I/O
   return { status: 201, body: { total } };
 }
 ```
@@ -426,7 +435,7 @@ export async function checkoutHandler(req: Request, db: Database): Promise<Respo
 
 This is the most common reason TDD's "refactoring safety net" fails in practice. When tests assert on private fields, internal call sequences, or exact mock invocation counts rather than observable outputs, every internal rename or restructure breaks the tests — the opposite of what TDD promises.
 
-```typescript
+```javascript
 // BAD: testing implementation details — breaks on any internal rename
 describe('UserService', () => {
   it('calls repository.save exactly once', async () => {
@@ -462,7 +471,7 @@ describe('UserService', () => {
 
 When the Arrange phase of a test requires more code than the Act+Assert phases combined, it is signalling that the production code has too many dependencies to construct. This is a TDD design signal to act on immediately.
 
-```typescript
+```javascript
 // BAD: Arrange is a maintenance nightmare — 7 dependencies to build one service
 it('processes a refund', async () => {
   const db = new MockDatabase();
@@ -473,12 +482,12 @@ it('processes a refund', async () => {
   const forex = new MockForexService();
   const payments = new MockPaymentGateway();
   const service = new RefundService(db, cache, mailer, sms, audit, forex, payments);
-  // ... actual test one line long
+  // ... actual test is one line long
 });
 
-// GOOD: extract a factory or builder — and examine WHY 7 deps are needed
+// GOOD: extract a factory builder — and examine WHY 7 deps are needed
 // Often, too many dependencies means the class has multiple responsibilities
-function buildRefundService(overrides: Partial<RefundServiceDeps> = {}): RefundService {
+function buildRefundService(overrides = {}) {
   return new RefundService({
     db: new InMemoryDatabase(),
     cache: new InMemoryCache(),
@@ -509,10 +518,14 @@ Legacy code that was not written test-first often has no "seams" — places wher
 
 **Practical approach:** Use Michael Feathers' "characterisation tests" to capture existing behaviour before refactoring toward testability.
 
-```typescript
+```javascript
 // ------ BEFORE: untestable legacy — hard-coded dependency, no seam ------
-class OrderProcessor {
-  async processOrder(orderId: string): Promise<void> {
+// order-processor.js
+import { PostgresDatabase } from './db/postgres.js';
+import { EmailClient } from './email/client.js';
+
+export class OrderProcessor {
+  async processOrder(orderId) {
     const db = new PostgresDatabase();          // hard dependency, can't swap
     const order = await db.findOrder(orderId);  // real DB call in every test
     if (order.status === 'pending') {
@@ -523,18 +536,14 @@ class OrderProcessor {
 }
 
 // ------ AFTER: add a seam via constructor injection ------
-interface Database {
-  findOrder(id: string): Promise<Order>;
-  updateStatus(id: string, status: string): Promise<void>;
-}
-interface Mailer {
-  send(to: string, body: string): Promise<void>;
-}
+// The interfaces are now implicit (duck-typed) — both db and mailer are injected
+export class OrderProcessor {
+  constructor(db, mailer) {
+    this.db = db;
+    this.mailer = mailer;
+  }
 
-class OrderProcessor {
-  constructor(private db: Database, private mailer: Mailer) {}
-
-  async processOrder(orderId: string): Promise<void> {
+  async processOrder(orderId) {
     const order = await this.db.findOrder(orderId);
     if (order.status === 'pending') {
       await this.db.updateStatus(orderId, 'processing');
@@ -545,16 +554,18 @@ class OrderProcessor {
 
 // ------ TDD test now possible using in-memory fakes ------
 it('updates status and sends email when order is pending', async () => {
-  const db: Database = new InMemoryDatabase([
+  const db = new InMemoryDatabase([
     { id: '42', status: 'pending', email: 'buyer@example.com' },
   ]);
-  const mailer: Mailer = new SpyMailer();
+  const mailer = new SpyMailer();
   const processor = new OrderProcessor(db, mailer);
 
   await processor.processOrder('42');
 
-  expect(await db.findOrder('42')).toMatchObject({ status: 'processing' });
-  expect((mailer as SpyMailer).sent).toHaveLength(1);
+  const updated = await db.findOrder('42');
+  expect(updated.status).toBe('processing');
+  expect(mailer.sent).toHaveLength(1);
+  expect(mailer.sent[0].to).toBe('buyer@example.com');
 });
 ```
 
@@ -566,7 +577,7 @@ UI tests are inherently integration tests. The render→interact→assert cycle 
 
 ### Algorithm Discovery (Spike First)
 
-When you are discovering an algorithm — numerical methods, machine learning pipelines, novel data structure implementations — you often do not know what the right answer is until you have run the code. Writing a failing test first is impossible when you do not yet know what "passing" looks like.
+When you are discovering an algorithm — numerical methods, novel data structure implementations — you often do not know what the right answer is until you have run the code. Writing a failing test first is impossible when you do not yet know what "passing" looks like.
 
 **Practical approach:** Spike first (write exploratory code without tests), identify the algorithm, extract it into a pure function, then apply TDD to the extracted function.
 
@@ -588,7 +599,7 @@ You cannot write a failing unit test for an API that does not exist in your code
 
 4. **[community] "Outside-in TDD" (London School) and "inside-out TDD" (Chicago/Detroit School) produce different architectures.** Outside-in starts with acceptance tests and mocks collaborators; inside-out starts with domain objects and avoids mocks. Mixing the two produces incoherent test suites. Teams must align on one school before starting a project — retrofitting is expensive.
 
-5. **[community] Test names are the most important documentation in a TDD codebase.** When a test fails in CI, the name is the first signal. Names like `test1` or `renders correctly` are worthless; names like `throws InvalidStateError when payment is attempted on a cancelled order` save hours. A good rule: if you cannot understand the failure from the test name alone, rename it before fixing it.
+5. **[community] Test names are the most important documentation in a TDD codebase.** When a test fails in CI, the name is the first signal. Names like `test1` or `renders correctly` are worthless; names like `throws when payment is attempted on a cancelled order` save hours. A good rule: if you cannot understand the failure from the test name alone, rename it before fixing it.
 
 6. **[community] Over-specification (testing too much) is as harmful as under-testing.** Tests that assert on every field in a response, exact error message strings, or internal call counts become fragile. They break on every change and erode trust in the test suite. A practical heuristic: if a test breaks when you refactor without changing behaviour, it is over-specified.
 
@@ -596,23 +607,28 @@ You cannot write a failing unit test for an API that does not exist in your code
 
 8. **[community] Continuous Integration amplifies TDD's benefits.** A TDD codebase with long CI feedback cycles (>10 minutes) loses most of its advantage. The tight loop that makes TDD valuable collapses when "run all tests" means waiting 40 minutes. Teams that adopt TDD without also parallelising CI end up with developers not running the full suite before pushing.
 
-9. **[community] TDD and type systems are complementary, not redundant.** TypeScript types catch structural errors; TDD catches behavioural errors. A function that type-checks perfectly can still return a wrong value. Teams sometimes stop writing tests because "TypeScript already catches that" — a false equivalence. Types narrow the solution space; tests pin specific expected behaviours.
+9. **[community] TDD and linting/type tools are complementary, not redundant.** ESLint and JSDoc type checks catch structural errors; TDD catches behavioural errors. A function that lints cleanly can still return a wrong value. Teams sometimes stop writing tests because "ESLint already catches that" — a false equivalence. Lint narrows the solution space; tests pin specific expected behaviours.
 
 10. **[community] "Delete the tests and re-TDD" is a legitimate rescue technique for legacy test suites.** When a test suite is so tightly coupled to implementation that it prevents refactoring, experienced TDD practitioners sometimes recommend deleting the unit tests, keeping only acceptance/integration tests as a safety net, and re-growing the unit test suite via TDD during the refactor. This is painful but faster than untangling hundreds of over-specified tests.
 
-11. **[community] TypeScript's `strict` mode and TDD reinforce each other but require discipline during the Red phase.** In strict TypeScript, a test file that imports a non-existent function will fail at compile time, not at test runtime — making the "Red" signal a type error rather than a test failure. A practical convention: define the function signature with `throw new Error('not implemented')` as the body before writing the test, so the Red phase is a runtime test failure (the function throws) rather than a compile error. This keeps the TDD cycle clean while still honouring TypeScript's type safety contract.
+11. **[community] In JavaScript, module-level side effects break TDD isolation.** When a module executes code on import (establishing DB connections, starting timers, reading env vars), every test that imports it inherits those side effects. This makes tests order-dependent and slow. The fix: export factory functions instead of module-level singletons, and initialise lazily or via explicit `init()` calls.
 
-```typescript
-// Pattern: stub the function signature first so tsc passes, then write the test
-// The RED is a runtime throw, not a compile error
-export function calculateVAT(_amount: number, _country: string): number {
-  throw new Error('not implemented'); // RED stub — allows tests to compile and fail correctly
+```javascript
+// BAD: module-level side effect — executes on every import in every test
+// db.js
+import pg from 'pg';
+export const pool = new pg.Pool({ connectionString: process.env.DB_URL });
+// Every test that imports anything that imports db.js opens a real connection.
+
+// GOOD: factory function — connection only created when explicitly called
+// db.js
+import pg from 'pg';
+let _pool = null;
+export function getPool() {
+  _pool ??= new pg.Pool({ connectionString: process.env.DB_URL });
+  return _pool;
 }
-
-// Now write the failing test — it will fail with "not implemented", not a compile error
-it('calculates UK VAT at 20%', () => {
-  expect(calculateVAT(100, 'GB')).toBe(20); // fails: "not implemented" thrown
-});
+// Tests inject InMemoryDatabase instead; real pool never created during tests.
 ```
 
 ---
@@ -667,7 +683,8 @@ it('calculates UK VAT at 20%', () => {
 | TestDrivenDevelopment — Martin Fowler | Article | https://martinfowler.com/bliki/TestDrivenDevelopment.html | Concise definition, situates TDD in the broader testing landscape |
 | TestFirst — Martin Fowler | Article | https://martinfowler.com/bliki/TestFirst.html | Distinguishes TDD (with refactor step) from test-first (without); useful for precise team communication |
 | *Working Effectively with Legacy Code* — Michael Feathers | Book | https://www.oreilly.com/library/view/working-effectively-with/0131177052/ | Essential for applying TDD to untestable legacy codebases; defines seams, characterisation tests |
-| Contributing Tests Wiki — Test Double / Justin Searls | Wiki | https://github.com/testdouble/contributing-tests/wiki/Test-Driven-Development | Pragmatic TDD guidance in modern JS/TS; covers London vs Chicago schools and real adoption patterns |
+| Contributing Tests Wiki — Test Double / Justin Searls | Wiki | https://github.com/testdouble/contributing-tests/wiki/Test-Driven-Development | Pragmatic TDD guidance in modern JS; covers London vs Chicago schools and real adoption patterns |
 | *Clean Code* Ch. 9 — Robert C. Martin | Book chapter | https://www.oreilly.com/library/view/clean-code-a/9780136083238/ | Unit test guidelines, F.I.R.S.T. principles, keeping tests clean as production code |
 | *Boundaries* talk — Gary Bernhardt | Conference talk | https://www.destroyallsoftware.com/talks/boundaries | Functional core / imperative shell architecture; explains how to structure code to minimize mocking need |
-| Vitest — official docs | Docs | https://vitest.dev/ | Primary TypeScript/Vite-native test runner; watch mode, coverage, snapshot support for the TDD inner loop |
+| Vitest — official docs | Docs | https://vitest.dev/ | Primary Vite-native test runner for modern JS projects; watch mode, coverage, snapshot support |
+| Jest — official docs | Docs | https://jestjs.io/ | Widely-used JS test runner; batteries-included with mocking, coverage, and snapshot support |

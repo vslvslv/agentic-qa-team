@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 2 | score: 100/100 | date: 2026-04-26 -->
+<!-- sources: official | community | mixed | iteration: 4 | score: 100/100 | date: 2026-04-27 -->
 
 ## Core Philosophy
 
@@ -158,6 +158,63 @@ const config = await loadConfig('./config.json');
 export { config };
 ```
 
+### CommonJS (CJS) vs ES Modules (ESM)
+
+Node.js supports two module systems. ESM is the modern standard for new code; CJS is legacy but still pervasive in the npm ecosystem. Understanding both is essential for Node.js developers.
+
+```javascript
+// ── CommonJS (CJS) ──────────────────────────────────────────────────
+// File: math.cjs  (or any .js with no "type": "module" in package.json)
+function add(a, b) { return a + b; }
+const PI = 3.14159;
+
+module.exports = { add, PI };        // Named exports via object
+// or: exports.add = add;            // Shorthand (not the same as module.exports = fn)
+
+// Consuming CJS:
+const { add, PI } = require('./math.cjs');
+
+// ── ES Modules (ESM) ────────────────────────────────────────────────
+// File: math.mjs  (or .js with "type": "module" in package.json)
+export function add(a, b) { return a + b; }
+export const PI = 3.14159;
+
+// Consuming ESM:
+import { add, PI } from './math.mjs';
+
+// ── Interoperability rules ───────────────────────────────────────────
+// ESM CAN import CJS — Node.js wraps CJS exports as the default export:
+import cjsModule from './legacy.cjs';  // module.exports becomes default
+import { namedExport } from './legacy.cjs'; // static analysis extracts named exports
+
+// CJS CANNOT synchronously require() an ESM file:
+// const esm = require('./modern.mjs'); // ERR_REQUIRE_ESM
+
+// CJS workaround — dynamic import (returns a Promise):
+async function loadESM() {
+  const { add } = await import('./modern.mjs');
+  return add(1, 2);
+}
+
+// ── Dual-package hazard ──────────────────────────────────────────────
+// If a package ships both CJS and ESM entry points and holds shared state,
+// consumers may get two separate instances (CJS instance ≠ ESM instance).
+// Mitigation: stateless code in the shared layer; single ESM entry preferred.
+```
+
+**Key decision table:**
+
+| Situation | Use |
+|-----------|-----|
+| New Node.js project | ESM — set `"type": "module"` in package.json |
+| Legacy codebase on `require()` | CJS — migrate incrementally |
+| Publishing an npm package | ESM primary + CJS compatibility layer via `exports` field |
+| Need `__dirname` / `__filename` | CJS, or ESM: `import.meta.dirname` / `import.meta.filename` (Node 21+) |
+| Top-level `await` | ESM only |
+| Synchronous config loading | CJS `require()` or `createRequire()` workaround in ESM |
+
+---
+
 ### ES2022+ Language Features
 Modern JavaScript has rich syntactic sugar that reduces boilerplate and improves intent clarity. These features are part of the language baseline — no polyfills needed in modern engines.
 
@@ -195,6 +252,34 @@ class EventEmitter {
 // structuredClone — deep clone without JSON round-trip (ES2022)
 const original = { dates: [new Date()], map: new Map([['key', 1]]) };
 const clone = structuredClone(original); // Preserves Date, Map, Set, etc.
+
+// ── ES2023 / ES2024 additions ────────────────────────────────────────
+
+// Array immutable change methods (ES2023) — return new arrays, no mutation
+const arr = [3, 1, 4, 1, 5];
+const sorted   = arr.toSorted();               // [1, 1, 3, 4, 5] — arr unchanged
+const reversed = arr.toReversed();             // [5, 1, 4, 1, 3] — arr unchanged
+const updated  = arr.with(2, 99);             // [3, 1, 99, 1, 5] — arr unchanged
+const spliced  = arr.toSpliced(1, 2, 9, 8);  // [3, 9, 8, 1, 5]  — arr unchanged
+
+// Object.groupBy (ES2024) — group array items into an object by key
+const people = [
+  { name: 'Alice', dept: 'eng' },
+  { name: 'Bob',   dept: 'design' },
+  { name: 'Carol', dept: 'eng' },
+];
+const byDept = Object.groupBy(people, p => p.dept);
+// { eng: [Alice, Carol], design: [Bob] }
+
+// Promise.withResolvers (ES2024) — expose resolve/reject outside the executor
+// Useful for wrapping event-driven APIs
+function waitForEvent(emitter, event) {
+  const { promise, resolve, reject } = Promise.withResolvers();
+  emitter.once(event,  resolve);
+  emitter.once('error', reject);
+  return promise;
+}
+const data = await waitForEvent(stream, 'data');
 ```
 
 ### Error Handling — Extending Error Classes with Cause
@@ -474,6 +559,49 @@ console.log(Object.keys(s));          // [] — symbol keys hidden
 console.log(JSON.stringify(s));       // {} — symbol keys not serialised
 ```
 
+### Custom Iterables with Symbol.iterator
+Any object that implements `[Symbol.iterator]()` integrates with `for...of`, spread, destructuring, and `Array.from()`. Generators are the most concise implementation.
+
+```javascript
+// Class-based iterable — paginated dataset backed by an API
+class PagedCollection {
+  #items;
+  constructor(items) { this.#items = items; }
+
+  // Makes the class work with for...of, spread, destructuring
+  [Symbol.iterator]() {
+    let index = 0;
+    const items = this.#items;
+    return {
+      next() {
+        return index < items.length
+          ? { value: items[index++], done: false }
+          : { done: true, value: undefined };
+      },
+      [Symbol.iterator]() { return this; }, // self-referential: also an iterator
+    };
+  }
+}
+
+const collection = new PagedCollection([10, 20, 30, 40]);
+const [first, second] = collection;           // destructuring
+const doubled = [...collection].map(x => x * 2); // spread
+for (const item of collection) {               // for...of
+  console.log(item); // 10, 20, 30, 40
+}
+
+// Generator shorthand — preferred when state is simple
+class Range {
+  constructor(start, end, step = 1) {
+    this.start = start; this.end = end; this.step = step;
+  }
+  *[Symbol.iterator]() {
+    for (let i = this.start; i < this.end; i += this.step) yield i;
+  }
+}
+console.log([...new Range(0, 10, 2)]); // [0, 2, 4, 6, 8]
+```
+
 ### Proxy for Meta-programming
 ```javascript
 // Validation proxy — intercepts property assignment
@@ -512,6 +640,51 @@ const result = obj?.transform?.() ?? defaultValue;
 
 // Optional chaining with dynamic keys
 const value = data?.[dynamicKey]?.nested ?? fallback;
+```
+
+### Map and Set for Typed Collections
+
+`Map` and `Set` are purpose-built collection types. Use them instead of plain objects/arrays when the semantics fit — they are faster for membership checks, cannot have accidental prototype properties, and iterate in guaranteed insertion order.
+
+```javascript
+// Set — O(1) membership check, deduplication
+const seen = new Set();
+function processOnce(items) {
+  return items.filter(item => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
+// Array deduplication
+const unique = [...new Set([1, 2, 2, 3, 3, 3])]; // [1, 2, 3]
+
+// Map — any key type, insertion-order iteration, O(1) get/set/has/delete
+const cache = new Map();
+cache.set('key', { data: 'value', ttl: Date.now() + 60_000 });
+cache.get('key');        // { data: 'value', ttl: ... }
+cache.has('key');        // true
+cache.size;              // 1
+
+// Map with object keys (impossible with plain objects)
+const roleMap = new Map();
+const adminRole = { name: 'admin' };
+roleMap.set(adminRole, ['read', 'write', 'delete']);
+roleMap.get(adminRole); // ['read', 'write', 'delete']
+
+// DON'T use bracket notation on Map — it bypasses Map methods
+// map['key'] = 'val';    // ❌ sets JS property, not Map entry
+// map.set('key', 'val'); // ✅ correct
+
+// Map.groupBy / Object.groupBy (ES2024)
+const people = [
+  { name: 'Alice', dept: 'eng' },
+  { name: 'Bob',   dept: 'design' },
+  { name: 'Carol', dept: 'eng' },
+];
+const byDept = Map.groupBy(people, p => p.dept);
+// Map { 'eng' => [Alice, Carol], 'design' => [Bob] }
 ```
 
 ---
@@ -586,6 +759,46 @@ stream
   .on('error', err => console.error('Stream error:', err));
 ```
 
+**9. CJS `require()` Can't Load ESM Synchronously** [community] — Trying to `require()` a `.mjs` file or a package with `"type": "module"` throws `ERR_REQUIRE_ESM`. WHY it causes problems: the error only surfaces at runtime, not at build time, and can surprise teams mid-migration. Entire dependency chains must be audited when introducing a pure-ESM package (like `node-fetch@3`, `chalk@5`). Fix: use dynamic `await import()` as the workaround, or stay on CJS-compatible versions until full ESM migration.
+
+```javascript
+// BAD — throws ERR_REQUIRE_ESM at runtime
+const fetch = require('node-fetch'); // node-fetch@3 is ESM-only
+
+// GOOD — dynamic import in an async context
+const { default: fetch } = await import('node-fetch');
+
+// BETTER — migrate the whole file to ESM
+// package.json: "type": "module"
+import fetch from 'node-fetch';
+```
+
+**10. Event Listener Memory Leaks** [community] — Adding event listeners without removing them is one of the most common memory leak sources in long-lived browser apps and Node.js servers. WHY it causes problems: each listener holds a closure reference to its surrounding scope; if the target element or emitter stays alive (e.g., `document`, a global singleton), the entire closure chain is never collected, gradually consuming memory. Fix: always pair `addEventListener` with `removeEventListener`, use `{ once: true }` for single-fire listeners, and `AbortSignal` for bulk cleanup.
+
+```javascript
+// BAD — listener accumulates every time the function is called
+function setup() {
+  document.addEventListener('click', handleClick); // never removed
+}
+
+// GOOD — { once: true } for single-fire listeners
+document.addEventListener('click', handleClick, { once: true });
+
+// GOOD — AbortSignal for coordinated cleanup of multiple listeners
+function attachListeners(element) {
+  const controller = new AbortController();
+  const { signal } = controller;
+  element.addEventListener('mouseenter', onEnter, { signal });
+  element.addEventListener('mouseleave', onLeave, { signal });
+  element.addEventListener('click',      onClick,  { signal });
+  // Remove ALL listeners at once:
+  return () => controller.abort();
+}
+
+const cleanup = attachListeners(myButton);
+// Later: cleanup(); — removes all three listeners simultaneously
+```
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -598,7 +811,7 @@ stream
 | Throwing strings (`throw 'error'`) | No stack trace; `instanceof` checks fail | Extend `Error` class |
 | Ignoring `catch` with empty block | Swallows exceptions silently | Log or re-throw; never `catch(e) {}` |
 | Defining methods in constructor | Each instance gets its own function copy; wastes memory | Define methods on `prototype` / use `class` syntax |
-| Mixing ESM and CJS imports | Interop edge-cases; tooling confusion | Standardise on ESM; set `"type": "module"` in package.json |
+| Mixing ESM and CJS imports | Interop edge-cases; `require()` cannot load ESM synchronously; dual-package hazard with shared state | Standardise on ESM; set `"type": "module"` in package.json; use `createRequire()` for legacy |
 | `console.log` in production | Unstructured, unsearchable output; leaks sensitive data | Use a structured logger (Pino / Winston) |
 | Modifying function parameters directly | Surprise side-effects for callers; referential equality breaks | Return new values; copy with `structuredClone` or spread |
 | Using `==` instead of `===` | Implicit type coercion produces surprising truthy/falsy results | Always use `===` and `!==` |

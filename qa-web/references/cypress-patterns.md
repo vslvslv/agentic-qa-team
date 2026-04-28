@@ -1,5 +1,5 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 3 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 7 | score: 100/100 | date: 2026-04-27 -->
 
 ## Core Principles
 
@@ -319,10 +319,10 @@ Cypress.Commands.overwrite('click', (originalFn, element, options) => {
 
 ### 12. Component Testing
 
-Cypress Component Testing mounts components in isolation without a full browser page load.
+Cypress Component Testing mounts components in isolation without a full browser page load. Supports React, Vue, Angular, and Svelte.
 
 ```typescript
-// counter.cy.tsx
+// counter.cy.tsx — React example
 import React from 'react';
 import { Counter } from '../../src/components/Counter';
 
@@ -342,19 +342,37 @@ describe('Counter component', () => {
 });
 ```
 
+```typescript
+// product-card.cy.ts — Vue 3 example
+import { mount } from 'cypress/vue';
+import ProductCard from '../../src/components/ProductCard.vue';
+
+describe('ProductCard', () => {
+  it('emits add-to-cart event', () => {
+    const onAddToCart = cy.stub().as('addToCart');
+    mount(ProductCard, {
+      props: { product: { id: 1, name: 'Widget', price: 9.99 } },
+      attrs: { onAddToCart },
+    });
+    cy.get('[data-cy="add-to-cart"]').click();
+    cy.get('@addToCart').should('have.been.calledOnce');
+  });
+});
+```
+
 Configure in `cypress.config.ts`:
 
 ```typescript
 import { defineConfig } from 'cypress';
 export default defineConfig({
   component: {
-    devServer: { framework: 'react', bundler: 'vite' },
+    devServer: { framework: 'react', bundler: 'vite' }, // or 'vue', 'angular'
     specPattern: 'src/**/*.cy.{ts,tsx}',
   },
 });
 ```
 
-### 11. Debugging with .debug(), .pause(), and cy.log()  [community]
+### 13. Debugging with .debug(), .pause(), and cy.log()  [community]
 
 Use Cypress's built-in debugging commands rather than `console.log` — they integrate with the time-travel UI.
 
@@ -382,7 +400,7 @@ it('debugs step by step', () => {
 });
 ```
 
-### 12. Multi-Origin Authentication (OAuth/SSO) with cy.origin()
+### 14. Multi-Origin Authentication (OAuth/SSO) with cy.origin()
 
 For auth flows that redirect to a third-party domain, wrap the foreign-domain commands in `cy.origin()`.
 
@@ -404,7 +422,7 @@ it('logs in via OAuth provider', () => {
 });
 ```
 
-### 13. Scroll and User Interaction Actions  [community]
+### 15. Scroll and User Interaction Actions  [community]
 
 Use Cypress action commands for realistic scroll, drag, and keyboard interactions. Avoid direct jQuery manipulation for gestures.
 
@@ -428,6 +446,69 @@ it('loads more items on scroll', () => {
     .trigger('dragstart')
     .get('[data-cy="drop-zone"]')
     .trigger('drop');
+});
+```
+
+### 16. Dual-Query Commands with Cypress.Commands.addQuery()  [community]
+
+Cypress 12+ introduced `Cypress.Commands.addQuery()` for commands that query the DOM synchronously on every retry without yielding a new command. Use it instead of `Commands.add()` for pure selectors to avoid wrapping in `.then()`.
+
+```typescript
+// cypress/support/commands.ts
+// Adds cy.getByTestId() that retries like cy.get() — not like a .then() callback
+Cypress.Commands.addQuery('getByTestId', (testId: string) => {
+  // Return a function; Cypress calls it on every retry attempt
+  return (subject) => {
+    const root = subject ?? cy.state('window').document;
+    const el = Cypress.$(root).find(`[data-testid="${testId}"]`);
+    // Throw to trigger retry; Cypress catches this and tries again
+    if (el.length === 0) {
+      throw new Error(`No element found with [data-testid="${testId}"]`);
+    }
+    return el;
+  };
+});
+
+// Type declaration
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      getByTestId(testId: string): Chainable<JQuery<HTMLElement>>;
+    }
+  }
+}
+
+// Usage — fully retrying, composable
+cy.getByTestId('submit-btn').should('be.visible').click();
+```
+
+### 17. Scoped Queries with cy.within() and cy.wrap()
+
+Use `cy.within()` to scope subsequent `cy.get()` calls to a specific parent element. Use `cy.wrap()` to bring synchronous values (plain JS objects, DOM nodes, Promises) into the Cypress command chain.
+
+```typescript
+// cy.within() — scope to a table row without complex selectors
+it('edits the second row', () => {
+  cy.get('[data-cy="orders-table"]').within(() => {
+    // cy.get() here only searches inside the orders-table
+    cy.get('tr').eq(1).within(() => {
+      cy.get('[data-cy="edit-btn"]').click();
+    });
+  });
+  cy.get('[data-cy="edit-modal"]').should('be.visible');
+});
+
+// cy.wrap() — assert on a synchronous value inside a Cypress chain
+it('validates helper output', () => {
+  const discount = applyDiscount(100, 0.2); // returns 80
+  cy.wrap(discount).should('equal', 80);
+});
+
+// cy.wrap() — bring a Promise into the chain
+it('waits for async setup', () => {
+  cy.wrap(
+    fetch('/api/seed').then((r) => r.json())
+  ).its('status').should('eq', 'ok');
 });
 ```
 
@@ -526,6 +607,9 @@ declare global {
 - **Retry flaky tests** — Add `"retries": { "runMode": 2, "openMode": 0 }` in `cypress.config.ts` to automatically re-attempt failed tests in CI without masking real failures locally.
 - **`--spec` flag for targeted runs** — In monorepos or large suites, run only changed specs with `--spec "cypress/e2e/checkout/**"` to keep PR feedback loops fast.
 - **Node version pinning** — Pin the Node.js version in CI to match the dev environment. Cypress is sensitive to Node.js ABI changes that affect native modules.
+- **`experimentalOriginDependencies`** — Set to `true` in `cypress.config.ts` to allow `cy.origin()` to load custom commands defined in the support file inside origin callbacks; without it, commands like `cy.loginViaApi()` are not available inside `cy.origin()`.
+- **Flakiness root-cause beyond retries** — Retries mask symptoms; fix root causes: (1) ensure `cy.intercept()` is registered before `cy.visit()`; (2) replace `cy.wait(ms)` with `cy.wait('@alias')`; (3) use `beforeEach` state resets; (4) avoid `cy.get().then()` snapshot patterns for assertions.
+- **Cypress Cloud Flaky Test Detection** — Cypress Cloud automatically marks tests as "flaky" when they pass on retry. Review the Flaky Tests dashboard weekly; a test flaking in CI 3+ times signals a test design issue, not just infrastructure noise.
 
 ```typescript
 // cypress.config.ts — production-ready CI config
@@ -599,6 +683,45 @@ jobs:
 ---
 
 ## Advanced Patterns
+
+### Cypress Module API — Programmatic Runs
+
+The Cypress Module API lets you invoke Cypress programmatically from a Node.js script (e.g., a custom CI orchestrator, a script that seeds the DB first, or a monorepo runner that maps spec files to environments).
+
+```typescript
+// scripts/run-e2e.ts
+import cypress from 'cypress';
+import { seedDatabase, teardownDatabase } from '../db/helpers';
+
+async function main(): Promise<void> {
+  await seedDatabase({ scenario: 'full' });
+
+  const result = await cypress.run({
+    browser: 'chrome',
+    headless: true,
+    spec: 'cypress/e2e/checkout/**/*.cy.ts',
+    config: {
+      baseUrl: process.env.CYPRESS_BASE_URL ?? 'http://localhost:3000',
+      video: false,
+      retries: { runMode: 2, openMode: 0 },
+    },
+    env: {
+      API_TOKEN: process.env.API_TOKEN,
+    },
+  });
+
+  await teardownDatabase();
+
+  if (result.status === 'failed' || result.totalFailed > 0) {
+    console.error(`${result.totalFailed} spec(s) failed`);
+    process.exit(1);
+  }
+}
+
+main().catch((err) => { console.error(err); process.exit(1); });
+```
+
+Run with: `npx ts-node scripts/run-e2e.ts`
 
 ### Environment-Based Configuration
 
@@ -690,3 +813,9 @@ describe('Checkout flow', { tags: ['@critical', '@smoke'] }, () => {
 | `cy.scrollTo(position)` | Scroll page or element | Infinite scroll, lazy-load testing |
 | `cy.clearAllCookies()` | Clear all browser cookies | Test isolation in `beforeEach` |
 | `cy.clearAllLocalStorage()` | Clear all localStorage | Test isolation in `beforeEach` |
+| `cy.spy(obj, method)` | Monitor function calls without stubbing | Analytics, event tracking assertions |
+| `cy.clock()` | Freeze/control JS timers globally | Test timeouts, debounce, polling |
+| `cy.tick(ms)` | Advance frozen clock by milliseconds | Pair with `cy.clock()` |
+| `Cypress.Commands.addQuery()` | Add a retrying synchronous query command | Custom element selectors |
+| `Cypress.Commands.overwrite()` | Wrap a built-in command with custom logic | Add logging/guards to `cy.visit()` |
+| `cypress.run(options)` | Programmatically invoke Cypress | Custom CI scripts, monorepo runners |

@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-04-26 -->
-<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, GitHub Discussions patterns, real-world production experience -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-04-27 -->
+<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer, /test-retries, /test-components -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis -->
 
 ---
 
@@ -9,9 +9,9 @@
 
 1. **Test user-visible behavior, not implementation details.** Assertions should reflect what users see and do — not CSS class names, internal state, or component structure.
 2. **Rely on Playwright's auto-waiting.** Every action (`click`, `fill`, `check`) automatically waits for the element to be actionable. Never add arbitrary `waitForTimeout()` sleeps.
-3. **Use semantic, resilient locators.** Roles, labels, and accessible names outlive CSS refactors. If a selector breaks when a class name changes, it was the wrong selector.
-4. **Isolate state between tests.** Each test should own its setup. Tests that depend on run order cannot be debugged in isolation.
-5. **Centralize reuse in fixtures and Page Objects.** Login flows, page interactions, and setup sequences belong in one place — so one change fixes every test that uses them.
+3. **Use semantic, resilient locators.** Roles, labels, and accessible names outlive CSS refactors. If a selector breaks when a class name changes, it was the wrong selector. Playwright pierces Shadow DOM by default — no special API needed.
+4. **Isolate state between tests.** Each test should own its setup. Tests that depend on run order cannot be debugged in isolation. When a worker restarts after failure, clean up stale state on retry using `testInfo.retry`.
+5. **Centralize reuse in fixtures and Page Objects.** Login flows, page interactions, and setup sequences belong in one place — so one change fixes every test that uses them. Use `locator.describe()` to annotate complex locators for trace readability.
 
 ---
 
@@ -594,6 +594,46 @@ expect(response.status()).toBe(200);
 **WHY:** `npm install` updates `package-lock.json` and may install newer patch versions that contain breaking changes. `npm ci` installs exactly what the lockfile specifies.
 **Fix:** Always use `npm ci` in CI pipelines. Add it as a check in your CI workflow template.
 
+### 12. `toMatchAriaSnapshot()` fails after design system icon library updates [community]
+**What:** Aria snapshot tests start failing en masse after updating an icon library or design system, even though no visible behavior changed.
+**WHY:** Icon libraries often add or remove `aria-label` or `role` attributes from SVG elements, changing the accessibility tree that `toMatchAriaSnapshot()` captures. Even visually identical changes cause snapshot mismatches.
+**Fix:** Use `--update-snapshots=changed` (v1.50+) after intentional design system upgrades. Scope `toMatchAriaSnapshot()` to specific semantic regions (e.g., `getByRole('navigation')`) rather than entire pages to limit blast radius.
+
+### 13. `failOnFlakyTests` breaks new environments where retries are expected [community]
+**What:** Enabling `failOnFlakyTests` in a new environment (staging, new CI runner) causes all runs to fail because network latency causes retries on tests that are "stable" in prod CI.
+**WHY:** `failOnFlakyTests` treats any pass-on-retry as a failure. New environments with higher latency will naturally produce more retries, triggering false positives.
+**Fix:** Enable `failOnFlakyTests` only on established, stable environments (e.g., nightly on main). Use a dedicated env var (`STRICT_FLAKE_MODE`) to gate it — never enable unconditionally in CI.
+
+### 14. `test.describe.serial()` re-runs all tests in the group on any failure [community]
+**What:** A serial test group with 10 tests retries all 10 when test #3 fails, rather than just test #3. This is much slower than parallel tests and creates confusing retry traces.
+**WHY:** Serial mode runs all tests together as a single unit — Playwright restores the entire group on retry because tests in a serial group share state by design.
+**Fix:** Use serial mode only for genuinely stateful multi-step flows (e.g., checkout → confirm → verify order). For independent tests, always use the default parallel mode. If you need shared state, use worker-scoped fixtures instead of serial mode.
+
+### 15. Worker restarts after test failure wipe `beforeAll` state [community]
+**What:** After a test fails, the next batch of tests in that worker suddenly starts with clean state — shared fixtures initialized in `beforeAll` or `{ scope: 'worker' }` are gone.
+**WHY:** Playwright discards the worker process on test failure and starts a fresh process for the next batch. Any worker-scoped state (DB connections, seeded data, server instances) must be re-initialized.
+**Fix:** Use `testInfo.retry` to detect re-runs and conditionally re-initialize state. Design worker-scoped fixtures to be self-healing (idempotent setup):
+
+```typescript
+// In a worker-scoped fixture — detect retry and clean up before re-initializing
+export const test = base.extend<{}, { dbConnection: DBClient }>({
+  dbConnection: [async ({ browser }, use, workerInfo) => {
+    const db = await connectToTestDB(workerInfo.workerIndex);
+    await use(db);
+    await db.cleanup();
+    await db.close();
+  }, { scope: 'worker' }],
+});
+
+// In a test — conditionally clean cache on retry
+test('creates a record', async ({ page, request }, testInfo) => {
+  if (testInfo.retry > 0) {
+    await request.delete('/api/test/cleanup');  // idempotent cleanup before retry
+  }
+  // ... test body
+});
+```
+
 ---
 
 ## CI Considerations
@@ -611,6 +651,10 @@ expect(response.status()).toBe(200);
 | `screenshot` | `off` | `'only-on-failure'` | Captures state at failure without filling disk |
 | `timeout` | `30000` | `60000` | CI machines are slower; avoid flakes from timing |
 | `maxFailures` | unlimited | `10` | Stop consuming resources when suite is fundamentally broken |
+| `failOnFlakyTests` | `false` | `true` (nightly only) | Surface retry-passing tests as failures on stable nightly runs |
+| `captureGitInfo` | `false` | `{ commit: true }` | Links test failures to specific commits in HTML reports |
+| `updateSnapshots` | `'missing'` | `'changed'` | Only update snapshots that actually differ; protect stable baselines |
+| `tag` | omitted | `CI_ENVIRONMENT_NAME` | Label runs in reports to distinguish staging from prod smoke runs |
 
 ### Installing browsers correctly in CI
 
@@ -654,9 +698,41 @@ npx playwright test --shard=2/4
 
 # Re-run only failed tests before failing the build (handle transient flakes)
 npx playwright test --last-failed
+
+# Run only tests in files changed since last commit (v1.46+)
+npx playwright test --only-changed
+
+# Run only tests in files changed relative to a branch (v1.46+)
+npx playwright test --only-changed=origin/main
 ```
 
-### Handling flaky tests strategically
+### Trace Modes Reference
+
+| Mode | What it records | When to use |
+|------|----------------|-------------|
+| `'off'` | Nothing | Local dev (no need for traces) |
+| `'on-first-retry'` | Only when a test is retried the first time | Standard CI — captures flakes without overhead |
+| `'on-all-retries'` | Every retry attempt | When you need to compare multiple retry states |
+| `'retain-on-failure'` | Every test, but deletes traces for passing tests | When you want traces for ALL failures, not just retried ones |
+| `'on'` | Every test, always | Local debugging only — too expensive for CI |
+
+```typescript
+// playwright.config.ts — retention strategies
+export default defineConfig({
+  use: {
+    // Most teams: capture flakes without overhead
+    trace: 'on-first-retry',
+
+    // Large suites with zero-retry policy: capture all failures
+    // trace: 'retain-on-failure',
+
+    // CI with retries=0 and need for failure traces:
+    // trace: process.env.CI ? 'retain-on-failure' : 'off',
+  },
+});
+```
+
+
 
 ```typescript
 // Tag known flaky tests for monitoring without blocking CI
@@ -699,6 +775,18 @@ npx playwright test --grep-invert @flaky --retries=2
 | `await waitForResponse()` before action | Deadlock — response waiter fires before trigger | Use `Promise.all([waitForResponse, click])` pattern |
 | `npm install` in CI | Dependency drift; different versions than lockfile | Always use `npm ci` in CI pipelines |
 | `--with-deps` omitted when installing browsers | Silent browser crashes from missing OS libraries | Always `npx playwright install chromium --with-deps` |
+| `toHaveClass('active disabled')` for partial class checks | Asserts the complete class string; fails if extra classes exist | Use `toContainClass('active')` (v1.52+) for partial class presence |
+| Running visual tests with `workers > 1` | Rendering differs across parallel processes; spurious diffs | Set `workers: 1` for visual test projects in playwright.config.ts |
+| Using `globalSetup` for setup that needs fixtures or traces | `globalSetup` has no access to fixtures, page, or trace | Use project-based dependencies with `testMatch: /global.setup.ts/` |
+| `await using` without TypeScript 5.2+ | Syntax error at compile time | Verify `"target": "ES2022"` or later in `tsconfig.json` before using async disposables |
+| `--update-snapshots` (update all) after fixing one component | Overwrites stable baselines for unrelated components with drift | Use `--update-snapshots=changed` to only update actually-differing snapshots |
+| `failOnFlakyTests: true` in all CI environments | False positives in new/slow environments where retries are expected | Gate with env var; enable only on established nightly runs |
+| `test.describe.serial()` for independent tests | All serial tests retry together on one failure — wastes time | Use parallel mode by default; serial only for genuinely state-dependent flows |
+| Not cleaning up state on `testInfo.retry > 0` | Worker restart leaves stale state; retried tests start dirty | Use `if (testInfo.retry > 0) await cleanup()` to reset before retry |
+| Component test config mixed with e2e config | Confusing failures from wrong test runner being invoked | Use separate `playwright-ct.config.ts` for component tests |
+| Forgetting `respectGitIgnore: true` in monorepos | Test discovery crawls `node_modules/` or generated build directories | Set `respectGitIgnore: true` and explicit `testMatch` patterns |
+| CHIPS cookies tested with `secure: false` locally | Cookie attribute differs from production; may hide auth bugs | Use a local HTTPS dev server or document the known difference |
+| Passing complex live objects as component test props | Runtime error: class instances and closures cannot be passed to CT | Use plain data; wrap complex state in story components |
 
 ---
 
@@ -713,6 +801,9 @@ npx playwright test --grep-invert @flaky --retries=2
 | `page.waitForLoadState('domcontentloaded')` | Wait until DOM is parsed | Fast navigation assertion |
 | `page.waitForLoadState('networkidle')` | Wait until network settles | Static pages only — avoid on polling apps |
 | `page.waitForResponse(url)` | Wait for a specific HTTP response | After UI actions that trigger API calls |
+| `context.setStorageState({ path })` | Reset all storage state in-place (v1.59+) | Role-switching tests without new context |
+| `page.clearConsoleMessages()` | Clear accumulated console logs (v1.59+) | Reset log state mid-test |
+| `page.clearPageErrors()` | Clear accumulated page errors (v1.59+) | Reset error state mid-test |
 
 ### Locators
 
@@ -742,7 +833,11 @@ npx playwright test --grep-invert @flaky --retries=2
 | `expect(page).toHaveTitle(str)` | Page title matches | Page identity |
 | `expect(locator).toHaveScreenshot()` | Visual regression snapshot | Critical UI components |
 | `expect(page).toHaveScreenshot()` | Full-page visual regression | Whole-page regression |
+| `expect(locator).toMatchAriaSnapshot()` | ARIA accessibility tree snapshot (v1.49+) | Accessibility structure regression |
+| `expect(locator).toContainClass(cls)` | Assert single class present (v1.52+) | Class presence without full-class match |
+| `expect(locator).toHaveAccessibleErrorMessage(msg)` | Validate aria-errormessage (v1.52+) | Form validation accessibility |
 | `expect.soft(locator)` | Non-blocking assertion; collects errors | Multi-field validation |
+| `expect.configure({ timeout, soft })` | Scoped expect instance with custom settings | Block-level timeout/soft mode |
 | `expect.poll(fn)` | Poll async function until assertion passes | External state / API polling |
 | `expect(fn).toPass()` | Retry entire code block until no failures | Complex multi-step conditions |
 | `expect.extend({...})` | Define custom matchers | Domain-specific assertions |
@@ -767,8 +862,13 @@ npx playwright test --grep-invert @flaky --retries=2
 | `browserContext.route(url, handler)` | Intercept across all pages including popups | Multi-window or popup scenarios |
 | `route.abort()` | Block the request entirely | Remove tracking pixels, large assets |
 | `route.fetch()` then `route.fulfill()` | Fetch real response then modify it | Feature flag injection, response patching |
+| `route.continue()` | Pass request through with optional header/body override | Inject auth headers on outbound requests |
 | `page.waitForRequest(url)` | Wait for outgoing request | Verify API calls are made |
 | `page.waitForResponse(url)` | Wait for incoming response | Verify API responses are handled |
+| `request.existingResponse()` | Get response without blocking — returns null if not yet received (v1.59+) | Non-blocking response inspection |
+| `request.maxRetries` option | Retry request on `ECONNRESET` errors (v1.46+) | Unstable staging environments |
+| `response.httpVersion()` | Returns HTTP protocol version (v1.59+) | Verify HTTP/2 or HTTP/3 usage |
+| `page.routeWebSocket(url, handler)` | Intercept WebSocket connections (v1.48+) | Mock WebSocket messages |
 
 ### Fixtures
 
@@ -779,9 +879,11 @@ npx playwright test --grep-invert @flaky --retries=2
 | `mergeTests(a, b)` | Combine fixtures from multiple modules | Modular fixture composition |
 | `workerInfo.workerIndex` | Unique per-worker integer | Worker-scoped unique test data |
 | `testInfo.testId` | Globally unique test identifier | Per-test unique data seeds |
+| `testInfo.tags` | Array of tags applied to current test | Tag-based branching in fixtures |
 | `{ scope: 'worker' }` | Share fixture across all tests in a worker | Expensive shared resources (DB, server) |
 | `{ auto: true }` | Run fixture for every test automatically | Universal setup like global logging |
 | `{ box: true }` | Hide fixture steps from test report | Reduce report noise for helper fixtures |
+| `locator.describe(label)` | Annotate locator with human-readable name (v1.52+) | Trace/report readability |
 
 ---
 
@@ -1214,6 +1316,55 @@ test('pre-load auth token via cookie', async ({ page, context }) => {
 
 ---
 
+### CHIPS (Partitioned Cookies) Support (v1.54+)
+
+Test applications that use CHIPS (Cookies Having Independent Partitioned State) — where cookies are isolated by top-level site to prevent cross-site tracking. Required for testing third-party embeds and cross-origin iframes.
+
+```typescript
+// Set a partitioned cookie for a third-party embed
+test('third-party widget loads with partitioned auth', async ({ context }) => {
+  // CHIPS cookie: isolated per top-level site (partitionKey = the embedding site)
+  await context.addCookies([{
+    name:         'widget_session',
+    value:        process.env.WIDGET_SESSION_TOKEN!,
+    domain:       'widget.third-party.com',
+    path:         '/',
+    httpOnly:     true,
+    secure:       true,
+    sameSite:     'None',
+    partitionKey: { sourceOrigin: 'https://your-app.com' },  // CHIPS partition key
+  }]);
+
+  await page.goto('/dashboard');
+  const widgetFrame = page.frameLocator('iframe[src*="widget.third-party.com"]');
+  await expect(widgetFrame.getByText('Widget loaded')).toBeVisible();
+});
+
+// Verify cookies are correctly partitioned (not shared across sites)
+test('cookie is not accessible from other contexts', async ({ browser }) => {
+  const context1 = await browser.newContext();
+  const context2 = await browser.newContext();
+
+  await context1.addCookies([{
+    name: 'test_cookie', value: 'value1', domain: 'localhost', path: '/',
+    partitionKey: { sourceOrigin: 'http://site-a.localhost' },
+  }]);
+
+  // context2 with different partition — should NOT see context1's cookie
+  const cookies2 = await context2.cookies('http://site-b.localhost');
+  expect(cookies2.find(c => c.name === 'test_cookie')).toBeUndefined();
+
+  await context1.close();
+  await context2.close();
+});
+```
+
+> CHIPS partitioned cookies require `secure: true` and `sameSite: 'None'` in production.
+> In local testing (`http://localhost`), you may need to use `secure: false` — be aware
+> this differs from the production cookie attributes and may hide auth bugs. [community]
+
+---
+
 ### Performance Timing Assertions
 
 Verify page load and interaction performance within tests using the Navigation Timing API.
@@ -1459,7 +1610,31 @@ npx playwright test --headed
 
 # 5. Trace viewer — replay recorded trace from CI failure
 npx playwright show-trace test-results/auth-chromium/trace.zip
+
+# 6. Debug CLI mode — agent-friendly, attaches to existing session (v1.59+)
+npx playwright test --debug=cli
+
+# 7. Trace CLI — explore trace programmatically without opening the UI (v1.59+)
+npx playwright trace actions ./trace.zip       # list all actions
+npx playwright trace action 5 ./trace.zip      # details for action #5
+npx playwright trace snapshot 5 ./trace.zip    # before/after state for action #5
 ```
+
+**Interactive locator picker (v1.59+):**
+
+```typescript
+// In a test — enter hover mode to visually pick a locator, then continue
+test('explore locators interactively', async ({ page }) => {
+  await page.goto('/dashboard');
+  // Opens an interactive element picker in headed mode
+  const locator = await page.pickLocator();
+  console.log(locator);  // prints the best-practice locator for the clicked element
+  await page.cancelPickLocator();  // exit picker mode
+});
+```
+
+> `page.pickLocator()` is a development tool — never commit tests that call it.
+> Add it to your ESLint config alongside `page.pause()` in `no-restricted-syntax`. [community]
 
 **Pause mid-test for inspection:**
 
@@ -1742,6 +1917,615 @@ await frame.getByRole('button', { name: 'Pay' }).click();
 
 ---
 
+### Aria Snapshot Assertions (v1.49+)
+
+`toMatchAriaSnapshot()` captures the ARIA accessibility tree as a YAML snapshot and asserts structural accessibility — distinct from visual snapshots. It verifies semantic structure, not rendering.
+
+```typescript
+// e2e/specs/aria.spec.ts
+import { test, expect } from '@playwright/test';
+
+test('navigation has expected aria structure', async ({ page }) => {
+  await page.goto('/');
+  // Assert the accessible tree structure
+  await expect(page.getByRole('navigation')).toMatchAriaSnapshot(`
+    - navigation:
+      - list:
+        - listitem: Home
+        - listitem: Products
+        - listitem: About
+  `);
+});
+
+test('form fields have correct labels and states', async ({ page }) => {
+  await page.goto('/signup');
+  await page.getByRole('button', { name: 'Create account' }).click();
+  // Verify error states are reflected in the accessibility tree
+  await expect(page.getByRole('form')).toMatchAriaSnapshot(`
+    - form:
+      - textbox /email/i [required]
+      - textbox /password/i [required]
+      - alert: Email is required
+  `);
+});
+
+// Store snapshots in external .aria.yml files (v1.50+)
+test('homepage navigation aria snapshot', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('main')).toMatchAriaSnapshot({
+    path: 'e2e/snapshots/homepage-main.aria.yml',
+  });
+});
+```
+
+> `toMatchAriaSnapshot()` tests fail intentionally when ARIA roles or labels change — making accessibility regressions explicit rather than invisible. Use `--update-snapshots` to regenerate after intentional changes. [community]
+
+---
+
+### Locator `describe()` for Trace Readability (v1.52+)
+
+Annotate locators with human-readable descriptions that appear in traces, reports, and error messages. Essential for debugging complex POM setups where generated locators are cryptic.
+
+```typescript
+// Without describe(): "locator('.data-table').filter(has=locator('[data-status="active"]'))"
+// With describe(): "Active users table"
+
+const activeUserTable = page
+  .locator('.data-table')
+  .filter({ has: page.locator('[data-status="active"]') })
+  .describe('Active users table');
+
+await expect(activeUserTable).toBeVisible();
+await activeUserTable.getByRole('button', { name: 'Edit' }).first().click();
+
+// In a Page Object — annotate complex locators at definition
+export class UserManagementPage {
+  readonly activeUsersTable: Locator;
+  readonly inactiveUsersTable: Locator;
+
+  constructor(page: Page) {
+    this.activeUsersTable = page
+      .locator('[data-grid]')
+      .filter({ has: page.locator('[data-status="active"]') })
+      .describe('Active users grid');
+    this.inactiveUsersTable = page
+      .locator('[data-grid]')
+      .filter({ has: page.locator('[data-status="inactive"]') })
+      .describe('Inactive users grid');
+  }
+}
+```
+
+---
+
+### `expect.configure()` for Scoped Timeouts and Soft Mode (v1.38+)
+
+Create configured `expect` instances instead of passing options to every assertion. Useful for slow pages, performance assertions, and section-wide soft validation.
+
+```typescript
+// e2e/specs/dashboard.spec.ts
+import { test, expect } from '@playwright/test';
+
+test('dashboard loads within acceptable time', async ({ page }) => {
+  // Slow expect for pages with expensive data fetching
+  const slowExpect = expect.configure({ timeout: 15_000 });
+
+  await page.goto('/dashboard');
+  await slowExpect(page.getByRole('main')).toBeVisible();
+  await slowExpect(page.getByTestId('metrics-chart')).toBeVisible();
+});
+
+test('validate all form field errors at once', async ({ page }) => {
+  // Soft mode for a section — collect all failures
+  const softExpect = expect.configure({ soft: true });
+
+  await page.goto('/checkout');
+  await page.getByRole('button', { name: 'Place order' }).click();
+
+  await softExpect(page.getByTestId('name-error')).toHaveText('Name is required');
+  await softExpect(page.getByTestId('email-error')).toHaveText('Email is required');
+  await softExpect(page.getByTestId('card-error')).toHaveText('Card number is required');
+
+  // Verify all soft assertions passed
+  expect(test.info().errors).toHaveLength(0);
+});
+```
+
+> `expect.configure({ soft: true })` is cleaner than calling `expect.soft()` on every line.
+> Use it to soft-assert a whole block, then check `test.info().errors` at the end. [community]
+
+---
+
+### New Assertions: `toContainClass` and `toHaveAccessibleErrorMessage` (v1.52+)
+
+```typescript
+// toContainClass — assert individual class names without full-class matching
+test('active nav item has active class', async ({ page }) => {
+  await page.goto('/products');
+  const productsLink = page.getByRole('link', { name: 'Products' });
+  // Unlike toHaveClass(), toContainClass checks for presence of a single class
+  await expect(productsLink).toContainClass('active');
+  await expect(productsLink).not.toContainClass('disabled');
+});
+
+// toHaveAccessibleErrorMessage — validates aria-errormessage attribute
+test('invalid form field has accessible error message', async ({ page }) => {
+  await page.goto('/signup');
+  await page.getByRole('button', { name: 'Submit' }).click();
+  const emailInput = page.getByLabel('Email');
+  await expect(emailInput).toHaveAccessibleErrorMessage('Please enter a valid email');
+});
+```
+
+---
+
+### `testConfig.failOnFlakyTests` — Zero Flake Tolerance (v1.52+)
+
+Configure the test run to fail if any test passes on retry (indicating flakiness) rather than silently treating retries as normal.
+
+```typescript
+// playwright.config.ts — production hardening
+export default defineConfig({
+  retries:            process.env.CI ? 2 : 0,
+  // Fail the run if any test required a retry to pass — surfaces flakiness
+  failOnFlakyTests:   !!process.env.CI && !!process.env.STRICT_FLAKE_MODE,
+});
+```
+
+```bash
+# Enable strict flake detection on nightly runs
+STRICT_FLAKE_MODE=1 npx playwright test
+```
+
+> `failOnFlakyTests` is most valuable on nightly regression runs, not every PR check.
+> On PRs, silent retries are acceptable — but in a nightly run, a pass-on-retry is
+> a signal that needs investigation before it becomes a hard failure. [community]
+
+---
+
+### Per-Project Worker Configuration (v1.52+)
+
+Override the global `workers` count per project. Critical when one project (e.g., visual regression) needs serialized runs while another (e.g., API tests) can run maximally parallel.
+
+```typescript
+// playwright.config.ts
+export default defineConfig({
+  workers: process.env.CI ? 4 : undefined,  // global default
+  projects: [
+    {
+      name: 'api-tests',
+      testMatch: /api\/.*.spec.ts/,
+      workers: 8,  // API tests are fast; more parallelism is fine
+    },
+    {
+      name: 'visual',
+      testMatch: /visual\/.*.spec.ts/,
+      workers: 1,  // Visual tests must be serialized for consistent rendering
+    },
+    {
+      name: 'chromium',
+      testMatch: /specs\/.*.spec.ts/,
+      // inherits global workers (4 in CI)
+    },
+  ],
+});
+```
+
+---
+
+### `browserContext.setStorageState()` — Reset Auth Without New Context (v1.59+)
+
+Reset all storage state (cookies, localStorage, sessionStorage, IndexedDB) within an existing context — useful for multi-user scenarios within a single test.
+
+```typescript
+// e2e/specs/admin.spec.ts
+import { test, expect } from '@playwright/test';
+import path from 'path';
+
+const adminAuth  = path.join(__dirname, '../.auth/admin.json');
+const viewerAuth = path.join(__dirname, '../.auth/viewer.json');
+
+test('admin can edit but viewer cannot', async ({ browser }) => {
+  const context = await browser.newContext({ storageState: adminAuth });
+  const page = await context.newPage();
+
+  // Test as admin
+  await page.goto('/settings');
+  await expect(page.getByRole('button', { name: 'Delete account' })).toBeVisible();
+
+  // Switch to viewer — reset storage in the SAME context (no new browser spawn)
+  await context.setStorageState({ path: viewerAuth });
+  await page.reload();
+
+  // Test as viewer
+  await expect(page.getByRole('button', { name: 'Delete account' })).toBeHidden();
+  await context.close();
+});
+```
+
+> `setStorageState()` is significantly faster than creating a new `browserContext` for
+> role-switching tests. Use it when testing permission differences between roles
+> without the overhead of spinning up a fresh browser context. [community]
+
+---
+
+### IndexedDB in `storageState` (v1.51+)
+
+Persist and restore IndexedDB contents alongside cookies and localStorage. Critical for apps that use IndexedDB for auth tokens, offline state, or feature flags.
+
+```typescript
+// e2e/auth.setup.ts — save IndexedDB as part of auth state
+setup('authenticate with IndexedDB app', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByLabel('Email').fill(process.env.E2E_USER_EMAIL!);
+  await page.getByLabel('Password').fill(process.env.E2E_USER_PASSWORD!);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page).not.toHaveURL(/login/);
+
+  // Save state including IndexedDB (e.g., service worker tokens, offline cache)
+  await page.context().storageState({
+    path:       'e2e/.auth/user.json',
+    indexedDB:  true,  // include IndexedDB contents in the saved state
+  });
+});
+```
+
+---
+
+### `captureGitInfo` for Trace Reports (v1.51+)
+
+Capture git commit metadata (branch, commit SHA, diff) in HTML reports for traceability between test failures and code changes.
+
+```typescript
+// playwright.config.ts
+export default defineConfig({
+  captureGitInfo: { commit: true, diff: true },
+  reporter:       process.env.CI ? [['blob'], ['junit', { outputFile: 'results.xml' }]] : 'html',
+});
+```
+
+The HTML report then shows which commit introduced the failure — click "Copy prompt" to pre-fill an LLM with the failing test context. [community]
+
+---
+
+### Async Disposables for Automatic Cleanup (v1.59+)
+
+Use `await using` (TypeScript 5.2+) to ensure automatic cleanup of pages, routes, and scripts — even if a test throws.
+
+```typescript
+test('route cleanup with async disposables', async ({ context }) => {
+  await using page = await context.newPage();  // auto-closes page on exit
+
+  {
+    // Route is automatically removed when this block exits
+    await using route = await page.route('**/api/slow', async r => {
+      await new Promise(res => setTimeout(res, 100));
+      await r.continue();
+    });
+
+    await using script = await page.addInitScript(() => {
+      (window as any).__testMode = true;
+    });
+
+    await page.goto('/dashboard');
+    await expect(page.getByTestId('dashboard-loaded')).toBeVisible();
+  }
+  // route and script are cleaned up here; page is still open
+
+  await page.goto('/profile');  // route no longer intercepts
+});
+```
+
+> `await using` requires TypeScript 5.2+ and `"target": "ES2022"` or later in `tsconfig.json`.
+> It eliminates the need for `test.afterEach()` cleanup of routes and scripts — they
+> are disposed at block exit, even on exception. [community]
+
+---
+
+### `--only-changed` for Fast Developer Feedback (v1.46+)
+
+Run only test files that have changed since the last git commit. Ideal for rapid local iteration without running the full suite.
+
+```bash
+# Run only tests in files modified since HEAD
+npx playwright test --only-changed
+
+# Compare against a specific branch (e.g., before merging)
+npx playwright test --only-changed=main
+
+# Combine with a project for fast PR checks
+npx playwright test --only-changed=origin/main --project=chromium
+```
+
+> `--only-changed` uses `git diff` to find modified files. It only detects changes in
+> test files themselves — not in Page Objects or fixtures they import. If a POM file
+> changes, run the full suite. [community]
+
+---
+
+### Step-Level Control: `test.step.skip()` and Step Timeouts (v1.50+)
+
+Control individual step execution and timeouts for granular test management.
+
+```typescript
+test('checkout flow with conditional steps', async ({ page }) => {
+  await test.step('navigate to checkout', async () => {
+    await page.goto('/checkout');
+  });
+
+  await test.step('apply promo code', async (step) => {
+    // Skip this step if feature flag is off — without failing the test
+    if (!process.env.PROMO_ENABLED) {
+      step.skip();
+      return;
+    }
+    await page.getByLabel('Promo code').fill('SAVE20');
+    await page.getByRole('button', { name: 'Apply' }).click();
+  });
+
+  // Step with explicit timeout (overrides test-level timeout for slow operations)
+  await test.step('wait for payment processor', { timeout: 45_000 }, async () => {
+    await expect(page.getByText('Payment confirmed')).toBeVisible({ timeout: 45_000 });
+  });
+});
+```
+
+---
+
+### `updateSnapshots: 'changed'` — Surgical Snapshot Updates (v1.50+)
+
+Update only snapshots that actually differ instead of regenerating all of them. Prevents accidentally overwriting stable baselines when fixing one component.
+
+```typescript
+// playwright.config.ts
+export default defineConfig({
+  expect: {
+    toHaveScreenshot: {
+      maxDiffPixels: 100,
+      stylePath:     './e2e/screenshot.css',
+    },
+  },
+  // Only update snapshots that have changed, not all snapshots
+  updateSnapshots: 'changed',
+});
+```
+
+```bash
+# Update only failing/changed snapshots (safe — won't touch stable ones)
+npx playwright test --update-snapshots=changed
+
+# Legacy behavior (updates ALL snapshots, including passing ones) — use rarely
+npx playwright test --update-snapshots
+```
+
+> `updateSnapshots: 'changed'` prevents a common mistake where `--update-snapshots` is
+> run after fixing one component but accidentally regenerates baselines for unrelated
+> components that have rendering drift. [community]
+
+---
+
+### Shadow DOM Traversal
+
+Playwright locators pierce Shadow DOM by default — no special API is needed for open shadow roots. XPath does NOT pierce shadow roots; only CSS and role-based locators work.
+
+```typescript
+// Transparent traversal — locates element inside <x-card>'s shadow root automatically
+test('shadow DOM component interaction', async ({ page }) => {
+  await page.goto('/components');
+
+  // Role-based locator works transparently through shadow root
+  await page.getByRole('button', { name: 'Expand details' }).click();
+
+  // Text-based locator also pierces shadow DOM
+  await expect(page.getByText('Shadow content loaded')).toBeVisible();
+
+  // Scope to the custom element host, then target inside
+  const card = page.locator('x-card', { hasText: 'Product A' });
+  await card.getByRole('button', { name: 'Add to cart' }).click();
+  await expect(card).toContainText('Added');
+});
+
+// frameLocator for embedded iframes within shadow components
+test('payment iframe within shadow component', async ({ page }) => {
+  await page.goto('/checkout');
+  // First pierce to the shadow host, then access the iframe inside
+  const shadowHost = page.locator('payment-widget');
+  const paymentFrame = shadowHost.frameLocator('iframe[title="Payment"]');
+  await paymentFrame.getByLabel('Card number').fill('4111111111111111');
+  await paymentFrame.getByLabel('Expiry').fill('12/26');
+  await paymentFrame.getByRole('button', { name: 'Pay' }).click();
+});
+```
+
+**Shadow DOM caveats:**
+- Open shadow roots: fully supported via all locator methods
+- Closed shadow roots: not supported — use `page.evaluate()` if unavoidable
+- XPath (`page.locator('xpath=...')`) does NOT pierce shadow roots — use CSS or role locators
+- `::slotted()` CSS pseudo-elements may require `page.locator('css=...')` for slot content
+
+> If your app uses closed shadow roots, the component is intentionally hiding its internals.
+> Test through the public API (events, attributes, methods) rather than piercing the shadow. [community]
+
+---
+
+### `testConfig.tag` for Run-Level Metadata (v1.57+)
+
+Tag entire test runs with environment or deployment context. The tag appears in HTML reports and helps differentiate CI environments in aggregated dashboards.
+
+```typescript
+// playwright.config.ts — tag the entire run for the current environment
+export default defineConfig({
+  tag: process.env.CI_ENVIRONMENT_NAME ?? 'local',  // e.g., '@staging', '@prod-smoke'
+  // All tests in this run will appear under this tag in the HTML report
+});
+```
+
+```bash
+# Override at runtime for ad-hoc tagging
+TEST_ENV=staging npx playwright test
+
+# In CI: tag differs by job type
+- name: Smoke tests
+  env:
+    CI_ENVIRONMENT_NAME: '@smoke-staging'
+  run: npx playwright test --grep @smoke
+
+- name: Full regression
+  env:
+    CI_ENVIRONMENT_NAME: '@regression-staging'
+  run: npx playwright test
+```
+
+---
+
+### `testConfig.tsconfig` — Single TypeScript Config for All Tests (v1.49+)
+
+By default Playwright looks up `tsconfig.json` separately for each imported test file. This can cause inconsistencies. Pin a single tsconfig:
+
+```typescript
+// playwright.config.ts
+export default defineConfig({
+  tsconfig: './e2e/tsconfig.json',  // single tsconfig for all test files
+  testDir:  './e2e',
+});
+```
+
+```jsonc
+// e2e/tsconfig.json — test-specific TypeScript settings
+{
+  "compilerOptions": {
+    "target":           "ES2022",          // required for await using (async disposables)
+    "module":           "commonjs",
+    "moduleResolution": "node",
+    "strict":           true,
+    "esModuleInterop":  true,
+    "skipLibCheck":     true,
+    "baseUrl":          ".",
+    "paths": {
+      "@fixtures/*": ["fixtures/*"],
+      "@pages/*":    ["pages/*"]
+    }
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}
+```
+
+> Set `"target": "ES2022"` (not `"ES2020"`) to enable the `await using` async disposables
+> syntax introduced in Playwright v1.59. Earlier targets cause a compile error. [community]
+
+---
+
+### Component Testing (Experimental CT)
+
+Test individual React/Vue/Svelte components in a real browser without a full app server. Uses `@playwright/experimental-ct-react` (or `-vue`, `-svelte`).
+
+```bash
+# Initialize component testing
+npm init playwright@latest -- --ct
+```
+
+```typescript
+// playwright-ct.config.ts — separate config for component tests
+import { defineConfig } from '@playwright/experimental-ct-react';
+
+export default defineConfig({
+  testDir:  './src',
+  testMatch: '**/*.ct.spec.ts',
+  use: {
+    ctPort:    3100,
+    ctViteConfig: {
+      // Vite config for the component sandbox
+    },
+  },
+});
+```
+
+```typescript
+// src/components/Button.ct.spec.ts
+import { test, expect } from '@playwright/experimental-ct-react';
+import { Button } from './Button';
+
+test('renders with correct label', async ({ mount }) => {
+  const component = await mount(<Button label="Submit" />);
+  await expect(component).toContainText('Submit');
+  await expect(component).toBeEnabled();
+});
+
+test('fires onClick when clicked', async ({ mount }) => {
+  let clicked = false;
+  const component = await mount(
+    <Button label="Submit" onClick={() => { clicked = true; }} />
+  );
+  await component.click();
+  expect(clicked).toBeTruthy();
+});
+
+test('shows loading state', async ({ mount }) => {
+  const component = await mount(<Button label="Submit" loading />);
+  await expect(component.getByRole('progressbar')).toBeVisible();
+  await expect(component).toBeDisabled();
+});
+```
+
+**MSW `router` fixture for component-level network mocking (v1.46+):**
+
+```typescript
+// playwright/index.tsx — configure global providers
+import { beforeMount } from '@playwright/experimental-ct-react/hooks';
+import { BrowserRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+export type HooksConfig = { enableRouting?: boolean; };
+
+beforeMount<HooksConfig>(async ({ App, hooksConfig }) => {
+  const queryClient = new QueryClient();
+  if (hooksConfig?.enableRouting) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter><App /></BrowserRouter>
+      </QueryClientProvider>
+    );
+  }
+  return <QueryClientProvider client={queryClient}><App /></QueryClientProvider>;
+});
+
+// src/components/UserProfile.ct.spec.ts — use router fixture for API mocking
+import { test, expect }  from '@playwright/experimental-ct-react';
+import { http, HttpResponse } from 'msw';
+import { UserProfile }   from './UserProfile';
+
+test('displays user name from API', async ({ mount, router }) => {
+  await router.use(
+    http.get('/api/users/1', () =>
+      HttpResponse.json({ id: 1, name: 'Alice Smith', role: 'admin' })
+    )
+  );
+  const component = await mount(<UserProfile userId={1} />);
+  await expect(component.getByRole('heading', { name: 'Alice Smith' })).toBeVisible();
+  await expect(component.getByText('admin')).toBeVisible();
+});
+
+test('shows error state on API failure', async ({ mount, router }) => {
+  await router.use(
+    http.get('/api/users/1', () => HttpResponse.error())
+  );
+  const component = await mount(<UserProfile userId={1} />);
+  await expect(component.getByRole('alert')).toContainText('Failed to load user');
+});
+```
+
+**Component testing constraints:**
+- Cannot pass complex live objects (e.g., class instances, functions with closures) as props — use plain data and callbacks
+- Component tests run in a sandboxed Vite/Webpack server, not your app's dev server
+- Use `hooksConfig` to pass routing/provider configuration per-test without mounting wrapper components in every spec
+
+> Run component tests in a separate CI job from e2e tests — they use a different test
+> runner config (`playwright-ct.config.ts`) and different browser binary. Mixing them
+> in one `playwright.config.ts` causes confusing failures. [community]
+
+---
+
 ## Project Structure Reference
 
 ```
@@ -1771,6 +2555,7 @@ e2e/
     users.spec.ts        # CRUD for users
     visual.spec.ts       # Visual regression tests
     accessibility.spec.ts # WCAG violation scans
+    aria.spec.ts         # Aria snapshot structural regression tests
     api/
       users.spec.ts      # Pure API tests (no browser)
   .auth/
@@ -1778,7 +2563,16 @@ e2e/
   screenshot.css         # CSS injected for visual regression to hide dynamic content
   tsconfig.json          # Separate TypeScript config for e2e code
 playwright.config.ts
+playwright-ct.config.ts  # Separate config for component tests (--ct)
 .eslintrc.playwright.json  # eslint-plugin-playwright rules
+
+# Component tests live alongside source (separate from e2e/)
+src/
+  components/
+    Button.ct.spec.ts    # Component test with @playwright/experimental-ct-react
+    UserProfile.ct.spec.ts
+playwright/
+  index.tsx              # Global hooks/providers for component tests
 ```
 
 **Rules:**
@@ -1796,15 +2590,21 @@ playwright.config.ts
 import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
-  testDir:       './e2e',
-  testMatch:     '**/*.spec.ts',
-  fullyParallel: true,
-  forbidOnly:    !!process.env.CI,        // fail if test.only left in CI
-  retries:       process.env.CI ? 2 : 0,  // retry flakes on CI only
-  workers:       process.env.CI ? 4 : undefined,
-  timeout:       process.env.CI ? 60_000 : 30_000,  // CI machines are slower
-  reporter:      process.env.CI ? 'blob' : [['html'], ['list']],
-  maxFailures:   process.env.CI ? 10 : undefined,   // stop early on broken suites
+  testDir:          './e2e',
+  testMatch:        '**/*.spec.ts',
+  fullyParallel:    true,
+  forbidOnly:       !!process.env.CI,        // fail if test.only left in CI
+  retries:          process.env.CI ? 2 : 0,  // retry flakes on CI only
+  failOnFlakyTests: !!process.env.CI && !!process.env.STRICT_FLAKE_MODE, // v1.52+
+  workers:          process.env.CI ? 4 : undefined,
+  timeout:          process.env.CI ? 60_000 : 30_000,  // CI machines are slower
+  reporter:         process.env.CI ? [['blob'], ['junit', { outputFile: 'test-results.xml' }]] : [['html'], ['list']],
+  maxFailures:      process.env.CI ? 10 : undefined,   // stop early on broken suites
+  captureGitInfo:   { commit: true, diff: false },     // git context in reports (v1.51+)
+  updateSnapshots:  'changed',                          // only update changed snapshots (v1.50+)
+  tsconfig:         './e2e/tsconfig.json',             // single tsconfig for all test files (v1.49+)
+  tag:              process.env.CI_ENVIRONMENT_NAME,   // label runs in reports (v1.57+)
+  respectGitIgnore: true,                              // skip files in .gitignore (v1.45+)
   expect: {
     timeout:         5_000,
     toHaveScreenshot: {
@@ -1835,6 +2635,12 @@ export default defineConfig({
         storageState: 'e2e/.auth/user.json',
       },
     },
+    {
+      name:    'visual',
+      testMatch: /visual\/.*.spec.ts/,
+      workers: 1,  // serialize visual tests for consistent rendering (v1.52+)
+      use: { ...devices['Desktop Chrome'] },
+    },
   ],
 });
 ```
@@ -1854,6 +2660,14 @@ page.getByLabel('Email')
 page.getByPlaceholder('Search...')
 page.getByText('Welcome back')
 page.getByTestId('submit-btn')
+page.locator('x-custom-element', { hasText: 'Details' }) // Shadow DOM host
+
+// Locator operations
+locator.describe('human label')                // annotate for trace readability (v1.52+)
+locator.filter({ hasText: 'Alice' })
+locator.and(page.getByTitle('Primary'))
+locator.or(page.getByText('Fallback'))
+locator.nth(0)
 
 // Actions
 await locator.click();
@@ -1873,6 +2687,9 @@ await expect(locator).toContainText('partial');
 await expect(locator).toHaveValue('input value');
 await expect(locator).toBeChecked();
 await expect(locator).toHaveCount(3);
+await expect(locator).toContainClass('active');         // partial class check (v1.52+)
+await expect(locator).toHaveAccessibleErrorMessage('Required');  // aria-errormessage (v1.52+)
+await expect(locator).toMatchAriaSnapshot('- button: Submit');   // aria tree (v1.49+)
 await expect(page).toHaveURL(/pattern/);
 await expect(page).toHaveTitle(/pattern/);
 
@@ -1880,6 +2697,11 @@ await expect(page).toHaveTitle(/pattern/);
 page.getByRole('dialog').getByRole('button', { name: 'Close' })
 page.getByRole('listitem').filter({ hasText: 'Buy milk' })
 page.getByRole('row').nth(1)
+
+// Soft and configured assertions
+const softExpect = expect.configure({ soft: true });
+await softExpect(locator).toHaveText('value');
+expect(test.info().errors).toHaveLength(0);             // verify all soft assertions
 
 // Network mocking
 await page.route('**/api/data', route =>
@@ -1900,4 +2722,10 @@ await expect(page).toHaveScreenshot('page.png', {
 // Sharding (CLI)
 // npx playwright test --shard=1/4
 // npx playwright test --last-failed
+// npx playwright test --only-changed
+// npx playwright test --only-changed=origin/main
+
+// Auth role-switching in existing context (v1.59+)
+await context.setStorageState({ path: './e2e/.auth/admin.json' });
+await page.reload();
 ```

@@ -1,5 +1,5 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 4 | score: 100/100 | date: 2026-04-26 -->
+<!-- sources: official | community | mixed | iteration: 6 | score: 100/100 | date: 2026-04-27 -->
 
 ## Core Philosophy
 
@@ -304,6 +304,119 @@ const service = new OrderService(mockHttpClient, mockLogger);
 
 ---
 
+### Assertion Functions (`asserts`)
+Assertion functions are a first-class TypeScript pattern for expressing runtime invariants in the type system. Unlike type predicates (`pet is Fish`), assertion functions use the `asserts` keyword and narrow the *calling scope* when they return normally — or throw if the assertion fails.
+
+```typescript
+// asserts condition — narrows after call
+function assert(condition: unknown, msg?: string): asserts condition {
+  if (!condition) throw new Error(msg ?? 'Assertion failed');
+}
+
+// asserts param is Type — narrows type of param after call
+function assertIsString(val: unknown): asserts val is string {
+  if (typeof val !== 'string') {
+    throw new TypeError(`Expected string, got ${typeof val}`);
+  }
+}
+
+function processInput(input: string | undefined) {
+  assert(input !== undefined, 'input must be provided');
+  // TypeScript now knows: input is string (not string | undefined)
+  assertIsString(input);
+  console.log(input.toUpperCase()); // safe — both assertions passed
+}
+```
+
+Use assertion functions to encode invariants at layer boundaries (e.g., after parsing config, after deserializing JSON) rather than sprinkling `!` non-null assertions or `as` casts.
+
+---
+
+### Decorators (TypeScript 5.0+ / ECMAScript Stage 3)
+TypeScript 5.0 shipped full support for the ECMAScript decorator proposal. Decorators are a composable, type-safe way to augment class methods, fields, and accessors. Prefer typed decorator signatures over `any`-based implementations.
+
+```typescript
+// Typed method decorator: logs entry/exit without any-casts
+function loggedMethod<This, Args extends unknown[], Return>(
+  target: (this: This, ...args: Args) => Return,
+  context: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Return>
+): (this: This, ...args: Args) => Return {
+  const methodName = String(context.name);
+  return function (this: This, ...args: Args): Return {
+    console.log(`→ ${methodName}(${args.map(String).join(', ')})`);
+    const result = target.call(this, ...args);
+    console.log(`← ${methodName} returned ${String(result)}`);
+    return result;
+  };
+}
+
+// Auto-bind decorator (replaces class-properties arrow-function workaround)
+function bound<This, Args extends unknown[], Return>(
+  target: (this: This, ...args: Args) => Return,
+  context: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Return>
+): void {
+  context.addInitializer(function (this: This) {
+    (this as Record<string | symbol, unknown>)[context.name] =
+      target.bind(this);
+  });
+}
+
+class Counter {
+  private count = 0;
+
+  @loggedMethod
+  increment(by: number): number {
+    this.count += by;
+    return this.count;
+  }
+
+  @bound
+  reset(): void {
+    this.count = 0;
+  }
+}
+```
+
+---
+
+### Explicit Resource Management — `using` / `await using` (TypeScript 5.2)
+TypeScript 5.2 introduced the `using` and `await using` declarations, which automatically call `Symbol.dispose()` (or `Symbol.asyncDispose()`) when the variable goes out of scope — eliminating manual `try/finally` cleanup for files, database connections, locks, and timers.
+
+```typescript
+// Implement the Disposable interface
+class DatabaseConnection implements Disposable {
+  private handle: number;
+  constructor(private readonly dsn: string) {
+    this.handle = openConnection(dsn); // hypothetical
+  }
+  query<T>(sql: string): T[] {
+    return runQuery(this.handle, sql);
+  }
+  [Symbol.dispose](): void {
+    closeConnection(this.handle);
+    console.log('Connection closed automatically');
+  }
+}
+
+// No try/finally needed — disposal runs even on early return or throw
+function processOrders(): Order[] {
+  using db = new DatabaseConnection(process.env.DB_URL!);
+  const orders = db.query<Order>('SELECT * FROM orders WHERE pending = true');
+  if (orders.length === 0) return []; // disposal fires here automatically
+  return enrichOrders(db, orders);
+} // disposal fires here too
+
+// Async variant for async cleanup (e.g., closing network streams)
+async function readStream(): Promise<string> {
+  await using reader = await openAsyncReader('file.txt');
+  return reader.readAll(); // reader[Symbol.asyncDispose]() called on exit
+}
+```
+
+Requires `"target": "ES2022"` or higher and `"lib": ["es2022", "esnext.disposable"]` in `tsconfig.json`.
+
+---
+
 ## Language Idioms
 
 TypeScript provides several features that go beyond "just typed JavaScript." These idioms express ideas more clearly than equivalent workarounds.
@@ -457,6 +570,103 @@ type StringProps<T> = {
 };
 ```
 
+**Module augmentation for extending third-party types.** When a library's types are missing a method your runtime polyfill adds, use `declare module` to extend the types without modifying the library source. This keeps vendor types separate from your additions and avoids casting.
+
+```typescript
+// extend-observable.ts
+import { Observable } from 'rxjs';
+
+declare module 'rxjs' {
+  interface Observable<T> {
+    /** Our custom retry-with-backoff operator */
+    retryWithBackoff(maxAttempts: number): Observable<T>;
+  }
+}
+
+Observable.prototype.retryWithBackoff = function (maxAttempts) {
+  // implementation
+  return this.pipe(/* retry logic */);
+};
+```
+
+**Type-safe event emitter using generics.** The standard `EventEmitter` API is stringly-typed — any string is accepted as an event name and the callback is `any`. Use a generic map type to get full type safety for events, payloads, and listeners.
+
+```typescript
+type EventMap = Record<string, unknown[]>; // event name → tuple of payload types
+
+class TypedEventEmitter<TEvents extends EventMap> {
+  private listeners = new Map<keyof TEvents, ((...args: unknown[]) => void)[]>();
+
+  on<K extends keyof TEvents>(
+    event: K,
+    listener: (...args: TEvents[K]) => void
+  ): this {
+    const handlers = this.listeners.get(event) ?? [];
+    handlers.push(listener as (...args: unknown[]) => void);
+    this.listeners.set(event, handlers);
+    return this;
+  }
+
+  emit<K extends keyof TEvents>(event: K, ...args: TEvents[K]): void {
+    this.listeners.get(event)?.forEach(h => h(...args));
+  }
+}
+
+// Define your event schema once
+interface AppEvents extends EventMap {
+  userCreated: [userId: string, email: string];
+  orderPlaced: [orderId: number, total: number];
+}
+
+const emitter = new TypedEventEmitter<AppEvents>();
+emitter.on('userCreated', (id, email) => console.log(id, email)); // correctly typed
+emitter.emit('userCreated', 'u_123', 'alice@example.com'); // args type-checked
+```
+
+**Recursive types for self-referential data.** TypeScript supports recursive type aliases, which enables precise modelling of trees, nested configuration, and JSON-like structures.
+
+```typescript
+// JSON-compatible value type (recursive)
+type JsonValue =
+  | string | number | boolean | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+function stringify(val: JsonValue): string {
+  return JSON.stringify(val);
+}
+
+// Recursive tree node
+interface TreeNode<T> {
+  value: T;
+  children?: TreeNode<T>[];
+}
+
+function traverseTree<T>(node: TreeNode<T>, visit: (v: T) => void): void {
+  visit(node.value);
+  node.children?.forEach(child => traverseTree(child, visit));
+}
+```
+
+**`const` type parameters (TypeScript 5.0).** Add `const` before a type parameter to tell TypeScript to infer the narrowest literal type — the same effect as `as const` at the call site, but built into the function signature.
+
+```typescript
+// Without const modifier: infers string[] (widened)
+function toReadonlyArray<T>(items: T[]): readonly T[] {
+  return items;
+}
+const arr = toReadonlyArray(['a', 'b']); // readonly string[]
+
+// With const modifier: infers readonly ['a', 'b'] (literal tuple)
+function toReadonlyArray2<const T extends readonly unknown[]>(items: T): T {
+  return items;
+}
+const arr2 = toReadonlyArray2(['a', 'b']); // readonly ["a", "b"]
+// arr2[0] has type "a", not string
+```
+
+This removes the need to pepper call sites with `as const` for lookup tables, configuration arrays, and route definitions.
+
 **Branded (opaque) types for domain safety.** TypeScript's structural type system means `type UserId = string` and `type ProductId = string` are interchangeable. Branded types add a phantom property that makes them nominally distinct — the compiler rejects mixing them even though the underlying runtime type is identical.
 
 ```typescript
@@ -510,6 +720,13 @@ Writing `if (count)` to guard a number silently skips the zero case. Writing `if
 **`as` casts defeating exhaustiveness checks.** [community]
 Type assertions (`value as SomeType`) are escape hatches that compile away entirely. Developers often use them to "fix" a type error without understanding why it was raised — bypassing the discriminated union exhaustiveness check, silencing null-narrowing, or hiding an incorrect type assignment. The cast succeeds at compile time but crashes at runtime. **Fix:** Treat every `as` cast as a code review flag. If a cast is necessary, document _why_ with a comment. For external data, use a runtime validation library (Zod, Valibot) instead of casting.
 
+**`const enum` causing broken builds across compilation boundaries.** [community]
+`const enum` inlines enum values at every call site during compilation, making them zero-cost at runtime. However, this inlining only works within a single `tsc` compilation. When a `const enum` is defined in a library (or a separate `tsconfig` project) and consumed by another, the values are absent in the emitted `.d.ts` — consuming packages get `undefined` instead of the expected number. Babel, esbuild, and SWC do not support `const enum` at all and silently emit broken code. **Fix:** Use string literal union types (`type Status = 'active' | 'inactive'`) or regular `enum` (not `const`) in any code that crosses a compilation boundary. Reserve `const enum` only for types used within a single compilation unit where full `tsc` is always used.
+
+**Distributive conditional types producing unexpected unions.** [community]
+When a conditional type is written as `T extends U ? X : Y` and `T` is a naked (unwrapped) type parameter, TypeScript distributes over every member of a union — each union member is evaluated separately, then the results are unioned together. This is intentional but frequently surprises teams. `type ToArray<T> = T extends any ? T[] : never; type R = ToArray<string | number>` gives `string[] | number[]`, not `(string | number)[]`. **Fix:** Wrap the type parameter in a single-element tuple to prevent distribution: `type ToArrayNonDist<T> = [T] extends [any] ? T[] : never` gives `(string | number)[]`. Always ask: "should this conditional distribute over union members or treat the union as a whole?"
+
+
 **Overloaded function signatures in wrong order.** [community]
 TypeScript resolves overloads by matching the _first_ compatible signature. When a general overload appears before a specific one, the specific signature is unreachable and type narrowing breaks at call-sites. **Fix:** Always order overloads from most specific to most general.
 
@@ -534,3 +751,8 @@ In multi-package repositories, running `tsc` at the root causes the compiler to 
 | No return type on public functions | Compiler infers large anonymous types; slow build | Annotate return types on all exported functions |
 | Legacy `moduleResolution: "node"` | Silent path resolution mismatches with bundlers | Use `"bundler"` or `"nodenext"` for modern projects |
 | No project references in monorepos | Single-pass type check; unbounded cache growth | Add `"composite": true` + `"references"` per package |
+| `any`-based decorator implementations | Loses all type safety in decorators | Use typed `ClassMethodDecoratorContext<This, Method>` signatures |
+| Manual `try/finally` for resource cleanup | Cleanup silently omitted on early returns | Use `using` / `await using` with `Disposable` interface (TS 5.2+) |
+| Naked type params in conditional types | Unexpected distribution over unions | Wrap in `[T] extends [U]` when non-distributive behavior is needed |
+| `const enum` in library code | Inlining breaks across compilation boundaries and Babel/esbuild | Use string literal union types or regular `enum` at boundaries |
+| Stringly-typed `EventEmitter` | Any event name / any payload; errors only at runtime | Use `TypedEventEmitter<TEvents>` pattern with a `Record<string, unknown[]>` map |

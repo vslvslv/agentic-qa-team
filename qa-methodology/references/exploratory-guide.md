@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 10 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 2 | score: 100/100 | date: 2026-04-27 -->
 
 ## Core Principles
 
@@ -159,6 +159,10 @@ SBTM metrics:
 - Bugs found per session
 - Coverage: sessions by charter area / total sessions planned
 - Blocked time: minutes lost due to build issues, missing test data, etc.
+- **Tester confidence score** (0–5): average across sessions in a charter area
+- **Bug density**: bugs per session-hour, tracked by feature area over time to identify systemically risky areas
+- **Charter completion rate**: sessions fully covering their charter vs partially blocked — a leading indicator of environment health
+- **Follow-on charter rate**: percentage of sessions that generate at least one follow-on charter — high rate indicates active areas with ongoing complexity
 
 **Example SBTM coverage report for a sprint:**
 
@@ -447,6 +451,9 @@ Elisabeth Hendrickson's "Explore It!" introduced the tour as a structured way to
 | FedEx Tour | Follow data through the system from origin to destination | Finding integration and data transformation bugs |
 | Long Shot Tour | Perform the longest, most complex path through the feature | Finding timeout, state accumulation, and performance bugs |
 | After-Hours Tour | Test outside normal conditions: slow connection, low battery API, minimal permissions | Finding resilience and degraded-mode behavior |
+| Supermodel Tour (Whittaker) | Focus entirely on the visual appearance — layout, fonts, alignment, colors, responsiveness | Finding cosmetic and accessibility presentation bugs |
+| Saboteur Tour (Whittaker) | Actively try to break every step: refuse required fields, kill the network, deny permissions | Finding error handling robustness and security input issues |
+| Couch Potato Tour | Do as little as possible — accept all defaults, skip optional steps, never scroll | Finding default-value and minimal-interaction bugs |
 
 Usage: at the start of a session, pick the tour type that best matches the charter's information goal. The tour gives the tester a concrete starting strategy without scripting steps.
 
@@ -977,6 +984,137 @@ const pairCharter: PairSessionCharter = {
 
 ---
 
+### TypeScript: Thread-Based Session Charter  [community]
+
+Thread-based exploration follows a complete user scenario end-to-end, crossing multiple subsystems in a single charter. This pattern finds integration bugs that per-feature charters miss.
+
+```typescript
+// src/testing/exploratory/thread-charter.ts
+// Thread charter: crosses Cart → Checkout → Payment → Order Confirmation → Email
+// Used when individual feature areas are stable but their integration is suspect.
+
+import type { SessionCharter } from './types';
+
+export interface ThreadCharter extends SessionCharter {
+  /** Ordered list of subsystems the thread passes through */
+  subsystems: string[];
+  /** The user persona performing this end-to-end thread */
+  userPersona: string;
+  /** Entry conditions: what state the system must be in before the thread starts */
+  preconditions: string[];
+}
+
+const guestCheckoutThread: ThreadCharter = {
+  charterId: 'THR-checkout-e2e-20260427-01',
+  tester: 'Alice Chen',
+  sessionDate: '2026-04-27',
+  timeboxMinutes: 90,
+  mission: {
+    explore: 'Complete guest checkout flow from product page to order confirmation email',
+    using: 'International test cards, mobile viewport, slow-3G network simulation',
+    toDiscover: 'Integration gaps between cart, payment, confirmation, and email subsystems',
+  },
+  subsystems: ['Cart', 'Address Form', 'Payment Processing', 'Order Confirmation Page', 'Confirmation Email'],
+  userPersona: 'New guest user with international shipping address and non-US credit card',
+  preconditions: [
+    'At least one product in stock',
+    'Guest checkout feature flag enabled',
+    'Test email inbox accessible',
+  ],
+  priorityAreas: [
+    'Data fidelity from cart through to confirmation page (quantities, prices, addresses)',
+    'Email arrives with correct order ID matching confirmation page',
+    'Error state at any step propagates correctly without data loss in earlier steps',
+  ],
+  outOfScope: [
+    'Logged-in checkout (separate charter)',
+    'Refund flow (separate charter)',
+  ],
+};
+
+export { guestCheckoutThread };
+```
+
+---
+
+### TypeScript: AI-Assisted Session Note Classifier  [community]
+
+Feeds raw session notes into a structured classifier to accelerate debrief. The human tester reviews and corrects the output — the AI draft is never accepted without review.
+
+```typescript
+// src/testing/exploratory/note-classifier.ts
+// Classifies raw session note lines into: bug | question | observation | blocked | scenario
+// In practice, teams pipe this to an LLM API; here shown as a rule-based classifier
+// that can be tested deterministically without an API key.
+
+export type NoteCategory = 'bug' | 'question' | 'observation' | 'blocked' | 'scenario' | 'uncategorised';
+
+export interface ClassifiedNote {
+  timestamp: string;
+  rawText: string;
+  category: NoteCategory;
+  confidence: 'high' | 'low';
+}
+
+const BUG_SIGNALS = ['bug:', 'unexpected', 'wrong', 'error', 'fail', 'broken', 'crash', 'security'];
+const QUESTION_SIGNALS = ['question:', 'why', 'check with dev', 'confirm', '?'];
+const BLOCKED_SIGNALS = ['blocked:', 'lost ~', 'expired', 'broken env', 'waiting for'];
+const SCENARIO_SIGNALS = ['tried', 'navigated', 'placed', 'clicked', 'entered', 'submitted'];
+
+function classifyLine(line: string): { category: NoteCategory; confidence: 'high' | 'low' } {
+  const lower = line.toLowerCase();
+  if (BUG_SIGNALS.some((s) => lower.includes(s))) return { category: 'bug', confidence: 'high' };
+  if (QUESTION_SIGNALS.some((s) => lower.includes(s))) return { category: 'question', confidence: 'high' };
+  if (BLOCKED_SIGNALS.some((s) => lower.includes(s))) return { category: 'blocked', confidence: 'high' };
+  if (SCENARIO_SIGNALS.some((s) => lower.includes(s))) return { category: 'scenario', confidence: 'high' };
+  if (lower.includes('observed') || lower.includes('noticed') || lower.includes('observation'))
+    return { category: 'observation', confidence: 'high' };
+  return { category: 'uncategorised', confidence: 'low' };
+}
+
+export function classifySessionNotes(rawNotes: string): ClassifiedNote[] {
+  const lines = rawNotes.split('\n').filter((l) => l.trim().startsWith('['));
+  return lines.map((line) => {
+    const timestampMatch = line.match(/^\[([^\]]+)\]/);
+    const timestamp = timestampMatch ? timestampMatch[1] : '';
+    const text = line.replace(/^\[[^\]]+\]\s*/, '');
+    const { category, confidence } = classifyLine(text);
+    return { timestamp, rawText: text, category, confidence };
+  });
+}
+
+export function generateDebriefDraft(classified: ClassifiedNote[]): string {
+  const bugs = classified.filter((n) => n.category === 'bug');
+  const questions = classified.filter((n) => n.category === 'question');
+  const blocked = classified.filter((n) => n.category === 'blocked');
+  const scenarios = classified.filter((n) => n.category === 'scenario');
+  const lowConf = classified.filter((n) => n.confidence === 'low');
+
+  return [
+    `=== AI-DRAFT DEBRIEF (review and correct before accepting) ===`,
+    ``,
+    `Scenarios exercised (${scenarios.length}):`,
+    ...scenarios.map((n) => `  - ${n.rawText}`),
+    ``,
+    `Bugs found (${bugs.length}):`,
+    ...bugs.map((n) => `  - [T+${n.timestamp}] ${n.rawText}`),
+    ``,
+    `Open questions (${questions.length}):`,
+    ...questions.map((n) => `  - ${n.rawText}`),
+    ``,
+    `Blocked items (${blocked.length}):`,
+    ...blocked.map((n) => `  - ${n.rawText}`),
+    ``,
+    `Needs tester review (${lowConf.length} uncategorised lines):`,
+    ...lowConf.map((n) => `  - [T+${n.timestamp}] ${n.rawText}`),
+    ``,
+    `=== END AI DRAFT — tester must verify all items above ===`,
+  ].join('\n');
+}
+```
+
+---
+
 ## Anti-Patterns
 
 - **Session without a charter**: Exploration without a mission is wandering. Without a charter, results can't be reported and coverage can't be tracked.
@@ -988,6 +1126,8 @@ const pairCharter: PairSessionCharter = {
 - **Reporting only bugs, not coverage**: Stakeholders need to know both what was found and what was checked. A session that finds no bugs is valuable if coverage was thorough.
 - **"Automation-first" teams that never schedule exploration**: High-automation teams sometimes reach 90% line coverage and stop exploratory testing entirely. This is the most expensive anti-pattern: the 10% of untested paths and all integration behavior is never explored. Coverage percentage is not equivalent to product quality.
 - **Equal session time across all areas regardless of risk**: Assigning the same number of sessions to the payment processing flow and the cosmetic preference page wastes session capacity. Session allocation should be risk-based: more sessions on higher-risk, higher-impact, recently changed areas.
+- **Ignoring blocked time as a metric**: Teams that track only bugs found miss that 30–40% of session time spent blocked is a signal about infrastructure health, not tester performance. Blocked time should trigger an infrastructure improvement conversation, not just be absorbed as a cost of testing.
+- **Never evolving the heuristic set**: FEW HICCUPS and HICCUPPS are starting points, not a complete list. Teams that adopt them as dogma without adding team- or product-specific heuristics plateau in bug-finding ability. Senior testers should maintain and share a living heuristic cheat sheet specific to their domain.
 
 ---
 
@@ -1038,6 +1178,10 @@ const pairCharter: PairSessionCharter = {
 22. **[community] Exploratory testing is not scalable with a single shared environment.** Teams with more than 3 testers all sharing one staging environment will spend 30–50% of session time waiting for the environment to be in the right state. Per-tester ephemeral environments (e.g., PR-level preview deployments) remove this bottleneck and allow parallel sessions without coordination overhead.
 
 23. **[community] Adding a "tester confidence score" to session sheets is the fastest way to surface risky areas.** When testers rate their confidence (0–5) that the chartered area is well understood, areas rated 2 or below almost always have follow-on bugs found in the next session. A sprint-level confidence map lets the QA lead see coverage quality at a glance without reading every session sheet.
+
+24. **[community] Thread-based exploration works better than session isolation for highly connected feature areas.** In tightly integrated applications, a single 90-minute session charter that cuts across multiple subsystems (cart + checkout + email + order history) finds integration bugs that isolated per-feature charters miss. Practitioners call this a "thread" — following a complete user scenario end-to-end as a single charter mission. Thread-based charters produce more integration bugs per session-hour than single-area charters in mature products where the features individually are stable but their interaction is where bugs live.
+
+25. **[community] AI-assisted note analysis speeds debrief without replacing tester judgment.** Teams in 2024–2025 began feeding raw session notes into LLMs to generate draft debrief summaries, extract action items, and categorise observations as bug/question/observation/blocked. The human tester reviews and corrects the draft. This cuts debrief time from 30 minutes to 10 minutes without losing quality — and the structured output feeds directly into sprint planning tools. The key constraint: the AI classification is always reviewed by the tester, never accepted blindly.
 
 ---
 

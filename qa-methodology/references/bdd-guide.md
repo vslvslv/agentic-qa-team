@@ -1,5 +1,6 @@
 # Behavior-Driven Development (BDD) — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 10 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: bdd | iteration: 2 | score: 100/100 | date: 2026-04-27 | sources: training-knowledge -->
+<!-- WebFetch and WebSearch unavailable; synthesized from training knowledge + TypeScript patterns reference -->
 
 ## Core Principles
 
@@ -1286,12 +1287,443 @@ A team that scores "warning sign" in 3+ of these areas will experience BDD as ov
 
 ---
 
+### playwright-bdd: TypeScript-First BDD with Playwright's Native Runner  [community]
+
+`playwright-bdd` is an open-source library (2023–) that bridges Cucumber's Gherkin layer
+with Playwright Test's native runner. It compiles `.feature` files into `.spec.ts` files
+that Playwright runs directly — enabling Playwright's native HTML reporter, trace viewer,
+and `--shard` support without any Cucumber-specific CI plumbing.
+
+**Why use `playwright-bdd` over `@cucumber/cucumber` + Playwright?**
+- Playwright's native `--shard` syntax works out of the box (no custom sharding logic)
+- Playwright Trace Viewer captures screenshots, network, and DOM snapshots on failure
+- `data-testid` selectors and Playwright's auto-wait reduce flakiness compared to raw Cucumber hooks
+- Fixtures replace the World object — fully type-safe, no `this` binding
+
+**Setup:**
+
+```bash
+npm install --save-dev playwright-bdd @playwright/test
+npx playwright install chromium
+```
+
+`playwright.config.ts`:
+```typescript
+import { defineConfig } from '@playwright/test';
+import { defineBddConfig } from 'playwright-bdd';
+
+const testDir = defineBddConfig({
+  features: 'features/**/*.feature',
+  steps: 'src/steps/**/*.ts',
+});
+
+export default defineConfig({
+  testDir,
+  reporter: [['html', { outputFolder: 'reports/playwright-html' }]],
+  use: {
+    baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
+    screenshot: 'only-on-failure',
+    trace: 'on-first-retry',
+  },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+  ],
+});
+```
+
+`src/steps/checkout.steps.ts` using **Playwright fixtures** instead of World:
+```typescript
+import { createBdd } from 'playwright-bdd';
+import { expect } from '@playwright/test';
+
+// createBdd returns typed Given/When/Then bound to Playwright fixtures
+const { Given, When, Then } = createBdd();
+
+Given('I am logged in as a registered customer', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByTestId('email').fill('test@example.com');
+  await page.getByTestId('password').fill('TestPass123!');
+  await page.getByTestId('submit').click();
+  await page.waitForURL('/dashboard');
+});
+
+When('I proceed to checkout', async ({ page }) => {
+  await page.getByTestId('checkout-button').click();
+  await page.waitForURL('/checkout');
+});
+
+When('I enter valid credit card details', async ({ page }) => {
+  await page.getByTestId('card-number').fill('4242424242424242');
+  await page.getByTestId('card-expiry').fill('12/28');
+  await page.getByTestId('card-cvv').fill('123');
+});
+
+Then('I should see an order confirmation page', async ({ page }) => {
+  await expect(page.getByTestId('order-confirmation')).toBeVisible();
+  await expect(page).toHaveURL(/\/order\/confirmation/);
+});
+
+Then('I should see the error {string}', async ({ page }, errorMessage: string) => {
+  await expect(page.getByTestId('error-message')).toHaveText(errorMessage);
+});
+```
+
+**Running BDD tests with `playwright-bdd`:**
+```bash
+# Generate spec files from .feature files (required before first run)
+npx bddgen
+
+# Run all BDD tests
+npx playwright test
+
+# Run smoke tag subset
+npx playwright test --grep "@smoke"
+
+# Run with sharding (4-way — no custom config needed)
+npx playwright test --shard=1/4
+npx playwright test --shard=2/4
+npx playwright test --shard=3/4
+npx playwright test --shard=4/4
+```
+
+**[community] `playwright-bdd` tradeoff vs `@cucumber/cucumber`**: The Playwright-native
+approach trades Cucumber's rich tag expression system (`@smoke and not @wip`) for
+Playwright's simpler `--grep` regex. For large test suites with complex tag strategies,
+`@cucumber/cucumber` with its dedicated profile system is more expressive. For teams
+already deep in Playwright who want the *living documentation* layer without a second
+runner, `playwright-bdd` is lower friction.
+
+---
+
+### Step Health: Detecting Unused and Duplicate Step Definitions  [community]
+
+As a BDD suite grows, unused and near-duplicate step definitions accumulate silently.
+Unlike dead code in TypeScript (caught by `noUnusedLocals`), unused step definitions are
+strings — the compiler cannot detect them. Purpose-built tooling is required.
+
+**Unused step detection with Cucumber's built-in `--format usage`:**
+
+```bash
+# Show all steps with usage count — steps with 0 uses are candidates for removal
+npx cucumber-js --dry-run --format usage | grep -E "^[[:space:]]+[0-9]+"
+
+# Output format:
+# Pattern                                        | Uses | Location
+# ------------------------------------------------|------|------------------
+# I am logged in as a registered customer         |   12 | steps/auth.ts:5
+# I am on the checkout page                       |    1 | steps/checkout.ts:23
+# I fill in the field {string} with {string}      |    0 | steps/forms.ts:47  ← UNUSED
+```
+
+**ESLint integration for step quality** (`eslint-plugin-cucumber`):
+
+```bash
+npm install --save-dev eslint-plugin-cucumber
+```
+
+`.eslintrc.json` (step files only):
+```json
+{
+  "overrides": [
+    {
+      "files": ["src/steps/**/*.ts"],
+      "plugins": ["cucumber"],
+      "rules": {
+        "cucumber/async-then": "error",
+        "cucumber/expression-type": "warn",
+        "cucumber/no-restricted-tags": ["warn", { "tags": ["@fixme", "@broken"] }],
+        "cucumber/no-arrow-functions": "error"
+      }
+    }
+  ]
+}
+```
+
+**Why `no-arrow-functions` matters**: Arrow functions in step definitions do not bind
+`this` — they break the World object pattern. `cucumber/no-arrow-functions` catches this
+at lint time rather than producing a cryptic runtime error:
+
+```typescript
+// BAD — arrow function: this is undefined at runtime
+Given('I am on the login page', async () => {
+  await this.page.goto('/login'); // TypeError: Cannot read properties of undefined
+});
+
+// GOOD — regular function: this is the World object
+Given('I am on the login page', async function (this: CustomWorld) {
+  await this.page.goto('/login');
+});
+```
+
+**Quarterly step audit workflow:**
+```bash
+# 1. List all step definitions with use counts
+npx cucumber-js --dry-run --format usage 2>&1 > step-audit.txt
+
+# 2. Find zero-use steps (dead code)
+grep " 0 " step-audit.txt
+
+# 3. Find near-duplicate patterns (manual review threshold: >3 similar starts)
+grep "^I " step-audit.txt | sed 's/ {.*$//' | sort | uniq -c | sort -rn | head -20
+```
+
+**[community] Production observation**: Teams that skip step audits typically have >30%
+unused step definitions after 12 months. These dead steps create false confidence
+("we have 400 steps defined") and add noise to `--dry-run` output, making it harder to
+catch genuinely undefined steps in CI.
+
+---
+
+### Merging Sharded Cucumber Reports in CI  [community]
+
+When running BDD suites with matrix sharding (e.g., 4 shards × 8 parallel workers),
+each shard produces a separate JSON or JUnit report. The Cucumber HTML report can only
+show one report at a time unless reports are merged before publishing.
+
+**Strategy 1: `cucumber-json-formatter` merge (recommended for `@cucumber/cucumber`)**
+
+```bash
+# Each shard writes: reports/cucumber-shard-N.json
+# After all shards complete, merge with multiple-cucumber-html-reporter:
+npm install --save-dev multiple-cucumber-html-reporter
+
+node -e "
+const report = require('multiple-cucumber-html-reporter');
+report.generate({
+  jsonDir: 'reports/',                        // folder containing cucumber-*.json files
+  reportPath: 'reports/combined-html/',
+  metadata: {
+    browser: { name: 'chrome', version: '120' },
+    device: 'CI runner',
+    platform: { name: 'ubuntu', version: '22.04' }
+  },
+  customData: {
+    title: 'BDD Regression Run',
+    data: [
+      { label: 'Project', value: 'my-app' },
+      { label: 'Release', value: process.env.GITHUB_RUN_NUMBER || 'local' },
+    ]
+  }
+});
+"
+```
+
+**GitHub Actions: merge-and-publish step (adds to the regression workflow):**
+
+```yaml
+  merge-reports:
+    name: Merge BDD Reports
+    runs-on: ubuntu-latest
+    needs: bdd-regression            # Wait for all shards
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Download all shard reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: regression-report-shard-*
+          path: reports/
+          merge-multiple: true       # Flatten into reports/ directory
+
+      - name: Merge into combined HTML report
+        run: node scripts/merge-cucumber-reports.js
+
+      - name: Upload combined report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bdd-combined-report
+          path: reports/combined-html/
+          retention-days: 30
+```
+
+**Strategy 2: `playwright-bdd` + Playwright's native merge** (if using the Playwright runner):
+
+```bash
+# Each shard produces: blob-report-N/
+# Playwright's native merge command:
+npx playwright merge-reports --reporter html blob-report-*
+
+# Output: playwright-report/ — single HTML file with all shards
+```
+
+**[community] Why report merging matters**: Teams that publish per-shard reports find
+that stakeholders never look at them — the reports are buried in artifact lists. A single
+merged report with a summary dashboard is the only format product managers and QA leads
+will check after a nightly regression run. Without it, living documentation fails its
+stakeholder-visibility promise.
+
+---
+
+### Ubiquitous Language: BDD as a Domain-Driven Design Artifact  [community]
+
+BDD's Gherkin vocabulary is, implicitly, a **Ubiquitous Language** (UL) exercise from
+Domain-Driven Design (DDD). Every noun and verb in a feature file is a claim about the
+shared language of the bounded context. Teams that treat BDD and DDD as separate
+practices end up with Gherkin that uses developer jargon in some scenarios and business
+language in others — creating the exact communication gap BDD is designed to close.
+
+**Why this matters**: When the Gherkin says `the order is confirmed` but the codebase
+says `OrderStatus.PROCESSED`, the team has two different languages for the same concept.
+Over 12 months, these diverge further: the feature file says `customer`, the API says
+`user`, the database says `account`. The Three Amigos cannot have a shared conversation
+because they have no shared dictionary.
+
+**Ubiquitous Language Glossary — structured YAML artifact**:
+
+```yaml
+# docs/ubiquitous-language.yaml
+# Maintained alongside feature files; reviewed in Three Amigos sessions
+# Each term must appear consistently in: Gherkin | API response fields | DB column names
+
+bounded_context: checkout
+
+terms:
+  - term: "Customer"
+    definition: "An authenticated user who has completed account registration"
+    gherkin_usage: "Given I am a registered customer"
+    api_field: "customerId"
+    db_column: "customers.id"
+    NOT_synonyms: ["user", "account", "buyer", "shopper"]
+
+  - term: "Cart"
+    definition: "A temporary collection of items before purchase commitment"
+    gherkin_usage: "Given my cart contains:"
+    api_field: "cartId"
+    db_column: "carts.id"
+    NOT_synonyms: ["basket", "bag", "wishlist"]
+
+  - term: "Order"
+    definition: "A committed purchase — cart items frozen with a payment method"
+    gherkin_usage: "Then my order should be confirmed"
+    api_field: "orderId"
+    db_column: "orders.id"
+    NOT_synonyms: ["purchase", "transaction", "booking"]
+
+  - term: "Discount Code"
+    definition: "A string token that modifies the order total per a business rule"
+    gherkin_usage: "When I apply discount code {string}"
+    api_field: "discountCode"
+    db_column: "discount_codes.code"
+    NOT_synonyms: ["promo code", "coupon", "voucher", "offer code"]
+```
+
+**Enforcing UL consistency in step definitions** (TypeScript):
+
+```typescript
+// src/support/ubiquitous-language-guard.ts
+// Run in Before hook — warns when Gherkin step text contains forbidden synonyms
+
+import { Before } from '@cucumber/cucumber';
+
+// Loaded from docs/ubiquitous-language.yaml at test startup
+const SYNONYMS: Record<string, string[]> = {
+  Customer: ['user', 'account', 'buyer', 'shopper'],
+  Cart:     ['basket', 'bag', 'wishlist'],
+  Order:    ['purchase', 'transaction', 'booking'],
+};
+
+Before(function (scenario) {
+  const stepTexts = scenario.pickle.steps.map(s => s.text.toLowerCase());
+  for (const [canonicalTerm, forbidden] of Object.entries(SYNONYMS)) {
+    for (const synonym of forbidden) {
+      const violations = stepTexts.filter(text => text.includes(synonym));
+      if (violations.length > 0) {
+        console.warn(
+          `[UL] Scenario "${scenario.pickle.name}" uses "${synonym}" ` +
+          `— prefer canonical term "${canonicalTerm}". ` +
+          `Steps: ${violations.join('; ')}`
+        );
+      }
+    }
+  }
+});
+```
+
+**[community] Production impact**: Teams that maintain a UL glossary and enforce it in
+Three Amigos sessions report 40–60% fewer "wait, what do you mean by X?" clarification
+rounds in sprint planning. The glossary becomes the most-referenced onboarding document
+for new hires — more useful than an API spec because it explains *why* terms were chosen,
+not just *what* they are.
+
+**[community] DDD bounded context and BDD feature file alignment**: Each `features/`
+subdirectory should correspond to one DDD bounded context (`features/checkout/`,
+`features/inventory/`, `features/identity/`). Step definitions and World fixtures scoped
+to a context prevent leakage — a checkout step definition should never reach into
+inventory's internal state. When a scenario needs two bounded contexts, it is a signal
+that the scenario is testing integration, not behavior, and belongs at the contract
+testing layer (see `contract-testing-guide.md`).
+
+---
+
+### BDD and Contract Testing: Defining the Boundary  [community]
+
+BDD scenarios describe *user-observable behavior* end-to-end. Contract tests describe
+*service interface obligations* between producers and consumers. The two methodologies
+are complementary but should not overlap — mixing them creates scenarios that are both
+slow (BDD's overhead) and brittle (contract fragility).
+
+**The rule**: BDD scenarios should treat downstream service calls as opaque. They should
+not assert on internal service behavior. Contract tests (Pact/CDC) own that layer.
+
+```gherkin
+# CORRECT BDD — treats payment service as opaque
+Scenario: Order total is charged on checkout
+  Given I am a registered customer with items in my cart
+  When I complete the checkout process with a valid card
+  Then my order should be confirmed
+  And I should receive an order confirmation email
+  # BDD does NOT assert: "a POST was sent to /api/payments/charge"
+  # That's a contract test concern
+
+# INCORRECT — BDD leaking into contract territory
+Scenario: Payment service receives correct charge amount
+  Given I am a registered customer with cart total $109.97
+  When I complete checkout
+  Then the payment service should receive a POST to /api/payments/charge
+  And the request body should contain amount 10997 in cents
+  # This belongs in a Pact consumer test, not a feature file
+```
+
+**When BDD scenarios start testing internal APIs directly**, it is a sign that:
+1. The feature file author does not trust the contract test layer (fix: establish Pact)
+2. The scenario is compensating for missing integration tests (fix: add API-level tests)
+3. The team has no clear boundary between BDD and contract testing layers
+
+**Integration map** — how the layers work together:
+```
+BDD (Gherkin + Cucumber/Playwright)   → tests USER-OBSERVABLE BEHAVIOR via browser or API
+  ↓ calls
+Application code                       → calls downstream services
+  ↓
+Contract tests (Pact)                  → tests SERVICE INTERFACE CONTRACT in isolation
+  ↓ publishes to
+Pact Broker                            → provider verifies independently
+```
+
+**[community] Lesson from production**: Teams that use BDD to test microservice APIs
+end-to-end find that every deployment of *any* downstream service can break *all* BDD
+scenarios — not because behavior changed, but because a response field name changed or
+a new required header was added. This is exactly the problem Pact/CDC solves. Once Pact
+is in place, BDD scenarios become stable because they test user behavior, not wire format.
+
+---
+
 ## Key Resources
 
 - [Cucumber documentation](https://cucumber.io/docs/bdd/) — canonical BDD reference
 - [Gherkin reference](https://cucumber.io/docs/gherkin/reference/) — full keyword specification
 - [@cucumber/cucumber npm package](https://www.npmjs.com/package/@cucumber/cucumber) — official JS/TS package
+- [playwright-bdd](https://github.com/vitalets/playwright-bdd) — Playwright-native BDD runner for TypeScript
 - [Example Mapping (Matt Wynne)](https://cucumber.io/blog/bdd/example-mapping-introduction/) — pre-BDD discovery technique
+- [eslint-plugin-cucumber](https://github.com/nicholasgasior/eslint-plugin-cucumber) — step definition linting rules
+- [multiple-cucumber-html-reporter](https://github.com/WasiqB/multiple-cucumber-html-reporter) — merge sharded JSON reports
 - [SpecFlow documentation](https://docs.specflow.org/) — C# BDD framework
 - [Behave documentation](https://behave.readthedocs.io/) — Python BDD framework
 - [Allure Framework](https://allurereport.org/) — rich reporting for Cucumber suites
+- [Pact documentation](https://docs.pact.io/) — consumer-driven contract testing for service boundaries

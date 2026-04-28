@@ -106,7 +106,7 @@ Target: **score ≥ 80** or **3 iterations** or **delta < 5** → stop.
 
 | Tool | Skill dir(s) | Pattern checklist |
 |------|-------------|-------------------|
-| Playwright | qa-web, qa-visual, qa-api | POM, fixture-based auth (storageState), locator rank, web-first assertions, API request context, network mocking, soft assertions, test sharding |
+| Playwright | qa-web, qa-visual, qa-api | POM, fixture-based auth (storageState + IndexedDB), locator rank, web-first assertions, API request context, network mocking, soft assertions, test sharding, component testing (--ct), aria snapshots (toMatchAriaSnapshot), locator.describe(), failOnFlakyTests, per-project workers, async disposables (await using), Shadow DOM traversal |
 | Cypress | qa-web | cy.session() auth, cy.intercept() mocking, data-cy selectors, custom commands, cy.request() API testing, Component Testing, cy.fixture(), retry-ability |
 | Selenium | qa-web | By.* selector hierarchy, Page Object Model (language-specific), explicit waits (WebDriverWait + ExpectedConditions), fluent waits, headless mode, screenshot on failure, Actions class |
 | k6 | qa-perf | Test type taxonomy, scenarios/executors, thresholds + abortOnFail, check() patterns, setup/teardown auth, custom metrics, handleSummary |
@@ -173,7 +173,9 @@ If both methods fail, synthesize from training knowledge and note the source in 
 | C# | `https://playwright.dev/dotnet/docs/` |
 
 Pages to fetch (append to base URL):
-`best-practices`, `pom`, `locators`, `test-fixtures`, `test-assertions`, `api-testing`, `network`
+`best-practices`, `pom`, `locators`, `test-fixtures`, `test-assertions`, `api-testing`, `network`, `auth`, `release-notes`, `test-retries`, `trace-viewer`, `test-components`
+
+**See also:** `qa-web/references/playwright-patterns.md` — TypeScript reference with POM, fixture-based auth, locator rank, web-first assertions, API request context, network mocking, soft assertions, test sharding, component testing, aria snapshots, locator.describe(), failOnFlakyTests, per-project workers, async disposables, Shadow DOM traversal, CHIPS cookies, trace modes, testConfig options (v1.45–v1.59 coverage).
 
 **k6 (JS only):**
 - `https://grafana.com/docs/k6/latest/using-k6/best-practices/`

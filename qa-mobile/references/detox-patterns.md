@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 10 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 10 | score: 100/100 | date: 2026-04-27 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 
@@ -594,7 +594,8 @@ describe('Biometric authentication', () => {
 
 ### Pattern 19 — Push notification and system event testing
 
-Detox can simulate push notifications and user notifications without a real APNS server, making it possible to test notification-triggered navigation flows:
+Detox can simulate push notifications and user notifications without a real APNS server,
+making it possible to test notification-triggered navigation flows:
 
 ```js
 // e2e/notifications.test.js
@@ -644,6 +645,191 @@ describe('Push notifications', () => {
 });
 ```
 
+### Pattern 20 — element.getAttributes() for reading element state
+
+`element.getAttributes()` returns a snapshot of an element's native properties — its
+`text`, `value`, `enabled`, `visible`, `frame`, `identifier`, `label`, and more. Use it
+when you need to make a conditional assertion based on the current state of an element,
+or when asserting exact pixel-level geometry in visual regression tests.
+
+```js
+it('reads the current value of a slider', async () => {
+  const attrs = await element(by.id('volume-slider')).getAttributes();
+  // attrs.value is the current slider percentage as a string (e.g., "0.75")
+  expect(parseFloat(attrs.value)).toBeGreaterThan(0);
+});
+
+it('verifies a button is both visible and enabled before tapping', async () => {
+  const attrs = await element(by.id('submit-button')).getAttributes();
+  expect(attrs.visible).toBe(true);
+  expect(attrs.enabled).toBe(true);
+  await element(by.id('submit-button')).tap();
+});
+
+it('asserts approximate element position for layout regression', async () => {
+  const attrs = await element(by.id('floating-action-button')).getAttributes();
+  // frame is { x, y, width, height } in points
+  expect(attrs.frame.y).toBeGreaterThan(400); // FAB should be in the bottom half
+});
+
+// Multi-element: returns { elements: [...] } when multiple match
+it('counts badge counts across notification list items', async () => {
+  const multiAttrs = await element(by.id('notification-badge')).getAttributes();
+  // When multiple elements match, Detox returns { elements: [attrs, attrs, ...] }
+  const badges = multiAttrs.elements ?? [multiAttrs];
+  const counts = badges.map(el => parseInt(el.text || '0', 10));
+  expect(counts.every(c => c >= 0)).toBe(true);
+});
+```
+
+**API note:** `getAttributes()` is read-only and does not interact with the element, so it
+never triggers Detox's idle detection. Safe to call in rapid succession.
+
+### Pattern 21 — Biometrics simulation (iOS only)
+
+Detox can simulate Face ID / Touch ID match or failure for biometric-gated flows on the
+iOS Simulator. This allows testing login, payment confirmation, and unlock screens without
+a real biometric sensor.
+
+```js
+// e2e/biometrics-simulation.test.js
+describe('Biometric login', () => {
+  beforeAll(async () => {
+    await device.launchApp({
+      newInstance: true,
+      permissions: { faceid: 'YES' },  // grant Face ID permission at launch
+    });
+  });
+
+  beforeEach(async () => {
+    await device.reloadReactNative();
+    // Enroll Face ID in the simulator so the app can request it
+    await device.setBiometricEnrollment(true);
+  });
+
+  it('logs in via Face ID when biometrics match', async () => {
+    await element(by.id('use-face-id-button')).tap();
+    // Simulate a successful Face ID match
+    await device.matchFace();
+    await waitFor(element(by.id('home-screen')))
+      .toBeVisible()
+      .withTimeout(5000);
+  });
+
+  it('shows fallback password screen when Face ID fails', async () => {
+    await element(by.id('use-face-id-button')).tap();
+    // Simulate a biometric mismatch
+    await device.unmatchFace();
+    await waitFor(element(by.id('fallback-password-screen')))
+      .toBeVisible()
+      .withTimeout(3000);
+  });
+
+  it('handles biometric lockout after multiple failures', async () => {
+    await element(by.id('use-face-id-button')).tap();
+    await device.unmatchFace();
+    await device.unmatchFace();
+    await device.unmatchFace();
+    // After 3 failures iOS locks biometrics — app should show device passcode prompt
+    await waitFor(element(by.id('passcode-screen')))
+      .toBeVisible()
+      .withTimeout(5000);
+  });
+
+  afterAll(async () => {
+    // Unenroll to avoid affecting other test suites
+    await device.setBiometricEnrollment(false);
+  });
+});
+```
+
+**Android equivalent:** Use `device.matchFinger()` / `device.unmatchFinger()` for
+fingerprint simulation on Android emulators that support biometric simulation.
+
+### Pattern 22 — iOS accessibility traits with by.traits()
+
+`by.traits()` targets elements by their iOS accessibility traits. Use it when an element
+has no `testID` and you want a more stable selector than visible text, especially for
+system-provided controls like navigation bar buttons or toolbar icons.
+
+```js
+// Target iOS-native controls by trait
+// Common traits: 'button', 'link', 'image', 'text', 'header', 'selected',
+//                'plays-sound', 'key-board-key', 'summary', 'not-enabled',
+//                'updates-frequently', 'search-field', 'starts-media', 'adjustable'
+
+it('taps the back button identified by navigation trait', async () => {
+  // Narrow by label + trait to avoid ambiguity
+  await element(by.label('Back').and(by.traits(['button']))).tap();
+  await waitFor(element(by.id('previous-screen')))
+    .toBeVisible()
+    .withTimeout(3000);
+});
+
+it('finds the search field by trait', async () => {
+  await element(by.traits(['search-field'])).tap();
+  await element(by.traits(['search-field'])).typeText('react native');
+  await waitFor(element(by.id('search-results')))
+    .toBeVisible()
+    .withTimeout(5000);
+});
+```
+
+**Note:** `by.traits()` is iOS-only. On Android, use `by.type('android.widget.ImageButton')`
+or add `testID` props. Always prefer `by.id()` when `testID` can be added.
+
+### Pattern 23 — Orientation and device rotation testing
+
+Test landscape layout and orientation-change behavior with `device.setOrientation()`:
+
+```js
+// e2e/orientation.test.js
+describe('Orientation tests', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  afterEach(async () => {
+    // Always reset to portrait after each test to avoid contaminating subsequent tests
+    await device.setOrientation('portrait');
+  });
+
+  it('renders the video player in landscape with full-screen controls', async () => {
+    await element(by.id('video-play-button')).tap();
+    await waitFor(element(by.id('video-player'))).toBeVisible().withTimeout(3000);
+
+    await device.setOrientation('landscape');
+
+    await waitFor(element(by.id('fullscreen-controls')))
+      .toBeVisible()
+      .withTimeout(3000);
+    await expect(element(by.id('fullscreen-exit-button'))).toBeVisible();
+  });
+
+  it('reflows the form layout correctly in landscape', async () => {
+    await element(by.id('contact-form-tab')).tap();
+    await device.setOrientation('landscape');
+
+    // In landscape, two-column layout should show both panels simultaneously
+    await expect(element(by.id('form-left-panel'))).toBeVisible();
+    await expect(element(by.id('form-right-panel'))).toBeVisible();
+  });
+
+  it('persists form input across rotation', async () => {
+    await element(by.id('email-input')).replaceText('keep@example.com');
+    await device.setOrientation('landscape');
+    // After rotation, the input value must be preserved
+    await expect(element(by.id('email-input'))).toHaveValue('keep@example.com');
+    await device.setOrientation('portrait');
+    await expect(element(by.id('email-input'))).toHaveValue('keep@example.com');
+  });
+});
+```
+
+**Android note:** Android may re-create the Activity on rotation. If your app does not
+handle `onSaveInstanceState`/`onRestoreInstanceState` correctly, the test will find a
+blank screen after rotation. This is a valid test finding — file it as an app bug.
+
 ---
 
 
@@ -656,6 +842,7 @@ Ranked from most stable to most fragile:
 | 3 | Accessibility type | `by.type('RCTTextInput')` | OK — use to narrow when testID is absent |
 | 4 | Visible text | `by.text('Log in')` | Fragile — breaks on copy changes and i18n |
 | 5 | XPath / CSS | n/a (not supported) | Not supported in Detox — do not attempt |
+| 6 | System elements | `by.system()` | iOS only — target system-level elements (permission dialogs, alerts) not in your app's view hierarchy |
 
 **Rule**: Add `testID` to every button, input, screen root, and list item that a test will touch. Coordinate with app developers to add them proactively.
 
@@ -821,6 +1008,129 @@ testRunner: {
 // app build command: add RCT_METRO_PORT env var
 ```
 
+### 12. Android emulator lock screen blocks all interactions [community]
+
+**Root cause**: On freshly booted Android emulators, the device lock screen appears. Detox's `element()` calls find no matching elements because the lock screen is on top of the app — resulting in cryptic "element not found" failures on the very first test action.
+
+**Fix**: Disable the lock screen in the emulator before running tests:
+
+```bash
+# Unlock the emulator via ADB before running Detox
+adb shell input keyevent 82    # KEYCODE_MENU — wakes screen
+adb shell input keyevent 3     # KEYCODE_HOME  — ensures on home
+adb shell wm dismiss-keyguard  # API 23+ — programmatic unlock
+```
+
+Or configure the AVD to never lock by setting the screen timeout to the maximum value in
+the emulator settings, or via:
+
+```bash
+adb shell settings put secure lockscreen.disabled 1
+```
+
+Include this as a CI pre-test step before `npx detox test`.
+
+### 13. Keyboard obscures the target element on small Android screens [community]
+
+**Root cause**: When a `TextInput` is focused, the software keyboard appears and pushes
+the layout up. On small emulator screens (Pixel 3a XL or smaller), the next form field
+or submit button may scroll off screen. Detox taps an element based on its pre-keyboard
+coordinates, missing the shifted position — the tap lands on empty space.
+
+**Fix**: Scroll the view to ensure the target element is above the keyboard fold, then tap:
+
+```js
+it('submits registration form', async () => {
+  await element(by.id('first-name-input')).tap();
+  await element(by.id('first-name-input')).replaceText('Jane');
+  // Scroll the form container to bring the submit button above the keyboard
+  await element(by.id('registration-form-scroll')).scrollTo('bottom');
+  await element(by.id('register-button')).tap();
+  await waitFor(element(by.id('success-screen')))
+    .toBeVisible()
+    .withTimeout(5000);
+});
+```
+
+Alternatively, dismiss the keyboard before tapping off-screen elements:
+
+```js
+// iOS: tap outside any input to dismiss keyboard
+await element(by.id('screen-root-container')).tap();
+// Android: press back key dismisses keyboard
+await device.pressBack();
+```
+
+### 14. WebSocket connections block Detox idle detection indefinitely [community]
+
+**Root cause**: Detox's idle detector monitors network activity. A persistent WebSocket
+connection (e.g., a real-time chat or live data feed) registers as continuous network
+activity from the app's perspective. Detox never sees the app as "idle" and hangs on
+every `element()` call until the configured timeout fires — even when all visible UI
+has rendered.
+
+**Fix**: Disable or defer WebSocket connections in test mode via `launchArgs`:
+
+```js
+// In test setup
+await device.launchApp({
+  newInstance: true,
+  launchArgs: { DISABLE_WEBSOCKET: '1' },
+});
+
+// In app code — check launchArgs before opening socket
+import { NativeModules } from 'react-native';
+const launchArgs = NativeModules.DetoxSync?.launchArgs || {};
+if (launchArgs.DISABLE_WEBSOCKET !== '1') {
+  openWebSocket();
+}
+```
+
+Or use `disableSynchronization` in a narrow scope when the WebSocket must be active:
+
+```js
+it('shows real-time message from WebSocket', async () => {
+  await device.disableSynchronization();
+  try {
+    // WebSocket is active — use explicit waitFor with generous timeout
+    await waitFor(element(by.id('live-message-item')))
+      .toBeVisible()
+      .withTimeout(10000);
+  } finally {
+    await device.enableSynchronization();
+  }
+});
+```
+
+### 15. React Navigation ghost screens cause false-positive `toBeVisible()` [community]
+
+**Root cause**: React Navigation (Stack Navigator) keeps the previous screen mounted in
+the component tree when you navigate forward — it's just positioned off-screen or hidden
+by the new screen. If the previous screen and the new screen share a `testID` (e.g., both
+have a `testID="back-button"`), Detox's `toBeVisible()` may match the hidden copy on the
+previous screen layer, not the visible one on the current screen. The test passes
+incorrectly, but the actual UI may be in a wrong state.
+
+**Fix**: Always assert a *unique* landmark on the destination screen immediately after
+`toBeVisible()` to confirm the correct screen layer is active:
+
+```js
+it('navigates to checkout and shows the correct total', async () => {
+  await element(by.id('checkout-button')).tap();
+
+  // Asserting the screen root is visible is necessary but not sufficient
+  await waitFor(element(by.id('checkout-screen')))
+    .toBeVisible()
+    .withTimeout(5000);
+
+  // Assert a unique data element that only exists on the checkout screen
+  await expect(element(by.id('order-total-label'))).toBeVisible();
+
+  // Optionally, assert the previous screen is NOT visible
+  await expect(element(by.id('cart-screen'))).not.toBeVisible();
+});
+```
+
 ---
 
 ## CI Considerations
@@ -961,6 +1271,23 @@ apps: {
 | `device.getPlatform()` | Returns `'ios'` or `'android'` | Conditional test logic per platform |
 | `device.takeScreenshot(name)` | Save a screenshot to artifacts | Manual debugging snapshots |
 
+### Android-specific device APIs
+
+| Method | Description | When to use |
+|--------|-------------|-------------|
+| `device.pressBack()` | Simulate Android hardware back button | Back navigation tests |
+| `device.openNotifications()` | Open the Android notification shade | Notification tray tests |
+| `device.setLocation(lat, lon)` | Set GPS coordinates | Location-aware feature tests |
+| `device.reverseTcp(port)` | ADB reverse TCP port forward | Connecting emulator to local mock server |
+| `element.getAttributes()` | Read element's native property snapshot | Conditional assertions, geometry checks |
+| `device.matchFace()` | Simulate successful Face ID match (iOS) | Biometric login success path |
+| `device.unmatchFace()` | Simulate Face ID failure (iOS) | Biometric fallback path |
+| `device.matchFinger()` | Simulate successful fingerprint match (Android) | Fingerprint authentication |
+| `device.unmatchFinger()` | Simulate fingerprint failure (Android) | Fingerprint fallback path |
+| `device.setBiometricEnrollment(bool)` | Enroll/unenroll biometrics in simulator | Required before calling matchFace/matchFinger |
+| `device.setOrientation('landscape')` | Rotate device orientation | Landscape layout tests |
+| `device.setStatusBar(params)` | Override status bar display | Screenshot/visual consistency in CI |
+
 ---
 
 ## State Isolation Helpers
@@ -1011,6 +1338,46 @@ Use `delete: true` only for onboarding tests and first-launch flows. It is signi
 
 ---
 
+## Flakiness Root-Cause Decision Tree
+
+Use this tree when a test intermittently fails. Start at the top and work down.
+
+```
+Test fails on CI but passes locally?
+├── YES → Is there a hard-coded sleep or setTimeout?
+│   ├── YES → Replace with waitFor(...).withTimeout(N)
+│   └── NO  → Is an animation blocking idle detection?
+│       ├── YES → Gate animation behind DETOX_MODE flag (Pattern 6)
+│       └── NO  → Is an analytics/crash-reporting SDK firing requests?
+│           ├── YES → Add to device.setURLBlacklist() (Pattern 10)
+│           └── NO  → Is there a setInterval or WebSocket keeping app busy?
+│               ├── YES → Disable via launchArgs in test mode (Gotchas 10, 14)
+│               └── NO  → Is the simulator model different from local?
+│                   ├── YES → Pin simulator model in .detoxrc.js
+│                   └── NO  → Is the app binary stale (cached from wrong commit)?
+│                       └── → Add source hash to CI cache key (Gotcha 9)
+│
+Test fails every time on CI?
+├── Is the simulator/emulator booted before tests?
+│   ├── NO  → Add xcrun simctl boot / adb shell wm dismiss-keyguard to CI pre-step
+│   └── YES → Is an OS permission dialog appearing?
+│       ├── YES → Pre-grant in launchApp({ permissions }) (Pattern 9)
+│       └── NO  → Is the element off-screen?
+│           ├── YES → Use scrollTo or whileElement.scroll (Pattern 3)
+│           └── NO  → Is by.id() matching multiple elements?
+│               ├── YES → Make testIDs unique; avoid atIndex() (Gotcha 3)
+│               └── NO  → Did previous test leave app in bad state?
+│                   └── → Use newInstance: true or delete: true (Gotcha 2, 4)
+│
+Test passes consistently but assertions are wrong?
+├── Is a React Navigation ghost screen being matched?
+│   └── YES → Assert unique destination landmark + source.not.toBeVisible() (Gotcha 15)
+└── Is clearText() missing before typeText()?
+    └── YES → Use replaceText() instead (Gotcha 8)
+```
+
+---
+
 ## Anti-Patterns Checklist
 
 Review your tests against this list when diagnosing a CI failure:
@@ -1034,6 +1401,12 @@ Review your tests against this list when diagnosing a CI failure:
 | Hardcoded timeouts not scaled for CI | Use `IS_CI`-aware timeout constants (Pattern 5) |
 | Binary cache key excludes source files | Include `hashFiles('ios/**', 'src/**')` in cache key |
 | Lottie/looped animations not gated | Gate behind `isTestEnvironment` flag |
+| Persistent WebSocket connection active | Disable via `launchArgs: { DISABLE_WEBSOCKET: '1' }` (Gotcha 14) |
+| Android emulator lock screen active | Add `adb shell wm dismiss-keyguard` to CI pre-step (Gotcha 12) |
+| React Navigation ghost screen false positive | Assert unique destination landmark + `not.toBeVisible()` for source (Gotcha 15) |
+| Keyboard covering submit button on small screen | Scroll container to bottom before tapping, or dismiss keyboard first (Gotcha 13) |
+| Expo OTA update firing during test startup | Block expo.dev URLs with `device.setURLBlacklist` or disable in app.json |
+| Using `device.launchApp({url})` vs `device.openURL()` incorrectly | Use `launchApp({url})` for cold-start deep links; use `device.openURL()` to open a URL while app is already running |
 
 ---
 
@@ -1055,6 +1428,10 @@ Use this checklist when a test passes locally but fails on CI:
 12. **New Architecture** — Is the target component a Fabric-native component? Check testID bridging (CI Considerations).
 13. **Polling timers** — Does the app poll a server on an interval? Disable via `launchArgs` (Gotcha 10).
 14. **Input field prefilled** — Did `typeText` append instead of replace? Add `clearText()` or use `replaceText()` (Gotcha 8).
+15. **WebSocket** — Does the app maintain a persistent WebSocket? Use `launchArgs` to disable in test mode (Gotcha 14).
+16. **Android lock screen** — Did the emulator lock screen appear before tests? Add `adb shell wm dismiss-keyguard` to CI pre-step (Gotcha 12).
+17. **React Navigation ghost** — Does the destination screen share a `testID` with the previous screen? Assert a unique landmark + `not.toBeVisible()` for the source (Gotcha 15).
+18. **Keyboard coverage** — Does the software keyboard obscure the submit button on small screens? Scroll the form container before tapping (Gotcha 13).
 
 ---
 
@@ -1094,7 +1471,383 @@ npx detox test -c ios.sim.release --loglevel verbose
 
 ---
 
-## Sources and Further Reading
+## Expo-Specific Setup
+
+When using Detox with an **Expo** project (Expo SDK 50+, Expo Router, or managed workflow
+with EAS Build), the setup differs from bare React Native in several ways.
+
+### expo-detox-plugin configuration
+
+Expo projects require the `expo-detox-plugin` Babel plugin installed, and the `expo-modules-core`
+package to be present for proper native module bridging:
+
+```bash
+npx expo install expo-modules-core
+npm install --save-dev jest-expo @config-plugins/detox
+```
+
+```js
+// .detoxrc.js — Expo managed workflow with prebuild
+module.exports = {
+  testRunner: {
+    args: { $0: 'jest', config: 'e2e/jest.config.js' },
+    jest: { setupTimeout: 300000 },
+  },
+  apps: {
+    'ios.expo': {
+      type: 'ios.app',
+      // After `npx expo prebuild` and `npx expo run:ios --configuration Release`
+      binaryPath: 'ios/build/Build/Products/Release-iphonesimulator/YourApp.app',
+      build: 'npx expo run:ios --configuration Release --no-bundler 2>&1 | tail -30',
+    },
+    'android.expo': {
+      type: 'android.apk',
+      binaryPath: 'android/app/build/outputs/apk/release/app-release.apk',
+      build: 'npx expo run:android --variant release --no-bundler 2>&1 | tail -30',
+    },
+  },
+  devices: {
+    simulator: { type: 'ios.simulator', device: { type: 'iPhone 15' } },
+    emulator: { type: 'android.emulator', device: { avd: 'Pixel_6_API_33' } },
+  },
+  configurations: {
+    'ios.expo.release': { device: 'simulator', app: 'ios.expo' },
+    'android.expo.release': { device: 'emulator', app: 'android.expo' },
+  },
+};
+```
+
+### Expo Router deep link testing
+
+Expo Router uses file-system based routing. Deep links use the `expo-scheme` defined in
+`app.json`. Test them with `device.launchApp({ url })`:
+
+```js
+// e2e/expo-router.test.js
+it('navigates to a product via Expo Router deep link', async () => {
+  await device.launchApp({
+    newInstance: true,
+    // scheme defined in app.json: { "expo": { "scheme": "myapp" } }
+    url: 'myapp:///products/42',  // Expo Router uses triple-slash for absolute path
+  });
+  await waitFor(element(by.id('product-detail-42')))
+    .toBeVisible()
+    .withTimeout(5000);
+});
+
+it('navigates to a tab via Expo Router', async () => {
+  await device.launchApp({
+    newInstance: true,
+    url: 'myapp:///tabs/profile',
+  });
+  await waitFor(element(by.id('profile-screen')))
+    .toBeVisible()
+    .withTimeout(5000);
+  await expect(element(by.id('profile-avatar'))).toBeVisible();
+});
+```
+
+### EAS Build integration [community]
+
+When building with EAS Build for CI, the app binary is not available locally. Use the
+`--binary` flag to point Detox at the downloaded artifact:
+
+```bash
+# Download EAS build artifact
+eas build --platform ios --profile preview --local --output ios-test.ipa
+
+# Run Detox against the downloaded binary
+DETOX_APP_BINARY_PATH=./ios-test.ipa npx detox test -c ios.expo.release
+```
+
+Or configure the binary path via environment variable in `.detoxrc.js`:
+
+```js
+apps: {
+  'ios.eas': {
+    type: 'ios.app',
+    binaryPath: process.env.DETOX_APP_BINARY_PATH || 'ios/build/...',
+  },
+},
+```
+
+**Expo OTA updates gotcha [community]:** If your Expo app has OTA (Over-the-Air) update
+logic, the app will try to fetch a bundle from expo.dev on every launch — even in tests.
+This causes random "app idle" timeouts because the update check is an async network request.
+**Fix:** Disable OTA in test builds by setting `"updates": { "enabled": false }` in
+`app.json` for the CI build profile, or block the update URL with `device.setURLBlacklist`:
+
+```js
+await device.setURLBlacklist([
+  '.*exp\\.host.*',      // Expo Update server
+  '.*expo\\.io.*',       // Legacy Expo CDN
+  '.*expo\\.dev.*',      // Expo Dashboard APIs
+]);
+```
+
+---
+
+## React Navigation Testing Patterns
+
+When using React Navigation, screen transitions can create ghost states where the old
+screen is still mounted (but not visible) while the new screen is shown. Asserting only
+`toBeVisible()` on the destination is insufficient if the source screen renders the same
+`testID` at a hidden layer.
+
+### Asserting correct screen with title or unique landmark
+
+```js
+// e2e/react-navigation.test.js
+const { TIMEOUT } = require('./constants');
+
+it('navigates from home to profile screen', async () => {
+  await element(by.id('profile-tab')).tap();
+
+  // 1. Wait for destination screen root to be visible
+  await waitFor(element(by.id('profile-screen')))
+    .toBeVisible()
+    .withTimeout(TIMEOUT.medium);
+
+  // 2. Assert a unique landmark on the destination screen
+  //    — confirms we're not on a ghost navigation layer
+  await expect(element(by.id('profile-avatar'))).toBeVisible();
+
+  // 3. Assert source screen root is NOT visible (guards against ghost screens)
+  await expect(element(by.id('home-screen'))).not.toBeVisible();
+});
+
+it('navigates back via hardware back button (Android)', async () => {
+  await element(by.id('profile-tab')).tap();
+  await waitFor(element(by.id('profile-screen'))).toBeVisible().withTimeout(TIMEOUT.medium);
+
+  // Simulate Android hardware back
+  await device.pressBack();
+
+  await waitFor(element(by.id('home-screen'))).toBeVisible().withTimeout(TIMEOUT.medium);
+  await expect(element(by.id('profile-screen'))).not.toBeVisible();
+});
+
+// Helper: assert active tab bar item
+async function assertActiveTab(tabId) {
+  const attrs = await element(by.id(tabId)).getAttributes();
+  // React Navigation sets accessibilityState.selected on the active tab
+  expect(attrs.value).toBe('1');  // selected=true serialized as '1' on iOS
+}
+```
+
+### Modal stack testing
+
+React Navigation modals are presented above the main stack. Test them like any other
+screen but check for the overlay container:
+
+```js
+it('shows and dismisses a modal', async () => {
+  await element(by.id('open-modal-button')).tap();
+  await waitFor(element(by.id('modal-screen')))
+    .toBeVisible()
+    .withTimeout(TIMEOUT.medium);
+
+  // Close modal via close button or swipe down
+  await element(by.id('modal-close-button')).tap();
+  await waitFor(element(by.id('modal-screen')))
+    .not.toBeVisible()
+    .withTimeout(TIMEOUT.medium);
+
+  // Confirm underlying screen is still visible
+  await expect(element(by.id('home-screen'))).toBeVisible();
+});
+```
+
+---
+
+## Multi-App Jest Projects Configuration
+
+When your repository contains multiple React Native apps (e.g., a customer app and a
+driver app), use Jest's `projects` feature to run each app's e2e tests in isolation
+while sharing the Detox test runner configuration:
+
+```js
+// e2e/jest.config.js — top-level config for multi-app setups
+module.exports = {
+  projects: [
+    {
+      displayName: 'customer-app',
+      rootDir: '../',
+      testMatch: ['<rootDir>/e2e/customer/**/*.test.js'],
+      testTimeout: 120000,
+      globalSetup: 'detox/runners/jest/globalSetup',
+      globalTeardown: 'detox/runners/jest/globalTeardown',
+      testEnvironment: 'detox/runners/jest/testEnvironment',
+      reporters: ['detox/runners/jest/reporter'],
+    },
+    {
+      displayName: 'driver-app',
+      rootDir: '../',
+      testMatch: ['<rootDir>/e2e/driver/**/*.test.js'],
+      testTimeout: 120000,
+      globalSetup: 'detox/runners/jest/globalSetup',
+      globalTeardown: 'detox/runners/jest/globalTeardown',
+      testEnvironment: 'detox/runners/jest/testEnvironment',
+      reporters: ['detox/runners/jest/reporter'],
+    },
+  ],
+};
+```
+
+```bash
+# Run only the customer app tests
+npx detox test -c ios.customer.release --testPathPattern="e2e/customer"
+
+# Run all apps in sequence
+npx detox test -c ios.customer.release && npx detox test -c ios.driver.release
+```
+
+**Note:** Do not run multiple apps' tests in the same Jest worker process — each Detox
+configuration manages its own device lifecycle, and sharing a device between apps
+causes crashes.
+
+---
+
+## Custom Jest Reporter for Detox
+
+The built-in Detox reporter is sufficient for CI logs, but a custom reporter enables
+integration with test management systems (e.g., TCMS, TestRail, Allure):
+
+```js
+// e2e/reporters/tcmsReporter.js
+class TcmsReporter {
+  constructor(globalConfig, options) {
+    this._options = options;
+    this._results = [];
+  }
+
+  onTestResult(test, testResult) {
+    testResult.testResults.forEach(result => {
+      this._results.push({
+        title: result.fullName,
+        status: result.status,        // 'passed' | 'failed' | 'pending'
+        duration: result.duration,
+        failureMessages: result.failureMessages,
+        ancestorTitles: result.ancestorTitles,
+      });
+    });
+  }
+
+  onRunComplete(contexts, results) {
+    const report = {
+      timestamp: new Date().toISOString(),
+      passed: results.numPassedTests,
+      failed: results.numFailedTests,
+      skipped: results.numPendingTests,
+      total: results.numTotalTests,
+      suites: results.numPassedTestSuites,
+      tests: this._results,
+    };
+
+    const fs = require('fs');
+    const path = this._options.outputPath || 'e2e-results.json';
+    fs.writeFileSync(path, JSON.stringify(report, null, 2));
+    console.log(`\n[TcmsReporter] Results written to ${path}`);
+  }
+}
+
+module.exports = TcmsReporter;
+```
+
+```js
+// e2e/jest.config.js — add custom reporter alongside Detox reporter
+module.exports = {
+  testTimeout: 120000,
+  globalSetup: 'detox/runners/jest/globalSetup',
+  globalTeardown: 'detox/runners/jest/globalTeardown',
+  testEnvironment: 'detox/runners/jest/testEnvironment',
+  reporters: [
+    'detox/runners/jest/reporter',   // required for Detox lifecycle
+    ['./reporters/tcmsReporter.js', { outputPath: 'e2e-results.json' }],
+  ],
+};
+```
+
+---
+
+## Supplementary Interaction Patterns
+
+### openURL vs launchApp({url})
+
+Use `device.launchApp({ url })` when the app must cold-start from the deep link (simulates
+tapping a URL from Safari or a notification). Use `device.openURL({ url })` when the app
+is already running and you want to simulate a universal link being received while the app
+is in the foreground:
+
+```js
+// Cold-start: app not running — tapped link launches the app
+it('cold-start deep link navigates to product', async () => {
+  await device.launchApp({
+    newInstance: true,
+    url: 'myapp://products/42',
+  });
+  await waitFor(element(by.id('product-detail-42'))).toBeVisible().withTimeout(5000);
+});
+
+// Warm: app already running — receives universal link in foreground
+it('in-app universal link navigates to product without re-launching', async () => {
+  await device.launchApp({ newInstance: true });
+  await waitFor(element(by.id('home-screen'))).toBeVisible().withTimeout(5000);
+
+  // App is running — open the URL into the running instance
+  await device.openURL({ url: 'https://www.myapp.com/products/42' });
+  await waitFor(element(by.id('product-detail-42'))).toBeVisible().withTimeout(5000);
+});
+```
+
+### Location testing with device.setLocation()
+
+```js
+// e2e/location.test.js
+describe('Location-aware features', () => {
+  beforeAll(async () => {
+    await device.launchApp({
+      newInstance: true,
+      permissions: { location: 'always' },
+    });
+  });
+
+  it('shows nearby stores when user is in San Francisco', async () => {
+    // Set GPS coordinates before triggering the location-dependent feature
+    await device.setLocation(37.7749, -122.4194);   // San Francisco
+    await element(by.id('find-nearby-stores-button')).tap();
+    await waitFor(element(by.id('store-list'))).toBeVisible().withTimeout(8000);
+    // Verify at least one SF store is shown
+    await expect(element(by.id('store-item-sf-market-st'))).toBeVisible();
+  });
+
+  it('shows no nearby stores when user is in the ocean', async () => {
+    await device.setLocation(0, 0);    // Null Island — no stores
+    await element(by.id('find-nearby-stores-button')).tap();
+    await waitFor(element(by.id('empty-stores-message'))).toBeVisible().withTimeout(5000);
+  });
+});
+```
+
+**Note:** `device.setLocation()` works on iOS Simulator and Android Emulator. On Android,
+you may need to set the mock location provider first:
+
+```bash
+adb shell appops set <package> MOCK_LOCATION allow
+```
+
+### Shake gesture
+
+```js
+it('shows the feedback dialog when device is shaken', async () => {
+  await device.shake();
+  await waitFor(element(by.id('feedback-dialog'))).toBeVisible().withTimeout(3000);
+  await element(by.id('feedback-cancel-button')).tap();
+  await waitFor(element(by.id('feedback-dialog'))).not.toBeVisible().withTimeout(2000);
+});
+```
+
+---
 
 - Detox Official Docs: https://wix.github.io/Detox/
 - Detox Getting Started: https://wix.github.io/Detox/docs/introduction/getting-started
@@ -1107,3 +1860,8 @@ npx detox test -c ios.sim.release --loglevel verbose
 - Detox URL Blacklist: https://wix.github.io/Detox/docs/api/device#deviceseturlblacklisturls
 - Detox Device API: https://wix.github.io/Detox/docs/api/device
 - Detox Config Overview: https://wix.github.io/Detox/docs/config/overview
+- Detox `getAttributes()`: https://wix.github.io/Detox/docs/api/actions-core#getattributes
+- Detox `setLocation()`: https://wix.github.io/Detox/docs/api/device#devicesetlocationlat-lon
+- Detox Biometrics (iOS): https://wix.github.io/Detox/docs/api/device#devicematchface
+- Expo Detox Integration: https://docs.expo.dev/build-reference/e2e-tests/
+- React Navigation Testing: https://reactnavigation.org/docs/testing/

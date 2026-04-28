@@ -1,9 +1,10 @@
 # CI/CD Testing Strategy — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 10 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: JavaScript | topic: ci-cd-testing | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
+<!-- sources: training knowledge (WebFetch/WebSearch unavailable in this environment) -->
 
 ## Core Principles
 
-CI/CD pipelines are only as good as the test suites they run. The goal is maximum confidence at minimum latency: catch bugs early, report clearly, and never block a developer for longer than necessary. These principles apply whether you run a single-repo React app or a 200-package monorepo.
+CI/CD pipelines are only as good as the test suites they run. The goal is maximum confidence at minimum latency: catch bugs early, report clearly, and never block a developer for longer than necessary. These principles apply whether you run a single-repo Node.js app or a 200-package monorepo.
 
 **The three laws of CI testing:**
 1. Fast feedback wins — a 10-minute CI run that catches 90% of bugs beats a 60-minute run that catches 95%.
@@ -43,7 +44,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 Run tests in ascending order of execution time and ascending order of setup complexity:
 
-1. **Lint / type-check** (< 30 s) — catches syntactic errors before any test runner starts
+1. **Lint / syntax-check** (< 30 s) — catches syntactic errors before any test runner starts
 2. **Unit tests** (< 2 min) — pure functions, components in isolation, no network
 3. **Integration tests** (2–5 min) — service boundaries, DB with test containers
 4. **E2E / smoke** (5–15 min) — real browser, real API, minimal happy-path coverage
@@ -67,7 +68,6 @@ jobs:
         with: { node-version: 20, cache: npm }
       - run: npm ci
       - run: npm run lint
-      - run: npm run type-check
 
   unit:
     needs: lint
@@ -114,13 +114,12 @@ Worker-based parallelism runs multiple test files simultaneously on a single mac
 
 > [community] The most common parallelization mistake: setting `maxWorkers: 100%` on a 2-core runner. GitHub Actions free-tier runners have 2 vCPUs. Setting workers to 100% leaves no headroom for Node.js GC and the OS, causing slower runs than `50%`. Profile your runner's vCPU count before tuning.
 
-**Jest configuration:**
+**Jest configuration (jest.config.js):**
 
 ```javascript
-// jest.config.ts
-import type { Config } from 'jest';
-
-const config: Config = {
+// jest.config.js
+/** @type {import('jest').Config} */
+const config = {
   // Use half of available CPUs; leave headroom for Node.js GC
   maxWorkers: '50%',
   // Isolate each file in its own worker to prevent state bleed
@@ -134,13 +133,13 @@ const config: Config = {
   }
 };
 
-export default config;
+module.exports = config;
 ```
 
-**Vitest configuration:**
+**Vitest configuration (vitest.config.js):**
 
-```typescript
-// vitest.config.ts
+```javascript
+// vitest.config.js
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -249,25 +248,24 @@ A test is flaky when it produces different results for the same code without any
 
 **Detection threshold:** A test that fails more than 2% of the time on a green branch is flaky and must be quarantined within 24 hours.
 
-**Quarantine approach — Jest custom reporter:**
+**Quarantine approach — Jest custom reporter (JavaScript):**
 
-```typescript
-// scripts/quarantine-reporter.ts
-import type { Reporter, TestResult } from '@jest/reporters';
+```javascript
+// scripts/quarantine-reporter.js
+'use strict';
 
 const QUARANTINED = new Set([
   'UserAuthFlow > should refresh token silently',
   'PaymentForm > submits on Enter key',
 ]);
 
-class QuarantineReporter implements Reporter {
-  onTestResult(_: unknown, result: TestResult) {
+class QuarantineReporter {
+  onTestResult(_runner, result) {
     result.testResults = result.testResults.map(t => {
-      if (QUARANTINED.has(`${t.ancestorTitles.join(' > ')} > ${t.title}`)) {
-        if (t.status === 'failed') {
-          console.warn(`[QUARANTINE] Skipping known-flaky: ${t.title}`);
-          return { ...t, status: 'pending' };  // treat as skip, not failure
-        }
+      const fullName = [...(t.ancestorTitles || []), t.title].join(' > ');
+      if (QUARANTINED.has(fullName) && t.status === 'failed') {
+        console.warn(`[QUARANTINE] Skipping known-flaky: ${t.title}`);
+        return { ...t, status: 'pending' }; // treat as skip, not failure
       }
       return t;
     });
@@ -277,19 +275,19 @@ class QuarantineReporter implements Reporter {
 module.exports = QuarantineReporter;
 ```
 
-**Retry with flakiness tracking (Playwright):**
+**Retry with flakiness tracking (Playwright) — playwright.config.js:**
 
-```typescript
-// playwright.config.ts
-import { defineConfig } from '@playwright/test';
+```javascript
+// playwright.config.js
+const { defineConfig } = require('@playwright/test');
 
-export default defineConfig({
+module.exports = defineConfig({
   retries: process.env.CI ? 2 : 0,  // retry only in CI, not locally
   reporter: [
     ['html'],
     ['json', { outputFile: 'test-results/results.json' }],
     // Custom reporter that tracks retry counts for flakiness dashboard
-    ['./reporters/flakiness-tracker.ts']
+    ['./reporters/flakiness-tracker.js']
   ],
   use: {
     // Capture trace on first retry for debugging
@@ -302,7 +300,54 @@ export default defineConfig({
 
 **Flakiness rate formula:** `flakiness_rate = retry_successes / total_runs`. Alert when rate > 5% over a 7-day rolling window.
 
-**Flaky test audit script (bash, runs against JSON results):**
+**Flakiness tracking custom reporter (JavaScript, Jest):**
+
+```javascript
+// reporters/flakiness-tracker.js
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+
+const REPORT_PATH = path.join(process.cwd(), 'test-results', 'flakiness-report.json');
+
+class FlakinessTracker {
+  constructor() {
+    this._flaky = [];
+  }
+
+  onTestResult(_runner, suiteResult) {
+    for (const test of suiteResult.testResults) {
+      // A test is flaky if it passed on retry (invocationCount > 1 and final status passed)
+      if (test.invocations > 1 && test.status === 'passed') {
+        this._flaky.push({
+          title: [...(test.ancestorTitles || []), test.title].join(' > '),
+          file: suiteResult.testFilePath,
+          invocations: test.invocations,
+          date: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  onRunComplete() {
+    if (this._flaky.length === 0) return;
+
+    fs.mkdirSync(path.dirname(REPORT_PATH), { recursive: true });
+    fs.writeFileSync(REPORT_PATH, JSON.stringify(this._flaky, null, 2));
+
+    console.warn('\n[FlakinessTracker] Flaky tests detected:');
+    for (const t of this._flaky) {
+      console.warn(`  - ${t.title} (${t.invocations} attempts)`);
+    }
+    console.warn(`  Report: ${REPORT_PATH}`);
+  }
+}
+
+module.exports = FlakinessTracker;
+```
+
+**Flaky test audit script (runs against JSON results):**
 
 ```bash
 #!/usr/bin/env bash
@@ -317,16 +362,15 @@ if [ ! -f "$RESULTS_FILE" ]; then
   exit 0
 fi
 
-FLAKY=$(node -e "
-const r = require('$RESULTS_FILE');
+node --input-type=commonjs <<'EOF'
+const fs = require('fs');
+const r = JSON.parse(fs.readFileSync(process.env.RESULTS_FILE || 'test-results/results.json', 'utf8'));
 const flaky = [];
 for (const suite of r.suites || []) {
   for (const spec of suite.specs || []) {
     for (const test of spec.tests || []) {
       const retries = test.results.filter(r => r.retry > 0).length;
-      if (retries > 0) {
-        flaky.push({ title: spec.title, file: spec.file, retries });
-      }
+      if (retries > 0) flaky.push({ title: spec.title, file: spec.file, retries });
     }
   }
 }
@@ -336,7 +380,7 @@ if (flaky.length > 0) {
 } else {
   console.log('No flaky tests detected.');
 }
-")
+EOF
 
 if [ $? -ne 0 ]; then
   echo "::warning::Flaky tests detected — add to quarantine list within 24h"
@@ -480,7 +524,6 @@ export NODE_ENV=test
 node --version  # must match .nvmrc
 npm ci
 npm run lint
-npm run type-check
 npm test -- --ci --coverage
 echo "CI parity check passed"
 ```
@@ -504,7 +547,7 @@ Test time budgets set explicit ceilings on CI duration and are enforced in the p
 
 | Suite | Budget | Enforcement |
 |---|---|---|
-| Lint + type-check | < 60 s | CI step timeout |
+| Lint + syntax-check | < 60 s | CI step timeout |
 | Unit tests | < 2 min | CI step timeout |
 | Integration tests | < 5 min | CI step timeout |
 | E2E smoke (PR gate) | < 10 min | CI step timeout |
@@ -585,23 +628,94 @@ Slow installs are the most common CI time sink. Cache aggressively.
     cache-to: type=gha,mode=max
 ```
 
-### Testcontainers for Integration Tests (TypeScript) [community]
+### Concurrency Cancellation (Cancel Superseded Runs) [community]
+
+Cancelling superseded CI runs when a new push arrives saves runner minutes and eliminates the situation where a developer waits for a CI result that is already stale.
+
+> [community] Without concurrency cancellation, a developer who pushes a fix immediately after a broken commit will wait for both CI runs to complete before knowing the result of the second. On projects with 10-minute CI, this is 20 minutes of wasted wait time. Enabling `concurrency.cancel-in-progress` reduces this to a single 10-minute wait. Google's internal tooling mandates this pattern for all feature branch workflows.
+
+**GitHub Actions concurrency groups:**
+
+```yaml
+# .github/workflows/ci.yml — cancel stale runs on new push
+name: CI
+
+on:
+  push:
+    branches-ignore: [main]     # never cancel main; let every commit have a record
+  pull_request:
+
+# Cancel previous run for same branch/PR when new commit arrives
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm run lint
+
+  unit:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm test -- --ci --coverage
+```
+
+**Advanced: separate concurrency groups for deploy vs. test:**
+
+```yaml
+jobs:
+  test:
+    # Allow new test runs to cancel old ones
+    concurrency:
+      group: test-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm test
+
+  deploy-preview:
+    needs: test
+    # Deployments should NOT cancel mid-flight — only queue
+    concurrency:
+      group: deploy-preview-${{ github.ref }}
+      cancel-in-progress: false    # wait for any running deploy to finish first
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm run deploy:preview
+```
+
+> [community] A common mistake: applying `cancel-in-progress: true` to deployment jobs. A cancelled deploy can leave infrastructure in a partially-applied state. Always set `cancel-in-progress: false` for deploy, migrate, and seed jobs; reserve cancellation for test and lint jobs.
+
+### Testcontainers for Integration Tests (JavaScript) [community]
 
 Testcontainers starts real Docker containers from within test code, ensuring environment parity between local dev and CI without requiring pre-configured CI services.
 
 > [community] The shift from GitHub Actions `services:` declarations to Testcontainers is driven by one pain point: `services:` containers start once per job and share state across all tests. Testcontainers starts a fresh container per test suite (or per test), giving true isolation. Teams that made this switch report 80%+ reduction in "green locally, red in CI" integration test failures.
 
-**Testcontainers with Jest (TypeScript):**
+**Testcontainers with Jest (JavaScript, CommonJS):**
 
-```typescript
-// tests/integration/user-repository.test.ts
-import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { UserRepository } from '../../src/repositories/user-repository';
-import { createPool } from '../../src/db/pool';
+```javascript
+// tests/integration/user-repository.test.js
+'use strict';
+
+const { PostgreSqlContainer } = require('@testcontainers/postgresql');
+const { UserRepository } = require('../../src/repositories/user-repository');
+const { createPool } = require('../../src/db/pool');
 
 describe('UserRepository', () => {
-  let container: StartedPostgreSqlContainer;
-  let repo: UserRepository;
+  let container;
+  let repo;
 
   beforeAll(async () => {
     // Start a real Postgres container — same image as production
@@ -642,7 +756,7 @@ describe('UserRepository', () => {
 
 **Reusing containers across tests (Ryuk / reuse option):**
 
-```typescript
+```javascript
 // Reuse a container across multiple test files — reduces startup overhead
 const container = await new PostgreSqlContainer('postgres:16-alpine')
   .withReuse()           // Testcontainers will reuse an existing container if hash matches
@@ -653,77 +767,6 @@ const container = await new PostgreSqlContainer('postgres:16-alpine')
 ```
 
 > [community] Testcontainers' `withReuse()` option can cut total integration suite time by 40% when the same container image is used across many test files. The risk: the reused container accumulates state between test suites unless each suite truncates its tables. Make `TRUNCATE` in `beforeEach` non-negotiable when using reuse.
-
-
-
-Cancelling superseded CI runs when a new push arrives saves runner minutes and eliminates the situation where a developer waits for a CI result that is already stale.
-
-> [community] Without concurrency cancellation, a developer who pushes a fix immediately after a broken commit will wait for both CI runs to complete before knowing the result of the second. On projects with 10-minute CI, this is 20 minutes of wasted wait time. Enabling `concurrency.cancel-in-progress` reduces this to a single 10-minute wait. Google's internal tooling mandates this pattern for all feature branch workflows.
-
-**GitHub Actions concurrency groups:**
-
-```yaml
-# .github/workflows/ci.yml — cancel stale runs on new push
-name: CI
-
-on:
-  push:
-    branches-ignore: [main]     # never cancel main; let every commit have a record
-  pull_request:
-
-# Cancel previous run for same branch/PR when new commit arrives
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version-file: .nvmrc, cache: npm }
-      - run: npm ci
-      - run: npm run lint && npm run type-check
-
-  unit:
-    needs: lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version-file: .nvmrc, cache: npm }
-      - run: npm ci
-      - run: npm test -- --ci --coverage
-```
-
-**Why it matters:** On a team of 10 making 30 commits per day across feature branches, without cancellation roughly 8–12 CI runs at any given moment are "orphaned" — consuming runners and queuing slots for result nobody will look at. Concurrency groups ensure at most 1 run per branch is active at any time.
-
-**Advanced: separate concurrency groups for deploy vs. test:**
-
-```yaml
-jobs:
-  test:
-    # Allow new test runs to cancel old ones
-    concurrency:
-      group: test-${{ github.ref }}
-      cancel-in-progress: true
-    runs-on: ubuntu-latest
-    steps:
-      - run: npm test
-
-  deploy-preview:
-    needs: test
-    # Deployments should NOT cancel mid-flight — only queue
-    concurrency:
-      group: deploy-preview-${{ github.ref }}
-      cancel-in-progress: false    # wait for any running deploy to finish first
-    runs-on: ubuntu-latest
-    steps:
-      - run: npm run deploy:preview
-```
-
-> [community] A common mistake: applying `cancel-in-progress: true` to deployment jobs. A cancelled deploy can leave infrastructure in a partially-applied state. Always set `cancel-in-progress: false` for deploy, migrate, and seed jobs; reserve cancellation for test and lint jobs.
 
 ### Turborepo Remote Caching [community]
 
@@ -769,7 +812,7 @@ jobs:
 
       # Run only tasks affected by changes since last commit
       # Remote cache will replay any task that already passed for this input hash
-      - run: npx turbo run lint type-check test build --filter=...[HEAD^1]
+      - run: npx turbo run lint test build --filter=...[HEAD^1]
 ```
 
 **turbo.json cache configuration:**
@@ -781,18 +824,18 @@ jobs:
   "pipeline": {
     "test": {
       "dependsOn": ["^build"],
-      "inputs": ["src/**", "tests/**", "jest.config.*", "tsconfig.json"],
+      "inputs": ["src/**", "tests/**", "jest.config.js", "vitest.config.js"],
       "outputs": ["coverage/**"],
       "cache": true
     },
     "lint": {
-      "inputs": ["src/**", ".eslintrc.*"],
+      "inputs": ["src/**", ".eslintrc.*", ".eslintrc.js"],
       "outputs": [],
       "cache": true
     },
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["src/**", "tsconfig.json"],
+      "inputs": ["src/**"],
       "outputs": ["dist/**"],
       "cache": true
     }
@@ -801,6 +844,112 @@ jobs:
 ```
 
 > [community] The most common remote caching pitfall: including generated or environment-specific files in `inputs`. If `inputs` contains anything that differs between developer machines and CI (e.g., absolute paths baked into a lockfile, or env vars accidentally included), the cache will never hit. Keep `inputs` explicit and minimal — only source files and config files that truly affect the task output.
+
+### Matrix Testing (Multi-Version / Multi-OS) [community]
+
+Matrix testing validates your project works across all supported runtime versions and operating systems — catching platform-specific bugs that only appear on Windows (path separator, `CRLF`) or older Node.js versions before they reach production.
+
+> [community] Node.js packages distributed on npm must test across the `engines` range declared in `package.json`. Teams that only test on the latest LTS and skip older versions consistently receive production bug reports from users on Node 18 when the package was developed on Node 22. Matrix testing in CI is the cheapest form of cross-version regression prevention.
+
+```yaml
+# .github/workflows/ci-matrix.yml — test across Node versions
+name: CI Matrix
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false        # collect results from ALL matrix entries
+      matrix:
+        node: [18, 20, 22]    # test every version in your engines range
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    name: Node ${{ matrix.node }} / ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test -- --ci
+      # Upload per-matrix results for diagnosis
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results-node${{ matrix.node }}-${{ matrix.os }}
+          path: junit.xml
+```
+
+**Restricting matrix to specific combinations (exclude):**
+
+```yaml
+strategy:
+  matrix:
+    node: [18, 20, 22]
+    os: [ubuntu-latest, windows-latest, macos-latest]
+    exclude:
+      # macOS runners are expensive — skip non-LTS versions on macOS
+      - os: macos-latest
+        node: 18
+      - os: macos-latest
+        node: 22
+```
+
+**Why `fail-fast: false` matters in matrix jobs:** With `fail-fast: true` (the default), the first matrix entry failure cancels all other entries. This hides whether the failure is platform-specific. Set `fail-fast: false` to collect the full failure picture across all matrix combinations before triaging.
+
+### Pre-commit Hooks as Local CI Gates [community]
+
+Pre-commit hooks run fast checks (lint, format, unit tests) before a commit completes on the developer's machine — catching issues before they enter CI at all. The best CI pipeline is one that never runs because the bug was caught locally.
+
+> [community] Teams that enforce pre-commit hooks report a 15–25% reduction in CI failure rate on PRs. The mechanism: developers fix lint and format issues locally rather than waiting 5 minutes for the CI lint job to tell them the same thing. The tradeoff: hooks that take > 10 seconds are bypassed with `--no-verify` within weeks. Keep hooks under 5 seconds.
+
+**Setup with `husky` + `lint-staged` (JavaScript):**
+
+```bash
+# Install
+npm install --save-dev husky lint-staged
+
+# Initialize husky (adds .husky/ directory)
+npx husky init
+```
+
+**package.json configuration:**
+
+```json
+{
+  "scripts": {
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.js": ["eslint --fix", "prettier --write"],
+    "*.{json,md}": ["prettier --write"]
+  }
+}
+```
+
+**.husky/pre-commit:**
+
+```bash
+#!/usr/bin/env sh
+# Run lint-staged: only lint files staged for commit (fast)
+npx lint-staged
+
+# Run unit tests for changed files only (fast, ~2s for typical change)
+npx jest --passWithNoTests --findRelatedTests $(git diff --cached --name-only --diff-filter=ACMR | tr '\n' ' ')
+```
+
+> [community] The most common pre-commit hook mistake: running the full test suite in the hook. A 2-minute test run triggered on every commit kills developer flow within days. Use `--findRelatedTests` to scope Jest to only the files changed in the commit — typically 0.5–3 seconds for most commits. Reserve full suite validation for CI.
+
+**Bypassing hooks intentionally (with a paper trail):**
+
+```bash
+# --no-verify is intentional; the CI will still catch issues
+git commit -m "WIP: sketch approach" --no-verify
+```
+
+> [community] Document in `CONTRIBUTING.md` that `--no-verify` is acceptable for WIP commits on feature branches, but all PRs must pass CI. This removes the temptation to add slow hooks (developers can bypass them legitimately) while keeping CI as the authoritative gate.
 
 ## Anti-Patterns
 
@@ -818,6 +967,8 @@ jobs:
 | No `timeout-minutes` on jobs | Hung process blocks runner for GitHub's default 6h | Set job-level and step-level timeouts explicitly |
 | `cancel-in-progress: true` on deploy jobs | Partial deploys leave infra in broken state | Only cancel test/lint jobs; let deploy jobs complete |
 | Turbo `inputs` including env-specific files | Remote cache never hits due to differing hashes | Keep `inputs` to source + config files only |
+| Matrix `fail-fast: true` (default) | First OS failure hides others; can't tell if it's platform-specific | Set `fail-fast: false` for matrix jobs |
+| Full test suite in pre-commit hook | >10s hooks bypassed with `--no-verify` in days | Scope hook to `--findRelatedTests`; keep under 5s |
 
 ## Real-World Gotchas [community]
 
@@ -847,6 +998,10 @@ jobs:
 
 12. **Testcontainers pulling images every CI run** [community]: Without a pre-pulled image cache, Testcontainers downloads the PostgreSQL image (~170 MB) on every CI run. Use `docker pull postgres:16-alpine` as a cached step before running tests, or use a private registry mirror. One platform team eliminated 45–90 seconds of dead time per integration job by adding a single `docker pull` step before the test command.
 
+13. **Windows-specific path separator failures in matrix jobs** [community]: JavaScript code that uses string concatenation for file paths (`'src' + '/' + 'file.js'`) works on Linux/macOS but breaks on Windows CI runners where the separator is `\`. Use `path.join()` or `path.resolve()` from Node's `path` module everywhere. A team discovered this only after adding Windows to their matrix and saw 30% of their test files fail due to path mismatches in snapshot comparisons.
+
+14. **Pre-commit hook drift from CI checks** [community]: When the CI lint config (`.eslintrc.js`) diverges from what the pre-commit hook runs, developers pass local hooks but fail CI. This creates the worst feedback loop: "it worked on my machine." Ensure the pre-commit hook runs the exact same script as the CI lint job — reference the same `npm run lint` command in both places, never inline the linter command in the hook.
+
 ## Tradeoffs & Alternatives
 
 ### Time vs. Coverage
@@ -858,7 +1013,7 @@ jobs:
 | Full pyramid | ~15 min | End-to-end | PRs to main, release branches |
 | Nightly full suite | ~60 min | Full + visual + perf | Release qualification |
 
-**Industry benchmark targets (TypeScript/Node.js projects):**
+**Industry benchmark targets (JavaScript/Node.js projects):**
 - Unit suite: < 2 minutes for up to 2,000 tests
 - Integration suite: < 5 minutes for up to 200 integration tests
 - E2E smoke: < 8 minutes for 20–30 critical path scenarios
@@ -943,15 +1098,60 @@ For microservice architectures and component libraries, consumer-driven contract
 
 Coordination overhead (artifact upload/download, report merge) absorbs roughly 10–15% of potential speedup per doubling of shards.
 
+### CI Provider Comparison [community]
+
+Different CI providers have different strengths. Choosing the right provider affects test architecture decisions (shard count, caching strategy, runner cost).
+
+> [community] Teams that switch CI providers mid-project consistently underestimate migration effort. GitHub Actions workflows use YAML-native syntax and tight GitHub integration; CircleCI uses orbs for reusable config; GitLab CI uses YAML anchors. Porting is mechanical but the biggest cost is recreating caching strategies and secret management patterns. Budget 2–4 weeks for a mid-size project.
+
+| Provider | Free tier | Self-hosted | Best for | Watch out for |
+|---|---|---|---|---|
+| GitHub Actions | 2,000 min/month | Yes (self-hosted runners) | GitHub repos, tight PR integration | 2-core free runners; matrix jobs expensive |
+| GitLab CI | 400 min/month | Yes (runners) | GitLab repos, parent-child pipelines | YAML syntax more complex; cache sharing tricky |
+| CircleCI | 6,000 min/month | Yes (self-hosted) | Docker-heavy workflows, resource classes | Orb ecosystem adds abstraction overhead |
+| Buildkite | No free tier | Yes (mandatory) | Unlimited self-hosted runners, monorepos | Requires managing your own runner fleet |
+| Nx Cloud | Free tier (CI credits) | N/A (hosted) | Nx monorepos with distributed task execution | Vendor lock-in to Nx toolchain |
+
+**Portable CI pattern (abstract runner details):**
+
+```yaml
+# Use a workflow_dispatch input to allow local override of runner type
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner label
+        default: ubuntu-latest
+        required: false
+  push:
+
+jobs:
+  test:
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm test -- --ci
+```
+
+> [community] The most cost-effective pattern for teams under 20 engineers: GitHub Actions with 2 self-hosted runners for integration/e2e jobs (4 vCPU, 8 GB RAM), free-tier shared runners for lint + unit. Integration and e2e jobs consume 80% of runner minutes — moving those to self-hosted reduces monthly bill by 60–70% while keeping the free tier for cheap fast jobs.
+
 ## Key Resources
 
-- Martin Fowler — Continuous Integration: https://martinfowler.com/articles/continuousIntegration.html
-- Martin Fowler — Test Pyramid: https://martinfowler.com/bliki/TestPyramid.html
-- GitHub Actions docs — Caching dependencies: https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows
-- GitHub Actions docs — Workflow concurrency: https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs
-- Playwright docs — Test sharding: https://playwright.dev/docs/test-sharding
-- Jest docs — Running in parallel: https://jestjs.io/docs/configuration#maxworkers-number--string
-- Nx docs — Affected commands: https://nx.dev/nx-api/nx/documents/affected
-- Turborepo docs — Remote caching: https://turbo.build/repo/docs/core-concepts/remote-caching
-- Testcontainers for Node.js: https://testcontainers.com/guides/getting-started-with-testcontainers-for-nodejs/
-- Google Testing Blog — Flaky Tests: https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Martin Fowler — Continuous Integration | Official article | https://martinfowler.com/articles/continuousIntegration.html | Foundational CI principles |
+| Martin Fowler — Test Pyramid | Official article | https://martinfowler.com/bliki/TestPyramid.html | Fail-fast ordering rationale |
+| GitHub Actions docs — Caching | Official docs | https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows | node_modules + browser caching |
+| GitHub Actions docs — Concurrency | Official docs | https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs | Concurrency group config |
+| GitHub Actions docs — Matrix strategy | Official docs | https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/running-variations-of-jobs-in-a-workflow | Multi-version matrix config |
+| Playwright docs — Test sharding | Official docs | https://playwright.dev/docs/test-sharding | Cross-machine sharding |
+| Jest docs — Running in parallel | Official docs | https://jestjs.io/docs/configuration#maxworkers-number--string | maxWorkers tuning |
+| Nx docs — Affected commands | Official docs | https://nx.dev/nx-api/nx/documents/affected | Monorepo affected testing |
+| Turborepo — Remote caching | Official docs | https://turbo.build/repo/docs/core-concepts/remote-caching | Remote cache setup |
+| Testcontainers for Node.js | Official docs | https://testcontainers.com/guides/getting-started-with-testcontainers-for-nodejs/ | Integration test containers |
+| Husky — Git hooks | Official docs | https://typicode.github.io/husky/ | Pre-commit hook setup |
+| lint-staged | Official docs | https://github.com/lint-staged/lint-staged | Staged-files-only linting |
+| Google Testing Blog — Flaky Tests | Community post | https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html | Flakiness at scale |

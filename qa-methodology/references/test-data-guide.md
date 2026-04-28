@@ -1,5 +1,5 @@
 # Test Data Strategy — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 10 | score: 98/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 2 | score: 100/100 | date: 2026-04-27 -->
 <!-- sources: training-knowledge (WebFetch blocked, WebSearch API unavailable; synthesized from training knowledge per skill fallback rule) -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html -->
 
@@ -490,6 +490,76 @@ it('shows error banner when API returns 500', async () => {
 
 ---
 
+### Playwright `test.extend()` — E2E-Native Test Fixtures  [community]
+
+Playwright has a first-class fixture system (`test.extend()`) that scopes test data to the test or worker lifecycle. Unlike `beforeEach`/`afterEach` hooks, Playwright fixtures are composable, lazily evaluated, and automatically torn down — making them the idiomatic way to manage E2E test data in TypeScript/Playwright suites.
+
+**Why it matters:** `beforeEach` hooks in large E2E suites become ordering-dependent and hard to reuse across spec files. Playwright fixtures compose like functions: a `authenticatedPage` fixture can depend on a `user` fixture which depends on a `db` fixture, and Playwright wires the lifecycle automatically.
+
+```typescript
+// fixtures/test-fixtures.ts
+import { test as base, expect } from '@playwright/test';
+import { userFactory } from '../factories/user.factory';
+import { db } from '../db';
+
+// Type-safe fixture declarations
+type TestFixtures = {
+  testUser: { id: string; email: string; password: string };
+  authenticatedPage: void;
+};
+
+export const test = base.extend<TestFixtures>({
+  // Worker-scoped: created once per worker, shared across tests in that worker
+  testUser: [async ({}, use) => {
+    // Setup: create user in DB before test
+    const user = await userFactory.create({
+      email: `e2e-${Date.now()}@test.com`,
+      password: 'Test@12345',
+    });
+
+    // Hand control to the test
+    await use({ id: user.id, email: user.email, password: 'Test@12345' });
+
+    // Teardown: always runs, even if test fails
+    await db.delete(users).where(eq(users.id, user.id));
+  }, { scope: 'test' }],
+
+  // Test-scoped: logs in the testUser for every test that uses this fixture
+  authenticatedPage: async ({ page, testUser }, use) => {
+    await page.goto('/login');
+    await page.fill('[data-testid="email"]', testUser.email);
+    await page.fill('[data-testid="password"]', testUser.password);
+    await page.click('[data-testid="submit"]');
+    await page.waitForURL('/dashboard');
+    await use();
+    // page cleanup handled by Playwright automatically
+  },
+});
+
+export { expect };
+```
+
+```typescript
+// specs/checkout.spec.ts — uses the extended test
+import { test, expect } from '../fixtures/test-fixtures';
+
+test('authenticated user can complete checkout', async ({ page, authenticatedPage, testUser }) => {
+  // testUser is already created in DB; authenticatedPage already logged in
+  await page.goto('/shop');
+  await page.click('[data-testid="add-to-cart"]');
+  await page.click('[data-testid="checkout"]');
+  await expect(page.locator('[data-testid="order-confirmation"]')).toBeVisible();
+});
+```
+
+**Key benefits over `beforeEach`:**
+- Fixtures are only instantiated if a test actually requests them (lazy evaluation)
+- Teardown is guaranteed — no leaked data even on test failure
+- Fixtures compose: `authenticatedPage` auto-requests `testUser` without the test knowing
+- Worker-scoped fixtures (e.g., seeded DB baseline) share setup cost across tests
+
+---
+
 ### Factory Library Comparison for TypeScript
 
 Use this table to choose the right tool for your project's scale and test type.
@@ -501,6 +571,7 @@ Use this table to choose the right tool for your project's scale and test type.
 | `fishery` | Full (generics) | `build` + `create` (with hooks) | `sequence` param | Via faker | Integration tests needing DB persistence; Thoughtbot-quality API |
 | `zod-fixture` | Schema-driven | `build` only | None | None | Zod-first codebases; zero-maintenance for schema-aligned mocks |
 | `msw` | n/a (HTTP layer) | n/a | Manual | Via faker | Frontend/React tests; replaces backend dependency entirely |
+| Playwright `test.extend()` | Full (TypeScript) | Fixture scopes (`test`/`worker`) | n/a | Via faker | E2E tests; composable lifecycle, guaranteed teardown |
 | Plain builder class | Full | Manual | Manual | Manual | Zero-dependency projects; team-readable, no abstraction overhead |
 
 **Decision guide:**
@@ -508,6 +579,9 @@ Use this table to choose the right tool for your project's scale and test type.
 - Integration + DB persistence → `fishery`
 - Zod-first domain → `zod-fixture` + `fishery` for persistence
 - Need realistic locale data → any library + `@faker-js/faker`
+- E2E / Playwright suites → Playwright `test.extend()` fixtures + `fishery` for DB setup
+
+**Cross-language equivalents:** The same Object Mother + Builder patterns apply in every language. TypeScript's factory libraries map to: **factory_bot** (Ruby, DSL-based `FactoryBot.create(:user, status: :suspended)`), **FactoryBoy** (Python, class-based with `factory.LazyAttribute` for dynamic fields), **AutoFixture** (C#, reflection-based automatic property population — the C# equivalent of `zod-fixture`), and **easy-random** / **Instancio** (Java, reflection-based). If you're migrating from a Ruby or Python codebase to TypeScript, `fishery` is the closest API match to `factory_bot`, and `zod-fixture` mirrors AutoFixture's zero-maintenance approach.
 
 ---
 
@@ -778,4 +852,5 @@ it('test B', () => baseUser.withEmail('b@test.com').build()); // order-dependent
 | zod-fixture | Library | https://www.npmjs.com/package/zod-fixture | Schema-driven automatic fixture generation for Zod-first codebases |
 | msw (Mock Service Worker) | Library | https://mswjs.io/ | HTTP-layer test data for frontend suites; eliminates backend dependency |
 | Vitest worker isolation docs | Official | https://vitest.dev/config/#pool | Per-worker DB setup guide |
+| Playwright test fixtures docs | Official | https://playwright.dev/docs/test-fixtures | Composable E2E fixture lifecycle with `test.extend()` |
 | Pact.io | Official | https://docs.pact.io/ | Contract-schema-driven factory patterns for microservices |

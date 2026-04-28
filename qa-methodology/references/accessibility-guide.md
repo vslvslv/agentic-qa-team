@@ -1,5 +1,5 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 10 | score: 100/100 | date: 2026-04-26 -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 2 | score: 100/100 | date: 2026-04-27 -->
 <!-- sources: training knowledge (WebFetch/WebSearch unavailable in this environment) -->
 
 ## Core Principles (POUR)
@@ -629,6 +629,160 @@ describe('AccordionItem accessibility', () => {
 }
 ```
 
+### SPA Focus Management After Route Changes  [community]
+
+In single-page applications using React Router, Next.js, or Vue Router, client-side navigation does not move browser focus. Screen reader users stay at the link they clicked, then hear the old page content re-read. This is one of the most common and impactful accessibility failures in modern SPAs.
+
+**Why it fails:** The browser's built-in focus management only runs on full page loads. Client-side routing swaps DOM content silently. Without intervention, focus strands at the navigation trigger while the page context has completely changed.
+
+```typescript
+// File: src/hooks/useFocusOnRouteChange.ts
+// Custom hook: moves focus to the page's h1 heading after each route change.
+// Attach to your router's location/pathname change event.
+import { useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
+
+/**
+ * After each route change, focus the first <h1> on the new page.
+ * The <h1> must have tabIndex={-1} to accept programmatic focus without
+ * entering the normal tab sequence.
+ *
+ * Why <h1>? Screen reader users can then immediately read the page title
+ * via their normal reading flow. Focusing <main> is acceptable but h1 is
+ * more specific to the content change.
+ */
+export function useFocusOnRouteChange(): void {
+  const { pathname } = useLocation();
+  const prevPathname = useRef(pathname);
+
+  useEffect(() => {
+    if (prevPathname.current === pathname) return;
+    prevPathname.current = pathname;
+
+    // Allow the DOM to settle after the route renders
+    const raf = requestAnimationFrame(() => {
+      const heading = document.querySelector<HTMLElement>('h1[tabindex="-1"]');
+      if (heading) {
+        heading.focus({ preventScroll: false });
+      } else {
+        // Fallback: focus main content region
+        const main = document.querySelector<HTMLElement>('main[tabindex="-1"]');
+        main?.focus({ preventScroll: false });
+      }
+    });
+
+    return () => cancelAnimationFrame(raf);
+  }, [pathname]);
+}
+```
+
+```typescript
+// File: e2e/accessibility/spa-focus.spec.ts
+// Verify focus management after client-side navigation
+import { test, expect } from '@playwright/test';
+
+test.describe('SPA focus management', () => {
+  test('focus moves to h1 heading after navigating to /about', async ({ page }) => {
+    await page.goto('/');
+    // Trigger client-side navigation
+    await page.click('a[href="/about"]');
+    await page.waitForURL('/about');
+
+    // The focused element should be the h1 on the new page
+    const focusedTag = await page.evaluate(() => document.activeElement?.tagName?.toLowerCase());
+    const focusedText = await page.evaluate(() => document.activeElement?.textContent?.trim());
+
+    expect(focusedTag).toBe('h1');
+    expect(focusedText).toBeTruthy();
+  });
+
+  test('focus does not strand at clicked link after navigation', async ({ page }) => {
+    await page.goto('/');
+    await page.click('a[href="/about"]');
+    await page.waitForURL('/about');
+
+    const focusedHref = await page.evaluate(
+      () => (document.activeElement as HTMLAnchorElement)?.href
+    );
+    // Focus must not remain on the nav link
+    expect(focusedHref).not.toContain('/about');
+  });
+});
+```
+
+### prefers-reduced-motion Testing
+
+WCAG 2.1 SC 2.3.3 (AAA) and WCAG 2.2 SC 2.3.3 require that animations triggered by interaction can be disabled. Beyond AAA, `prefers-reduced-motion` is widely considered a best practice and is referenced in WCAG 2.1 Understanding docs. Many users with vestibular disorders, epilepsy, and attention disorders rely on it.
+
+**Why test this:** Animation-heavy UIs built without `prefers-reduced-motion` support actively harm users with vestibular disorders. Testing ensures that CSS and JavaScript animations respect the OS-level accessibility preference.
+
+```typescript
+// File: e2e/accessibility/reduced-motion.spec.ts
+// Test that animations are suppressed when prefers-reduced-motion: reduce is active.
+// Playwright emulates the media query at the browser level.
+import { test, expect } from '@playwright/test';
+
+test.describe('prefers-reduced-motion', () => {
+  test.use({
+    // Emulate OS-level reduced motion preference for all tests in this block
+    reducedMotion: 'reduce',
+  });
+
+  test('page-transition animation is suppressed', async ({ page }) => {
+    await page.goto('/');
+
+    // Verify that the page-transition container has no animation duration
+    // when reduced motion is preferred
+    const animationDuration = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="page-transition"]');
+      return el ? getComputedStyle(el).animationDuration : null;
+    });
+
+    // CSS: @media (prefers-reduced-motion: reduce) { animation-duration: 0.001ms }
+    // 0.001ms rounds to "0s" in getComputedStyle; either is acceptable
+    expect(['0s', '0.001s', '0.001ms']).toContain(animationDuration ?? '0s');
+  });
+
+  test('carousel auto-play is disabled', async ({ page }) => {
+    await page.goto('/');
+    const initialSlide = await page.locator('[data-testid="carousel-slide"].active').textContent();
+
+    // Wait 3 seconds — slide should not advance if auto-play respects prefers-reduced-motion
+    await page.waitForTimeout(3000);
+    const currentSlide = await page.locator('[data-testid="carousel-slide"].active').textContent();
+    expect(currentSlide).toBe(initialSlide);
+  });
+});
+
+test.describe('without reduced-motion preference (baseline)', () => {
+  test.use({ reducedMotion: 'no-preference' });
+
+  test('carousel auto-play is active by default', async ({ page }) => {
+    await page.goto('/');
+    const initialSlide = await page.locator('[data-testid="carousel-slide"].active').textContent();
+    await page.waitForTimeout(4000);
+    const currentSlide = await page.locator('[data-testid="carousel-slide"].active').textContent();
+    // Slide should have advanced if auto-play is on
+    expect(currentSlide).not.toBe(initialSlide);
+  });
+});
+```
+
+**CSS implementation pattern** that these tests verify:
+```css
+/* Respect OS reduced-motion preference globally */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+```
+
 ---
 
 ## Anti-Patterns
@@ -711,6 +865,10 @@ axe-core's automated rules detect approximately **57% of WCAG 2.1 issues** (Dequ
 
 15. **[community] Positive tabIndex values break natural tab order**: `tabIndex={1}`, `tabIndex={2}` create a separate tab order that overrides natural DOM order and causes severe confusion for keyboard users navigating sequentially. Use only `tabIndex={0}` (include in tab order) or `tabIndex={-1}` (programmatic focus only).
 
+16. **[community] @testing-library query priority directly reflects accessibility**: `getByRole` is the most accessible query because it uses the accessibility tree, not the DOM. Teams that use `getByTestId` exclusively write tests that pass even when accessible names are broken — a form label can be removed and `getByTestId('email')` still finds the input. Use query priority: `getByRole` > `getByLabelText` > `getByPlaceholderText` > `getByText` > `getByTestId` (last resort only).
+
+17. **[community] axe-core minor version upgrades add new rules that break CI unexpectedly**: Deque ships new rules in minor versions of axe-core. Teams that pin `axe-core: "^4"` or `jest-axe: "^8"` find CI failing after a dependency update because a new rule fires. Best practice from axe-core's security support policy: plan a minor version upgrade every 3–5 months and treat axe rule changes as you would a lint rule change — review, fix, update the baseline.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -771,6 +929,50 @@ WCAG 2.2 (published October 2023) adds 9 new criteria at A/AA. Adoption in legal
 | 3.3.8 Accessible Authentication | AA | No cognitive function test (no distorted CAPTCHAs) required for login |
 
 **Practical impact**: 2.5.8 Target Size — many mobile navigation patterns and icon buttons are smaller than 24×24px. Check 2.4.11 Focus Appearance — many design systems use thin focus rings that will fail the new 2px + 3:1 contrast requirement.
+
+**WCAG 2.2 target size test (2.5.8)** — Playwright can measure bounding box dimensions:
+
+```typescript
+// File: e2e/accessibility/wcag22-target-size.spec.ts
+// WCAG 2.2 SC 2.5.8: all interactive targets must be ≥ 24×24 CSS pixels
+// (or have ≥ 24px spacing from adjacent targets, but testing the size is the
+//  practical first gate — spacing analysis requires custom geometry logic).
+import { test, expect } from '@playwright/test';
+
+const MINIMUM_TARGET_PX = 24;
+
+test.describe('WCAG 2.2 Target Size (2.5.8)', () => {
+  test('all interactive controls on homepage meet 24×24px minimum', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const violations = await page.evaluate((minPx) => {
+      const interactiveSelector =
+        'button, a[href], input, select, textarea, [role="button"], [role="link"], [tabindex="0"]';
+      const elements = Array.from(document.querySelectorAll<HTMLElement>(interactiveSelector));
+
+      return elements
+        .map((el) => {
+          const rect = el.getBoundingClientRect();
+          return {
+            tag: el.tagName.toLowerCase(),
+            role: el.getAttribute('role') ?? '',
+            text: (el.textContent ?? '').trim().slice(0, 40),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          };
+        })
+        .filter((el) => el.width > 0 && el.height > 0) // skip display:none
+        .filter((el) => el.width < minPx || el.height < minPx);
+    }, MINIMUM_TARGET_PX);
+
+    if (violations.length > 0) {
+      console.table(violations);
+    }
+    expect(violations).toEqual([]);
+  });
+});
+```
 
 ### Screen Reader Testing Matrix
 

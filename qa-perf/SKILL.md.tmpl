@@ -153,9 +153,12 @@ Also check the qa-refine reference guide if it exists:
 - k6: `qa-perf/references/k6-patterns.md`
   - Patterns: test type taxonomy, scenarios/executors, thresholds + abortOnFail, check(),
     setup/teardown auth, custom metrics (Trend/Rate/Counter/Gauge), handleSummary,
-    http.batch(), group(), browser module, gRPC, cookie jar, SharedArray, per-environment thresholds
-  - 14 [community] gotchas including: duplicate threshold keys, abortOnFail timing, fd limits,
-    closed-model explosive load, dropped_iterations, discardResponseBodies at scale
+    http.batch(), group(), browser module (getBy* locators), gRPC, WebSocket (k6/websockets stable),
+    cookie jar, SharedArray, CSV data with papaparse, per-environment thresholds
+  - 16 [community] gotchas including: duplicate threshold keys, abortOnFail timing, fd limits,
+    closed-model explosive load, dropped_iterations, discardResponseBodies at scale,
+    ESM import requires .js extension, k6/experimental/* deprecations in v1.x
+  - k6 v1.7.1 verified; TypeScript supported natively via esbuild (k6 v0.57+, no bundler needed)
   - See also: `qa-perf/references/k6-patterns-baseline.md` (original baseline for comparison)
 - JMeter: `qa-perf/references/jmeter-patterns.md`
 - Locust: `qa-perf/references/locust-patterns.md`

@@ -1,7 +1,7 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 10 | score: 98/100 | date: 2026-04-26 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
 
-> Generated from official k6 documentation and community sources on 2026-04-26. Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-04-27. Verified against k6 v1.7.1 (latest stable). Re-run `/qa-refine k6` to refresh.
 
 ## Core Principles
 
@@ -543,7 +543,63 @@ export default function () {
 > those methods return regular JS arrays, discarding the shared-memory benefit.
 > Perform data transformations inside the `new SharedArray(name, fn)` callback.
 
-### Custom Metrics — All Four Types
+### CSV Data with SharedArray + papaparse  [community]
+
+k6 has no built-in CSV parser. Use papaparse (via jslib.k6.io or bundled locally) inside
+a `SharedArray` constructor to load CSV test data once, shared across all VUs.
+
+```javascript
+// k6/scripts/csv-users-load.js
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { SharedArray } from "k6/data";
+import papaparse from "https://jslib.k6.io/papaparse/5.1.1/index.js";
+
+// Load and parse CSV once at init — users.csv: email,password,role
+const csvUsers = new SharedArray("csvUsers", function () {
+  const raw = open("./data/users.csv");
+  return papaparse.parse(raw, { header: true, skipEmptyLines: true }).data;
+  // Result: [{ email: "u1@test.com", password: "pass1", role: "admin" }, ...]
+});
+
+export const options = {
+  scenarios: {
+    csv_load: {
+      executor: "ramping-vus",
+      stages: [
+        { duration: "30s", target: 20 },
+        { duration: "1m",  target: 20 },
+        { duration: "15s", target: 0  },
+      ],
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<400"],
+    http_req_failed:   ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  // Use scenario.iterationInTest for unique assignment across all VUs (no collision)
+  const user = csvUsers[__VU % csvUsers.length];
+
+  const res = http.post(
+    `${BASE}/api/auth/login`,
+    JSON.stringify({ email: user.email, password: user.password }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+  check(res, { "login ok": (r) => r.status === 200 });
+  sleep(1);
+}
+```
+
+> **[community]:** k6 Cloud allocates 8 GB memory per 300 VUs. Without `SharedArray`, a 50 MB
+> CSV parsed per-VU at 300 VUs = 15 GB — test crashes silently. Always wrap CSV data in
+> `SharedArray`. Use `papaparse` from jslib.k6.io to avoid bundler setup for CSV parsing.
+
+
 
 k6 provides four metric primitives. Use the right type to get the right aggregation in thresholds.
 
@@ -685,14 +741,16 @@ export function handleSummary(data) {
 }
 ```
 
-k6 supports WebSocket load testing via two modules. The newer `k6/websockets` module
-implements the WebSocket living standard with a global event loop — prefer it over the
-legacy `k6/ws` for new scripts. The key structural difference from HTTP tests: the
-`default` function runs **once** per VU, not in a loop — the event loop drives execution.
+k6's stable WebSocket module (`k6/websockets`, stable since k6 v0.56) implements the
+WebSocket living standard with a global event loop — use it for all new scripts.
+The `k6/experimental/websockets` and legacy `k6/ws` modules are **deprecated** as of
+k6 v1.x and will be removed in a future release. The key structural difference from
+HTTP tests: the `default` function runs **once** per VU, not in a loop — the event loop
+drives execution.
 
 ```javascript
 // k6/scripts/websocket-load.js
-import { WebSocket } from "k6/experimental/websockets";
+import { WebSocket } from "k6/websockets";   // stable module — NOT k6/experimental/websockets
 import { check, sleep } from "k6";
 
 export const options = {
@@ -865,7 +923,9 @@ export default function () {
 
 k6's built-in browser module allows mixed protocol + browser tests in one script.
 Since v0.52.0 all browser APIs are **async** — always use `async/await`. Browser VUs
-are expensive (~10× memory); keep browser scenario VUs low.
+are expensive (~10× memory); keep browser scenario VUs low. As of k6 v0.54+ the browser
+module includes semantic `getBy*` locators (role, text, label, placeholder, testId)
+matching the Playwright API — prefer these over CSS/XPath selectors.
 
 ```javascript
 // k6/scripts/browser-smoke.js
@@ -896,10 +956,14 @@ export default async function () {
   try {
     await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/`);
 
-    // Wait for key element and assert content
-    await page.waitForSelector("h1");
-    const heading = await page.locator("h1").textContent();
-    check(heading, { "heading not empty": (h) => h && h.length > 0 });
+    // Semantic locators (k6 v0.54+ / getBy* API matches Playwright)
+    const heading = page.getByRole("heading", { level: 1 });
+    await heading.waitFor();
+    const headingText = await heading.textContent();
+    check(headingText, { "heading not empty": (h) => h && h.length > 0 });
+
+    // Route interception — stub external APIs to isolate performance
+    await page.route("**/api/analytics*", (route) => route.abort());
 
     // Screenshot on each iteration for visual diff
     await page.screenshot({ path: `results/screenshot-${__ITER}.png` });
@@ -1285,6 +1349,34 @@ export const options = {
 };
 ```
 
+### 15. Local ESM imports require explicit `.js` extension  [community]
+**What:** Teams migrating from Node.js write `import { helper } from "./lib/auth"` — this
+works in Node but silently fails in k6 with "cannot find module" or resolves to the wrong file.
+**WHY:** k6 uses browser-style ESM resolution, not Node.js CJS resolution. Extensionless
+imports are not auto-resolved to `.js` — the full filename is required.
+**Fix:** Always include the `.js` extension in local imports:
+```javascript
+// ❌ Node-style — fails in k6
+import { authParams } from "./lib/auth";
+
+// ✓ k6/browser-style — works
+import { authParams } from "./lib/auth.js";
+```
+Also: k6 does not support bare npm package imports (e.g., `import _ from "lodash"`) —
+bundle npm dependencies with webpack/rollup first and import the bundle.
+
+### 16. `k6/experimental/*` modules removed / deprecated in k6 v1.x  [community]
+**What:** Scripts using `k6/experimental/websockets`, `k6/experimental/redis`, or
+`k6/experimental/tracing` emit deprecation warnings in k6 v1.x and will break when
+those namespaces are removed.
+**WHY:** "Experimental" modules are graduation paths to stable APIs. Once graduated,
+the `experimental/` path is deprecated. Continuing to use them creates a silent migration
+debt that surfaces as breakage during k6 upgrades.
+**Fix:** Audit imports on every k6 major version bump. Migrations to stable equivalents:
+- `k6/experimental/websockets` → `k6/websockets`
+- `k6/experimental/redis` → deprecated entirely (no stable replacement yet; use xk6-redis extension)
+- `k6/experimental/tracing` → use OpenTelemetry output (`--out opentelemetry`) instead
+
 ---
 
 ## Key APIs
@@ -1501,6 +1593,10 @@ k6 run --out influxdb=http://localhost:8086/k6 k6/scripts/load.js
 K6_PROMETHEUS_RW_SERVER_URL=http://localhost:9090/api/v1/write \
   k6 run --out experimental-prometheus-rw k6/scripts/load.js
 
+# OpenTelemetry (stable as of k6 v1.3) — OTLP HTTP or gRPC
+K6_OTEL_GRPC_EXPORTER_ENDPOINT=localhost:4317 \
+  k6 run --out opentelemetry k6/scripts/load.js
+
 # Datadog — add K6_STATSD_ENABLE_TAGS=true for tag support
 K6_STATSD_ADDR=localhost:8125 \
   k6 run --out statsd k6/scripts/load.js
@@ -1532,21 +1628,30 @@ k6/
     soak.js               # long-running stability
     breakpoint.js         # ramping-arrival-rate — find max RPS
     mixed-load.js         # multi-scenario with scenarios API
-    websocket-load.js     # WebSocket load pattern
+    websocket-load.js     # WebSocket load pattern (uses k6/websockets stable module)
     browser-smoke.js      # browser module UI smoke test
     grpc-load.js          # gRPC load test
+    csv-users-load.js     # CSV-parameterized load test
   lib/
     auth.js               # shared setup() / getToken() helpers
     thresholds.js         # reusable threshold presets
-    data.js               # SharedArray test data loaders
+    data.js               # SharedArray test data loaders (JSON + CSV)
     retry.js              # httpGetWithRetry / httpPostWithRetry
     session.js            # cookie jar session helpers
   data/
     users.json            # parameterized test users (gitignored if sensitive)
+    users.csv             # CSV user list — loaded via papaparse + SharedArray
     products.json         # product SKUs for checkout tests
   proto/
     items.proto           # .proto files for gRPC tests
   dist/                   # webpack bundles (gitignored)
   results/                # .json / .csv summary exports (gitignored)
   webpack.config.js       # optional — only needed for npm dependency bundling
+  tsconfig.json           # optional — k6 v0.57+ runs .ts files natively via esbuild
 ```
+
+> **TypeScript note (k6 v0.57+):** k6 now runs `.ts` files directly — no bundler required
+> for type annotations. Run `k6 run script.ts` directly. Note: k6's TypeScript support is
+> transpilation-only (esbuild strips types but does NOT type-check). For compile-time
+> safety, add a `tsc --noEmit` pre-check step in CI before running k6.
+
