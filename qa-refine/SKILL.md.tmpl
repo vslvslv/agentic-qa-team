@@ -71,8 +71,8 @@ Before fetching any docs, determine which language to use for code examples:
    - `requirements.txt`, `pytest.ini`, `conftest.py`, `pyproject.toml` → **Python**
    - `*.csproj` or `*.sln` → **C#**
    - `Gemfile` or `*.gemspec` → **Ruby**
-   - `package.json` with `typescript` or `ts-jest` dependency → **TypeScript**
-   - `package.json` without TypeScript → **JavaScript**
+   - `tsconfig.json` present, or `package.json` has `typescript`, `ts-jest`, or `@types/node`, or `.ts`/`.tsx` files found in `src/` → **TypeScript**
+   - `package.json` without TypeScript signals → **JavaScript**
 
 2. If the user explicitly names a language ("in Java", "Python examples"), use that.
 
@@ -80,8 +80,8 @@ Before fetching any docs, determine which language to use for code examples:
    (TypeScript / JavaScript / Java / Python / C# / Ruby / other)"
 
 4. **Exceptions** — these tools are single-language regardless of project signals:
-   - k6: always **JavaScript**
-   - Detox: always **JavaScript**
+   - k6: always **JavaScript/TypeScript** (official docs use JS examples; TS supported via bundler)
+   - Detox: always **JavaScript/TypeScript**
    - WebDriverIO: always **TypeScript/JavaScript**
    - Cypress: always **TypeScript/JavaScript**
    - Locust: always **Python**
@@ -163,6 +163,36 @@ EOF
 After fetching (by either method), synthesize the extracted text against the prompt above.
 If both methods fail, synthesize from training knowledge and note the source in the file header.
 
+### Existing reference files
+
+Read the file for the current tool + language combination **before fetching** to extend
+prior work rather than duplicate it.
+
+| Tool | Language | File |
+|------|----------|------|
+| Playwright | TypeScript | `qa-web/references/playwright-patterns.md` |
+| Playwright | TypeScript (baseline) | `qa-web/references/playwright-patterns-baseline.md` |
+| Playwright | C# | `qa-web/references/playwright-patterns-csharp.md` |
+| Cypress | TypeScript / JavaScript | `qa-web/references/cypress-patterns.md` |
+| Selenium | TypeScript | `qa-web/references/selenium-patterns.md` |
+| k6 | JavaScript | `qa-perf/references/k6-patterns.md` |
+| k6 | JavaScript (baseline) | `qa-perf/references/k6-patterns-baseline.md` |
+| JMeter | (XML / CLI) | `qa-perf/references/jmeter-patterns.md` |
+| Locust | Python | `qa-perf/references/locust-patterns.md` |
+| NBomber | C# | `qa-perf/references/nbomber-patterns.md` |
+| Detox | JavaScript / TypeScript | `qa-mobile/references/detox-patterns.md` |
+| Detox | JavaScript / TypeScript (baseline) | `qa-mobile/references/detox-patterns-baseline.md` |
+| Appium / WDIO | TypeScript | `qa-mobile/references/appium-wdio-patterns.md` |
+| Appium | Java | `qa-mobile/references/appium-patterns-java.md` |
+| Appium | Python | `qa-mobile/references/appium-patterns-python.md` |
+| Appium | C# | `qa-mobile/references/appium-patterns-csharp.md` |
+| Maestro | YAML | `qa-mobile/references/maestro-patterns.md` |
+| API testing | TypeScript | `qa-api/references/api-patterns-typescript.md` |
+| API testing | Java | `qa-api/references/api-patterns-java.md` |
+| API testing | Python | `qa-api/references/api-patterns-python.md` |
+| API testing | C# (RestSharp or HttpClient) | `qa-api/references/api-patterns-csharp.md` |
+| API testing | Ruby | `qa-api/references/api-patterns-ruby.md` |
+
 **Playwright — URL set depends on TARGET_LANG:**
 
 | Language | Base URL prefix |
@@ -175,7 +205,7 @@ If both methods fail, synthesize from training knowledge and note the source in 
 Pages to fetch (append to base URL):
 `best-practices`, `pom`, `locators`, `test-fixtures`, `test-assertions`, `api-testing`, `network`, `auth`, `release-notes`, `test-retries`, `trace-viewer`, `test-components`
 
-**See also:** `qa-web/references/playwright-patterns.md` — TypeScript reference with POM, fixture-based auth, locator rank, web-first assertions, API request context, network mocking, soft assertions, test sharding, component testing, aria snapshots, locator.describe(), failOnFlakyTests, per-project workers, async disposables, Shadow DOM traversal, CHIPS cookies, trace modes, testConfig options (v1.45–v1.59 coverage).
+**See also:** `qa-web/references/playwright-patterns.md` (TypeScript) and `qa-web/references/playwright-patterns-csharp.md` (C#) — see reference files table above.
 
 **k6 (JS only):**
 - `https://grafana.com/docs/k6/latest/using-k6/best-practices/`
@@ -209,18 +239,22 @@ Pages to fetch (append to base URL):
 - `https://docs.cypress.io/guides/end-to-end-testing/testing-strategies`
 - `https://docs.cypress.io/guides/component-testing/overview`
 
-**Selenium — URL set depends on TARGET_LANG:**
+**Selenium — language-independent docs (fetch for all `TARGET_LANG`):**
+- `https://www.selenium.dev/documentation/webdriver/`
+- `https://www.selenium.dev/documentation/test_practices/`
+- `https://www.selenium.dev/documentation/webdriver/waits/`
+- `https://www.selenium.dev/documentation/webdriver/elements/finders/`
 
-| Language | Docs |
-|----------|------|
-| TypeScript / JavaScript | `https://www.selenium.dev/documentation/webdriver/`, `https://www.selenium.dev/documentation/test_practices/` |
-| Java | `https://www.selenium.dev/documentation/webdriver/`, `https://www.selenium.dev/documentation/test_practices/`, `https://github.com/SeleniumHQ/seleniumhq.github.io/tree/trunk/examples/java` |
-| Python | `https://www.selenium.dev/documentation/webdriver/`, `https://selenium-python.readthedocs.io/` |
-| C# | `https://www.selenium.dev/documentation/webdriver/`, `https://www.selenium.dev/documentation/test_practices/` |
-| Ruby | `https://www.selenium.dev/documentation/webdriver/`, `https://github.com/SeleniumHQ/selenium/tree/trunk/rb` |
+**Selenium — language-specific additional sources:**
 
-- `https://www.selenium.dev/documentation/webdriver/waits/` (all languages)
-- `https://www.selenium.dev/documentation/webdriver/elements/finders/` (all languages)
+| Language | Additional source |
+|----------|-------------------|
+| Java | `https://github.com/SeleniumHQ/seleniumhq.github.io/tree/trunk/examples/java` |
+| Python | `https://selenium-python.readthedocs.io/` |
+| Ruby | `https://github.com/SeleniumHQ/selenium/tree/trunk/rb` |
+| TypeScript / JavaScript / C# | *(selenium.dev docs are sufficient)* |
+
+**See also:** `qa-web/references/selenium-patterns.md` (TypeScript) — see reference files table above.
 
 **JMeter:**
 - `https://jmeter.apache.org/usermanual/get-started.html`
@@ -258,52 +292,53 @@ Run **in parallel with Phase 1a**. Prompt for community fetches:
 - `https://github.com/mxschmitt/awesome-playwright`
 - `https://github.com/microsoft/playwright-examples`
 - `https://github.com/checkly/playwright-examples`
-- WebSearch: `playwright best practices production scale {TARGET_LANG} 2025`
+- WebSearch: `playwright best practices production scale {TARGET_LANG} 2026`
 - WebSearch: `playwright flaky tests root causes solutions`
 
 **k6 — community:**
 - `https://github.com/grafana/awesome-k6`
 - `https://github.com/grafana/k6/tree/master/examples`
-- WebSearch: `k6 load testing production tips CI 2025`
+- WebSearch: `k6 load testing production tips CI 2026`
 
 **Detox — community:**
 - `https://github.com/wix/Detox/tree/master/examples`
-- WebSearch: `detox CI flaky tests solutions react native 2025`
+- WebSearch: `detox CI flaky tests solutions react native 2026`
 
 **Appium / WebDriverIO — community:**
 - `https://github.com/webdriverio/awesome-webdriverio`
 - `https://github.com/saikrishna321/awesome-appium`
-- WebSearch: `appium webdriverio mobile testing best practices {TARGET_LANG} 2025`
+- WebSearch: `appium webdriverio mobile testing best practices {TARGET_LANG} 2026`
 
 **Cypress — community:**
 - `https://github.com/cypress-io/awesome-cypress`
 - `https://github.com/cypress-io/cypress-realworld-app` (reference implementation)
-- WebSearch: `cypress best practices production scale 2025`
-- WebSearch: `cypress flaky tests solutions CI 2025`
+- WebSearch: `cypress best practices production scale 2026`
+- WebSearch: `cypress flaky tests solutions CI 2026`
 
 **Selenium — community:**
 - `https://github.com/SeleniumHQ/selenium/tree/trunk/examples`
-- WebSearch: `selenium webdriver best practices {TARGET_LANG} 2025`
-- WebSearch: `selenium page object model production pitfalls 2025`
+- WebSearch: `selenium webdriver best practices {TARGET_LANG} 2026`
+- WebSearch: `selenium page object model production pitfalls 2026`
 
 **JMeter — community:**
 - `https://github.com/abstracta/jmeter-java-dsl`
-- WebSearch: `jmeter load testing best practices CI 2025`
-- WebSearch: `jmeter performance test gotchas production 2025`
+- WebSearch: `jmeter load testing best practices CI 2026`
+- WebSearch: `jmeter performance test gotchas production 2026`
 
 **Locust — community:**
 - `https://github.com/locustio/locust/tree/master/examples`
-- WebSearch: `locust load testing production tips CI 2025`
-- WebSearch: `locust python performance testing patterns 2025`
+- WebSearch: `locust load testing production tips CI 2026`
+- WebSearch: `locust python performance testing patterns 2026`
 
 **Maestro — community:**
 - `https://github.com/mobile-dev-inc/maestro/tree/main/examples`
-- WebSearch: `maestro mobile testing best practices 2025`
-- WebSearch: `maestro CI integration react native 2025`
+- WebSearch: `maestro mobile testing best practices 2026`
+- WebSearch: `maestro CI integration react native 2026`
 
-**For non-JS/TS languages, also fetch the language-specific guide** from
-`lang-refine/references/<TARGET_LANG>-patterns.md` if it exists — it provides
-language idioms that test code examples should follow.
+**For all languages, also check** `lang-refine/references/<TARGET_LANG>-patterns.md` if it
+exists — it provides language idioms that test code examples should follow. Available:
+`typescript-patterns.md`, `javascript-patterns.md`, `java-patterns.md`, `python-patterns.md`,
+`csharp-patterns.md`, `ruby-patterns.md`, `kotlin-patterns.md`.
 
 ---
 
@@ -321,13 +356,14 @@ iteration 0 even if imperfect — the loop improves it.
 | k6 | `qa-perf/references/k6-patterns.md` |
 | JMeter | `qa-perf/references/jmeter-patterns.md` |
 | Locust | `qa-perf/references/locust-patterns.md` |
+| NBomber | `qa-perf/references/nbomber-patterns.md` |
 | Detox | `qa-mobile/references/detox-patterns.md` |
 | Appium / WebDriverIO | `qa-mobile/references/appium-wdio-patterns-<lang>.md` (or base name for TS) |
 | Maestro | `qa-mobile/references/maestro-patterns.md` |
 
-For TypeScript/JavaScript (the default), use the existing base filename with no suffix.
-For other languages, append `-java`, `-python`, `-csharp`, `-ruby` etc. so guides
-coexist without overwriting each other.
+The existing base-name files (e.g. `playwright-patterns.md`) are the TypeScript references.
+For all other languages, append the language suffix (e.g. `-csharp`, `-java`, `-python`,
+`-ruby`, `-javascript`) so guides coexist without overwriting each other.
 
 **Document structure:**
 ```
@@ -392,7 +428,7 @@ Repeat until: **score ≥ 80**, OR **iterations ≥ 3**, OR **delta < 5**.
 |-----|-------------|
 | Missing official pattern | Language-specific docs from Phase 1a |
 | Thin code examples for TARGET_LANG | Official example repo for that tool+language |
-| Missing CI quirk | WebSearch: `"<tool> CI <issue> <TARGET_LANG> 2025"` |
+| Missing CI quirk | WebSearch: `"<tool> CI <issue> <TARGET_LANG> 2026"` |
 | Thin community signal | WebSearch: `"<tool> production gotchas <TARGET_LANG>"` |
 | Language idiom mismatch | `lang-refine/references/<TARGET_LANG>-patterns.md` |
 

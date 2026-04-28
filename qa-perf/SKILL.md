@@ -27,13 +27,21 @@ _TMP="${TEMP:-${TMP:-/tmp}}"
 _QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-perf 2>/dev/null)" 2>/dev/null) || true
 [ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
   _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-bash "$_QA_ROOT/bin/qa-team-precheck"
+_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
+  || echo "UPDATE_CHECK_FAILED: not found" )
+echo "VERSION_STATUS: $_QA_VER"
+_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
+_QA_SKIP_ASK=0
+if [ -f "$_QA_ASK_COOLDOWN" ]; then
+  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
+  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
+fi
 ```
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_PROMPT` is `0`, use `AskUserQuestion`:
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
 - Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
 - Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_TMP/.qa-update-asked"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
+- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
 - If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
 - Continue regardless of choice.
 
@@ -50,6 +58,11 @@ echo "BRANCH: $_BRANCH"
 # Detect base URLs
 _API_URL=$(grep -r "API_URL\|apiUrl\|BASE_URL" .env .env.local .env.test 2>/dev/null \
   | grep -o 'http[s]*://[^"'"'"' ]*' | head -1)
+# .NET: launchSettings.json / appsettings.json
+[ -z "$_API_URL" ] && _API_URL=$(
+  find . -name "launchSettings.json" ! -path "*/obj/*" 2>/dev/null | head -1 | \
+  xargs grep -o '"applicationUrl"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | \
+  grep -o 'http[s]*://[^;",]*' | head -1)
 _API_URL="${_API_URL:-http://localhost:3001}"
 _WEB_URL="${WEB_URL:-http://localhost:3000}"
 echo "API_URL: $_API_URL"
@@ -60,6 +73,14 @@ for url in "$_API_URL" "$_WEB_URL"; do
   status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
   echo "HEALTH $url: $status"
 done
+
+# Target language detection
+_TARGET_LANG="typescript"
+find . -name "pom.xml" ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="java"
+find . \( -name "requirements.txt" -o -name "pyproject.toml" \) \
+  ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="python"
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="csharp"
+echo "TARGET_LANG: $_TARGET_LANG"
 
 # --- PERF TOOL DETECTION ---
 echo "--- K6 ---"
@@ -82,33 +103,61 @@ which locust 2>/dev/null && _LOCUST=1
 find . -name "locustfile.py" -o -name "locust*.py" ! -path "*/node_modules/*" 2>/dev/null | head -3 | grep -q '.' && _LOCUST=1
 echo "LOCUST_PRESENT: $_LOCUST"
 
+echo "--- NBOMBER ---"
+_NBOMBER=0
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -il "NBomber" 2>/dev/null | grep -q '.' && _NBOMBER=1
+echo "NBOMBER_PRESENT: $_NBOMBER"
+
 # Existing perf test files
 echo "--- EXISTING PERF TESTS ---"
 find . \( -name "*.k6.js" -o -name "*.k6.ts" -o -name "load-test*.js" \
-  -o -name "locustfile.py" -o -name "*.jmx" -o -name "*perf*.spec.ts" \) \
-  ! -path "*/node_modules/*" 2>/dev/null | head -10
+  -o -name "locustfile.py" -o -name "*.jmx" -o -name "*perf*.spec.ts" \
+  -o -name "*LoadTest*.cs" -o -name "*PerfTest*.cs" \) \
+  ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | head -10
 
 # Detect route files to identify endpoints
 echo "--- ENDPOINTS SAMPLE ---"
 grep -r "router\.\(get\|post\|put\|patch\|delete\)" --include="*.ts" --include="*.js" \
   ! -path "*/node_modules/*" 2>/dev/null | grep -o '"[/][^"]*"' | sort -u | head -20
+# C# Controllers
+find . -path "*/Controllers/*.cs" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -h "\[HttpGet\]\|\[HttpPost\]\|\[Route\]" 2>/dev/null | \
+  grep -o '"[^"]*"' | sort -u | head -20
+
+# --- MULTI-REPO SUPPORT ---
+# Set QA_EXTRA_PATHS (space-separated absolute paths) to scan perf tests in other repos
+# e.g.: export QA_EXTRA_PATHS="/path/to/perf-tests-repo"
+if [ -n "$QA_EXTRA_PATHS" ]; then
+  echo "MULTI_REPO_PATHS: $QA_EXTRA_PATHS"
+  for _qr in $QA_EXTRA_PATHS; do
+    _extra=$(find "$_qr" \( \
+      -name "*.k6.js" -o -name "*.k6.ts" -o -name "*.jmx" \
+      -o -name "locustfile.py" -o -name "*LoadTest*.cs" -o -name "*PerfTest*.cs" \) \
+      ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | wc -l | tr -d ' ')
+    echo "EXTRA_REPO $(basename "$_qr"): $_extra perf test files — $_qr"
+  done
+fi
 ```
+
+If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
 
 ### Tool Selection Gate
 
-Count detected tools from `K6_PRESENT`, `JMETER_PRESENT`, `LOCUST_PRESENT`.
+Count detected tools from `K6_PRESENT`, `JMETER_PRESENT`, `LOCUST_PRESENT`, `NBOMBER_PRESENT`.
 
 **Exactly one detected** → use that tool automatically. Set `_PERF_TOOL` to `k6`,
-`jmeter`, or `locust`.
+`jmeter`, `locust`, or `nbomber`.
 
-**Zero detected** → ask:
+**Zero detected** → if `_TARGET_LANG=csharp`, recommend NBomber first; otherwise ask:
 > "No performance testing tool detected. Which would you like to use?
-> 1. **k6** (recommended — JS-native, CI-friendly, Grafana ecosystem, fast feedback)
-> 2. **JMeter** (best if you have existing .jmx plans or need a Java/GUI-based workflow)
-> 3. **Locust** (ideal for Python teams — readable Python DSL, easy to extend)
+> 1. **k6** (recommended for JS/TS — CI-friendly, Grafana ecosystem, fast feedback)
+> 2. **NBomber** (recommended for C# — native .NET, integrates with NUnit/xUnit, fluent API) ← suggest first if `_TARGET_LANG=csharp`
+> 3. **JMeter** (best if you have existing .jmx plans or need a Java/GUI-based workflow)
+> 4. **Locust** (ideal for Python teams — readable Python DSL, easy to extend)
 >
-> Recommendation: k6 for new projects; JMeter if .jmx files exist or Java CI is required;
-> Locust for Python-heavy stacks."
+> Recommendation: k6 for JS/TS stacks; NBomber for .NET/C# stacks; JMeter if .jmx files
+> exist or Java CI is required; Locust for Python-heavy stacks."
 
 **Two or more detected** → list which were found, ask which to use for this run.
 
@@ -141,19 +190,24 @@ Read the tool-specific patterns file for the selected `_PERF_TOOL`:
 Read qa-perf/tools/<_PERF_TOOL>.md
 ```
 
-Also check the qa-refine reference guide if it exists:
-- k6: `qa-perf/references/k6-patterns.md`
-  - Patterns: test type taxonomy, scenarios/executors, thresholds + abortOnFail, check(),
-    setup/teardown auth, custom metrics (Trend/Rate/Counter/Gauge), handleSummary,
-    http.batch(), group(), browser module (getBy* locators), gRPC, WebSocket (k6/websockets stable),
-    cookie jar, SharedArray, CSV data with papaparse, per-environment thresholds
-  - 16 [community] gotchas including: duplicate threshold keys, abortOnFail timing, fd limits,
-    closed-model explosive load, dropped_iterations, discardResponseBodies at scale,
-    ESM import requires .js extension, k6/experimental/* deprecations in v1.x
-  - k6 v1.7.1 verified; TypeScript supported natively via esbuild (k6 v0.57+, no bundler needed)
-  - See also: `qa-perf/references/k6-patterns-baseline.md` (original baseline for comparison)
-- JMeter: `qa-perf/references/jmeter-patterns.md`
-- Locust: `qa-perf/references/locust-patterns.md`
+Also check the detailed reference guide:
+
+**k6**:
+> Reference: [k6 patterns guide](references/k6-patterns.md)
+> Key patterns: test type taxonomy · scenarios/executors (`ramping-vus`, `constant-arrival-rate`, `ramping-arrival-rate`) · thresholds + `abortOnFail` · `check()` · `setup()`/`teardown()` auth · custom metrics (Trend/Rate/Counter/Gauge) · `handleSummary` · `http.batch()` · `group()` · browser module (getBy* locators) · gRPC · WebSocket · SharedArray · CSV data with papaparse · per-environment thresholds
+> See also: `qa-perf/references/k6-patterns-baseline.md` (original baseline for comparison)
+
+**NBomber** (C# native — use when `_TARGET_LANG=csharp`):
+> Reference: [NBomber patterns guide (C#)](references/nbomber-patterns.md)
+> Key patterns: `Scenario.Create` + `Http.CreateRequest` · `LoadSimulations` (`RampingInject`, `Inject`, `KeepConstant`, `RampingVUsers`) · `WithWarmUpDuration` · `WithThresholds` (fail on p95/error-rate) · `NBomberRunner` + `WithReportFolder` (HTML/CSV/JSON) · auth token in scenario init · `DataFeed` for parameterized data · `IStepContext` custom logging · NUnit/xUnit integration via `NBomberRunner.Run()`
+
+**JMeter**:
+> Reference: [JMeter patterns guide](references/jmeter-patterns.md)
+> Key patterns: Thread Group · HTTP Request Sampler · CSV Data Set Config · Response Assertion · Constant Timer · non-GUI mode (`-n`) · parameterization · CI integration
+
+**Locust**:
+> Reference: [Locust patterns guide](references/locust-patterns.md)
+> Key patterns: `HttpUser` · task weights · `@task` decorator · wait time strategies · `on_start` auth · environment params · headless CI mode · custom stats
 
 Generate scripts covering all **critical** endpoints from Phase 1.
 Read existing perf test files first — append missing scenarios, never overwrite.
@@ -185,59 +239,6 @@ Write report to `$_TMP/qa-perf-report.md`:
 
 ## Recommendations
 <top bottlenecks + suggested optimizations>
-
-## After this run
-- For functional correctness of the same endpoints: → `/qa-api`
-- For up-to-date load-tool patterns (k6, JMeter, Locust): → `/qa-refine`
-- After applying optimizations: re-run `/qa-perf` to confirm thresholds — history at `<repo>/.qa-team/qa-perf-*.json`
-```
-
-## Phase 4b — Machine-Readable Sidecar
-
-After the markdown report, also write `$_TMP/qa-perf-score.json`. Shares the envelope
-schema with `qa-audit-score.json`.
-
-```bash
-_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
-_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-cat > "$_TMP/qa-perf-score.json" <<JSON
-{
-  "schema_version": "1.0",
-  "skill": "qa-perf",
-  "skill_version": "<read from $_QA_ROOT/VERSION>",
-  "branch": "$_BRANCH",
-  "commit": "$_COMMIT",
-  "timestamp": "$_TIMESTAMP",
-  "status": "<pass | warn | fail>",
-  "tool": "<k6 | jmeter | locust>",
-  "target_url": "<url under test>",
-  "thresholds_met": <true | false>,
-  "threshold_violations_count": <N>,
-  "scenarios": {
-    "total": <N>,
-    "passed": <N>,
-    "failed": <N>
-  },
-  "metrics": {
-    "p50_ms": <N or null>,
-    "p95_ms": <N or null>,
-    "p99_ms": <N or null>,
-    "rps": <N or null>,
-    "error_rate_pct": <N or null>
-  },
-  "report_md_path": "$_TMP/qa-perf-report.md"
-}
-JSON
-```
-
-Validate it parses (`jq . "$_TMP/qa-perf-score.json" >/dev/null`). Use `null` (not 0)
-for metrics that were not measured — that distinction matters for trend analysis.
-
-## Phase 4c — Persist to Project History
-
-```bash
-bash "$_QA_ROOT/bin/qa-team-persist-history" "qa-perf"
 ```
 
 ## Important Rules
@@ -248,18 +249,3 @@ bash "$_QA_ROOT/bin/qa-team-persist-history" "qa-perf"
 - **Conservative defaults** — default to 50 VUs/threads max; ask user before going above 200
 - **Report even without execution** — if the tool is missing, document installation steps + the generated scripts
 - **Cleanup after writes** — if any POST creates resources, add teardown logic to delete them
-- **JSON contract is load-bearing** — `qa-perf-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by CI hooks. Field renames or removals require bumping `schema_version` and updating consumers.
-
-## Telemetry (run last)
-
-```bash
-# Per-run cost log (consumed by bin/qa-team-cost). Status is derived from the
-# just-written JSON sidecar — single source of truth. Falls back to "warn" if
-# jq is missing or the sidecar wasn't written. Valid: pass | warn | fail.
-_QA_STATUS=$(jq -r '.status // "warn"' "$_TMP/qa-perf-score.json" 2>/dev/null || echo "warn")
-case "$_QA_STATUS" in
-  pass|warn|fail) ;;
-  *) _QA_STATUS="warn" ;;
-esac
-bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-perf" "$_QA_STATUS" 2>/dev/null || true
-```

@@ -28,13 +28,21 @@ _TMP="${TEMP:-${TMP:-/tmp}}"
 _QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-mobile 2>/dev/null)" 2>/dev/null) || true
 [ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
   _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-bash "$_QA_ROOT/bin/qa-team-precheck"
+_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
+  || echo "UPDATE_CHECK_FAILED: not found" )
+echo "VERSION_STATUS: $_QA_VER"
+_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
+_QA_SKIP_ASK=0
+if [ -f "$_QA_ASK_COOLDOWN" ]; then
+  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
+  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
+fi
 ```
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_PROMPT` is `0`, use `AskUserQuestion`:
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
 - Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
 - Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_TMP/.qa-update-asked"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
+- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
 - If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
 - Continue regardless of choice.
 
@@ -73,6 +81,15 @@ find . -name "*.yaml" ! -path "*/node_modules/*" 2>/dev/null | \
   xargs grep -l "appId:\|tapOn:\|assertVisible:" 2>/dev/null | head -1 | grep -q '.' && _MAESTRO=1
 echo "MAESTRO_PRESENT: $_MAESTRO"
 
+# Target language detection (used for Appium multi-language support)
+_TARGET_LANG="typescript"
+find . -name "pom.xml" ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="java"
+find . \( -name "requirements.txt" -o -name "pyproject.toml" \) \
+  ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="python"
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="csharp"
+[ -f "Gemfile" ] && _TARGET_LANG="ruby"
+echo "TARGET_LANG: $_TARGET_LANG"
+
 # Detect available simulators/emulators
 echo "--- DEVICES ---"
 xcrun simctl list devices available 2>/dev/null | grep -E "Booted|iPhone|iPad" | head -10 || echo "iOS sim: not available"
@@ -90,7 +107,23 @@ echo "--- SCREENS ---"
 find . \( -path "*/screens/*.tsx" -o -path "*/screens/*.jsx" \
   -o -path "*/navigation/*.tsx" -o -path "*/Navigation.tsx" \) \
   ! -path "*/node_modules/*" 2>/dev/null | head -20
+
+# --- MULTI-REPO SUPPORT ---
+# Set QA_EXTRA_PATHS (space-separated absolute paths) to scan tests in other repos
+# e.g.: export QA_EXTRA_PATHS="/path/to/mobile-tests-repo"
+if [ -n "$QA_EXTRA_PATHS" ]; then
+  echo "MULTI_REPO_PATHS: $QA_EXTRA_PATHS"
+  for _qr in $QA_EXTRA_PATHS; do
+    _extra=$(find "$_qr" \( \
+      -name "*.spec.ts" -o -name "*.spec.js" -o -name "*.test.ts" -o -name "*.test.js" \
+      -o -name "*.yaml" \) \
+      ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+    echo "EXTRA_REPO $(basename "$_qr"): $_extra test files — $_qr"
+  done
+fi
 ```
+
+If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
 
 ### Tool Selection Gate
 
@@ -212,11 +245,26 @@ describe("Login Flow", () => {
 
 **Appium / WebDriverIO tests (Native iOS/Android):**
 
-> Reference: [Appium/WebDriverIO patterns guide](references/appium-wdio-patterns.md)
-> Key patterns: TypeScript POM with BasePage · accessibility-id selector hierarchy · explicit waits (waitForDisplayed/waitUntil/waitForStable) · mobile gestures (W3C Actions API) · parallel device execution with typed capabilities · auth bypass via API token + deep-link · network mock (browser.mock) · beforeEach app reset (terminateApp/activateApp) · CI Appium 2 driver installation + pin + wait-on · animation disable (Android ADB + iOS processArguments) · performance tuning (snapshotMaxDepth, elementResponseAttributes) · visual regression (@wdio/visual-service) · device farm integration (BrowserStack/Sauce Labs) · Cucumber BDD option · retry/flake quarantine
+Select the reference guide based on `_TARGET_LANG`:
+
+**TypeScript** (default):
+> Reference: [Appium/WebDriverIO patterns guide (TypeScript)](references/appium-wdio-patterns.md)
+> Key patterns: TypeScript POM with BasePage · accessibility-id selector hierarchy · explicit waits (waitForDisplayed/waitUntil/waitForStable) · mobile gestures (W3C Actions API) · parallel device execution with typed capabilities · auth bypass via API token + deep-link · network mock (browser.mock) · beforeEach app reset (terminateApp/activateApp) · CI Appium 2 driver installation + pin + wait-on · animation disable · performance tuning (snapshotMaxDepth) · visual regression (@wdio/visual-service) · device farm integration (BrowserStack/Sauce Labs) · Cucumber BDD option · retry/flake quarantine
+
+**Java**:
+> Reference: [Appium patterns guide (Java)](references/appium-patterns-java.md)
+> Key patterns: `AppiumDriver` setup (IOSDriver / AndroidDriver) · `MobileBy.AccessibilityId` selector hierarchy · explicit waits (WebDriverWait) · POM base class · `@BeforeAll`/`@AfterAll` lifecycle · W3C touch actions · capabilities via `AppiumOptions`
+
+**Python**:
+> Reference: [Appium patterns guide (Python)](references/appium-patterns-python.md)
+> Key patterns: `webdriver.Remote` with Appium · `AppiumBy.ACCESSIBILITY_ID` selector hierarchy · `WebDriverWait` + `expected_conditions` · pytest fixtures for driver lifecycle · session-scoped setup/teardown
+
+**C#**:
+> Reference: [Appium patterns guide (C#)](references/appium-patterns-csharp.md)
+> Key patterns: `IOSDriver`/`AndroidDriver` with `AppiumOptions` · `MobileBy.AccessibilityId` selector hierarchy · `WebDriverWait` explicit waits · NUnit/MSTest/xUnit base class setup · `OneTimeSetUp`/`OneTimeTearDown` driver lifecycle
 
 ```typescript
-// test/specs/login.spec.ts
+// test/specs/login.spec.ts  (TypeScript / WebDriverIO example)
 import { $, browser } from "@wdio/globals";
 import { expect } from "expect-webdriverio";
 
@@ -387,57 +435,6 @@ Write report to `$_TMP/qa-mobile-report.md`:
 
 ## Setup Notes
 <any build commands or config changes needed>
-
-## After this run
-- For up-to-date framework patterns (Detox, Appium+WDIO, Maestro): → `/qa-refine`
-- For test methodology (pyramid, isolation, naming): → `/qa-audit`
-- After applying fixes: re-run `/qa-mobile` (or `/qa-team`) — history at `<repo>/.qa-team/qa-mobile-*.json`
-```
-
-## Phase 5b — Machine-Readable Sidecar
-
-After the markdown report, also write `$_TMP/qa-mobile-score.json`. Shares the envelope
-schema with `qa-audit-score.json`.
-
-```bash
-_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
-_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-cat > "$_TMP/qa-mobile-score.json" <<JSON
-{
-  "schema_version": "1.0",
-  "skill": "qa-mobile",
-  "skill_version": "<read from $_QA_ROOT/VERSION>",
-  "branch": "$_BRANCH",
-  "commit": "$_COMMIT",
-  "timestamp": "$_TIMESTAMP",
-  "status": "<pass | warn | fail>",
-  "tool": "<detox | appium_wdio | maestro>",
-  "platform": "<ios | android | cross>",
-  "device": "<simulator/emulator/device name>",
-  "counts": {
-    "passed": <N>,
-    "failed": <N>,
-    "skipped": <N>,
-    "total": <N>
-  },
-  "screens": {
-    "discovered": <N>,
-    "tested": <N>,
-    "missing": <N>
-  },
-  "failure_count": <N>,
-  "report_md_path": "$_TMP/qa-mobile-report.md"
-}
-JSON
-```
-
-Validate it parses (`jq . "$_TMP/qa-mobile-score.json" >/dev/null`).
-
-## Phase 5c — Persist to Project History
-
-```bash
-bash "$_QA_ROOT/bin/qa-team-persist-history" "qa-mobile"
 ```
 
 ## Important Rules
@@ -451,18 +448,3 @@ bash "$_QA_ROOT/bin/qa-team-persist-history" "qa-mobile"
 - **Clean state** — use `device.launchApp({ newInstance: true })` or `launchApp` (Maestro) for fresh state
 - **Report even if build fails** — document what was blocked and why
 - **Never run `adb root` or modify system settings** on physical devices without explicit confirmation
-- **JSON contract is load-bearing** — `qa-mobile-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by CI hooks. Field renames or removals require bumping `schema_version` and updating consumers.
-
-## Telemetry (run last)
-
-```bash
-# Per-run cost log (consumed by bin/qa-team-cost). Status is derived from the
-# just-written JSON sidecar — single source of truth. Falls back to "warn" if
-# jq is missing or the sidecar wasn't written. Valid: pass | warn | fail.
-_QA_STATUS=$(jq -r '.status // "warn"' "$_TMP/qa-mobile-score.json" 2>/dev/null || echo "warn")
-case "$_QA_STATUS" in
-  pass|warn|fail) ;;
-  *) _QA_STATUS="warn" ;;
-esac
-bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-mobile" "$_QA_STATUS" 2>/dev/null || true
-```

@@ -49,13 +49,21 @@ _TMP="${TEMP:-${TMP:-/tmp}}"
 _QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-methodology-refine 2>/dev/null)" 2>/dev/null) || true
 [ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
   _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-bash "$_QA_ROOT/bin/qa-team-precheck"
+_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
+  || echo "UPDATE_CHECK_FAILED: not found" )
+echo "VERSION_STATUS: $_QA_VER"
+_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
+_QA_SKIP_ASK=0
+if [ -f "$_QA_ASK_COOLDOWN" ]; then
+  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
+  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
+fi
 ```
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_PROMPT` is `0`, use `AskUserQuestion`:
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
 - Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
 - Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_TMP/.qa-update-asked"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
+- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
 - If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
 - Continue regardless of choice.
 
@@ -86,8 +94,8 @@ If the topic is unclear after reading the user input, use `AskUserQuestion`:
 - `requirements.txt` / `pytest.ini` / `conftest.py` / `pyproject.toml` → **Python**
 - `*.csproj` / `*.sln` → **C#**
 - `Gemfile` → **Ruby**
-- `package.json` with `"typescript"` dependency → **TypeScript**
-- `package.json` without TypeScript → **JavaScript**
+- `tsconfig.json` present, or `package.json` has `typescript`, `ts-jest`, or `@types/node`, or `.ts`/`.tsx` files found in `src/` → **TypeScript**
+- `package.json` without TypeScript signals → **JavaScript**
 - Explicit user request overrides detection.
 
 Store as `TARGET_TOPIC` and `TARGET_LANG`.
@@ -168,23 +176,38 @@ EOF
 After fetching (by either method), synthesize against the prompt above.
 If both methods fail, synthesize from training knowledge and note the source in the file header.
 
-| Topic | URLs to fetch |
-|-------|--------------|
-| `test-pyramid` | `https://martinfowler.com/bliki/TestPyramid.html` · `https://martinfowler.com/articles/practical-test-pyramid.html` |
-| `tdd` | `https://martinfowler.com/bliki/TestDrivenDevelopment.html` · `https://martinfowler.com/bliki/TestFirst.html` |
-| `bdd` | `https://cucumber.io/docs/bdd/` · `https://cucumber.io/docs/gherkin/reference/` |
-| `test-isolation` | `https://martinfowler.com/bliki/UnitTest.html` · `https://xunitpatterns.com/Four%20Phase%20Test.html` |
-| `test-data` | `https://martinfowler.com/bliki/ObjectMother.html` · `https://martinfowler.com/bliki/TestDouble.html` |
-| `contract-testing` | `https://docs.pact.io/` · `https://docs.pact.io/consumer` · `https://docs.pact.io/provider` |
-| `flakiness` | `https://martinfowler.com/articles/nonDeterminism.html` · `https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html` |
-| `coverage` | `https://martinfowler.com/bliki/TestCoverage.html` · `https://martinfowler.com/bliki/TestDrivenDevelopment.html` |
-| `ci-cd-testing` | `https://martinfowler.com/articles/continuousIntegration.html` · `https://testing.googleblog.com/` |
-| `accessibility` | `https://www.deque.com/axe/axe-for-web/` · `https://www.w3.org/WAI/WCAG21/quickref/` |
-| `shift-left` | `https://www.ibm.com/topics/shift-left-testing` · `https://owasp.org/www-project-devsecops-guideline/` |
-| `exploratory` | `https://www.satisfice.com/download/session-based-test-management` · `https://www.developsense.com/blog/2009/08/testing-from-an-exploratory-perspective/` |
+### Check existing guide first
 
-If WebFetch is blocked, synthesize from training knowledge. Note the source in the
-file header.
+```bash
+ls qa-methodology/references/ 2>/dev/null || echo "No guides yet"
+```
+
+Read `qa-methodology/references/<TARGET_TOPIC>-guide.md` if it exists — **extend rather
+than replace**: note what's already covered, then use the sources below to fill gaps and
+refresh outdated sections. This avoids re-fetching content that was already aggregated.
+
+### Sources by topic
+
+Old blog posts (pre-2018) are not fetched on each run — their content is already captured
+in the generated guide files. Instead, use **WebSearch** to find current coverage of the
+same concepts; this returns up-to-date articles, case studies, and tool documentation
+that a fixed URL cannot provide. Only **actively maintained official docs** (Cucumber,
+Pact, W3C WCAG, OWASP, Deque axe-core) are fetched directly.
+
+| Topic | Sources |
+|-------|---------|
+| `test-pyramid` | WebSearch: `test pyramid unit integration e2e ratio guidance 2026` · WebSearch: `testing trophy honeycomb practical guide 2026` |
+| `tdd` | WebSearch: `test driven development red green refactor workflow 2026` · WebSearch: `TDD when not to use legacy code UI tradeoffs 2026` |
+| `bdd` | `https://cucumber.io/docs/bdd/` · `https://cucumber.io/docs/gherkin/reference/` |
+| `test-isolation` | WebSearch: `FIRST principles test isolation fast independent repeatable 2026` · WebSearch: `arrange act assert shared state test isolation 2026` |
+| `test-data` | WebSearch: `test data builder object mother factory pattern 2026` · WebSearch: `factory_bot FactoryBoy AutoFixture test data strategy 2026` |
+| `contract-testing` | `https://docs.pact.io/` · `https://docs.pact.io/consumer` · `https://docs.pact.io/provider` |
+| `flakiness` | WebSearch: `flaky test root causes timing shared state ordering 2026` · WebSearch: `flaky test quarantine strategy CI pipeline 2026` |
+| `coverage` | WebSearch: `test coverage branch mutation meaningful threshold 2026` · WebSearch: `mutation testing pitest mutmut stryker practical guide 2026` |
+| `ci-cd-testing` | WebSearch: `CI test fail-fast ordering unit integration e2e 2026` · WebSearch: `test sharding parallelization merge gate strategy 2026` |
+| `accessibility` | `https://www.deque.com/axe/axe-for-web/` · `https://www.w3.org/WAI/WCAG21/quickref/` · `https://github.com/dequelabs/axe-core` |
+| `shift-left` | `https://owasp.org/www-project-devsecops-guideline/` · WebSearch: `shift left testing SAST pre-commit developer ownership 2026` |
+| `exploratory` | WebSearch: `session-based test management SBTM charter format 2026` · WebSearch: `exploratory testing HICCUPS heuristics FEW HICCUPPS practical 2026` |
 
 ---
 
@@ -198,27 +221,28 @@ Prompt:
 **All topics — base community sources:**
 - `https://testing.googleblog.com/` (search topic keywords)
 - `https://martinfowler.com/testing/`
-- WebSearch: `"<TARGET_TOPIC>" testing best practices production 2025`
-- WebSearch: `"<TARGET_TOPIC>" testing anti-patterns real world 2025`
+- WebSearch: `"<TARGET_TOPIC>" testing best practices production 2026`
+- WebSearch: `"<TARGET_TOPIC>" testing anti-patterns real world 2026`
+- WebSearch: `"ISTQB CTFL 4.0" "<TARGET_TOPIC>" terminology 2026` (standardized terminology cross-reference — ISTQB Certified Tester Foundation Level 4.0 defines authoritative terms: "test case" vs "test", "test level" vs "test layer", "test basis" vs "test source", etc.)
 
 **Per-topic extras:**
 
 | Topic | Additional community sources |
 |-------|------------------------------|
-| `test-pyramid` | `https://kentcdodds.com/blog/write-tests` · WebSearch: `test pyramid vs trophy practical 2025` |
-| `tdd` | WebSearch: `TDD does it work production experience 2025` · `TDD false positives legacy code` |
-| `bdd` | WebSearch: `BDD step definition bloat living documentation pitfalls 2025` |
-| `test-isolation` | WebSearch: `test isolation shared state flakiness root causes 2025` |
-| `test-data` | WebSearch: `test data factory pattern production tradeoffs 2025` |
-| `contract-testing` | `https://github.com/pact-foundation/pact-js` README · WebSearch: `consumer-driven contracts real world adoption 2025` |
-| `flakiness` | WebSearch: `flaky tests quarantine strategy CI pipeline 2025` · `flaky tests root causes detection 2025` |
-| `coverage` | WebSearch: `100% test coverage harmful false confidence 2025` · `mutation testing pitest mutmut stryker production 2025` |
-| `ci-cd-testing` | WebSearch: `test parallelization sharding monorepo CI strategy 2025` |
-| `accessibility` | `https://github.com/dequelabs/axe-core` README · WebSearch: `axe-core WCAG automated testing limitations 2025` |
-| `shift-left` | WebSearch: `shift left testing developer experience cost 2025` |
-| `exploratory` | WebSearch: `exploratory testing session-based heuristics FEW HICCUPS 2025` |
+| `test-pyramid` | `https://kentcdodds.com/blog/write-tests` · WebSearch: `test pyramid vs trophy practical 2026` |
+| `tdd` | WebSearch: `TDD does it work production experience 2026` · `TDD false positives legacy code` |
+| `bdd` | WebSearch: `BDD step definition bloat living documentation pitfalls 2026` |
+| `test-isolation` | WebSearch: `test isolation shared state flakiness root causes 2026` |
+| `test-data` | WebSearch: `test data factory pattern production tradeoffs 2026` |
+| `contract-testing` | `https://github.com/pact-foundation/pact-js` README · WebSearch: `consumer-driven contracts real world adoption 2026` |
+| `flakiness` | WebSearch: `flaky tests quarantine strategy CI pipeline 2026` · `flaky tests root causes detection 2026` |
+| `coverage` | WebSearch: `100% test coverage harmful false confidence 2026` · `mutation testing pitest mutmut stryker production 2026` |
+| `ci-cd-testing` | WebSearch: `test parallelization sharding monorepo CI strategy 2026` |
+| `accessibility` | `https://github.com/dequelabs/axe-core` README · WebSearch: `axe-core WCAG automated testing limitations 2026` |
+| `shift-left` | WebSearch: `shift left testing developer experience cost 2026` |
+| `exploratory` | WebSearch: `exploratory testing session-based heuristics FEW HICCUPS 2026` |
 
-**For non-JS/TS languages**, read `lang-refine/references/<TARGET_LANG>-patterns.md` if it
+**For all languages**, read `lang-refine/references/<TARGET_LANG>-patterns.md` if it
 exists — use it to make code examples idiomatic for TARGET_LANG.
 
 **If WebSearch is unavailable** and WebFetch is blocked, use the `_fetch_text` bash
@@ -273,6 +297,12 @@ All code examples must use actual TARGET_LANG syntax and APIs. Never use TypeScr
 examples for Java output, etc. If a concept has no code (e.g., exploratory testing
 charters), use YAML/pseudo-structured text instead.
 
+Use **ISTQB CTFL 4.0 standardized terminology** throughout the guide. Key terms: "test case"
+(not "test"), "test level" (not "test layer"), "test basis" (not "test source"), "test suite"
+(not "test set"), "test object" (not "thing under test"), "test condition" (not "test
+scenario" in the pyramid context), "defect" (not "bug" or "error" — unless quoting tools).
+This ensures guides remain consistent with industry certifications and onboarding materials.
+
 ---
 
 ## Phase 3 — Score the draft
@@ -299,7 +329,7 @@ Repeat until: **score ≥ 80**, OR **iterations ≥ 3**, OR **delta < 5**.
 | Missing core concept | Phase 1a official URL for this topic |
 | Thin code examples | Official example repo or lang-refine reference |
 | Missing tradeoff | WebSearch: `<topic> when not to use costs tradeoffs` |
-| Thin community signal | WebSearch: `<topic> production gotchas lessons learned 2025` |
+| Thin community signal | WebSearch: `<topic> production gotchas lessons learned 2026` |
 | Language idiom mismatch | `lang-refine/references/<TARGET_LANG>-patterns.md` |
 
 ### 4c. Rewrite only weak sections (Edit tool).
@@ -348,7 +378,4 @@ Used by: /qa-audit (reads qa-methodology/references/ for enriched recommendation
 ~/.claude/skills/gstack/bin/gstack-timeline-log \
   '{"skill":"qa-methodology-refine","event":"completed","topic":"'"$TARGET_TOPIC"'","lang":"'"$TARGET_LANG"'","date":"'"$(date +%Y-%m-%d)"'"}' \
   2>/dev/null || true
-
-# Per-run cost log (consumed by bin/qa-team-cost).
-bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-methodology-refine" "pass" 2>/dev/null || true
 ```

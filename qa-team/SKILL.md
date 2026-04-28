@@ -26,13 +26,21 @@ _TMP="${TEMP:-${TMP:-/tmp}}"
 _QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-team 2>/dev/null)" 2>/dev/null) || true
 [ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
   _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-bash "$_QA_ROOT/bin/qa-team-precheck"
+_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
+  || echo "UPDATE_CHECK_FAILED: not found" )
+echo "VERSION_STATUS: $_QA_VER"
+_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
+_QA_SKIP_ASK=0
+if [ -f "$_QA_ASK_COOLDOWN" ]; then
+  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
+  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
+fi
 ```
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_PROMPT` is `0`, use `AskUserQuestion`:
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
 - Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
 - Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_TMP/.qa-update-asked"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
+- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
 - If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
 - Continue regardless of choice.
 
@@ -40,45 +48,18 @@ If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_PROMPT` is `0`
 
 ## Preamble (run first)
 
-### Skill arguments
-
-If the user invoked this skill with `--since=<git-ref>`, set `_SINCE_REF` below to that
-value. Otherwise leave it empty. `--since=<ref>` activates **delta mode**: each
-sub-agent that supports it (currently only `qa-audit`) is invoked with the same
-`--since=<ref>` so it scores only the changed-file subset. Useful for per-PR runs:
-`/qa-team --since=main`.
-
 ```bash
 _TMP="${TEMP:-${TMP:-/tmp}}"
 _DATE=$(date +%Y-%m-%d)
 _BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
-_SINCE_REF=""           # ← if user passed --since=<ref>, set it here
 echo "BRANCH: $_BRANCH"
 echo "DATE: $_DATE"
 echo "TMP: $_TMP"
 
-# Validate --since up front so sub-agents can't be spawned with a bogus ref.
-# Resolve to FULL hash (short hashes can collide on large repos); derive a short
-# form separately for display.
-_SINCE_SHA=""
-_SINCE_SHA_SHORT=""
-if [ -n "$_SINCE_REF" ]; then
-  _SINCE_SHA=$(git rev-parse --verify "$_SINCE_REF^{commit}" 2>/dev/null || true)
-  if [ -z "$_SINCE_SHA" ]; then
-    echo "ERROR: --since=$_SINCE_REF does not resolve to a git commit. Aborting." >&2
-    exit 1
-  fi
-  _SINCE_SHA_SHORT=$(git rev-parse --short "$_SINCE_SHA" 2>/dev/null || echo "$_SINCE_SHA")
-  if ! git merge-base --is-ancestor "$_SINCE_SHA" HEAD 2>/dev/null; then
-    echo "ERROR: --since=$_SINCE_REF ($_SINCE_SHA_SHORT) is not an ancestor of HEAD. Aborting." >&2
-    exit 1
-  fi
-  echo "DELTA_MODE: enabled (since $_SINCE_REF → $_SINCE_SHA_SHORT)"
-fi
-
 # Detect project type signals
 echo "--- PROJECT SIGNALS ---"
 ls package.json pyproject.toml go.mod Cargo.toml pom.xml build.gradle Gemfile 2>/dev/null | head -6
+ls *.csproj *.sln global.json Directory.Build.props nuget.config 2>/dev/null | head -4
 ls android/ ios/ app.json 2>/dev/null | head -3
 ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | head -2
 
@@ -90,6 +71,13 @@ ls playwright.config.ts playwright.config.js playwright.config.mts 2>/dev/null &
   grep -q '"cypress"' package.json 2>/dev/null && _WEB_TOOL="${_WEB_TOOL:+$_WEB_TOOL,}cypress"
 grep -q '"selenium-webdriver"\|"@seleniumhq"' package.json 2>/dev/null && \
   _WEB_TOOL="${_WEB_TOOL:+$_WEB_TOOL,}selenium"
+# C# / .NET web E2E detection
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -l "Microsoft\.Playwright" 2>/dev/null | grep -q '.' && \
+  _WEB_TOOL="${_WEB_TOOL:+$_WEB_TOOL,}playwright-dotnet"
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -l "Selenium\.WebDriver" 2>/dev/null | grep -q '.' && \
+  _WEB_TOOL="${_WEB_TOOL:+$_WEB_TOOL,}selenium-dotnet"
 echo "WEB_TOOL: ${_WEB_TOOL:-none}"
 
 # Performance tool detection
@@ -114,12 +102,16 @@ grep -q '"appium"\|"@wdio"' package.json 2>/dev/null && \
   _MOB_TOOL="${_MOB_TOOL:+$_MOB_TOOL,}maestro"
 echo "MOB_TOOL: ${_MOB_TOOL:-none}"
 
-# Methodology: detect whether the project has any test files.
-# Delegates to the canonical helper (single source of truth for what counts as
-# a test file). $_QA_ROOT is set in the version-check block above.
+# Methodology: detect whether the project has any test files
 echo "--- TEST FILES ---"
 _HAS_TESTS=0
-bash "$_QA_ROOT/bin/qa-team-test-files" --has-tests >/dev/null 2>&1 && _HAS_TESTS=1
+find . \( \
+  -name "*.spec.ts" -o -name "*.spec.js" \
+  -o -name "*.test.ts" -o -name "*.test.js" \
+  -o -name "*_test.py" -o -name "test_*.py" \
+  -o -name "*Test.java" -o -name "*_spec.rb" \
+  -o -name "*Tests.cs" -o -name "*Test.cs" -o -name "*Spec.cs" \
+  \) ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | grep -q '.' && _HAS_TESTS=1
 echo "HAS_TESTS: $_HAS_TESTS"
 
 # Detect running services
@@ -129,61 +121,46 @@ for port in 3000 3001 4000 4001 5000 5001 8000 8080; do
   [ "$status" != "000" ] && echo "PORT $port: $status"
 done
 
+# --- MULTI-REPO SUPPORT ---
+# Set QA_EXTRA_PATHS (space-separated absolute paths) to scan tests in other repos
+# e.g.: export QA_EXTRA_PATHS="/path/to/e2e-repo /path/to/api-tests-repo"
+if [ -n "$QA_EXTRA_PATHS" ]; then
+  echo "MULTI_REPO_PATHS: $QA_EXTRA_PATHS"
+  for _qr in $QA_EXTRA_PATHS; do
+    _extra=$(find "$_qr" \( \
+      -name "*.spec.ts" -o -name "*.spec.js" -o -name "*.test.ts" -o -name "*.test.js" \
+      -o -name "*_test.py" -o -name "test_*.py" -o -name "*Test.java" \
+      -o -name "*Tests.cs" -o -name "*_spec.rb" -o -name "*.yaml" \) \
+      ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | wc -l | tr -d ' ')
+    echo "EXTRA_REPO $(basename "$_qr"): $_extra test files — $_qr"
+  done
+fi
+
 echo "--- DONE ---"
 ```
 
 If no running services are found, warn the user and ask whether to proceed in offline mode (analyze only, no execution).
 
+If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
+
 ## Phase 0 — Scope Selection
 
 Use `AskUserQuestion` to confirm which agents to run. Default to auto-detecting based on project signals.
 
-### Sticky scope: load prior selection if present
-
-```bash
-_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-_LAST_SCOPE=""
-if [ -n "$_REPO_ROOT" ] && [ -f "$_REPO_ROOT/.qa-team/last-scope" ]; then
-  _LAST_SCOPE=$(cat "$_REPO_ROOT/.qa-team/last-scope" | tr -d '[:space:]' | head -c 200)
-fi
-[ -n "$_LAST_SCOPE" ] && echo "STICKY_SCOPE: previous selection was '$_LAST_SCOPE'"
-```
-
-If `_LAST_SCOPE` is non-empty, it represents the user's last confirmed scope (e.g.
-`api,audit,web,visual`). Make it the **first** option in the `AskUserQuestion` below
-labelled "Re-run last scope ($_LAST_SCOPE) (Recommended)" — sticky scope eliminates the
-need to re-select identical domains across runs on the same project.
-
-**Auto-detection rules** (used when no sticky scope or user picks "Different scope"):
-- `playwright.config.*` or `e2e/` or `cypress.config.*` or `cypress/` or `selenium-webdriver` in package.json → include **qa-web**
+**Auto-detection rules:**
+- `playwright.config.*` or `e2e/` or `cypress.config.*` or `cypress/` or `selenium-webdriver` in package.json, or `Microsoft.Playwright`/`Selenium.WebDriver` in any `.csproj` → include **qa-web**
 - `openapi.*` or `swagger.*` or `api/` routes → include **qa-api**
 - `android/` or `ios/` or `app.json` (Expo) or `.maestro/` → include **qa-mobile**
 - `k6/` or `locustfile.py` or `load-tests/` or `*.jmx` files → include **qa-perf**
 - `playwright.config.*` + any `screenshots/` or `visual/` dir → include **qa-visual**
-- any `*.spec.*`, `*.test.*`, `*_test.*`, `test_*.py`, `*Test.cs`/`*Tests.cs`, `*Test.java`/`*Tests.java`, `*_test.go`, or `*_spec.rb` files found → include **qa-audit** (driven by `_HAS_TESTS` from the Preamble — same glob set as the Phase 5 regex)
+- any `*.spec.*`, `*.test.*`, `*_test.*`, or `*Test.java` files found → include **qa-audit**
 
 Present detected domains and ask for confirmation. Allow overriding.
-
-### Persist selected scope (for next run)
-
-After the user confirms, write the canonical scope back to disk so the next run can
-offer it as the recommended default:
-
-```bash
-if [ -n "$_REPO_ROOT" ]; then
-  mkdir -p "$_REPO_ROOT/.qa-team"
-  printf '%s' "$_SELECTED_DOMAINS" > "$_REPO_ROOT/.qa-team/last-scope"
-fi
-```
-
-Where `$_SELECTED_DOMAINS` is a comma-separated list of confirmed domains (e.g.
-`api,audit,web`). Use a stable comma-separated form so the prompt label in subsequent
-runs renders cleanly.
 
 Record selected domains and detected tools:
 
 ```bash
-echo "SELECTED_DOMAINS: $_SELECTED_DOMAINS"
+echo "SELECTED_DOMAINS: web api mobile perf visual audit"  # adjust to confirmed selection
 echo "DETECTED: WEB=${_WEB_TOOL:-none} PERF=${_PERF_TOOL:-none} MOB=${_MOB_TOOL:-none} AUDIT=${_HAS_TESTS}"
 ```
 
@@ -207,6 +184,11 @@ find . -path "*/routes/*.ts" -o -path "*/routes/*.js" -o -path "*/controllers/*.
 # Web pages / screens
 find . \( -path "*/pages/*.tsx" -o -path "*/screens/*.tsx" -o -path "*/views/*.tsx" \) \
   ! -path "*/node_modules/*" 2>/dev/null | head -20
+
+# C# / .NET project discovery
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | head -10
+find . \( -path "*/Controllers/*.cs" -o -path "*/Pages/*.cs" -o -path "*/Views/*.cs" \) \
+  ! -path "*/obj/*" 2>/dev/null | head -20
 ```
 
 Summarize findings:
@@ -231,20 +213,11 @@ Target: <web | api | mobile | perf | visual>
 Working directory: <cwd>
 Base URL: <detected base URL>
 Detected tool: <value of _WEB_TOOL | _PERF_TOOL | _MOB_TOOL — skip if "none" or empty>
-Delta mode: <if _SINCE_REF non-empty for qa-audit, include "--since=$_SINCE_REF"; otherwise omit>
 Report output: $_TMP/qa-<domain>-report.md
 
 Run /qa-<domain> with the above context. If "Detected tool" is provided, skip the
-tool selection gate and use that tool directly. If "Delta mode" is set, pass it through
-verbatim — qa-audit understands `--since=<ref>` and will scope its scoring accordingly.
-Sub-agents that don't support delta mode should ignore the flag silently.
-Write the final report to the output path.
+tool selection gate and use that tool directly. Write the final report to the output path.
 ```
-
-> **Delta-mode propagation:** today only `/qa-audit` consumes `--since=<ref>`. Other
-> sub-agents (`/qa-api`, `/qa-web`, `/qa-visual`, `/qa-perf`, `/qa-mobile`) ignore it
-> harmlessly — their scoring is per-endpoint / per-page / per-screenshot, which is
-> already incremental in nature. Future sub-agents may add their own delta mode.
 
 Sub-agents to spawn (skip domains not in Phase 0 selection):
 - `/qa-web`    → `$_TMP/qa-web-report.md`
@@ -318,90 +291,7 @@ Write `qa-report-<date>.md` to the project root (or `reports/` if it exists):
 
 Print the report path and overall pass/fail status.
 
-After writing the unified report, set `_QA_TEAM_STATUS` so the Telemetry tail at
-the end of the skill records the aggregated outcome accurately:
-
-```bash
-# Reflect the same verdict as the "Overall Status" line in the unified report.
-# pass: 0 critical failures across all sub-agents
-# warn: at least one sub-agent reported issues but none CRITICAL
-# fail: at least one sub-agent reported a CRITICAL failure
-_QA_TEAM_STATUS="<pass | warn | fail>"
-```
-
 If there are critical failures: "Found N critical failures. Run /investigate to diagnose?"
-
-## Phase 5 — Verify After Fixes (close the loop)
-
-A QA report is only useful if the user re-runs it after applying fixes. Most users
-(and most agents) forget. This phase makes re-runs the default expectation.
-
-```bash
-_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-_HIST_DIR="${_REPO_ROOT:+$_REPO_ROOT/.qa-team}"
-_PRIOR_AUDIT="${_HIST_DIR:+$_HIST_DIR/qa-audit-latest.json}"
-
-_PRIOR_COMMIT=""
-if [ -n "$_PRIOR_AUDIT" ] && [ -f "$_PRIOR_AUDIT" ]; then
-  _PRIOR_COMMIT=$(jq -r '.commit // empty' "$_PRIOR_AUDIT" 2>/dev/null)
-fi
-
-# Compute scope of changes since the last recorded run.
-# Delegates to the canonical helper (same script that qa-audit and the
-# Stop-hook use — single source of truth).
-#
-# IMPORTANT: capture the helper's exit code BEFORE piping to head, otherwise
-# `bash ... | head -20` masks failures (head's exit 0 wins). The helper exits
-# 3 if _PRIOR_COMMIT is no longer reachable from HEAD (e.g. user rewrote
-# history). In that case skip Phase 5 entirely instead of silently treating
-# the failure as "no changed tests" — same behaviour as the Stop hook.
-_CHANGED_TEST_FILES=""
-_PHASE5_SKIP=0
-if [ -n "$_PRIOR_COMMIT" ] && [ "$_PRIOR_COMMIT" != "$(git rev-parse --short HEAD)" ]; then
-  if _RAW_CHANGED=$(bash "$_QA_ROOT/bin/qa-team-test-files" --since="$_PRIOR_COMMIT" 2>/dev/null); then
-    _CHANGED_TEST_FILES=$(printf '%s\n' "$_RAW_CHANGED" | head -20)
-  else
-    # Helper rejected the ref. Treat as "prior history is no longer comparable"
-    # and skip Phase 5 — don't mislead the user into thinking nothing changed.
-    _PHASE5_SKIP=1
-    echo "Phase 5 skipped: prior commit $_PRIOR_COMMIT is no longer reachable from HEAD (history rewrite?). Run /qa-team without verify to re-baseline." >&2
-  fi
-fi
-```
-
-**Decision tree:**
-
-1. **No prior history** (`_PRIOR_AUDIT` missing): nothing to verify against. Skip Phase 5.
-2. **Prior commit equals HEAD**: report was already against the current code. Skip Phase 5.
-3. **`_PHASE5_SKIP=1`** (helper rejected the prior commit — history rewrite): skip Phase 5; the prior baseline is no longer comparable.
-4. **Test files changed since last run**: this is the case that matters. Use `AskUserQuestion`:
-   - Question: "You've changed N test files since the last QA report (commit `$_PRIOR_COMMIT`). Re-run sub-agents now to measure delta?"
-   - Options:
-     - "Yes — re-run `/qa-audit --since=$_PRIOR_COMMIT` (cheap, Recommended)" — spawns only `/qa-audit` in delta mode, scoping to the changed-file subset. Fastest option; ideal for per-PR verification.
-     - "Yes — re-run affected sub-agents (full)" — re-spawns the sub-agents whose domain matches the changed files (e.g. `/qa-audit` and `/qa-api` if only test/api code changed), all in full-scan mode.
-     - "Yes — re-run full /qa-team"
-     - "No — skip verification"
-   - If the user picks a re-run option, jump back to Phase 2 with the narrowed scope (and `--since` flag set when applicable) and complete the loop.
-5. **No test files changed but production code did**: nudge gently — "Production code changed since last audit but no test files. Consider whether the changes need new test coverage."
-
-**Score-delta hint**: if the re-run completes in **full** mode, read both the prior and
-current `qa-audit-score.json`, compute `overall_delta = current - prior`, and surface it
-in the new report's Executive Summary:
-
-```
-Audit score: 76 → 84 (+8 since 0939d0b)
-```
-
-If the re-run was in **delta** mode (`delta_mode.enabled == true` in the new JSON),
-**do not** compare against the prior full-audit score — they are not comparable. Instead
-surface the delta-scope finding directly:
-
-```
-Delta-scope audit (12 changed test files since 0939d0b): 88/100 — 0 critical issues
-```
-
-This is the closed-loop signal that turns the QA harness from one-shot triage into a
-measurement instrument the user can trust.
 
 ## Important Rules
 
@@ -410,9 +300,6 @@ measurement instrument the user can trust.
 - **Sub-agents are independent** — do not share state between them beyond the context summary
 - **Report even if tests fail** — always produce the aggregated report regardless of exit codes
 - **Idempotent** — safe to re-run; overwrites `$_TMP/qa-*-report.md` and the root report
-- **Close the loop** — Phase 5 is the difference between triage and a measurement instrument. Do not skip it when there is prior history; ask the user explicitly via `AskUserQuestion` rather than assuming silence means "no"
-- **Delta mode is for verification** — `--since=<ref>` is for cheap per-PR re-runs after fixes; never persist its score to `.qa-team/`. Full audits remain the canonical history.
-- **Sticky scope is a default, not a lock** — always offer the prior scope as the recommended option, but never bypass `AskUserQuestion`. Project structure or user intent may have changed since the last run.
 
 ## Telemetry (run last)
 
@@ -420,15 +307,4 @@ measurement instrument the user can trust.
 ~/.claude/skills/gstack/bin/gstack-timeline-log \
   '{"skill":"qa-team","event":"completed","branch":"'"$_BRANCH"'","date":"'"$_DATE"'"}' \
   2>/dev/null || true
-
-# Per-run cost log (consumed by bin/qa-team-cost). Status is read from the
-# `_QA_TEAM_STATUS` variable that Phase 4 sets when emitting the unified
-# report (mirrors the report's "Overall Status" line). Falls back to "warn"
-# if the variable is unset (e.g. early failure before Phase 4 ran).
-_QA_STATUS="${_QA_TEAM_STATUS:-warn}"
-case "$_QA_STATUS" in
-  pass|warn|fail) ;;
-  *) _QA_STATUS="warn" ;;
-esac
-bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-team" "$_QA_STATUS" 2>/dev/null || true
 ```

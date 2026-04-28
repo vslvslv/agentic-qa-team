@@ -46,13 +46,21 @@ _TMP="${TEMP:-${TMP:-/tmp}}"
 _QA_ROOT=$(dirname "$(readlink ~/.claude/skills/lang-refine 2>/dev/null)" 2>/dev/null) || true
 [ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
   _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-bash "$_QA_ROOT/bin/qa-team-precheck"
+_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
+  || echo "UPDATE_CHECK_FAILED: not found" )
+echo "VERSION_STATUS: $_QA_VER"
+_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
+_QA_SKIP_ASK=0
+if [ -f "$_QA_ASK_COOLDOWN" ]; then
+  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
+  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
+fi
 ```
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_PROMPT` is `0`, use `AskUserQuestion`:
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
 - Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
 - Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_TMP/.qa-update-asked"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
+- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
 - If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
 - Continue regardless of choice.
 
@@ -147,7 +155,7 @@ Fetch all official pages **in parallel**. Prompt per fetch:
 
 **`functional`:**
 - `https://refactoring.guru/design-patterns` (Strategy, Command as FP precursors)
-- WebSearch: `functional programming principles immutability pure functions 2025`
+- WebSearch: `functional programming principles immutability pure functions 2026`
 
 If WebFetch is blocked, synthesize from training knowledge and label the source.
 
@@ -163,48 +171,48 @@ Run in parallel with Phase 1a. Prompt:
 
 **`general`:**
 - `https://github.com/iluwatar/java-design-patterns` (90k stars — GoF patterns in runnable code; language is Java but patterns are universal)
-- WebSearch: `SOLID principles real-world application pitfalls 2025`
+- WebSearch: `SOLID principles real-world application pitfalls 2026`
 - WebSearch: `design patterns overuse antipatterns software engineering`
 
 **`typescript`:**
 - `https://github.com/microsoft/TypeScript/wiki/Performance`
 - `https://github.com/uhub/awesome-typescript`
-- WebSearch: `TypeScript best practices pitfalls any type 2025`
+- WebSearch: `TypeScript best practices pitfalls any type 2026`
 
 **`javascript`:**
 - `https://github.com/goldbergyoni/nodebestpractices` (91k stars — production Node.js)
 - `https://github.com/ryanmcdermott/clean-code-javascript`
-- WebSearch: `JavaScript common mistakes async await 2025`
+- WebSearch: `JavaScript common mistakes async await 2026`
 
 **`java`:**
 - `https://github.com/akullpp/awesome-java`
 - `https://github.com/iluwatar/java-design-patterns`
-- WebSearch: `Java best practices Effective Java gotchas 2025`
+- WebSearch: `Java best practices Effective Java gotchas 2026`
 
 **`python`:**
 - `https://github.com/vinta/awesome-python`
 - WebFetch `https://realpython.com/python-best-practices/` with community prompt
-- WebSearch: `Python antipatterns idiomatic Python pitfalls 2025`
+- WebSearch: `Python antipatterns idiomatic Python pitfalls 2026`
 
 **`csharp`:**
 - `https://github.com/thangchung/awesome-dotnet-core`
-- WebSearch: `C# best practices .NET common mistakes 2025`
+- WebSearch: `C# best practices .NET common mistakes 2026`
 
 **`kotlin`:**
 - `https://github.com/KotlinBy/awesome-kotlin`
-- WebSearch: `Kotlin idiomatic code pitfalls coroutines 2025`
+- WebSearch: `Kotlin idiomatic code pitfalls coroutines 2026`
 
 **`ruby`:**
 - `https://github.com/markets/awesome-ruby`
-- WebSearch: `Ruby best practices antipatterns metaprogramming pitfalls 2025`
+- WebSearch: `Ruby best practices antipatterns metaprogramming pitfalls 2026`
 
 **`bash`:**
 - `https://github.com/alebcay/awesome-shell`
-- WebSearch: `Bash scripting common mistakes best practices 2025`
+- WebSearch: `Bash scripting common mistakes best practices 2026`
 
 **`functional`:**
 - `https://github.com/stoeffel/awesome-fp-js` (FP in JS, patterns are cross-language)
-- WebSearch: `functional programming anti-patterns real world 2025`
+- WebSearch: `functional programming anti-patterns real world 2026`
 
 ---
 
@@ -335,11 +343,4 @@ Gaps remaining (if score < 80):
 - <gap> — suggested source to close it
 
 Re-run to refresh: /lang-refine <language>
-```
-
-## Telemetry (run last)
-
-```bash
-# Per-run cost log (consumed by bin/qa-team-cost).
-bash "$_QA_ROOT/bin/qa-team-cost-log" "lang-refine" "pass" 2>/dev/null || true
 ```

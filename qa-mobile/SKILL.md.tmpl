@@ -81,6 +81,15 @@ find . -name "*.yaml" ! -path "*/node_modules/*" 2>/dev/null | \
   xargs grep -l "appId:\|tapOn:\|assertVisible:" 2>/dev/null | head -1 | grep -q '.' && _MAESTRO=1
 echo "MAESTRO_PRESENT: $_MAESTRO"
 
+# Target language detection (used for Appium multi-language support)
+_TARGET_LANG="typescript"
+find . -name "pom.xml" ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="java"
+find . \( -name "requirements.txt" -o -name "pyproject.toml" \) \
+  ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="python"
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="csharp"
+[ -f "Gemfile" ] && _TARGET_LANG="ruby"
+echo "TARGET_LANG: $_TARGET_LANG"
+
 # Detect available simulators/emulators
 echo "--- DEVICES ---"
 xcrun simctl list devices available 2>/dev/null | grep -E "Booted|iPhone|iPad" | head -10 || echo "iOS sim: not available"
@@ -98,7 +107,23 @@ echo "--- SCREENS ---"
 find . \( -path "*/screens/*.tsx" -o -path "*/screens/*.jsx" \
   -o -path "*/navigation/*.tsx" -o -path "*/Navigation.tsx" \) \
   ! -path "*/node_modules/*" 2>/dev/null | head -20
+
+# --- MULTI-REPO SUPPORT ---
+# Set QA_EXTRA_PATHS (space-separated absolute paths) to scan tests in other repos
+# e.g.: export QA_EXTRA_PATHS="/path/to/mobile-tests-repo"
+if [ -n "$QA_EXTRA_PATHS" ]; then
+  echo "MULTI_REPO_PATHS: $QA_EXTRA_PATHS"
+  for _qr in $QA_EXTRA_PATHS; do
+    _extra=$(find "$_qr" \( \
+      -name "*.spec.ts" -o -name "*.spec.js" -o -name "*.test.ts" -o -name "*.test.js" \
+      -o -name "*.yaml" \) \
+      ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+    echo "EXTRA_REPO $(basename "$_qr"): $_extra test files — $_qr"
+  done
+fi
 ```
+
+If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
 
 ### Tool Selection Gate
 
@@ -220,11 +245,26 @@ describe("Login Flow", () => {
 
 **Appium / WebDriverIO tests (Native iOS/Android):**
 
-> Reference: [Appium/WebDriverIO patterns guide](references/appium-wdio-patterns.md)
-> Key patterns: TypeScript POM with BasePage · accessibility-id selector hierarchy · explicit waits (waitForDisplayed/waitUntil/waitForStable) · mobile gestures (W3C Actions API) · parallel device execution with typed capabilities · auth bypass via API token + deep-link · network mock (browser.mock) · beforeEach app reset (terminateApp/activateApp) · CI Appium 2 driver installation + pin + wait-on · animation disable (Android ADB + iOS processArguments) · performance tuning (snapshotMaxDepth, elementResponseAttributes) · visual regression (@wdio/visual-service) · device farm integration (BrowserStack/Sauce Labs) · Cucumber BDD option · retry/flake quarantine
+Select the reference guide based on `_TARGET_LANG`:
+
+**TypeScript** (default):
+> Reference: [Appium/WebDriverIO patterns guide (TypeScript)](references/appium-wdio-patterns.md)
+> Key patterns: TypeScript POM with BasePage · accessibility-id selector hierarchy · explicit waits (waitForDisplayed/waitUntil/waitForStable) · mobile gestures (W3C Actions API) · parallel device execution with typed capabilities · auth bypass via API token + deep-link · network mock (browser.mock) · beforeEach app reset (terminateApp/activateApp) · CI Appium 2 driver installation + pin + wait-on · animation disable · performance tuning (snapshotMaxDepth) · visual regression (@wdio/visual-service) · device farm integration (BrowserStack/Sauce Labs) · Cucumber BDD option · retry/flake quarantine
+
+**Java**:
+> Reference: [Appium patterns guide (Java)](references/appium-patterns-java.md)
+> Key patterns: `AppiumDriver` setup (IOSDriver / AndroidDriver) · `MobileBy.AccessibilityId` selector hierarchy · explicit waits (WebDriverWait) · POM base class · `@BeforeAll`/`@AfterAll` lifecycle · W3C touch actions · capabilities via `AppiumOptions`
+
+**Python**:
+> Reference: [Appium patterns guide (Python)](references/appium-patterns-python.md)
+> Key patterns: `webdriver.Remote` with Appium · `AppiumBy.ACCESSIBILITY_ID` selector hierarchy · `WebDriverWait` + `expected_conditions` · pytest fixtures for driver lifecycle · session-scoped setup/teardown
+
+**C#**:
+> Reference: [Appium patterns guide (C#)](references/appium-patterns-csharp.md)
+> Key patterns: `IOSDriver`/`AndroidDriver` with `AppiumOptions` · `MobileBy.AccessibilityId` selector hierarchy · `WebDriverWait` explicit waits · NUnit/MSTest/xUnit base class setup · `OneTimeSetUp`/`OneTimeTearDown` driver lifecycle
 
 ```typescript
-// test/specs/login.spec.ts
+// test/specs/login.spec.ts  (TypeScript / WebDriverIO example)
 import { $, browser } from "@wdio/globals";
 import { expect } from "expect-webdriverio";
 

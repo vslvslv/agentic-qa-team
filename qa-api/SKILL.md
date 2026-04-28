@@ -29,13 +29,21 @@ _TMP="${TEMP:-${TMP:-/tmp}}"
 _QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-api 2>/dev/null)" 2>/dev/null) || true
 [ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
   _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-bash "$_QA_ROOT/bin/qa-team-precheck"
+_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
+  || echo "UPDATE_CHECK_FAILED: not found" )
+echo "VERSION_STATUS: $_QA_VER"
+_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
+_QA_SKIP_ASK=0
+if [ -f "$_QA_ASK_COOLDOWN" ]; then
+  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
+  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
+fi
 ```
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_PROMPT` is `0`, use `AskUserQuestion`:
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
 - Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
 - Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_TMP/.qa-update-asked"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
+- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
 - If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
 - Continue regardless of choice.
 
@@ -49,9 +57,20 @@ _DATE=$(date +%Y-%m-%d)
 _BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
 echo "BRANCH: $_BRANCH"
 
-# Detect API base URL
+# Detect API base URL (JS/TS envs first, then .NET sources)
 _API_URL=$(grep -r "API_URL\|apiUrl\|baseURL\|BASE_URL" .env .env.local .env.test 2>/dev/null \
   | grep -o 'http[s]*://[^"'"'"' ]*' | head -1)
+# .NET: launchSettings.json applicationUrl
+[ -z "$_API_URL" ] && _API_URL=$(
+  find . -name "launchSettings.json" ! -path "*/obj/*" 2>/dev/null | head -1 | \
+  xargs grep -o '"applicationUrl"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | \
+  grep -o 'http[s]*://[^;",]*' | head -1)
+# .NET: appsettings.json BaseUrl / ApiUrl key
+[ -z "$_API_URL" ] && _API_URL=$(
+  find . \( -name "appsettings.json" -o -name "appsettings.Development.json" \) \
+  ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -oi '"[Aa]pi[Uu]rl\|[Bb]ase[Uu]rl"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | \
+  grep -o 'http[s]*://[^"]*' | head -1)
 _API_URL="${_API_URL:-http://localhost:3001}"
 echo "API_URL: $_API_URL"
 
@@ -68,17 +87,33 @@ ls openapi.yaml openapi.json swagger.yaml swagger.json \
 echo "--- ROUTE FILES ---"
 find . \( -path "*/routes/*.ts" -o -path "*/routes/*.js" \
   -o -path "*/controllers/*.ts" -o -path "*/controllers/*.java" \
-  -o -path "*/api/src/**/*.ts" \) \
-  ! -path "*/node_modules/*" 2>/dev/null | head -20
+  -o -path "*/api/src/**/*.ts" \
+  -o -path "*/Controllers/*.cs" \) \
+  ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | head -20
 
 # Detect project language → API tool
 echo "--- LANGUAGE DETECTION ---"
 _API_TOOL="playwright"  # default for JS/TS
 [ -f "pom.xml" ] || [ -f "build.gradle" ] || [ -f "build.gradle.kts" ] && _API_TOOL="java"
 [ -f "requirements.txt" ] || [ -f "conftest.py" ] || [ -f "pytest.ini" ] || [ -f "pyproject.toml" ] && _API_TOOL="python"
-[ -n "$(find . -maxdepth 3 \( -name '*.csproj' -o -name '*.sln' \) 2>/dev/null | head -1)" ] && _API_TOOL="csharp"
+[ -n "$(find . -maxdepth 3 \( -name '*.csproj' -o -name '*.sln' \) ! -path '*/obj/*' 2>/dev/null | head -1)" ] && _API_TOOL="csharp"
 [ -f "Gemfile" ] && _API_TOOL="ruby"
 echo "API_TOOL: $_API_TOOL"
+
+# C# test framework detection (nunit / mstest / xunit)
+_CS_TEST_FW="nunit"
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -il "xunit" 2>/dev/null | grep -q '.' && _CS_TEST_FW="xunit"
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -il "MSTest\|Microsoft\.VisualStudio\.TestTools" 2>/dev/null | grep -q '.' && \
+  _CS_TEST_FW="mstest"
+echo "CS_TEST_FW: $_CS_TEST_FW"
+
+# C# HTTP client detection (RestSharp preferred when present, HttpClient otherwise)
+_CS_RESTSHARP=0
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -il "RestSharp" 2>/dev/null | grep -q '.' && _CS_RESTSHARP=1
+echo "CS_RESTSHARP: $_CS_RESTSHARP"
 
 # Detect test runner (JS/TS)
 echo "--- TEST RUNNER ---"
@@ -91,7 +126,24 @@ find . \( -name "schema.graphql" -o -name "*.graphql" \) \
   ! -path "*/node_modules/*" 2>/dev/null | head -5
 grep -r "graphql\|ApolloServer\|type Query" --include="*.ts" -l \
   ! -path "*/node_modules/*" 2>/dev/null | head -5
+
+# --- MULTI-REPO SUPPORT ---
+# Set QA_EXTRA_PATHS (space-separated absolute paths) to scan tests in other repos
+# e.g.: export QA_EXTRA_PATHS="/path/to/api-tests-repo /path/to/integration-tests"
+if [ -n "$QA_EXTRA_PATHS" ]; then
+  echo "MULTI_REPO_PATHS: $QA_EXTRA_PATHS"
+  for _qr in $QA_EXTRA_PATHS; do
+    _extra=$(find "$_qr" \( \
+      -name "*.spec.ts" -o -name "*.spec.js" -o -name "*.test.ts" -o -name "*.test.js" \
+      -o -name "*_test.py" -o -name "test_*.py" -o -name "*Test.java" \
+      -o -name "*Tests.cs" -o -name "*_spec.rb" \) \
+      ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | wc -l | tr -d ' ')
+    echo "EXTRA_REPO $(basename "$_qr"): $_extra test files — $_qr"
+  done
+fi
 ```
+
+If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
 
 If `API_HEALTH` is `000`: warn the user. Ask whether to:
 1. Start the API first (provide the start command)
@@ -114,10 +166,15 @@ if [ -n "$_SPEC" ]; then
   cat "$_SPEC" | grep -E "^\s*(get|post|put|patch|delete):" | head -40
 fi
 
-# Strategy 2: Grep route files
+# Strategy 2: Grep route files (JS/TS)
 grep -r "router\.\(get\|post\|put\|patch\|delete\)\|app\.\(get\|post\|put\|patch\|delete\)" \
   --include="*.ts" --include="*.js" ! -path "*/node_modules/*" 2>/dev/null | \
   grep -o '"[/][^"]*"' | sort -u | head -40
+
+# Strategy 2b: C# Controllers — extract routes from attributes
+find . -path "*/Controllers/*.cs" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -h "\[Route\]\|\[HttpGet\]\|\[HttpPost\]\|\[HttpPut\]\|\[HttpPatch\]\|\[HttpDelete\]" \
+  2>/dev/null | grep -o '"[^"]*"' | sort -u | head -40
 
 # Strategy 3: GraphQL introspection
 _GRAPHQL_URL="$_API_URL/graphql"
@@ -184,176 +241,68 @@ _TOKEN=$(echo "$_AUTH_RESP" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
 
 ## Phase 3 — Generate API Tests
 
-Use `_API_TOOL` to select the test template. Read existing test files before writing —
-append missing test blocks, never overwrite existing ones.
+### DELETE endpoint policy (read before writing any test)
 
-**TypeScript / JavaScript — Playwright request context:**
+**Never generate a bare `DELETE /api/*` test.** Calling delete on a resource that was
+not created by this test run may corrupt shared test data.
 
-```typescript
-// api-tests/endpoints.spec.ts
-import { test, expect } from "@playwright/test";
+Allowed patterns — only generate DELETE tests when the test itself:
+1. **POST first** — create the resource with a unique payload (e.g. email with timestamp)
+2. **Verify creation** — assert 201 and capture the returned ID
+3. **DELETE** — call the endpoint, assert 204 / 200
+4. This is a lifecycle test, not a standalone delete test.
 
-const BASE = process.env.API_URL || "http://localhost:3001";
-let token: string;
+If you cannot safely create the resource first (no POST endpoint, write access not
+available), **skip the DELETE test entirely** and log it as a coverage gap.
 
-test.beforeAll(async ({ request }) => {
-  const res = await request.post(`${BASE}/api/auth/login`, {
-    data: { email: process.env.E2E_USER_EMAIL || "admin@example.com",
-            password: process.env.E2E_USER_PASSWORD || "password123" },
-  });
-  token = (await res.json()).token;
-});
+### Cleanup obligations (read before writing any test)
 
-test.describe("GET /api/users", () => {
-  test("returns 200 with array", async ({ request }) => {
-    const res = await request.get(`${BASE}/api/users`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.status()).toBe(200);
-    expect(Array.isArray(await res.json())).toBe(true);
-  });
-  test("returns 401 without auth", async ({ request }) => {
-    expect((await request.get(`${BASE}/api/users`)).status()).toBe(401);
-  });
-});
-```
+Every test that creates data **must** clean it up:
+- Track all created resource IDs in a shared list during the test run
+- Delete tracked resources in the suite's teardown (`@AfterAll` / `OneTimeTearDown` /
+  `session`-scope fixture / `afterAll`)
+- If a test asserts the DELETE itself (lifecycle test), remove the ID from the tracking
+  list immediately after so teardown does not double-delete
+- If cleanup fails or is skipped, mark the test `[Explicit]` / `@pytest.mark.explicit`
+  with a comment explaining the manual cleanup needed
 
-**Java — REST Assured:**
+### Load language patterns file
 
-```java
-// src/test/java/api/UsersApiTest.java
-import io.restassured.RestAssured;
-import io.restassured.http.ContentType;
-import org.junit.jupiter.api.*;
-import static io.restassured.RestAssured.*;
-import static org.hamcrest.Matchers.*;
+Select and read the language-appropriate reference guide for `_API_TOOL`:
 
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-public class UsersApiTest {
-    static String token;
+**TypeScript (Playwright request context)**:
+> Reference: [API patterns — TypeScript](references/api-patterns-typescript.md)
+> Key patterns: `ApiClient` wrapping Playwright `APIRequestContext` · `anonymous()` for 401 tests · `afterAll` cleanup tracking · lifecycle DELETE (POST → assert 201 → DELETE → assert 204)
 
-    @BeforeAll static void setup() {
-        RestAssured.baseURI = System.getenv().getOrDefault("API_URL", "http://localhost:3001");
-        token = given().contentType(ContentType.JSON)
-            .body("{\"email\":\"admin@example.com\",\"password\":\"password123\"}")
-            .post("/api/auth/login")
-            .then().statusCode(200)
-            .extract().path("token");
-    }
+**Java (REST Assured)**:
+> Reference: [API patterns — Java](references/api-patterns-java.md)
+> Key patterns: `ApiClient` wrapping REST Assured · `@AfterAll` teardown with `created` list · `anon()` spec for 401 tests · lifecycle DELETE pattern
 
-    @Test void getUsers_returns200WithList() {
-        given().header("Authorization", "Bearer " + token)
-            .get("/api/users")
-            .then().statusCode(200).body("$", instanceOf(java.util.List.class));
-    }
+**Python (pytest + requests)**:
+> Reference: [API patterns — Python](references/api-patterns-python.md)
+> Key patterns: `ApiClient` wrapping `requests.Session` · `anonymous()` client for 401 tests · session-scoped `autouse` fixture cleanup · lifecycle DELETE pattern
 
-    @Test void getUsers_returns401WithoutAuth() {
-        get("/api/users").then().statusCode(401);
-    }
-}
-```
+**C# (RestSharp or HttpClient + NUnit / MSTest / xUnit)**:
+> Reference: [API patterns — C#](references/api-patterns-csharp.md)
+> Key patterns: `ApiClient` wrapping RestSharp `RestClient` (when `CS_RESTSHARP=1`) or `HttpClient` (fallback) · `Anonymous()` for 401 tests · `_created` list + `OneTimeTearDown`/`ClassCleanup`/`DisposeAsync` teardown · NUnit / MSTest / xUnit sections
+> Use the **RestSharp section** when `CS_RESTSHARP=1`; use the **HttpClient section** otherwise.
+> Focus on the sub-section matching `CS_TEST_FW` (`nunit`, `mstest`, or `xunit`).
 
-**Python — pytest + requests:**
+**Ruby (RSpec + Faraday)**:
+> Reference: [API patterns — Ruby](references/api-patterns-ruby.md)
+> Key patterns: `ApiClient` wrapping Faraday · `after(:all)` teardown with `created_ids` list · `anonymous` client for 401 tests · lifecycle DELETE pattern
 
-```python
-# tests/test_users_api.py
-import os, pytest, requests
+For `_API_TOOL=csharp`, also note `CS_TEST_FW` and `CS_RESTSHARP` — use the RestSharp section of the patterns file when `CS_RESTSHARP=1`, otherwise use the HttpClient section; within each HTTP-client section, focus on the sub-section matching `CS_TEST_FW`.
 
-BASE = os.getenv("API_URL", "http://localhost:3001")
-
-@pytest.fixture(scope="session")
-def token():
-    r = requests.post(f"{BASE}/api/auth/login", json={
-        "email": os.getenv("E2E_USER_EMAIL", "admin@example.com"),
-        "password": os.getenv("E2E_USER_PASSWORD", "password123"),
-    })
-    r.raise_for_status()
-    return r.json()["token"]
-
-def test_get_users_returns_200(token):
-    r = requests.get(f"{BASE}/api/users", headers={"Authorization": f"Bearer {token}"})
-    assert r.status_code == 200
-    assert isinstance(r.json(), list)
-
-def test_get_users_401_without_auth():
-    assert requests.get(f"{BASE}/api/users").status_code == 401
-```
-
-**C# — HttpClient + NUnit:**
-
-```csharp
-// ApiTests/UsersApiTests.cs
-using NUnit.Framework;
-using System.Net.Http;
-using System.Net.Http.Json;
-using System.Threading.Tasks;
-
-[TestFixture]
-public class UsersApiTests {
-    static HttpClient _client = new HttpClient {
-        BaseAddress = new Uri(Environment.GetEnvironmentVariable("API_URL") ?? "http://localhost:3001")
-    };
-    static string _token = "";
-
-    [OneTimeSetUp] public async Task Setup() {
-        var res = await _client.PostAsJsonAsync("/api/auth/login",
-            new { email = "admin@example.com", password = "password123" });
-        var body = await res.Content.ReadFromJsonAsync<LoginResponse>();
-        _token = body?.Token ?? "";
-        _client.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
-    }
-
-    [Test] public async Task GetUsers_Returns200() {
-        var res = await _client.GetAsync("/api/users");
-        Assert.That((int)res.StatusCode, Is.EqualTo(200));
-    }
-
-    [Test] public async Task GetUsers_Returns401WithoutAuth() {
-        using var anon = new HttpClient { BaseAddress = _client.BaseAddress };
-        Assert.That((int)(await anon.GetAsync("/api/users")).StatusCode, Is.EqualTo(401));
-    }
-
-    record LoginResponse(string Token);
-}
-```
-
-**Ruby — RSpec + Faraday:**
-
-```ruby
-# spec/api/users_spec.rb
-require 'faraday'
-require 'json'
-
-BASE = ENV.fetch('API_URL', 'http://localhost:3001')
-
-RSpec.describe 'Users API' do
-  let(:conn) { Faraday.new(url: BASE) }
-  let(:token) do
-    res = conn.post('/api/auth/login') do |req|
-      req.headers['Content-Type'] = 'application/json'
-      req.body = JSON.dump(email: 'admin@example.com', password: 'password123')
-    end
-    JSON.parse(res.body)['token']
-  end
-
-  it 'GET /api/users returns 200 with array' do
-    res = conn.get('/api/users') { |r| r.headers['Authorization'] = "Bearer #{token}" }
-    expect(res.status).to eq(200)
-    expect(JSON.parse(res.body)).to be_a(Array)
-  end
-
-  it 'GET /api/users returns 401 without auth' do
-    expect(conn.get('/api/users').status).to eq(401)
-  end
-end
-```
+Follow the patterns in that file to generate tests. Read existing test files before
+writing — append missing test blocks, never overwrite existing ones.
 
 **Coverage targets per endpoint:**
 1. Happy path — expected status code + response shape
 2. Auth enforcement — `401` without token, `403` for insufficient permissions
 3. Validation — `400` / `422` for invalid/missing required fields
 4. Not found — `404` for non-existent resource IDs
+5. Lifecycle (POST → DELETE) — only when the create endpoint is available
 
 **GraphQL coverage:**
 - Each query/mutation: success case
@@ -444,80 +393,15 @@ Write report to `$_TMP/qa-api-report.md`:
 
 ## Schema Gaps
 <fields or responses not validated>
-
-## After this run
-- For methodology issues (pyramid, isolation, naming): → `/qa-audit`
-- For up-to-date tooling patterns (HTTP clients, schema libs, mocking): → `/qa-refine`
-- After applying fixes: re-run `/qa-api` (or `/qa-team`) to measure delta — score history at `<repo>/.qa-team/qa-api-*.json`
-```
-
-## Phase 5b — Machine-Readable Sidecar
-
-After the markdown report, also write `$_TMP/qa-api-score.json` with the same numbers
-in a parseable shape. Shares the envelope schema with `qa-audit-score.json` so hooks
-and CI can consume both uniformly.
-
-```bash
-_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
-_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-cat > "$_TMP/qa-api-score.json" <<JSON
-{
-  "schema_version": "1.0",
-  "skill": "qa-api",
-  "skill_version": "<read from $_QA_ROOT/VERSION>",
-  "branch": "$_BRANCH",
-  "commit": "$_COMMIT",
-  "timestamp": "$_TIMESTAMP",
-  "status": "<pass | warn | fail>",
-  "tool": "<playwright | rest_assured | pytest | httpclient | rspec>",
-  "auth": "<jwt | session | apikey | none>",
-  "counts": {
-    "passed": <N>,
-    "failed": <N>,
-    "skipped": <N>,
-    "total": <N>
-  },
-  "endpoints": {
-    "discovered": <N>,
-    "tested": <N>,
-    "missing": <N>
-  },
-  "schema_gaps_count": <N>,
-  "report_md_path": "$_TMP/qa-api-report.md"
-}
-JSON
-```
-
-Validate it parses (`jq . "$_TMP/qa-api-score.json" >/dev/null`). Replace every `<...>`
-with the actual computed value. If `jq` reports invalid JSON, fix and rewrite.
-
-## Phase 5c — Persist to Project History
-
-```bash
-bash "$_QA_ROOT/bin/qa-team-persist-history" "qa-api"
 ```
 
 ## Important Rules
 
 - **Language-native by default** — use the idiomatic tool for the stack; avoid cross-language deps
-- **Auth first** — always obtain a token in setup; never hard-code tokens in test bodies
+- **Shared ApiClient** — always use the `ApiClient` class from the patterns reference; never instantiate `HttpClient` / `requests.Session` / Faraday per test class
+- **Auth first** — always obtain a token in suite setup; never hard-code tokens in test bodies
 - **Test the contract, not the implementation** — assert on status codes + response schema
-- **Idempotent tests** — use unique IDs for created resources; clean up in teardown
+- **No bare DELETE tests** — never call `DELETE /api/*` on a resource that this test did not create; only generate DELETE tests as lifecycle tests (POST → verify → DELETE)
+- **Cleanup everything you create** — track IDs of all created resources and delete them in suite teardown; lifecycle tests that exercise DELETE must remove their ID from the tracking list immediately after asserting the delete, so teardown does not double-delete
+- **Idempotent test data** — use unique, timestamped values (e.g. `test-{timestamp}@example.com`) so parallel runs do not collide
 - **Report even if execution fails** — always write the report regardless of exit code
-- **No destructive operations** — skip `DELETE /api/*` tests unless cleanup-only; flag them explicitly
-- **JSON contract is load-bearing** — `qa-api-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by CI hooks. Field renames or removals require bumping `schema_version` and updating consumers.
-
-## Telemetry (run last)
-
-```bash
-# Per-run cost log (consumed by bin/qa-team-cost). Status is derived from the
-# just-written JSON sidecar — single source of truth. Falls back to "warn" if
-# jq is missing or the sidecar wasn't written. Valid: pass | warn | fail.
-_QA_STATUS=$(jq -r '.status // "warn"' "$_TMP/qa-api-score.json" 2>/dev/null || echo "warn")
-case "$_QA_STATUS" in
-  pass|warn|fail) ;;
-  *) _QA_STATUS="warn" ;;
-esac
-bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-api" "$_QA_STATUS" 2>/dev/null || true
-```

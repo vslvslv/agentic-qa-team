@@ -26,13 +26,21 @@ _TMP="${TEMP:-${TMP:-/tmp}}"
 _QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-web 2>/dev/null)" 2>/dev/null) || true
 [ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
   _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-bash "$_QA_ROOT/bin/qa-team-precheck"
+_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
+  || echo "UPDATE_CHECK_FAILED: not found" )
+echo "VERSION_STATUS: $_QA_VER"
+_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
+_QA_SKIP_ASK=0
+if [ -f "$_QA_ASK_COOLDOWN" ]; then
+  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
+  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
+fi
 ```
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_PROMPT` is `0`, use `AskUserQuestion`:
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
 - Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
 - Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_TMP/.qa-update-asked"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
+- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
 - If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
 - Continue regardless of choice.
 
@@ -66,9 +74,48 @@ grep -q 'selenium' pom.xml 2>/dev/null && _SE=1
 grep -q 'selenium' requirements.txt 2>/dev/null && _SE=1
 echo "SELENIUM_PRESENT: $_SE"
 
+# C# / .NET web E2E detection
+echo "--- DOTNET ---"
+_PW_DOTNET=0; _SE_DOTNET=0
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -l "Microsoft\.Playwright" 2>/dev/null | grep -q '.' && _PW_DOTNET=1
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -l "Selenium\.WebDriver" 2>/dev/null | grep -q '.' && _SE_DOTNET=1
+echo "PLAYWRIGHT_DOTNET: $_PW_DOTNET"
+echo "SELENIUM_DOTNET: $_SE_DOTNET"
+
+# Target language detection
+_TARGET_LANG="typescript"
+find . -name "pom.xml" ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="java"
+find . \( -name "requirements.txt" -o -name "pyproject.toml" \) \
+  ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="python"
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | grep -q '.' && _TARGET_LANG="csharp"
+echo "TARGET_LANG: $_TARGET_LANG"
+
+# C# test framework detection (nunit / mstest / xunit)
+_CS_TEST_FW="nunit"
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -il "xunit" 2>/dev/null | grep -q '.' && _CS_TEST_FW="xunit"
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -il "MSTest\|Microsoft\.VisualStudio\.TestTools" 2>/dev/null | grep -q '.' && \
+  _CS_TEST_FW="mstest"
+echo "CS_TEST_FW: $_CS_TEST_FW"
+
 # Detect base URL
-_BASE_URL=$(grep -r "baseURL\|BASE_URL" playwright.config.ts playwright.config.js cypress.config.ts .env .env.local 2>/dev/null \
+_BASE_URL=$(grep -r "baseURL\|BASE_URL" playwright.config.ts playwright.config.js \
+  cypress.config.ts .env .env.local 2>/dev/null \
   | grep -o 'http[s]*://[^"'"'"' ]*' | head -1)
+# .NET: launchSettings.json (applicationUrl may be semicolon-separated — take first)
+[ -z "$_BASE_URL" ] && _BASE_URL=$(
+  find . -name "launchSettings.json" ! -path "*/obj/*" 2>/dev/null | head -1 | \
+  xargs grep -o '"applicationUrl"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | \
+  grep -o 'http[s]*://[^;",]*' | head -1)
+# .NET: appsettings.json BaseUrl key
+[ -z "$_BASE_URL" ] && _BASE_URL=$(
+  find . \( -name "appsettings.json" -o -name "appsettings.Development.json" \) \
+  ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -oi '"[Bb]ase[Uu]rl"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | \
+  grep -o 'http[s]*://[^"]*' | head -1)
 _BASE_URL="${_BASE_URL:-http://localhost:3000}"
 echo "BASE_URL: $_BASE_URL"
 
@@ -80,22 +127,45 @@ echo "APP_STATUS: $_STATUS"
 echo "--- EXISTING SPECS ---"
 find . \( -path "*/e2e/*.spec.ts" -o -path "*/tests/*.spec.ts" \
   -o -path "*/cypress/**/*.cy.ts" -o -path "*/cypress/**/*.cy.js" \
-  -o -path "*/test/*.test.ts" -o -path "*/test/*.test.js" \) \
-  ! -path "*/node_modules/*" 2>/dev/null | head -20
+  -o -path "*/test/*.test.ts" -o -path "*/test/*.test.js" \
+  -o -name "*Tests.cs" -o -name "*Test.cs" -o -name "*Spec.cs" \
+  \) ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | head -20
 
 # Pages / routes
 echo "--- APP ROUTES ---"
 find . \( -path "*/pages/*.tsx" -o -path "*/pages/*.jsx" -o -path "*/app/**/*.tsx" \
-  -o -path "*/views/*.tsx" -o -path "*/routes/*.tsx" \) \
-  ! -path "*/node_modules/*" 2>/dev/null | head -30
+  -o -path "*/views/*.tsx" -o -path "*/routes/*.tsx" \
+  -o -path "*/Controllers/*.cs" -o -path "*/Pages/*.cs" -o -path "*/Views/*.cs" \
+  \) ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | head -30
+
+# --- MULTI-REPO SUPPORT ---
+# Set QA_EXTRA_PATHS (space-separated absolute paths) to scan tests in other repos
+# e.g.: export QA_EXTRA_PATHS="/path/to/e2e-repo /path/to/api-tests-repo"
+if [ -n "$QA_EXTRA_PATHS" ]; then
+  echo "MULTI_REPO_PATHS: $QA_EXTRA_PATHS"
+  for _qr in $QA_EXTRA_PATHS; do
+    _extra=$(find "$_qr" \( \
+      -name "*.spec.ts" -o -name "*.spec.js" -o -name "*.test.ts" -o -name "*.test.js" \
+      -o -name "*.cy.ts" -o -name "*.cy.js" -o -name "*Tests.cs" -o -name "*Test.cs" \) \
+      ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | wc -l | tr -d ' ')
+    echo "EXTRA_REPO $(basename "$_qr"): $_extra test files — $_qr"
+  done
+fi
 ```
+
+If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
 
 ### Tool Selection Gate
 
-Count detected tools from `PLAYWRIGHT_PRESENT`, `CYPRESS_PRESENT`, `SELENIUM_PRESENT`.
+Count detected tools from `PLAYWRIGHT_PRESENT`, `CYPRESS_PRESENT`, `SELENIUM_PRESENT`,
+`PLAYWRIGHT_DOTNET`, and `SELENIUM_DOTNET`. Treat `PLAYWRIGHT_DOTNET=1` as a Playwright
+signal and `SELENIUM_DOTNET=1` as a Selenium signal. `_TARGET_LANG` already carries the
+resolved language (`typescript`, `csharp`, `java`, `python`).
 
 **Exactly one detected** → use that tool automatically. Set `_WEB_TOOL` to `playwright`,
-`cypress`, or `selenium`.
+`cypress`, or `selenium`. If the signal came from `PLAYWRIGHT_DOTNET` or `SELENIUM_DOTNET`,
+the tool name is the same but `_TARGET_LANG` will be `csharp` — Phase 2 will load the
+C#-specific patterns and Phase 3 will execute `dotnet test`.
 
 **Zero detected** → ask:
 > "No web testing framework detected. Which would you like to use?
@@ -125,6 +195,11 @@ grep -r "href=\|to=\|path=" --include="*.tsx" --include="*.jsx" -l \
 
 grep -r "login\|signin\|auth\|token\|localStorage" --include="*.tsx" -l \
   ! -path "*/node_modules/*" 2>/dev/null | head -10
+
+# C# / .NET routes
+find . -path "*/Controllers/*.cs" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -h "\[Route\]\|\[HttpGet\]\|\[HttpPost\]\|ActionResult" 2>/dev/null | head -40
+find . -path "*/Pages/*.cshtml" -o -path "*/Views/*.cshtml" 2>/dev/null | head -20
 ```
 
 From analysis, build a **page inventory**:
@@ -142,13 +217,24 @@ Read the tool-specific patterns file for the selected `_WEB_TOOL`:
 Read qa-web/tools/<_WEB_TOOL>.md
 ```
 
-Then for each **critical** and **important** page from Phase 1, generate test specs
-following the patterns in that file. Also check the qa-refine reference guide if it
-exists:
+Then select and read the language-appropriate reference guide based on `_WEB_TOOL` and `_TARGET_LANG`:
 
-- Playwright: `qa-web/references/playwright-patterns.md` — covers POM + fixture injection, storageState auth (single/multi-role/API-based/worker-scoped), locator rank, web-first assertions, soft assertions, network mocking + HAR recording, test sharding, visual regression, `expect.poll`/`toPass`, accessibility with axe-core, test annotations/tagging, global setup via project deps, custom reporters, multi-environment projects, custom matchers, keyboard/focus testing, browser storage manipulation, performance timing, mobile emulation, clock mocking, geolocation, test attachments, debug workflow, TypeScript config + ESLint, typed POM factory, WebSocket testing, pure API test suites
-- Cypress: `qa-web/references/cypress-patterns.md` — covers cy.session() auth (with validate callback), cy.intercept() with RouteHandler (spy/modify/delay), data-cy selectors, custom commands + Commands.overwrite() + Commands.addQuery() (Cypress 12+ retrying queries), cy.request() seeding, cy.spy(), Component Testing (React + Vue 3), cy.fixture() with TypeScript generics, test isolation, debugging (.debug/.pause/cy.log), cy.origin() OAuth/SSO, cy.task() for DB ops, cy.within() scoping, cy.wrap() for sync values/Promises, Module API programmatic runs, CI parallelization + Cypress Cloud flaky detection, experimentalOriginDependencies flag, a11y (cypress-axe) and visual regression (@percy/cypress) integration, test tagging with @cypress/grep
-- Selenium: `qa-web/references/selenium-patterns.md`
+**Playwright — TypeScript** (when `_TARGET_LANG` is not `csharp`):
+> Reference: [Playwright patterns guide (TypeScript)](references/playwright-patterns.md)
+> Key patterns: POM + fixture injection · storageState auth (single/multi-role/API-based/worker-scoped) · locator rank · web-first assertions · soft assertions · network mocking + HAR recording · test sharding · visual regression · `expect.poll`/`toPass` · accessibility with axe-core · test annotations/tagging · global setup via project deps · custom reporters · multi-environment projects · custom matchers · keyboard/focus testing · browser storage manipulation · performance timing · mobile emulation · clock mocking · geolocation · test attachments · debug workflow · TypeScript config + ESLint · typed POM factory · WebSocket testing · pure API test suites
+
+**Playwright — C#** (when `_TARGET_LANG=csharp`):
+> Reference: [Playwright patterns guide (C#)](references/playwright-patterns-csharp.md)
+> Key patterns: PageTest base class (NUnit/MSTest/xUnit) · IPage/ILocator · C# POM · StorageStateAsync auth · selector strategy · web-first assertions via `Expect()` · network mocking · `.runsettings` config · `dotnet test` execution
+> Focus on the section matching `CS_TEST_FW` (`nunit`, `mstest`, or `xunit`).
+
+**Cypress**:
+> Reference: [Cypress patterns guide](references/cypress-patterns.md)
+> Key patterns: cy.session() auth (validate callback) · cy.intercept() RouteHandler (spy/modify/delay) · data-cy selectors · custom commands + Commands.overwrite() + Commands.addQuery() · cy.request() seeding · cy.spy() · Component Testing (React + Vue 3) · cy.fixture() with TypeScript generics · test isolation · cy.origin() OAuth/SSO · cy.task() for DB ops · cy.within() scoping · Module API programmatic runs · CI parallelization + Cypress Cloud flaky detection · a11y (cypress-axe) · visual regression (@percy/cypress) · test tagging with @cypress/grep
+
+**Selenium**:
+> Reference: [Selenium patterns guide](references/selenium-patterns.md)
+> Key patterns: explicit waits (WebDriverWait) · selector hierarchy (id > data-testid > name > link text > xpath) · Page Object Model · auth via cookie save/restore · headless mode · screenshot on failure · multi-language support (Java / Python / C# / Ruby / JS)
 
 **Test coverage targets per page:**
 1. Page loads without error (smoke test)
@@ -198,6 +284,19 @@ npx jest --testPathPattern="(test|e2e)/.*\\.(test|spec)\\.(ts|js)$" --forceExit 
   2>&1 | tee "$_TMP/qa-web-output.txt"
 echo "EXIT_CODE: $?"
 # Java: mvn test | Python: pytest tests/ | C#: dotnet test
+```
+
+**Playwright (.NET) / Selenium (.NET)** (when `_TARGET_LANG=csharp`):
+```bash
+export BASE_URL="${BASE_URL:-$_BASE_URL}"
+export E2E_USER_EMAIL="${E2E_USER_EMAIL:-admin@example.com}"
+export E2E_USER_PASSWORD="${E2E_USER_PASSWORD:-password123}"
+_RUNSETTINGS=""
+[ -f "playwright.runsettings" ] && _RUNSETTINGS="--settings playwright.runsettings"
+dotnet test $_RUNSETTINGS \
+  --logger "json;LogFileName=$_TMP/qa-web-dotnet-results.json" \
+  2>&1 | tee "$_TMP/qa-web-output.txt"
+echo "EXIT_CODE: $?"
 ```
 
 Parse Playwright JSON results (if applicable):
@@ -251,60 +350,9 @@ Write report to `$_TMP/qa-web-report.md`:
 ## Coverage Map
 | Page/Flow | Tests | Status |
 |-----------|-------|--------|
-
-## After this run
-- For visual regression on the same pages: → `/qa-visual`
-- For up-to-date Playwright/Cypress patterns and selectors: → `/qa-refine`
-- For test methodology (pyramid, isolation, naming): → `/qa-audit`
-- After applying fixes: re-run `/qa-web` (or `/qa-team`) — history at `<repo>/.qa-team/qa-web-*.json`
 ```
 
 Print report path. If failures exist: "Found N failing web tests. Run /investigate to diagnose?"
-
-## Phase 4b — Machine-Readable Sidecar
-
-After the markdown report, also write `$_TMP/qa-web-score.json`. Shares the envelope
-schema with `qa-audit-score.json` so hooks and CI can consume both uniformly.
-
-```bash
-_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
-_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-cat > "$_TMP/qa-web-score.json" <<JSON
-{
-  "schema_version": "1.0",
-  "skill": "qa-web",
-  "skill_version": "<read from $_QA_ROOT/VERSION>",
-  "branch": "$_BRANCH",
-  "commit": "$_COMMIT",
-  "timestamp": "$_TIMESTAMP",
-  "status": "<pass | warn | fail>",
-  "tool": "<playwright | cypress | selenium>",
-  "base_url": "<base url under test>",
-  "counts": {
-    "passed": <N>,
-    "failed": <N>,
-    "skipped": <N>,
-    "total": <N>
-  },
-  "pages": {
-    "discovered": <N>,
-    "tested": <N>,
-    "missing": <N>
-  },
-  "failure_count": <N>,
-  "report_md_path": "$_TMP/qa-web-report.md"
-}
-JSON
-```
-
-Validate it parses (`jq . "$_TMP/qa-web-score.json" >/dev/null`).
-
-## Phase 4c — Persist to Project History
-
-```bash
-bash "$_QA_ROOT/bin/qa-team-persist-history" "qa-web"
-```
 
 ## Important Rules
 
@@ -312,18 +360,3 @@ bash "$_QA_ROOT/bin/qa-team-persist-history" "qa-web"
 - **Stable selectors only** — role, label, testid, data-cy — never raw CSS classes
 - **Report even if execution fails** — always write the report file regardless of outcome
 - **Auth setup is a prerequisite** — create it before running protected tests
-- **JSON contract is load-bearing** — `qa-web-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by CI hooks. Field renames or removals require bumping `schema_version` and updating consumers.
-
-## Telemetry (run last)
-
-```bash
-# Per-run cost log (consumed by bin/qa-team-cost). Status is derived from the
-# just-written JSON sidecar — single source of truth. Falls back to "warn" if
-# jq is missing or the sidecar wasn't written. Valid: pass | warn | fail.
-_QA_STATUS=$(jq -r '.status // "warn"' "$_TMP/qa-web-score.json" 2>/dev/null || echo "warn")
-case "$_QA_STATUS" in
-  pass|warn|fail) ;;
-  *) _QA_STATUS="warn" ;;
-esac
-bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-web" "$_QA_STATUS" 2>/dev/null || true
-```

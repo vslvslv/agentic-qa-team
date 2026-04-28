@@ -59,6 +59,7 @@ echo "TMP: $_TMP"
 # Detect project type signals
 echo "--- PROJECT SIGNALS ---"
 ls package.json pyproject.toml go.mod Cargo.toml pom.xml build.gradle Gemfile 2>/dev/null | head -6
+ls *.csproj *.sln global.json Directory.Build.props nuget.config 2>/dev/null | head -4
 ls android/ ios/ app.json 2>/dev/null | head -3
 ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | head -2
 
@@ -70,6 +71,13 @@ ls playwright.config.ts playwright.config.js playwright.config.mts 2>/dev/null &
   grep -q '"cypress"' package.json 2>/dev/null && _WEB_TOOL="${_WEB_TOOL:+$_WEB_TOOL,}cypress"
 grep -q '"selenium-webdriver"\|"@seleniumhq"' package.json 2>/dev/null && \
   _WEB_TOOL="${_WEB_TOOL:+$_WEB_TOOL,}selenium"
+# C# / .NET web E2E detection
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -l "Microsoft\.Playwright" 2>/dev/null | grep -q '.' && \
+  _WEB_TOOL="${_WEB_TOOL:+$_WEB_TOOL,}playwright-dotnet"
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
+  xargs grep -l "Selenium\.WebDriver" 2>/dev/null | grep -q '.' && \
+  _WEB_TOOL="${_WEB_TOOL:+$_WEB_TOOL,}selenium-dotnet"
 echo "WEB_TOOL: ${_WEB_TOOL:-none}"
 
 # Performance tool detection
@@ -102,7 +110,8 @@ find . \( \
   -o -name "*.test.ts" -o -name "*.test.js" \
   -o -name "*_test.py" -o -name "test_*.py" \
   -o -name "*Test.java" -o -name "*_spec.rb" \
-  \) ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _HAS_TESTS=1
+  -o -name "*Tests.cs" -o -name "*Test.cs" -o -name "*Spec.cs" \
+  \) ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | grep -q '.' && _HAS_TESTS=1
 echo "HAS_TESTS: $_HAS_TESTS"
 
 # Detect running services
@@ -112,17 +121,34 @@ for port in 3000 3001 4000 4001 5000 5001 8000 8080; do
   [ "$status" != "000" ] && echo "PORT $port: $status"
 done
 
+# --- MULTI-REPO SUPPORT ---
+# Set QA_EXTRA_PATHS (space-separated absolute paths) to scan tests in other repos
+# e.g.: export QA_EXTRA_PATHS="/path/to/e2e-repo /path/to/api-tests-repo"
+if [ -n "$QA_EXTRA_PATHS" ]; then
+  echo "MULTI_REPO_PATHS: $QA_EXTRA_PATHS"
+  for _qr in $QA_EXTRA_PATHS; do
+    _extra=$(find "$_qr" \( \
+      -name "*.spec.ts" -o -name "*.spec.js" -o -name "*.test.ts" -o -name "*.test.js" \
+      -o -name "*_test.py" -o -name "test_*.py" -o -name "*Test.java" \
+      -o -name "*Tests.cs" -o -name "*_spec.rb" -o -name "*.yaml" \) \
+      ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | wc -l | tr -d ' ')
+    echo "EXTRA_REPO $(basename "$_qr"): $_extra test files — $_qr"
+  done
+fi
+
 echo "--- DONE ---"
 ```
 
 If no running services are found, warn the user and ask whether to proceed in offline mode (analyze only, no execution).
+
+If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
 
 ## Phase 0 — Scope Selection
 
 Use `AskUserQuestion` to confirm which agents to run. Default to auto-detecting based on project signals.
 
 **Auto-detection rules:**
-- `playwright.config.*` or `e2e/` or `cypress.config.*` or `cypress/` or `selenium-webdriver` in package.json → include **qa-web**
+- `playwright.config.*` or `e2e/` or `cypress.config.*` or `cypress/` or `selenium-webdriver` in package.json, or `Microsoft.Playwright`/`Selenium.WebDriver` in any `.csproj` → include **qa-web**
 - `openapi.*` or `swagger.*` or `api/` routes → include **qa-api**
 - `android/` or `ios/` or `app.json` (Expo) or `.maestro/` → include **qa-mobile**
 - `k6/` or `locustfile.py` or `load-tests/` or `*.jmx` files → include **qa-perf**
@@ -158,6 +184,11 @@ find . -path "*/routes/*.ts" -o -path "*/routes/*.js" -o -path "*/controllers/*.
 # Web pages / screens
 find . \( -path "*/pages/*.tsx" -o -path "*/screens/*.tsx" -o -path "*/views/*.tsx" \) \
   ! -path "*/node_modules/*" 2>/dev/null | head -20
+
+# C# / .NET project discovery
+find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | head -10
+find . \( -path "*/Controllers/*.cs" -o -path "*/Pages/*.cs" -o -path "*/Views/*.cs" \) \
+  ! -path "*/obj/*" 2>/dev/null | head -20
 ```
 
 Summarize findings:

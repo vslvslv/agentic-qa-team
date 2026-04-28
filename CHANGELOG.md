@@ -5,6 +5,147 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.5.10.1 — 2026-04-28 — qa-api: add RestSharp as C# HTTP client option
+
+- **`qa-api` preamble**: added `_CS_RESTSHARP` detection — greps `.csproj` files for RestSharp package reference; emits `CS_RESTSHARP: 1` when found, `CS_RESTSHARP: 0` otherwise
+- **`qa-api` Phase 3 — C# reference pointer**: updated description from "HttpClient" to "RestSharp or HttpClient"; added routing rule — use RestSharp section when `CS_RESTSHARP=1`, HttpClient section otherwise; updated note to cross-reference both `CS_TEST_FW` and `CS_RESTSHARP`
+- **`api-patterns-csharp.md`**: restructured file into two top-level sections (`## RestSharp Section` and `## HttpClient Section`); added full RestSharp v107+ `ApiClient` with typed generics (`GetAsync<T>` / `PostAsync<T>`) and untyped overloads; added RestSharp NUnit / MSTest / xUnit sub-sections with identical test coverage (happy path, 401, 404, 400, lifecycle DELETE); renamed existing HttpClient test sub-sections to `### HttpClient — NUnit/MSTest/xUnit`; header comment updated to include `http-clients: RestSharp, HttpClient`
+- **`qa-refine` reference table**: updated C# API testing entry to "C# (RestSharp or HttpClient)"
+
+---
+
+## v1.5.10.0 — 2026-04-28 — multi-repo support (QA_EXTRA_PATHS) + ISTQB CTFL 4.0 terminology
+
+### Multi-repo support (`QA_EXTRA_PATHS`) — all scanning skills
+
+- **qa-audit, qa-web, qa-api, qa-mobile, qa-perf, qa-team**: added `QA_EXTRA_PATHS` multi-repo block to each skill's preamble — when the env var is set (space-separated absolute paths), the preamble counts test files in each extra repo and emits `EXTRA_REPO <name>: N files — <path>` lines
+- **Post-preamble notes**: added "If `MULTI_REPO_PATHS` output appeared" instruction to all 6 skills — directs agents to include extra-repo files when sampling during subsequent phases; notes that language detection uses CWD and that sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment
+- **qa-team**: notes that sub-agents inherit the variable automatically so no manual forwarding is needed
+
+### Language consistency — qa-audit
+
+- **`_TARGET_LANG` detection**: added to preamble so recommendation code examples use the project's detected language (TypeScript, Java, Python, C#)
+- **C# test file patterns**: `*Tests.cs`, `*Test.cs`, `*Spec.cs` added to `_ALL_TESTS` find patterns with `! -path "*/obj/*"` exclusion
+- **C# framework detection**: added bash block to detect xUnit, NUnit, MSTest in `.csproj` files and emit `CS_TEST_FW: <framework>`
+- **Recommendation template**: added `(use the project's detected TARGET_LANG for all code examples)` note
+
+### ISTQB CTFL 4.0 terminology — qa-methodology-refine
+
+- **Phase 1b base community sources**: added `WebSearch: '"ISTQB CTFL 4.0" "<TARGET_TOPIC>" terminology 2026'` to the base source list with explanatory note (ISTQB defines authoritative terms: "test case" vs "test", "test level" vs "test layer", etc.)
+- **Phase 2 document structure**: added ISTQB CTFL 4.0 standardized terminology note listing key term mappings ("test case" not "test", "test level" not "test layer", "test basis" not "test source", "test suite", "test object", "test condition", "defect" not "bug") so generated guides stay consistent with industry certifications
+
+---
+
+## v1.5.9.9 — 2026-04-28 — lang-refine: update WebSearch queries from 2025 to 2026
+
+- **lang-refine WebSearch queries**: all 11 occurrences of `2025` updated to `2026`
+
+---
+
+## v1.5.9.8 — 2026-04-28 — qa-methodology-refine: WebSearch-first sources, existing guide check, 2026 queries
+
+- **Step 0 language detection**: TypeScript detection strengthened — now checks `tsconfig.json`, `@types/node`, `.ts`/`.tsx` files in addition to `typescript`/`ts-jest` in `package.json`
+- **Phase 1a — check existing guide first**: added `ls qa-methodology/references/` step + instruction to read the existing `<TARGET_TOPIC>-guide.md` before fetching, so research extends prior work rather than duplicating it
+- **Phase 1a — sources table**: replaced all old blog post URLs (martinfowler.com pre-2018, testing.googleblog.com/2016, satisfice.com PDF download, developsense.com/2009, xunitpatterns.com, ibm.com) with WebSearch queries; these URLs are unreliable and their content is already captured in the generated guide files; WebSearch naturally returns current, high-quality coverage of the same concepts
+- **Phase 1a — active official docs preserved**: `cucumber.io/docs/bdd/`, `cucumber.io/docs/gherkin/reference/` (BDD), `docs.pact.io/` + consumer + provider (contract-testing), `www.deque.com/axe/axe-for-web/` + W3C WCAG quickref + axe-core GitHub (accessibility), `owasp.org/www-project-devsecops-guideline/` (shift-left) — these are actively maintained and worth fetching
+- **Phase 1a — explanatory note**: added paragraph explaining the WebSearch-first rationale (old content already in guide files; WebSearch finds current articles vs fixed stale URL)
+- **Phase 1b lang-refine fetch**: removed "For non-JS/TS languages" qualifier; applies to all languages
+- **WebSearch queries**: all `2025` occurrences updated to `2026` (Phase 1a WebSearch table, Phase 1b base + per-topic queries, Phase 4b refinement gap table — 25 total occurrences)
+
+---
+
+## v1.5.9.7 — 2026-04-28 — qa-refine: full reference index, Selenium URL dedupe, 2026 queries, no JS bias
+
+- **Step 0 language detection**: TypeScript detection strengthened — now checks for `tsconfig.json`, `@types/node`, and `.ts`/`.tsx` files in `src/` in addition to `typescript`/`ts-jest` in `package.json`
+- **Step 0 exceptions**: k6 and Detox updated from "always JavaScript" to "always **JavaScript/TypeScript**" (TS supported via bundler; official docs use JS examples)
+- **Phase 1a — Existing reference files table**: added comprehensive table listing all 22 reference files currently in the repo (Playwright TS + baseline + C#, Cypress, Selenium TS, k6 + baseline, JMeter, Locust, NBomber, Detox + baseline, Appium WDIO/Java/Python/C#, Maestro, API patterns TS/Java/Python/C#/Ruby); instructs agent to read the relevant file before fetching to extend prior work rather than duplicate it
+- **Phase 1a — Playwright "See also"**: simplified to a short pointer; detail moved to reference files table
+- **Phase 1a — Selenium URLs**: refactored from per-language table (which repeated the same 4 selenium.dev URLs for every language) to a shared "language-independent" block + a small language-specific additions table; TS/JS/C# now noted as needing no additional source beyond selenium.dev; added `See also` pointer to `selenium-patterns.md`
+- **Phase 1b — lang-refine fetch**: removed "For non-JS/TS languages" qualifier; now applies to all languages; lists all 7 available lang-refine reference files explicitly
+- **Phase 2 — target paths**: removed "TypeScript/JavaScript (the default)" framing; replaced with neutral note that base-name files are the TypeScript references and all other languages use a suffix
+- **Phase 2 — target paths table**: added NBomber → `qa-perf/references/nbomber-patterns.md`
+- **WebSearch queries**: all 15 occurrences of `2025` updated to `2026`
+
+---
+
+## v1.5.9.6 — 2026-04-28 — qa-audit: 4 new methodology checks + scoring/report updates
+
+- **qa-audit preamble**: expanded `_RETRY_COUNT` grep to capture `.only`, `xdescribe`, `@Ignore`, `[Ignore]`, `[Skip]`, `pytest.mark.xfail`, `jest.retryTimes`, `retries: N`
+- **Check 7 (CI test integration)**: added bash block to detect artifact-on-failure signals (`upload-artifact`, `store_artifacts`, `junit`, `screenshot`, `video`, `allure`); added "Artifacts on failure" checklist item; removed "Parallel test execution" bullet (moved to dedicated Check 11)
+- **new Check 8 — Assertion quality**: greps for presence-only assertions (`notBeNull`, `assertNotNull`, `toBeDefined()`, `ShouldNotBeNull`, `assertIsNotNone`, etc.); flags tests that confirm an object exists but do not verify its content or behaviour
+- **new Check 9 — Positive/negative test balance**: counts test names matching positive-path keywords vs negative-path keywords; flags suites where `_NEG_TESTS = 0` (only happy-path coverage) or extreme imbalance
+- **new Check 10 — Retry / ignore / skip markers**: greps for `.skip`, `.only`, `xtest`, `@Ignore`, `[Ignore]`, `pytest.mark.skip/xfail`, `retries: N`, `flaky`; explains risk of each marker type; flags any committed `.only` as a definite bug
+- **new Check 11 — Parallelization safety**: greps for hardcoded shared ports/DB names and for `--runInBand` / `maxWorkers=1` / `singleThread` config flags that suppress parallelism instead of fixing root causes; explicitly distinguished from Check 7's CI parallel-execution check
+- **Phase 4 scoring table**: renamed "Naming Quality" → "Assertion & Naming Quality" (Checks 1 & 8); renamed "CI / Coverage" → "CI / Coverage & Reliability" (Checks 4, 6, 7 & 10); updated "Pyramid Balance" signal to include Check 9; updated "Test Isolation" signal to include Check 11
+- **Phase 5 report template**: updated dimension score rows to surface new signals; renamed "Flakiness Risk Summary" → "Flakiness & Reliability Summary"; added weak assertion count and missing-negative-path verdict rows
+- **skill description**: updated to enumerate all 11 checks
+
+---
+
+## v1.5.9.5 — 2026-04-28 — qa-perf: NBomber support, C# detection, blockquote reference format
+
+- **qa-perf preamble**: added `_TARGET_LANG` detection; .NET base URL from `launchSettings.json`; `_NBOMBER` detection via `find . -name "*.csproj" | xargs grep -il "NBomber"`; C# existing perf file patterns (`*LoadTest*.cs`, `*PerfTest*.cs`); C# Controller route detection
+- **qa-perf Tool Selection Gate**: `NBOMBER_PRESENT` counted alongside k6/JMeter/Locust; NBomber listed as option 2 in zero-detected case with recommendation note for `_TARGET_LANG=csharp`
+- **qa-perf Phase 2**: converted from bullet/inline list to blockquote format (matching qa-web/qa-api/qa-mobile pattern); NBomber entry added with reference link and key patterns summary
+- **new files** — `qa-perf/tools/`:
+  - `nbomber.md` — load simulation types table, full auth+scenario script template, thresholds, DataFeed, execute block, result parsing, CI notes
+- **new files** — `qa-perf/references/`:
+  - `nbomber-patterns.md` — core principles (open vs closed model, one `HttpClient`, auth before scenario); all `LoadSimulation` variants; full multi-scenario script with auth + thresholds + report formats; `DataFeed` parameterised data; NUnit `[Explicit]` integration; cleanup-after-writes with `ConcurrentBag`; default SLA profiles table
+
+---
+
+## v1.5.9.4 — 2026-04-28 — Consistent blockquote reference format; qa-mobile multi-language Appium
+
+- **qa-web Phase 2**: reference section converted from flat bullet list to blockquote format matching qa-mobile Phase 3 — each tool now has a bold heading, `> Reference: [title](path)` link, and `> Key patterns: a · b · c` summary
+- **qa-api Phase 3**: "Load language patterns file" section converted to same blockquote format — one entry per language with link + key patterns summary; `CS_TEST_FW` focus note retained for C#
+- **qa-mobile preamble**: added `_TARGET_LANG` detection (`typescript`, `java`, `python`, `csharp`, `ruby`) after Maestro detection block
+- **qa-mobile Phase 3 Appium section**: split into per-language blockquote entries (TypeScript/WDIO, Java, Python, C#); TS example code retained; other languages redirect to new reference files
+- **new files** — `qa-mobile/references/`:
+  - `appium-patterns-java.md` — `AppiumTestBase` with JUnit 5, `AppiumBy.ACCESSIBILITY_ID` selectors, `WebDriverWait`, `@BeforeAll`/`@AfterAll` lifecycle
+  - `appium-patterns-python.md` — pytest session-fixture driver, `AppiumBy.ACCESSIBILITY_ID`, `WebDriverWait`/`expected_conditions`, `autouse` app-reset fixture
+  - `appium-patterns-csharp.md` — `AppiumTestBase` with `IOSDriver`/`AndroidDriver`, NUnit/MSTest/xUnit sections, `MobileBy.AccessibilityId`, `WebDriverWait`, `dotnet test` execute block
+
+---
+
+## v1.5.9.3 — 2026-04-28 — qa-api: C# support, ApiClient pattern, reference files, DELETE/cleanup rules
+
+- **qa-api preamble**: `_CS_TEST_FW` detection (nunit/mstest/xunit); .NET base URL from `launchSettings.json` + `appsettings*.json`; `Controllers/*.cs` added to route file scan; all C# `find` calls exclude `*/obj/*`
+- **qa-api Phase 1**: added C# Controller attribute grep (`[HttpGet]`, `[HttpPost]`, `[Route]` etc.) as Strategy 2b
+- **qa-api Phase 3**: removed all inline language templates; Phase 3 now reads `qa-api/references/api-patterns-<_API_TOOL>.md`; prominent DELETE policy and cleanup obligations added before test generation
+- **qa-api Important Rules**: replaced vague "idempotent tests" with explicit "shared ApiClient", "no bare DELETE tests", and "cleanup everything you create" rules
+- **new files** — `qa-api/references/`:
+  - `api-patterns-typescript.md` — `ApiClient` wrapping Playwright request context, cleanup via `afterAll`
+  - `api-patterns-java.md` — `ApiClient` wrapping REST Assured, cleanup in `@AfterAll`
+  - `api-patterns-python.md` — `ApiClient` wrapping `requests.Session`, cleanup via session-scoped `autouse` fixture
+  - `api-patterns-csharp.md` — `ApiClient` wrapping `HttpClient` (single instance, `Anonymous()` helper); NUnit / MSTest / xUnit sections; `_created` list + teardown cleanup; lifecycle DELETE pattern
+  - `api-patterns-ruby.md` — `ApiClient` wrapping Faraday, cleanup in `after(:all)`
+
+---
+
+## v1.5.9.2 — 2026-04-28 — C# support in qa-web (preamble, base URL, patterns)
+
+- **qa-web preamble**: added `_PW_DOTNET` / `_SE_DOTNET` detection (grep `.csproj` for `Microsoft.Playwright` / `Selenium.WebDriver`); `_TARGET_LANG` variable (`typescript`, `csharp`, `java`, `python`); `_CS_TEST_FW` detection (`nunit`, `mstest`, `xunit`)
+- **qa-web base URL**: extended detection chain — `launchSettings.json` (`applicationUrl`, semicolon-safe), then `appsettings.json`/`appsettings.Development.json` `BaseUrl` key, then JS/TS configs, then fallback `http://localhost:3000`
+- **qa-web spec scan**: added `*Tests.cs`, `*Test.cs`, `*Spec.cs`; all C# `find` calls exclude `*/obj/*`
+- **qa-web routes**: added `Controllers/*.cs`, `Pages/*.cs`, `Views/*.cs` + `.cshtml` to Phase 1 route discovery
+- **qa-web Tool Gate**: treats `PLAYWRIGHT_DOTNET` / `SELENIUM_DOTNET` as Playwright/Selenium signals; documents that `_TARGET_LANG=csharp` drives Phase 2 pattern file selection and Phase 3 execute command
+- **qa-web Phase 2**: patterns file selection now branches on `_TARGET_LANG` — C# projects read `playwright-patterns-csharp.md` and focus on `CS_TEST_FW` section
+- **qa-web Phase 3**: added `dotnet test` execute block for `_TARGET_LANG=csharp`
+- **new file**: `qa-web/references/playwright-patterns-csharp.md` — C# Playwright patterns covering NUnit / MSTest / xUnit base classes, POM with `IPage`/`ILocator`, `StorageStateAsync` auth, selector strategy, `Expect()` assertions, network mocking, `.runsettings` config, CI notes
+
+
+---
+
+## v1.5.9.1 — 2026-04-28 — C# support in qa-team project/web-tool detection
+
+- **qa-team preamble**: detect `*.csproj`, `*.sln`, `global.json`, `Directory.Build.props`, `nuget.config` as project signals
+- **qa-team web E2E detection**: grep `.csproj` files for `Microsoft.Playwright` → `playwright-dotnet` and `Selenium.WebDriver` → `selenium-dotnet`
+- **qa-team test file scan**: add `*Tests.cs`, `*Test.cs`, `*Spec.cs` patterns; exclude `*/obj/*` from all C# `find` calls
+- **qa-team Phase 0**: auto-detection rule for **qa-web** now mentions `.csproj` Playwright/Selenium signals
+- **qa-team Phase 1**: added C# entry-point discovery (`*.csproj`, `Controllers/`, `Pages/`, `Views/`)
+
+---
+
 ## v1.5.9.0 — 2026-04-28 — Extract version-check + history persistence (Impact 9 complete)
 
 Closes the two **deferred** Impact 9 sub-tasks from PR #5. With this release, every

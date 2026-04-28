@@ -27,13 +27,21 @@ _TMP="${TEMP:-${TMP:-/tmp}}"
 _QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-visual 2>/dev/null)" 2>/dev/null) || true
 [ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
   _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-bash "$_QA_ROOT/bin/qa-team-precheck"
+_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
+  || echo "UPDATE_CHECK_FAILED: not found" )
+echo "VERSION_STATUS: $_QA_VER"
+_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
+_QA_SKIP_ASK=0
+if [ -f "$_QA_ASK_COOLDOWN" ]; then
+  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
+  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
+fi
 ```
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_PROMPT` is `0`, use `AskUserQuestion`:
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
 - Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
 - Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_TMP/.qa-update-asked"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
+- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
 - If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
 - Continue regardless of choice.
 
@@ -353,56 +361,6 @@ Write report to `$_TMP/qa-visual-report.md`:
 ## Diff Artifacts
 - Location: playwright-report/
 - View: npx playwright show-report
-
-## After this run
-- For functional coverage of the same pages: → `/qa-web`
-- For up-to-date masking and viewport patterns: → `/qa-refine`
-- After accepting intentional UI changes: re-run with `--update-snapshots`, then re-run `/qa-visual` to lock the new baseline
-- History at `<repo>/.qa-team/qa-visual-*.json`
-```
-
-## Phase 6b — Machine-Readable Sidecar
-
-After the markdown report, also write `$_TMP/qa-visual-score.json`. Shares the envelope
-schema with `qa-audit-score.json`.
-
-```bash
-_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
-_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-cat > "$_TMP/qa-visual-score.json" <<JSON
-{
-  "schema_version": "1.0",
-  "skill": "qa-visual",
-  "skill_version": "<read from $_QA_ROOT/VERSION>",
-  "branch": "$_BRANCH",
-  "commit": "$_COMMIT",
-  "timestamp": "$_TIMESTAMP",
-  "status": "<pass | warn | fail>",
-  "tool": "playwright",
-  "counts": {
-    "passed": <N>,
-    "failed": <N>,
-    "skipped": <N>,
-    "total": <N>
-  },
-  "screenshots": {
-    "baselines": <N>,
-    "viewports_count": <N>
-  },
-  "regressions_count": <N>,
-  "baseline_update_required_count": <N>,
-  "report_md_path": "$_TMP/qa-visual-report.md"
-}
-JSON
-```
-
-Validate it parses (`jq . "$_TMP/qa-visual-score.json" >/dev/null`).
-
-## Phase 6c — Persist to Project History
-
-```bash
-bash "$_QA_ROOT/bin/qa-team-persist-history" "qa-visual"
 ```
 
 ## Important Rules
@@ -415,18 +373,3 @@ bash "$_QA_ROOT/bin/qa-team-persist-history" "qa-visual"
 - **Pixel threshold is project-specific** — default `maxDiffPixels: 100` is conservative; adjust if too noisy
 - **Report even without comparison** — if baseline missing, document that baselines were created
 - **No full-page on infinite scroll** — use `clip` option for pages with endless scroll
-- **JSON contract is load-bearing** — `qa-visual-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by CI hooks. Field renames or removals require bumping `schema_version` and updating consumers.
-
-## Telemetry (run last)
-
-```bash
-# Per-run cost log (consumed by bin/qa-team-cost). Status is derived from the
-# just-written JSON sidecar — single source of truth. Falls back to "warn" if
-# jq is missing or the sidecar wasn't written. Valid: pass | warn | fail.
-_QA_STATUS=$(jq -r '.status // "warn"' "$_TMP/qa-visual-score.json" 2>/dev/null || echo "warn")
-case "$_QA_STATUS" in
-  pass|warn|fail) ;;
-  *) _QA_STATUS="warn" ;;
-esac
-bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-visual" "$_QA_STATUS" 2>/dev/null || true
-```
