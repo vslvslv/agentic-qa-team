@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# bin/qa-team-suggest-rerun — Passive nudge to re-run /qa-* after edits.
+#
+# Designed to be wired in as a Claude Code Stop hook. On each Stop event:
+#   1. Read .qa-team/qa-*-latest.json from the active git repo (if any)
+#   2. For each skill's recorded commit, compare against HEAD
+#   3. If HEAD differs AND test files changed since, print a one-line nudge
+#      to stderr (visible to the user, not consumed by Claude)
+#   4. Always exit 0 — this hook never blocks
+#
+# Performance budget: <200ms (no network, no LLM, no Docker).
+# Depends on: git (required), jq (optional — falls back to grep).
+#
+# Manual test:
+#   cd /path/to/some/repo  # one with .qa-team/qa-audit-latest.json
+#   bash bin/qa-team-suggest-rerun
+
+set -e
+
+# Quick exits — never error out, just be silent.
+command -v git >/dev/null 2>&1 || exit 0
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+
+HIST_DIR="$REPO_ROOT/.qa-team"
+[ -d "$HIST_DIR" ] || exit 0
+
+CURRENT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null)" || exit 0
+
+# Pattern for "test file" — covers JS/TS, Python, C#, Java, Ruby, Go.
+_is_test_file_pattern='\.(test|spec)\.[jt]sx?$|_test\.py$|^test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$'
+
+NUDGES=()
+for latest in "$HIST_DIR"/qa-*-latest.json; do
+  [ -e "$latest" ] || continue
+
+  # Get the prior commit. Prefer jq; fall back to grep.
+  PRIOR_COMMIT=""
+  if command -v jq >/dev/null 2>&1; then
+    PRIOR_COMMIT=$(jq -r '.commit // empty' "$latest" 2>/dev/null) || PRIOR_COMMIT=""
+  else
+    PRIOR_COMMIT=$(grep -o '"commit":[[:space:]]*"[^"]*"' "$latest" 2>/dev/null \
+      | head -1 \
+      | sed 's/.*"\([^"]*\)"$/\1/')
+  fi
+
+  [ -z "$PRIOR_COMMIT" ] && continue
+  [ "$PRIOR_COMMIT" = "$CURRENT_COMMIT" ] && continue
+
+  # Get skill name (strip the -latest.json suffix from the basename).
+  SKILL_NAME=$(basename "$latest")
+  SKILL_NAME="${SKILL_NAME%-latest.json}"
+
+  # Count test files changed in the range PRIOR_COMMIT..HEAD.
+  # If the prior commit isn't reachable (e.g. user rewrote history), skip silently.
+  if ! git merge-base --is-ancestor "$PRIOR_COMMIT" HEAD 2>/dev/null; then
+    continue
+  fi
+
+  CHANGED=$(git diff --name-only "$PRIOR_COMMIT"..HEAD 2>/dev/null \
+    | grep -E "$_is_test_file_pattern" 2>/dev/null \
+    | wc -l \
+    | tr -d ' ')
+
+  if [ "${CHANGED:-0}" -gt 0 ]; then
+    NUDGES+=("$CHANGED test file(s) changed since /$SKILL_NAME at $PRIOR_COMMIT — re-run /$SKILL_NAME to measure delta")
+  fi
+done
+
+if [ "${#NUDGES[@]:-0}" -gt 0 ]; then
+  printf '\n' >&2
+  for nudge in "${NUDGES[@]}"; do
+    printf '[qa-team] %s\n' "$nudge" >&2
+  done
+fi
+
+exit 0

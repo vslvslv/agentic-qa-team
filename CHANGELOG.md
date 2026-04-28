@@ -5,6 +5,55 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.5.6.0 — 2026-04-28 — Default Stop-hook for re-run nudges
+
+Closes Impact 7 from the original audit: skill discovery and re-run had been pull-only.
+With this release, every Claude Code session now ends with an automatic check that
+detects whether test files have changed since the last `/qa-*` run, and surfaces a
+passive nudge to re-run the affected skill.
+
+### Added (`bin/qa-team-suggest-rerun`)
+- New shell script (bash 3.2 compatible, jq-optional) designed to run as a Claude Code
+  Stop hook. On every Stop:
+  1. Reads `.qa-team/qa-*-latest.json` from the active git repo (silently exits if
+     none exists, the cwd is not a git repo, or `git` is missing).
+  2. For each skill's recorded commit, compares against `HEAD`.
+  3. If the prior commit is reachable from `HEAD` AND test files changed in between
+     (matched against patterns for JS/TS, Python, C#, Java, Ruby, Go), prints a
+     one-line nudge per skill to **stderr** (visible to the user, not consumed by
+     the agent's stdout pipeline).
+  4. Always exits 0 — this hook never blocks a Stop event.
+- Performance budget: <200ms (no network, no LLM, no Docker).
+- Five-case smoke-test covers: not-in-repo, no-history, no-changes-since,
+  test-file-changed, and multi-skill deltas.
+
+### Changed (`bin/setup`)
+- New flags: `--with-hook` (skip prompt — install Stop hook unattended), `--no-hook`
+  (skip the hook entirely), `--hook-only` (don't touch symlinks; install/update hook
+  only). Default behaviour unchanged: prompt before installing.
+- Default install now offers a Y/n prompt to wire `bin/qa-team-suggest-rerun` into
+  `~/.claude/settings.json` under `.hooks.Stop`. Non-interactive stdin defaults to
+  yes. Pre-existing hooks and other settings keys are preserved (verified end-to-end).
+- Hook installation is **idempotent**: re-running setup detects an existing entry by
+  command-string match and skips. Works with `jq` (preferred); without `jq`, prints a
+  manual install snippet for the user to paste.
+- Atomic merge: writes to a tempfile and `mv`s into place — no partial-write risk.
+- Two new env-var overrides for testing: `CLAUDE_SETTINGS_FILE` and
+  `CLAUDE_SKILLS_DIR` (pre-existing).
+
+### Notes
+- The hook is **passive** — it never auto-runs `/qa-*`. It only prints a nudge. The
+  user (or agent) decides whether to re-run, preserving the same decision boundary
+  the verify-after-fixes loop in v1.5.4.0 introduced.
+- The hook references the absolute path of `qa-team-suggest-rerun`. If the repo is
+  moved or symlinks are recreated under a different name, re-run `bash bin/setup
+  --hook-only` to refresh the reference.
+- Why a `Stop` hook and not `PostToolUse`: nudging on every edit would be noisy (the
+  user is mid-flow). Stop fires once per session — exactly when the user is about to
+  step away and ask "did I leave something undone?".
+
+---
+
 ## v1.5.5.0 — 2026-04-28 — Extend JSON sidecar pattern to all sub-skills
 
 ### Added (sub-skills)
