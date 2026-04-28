@@ -437,7 +437,13 @@ fi
 ## Telemetry (run last)
 
 ```bash
-# Per-run cost log (consumed by bin/qa-team-cost). Status mirrors the JSON
-# sidecar's `status` field: pass | warn | fail.
-bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-visual" "<pass|warn|fail>" 2>/dev/null || true
+# Per-run cost log (consumed by bin/qa-team-cost). Status is derived from the
+# just-written JSON sidecar — single source of truth. Falls back to "warn" if
+# jq is missing or the sidecar wasn't written. Valid: pass | warn | fail.
+_QA_STATUS=$(jq -r '.status // "warn"' "$_TMP/qa-visual-score.json" 2>/dev/null || echo "warn")
+case "$_QA_STATUS" in
+  pass|warn|fail) ;;
+  *) _QA_STATUS="warn" ;;
+esac
+bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-visual" "$_QA_STATUS" 2>/dev/null || true
 ```

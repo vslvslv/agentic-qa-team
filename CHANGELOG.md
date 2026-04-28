@@ -27,7 +27,7 @@ Canonical pattern: `\.(test|spec)\.[jt]sx?$|_test\.py$|(^|/)test_.*\.py$|Tests?\
 plus the corresponding 16 find globs. Bash 3.2 compatible. No external deps
 beyond git + grep + find.
 
-### Changed — three drift sites collapsed to one
+### Changed — five drift sites collapsed to one
 
 The same test-file pattern previously lived in five places:
 - `qa-audit/SKILL.md` Preamble (delta regex)

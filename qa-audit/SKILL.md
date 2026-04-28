@@ -488,6 +488,7 @@ cat > "$_TMP/qa-audit-score.json" <<JSON
   "branch": "$_BRANCH",
   "commit": "$_COMMIT",
   "timestamp": "$_TIMESTAMP",
+  "status": "<pass | warn>",
   "overall": <score 0-100>,
   "rating": "<Excellent | Good | Fair | Needs Work>",
   "delta_mode": {
@@ -520,6 +521,10 @@ cat > "$_TMP/qa-audit-score.json" <<JSON
 }
 JSON
 ```
+
+`status` is `"warn"` when `critical_count > 0`, otherwise `"pass"`. The
+delta-no-op early exit (Phase 0) writes `status: "delta-no-op"` instead.
+Telemetry consumes this field uniformly across all skills with sidecars.
 
 Replace every `<...>` placeholder with the actual values computed in Phases 1–4. Validate
 the file is parseable JSON before continuing (`jq . "$_TMP/qa-audit-score.json" >/dev/null`)
@@ -580,9 +585,14 @@ alongside code.
   '{"skill":"qa-audit","event":"completed","branch":"'"$_BRANCH"'","date":"'"$_DATE"'"}' \
   2>/dev/null || true
 
-# Per-run cost log (consumed by bin/qa-team-cost). Status reflects the run:
-#   pass         = score reported (full audit or non-zero delta)
-#   warn         = critical_count > 0
-#   delta-no-op  = delta mode with 0 changed test files (early exit)
-bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-audit" "<pass|warn|delta-no-op>" 2>/dev/null || true
+# Per-run cost log (consumed by bin/qa-team-cost). Status is derived from the
+# JSON sidecar's `.status` field — single source of truth, no drift between
+# the sidecar and the cost log. Falls back to "warn" if jq is missing or the
+# sidecar wasn't written. Possible values: pass | warn | delta-no-op.
+_QA_STATUS=$(jq -r '.status // "warn"' "$_TMP/qa-audit-score.json" 2>/dev/null || echo "warn")
+case "$_QA_STATUS" in
+  pass|warn|fail|delta-no-op) ;;
+  *) _QA_STATUS="warn" ;;
+esac
+bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-audit" "$_QA_STATUS" 2>/dev/null || true
 ```

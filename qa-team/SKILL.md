@@ -326,6 +326,17 @@ Write `qa-report-<date>.md` to the project root (or `reports/` if it exists):
 
 Print the report path and overall pass/fail status.
 
+After writing the unified report, set `_QA_TEAM_STATUS` so the Telemetry tail at
+the end of the skill records the aggregated outcome accurately:
+
+```bash
+# Reflect the same verdict as the "Overall Status" line in the unified report.
+# pass: 0 critical failures across all sub-agents
+# warn: at least one sub-agent reported issues but none CRITICAL
+# fail: at least one sub-agent reported a CRITICAL failure
+_QA_TEAM_STATUS="<pass | warn | fail>"
+```
+
 If there are critical failures: "Found N critical failures. Run /investigate to diagnose?"
 
 ## Phase 5 — Verify After Fixes (close the loop)
@@ -403,8 +414,14 @@ measurement instrument the user can trust.
   '{"skill":"qa-team","event":"completed","branch":"'"$_BRANCH"'","date":"'"$_DATE"'"}' \
   2>/dev/null || true
 
-# Per-run cost log (consumed by bin/qa-team-cost). Status reflects the
-# aggregated outcome: pass = no critical failures across sub-agents, warn =
-# partial issues, fail = at least one sub-agent reported critical failures.
-bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-team" "<pass|warn|fail>" 2>/dev/null || true
+# Per-run cost log (consumed by bin/qa-team-cost). Status is read from the
+# `_QA_TEAM_STATUS` variable that Phase 4 sets when emitting the unified
+# report (mirrors the report's "Overall Status" line). Falls back to "warn"
+# if the variable is unset (e.g. early failure before Phase 4 ran).
+_QA_STATUS="${_QA_TEAM_STATUS:-warn}"
+case "$_QA_STATUS" in
+  pass|warn|fail) ;;
+  *) _QA_STATUS="warn" ;;
+esac
+bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-team" "$_QA_STATUS" 2>/dev/null || true
 ```
