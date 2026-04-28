@@ -488,7 +488,7 @@ cat > "$_TMP/qa-audit-score.json" <<JSON
   "branch": "$_BRANCH",
   "commit": "$_COMMIT",
   "timestamp": "$_TIMESTAMP",
-  "status": "<pass | warn>",
+  "status": "<pass | warn | delta-no-op>",
   "overall": <score 0-100>,
   "rating": "<Excellent | Good | Fair | Needs Work>",
   "delta_mode": {
@@ -522,9 +522,16 @@ cat > "$_TMP/qa-audit-score.json" <<JSON
 JSON
 ```
 
-`status` is `"warn"` when `critical_count > 0`, otherwise `"pass"`. The
-delta-no-op early exit (Phase 0) writes `status: "delta-no-op"` instead.
-Telemetry consumes this field uniformly across all skills with sidecars.
+`status` mapping (uniform contract across all skills with sidecars):
+- `"pass"` — full audit completed and `critical_count == 0`
+- `"warn"` — full audit completed but `critical_count > 0`
+- `"delta-no-op"` — emitted **only** by the delta-mode early exit in the Preamble
+  (when `_DELTA_MODE=1` and `_CHANGED_COUNT=0`). The delta-no-op JSON sets
+  `overall: null` and `rating: null` since there was nothing to score; consumers
+  must treat it as "scope was empty", not as "score was zero".
+
+The same `status` field is consumed by `bin/qa-team-cost-log` so cost telemetry
+mirrors the sidecar automatically — no second source of truth.
 
 Replace every `<...>` placeholder with the actual values computed in Phases 1–4. Validate
 the file is parseable JSON before continuing (`jq . "$_TMP/qa-audit-score.json" >/dev/null`)

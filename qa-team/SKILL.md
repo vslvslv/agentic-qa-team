@@ -357,9 +357,23 @@ fi
 # Compute scope of changes since the last recorded run.
 # Delegates to the canonical helper (same script that qa-audit and the
 # Stop-hook use — single source of truth).
+#
+# IMPORTANT: capture the helper's exit code BEFORE piping to head, otherwise
+# `bash ... | head -20` masks failures (head's exit 0 wins). The helper exits
+# 3 if _PRIOR_COMMIT is no longer reachable from HEAD (e.g. user rewrote
+# history). In that case skip Phase 5 entirely instead of silently treating
+# the failure as "no changed tests" — same behaviour as the Stop hook.
 _CHANGED_TEST_FILES=""
+_PHASE5_SKIP=0
 if [ -n "$_PRIOR_COMMIT" ] && [ "$_PRIOR_COMMIT" != "$(git rev-parse --short HEAD)" ]; then
-  _CHANGED_TEST_FILES=$(bash "$_QA_ROOT/bin/qa-team-test-files" --since="$_PRIOR_COMMIT" 2>/dev/null | head -20 || true)
+  if _RAW_CHANGED=$(bash "$_QA_ROOT/bin/qa-team-test-files" --since="$_PRIOR_COMMIT" 2>/dev/null); then
+    _CHANGED_TEST_FILES=$(printf '%s\n' "$_RAW_CHANGED" | head -20)
+  else
+    # Helper rejected the ref. Treat as "prior history is no longer comparable"
+    # and skip Phase 5 — don't mislead the user into thinking nothing changed.
+    _PHASE5_SKIP=1
+    echo "Phase 5 skipped: prior commit $_PRIOR_COMMIT is no longer reachable from HEAD (history rewrite?). Run /qa-team without verify to re-baseline." >&2
+  fi
 fi
 ```
 
@@ -367,7 +381,8 @@ fi
 
 1. **No prior history** (`_PRIOR_AUDIT` missing): nothing to verify against. Skip Phase 5.
 2. **Prior commit equals HEAD**: report was already against the current code. Skip Phase 5.
-3. **Test files changed since last run**: this is the case that matters. Use `AskUserQuestion`:
+3. **`_PHASE5_SKIP=1`** (helper rejected the prior commit — history rewrite): skip Phase 5; the prior baseline is no longer comparable.
+4. **Test files changed since last run**: this is the case that matters. Use `AskUserQuestion`:
    - Question: "You've changed N test files since the last QA report (commit `$_PRIOR_COMMIT`). Re-run sub-agents now to measure delta?"
    - Options:
      - "Yes — re-run `/qa-audit --since=$_PRIOR_COMMIT` (cheap, Recommended)" — spawns only `/qa-audit` in delta mode, scoping to the changed-file subset. Fastest option; ideal for per-PR verification.
@@ -375,7 +390,7 @@ fi
      - "Yes — re-run full /qa-team"
      - "No — skip verification"
    - If the user picks a re-run option, jump back to Phase 2 with the narrowed scope (and `--since` flag set when applicable) and complete the loop.
-4. **No test files changed but production code did**: nudge gently — "Production code changed since last audit but no test files. Consider whether the changes need new test coverage."
+5. **No test files changed but production code did**: nudge gently — "Production code changed since last audit but no test files. Consider whether the changes need new test coverage."
 
 **Score-delta hint**: if the re-run completes in **full** mode, read both the prior and
 current `qa-audit-score.json`, compute `overall_delta = current - prior`, and surface it
