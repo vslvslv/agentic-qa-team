@@ -1,19 +1,50 @@
 #!/usr/bin/env bash
 # bin/setup — Install qa-agentic-team skills as symlinks into ~/.claude/skills/
-# Usage: bash bin/setup [--short-names | --namespaced]
+#
+# Usage:
+#   bash bin/setup                          # Symlink skills under short names; prompt for hook
+#   bash bin/setup --namespaced             # Single namespaced symlink
+#   bash bin/setup --with-hook              # Skip prompt — install Stop hook unattended
+#   bash bin/setup --no-hook                # Skip hook entirely
+#   bash bin/setup --hook-only              # Don't touch symlinks; install/update hook only
+#
+# The Stop hook (~/.claude/settings.json) wires bin/qa-team-suggest-rerun to fire on every
+# session end, printing a passive nudge when test files have changed since the last QA run.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLAUDE_SKILLS="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
-MODE="${1:---short-names}"
+CLAUDE_SETTINGS="${CLAUDE_SETTINGS_FILE:-$HOME/.claude/settings.json}"
+
+# Parse args. Mutually exclusive: --short-names | --namespaced.
+# Independent: --with-hook | --no-hook | --hook-only.
+MODE="--short-names"
+HOOK_PREF="prompt"     # prompt | install | skip
+INSTALL_SKILLS=1
+
+for arg in "$@"; do
+  case "$arg" in
+    --short-names) MODE="--short-names" ;;
+    --namespaced)  MODE="--namespaced" ;;
+    --with-hook)   HOOK_PREF="install" ;;
+    --no-hook)     HOOK_PREF="skip" ;;
+    --hook-only)   HOOK_PREF="install"; INSTALL_SKILLS=0 ;;
+    *)
+      echo "ERROR: unknown argument: $arg" >&2
+      sed -n '3,12p' "$0" >&2
+      exit 1
+      ;;
+  esac
+done
 
 _version() { cat "$REPO_DIR/VERSION" | tr -d '[:space:]'; }
 
 echo "qa-agentic-team $(_version) — Setup"
 echo "========================================"
-echo "Repo:   $REPO_DIR"
-echo "Skills: $CLAUDE_SKILLS"
-echo "Mode:   $MODE"
+echo "Repo:     $REPO_DIR"
+echo "Skills:   $CLAUDE_SKILLS"
+echo "Settings: $CLAUDE_SETTINGS"
+echo "Mode:     $MODE"
 echo ""
 
 mkdir -p "$CLAUDE_SKILLS"
@@ -34,7 +65,9 @@ INSTALLED=0
 UPDATED=0
 SKIPPED=0
 
-if [ "$MODE" = "--namespaced" ]; then
+if [ "$INSTALL_SKILLS" = "0" ]; then
+  echo "  (skipping skill symlinks — --hook-only)"
+elif [ "$MODE" = "--namespaced" ]; then
   # Single symlink: ~/.claude/skills/qa-agentic-team → repo root
   DEST="$CLAUDE_SKILLS/qa-agentic-team"
   if [ -L "$DEST" ]; then
@@ -80,8 +113,95 @@ else
   done < <(_skills)
 fi
 
-echo ""
-echo "Done. Installed: $INSTALLED  Updated: $UPDATED  Skipped: $SKIPPED"
+if [ "$INSTALL_SKILLS" = "1" ]; then
+  echo ""
+  echo "Skill symlinks: Installed: $INSTALLED  Updated: $UPDATED  Skipped: $SKIPPED"
+fi
+
+# ---- Stop hook (re-run nudge) ---------------------------------------------------
+HOOK_SCRIPT="$REPO_DIR/bin/qa-team-suggest-rerun"
+HOOK_MATCHER="main-agent"
+
+_hook_already_installed() {
+  # Returns 0 if a Stop hook entry with our command is present in CLAUDE_SETTINGS.
+  [ -f "$CLAUDE_SETTINGS" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 2
+  jq -e --arg cmd "$HOOK_SCRIPT" \
+    'first(.hooks.Stop[]? | select(.command == $cmd))' \
+    "$CLAUDE_SETTINGS" >/dev/null 2>&1
+}
+
+_install_hook() {
+  if [ ! -x "$HOOK_SCRIPT" ]; then
+    chmod +x "$HOOK_SCRIPT" 2>/dev/null || true
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo ""
+    echo "WARN  jq not installed — cannot edit $CLAUDE_SETTINGS automatically."
+    echo "      Add this entry manually under .hooks.Stop:"
+    cat <<JSON
+        {
+          "matcher": "$HOOK_MATCHER",
+          "command": "$HOOK_SCRIPT"
+        }
+JSON
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
+  if [ ! -f "$CLAUDE_SETTINGS" ]; then
+    echo '{}' > "$CLAUDE_SETTINGS"
+  fi
+
+  if _hook_already_installed; then
+    echo "  OK    Stop hook already installed ($HOOK_SCRIPT)"
+    return 0
+  fi
+
+  # Atomic merge: read settings → add hook → write to tmp → mv into place.
+  local TMP
+  TMP="$(mktemp)"
+  jq --arg cmd "$HOOK_SCRIPT" --arg matcher "$HOOK_MATCHER" \
+    '.hooks.Stop = ((.hooks.Stop // []) + [{matcher: $matcher, command: $cmd}])' \
+    "$CLAUDE_SETTINGS" > "$TMP"
+  mv "$TMP" "$CLAUDE_SETTINGS"
+  echo "  HOOK  installed: Stop / $HOOK_MATCHER → $HOOK_SCRIPT"
+}
+
+case "$HOOK_PREF" in
+  install)
+    echo ""
+    echo "Stop hook (auto re-run nudge):"
+    _install_hook
+    ;;
+  skip)
+    echo ""
+    echo "Stop hook: skipped (--no-hook)."
+    echo "  To install later:  bash bin/setup --hook-only"
+    ;;
+  prompt)
+    echo ""
+    echo "Stop hook (auto re-run nudge):"
+    if _hook_already_installed; then
+      echo "  OK    already installed"
+    else
+      printf "  Install? [Y/n] "
+      # Be defensive — if stdin is not a TTY (e.g. CI), default to yes.
+      if [ -t 0 ]; then
+        read -r reply || reply=""
+      else
+        reply=""
+        echo "(non-interactive: defaulting to yes)"
+      fi
+      case "$reply" in
+        n|N|no|NO|No) echo "  skipped (you can run 'bash bin/setup --hook-only' later)" ;;
+        *) _install_hook ;;
+      esac
+    fi
+    ;;
+esac
+
 echo ""
 echo "Available commands:"
 echo "  /qa-team               — Run all agents (auto-detects project type)"
