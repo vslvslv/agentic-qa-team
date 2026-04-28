@@ -5,6 +5,78 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.5.9.0 — 2026-04-28 — Extract version-check + history persistence (Impact 9 complete)
+
+Closes the two **deferred** Impact 9 sub-tasks from PR #5. With this release, every
+piece of "this code repeats across N skills" duplication identified in the original
+audit is now collapsed into shared `bin/` scripts.
+
+### Added — `bin/qa-team-precheck`
+
+Centralizes the ~12-line version-check + prompt-cooldown logic that was previously
+duplicated verbatim in all 10 `SKILL.md` files. Prints two stdout markers the agent
+reads (`VERSION_STATUS` and `SKIP_UPDATE_PROMPT`); cooldown management is internal.
+Exits 0 always — never blocks the wrapping skill.
+
+Each `SKILL.md` version-check block went from 13 lines to 5:
+
+```bash
+_TMP="${TEMP:-${TMP:-/tmp}}"
+_QA_ROOT=$(dirname "$(readlink ~/.claude/skills/<skill> 2>/dev/null)" 2>/dev/null) || true
+[ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
+  _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
+bash "$_QA_ROOT/bin/qa-team-precheck"
+```
+
+The 4 surviving lines are the per-skill bootstrap (`$_TMP` and `$_QA_ROOT`) — those
+remain inline because subsequent bash blocks in the same SKILL.md need them.
+
+Prose updated: agents now read `SKIP_UPDATE_PROMPT` from stdout (was `_QA_SKIP_ASK`,
+a shell variable) and write the cooldown to `$_TMP/.qa-update-asked` directly (was
+`$_QA_ASK_COOLDOWN`, also a shell variable). Same observable behaviour.
+
+### Added — `bin/qa-team-persist-history <skill-name>`
+
+Centralizes the ~10-line "copy `$TMP/<skill>-{score.json,report.md}` to
+`<repo>/.qa-team/<skill>-<commit>-<ts>.{json,md}` + update `<skill>-latest.json`
+symlink" block that was duplicated as Phase Xc across the 6 sub-skills with sidecars
+(`qa-audit`, `qa-api`, `qa-web`, `qa-visual`, `qa-perf`, `qa-mobile`).
+
+The helper also handles the **delta-mode skip**: if `delta_mode.enabled == true` in
+the sidecar JSON, it skips persistence entirely (delta runs are transient by design).
+Previously this was inline in `qa-audit` only; centralizing means any sub-skill that
+adopts delta mode in the future gets the correct behaviour for free.
+
+Each Phase Xc block went from 11 lines to 1:
+
+```bash
+bash "$_QA_ROOT/bin/qa-team-persist-history" "<skill-name>"
+```
+
+### Net effect
+
+- **2 new bin scripts**, ~120 LOC total
+- **10 SKILL.md files** simplified (version-check)
+- **6 SKILL.md files** further simplified (Phase Xc)
+- **~8 lines saved per skill on the version-check** × 10 skills = ~80 lines
+- **~10 lines saved per skill on Phase Xc** × 6 skills = ~60 lines
+- **Single source of truth** for version-check, cooldown management, and history
+  persistence (including delta-mode skip rules)
+
+### Status of original 10-item audit plan
+
+All 10 items are now fully shipped (PR #1 through #6):
+
+| Impact | PR |
+|--------|----|
+| 1, 2, 3, 5, 7, 4, 8 | merged in #1 – #4 |
+| 6 — Cost telemetry | merged in #5 |
+| 9 — Extract test-file pattern | merged in #5 |
+| 9 — Extract version-check | **#6** |
+| 9 — Extract history persistence | **#6** |
+
+---
+
 ## v1.5.8.0 — 2026-04-28 — Extract test-file pattern + cost telemetry
 
 Closes the **Impact 9** test-file-pattern duplication directly responsible for

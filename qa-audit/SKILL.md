@@ -36,21 +36,13 @@ _TMP="${TEMP:-${TMP:-/tmp}}"
 _QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-audit 2>/dev/null)" 2>/dev/null) || true
 [ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
   _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
-  || echo "UPDATE_CHECK_FAILED: not found" )
-echo "VERSION_STATUS: $_QA_VER"
-_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
-_QA_SKIP_ASK=0
-if [ -f "$_QA_ASK_COOLDOWN" ]; then
-  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
-  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
-fi
+bash "$_QA_ROOT/bin/qa-team-precheck"
 ```
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_PROMPT` is `0`, use `AskUserQuestion`:
 - Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
 - Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
+- Run `echo "$(date +%s)" > "$_TMP/.qa-update-asked"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
 - If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
 - Continue regardless of choice.
 
@@ -547,27 +539,14 @@ Copy the JSON sidecar (and the markdown report) into a project-local history dir
 trend analysis and per-commit comparisons survive across runs. Skip silently when the
 working directory is not a git repo.
 
-**Important — delta runs are transient.** When `_DELTA_MODE=1`, **skip persistence
-entirely**: do not write to `.qa-team/`, do not update `qa-audit-latest.json`. The history
+**Important — delta runs are transient.** The helper inspects the score JSON's
+`delta_mode.enabled` field; when `true`, it skips persistence entirely. The history
 directory holds full-audit snapshots that are comparable across runs; mixing in delta
 scores would corrupt the trend rendered by `bin/qa-team-history` and the regression
 detection in `qa-team` Phase 5.
 
 ```bash
-if [ "$_DELTA_MODE" = "1" ]; then
-  echo "HISTORY: delta-mode run — skipping persistence (transient by design)"
-else
-  _REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-  if [ -n "$_REPO_ROOT" ]; then
-    _HIST_DIR="$_REPO_ROOT/.qa-team"
-    mkdir -p "$_HIST_DIR"
-    _HIST_KEY="qa-audit-${_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)"
-    cp "$_TMP/qa-audit-score.json"  "$_HIST_DIR/${_HIST_KEY}.json"  2>/dev/null || true
-    cp "$_TMP/qa-audit-report.md"   "$_HIST_DIR/${_HIST_KEY}.md"    2>/dev/null || true
-    ln -sf "${_HIST_KEY}.json" "$_HIST_DIR/qa-audit-latest.json"    2>/dev/null || true
-    echo "HISTORY: persisted to $_HIST_DIR/${_HIST_KEY}.{json,md}"
-  fi
-fi
+bash "$_QA_ROOT/bin/qa-team-persist-history" "qa-audit"
 ```
 
 The first non-delta run on a project creates `.qa-team/`. Add it to `.gitignore` if you do
