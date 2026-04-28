@@ -259,9 +259,69 @@ Write report to `$_TMP/qa-web-report.md`:
 ## Coverage Map
 | Page/Flow | Tests | Status |
 |-----------|-------|--------|
+
+## After this run
+- For visual regression on the same pages: → `/qa-visual`
+- For up-to-date Playwright/Cypress patterns and selectors: → `/qa-refine`
+- For test methodology (pyramid, isolation, naming): → `/qa-audit`
+- After applying fixes: re-run `/qa-web` (or `/qa-team`) — history at `<repo>/.qa-team/qa-web-*.json`
 ```
 
 Print report path. If failures exist: "Found N failing web tests. Run /investigate to diagnose?"
+
+## Phase 4b — Machine-Readable Sidecar
+
+After the markdown report, also write `$_TMP/qa-web-score.json`. Shares the envelope
+schema with `qa-audit-score.json` so hooks and CI can consume both uniformly.
+
+```bash
+_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
+_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+cat > "$_TMP/qa-web-score.json" <<JSON
+{
+  "schema_version": "1.0",
+  "skill": "qa-web",
+  "skill_version": "<read from $_QA_ROOT/VERSION>",
+  "branch": "$_BRANCH",
+  "commit": "$_COMMIT",
+  "timestamp": "$_TIMESTAMP",
+  "status": "<pass | warn | fail>",
+  "tool": "<playwright | cypress | selenium>",
+  "base_url": "<base url under test>",
+  "counts": {
+    "passed": <N>,
+    "failed": <N>,
+    "skipped": <N>,
+    "total": <N>
+  },
+  "pages": {
+    "discovered": <N>,
+    "tested": <N>,
+    "missing": <N>
+  },
+  "failure_count": <N>,
+  "report_md_path": "$_TMP/qa-web-report.md"
+}
+JSON
+```
+
+Validate it parses (`jq . "$_TMP/qa-web-score.json" >/dev/null`).
+
+## Phase 4c — Persist to Project History
+
+```bash
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "$_REPO_ROOT" ]; then
+  _HIST_DIR="$_REPO_ROOT/.qa-team"
+  mkdir -p "$_HIST_DIR"
+  _HIST_KEY="qa-web-${_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)"
+  cp "$_TMP/qa-web-score.json" "$_HIST_DIR/${_HIST_KEY}.json" 2>/dev/null || true
+  cp "$_TMP/qa-web-report.md"  "$_HIST_DIR/${_HIST_KEY}.md"   2>/dev/null || true
+  ln -sf "${_HIST_KEY}.json" "$_HIST_DIR/qa-web-latest.json"  2>/dev/null || true
+  echo "HISTORY: persisted to $_HIST_DIR/${_HIST_KEY}.{json,md}"
+fi
+```
 
 ## Important Rules
 
@@ -269,3 +329,4 @@ Print report path. If failures exist: "Found N failing web tests. Run /investiga
 - **Stable selectors only** — role, label, testid, data-cy — never raw CSS classes
 - **Report even if execution fails** — always write the report file regardless of outcome
 - **Auth setup is a prerequisite** — create it before running protected tests
+- **JSON contract is load-bearing** — `qa-web-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by CI hooks. Field renames or removals require bumping `schema_version` and updating consumers.

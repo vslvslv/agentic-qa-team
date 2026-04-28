@@ -395,6 +395,66 @@ Write report to `$_TMP/qa-mobile-report.md`:
 
 ## Setup Notes
 <any build commands or config changes needed>
+
+## After this run
+- For up-to-date framework patterns (Detox, Appium+WDIO, Maestro): → `/qa-refine`
+- For test methodology (pyramid, isolation, naming): → `/qa-audit`
+- After applying fixes: re-run `/qa-mobile` (or `/qa-team`) — history at `<repo>/.qa-team/qa-mobile-*.json`
+```
+
+## Phase 5b — Machine-Readable Sidecar
+
+After the markdown report, also write `$_TMP/qa-mobile-score.json`. Shares the envelope
+schema with `qa-audit-score.json`.
+
+```bash
+_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
+_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+cat > "$_TMP/qa-mobile-score.json" <<JSON
+{
+  "schema_version": "1.0",
+  "skill": "qa-mobile",
+  "skill_version": "<read from $_QA_ROOT/VERSION>",
+  "branch": "$_BRANCH",
+  "commit": "$_COMMIT",
+  "timestamp": "$_TIMESTAMP",
+  "status": "<pass | warn | fail>",
+  "tool": "<detox | appium_wdio | maestro>",
+  "platform": "<ios | android | cross>",
+  "device": "<simulator/emulator/device name>",
+  "counts": {
+    "passed": <N>,
+    "failed": <N>,
+    "skipped": <N>,
+    "total": <N>
+  },
+  "screens": {
+    "discovered": <N>,
+    "tested": <N>,
+    "missing": <N>
+  },
+  "failure_count": <N>,
+  "report_md_path": "$_TMP/qa-mobile-report.md"
+}
+JSON
+```
+
+Validate it parses (`jq . "$_TMP/qa-mobile-score.json" >/dev/null`).
+
+## Phase 5c — Persist to Project History
+
+```bash
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "$_REPO_ROOT" ]; then
+  _HIST_DIR="$_REPO_ROOT/.qa-team"
+  mkdir -p "$_HIST_DIR"
+  _HIST_KEY="qa-mobile-${_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)"
+  cp "$_TMP/qa-mobile-score.json" "$_HIST_DIR/${_HIST_KEY}.json" 2>/dev/null || true
+  cp "$_TMP/qa-mobile-report.md"  "$_HIST_DIR/${_HIST_KEY}.md"   2>/dev/null || true
+  ln -sf "${_HIST_KEY}.json" "$_HIST_DIR/qa-mobile-latest.json"  2>/dev/null || true
+  echo "HISTORY: persisted to $_HIST_DIR/${_HIST_KEY}.{json,md}"
+fi
 ```
 
 ## Important Rules
@@ -408,3 +468,4 @@ Write report to `$_TMP/qa-mobile-report.md`:
 - **Clean state** — use `device.launchApp({ newInstance: true })` or `launchApp` (Maestro) for fresh state
 - **Report even if build fails** — document what was blocked and why
 - **Never run `adb root` or modify system settings** on physical devices without explicit confirmation
+- **JSON contract is load-bearing** — `qa-mobile-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by CI hooks. Field renames or removals require bumping `schema_version` and updating consumers.

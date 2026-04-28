@@ -361,6 +361,65 @@ Write report to `$_TMP/qa-visual-report.md`:
 ## Diff Artifacts
 - Location: playwright-report/
 - View: npx playwright show-report
+
+## After this run
+- For functional coverage of the same pages: → `/qa-web`
+- For up-to-date masking and viewport patterns: → `/qa-refine`
+- After accepting intentional UI changes: re-run with `--update-snapshots`, then re-run `/qa-visual` to lock the new baseline
+- History at `<repo>/.qa-team/qa-visual-*.json`
+```
+
+## Phase 6b — Machine-Readable Sidecar
+
+After the markdown report, also write `$_TMP/qa-visual-score.json`. Shares the envelope
+schema with `qa-audit-score.json`.
+
+```bash
+_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
+_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+cat > "$_TMP/qa-visual-score.json" <<JSON
+{
+  "schema_version": "1.0",
+  "skill": "qa-visual",
+  "skill_version": "<read from $_QA_ROOT/VERSION>",
+  "branch": "$_BRANCH",
+  "commit": "$_COMMIT",
+  "timestamp": "$_TIMESTAMP",
+  "status": "<pass | warn | fail>",
+  "tool": "playwright",
+  "counts": {
+    "passed": <N>,
+    "failed": <N>,
+    "skipped": <N>,
+    "total": <N>
+  },
+  "screenshots": {
+    "baselines": <N>,
+    "viewports_count": <N>
+  },
+  "regressions_count": <N>,
+  "baseline_update_required_count": <N>,
+  "report_md_path": "$_TMP/qa-visual-report.md"
+}
+JSON
+```
+
+Validate it parses (`jq . "$_TMP/qa-visual-score.json" >/dev/null`).
+
+## Phase 6c — Persist to Project History
+
+```bash
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "$_REPO_ROOT" ]; then
+  _HIST_DIR="$_REPO_ROOT/.qa-team"
+  mkdir -p "$_HIST_DIR"
+  _HIST_KEY="qa-visual-${_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)"
+  cp "$_TMP/qa-visual-score.json" "$_HIST_DIR/${_HIST_KEY}.json" 2>/dev/null || true
+  cp "$_TMP/qa-visual-report.md"  "$_HIST_DIR/${_HIST_KEY}.md"   2>/dev/null || true
+  ln -sf "${_HIST_KEY}.json" "$_HIST_DIR/qa-visual-latest.json"  2>/dev/null || true
+  echo "HISTORY: persisted to $_HIST_DIR/${_HIST_KEY}.{json,md}"
+fi
 ```
 
 ## Important Rules
@@ -373,3 +432,4 @@ Write report to `$_TMP/qa-visual-report.md`:
 - **Pixel threshold is project-specific** — default `maxDiffPixels: 100` is conservative; adjust if too noisy
 - **Report even without comparison** — if baseline missing, document that baselines were created
 - **No full-page on infinite scroll** — use `clip` option for pages with endless scroll
+- **JSON contract is load-bearing** — `qa-visual-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by CI hooks. Field renames or removals require bumping `schema_version` and updating consumers.
