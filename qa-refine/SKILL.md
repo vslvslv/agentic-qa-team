@@ -444,3 +444,10 @@ Community signal highlights:
 
 Re-run: /qa-refine <tool> (in a project with pom.xml for Java, etc.)
 ```
+
+## Telemetry (run last)
+
+```bash
+# Per-run cost log (consumed by bin/qa-team-cost).
+bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-refine" "pass" 2>/dev/null || true
+```

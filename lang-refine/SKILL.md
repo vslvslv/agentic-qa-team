@@ -344,3 +344,10 @@ Gaps remaining (if score < 80):
 
 Re-run to refresh: /lang-refine <language>
 ```
+
+## Telemetry (run last)
+
+```bash
+# Per-run cost log (consumed by bin/qa-team-cost).
+bash "$_QA_ROOT/bin/qa-team-cost-log" "lang-refine" "pass" 2>/dev/null || true
+```

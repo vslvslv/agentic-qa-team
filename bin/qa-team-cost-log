@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# bin/qa-team-cost-log — Append a single run record to <repo>/.qa-team/runs.jsonl.
+#
+# Designed to be called from each skill's Telemetry tail. Cheap, side-effect-only,
+# never blocks. Pairs with bin/qa-team-cost (aggregator).
+#
+# Usage:
+#   bash bin/qa-team-cost-log <skill-name> <status> [duration_seconds]
+#
+# Arguments:
+#   skill-name         e.g. qa-audit, qa-team, qa-api
+#   status             pass | warn | fail | delta-no-op | skipped
+#   duration_seconds   integer, optional (omit if unknown)
+#
+# Side effects:
+#   - Appends one JSON line to <git-root>/.qa-team/runs.jsonl
+#   - Creates .qa-team/ if missing
+#
+# Silent on:
+#   - Outside a git repo (no-op)
+#   - Missing args (no-op — never block telemetry)
+#   - Write failure (no-op)
+#
+# Exit code:
+#   Always 0. Designed to be appended with `|| true` for paranoid callers.
+
+set -e
+
+SKILL="${1:-}"
+STATUS="${2:-}"
+DURATION="${3:-}"
+
+# No-op on bad usage. Telemetry should never block the wrapping skill.
+if [ -z "$SKILL" ] || [ -z "$STATUS" ]; then
+  exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$REPO_ROOT" ]; then
+  exit 0
+fi
+
+HIST_DIR="$REPO_ROOT/.qa-team"
+mkdir -p "$HIST_DIR" 2>/dev/null || exit 0
+
+LOG="$HIST_DIR/runs.jsonl"
+TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
+COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "uncommitted")
+
+# Build the JSON line. Quote string values; numeric/null for duration.
+DURATION_FIELD='null'
+if [ -n "$DURATION" ] && [ "$DURATION" -eq "$DURATION" ] 2>/dev/null; then
+  DURATION_FIELD="$DURATION"
+fi
+
+# Escape inner quotes/backslashes in skill+status (paranoid — they're CLI args
+# but a mis-configured caller could pass weird input).
+_esc() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+LINE=$(printf '{"timestamp":"%s","skill":"%s","status":"%s","branch":"%s","commit":"%s","duration_seconds":%s}' \
+  "$TIMESTAMP" "$(_esc "$SKILL")" "$(_esc "$STATUS")" "$(_esc "$BRANCH")" "$COMMIT" "$DURATION_FIELD")
+
+# Atomic append. `>>` is atomic for small writes (<PIPE_BUF, ~4KB on most
+# systems) which our line always is.
+printf '%s\n' "$LINE" >> "$LOG" 2>/dev/null || true
+exit 0

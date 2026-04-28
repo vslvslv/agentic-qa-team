@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# bin/qa-team-cost — Aggregate qa-team run history into a cost summary.
+#
+# Reads <repo>/.qa-team/runs.jsonl (appended by bin/qa-team-cost-log on every
+# skill invocation) and prints per-skill totals: run count, status mix, total
+# wall time, time since last run.
+#
+# Usage:
+#   bash bin/qa-team-cost                      # Per-skill summary table
+#   bash bin/qa-team-cost --since=24h          # Only runs in the last 24 hours
+#   bash bin/qa-team-cost --since=7d           # Only runs in the last 7 days
+#   bash bin/qa-team-cost --skill=qa-audit     # Filter to one skill
+#   bash bin/qa-team-cost --json               # Raw aggregate as JSON
+#
+# Exit codes:
+#   0  success
+#   1  not in a git repo / no runs.jsonl yet
+#   2  jq not installed (required)
+#   3  unknown argument
+
+set -e
+
+SINCE_DURATION=""    # e.g. "24h", "7d"
+SKILL_FILTER=""
+MODE="table"
+
+for arg in "$@"; do
+  case "$arg" in
+    --since=*) SINCE_DURATION="${arg#--since=}" ;;
+    --skill=*) SKILL_FILTER="${arg#--skill=}" ;;
+    --json)    MODE="json" ;;
+    -h|--help)
+      sed -n '2,15p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown argument: $arg" >&2
+      exit 3
+      ;;
+  esac
+done
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "qa-team-cost: jq is required (brew install jq / apt install jq)" >&2
+  exit 2
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$REPO_ROOT" ]; then
+  echo "qa-team-cost: not in a git repo" >&2
+  exit 1
+fi
+
+LOG="$REPO_ROOT/.qa-team/runs.jsonl"
+if [ ! -f "$LOG" ]; then
+  echo "qa-team-cost: no runs.jsonl yet at $LOG" >&2
+  echo "  Run any /qa-* skill at least once to seed cost telemetry." >&2
+  exit 1
+fi
+
+# Convert --since=24h / 7d into an ISO 8601 cutoff timestamp.
+# BSD/GNU date have different syntaxes; try GNU first, fall back to a portable
+# epoch-arithmetic approach.
+_since_to_cutoff() {
+  local dur="$1"
+  if [ -z "$dur" ]; then
+    return 0
+  fi
+  local n="${dur%[hd]}"
+  local unit="${dur: -1}"
+  local seconds
+  case "$unit" in
+    h) seconds=$((n * 3600)) ;;
+    d) seconds=$((n * 86400)) ;;
+    *) echo "ERROR: --since accepts <N>h or <N>d" >&2; exit 3 ;;
+  esac
+  local now_epoch
+  now_epoch=$(date -u +%s)
+  local cutoff_epoch=$((now_epoch - seconds))
+  # ISO 8601 from epoch — try BSD then GNU.
+  date -u -r "$cutoff_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "@$cutoff_epoch" +%Y-%m-%dT%H:%M:%SZ
+}
+
+CUTOFF=""
+if [ -n "$SINCE_DURATION" ]; then
+  CUTOFF=$(_since_to_cutoff "$SINCE_DURATION")
+fi
+
+# Build the jq filter:
+#   - parse the JSONL into an array via slurp (-s)
+#   - filter by timestamp >= cutoff (if set) and skill match (if set)
+#   - group by skill, count statuses, sum durations
+JQ_FILTER='[
+  .[] |
+  select(.timestamp >= ($cutoff // .timestamp))
+  | select(($skill // "") == "" or .skill == $skill)
+] | group_by(.skill) | map({
+  skill:    .[0].skill,
+  runs:     length,
+  pass:     ([.[] | select(.status == "pass")]   | length),
+  warn:     ([.[] | select(.status == "warn")]   | length),
+  fail:     ([.[] | select(.status == "fail")]   | length),
+  other:    ([.[] | select(.status != "pass" and .status != "warn" and .status != "fail")] | length),
+  total_seconds: (([.[] | .duration_seconds // 0] | add) // 0),
+  last:     (max_by(.timestamp) | .timestamp)
+}) | sort_by(.skill)'
+
+RESULT=$(jq -s --arg cutoff "$CUTOFF" --arg skill "$SKILL_FILTER" "$JQ_FILTER" "$LOG")
+
+if [ "$MODE" = "json" ]; then
+  printf '%s\n' "$RESULT"
+  exit 0
+fi
+
+# Table mode
+HEADER_FILTER=""
+if [ -n "$SINCE_DURATION" ]; then
+  HEADER_FILTER=" (since ${SINCE_DURATION})"
+fi
+if [ -n "$SKILL_FILTER" ]; then
+  HEADER_FILTER="$HEADER_FILTER (skill=$SKILL_FILTER)"
+fi
+
+printf '\nqa-team cost summary%s\n' "$HEADER_FILTER"
+printf '%s\n' "----------------------------------------------------------------------------"
+printf '  %-22s  %5s  %5s  %5s  %5s  %5s  %10s  %s\n' \
+  "SKILL" "RUNS" "PASS" "WARN" "FAIL" "OTHER" "WALL(s)" "LAST"
+printf '%s\n' "----------------------------------------------------------------------------"
+
+if [ "$(printf '%s' "$RESULT" | jq 'length')" -eq 0 ]; then
+  printf '  (no runs in scope)\n'
+else
+  printf '%s' "$RESULT" | jq -r '.[] | [
+    .skill, (.runs|tostring), (.pass|tostring), (.warn|tostring),
+    (.fail|tostring), (.other|tostring), (.total_seconds|tostring),
+    (.last[0:19])
+  ] | @tsv' | while IFS=$'\t' read -r skill runs pass warn fail other secs last; do
+    printf '  %-22s  %5s  %5s  %5s  %5s  %5s  %10s  %s\n' \
+      "$skill" "$runs" "$pass" "$warn" "$fail" "$other" "$secs" "$last"
+  done
+fi
+echo ""

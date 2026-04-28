@@ -123,22 +123,11 @@ grep -q '"appium"\|"@wdio"' package.json 2>/dev/null && \
 echo "MOB_TOOL: ${_MOB_TOOL:-none}"
 
 # Methodology: detect whether the project has any test files.
-# CANONICAL test-file globs — must match the regex in:
-#   bin/qa-team-suggest-rerun (_is_test_file_pattern)
-#   qa-audit/SKILL.md         (Preamble delta regex + non-delta find globs)
-#   qa-team/SKILL.md          (Phase 5 regex below)
-# Drift = qa-audit gets silently skipped on Go/C# projects despite having tests.
+# Delegates to the canonical helper (single source of truth for what counts as
+# a test file). $_QA_ROOT is set in the version-check block above.
 echo "--- TEST FILES ---"
 _HAS_TESTS=0
-find . \( \
-  -name "*.spec.ts"  -o -name "*.spec.tsx"  -o -name "*.spec.js"  -o -name "*.spec.jsx" \
-  -o -name "*.test.ts"  -o -name "*.test.tsx"  -o -name "*.test.js"  -o -name "*.test.jsx" \
-  -o -name "*_test.py"  -o -name "test_*.py" \
-  -o -name "*Test.cs"   -o -name "*Tests.cs" \
-  -o -name "*Test.java" -o -name "*Tests.java" \
-  -o -name "*_test.go" \
-  -o -name "*_spec.rb" \
-  \) ! -path "*/node_modules/*" 2>/dev/null | grep -q '.' && _HAS_TESTS=1
+bash "$_QA_ROOT/bin/qa-team-test-files" --has-tests >/dev/null 2>&1 && _HAS_TESTS=1
 echo "HAS_TESTS: $_HAS_TESTS"
 
 # Detect running services
@@ -355,15 +344,11 @@ if [ -n "$_PRIOR_AUDIT" ] && [ -f "$_PRIOR_AUDIT" ]; then
 fi
 
 # Compute scope of changes since the last recorded run.
-# CANONICAL test-file regex — must match the globs/regex in:
-#   bin/qa-team-suggest-rerun (_is_test_file_pattern)
-#   qa-audit/SKILL.md         (delta regex + non-delta find globs)
-#   qa-team/SKILL.md          (Preamble _HAS_TESTS detection above)
+# Delegates to the canonical helper (same script that qa-audit and the
+# Stop-hook use — single source of truth).
 _CHANGED_TEST_FILES=""
 if [ -n "$_PRIOR_COMMIT" ] && [ "$_PRIOR_COMMIT" != "$(git rev-parse --short HEAD)" ]; then
-  _CHANGED_TEST_FILES=$(git diff --name-only "$_PRIOR_COMMIT"...HEAD 2>/dev/null \
-    | grep -E '\.(test|spec)\.[jt]sx?$|_test\.py$|(^|/)test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$' \
-    | head -20)
+  _CHANGED_TEST_FILES=$(bash "$_QA_ROOT/bin/qa-team-test-files" --since="$_PRIOR_COMMIT" 2>/dev/null | head -20 || true)
 fi
 ```
 
@@ -417,4 +402,9 @@ measurement instrument the user can trust.
 ~/.claude/skills/gstack/bin/gstack-timeline-log \
   '{"skill":"qa-team","event":"completed","branch":"'"$_BRANCH"'","date":"'"$_DATE"'"}' \
   2>/dev/null || true
+
+# Per-run cost log (consumed by bin/qa-team-cost). Status reflects the
+# aggregated outcome: pass = no critical failures across sub-agents, warn =
+# partial issues, fail = at least one sub-agent reported critical failures.
+bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-team" "<pass|warn|fail>" 2>/dev/null || true
 ```
