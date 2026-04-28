@@ -5,6 +5,40 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.5.3.0 — 2026-04-28 — Nightly refinement: all 22 guides reach 100/100
+
+### Changed (reference guides + SKILL.md templates)
+- **qa-methodology (12 guides):** All at 100/100. Language correction pass: tdd, test-isolation,
+  coverage, ci-cd-testing, shift-left, contract-testing, test-pyramid rewrote code examples from
+  TypeScript to JavaScript (project has no TypeScript dependency). New patterns added to flakiness
+  (randomness seeding, React `act()`, Vitest concurrent isolation), accessibility (WCAG 2.2 SC 2.5.8
+  target-size test, SPA focus management), bdd (`playwright-bdd`, step health tooling, CI sharding),
+  exploratory (Whittaker tours, thread-based charters, AI-assisted debrief)
+- **qa-web/references/playwright-patterns.md:** Added 15+ Playwright v1.49–v1.59 APIs: aria snapshots,
+  `locator.describe()`, `toContainClass`, `setStorageState()`, CHIPS partitioned cookies,
+  `--only-changed`, `failOnFlakyTests`, per-project workers, `page.pickLocator()`, Component Testing
+  (experimental CT) with MSW router fixture; 10 iterations
+- **qa-web/references/cypress-patterns.md:** Fixed `Cypress.Commands.addQuery()` (Cypress 12+) as
+  correct retrying-selector API; `experimentalOriginDependencies` flag for `cy.origin()` custom
+  commands; Cypress Module API; Vue 3 Component Testing; 3 iterations
+- **qa-perf/references/k6-patterns.md:** Fixed deprecated `k6/experimental/websockets` →
+  `k6/websockets` (stable); added k6 v0.57+ native TypeScript support via esbuild; CSV
+  parameterisation with papaparse + SharedArray; OpenTelemetry stable output; 4 iterations
+- **qa-mobile/references/detox-patterns.md:** Added `getAttributes()`, biometrics simulation
+  (`matchFace`/`unmatchFace`), `by.traits()`, Expo/EAS integration, React Navigation ghost screen
+  strategy, `device.setOrientation()`, flakiness root-cause decision tree; 10 iterations
+- **qa-mobile/references/appium-wdio-patterns.md:** Added visual regression (`@wdio/visual-service`),
+  device farm integration (BrowserStack/Sauce Labs), accessibility validation, test tagging
+  (`WDIO_GREP`), environment/secrets management, quick-reference checklist; 10 iterations
+- **lang-refine (5 guides):** All at 100/100. JavaScript: added CJS/ESM interop section, ES2023/2024
+  features (`Object.groupBy`, `Promise.withResolvers`, `toSorted`), Symbol.iterator, Map/Set idioms.
+  Python: added structural pattern matching (`match`/`case`). TypeScript: added `using`/`await using`
+  (TS 5.2), assertion functions, typed decorators (TS 5.0), const type parameters
+- **SKILL.md templates updated:** `qa-mobile`, `qa-perf`, `qa-refine`, `qa-web` regenerated from
+  agent-updated `.tmpl` files
+
+---
+
 ## v1.5.2.0 — 2026-04-26 — Auto-update check on every skill invocation
 
 ### Changed (all 10 skills)
