@@ -5,6 +5,63 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.5.7.0 — 2026-04-28 — Delta mode + sticky scope
+
+Closes **Impact 4** (`--since=<ref>` delta mode) and **Impact 8** (sticky scope) from the
+original audit. Together they cut the cost of repeat runs and remove the friction of
+re-confirming identical scope on every invocation.
+
+### Added (`qa-audit`) — `--since=<git-ref>` delta mode
+
+- New optional argument: `/qa-audit --since=<commit | branch | tag>`. When set,
+  qa-audit scores **only the test files changed since `<ref>`** instead of the entire
+  test tree. Designed for per-PR audits: `/qa-audit --since=main` in a feature branch
+  scopes to the PR's test diff.
+- Preamble validates the ref via `git rev-parse` and `git merge-base --is-ancestor`,
+  aborting with a clear error if the ref is unknown or not reachable from `HEAD`.
+- Phase 1 (Test Inventory) sampling switches from `find` globs to iterating the
+  `_CHANGED_TEST_FILES` list. Existing layer-classification heuristics still apply.
+- The markdown report prepends a "Delta scope" banner so readers know the score covers
+  a subset, not the whole suite.
+- The JSON sidecar gains a `delta_mode` object: `{ enabled, since_ref, base_sha,
+  changed_files_count }`. Schema stays at `1.0` (additive field).
+- **Delta runs are transient** — Phase 5c skips persistence to `.qa-team/` entirely
+  when `_DELTA_MODE=1`. Full audits remain the canonical history; mixing in delta
+  scores would corrupt trend rendering and the regression detection in qa-team Phase 5.
+- `Important Rules` gain a new entry codifying the transient-by-design rule.
+
+### Added (`qa-team`) — propagation + sticky scope + Phase 5 wiring
+
+- **`--since=<ref>` propagation:** qa-team accepts the same arg, validates it once in
+  Phase 1, and threads it through to `qa-audit` in Phase 2's sub-agent template.
+  Sub-agents that don't support delta mode (`qa-api`, `qa-web`, `qa-visual`, `qa-perf`,
+  `qa-mobile`) ignore the flag harmlessly — their scoring is already incremental.
+- **Sticky scope (Impact 8):** Phase 0 reads `<repo>/.qa-team/last-scope` if present
+  and offers it as the **first** option in `AskUserQuestion` ("Re-run last scope
+  (Recommended)"). Confirmed scope is persisted back to the same file at the end of
+  Phase 0 so subsequent runs benefit. Eliminates re-clicking the same domain mix on
+  every invocation in an established project.
+- **Phase 5 verify loop now suggests `--since=`:** when the user has changed test
+  files since the last full audit, the re-run prompt's first option is now
+  `Yes — re-run /qa-audit --since=$_PRIOR_COMMIT (cheap, Recommended)`. This is the
+  intended workflow — verify-after-fixes runs are exactly the case delta mode was
+  designed for.
+- Score-delta hint is now mode-aware: full re-runs render `Audit score: 76 → 84
+  (+8 since 0939d0b)`; delta re-runs render `Delta-scope audit (12 changed test files
+  since 0939d0b): 88/100`. Two different shapes because the numbers measure different
+  things.
+- `Important Rules` gain two new entries codifying delta-mode-is-for-verification and
+  sticky-scope-is-a-default-not-a-lock.
+
+### Notes
+- No change to `bin/qa-team-history`, `bin/qa-team-suggest-rerun`, or `bin/setup`
+  — delta mode is invoked through the skill, not via CLI tools.
+- `schema_version` stays at `1.0`. The `delta_mode` field is additive; consumers that
+  pin to 1.0 will see it as an unknown extra field and must tolerate it (per JSON
+  contract conventions).
+
+---
+
 ## v1.5.6.0 — 2026-04-28 — Default Stop-hook for re-run nudges
 
 Closes Impact 7 from the original audit: skill discovery and re-run had been pull-only.

@@ -58,11 +58,48 @@ If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use 
 
 ## Preamble (run first)
 
+### Skill arguments
+
+If the user invoked this skill with `--since=<git-ref>` (a commit SHA, branch name, or
+tag), set `_SINCE_REF` to that value below. Otherwise leave it empty. `--since=` enables
+**delta mode**: only test files changed since `<git-ref>` are inventoried and scored,
+instead of the entire test tree. Useful for per-PR audits — `/qa-audit --since=main`.
+
 ```bash
 _TMP="${TEMP:-${TMP:-/tmp}}"
 _DATE=$(date +%Y-%m-%d)
 _BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
+_SINCE_REF=""           # ← if user passed --since=<ref>, set it here
+_DELTA_MODE=0
+_SINCE_SHA=""
+_CHANGED_TEST_FILES=""
 echo "BRANCH: $_BRANCH"
+
+# --- Delta-mode resolution ---
+if [ -n "$_SINCE_REF" ]; then
+  _SINCE_SHA=$(git rev-parse --short --verify "$_SINCE_REF^{commit}" 2>/dev/null || true)
+  if [ -z "$_SINCE_SHA" ]; then
+    echo "ERROR: --since=$_SINCE_REF does not resolve to a git commit. Aborting."
+    exit 1
+  fi
+  if ! git merge-base --is-ancestor "$_SINCE_SHA" HEAD 2>/dev/null; then
+    echo "ERROR: --since=$_SINCE_REF ($_SINCE_SHA) is not an ancestor of HEAD. Aborting."
+    exit 1
+  fi
+  # Test-file pattern matches qa-team-suggest-rerun + Phase 5 verify loop.
+  _CHANGED_TEST_FILES=$(git diff --name-only "$_SINCE_SHA"..HEAD 2>/dev/null \
+    | grep -E '\.(test|spec)\.[jt]sx?$|_test\.py$|^test_.*\.py$|Tests?\.cs$|_spec\.rb$|_test\.go$|Test\.java$|Tests\.java$' \
+    || true)
+  _CHANGED_COUNT=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -c . || true)
+  _DELTA_MODE=1
+  echo "DELTA_MODE: enabled (since $_SINCE_REF → $_SINCE_SHA)"
+  echo "DELTA_CHANGED_TEST_FILES: $_CHANGED_COUNT"
+  if [ "${_CHANGED_COUNT:-0}" -eq 0 ]; then
+    echo "No test files changed since $_SINCE_REF — emitting no-op result and exiting."
+    # Skip Phases 1-4 (nothing to score). Still write the JSON/report so consumers
+    # see the run. Phase 5 will branch on _DELTA_MODE + _CHANGED_COUNT==0.
+  fi
+fi
 
 # --- Test file discovery by layer ---
 echo "--- TEST INVENTORY ---"
@@ -88,6 +125,17 @@ _ALL_TESTS=$(find . \( \
   -o -name "*Test.java" -o -name "*_spec.rb" \
   \) ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
 echo "UNIT: $_UNIT  INTEGRATION: $_INTEG  E2E: $_E2E  TOTAL: $_ALL_TESTS"
+
+# --- Delta-mode inventory override ---
+# In delta mode, the relevant tests are *only* the ones that changed since _SINCE_SHA.
+# Override the counts so Phase 4 scores against that subset.
+if [ "$_DELTA_MODE" = "1" ]; then
+  _ALL_TESTS=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -c . || true)
+  _UNIT=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -cE '/unit/|\.unit\.' || true)
+  _INTEG=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -cE '/integration/|\.integration\.' || true)
+  _E2E=$(printf '%s\n' "$_CHANGED_TEST_FILES" | grep -cE '/e2e/|\.e2e\.' || true)
+  echo "DELTA_OVERRIDE: UNIT: $_UNIT  INTEGRATION: $_INTEG  E2E: $_E2E  TOTAL: $_ALL_TESTS"
+fi
 
 # --- Framework detection ---
 echo "--- FRAMEWORK ---"
@@ -135,6 +183,11 @@ with `/qa-methodology-refine test-pyramid` to understand testing strategy. Skip 
 2–4 and produce a "No tests found" report.
 
 ## Phase 1 — Test Inventory
+
+> **Delta mode (`_DELTA_MODE=1`)**: skip the find-based sampling below. Iterate over
+> `$_CHANGED_TEST_FILES` directly (already scoped to the `--since=<ref>` range). Read
+> all of them up to a reasonable cap (e.g. 20). Layer-classify each by path and content
+> using the same heuristics, then proceed to Phase 2 with that subset.
 
 Sample test files across all layers. Read up to 3 files from each detected layer:
 
@@ -301,10 +354,16 @@ methodology. Report the score with context, not judgment.
 
 ## Phase 5 — Audit Report
 
-Write to `$_TMP/qa-audit-report.md` AND print to console.
+Write to `$_TMP/qa-audit-report.md` AND print to console. **In delta mode, prepend the
+"Delta scope" banner so readers know the score covers a subset, not the whole suite.**
 
 ```markdown
 # QA Audit Report — <date> — <branch>
+
+<!-- if _DELTA_MODE=1: -->
+> ⚠ **Delta scope:** scored only the <N> test file(s) changed since `<_SINCE_REF>` (`<_SINCE_SHA>`).
+> The `Overall Score` below is **not** comparable to a full-audit score in
+> `<repo>/.qa-team/qa-audit-latest.json`. Use `bin/qa-team-history` for full-audit trend.
 
 ## Overall Score: <N>/100 — <Excellent ≥80 | Good 65–79 | Fair 50–64 | Needs Work <50>
 
@@ -386,6 +445,12 @@ cat > "$_TMP/qa-audit-score.json" <<JSON
   "timestamp": "$_TIMESTAMP",
   "overall": <score 0-100>,
   "rating": "<Excellent | Good | Fair | Needs Work>",
+  "delta_mode": {
+    "enabled": <true | false>,
+    "since_ref": <"$_SINCE_REF" or null>,
+    "base_sha": <"$_SINCE_SHA" or null>,
+    "changed_files_count": <_CHANGED_COUNT or 0>
+  },
   "dimensions": {
     "pyramid": <0-20>,
     "isolation": <0-20>,
@@ -415,27 +480,42 @@ Replace every `<...>` placeholder with the actual values computed in Phases 1–
 the file is parseable JSON before continuing (`jq . "$_TMP/qa-audit-score.json" >/dev/null`)
 — if the assistant emitted invalid JSON, fix it and rewrite. Hooks depend on this contract.
 
+`delta_mode.enabled` is `true` when the run was scoped via `--since=<ref>`. In that case
+the `overall` score and `dimensions` reflect only the changed-file subset and are **not
+comparable** to a full-audit score from a non-delta run.
+
 ## Phase 5c — Persist to Project History
 
 Copy the JSON sidecar (and the markdown report) into a project-local history directory so
 trend analysis and per-commit comparisons survive across runs. Skip silently when the
 working directory is not a git repo.
 
+**Important — delta runs are transient.** When `_DELTA_MODE=1`, **skip persistence
+entirely**: do not write to `.qa-team/`, do not update `qa-audit-latest.json`. The history
+directory holds full-audit snapshots that are comparable across runs; mixing in delta
+scores would corrupt the trend rendered by `bin/qa-team-history` and the regression
+detection in `qa-team` Phase 5.
+
 ```bash
-_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-if [ -n "$_REPO_ROOT" ]; then
-  _HIST_DIR="$_REPO_ROOT/.qa-team"
-  mkdir -p "$_HIST_DIR"
-  _HIST_KEY="qa-audit-${_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)"
-  cp "$_TMP/qa-audit-score.json"  "$_HIST_DIR/${_HIST_KEY}.json"  2>/dev/null || true
-  cp "$_TMP/qa-audit-report.md"   "$_HIST_DIR/${_HIST_KEY}.md"    2>/dev/null || true
-  ln -sf "${_HIST_KEY}.json" "$_HIST_DIR/qa-audit-latest.json"    2>/dev/null || true
-  echo "HISTORY: persisted to $_HIST_DIR/${_HIST_KEY}.{json,md}"
+if [ "$_DELTA_MODE" = "1" ]; then
+  echo "HISTORY: delta-mode run — skipping persistence (transient by design)"
+else
+  _REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+  if [ -n "$_REPO_ROOT" ]; then
+    _HIST_DIR="$_REPO_ROOT/.qa-team"
+    mkdir -p "$_HIST_DIR"
+    _HIST_KEY="qa-audit-${_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)"
+    cp "$_TMP/qa-audit-score.json"  "$_HIST_DIR/${_HIST_KEY}.json"  2>/dev/null || true
+    cp "$_TMP/qa-audit-report.md"   "$_HIST_DIR/${_HIST_KEY}.md"    2>/dev/null || true
+    ln -sf "${_HIST_KEY}.json" "$_HIST_DIR/qa-audit-latest.json"    2>/dev/null || true
+    echo "HISTORY: persisted to $_HIST_DIR/${_HIST_KEY}.{json,md}"
+  fi
 fi
 ```
 
-The first run on a project creates `.qa-team/`. Add it to `.gitignore` if you do not want
-the history committed; or commit it deliberately to track score over time alongside code.
+The first non-delta run on a project creates `.qa-team/`. Add it to `.gitignore` if you do
+not want the history committed; or commit it deliberately to track score over time
+alongside code.
 
 ## Important Rules
 
@@ -446,6 +526,7 @@ the history committed; or commit it deliberately to track score over time alongs
 - **Link to guides** — when a methodology guide exists for a finding, reference it explicitly
 - **Idempotent** — safe to re-run; always overwrites `$_TMP/qa-audit-report.md` and `$_TMP/qa-audit-score.json`
 - **JSON contract is load-bearing** — `qa-audit-score.json` is consumed by `qa-team`'s verify-after-fixes phase, by `bin/qa-team-history`, and by user-defined CI hooks. Do not change field names without bumping `schema_version` and updating consumers
+- **Delta mode (`--since=<ref>`) is transient** — delta runs do NOT persist to `.qa-team/` and do NOT update `qa-audit-latest.json`. Their score is over a subset, not the whole suite, and treating them as snapshots would corrupt trend rendering. Only full audits go in the history directory.
 
 ## Telemetry (run last)
 
