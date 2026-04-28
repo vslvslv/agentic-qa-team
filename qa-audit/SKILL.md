@@ -598,7 +598,7 @@ alongside code.
 # sidecar wasn't written. Possible values: pass | warn | delta-no-op.
 _QA_STATUS=$(jq -r '.status // "warn"' "$_TMP/qa-audit-score.json" 2>/dev/null || echo "warn")
 case "$_QA_STATUS" in
-  pass|warn|fail|delta-no-op) ;;
+  pass|warn|delta-no-op) ;;
   *) _QA_STATUS="warn" ;;
 esac
 bash "$_QA_ROOT/bin/qa-team-cost-log" "qa-audit" "$_QA_STATUS" 2>/dev/null || true
