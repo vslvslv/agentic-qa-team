@@ -5,6 +5,48 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.5.4.0 — 2026-04-28 — Machine-readable score sidecar and verify-after-fixes loop
+
+### Added (qa-audit)
+- **Phase 5b — JSON sidecar:** writes `$TEMP/qa-audit-score.json` alongside the existing
+  markdown report. Stable contract under `schema_version: "1.0"`: `overall`, `rating`,
+  `dimensions{pyramid, isolation, test_data, naming, ci_coverage}`,
+  `counts{unit, integration, e2e, unclassified, total}`,
+  `flakiness{sleep_calls, retry_marks, risk}`, `critical_count`, `commit`, `branch`,
+  `timestamp`, `report_md_path`. Validated as parseable JSON before continuing.
+- **Phase 5c — History persistence:** copies the JSON sidecar and markdown report into
+  `<repo>/.qa-team/qa-audit-<sha>-<ts>.{json,md}` with a `qa-audit-latest.json` symlink.
+  Skipped silently outside a git repo. Enables score-trend analysis and per-commit
+  comparisons across runs.
+- **Important Rules:** new entry documenting the JSON contract is load-bearing —
+  consumers (`qa-team` Phase 5, `bin/qa-team-history`, user-defined CI hooks) depend on
+  it. Field renames or removals require bumping `schema_version`.
+
+### Added (qa-team)
+- **Phase 5 — Verify after fixes:** reads `.qa-team/qa-audit-latest.json`, computes which
+  test files changed since the recorded commit, and uses `AskUserQuestion` to offer
+  narrowed re-runs of affected sub-agents. Surfaces score delta in the Executive Summary
+  on re-run ("76 → 84 (+8 since 0939d0b)"). Skipped silently when no history exists or
+  HEAD already matches the recorded commit. Closes the loop between triage and
+  measurement — turns the harness from one-shot report into a measurement instrument.
+- **Important Rules:** new entry making Phase 5 the default expectation, not an
+  optional nicety.
+
+### Added (bin)
+- **`bin/qa-team-history`:** new portable script (bash 3.2 compatible, jq-only
+  dependency) that renders a score-trend table from `.qa-team/`. Modes: default table
+  with delta column, `--limit=N`, `--json` (raw array for hooks/CI), `--delta` (skips
+  the first row). Designed to be cheap enough to call from `Stop` hooks and CI gates.
+  Smoke-tested with synthetic history.
+
+### Notes
+- Existing markdown reports are unchanged — this release is strictly additive.
+- Sub-skills `qa-api`, `qa-web`, `qa-visual`, `qa-perf`, `qa-mobile` continue to emit
+  markdown only. Adding JSON sidecars to them is a planned follow-up once the qa-audit
+  shape is validated in practice.
+
+---
+
 ## v1.5.3.0 — 2026-04-28 — Nightly refinement: all 22 guides reach 100/100
 
 ### Changed (reference guides + SKILL.md templates)
