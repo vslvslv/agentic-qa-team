@@ -1,8 +1,12 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 2 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 12 | score: 100/100 | date: 2026-04-28 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: synthesized from training knowledge — WebFetch blocked; WebSearch unavailable -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
+<!-- Iterations 3–12: cross-shard detection; ISTQB CTFL 4.0 terminology; memory/resource exhaustion; snapshot flakiness; -->
+<!--   Storybook/Chromatic; WebSocket/SSE; port collision; Pact provider state; DB migration race; GitHub Actions dashboard; -->
+<!--   Node.js native test runner; ESLint anti-flakiness rules; Playwright trace debugging; worker_threads; -->
+<!--   flakiness SLO/metrics; quarantine review automation; Promise.race timeout helper; test doubles taxonomy; AbortSignal -->
 
 ---
 
@@ -33,6 +37,33 @@ Waiting for a developer to notice a flaky test means weeks of noise. Automated d
 - You're introducing parallel test execution (order-dependency flakiness spikes)
 - You're migrating to a new test runner or CI platform (environment assumptions surface)
 - Your team is adopting microservices with contract tests (network-level flakiness increases)
+
+---
+
+## ISTQB CTFL 4.0 Terminology Alignment
+
+ISTQB Certified Tester Foundation Level 4.0 (2023) standardises terminology used throughout this guide.
+Using consistent terms reduces miscommunication when teams include certified testers or reference
+certification materials during onboarding.
+
+| Term used in this guide | ISTQB CTFL 4.0 definition | Notes |
+|-------------------------|--------------------------|-------|
+| **flaky test** | "non-deterministic test" — a test case that produces different verdicts on the same test object without code change | ISTQB uses "non-deterministic"; "flaky" is community shorthand |
+| **test case** | "a set of preconditions, inputs, actions, expected results and postconditions" | Do NOT write "test" when you mean "test case"; "test" is the broader activity |
+| **test suite** | "a set of test cases or test procedures to be executed in a specific test run" | Do NOT use "test set" |
+| **test object** | "the work product to be tested" | Do NOT use "thing under test" or "SUT" in formal contexts |
+| **defect** | "an imperfection or deficiency in a work product" | Use "defect" in reports; "bug" is informal |
+| **test level** | "a specific instantiation of a test process — e.g., component, integration, system" | Do NOT use "test layer" |
+| **test result** | "the outcome of running a test case: pass, fail, or blocked" | A flaky test case has an *inconsistent* test result across runs |
+| **test stability** | not a formal CTFL term, but maps to "reliability of the test suite" | Stability rate = fraction of runs yielding deterministic results |
+| **quarantine** | not a formal CTFL term — community practice; CTFL uses "deferred defect" for tracked but unresolved defects | Tag with `[QUARANTINE]`, link to defect tracking system |
+
+**Test Stability vs. Test Reliability (distinction):**
+
+- **Test stability** — whether a given test case produces the *same* result on repeated runs against unchanged code. A stable test case always passes on passing code and always fails on failing code.
+- **Test reliability** — whether a test suite as a whole can be trusted to signal real regressions. A test suite with 5% flakiness rate has low reliability even if 95% of individual test cases are stable.
+
+Both metrics are required. A single highly-flaky test case (e.g., an end-to-end test that flakes 30% of the time) can undermine the reliability of the entire suite's signal, because developers start ignoring failures.
 
 ---
 
@@ -500,6 +531,1303 @@ describe.concurrent('UserService concurrent tests', () => {
 });
 ```
 
+### Pattern 10 — Cross-Shard Order-Dependency Detection [community]
+
+Test sharding (splitting the suite across N parallel workers) surfaces order-dependency defects
+that single-threaded runs hide. By varying shard assignment across CI runs, you ensure no test
+implicitly depends on a previous test in the same shard bucket.
+
+```typescript
+// GitHub Actions matrix strategy: run 4 shards with different random seeds
+// Any test that fails only in certain shard assignments is order-dependent.
+// .github/workflows/shard-flakiness.yml (relevant job section)
+//
+// jobs:
+//   test:
+//     strategy:
+//       matrix:
+//         shard: [1, 2, 3, 4]
+//         seed:  [42, 7, 99, 113]   # different ordering per seed
+//     steps:
+//       - run: npx jest --shard=${{ matrix.shard }}/4 --randomize --seed=${{ matrix.seed }}
+
+// jest.config.ts — enable --randomize flag support
+import type { Config } from 'jest';
+
+const config: Config = {
+  // testSequencer randomizes file order; seed can be passed via --seed flag
+  testSequencer: './randomSequencer.ts',
+  // Fail immediately on the first order-dependent error to save CI minutes
+  bail: 1,
+  // Each test file in its own vm context — prevents module-level state leaks
+  resetModules: true,
+  // Detect open handles (unresolved Promises, timers) that bleed between files
+  detectOpenHandles: true,
+};
+
+export default config;
+```
+
+```typescript
+// Seeded randomSequencer.ts — accepts --seed flag for reproducible shard ordering
+import Sequencer from '@jest/test-sequencer';
+import type { Test } from '@jest/test-result';
+
+// Deterministic shuffle using seed from JEST_SEED env var (set by --seed flag)
+function seededRandom(seed: number): () => number {
+  let s = seed;
+  return () => {
+    s = (s * 9301 + 49297) % 233280;
+    return s / 233280;
+  };
+}
+
+export default class SeededSequencer extends Sequencer {
+  sort(tests: Test[]): Test[] {
+    const seed = parseInt(process.env.JEST_SEED ?? '42', 10);
+    const rand = seededRandom(seed);
+    const result = [...tests];
+    for (let i = result.length - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      [result[i], result[j]] = [result[j], result[i]];
+    }
+    return result;
+  }
+}
+```
+
+### Pattern 11 — Vitest Retry Verbose Reporting [community]
+
+Vitest 1.x+ supports per-test retry with structured reporting. Unlike Jest's `retryTimes`
+(which modifies the global suite), Vitest's retry count is a first-class config option
+and can be combined with the `junit` reporter to feed a flakiness tracking dashboard.
+
+```typescript
+// vitest.config.ts — retry + structured reporting for flakiness tracking
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Global retry count — failed test cases are retried this many times before
+    // being marked as failed. A test case that passes on retry is reported as
+    // "flaky" (not failed) in the HTML report and JUnit XML.
+    retry: 2,
+    // Pair with forks pool for maximum isolation between test files
+    pool: 'forks',
+    // Reporter combo: human-readable + JUnit for CI flakiness dashboard ingestion
+    reporters: [
+      'verbose',   // shows retry attempts in terminal output
+      ['junit', { outputFile: 'test-results/vitest-results.xml' }],
+      ['html'],    // HTML report shows flakiness annotations
+    ],
+    // Mandatory for concurrent safety: reset all mock state between tests
+    clearMocks: true,
+    restoreMocks: true,
+    resetMocks: true,
+  },
+});
+```
+
+```typescript
+// Per-test-case retry override — useful during quarantine stabilization
+// when you know a specific test case is being fixed but isn't stable yet
+import { it, describe, expect } from 'vitest';
+
+describe('PaymentGateway — integration', () => {
+  // This test case is being stabilized (PROJ-2501) — temporarily retry 3 times
+  // while the root cause (payment webhook timing) is diagnosed.
+  it('processes refund within 5 seconds', { retry: 3, timeout: 10_000 }, async () => {
+    const gateway = new PaymentGateway({ endpoint: process.env.GATEWAY_URL! });
+    const result = await gateway.refund({ transactionId: 'TXN-001', amount: 50_00 });
+    expect(result.status).toBe('refunded');
+    expect(result.processedAt).toBeDefined();
+  });
+
+  // Stable tests do not need per-test retry
+  it('rejects negative refund amount', async () => {
+    const gateway = new PaymentGateway({ endpoint: process.env.GATEWAY_URL! });
+    await expect(gateway.refund({ transactionId: 'TXN-001', amount: -100 }))
+      .rejects.toThrow('amount must be positive');
+  });
+});
+```
+
+### Pattern 12 — Memory Leak and Resource Exhaustion Flakiness [community]
+
+Tests that leak memory or file descriptors cause later tests in the same worker process to fail
+with OOM errors, EMFILE (too many open files), or ENOMEM — failures that appear non-deterministic
+because they depend on test execution order and total suite size.
+
+```typescript
+// Pattern: Use the 'using' keyword (TypeScript 5.2+) for automatic resource cleanup
+// This prevents file descriptor and DB connection leaks in tests that use real resources
+
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { createReadStream } from 'fs';
+import { createInterface } from 'readline';
+
+// Disposable wrapper for readline — ensures the stream and rl interface close
+// even if the test throws, preventing EMFILE leaks in long test suites
+class DisposableReadline implements Disposable {
+  readonly rl: ReturnType<typeof createInterface>;
+  constructor(filePath: string) {
+    this.rl = createInterface({
+      input: createReadStream(filePath),
+      crlfDelay: Infinity,
+    });
+  }
+  [Symbol.dispose](): void {
+    this.rl.close(); // guaranteed to run even on test failure
+  }
+}
+
+describe('LogParser', () => {
+  it('counts error lines in log file', async () => {
+    // 'using' guarantees disposal — no fd leak even if assertion throws
+    using reader = new DisposableReadline('test-fixtures/sample.log');
+    let errorCount = 0;
+    for await (const line of reader.rl) {
+      if (line.includes('[ERROR]')) errorCount++;
+    }
+    expect(errorCount).toBeGreaterThan(0);
+  });
+});
+```
+
+```typescript
+// Pattern: Explicit cleanup registry for tests that cannot use 'using'
+// (e.g., resources created inside beforeAll/afterAll lifecycle hooks)
+
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { Pool } from 'pg'; // hypothetical PostgreSQL pool
+
+let pool: Pool;
+const cleanupFns: (() => Promise<void>)[] = [];
+
+beforeAll(async () => {
+  pool = new Pool({ connectionString: process.env.TEST_DB_URL });
+  // Register cleanup — always runs in afterAll regardless of test failures
+  cleanupFns.push(() => pool.end());
+});
+
+afterAll(async () => {
+  // Drain all registered cleanup functions in reverse order (LIFO)
+  for (const fn of cleanupFns.reverse()) {
+    try { await fn(); } catch (e) { console.error('Cleanup failed:', e); }
+  }
+});
+
+describe('UserRepository', () => {
+  it('persists a new user', async () => {
+    const repo = new UserRepository(pool);
+    const user = await repo.create({ name: 'Alice', email: 'alice@example.com' });
+    expect(user.id).toBeDefined();
+    // Pool is guaranteed to close after ALL tests, even if this assertion fails
+  });
+});
+```
+
+```bash
+# Detect file descriptor leaks in CI — run before and after the test suite
+# and fail if the fd count grew by more than a threshold
+# (Add to .github/workflows/test.yml as a pre/post step)
+#
+# Pre-test: record open fd count
+# node -e "const { execSync } = require('child_process'); \
+#   const count = parseInt(execSync('lsof -p ' + process.pid + ' | wc -l').toString()); \
+#   require('fs').writeFileSync('/tmp/fd-before.txt', count.toString());"
+#
+# Post-test: compare
+# node -e "const before = parseInt(require('fs').readFileSync('/tmp/fd-before.txt')); \
+#   const { execSync } = require('child_process'); \
+#   const after = parseInt(execSync('lsof -p ' + process.pid + ' | wc -l').toString()); \
+#   const leak = after - before; \
+#   if (leak > 10) { console.error('FD LEAK: ' + leak + ' descriptors leaked'); process.exit(1); } \
+#   console.log('FD check passed: delta=' + leak);"
+```
+
+### Pattern 13 — Snapshot Test Flakiness [community]
+
+Snapshot tests (Jest `toMatchSnapshot()`, `toMatchInlineSnapshot()`) are a common source of
+non-deterministic failures when they capture dynamic values: timestamps, random IDs, auto-
+incrementing counters, or unstable sort orders. The root cause is that the snapshot encodes
+*incidental* data alongside *structural* intent.
+
+```typescript
+// BAD: snapshot captures non-deterministic values — fails on every re-run
+import { render } from '@testing-library/react';
+import { UserCard } from './UserCard';
+
+it('renders user card', () => {
+  const user = {
+    id: crypto.randomUUID(), // different every run — snapshot will always fail
+    name: 'Alice',
+    createdAt: new Date().toISOString(), // changes every millisecond
+  };
+  const { container } = render(<UserCard user={user} />);
+  expect(container).toMatchSnapshot(); // FLAKY: id and createdAt differ each run
+});
+
+// GOOD: mask non-deterministic fields before snapshotting
+import { render } from '@testing-library/react';
+
+it('renders user card structure', () => {
+  const user = {
+    id: 'FIXED-UUID-FOR-SNAPSHOT', // stable sentinel value
+    name: 'Alice',
+    createdAt: '2026-01-15T12:00:00.000Z', // fixed date
+  };
+  const { container } = render(<UserCard user={user} />);
+  // Snapshot now captures only the structural intent (layout, labels, classes)
+  expect(container).toMatchSnapshot();
+});
+
+// BETTER: use inline snapshots for properties you DO care about structurally
+it('renders user name and role badge', () => {
+  const { getByRole, getByText } = render(
+    <UserCard user={{ id: 'u1', name: 'Alice', role: 'admin', createdAt: '2026-01-15T12:00:00Z' }} />
+  );
+  // Assert on semantics, not serialized DOM structure — more resilient to refactoring
+  expect(getByText('Alice')).toBeInTheDocument();
+  expect(getByRole('img', { name: /admin badge/i })).toBeInTheDocument();
+});
+```
+
+```typescript
+// Jest serializer config: scrub dynamic values globally before snapshot comparison
+// jest.config.ts — add custom serializer to mask UUIDs and ISO dates
+import type { Config } from 'jest';
+
+const config: Config = {
+  snapshotSerializers: [
+    // Custom serializer that replaces UUIDs and ISO timestamps in snapshots
+    // with stable placeholders — prevents spurious snapshot failures
+    '<rootDir>/test-utils/snapshot-scrubber.ts',
+  ],
+};
+
+export default config;
+```
+
+```typescript
+// test-utils/snapshot-scrubber.ts — stable snapshot values for dynamic data
+// Registered as a Jest snapshot serializer — applies to ALL toMatchSnapshot() calls
+
+const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const ISO_DATE_PATTERN = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g;
+
+export const print = (val: unknown): string =>
+  JSON.stringify(val, null, 2)
+    .replace(UUID_PATTERN, '[UUID]')
+    .replace(ISO_DATE_PATTERN, '[ISO_DATE]');
+
+export const test = (val: unknown): val is object =>
+  typeof val === 'object' && val !== null;
+```
+
+### Pattern 14 — Storybook / Chromatic Visual Flakiness [community]
+
+Visual regression testing (via Chromatic or Percy) introduces a new category of flakiness:
+pixel-level rendering differences caused by font anti-aliasing, GPU compositing, animation
+frames, and OS-level rendering differences between local and CI.
+
+```typescript
+// storybook/preview.ts — freeze animations and transitions for stable visual snapshots
+// This prevents Chromatic from capturing mid-animation frames
+
+export const parameters = {
+  // Disable all CSS animations and transitions globally during visual tests
+  chromatic: {
+    // Pause all CSS animations at their end state before capturing
+    pauseAnimationAtEnd: true,
+    // Delay capture to allow async data loading to complete
+    delay: 300,
+    // Disable diff detection for elements known to be dynamic
+    diffIncludeAntiAliasing: false,
+    // Viewport sizes to test — test multiple breakpoints
+    viewports: [375, 768, 1280],
+  },
+};
+
+// For stories with real timers or date-dependent rendering, freeze the clock
+import { withThemeByClassName } from '@storybook/addon-themes';
+
+export const decorators = [
+  (Story: React.ComponentType) => {
+    // Override Date.now() and new Date() within Storybook's iframe
+    // to prevent date-dependent components from rendering different values
+    const OriginalDate = Date;
+    const FIXED_DATE = new Date('2026-01-15T12:00:00.000Z');
+    // @ts-expect-error — intentional override for stable snapshots
+    Date = class extends OriginalDate {
+      constructor(...args: ConstructorParameters<typeof OriginalDate>) {
+        if (args.length === 0) { super(FIXED_DATE.getTime()); }
+        else { super(...args); }
+      }
+      static now() { return FIXED_DATE.getTime(); }
+    };
+    return <Story />;
+  },
+];
+```
+
+### Pattern 15 — WebSocket and SSE Flakiness [community]
+
+Real-time protocols (WebSocket, Server-Sent Events) introduce race conditions that
+standard HTTP mocking cannot address: connection establishment timing, message ordering,
+reconnect logic, and heartbeat timeouts all create opportunities for non-deterministic
+test results.
+
+```typescript
+// Pattern: Use a test WebSocket server with explicit event synchronization
+// Avoids the race between "server sends message" and "client receives message"
+import { WebSocketServer, WebSocket } from 'ws';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { NotificationClient } from '../src/NotificationClient';
+
+let wss: WebSocketServer;
+let serverPort: number;
+
+beforeAll(async () => {
+  // Use port 0 to let the OS assign a free port — eliminates port collision flakiness
+  wss = new WebSocketServer({ port: 0 });
+  serverPort = (wss.address() as { port: number }).port;
+});
+
+afterAll(async () => {
+  await new Promise<void>(resolve => wss.close(() => resolve()));
+});
+
+it('receives notification within 2 seconds', async () => {
+  const client = new NotificationClient(`ws://localhost:${serverPort}`);
+
+  // Create a promise that resolves when the server receives a connection
+  // Then send the message — avoids race where message is sent before connection is ready
+  const messageReceived = new Promise<string>((resolve) => {
+    wss.once('connection', (socket: WebSocket) => {
+      // Wait for client to send its subscription, THEN emit the notification
+      socket.once('message', (_subscribeMsg) => {
+        socket.send(JSON.stringify({ type: 'notification', message: 'Order shipped' }));
+      });
+    });
+    client.onMessage(resolve); // resolve the promise when client receives message
+  });
+
+  await client.connect();
+  client.subscribe('orders');
+
+  const received = await messageReceived;
+  expect(JSON.parse(received).message).toBe('Order shipped');
+  await client.disconnect();
+});
+```
+
+```typescript
+// Pattern: Test SSE (Server-Sent Events) with explicit close and retry handling
+// SSE connections can hang if the test doesn't explicitly close the EventSource
+
+import { describe, it, expect, afterEach } from 'vitest';
+
+// Track open EventSource connections to ensure cleanup
+const openConnections: EventSource[] = [];
+
+afterEach(() => {
+  // Close all EventSource connections after each test — prevents leaks that
+  // cause the next test's server to refuse new connections (EMFILE)
+  openConnections.splice(0).forEach(es => es.close());
+});
+
+it('streams progress events from task endpoint', async () => {
+  const events: string[] = [];
+  const es = new EventSource('http://localhost:3000/api/tasks/123/progress');
+  openConnections.push(es);
+
+  // Collect events into an array, resolve after receiving 'complete' event
+  await new Promise<void>((resolve, reject) => {
+    es.onmessage = (event) => {
+      events.push(event.data);
+      if (JSON.parse(event.data).status === 'complete') resolve();
+    };
+    es.onerror = reject;
+    // Guard: resolve after 5 seconds even if 'complete' never arrives (flakiness safety net)
+    setTimeout(() => reject(new Error('SSE timeout')), 5000);
+  });
+
+  expect(events.length).toBeGreaterThan(0);
+  expect(JSON.parse(events[events.length - 1]).status).toBe('complete');
+});
+```
+
+### Pattern 16 — Port Collision Prevention [community]
+
+Hard-coded port numbers in test setup are one of the most common causes of parallel-run
+flakiness, especially in monorepos where multiple packages run tests concurrently.
+Two packages binding to the same port produces `EADDRINUSE` errors that appear random.
+
+```typescript
+// utils/get-free-port.ts — assign a random free OS port for each test server
+import * as net from 'net';
+
+/**
+ * Returns a free TCP port by asking the OS to bind to port 0.
+ * The OS assigns the next available port, which is then immediately released.
+ * Use this in beforeAll() to get a unique port for each test suite's server.
+ */
+export function getFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        return reject(new Error('Failed to get free port'));
+      }
+      const { port } = address;
+      server.close(() => resolve(port));
+    });
+    server.on('error', reject);
+  });
+}
+
+// Usage in tests:
+// const port = await getFreePort();
+// const app = express();
+// const server = app.listen(port);
+// // ... run tests against `http://localhost:${port}`
+// server.close();
+```
+
+```typescript
+// Integration test using dynamic port assignment — safe for parallel execution
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import express from 'express';
+import type { Server } from 'http';
+import supertest from 'supertest';
+import { getFreePort } from '../utils/get-free-port';
+import { createRouter } from '../src/api/router';
+
+let server: Server;
+let baseUrl: string;
+
+beforeAll(async () => {
+  const port = await getFreePort(); // unique port per test suite — zero collision risk
+  const app = express();
+  app.use('/api', createRouter());
+  server = app.listen(port);
+  baseUrl = `http://localhost:${port}`;
+});
+
+afterAll(async () => {
+  await new Promise<void>(resolve => server.close(() => resolve()));
+});
+
+it('GET /api/health returns 200', async () => {
+  const res = await supertest(baseUrl).get('/api/health');
+  expect(res.status).toBe(200);
+});
+```
+
+### Pattern 17 — Contract Test Flakiness (Pact Provider State) [community]
+
+Consumer-driven contract tests (Pact) have their own category of flakiness: provider state
+setup that doesn't complete before the interaction is verified, or provider state cleanup
+that leaks into subsequent verifications. The root cause is timing in the state change handler.
+
+```typescript
+// pact/provider.test.ts — robust Pact provider verification with explicit state sync
+import { Verifier } from '@pact-foundation/pact';
+import { app } from '../src/app';
+import { db } from '../src/db';
+import type { Server } from 'http';
+import { getFreePort } from '../utils/get-free-port';
+
+let server: Server;
+let port: number;
+
+beforeAll(async () => {
+  port = await getFreePort();
+  server = app.listen(port);
+});
+
+afterAll(async () => {
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  await db.end(); // close connection pool — prevents open handle flakiness
+});
+
+it('verifies consumer contracts', async () => {
+  await new Verifier({
+    provider: 'OrderService',
+    providerBaseUrl: `http://localhost:${port}`,
+    pactBrokerUrl: process.env.PACT_BROKER_URL,
+    publishVerificationResult: process.env.CI === 'true',
+    providerVersion: process.env.GIT_SHA ?? 'local',
+
+    // Provider state handler — MUST be synchronous-ready or return a Promise
+    // that resolves only after the state is fully established.
+    // Flakiness root cause: fire-and-forget DB inserts that complete AFTER
+    // the Pact verifier issues the interaction request.
+    stateHandlers: {
+      'a user with ID 42 exists': async () => {
+        // Await the DB operation — do NOT fire-and-forget
+        await db.query(
+          `INSERT INTO users (id, name, email) VALUES ($1, $2, $3)
+           ON CONFLICT (id) DO UPDATE SET name = $2, email = $3`,
+          [42, 'Alice', 'alice@example.com']
+        );
+        // Return teardown function — Pact calls this after the interaction
+        return async () => {
+          await db.query('DELETE FROM users WHERE id = $1', [42]);
+        };
+      },
+
+      'no users exist': async () => {
+        await db.query('TRUNCATE users CASCADE');
+      },
+    },
+  }).verifyProvider();
+});
+```
+
+### Pattern 18 — Database Migration Race Condition Flakiness [community]
+
+Integration test suites that run migrations as part of test setup are vulnerable to a race:
+two parallel test workers both attempt to apply the same migration, one succeeds, the other
+fails with a "relation already exists" or "duplicate column" error. This manifests as
+non-deterministic failures in the first few tests that run after migration.
+
+```typescript
+// test-setup/migrate-once.ts — distributed migration lock using advisory locks
+// Ensures only one worker applies migrations even in parallel test runs
+
+import { Pool } from 'pg';
+
+const DB_MIGRATE_LOCK_ID = 9876543; // arbitrary unique number — consistent per project
+
+export async function migrateOnce(
+  pool: Pool,
+  migrationFn: () => Promise<void>
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    // pg_try_advisory_lock returns TRUE for the first caller, FALSE for concurrent callers
+    // This is a session-level lock — auto-released when the connection is closed
+    const { rows } = await client.query<{ locked: boolean }>(
+      'SELECT pg_try_advisory_lock($1) AS locked',
+      [DB_MIGRATE_LOCK_ID]
+    );
+
+    if (rows[0].locked) {
+      // We won the race — apply migrations
+      console.log('[migrate-once] acquired lock, applying migrations...');
+      await migrationFn();
+      console.log('[migrate-once] migrations complete');
+    } else {
+      // Another worker is migrating — wait for it to finish (poll migration table)
+      console.log('[migrate-once] waiting for migrations from another worker...');
+      await waitForMigrations(client);
+    }
+  } finally {
+    client.release(); // releases advisory lock
+  }
+}
+
+async function waitForMigrations(client: ReturnType<Pool['connect']> extends Promise<infer T> ? T : never): Promise<void> {
+  const maxWait = 30_000; // 30 seconds
+  const interval = 500;
+  const start = Date.now();
+  while (Date.now() - start < maxWait) {
+    // Check migration status from schema_migrations table (or equivalent)
+    const { rows } = await client.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM information_schema.tables
+       WHERE table_name = 'schema_migrations'`
+    );
+    if (parseInt(rows[0].count, 10) > 0) return; // migrations table exists — complete
+    await new Promise(resolve => setTimeout(resolve, interval));
+  }
+  throw new Error('Migration wait timeout — check migration lock holder');
+}
+```
+
+### Pattern 19 — GitHub Actions Step Summary Flakiness Dashboard [community]
+
+GitHub Actions' built-in step summary (`$GITHUB_STEP_SUMMARY`) can be used to publish
+a flakiness report directly in the PR checks UI without external services. This provides
+immediate visibility into retry counts without requiring BuildPulse or Trunk.
+
+```yaml
+# .github/workflows/test-with-flakiness-report.yml (relevant job section)
+# After running tests with JUnit output, parse retry counts and write to step summary
+
+# - name: Parse flakiness from JUnit XML
+#   if: always()  # run even if tests fail
+#   run: |
+#     node -e "
+#     const fs = require('fs');
+#     const xml = fs.readFileSync('test-results/results.xml', 'utf-8');
+#     const flaky = [];
+#     // Match test cases with flaky='true' attribute (Playwright) or retries > 0 (Jest)
+#     const matches = xml.matchAll(/<testcase[^>]+name=\"([^\"]+)\"[^>]*(flaky=\"true\"|retries=\"[1-9]\d*\")[^>]*/g);
+#     for (const m of matches) flaky.push(m[1]);
+#     if (flaky.length === 0) {
+#       fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '### Flakiness Report\\n✅ No flaky tests detected this run\\n');
+#     } else {
+#       let md = '### Flakiness Report\\n⚠️ ' + flaky.length + ' flaky test(s) detected:\\n';
+#       flaky.forEach(name => { md += '- ' + name + '\\n'; });
+#       md += '\\n> These tests passed on retry. Investigate root cause before quarantine.\\n';
+#       fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
+#     }
+#     "
+```
+
+```typescript
+// scripts/parse-flakiness-report.ts — TypeScript version of the above for type safety
+// Run after test suite: `npx ts-node scripts/parse-flakiness-report.ts`
+
+import { readFileSync, appendFileSync } from 'fs';
+
+interface FlakyTest {
+  name: string;
+  classname: string;
+  retries: number;
+}
+
+function parseFlakyTests(junitXml: string): FlakyTest[] {
+  const results: FlakyTest[] = [];
+  // Match testcase elements that have retries or flaky attributes
+  const pattern = /<testcase[^>]+name="([^"]+)"[^>]+classname="([^"]+)"[^>]*(flaky="true"|retries="([1-9]\d*)")[\s\S]*?(?:<\/testcase>|\/?>)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(junitXml)) !== null) {
+    results.push({
+      name: match[1],
+      classname: match[2],
+      retries: match[4] ? parseInt(match[4], 10) : 1,
+    });
+  }
+  return results;
+}
+
+const xmlPath = process.argv[2] ?? 'test-results/results.xml';
+const summaryPath = process.env.GITHUB_STEP_SUMMARY ?? '/dev/stdout';
+
+try {
+  const xml = readFileSync(xmlPath, 'utf-8');
+  const flaky = parseFlakyTests(xml);
+
+  let summary: string;
+  if (flaky.length === 0) {
+    summary = '### Flakiness Report\n✅ No flaky tests detected this run\n';
+  } else {
+    summary = `### Flakiness Report\n⚠️ ${flaky.length} flaky test(s) detected:\n\n`;
+    summary += '| Test Name | Suite | Retries |\n|-----------|-------|---------|\n';
+    flaky.forEach(t => {
+      summary += `| ${t.name} | ${t.classname} | ${t.retries} |\n`;
+    });
+    summary += '\n> These tests passed on retry. Investigate root cause before marking as quarantine.\n';
+  }
+
+  appendFileSync(summaryPath, summary);
+  if (flaky.length > 0) process.exitCode = 0; // don't fail build — just report
+} catch (err) {
+  console.error('Failed to parse JUnit XML:', err);
+  process.exitCode = 1;
+}
+```
+
+### Pattern 20 — ESLint Rules for Static Flakiness Prevention [community]
+
+Static analysis can catch flakiness-prone patterns before they reach CI. The following
+ESLint rules form a "no-flakiness" ruleset that eliminates the most common root causes
+at the lint stage.
+
+```jsonc
+// .eslintrc.cjs — flakiness-prevention ESLint config for test files
+// Apply these rules only to test files (*.test.ts, *.spec.ts) to avoid noise in production code
+{
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.spec.ts", "**/test-utils/**/*.ts"],
+      "plugins": ["jest", "jest-extended", "@typescript-eslint"],
+      "rules": {
+        // Rule: no floating (unawaited) promises — catches missing await in afterEach/beforeEach
+        "@typescript-eslint/no-floating-promises": "error",
+
+        // Rule: no explicit any in test files — prevents type-unsafe mock setup
+        "@typescript-eslint/no-explicit-any": "warn",
+
+        // Rule: prefer jest.useFakeTimers over setTimeout in tests
+        // Custom rule via no-restricted-syntax
+        "no-restricted-syntax": [
+          "error",
+          {
+            // Flag: await new Promise(r => setTimeout(r, N)) — sleep smell
+            "selector": "AwaitExpression > NewExpression[callee.name='Promise'] > ArrowFunctionExpression CallExpression[callee.name='setTimeout'][arguments.1.type='Literal']",
+            "message": "Use waitFor() or explicit condition polling instead of sleep() in tests"
+          },
+          {
+            // Flag: page.waitForTimeout() in Playwright tests — sleep smell
+            "selector": "CallExpression[callee.property.name='waitForTimeout']",
+            "message": "Use page.waitForSelector() or expect(locator).toBeVisible() instead of waitForTimeout()"
+          }
+        ],
+
+        // Rule: jest/no-disabled-tests — warn on .skip without a QUARANTINE marker
+        // (catches accidental disables that aren't tracked)
+        "jest/no-disabled-tests": "warn",
+
+        // Rule: jest/no-standalone-expect — expect() outside a test body is a setup error
+        "jest/no-standalone-expect": "error",
+
+        // Rule: jest/valid-expect — catches expect(x) without an assertion method
+        "jest/valid-expect": "error",
+
+        // Rule: jest/no-conditional-expect — conditional assertions hide flakiness
+        "jest/no-conditional-expect": "error"
+      }
+    }
+  ]
+}
+```
+
+```typescript
+// Custom ESLint rule: detect hard-coded port numbers in test files
+// Add to your local eslint-rules/ directory and register as a plugin
+
+// eslint-rules/no-hardcoded-ports.ts
+import type { Rule } from 'eslint';
+
+const rule: Rule.RuleModule = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description: 'Disallow hard-coded port numbers in test setup (use port 0 for OS-assigned)',
+    },
+    messages: {
+      hardcodedPort: 'Hard-coded port {{port}} causes EADDRINUSE flakiness in parallel runs. Use port 0 and read server.address().port instead.',
+    },
+  },
+  create(context) {
+    return {
+      // Flag: .listen(3000) or .listen(8080) etc. in test files
+      CallExpression(node) {
+        if (
+          node.callee.type === 'MemberExpression' &&
+          node.callee.property.type === 'Identifier' &&
+          node.callee.property.name === 'listen' &&
+          node.arguments[0]?.type === 'Literal' &&
+          typeof node.arguments[0].value === 'number' &&
+          node.arguments[0].value > 0
+        ) {
+          context.report({
+            node: node.arguments[0],
+            messageId: 'hardcodedPort',
+            data: { port: String(node.arguments[0].value) },
+          });
+        }
+      },
+    };
+  },
+};
+
+export default rule;
+```
+
+### Pattern 21 — Node.js Native Test Runner (node:test) Retry Support [community]
+
+Node.js 20+ ships `node:test` with built-in retry support, making it possible to detect
+flakiness without Jest or Vitest in lightweight scripts and microservice tests.
+
+```typescript
+// Node.js 20+ native test runner with retry and flakiness detection
+// Run with: node --test src/**/*.test.mts
+
+import { describe, it, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+
+// node:test supports per-test retry via the `options.retry` field
+// A test case that fails then passes on retry is annotated as "flaky" in TAP output
+
+describe('PaymentProcessor', () => {
+  let processor: PaymentProcessor;
+
+  beforeEach(() => {
+    processor = new PaymentProcessor({ endpoint: process.env.GATEWAY_URL! });
+  });
+
+  // Stable test — no retry needed
+  it('rejects payment with invalid card number', async () => {
+    await assert.rejects(
+      () => processor.charge({ cardNumber: '0000', amount: 10_00 }),
+      { message: /invalid card/i }
+    );
+  });
+
+  // Test under stabilization — retry 2 times, annotated as flaky in TAP output if passes on retry
+  it('charges card within 3 seconds', { retry: 2, timeout: 5000 }, async () => {
+    const result = await processor.charge({ cardNumber: '4111111111111111', amount: 25_00 });
+    assert.equal(result.status, 'approved');
+    assert.ok(result.transactionId.startsWith('TXN-'));
+  });
+});
+```
+
+```typescript
+// node:test — run suite N times to detect flakiness rate (Node 20+ diagnostic script)
+// Usage: node scripts/flakiness-sweep.mts <test-file> <runs>
+
+import { run } from 'node:test';
+import { createReadStream } from 'node:stream';
+
+const [, , testFile = 'src/payment.test.mts', runsStr = '5'] = process.argv;
+const runs = parseInt(runsStr, 10);
+
+let failures = 0;
+let retries = 0;
+
+for (let i = 0; i < runs; i++) {
+  const stream = run({ files: [testFile] });
+  for await (const event of stream) {
+    if (event.type === 'test:fail') failures++;
+    if (event.type === 'test:diagnostic' && event.data.message?.includes('retry')) retries++;
+  }
+}
+
+const flakinessRate = (retries / (runs * 1)) * 100; // approximate
+console.log(`Flakiness sweep (${runs} runs):`);
+console.log(`  Failures:      ${failures}`);
+console.log(`  Retry events:  ${retries}`);
+console.log(`  Flakiness rate: ~${flakinessRate.toFixed(1)}%`);
+if (flakinessRate > 5) {
+  console.error('FLAKINESS ALERT: rate exceeds 5% threshold');
+  process.exitCode = 1;
+}
+```
+
+### Pattern 22 — Playwright Trace-Based Flakiness Diagnosis [community]
+
+When a Playwright test case fails on retry and you don't know why, the trace file
+(`trace.zip`) provides a full timeline: DOM snapshots, network requests, console logs,
+and action markers. Automating trace capture on first retry and uploading as a CI
+artifact converts invisible flakiness into diagnosable evidence.
+
+```typescript
+// playwright.config.ts — trace capture with artifact naming strategy
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  retries: process.env.CI ? 2 : 0,
+
+  use: {
+    // Capture trace on first retry only — zero overhead for passing tests
+    trace: 'on-first-retry',
+    // Screenshot on failure — fast visual reference without full trace
+    screenshot: 'only-on-failure',
+    // Video on first retry — captures the full interaction timeline
+    video: 'on-first-retry',
+  },
+
+  reporter: [
+    ['list'],
+    // HTML report embeds traces inline — open with: npx playwright show-report
+    ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    // JUnit for CI flakiness tracking (BuildPulse / Trunk / GitHub step summary)
+    ['junit', { outputFile: 'test-results/e2e-results.xml' }],
+  ],
+
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox',  use: { ...devices['Desktop Firefox'] } },
+  ],
+});
+```
+
+```typescript
+// Playwright test — structured trace annotation for flakiness investigation
+// Use test.step() to annotate actions — these show as labelled checkpoints in the trace viewer
+import { test, expect } from '@playwright/test';
+
+test('user completes checkout', async ({ page }) => {
+  await test.step('navigate to product page', async () => {
+    await page.goto('/products/laptop-pro');
+    // Explicit assertion — trace viewer shows exactly when this passed or failed
+    await expect(page.getByRole('heading', { name: 'Laptop Pro' })).toBeVisible();
+  });
+
+  await test.step('add to cart', async () => {
+    await page.getByRole('button', { name: /add to cart/i }).click();
+    // Wait for cart badge to update — avoids race with cart counter animation
+    await expect(page.getByTestId('cart-count')).toHaveText('1');
+  });
+
+  await test.step('proceed to checkout', async () => {
+    await page.getByRole('link', { name: /checkout/i }).click();
+    // waitForURL is more reliable than waitForNavigation for SPA routing
+    await page.waitForURL('**/checkout');
+    await expect(page.getByRole('heading', { name: 'Checkout' })).toBeVisible();
+  });
+
+  await test.step('submit order', async () => {
+    await page.fill('[name="card-number"]', '4111111111111111');
+    await page.fill('[name="expiry"]', '12/28');
+    await page.fill('[name="cvv"]', '123');
+    // Intercept the order API call — deterministic success response, no external dep
+    await page.route('**/api/orders', route =>
+      route.fulfill({ status: 201, json: { orderId: 'ORD-TEST-001' } })
+    );
+    await page.getByRole('button', { name: /place order/i }).click();
+    await expect(page.getByTestId('order-confirmation')).toBeVisible({ timeout: 5000 });
+  });
+});
+```
+
+```yaml
+# .github/workflows/e2e.yml — upload trace artifacts for any flaky test investigation
+# jobs.test.steps (relevant portion)
+#
+# - name: Upload Playwright trace and video artifacts
+#   if: failure() || steps.tests.outcome == 'failure'
+#   uses: actions/upload-artifact@v4
+#   with:
+#     name: playwright-traces-${{ github.run_id }}
+#     path: |
+#       playwright-report/
+#       test-results/
+#     retention-days: 7
+#
+# Trace files can then be opened locally with:
+#   npx playwright show-report playwright-report/
+# or shared via the GitHub Actions artifact download link
+```
+
+### Pattern 23 — Worker Threads Race Condition Flakiness [community]
+
+Node.js `worker_threads` in production code (e.g., CPU-intensive tasks, stream processing)
+can introduce race conditions when tests share worker pool instances. The worker pool's
+internal queue and thread lifecycle creates timing-dependent test results.
+
+```typescript
+// Pattern: each test gets its own worker pool instance — no shared thread state
+import { Worker, WorkerOptions } from 'worker_threads';
+import { describe, it, expect, afterEach } from 'vitest';
+
+// Simple disposable worker pool for test isolation
+class TestWorkerPool implements Disposable {
+  private workers: Worker[] = [];
+
+  async runTask(script: string, data: unknown): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      // workerData is passed once at creation — no mutable shared state
+      const worker = new Worker(script, {
+        workerData: data,
+        resourceLimits: { maxOldGenerationSizeMb: 64 },
+      });
+      this.workers.push(worker);
+      worker.once('message', resolve);
+      worker.once('error', reject);
+      worker.once('exit', code => {
+        if (code !== 0) reject(new Error(`Worker exited with code ${code}`));
+      });
+    });
+  }
+
+  [Symbol.dispose](): void {
+    // Terminate all workers — prevents open handle flakiness
+    this.workers.forEach(w => w.terminate());
+    this.workers = [];
+  }
+}
+
+describe('ImageProcessor worker', () => {
+  it('resizes image in worker thread', async () => {
+    // New pool per test case — zero shared worker state
+    using pool = new TestWorkerPool();
+    const result = await pool.runTask('./src/workers/image-resize.mjs', {
+      width: 800, height: 600, quality: 80,
+    });
+    expect((result as { width: number }).width).toBe(800);
+  });
+
+  it('handles invalid dimensions gracefully', async () => {
+    using pool = new TestWorkerPool();
+    await expect(
+      pool.runTask('./src/workers/image-resize.mjs', { width: -1, height: 0 })
+    ).rejects.toThrow('invalid dimensions');
+  });
+});
+```
+
+### Pattern 24 — Flakiness SLO Tracking and Alerting [community]
+
+Treating flakiness as a first-class Service Level Objective (SLO) — with a defined target,
+measurement, and alert threshold — transforms it from a morale problem into an engineering
+metric. Teams with a defined flakiness SLO reduce their flakiness rate faster because they
+have visible accountability.
+
+```typescript
+// scripts/flakiness-slo.ts — parse JUnit XML and assert against SLO thresholds
+// Run as the final CI step: `npx ts-node scripts/flakiness-slo.ts test-results/`
+// Exit code 1 if SLO is violated — blocks merge
+
+import { readdirSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { parseStringPromise } from 'xml2js'; // npm install xml2js @types/xml2js
+
+interface SLOConfig {
+  maxFlakinessRatePercent: number; // alert if flakiness rate exceeds this
+  maxFlakyTestCount: number;       // alert if absolute count exceeds this
+  maxRetryRatePercent: number;     // alert if retry rate exceeds this
+}
+
+const SLO: SLOConfig = {
+  maxFlakinessRatePercent: 5,   // team SLO: < 5% flaky tests per run
+  maxFlakyTestCount: 10,        // hard cap: no more than 10 quarantined tests
+  maxRetryRatePercent: 10,      // CI cost guard: retries < 10% of all test runs
+};
+
+async function parseFlakinessMetrics(dir: string) {
+  let totalTests = 0;
+  let flakyTests = 0;
+  let retryAttempts = 0;
+
+  for (const file of readdirSync(dir).filter(f => f.endsWith('.xml'))) {
+    const xml = readFileSync(join(dir, file), 'utf-8');
+    const parsed = await parseStringPromise(xml);
+    const suites = parsed.testsuites?.testsuite ?? [parsed.testsuite];
+
+    for (const suite of suites) {
+      const cases = suite.testcase ?? [];
+      totalTests += cases.length;
+      for (const tc of cases) {
+        // Playwright marks flaky tests with flaky="true" attribute
+        if (tc.$.flaky === 'true') flakyTests++;
+        // Count retry attempts from <system-out> or custom attributes
+        const retries = parseInt(tc.$.retries ?? '0', 10);
+        if (retries > 0) { flakyTests++; retryAttempts += retries; }
+      }
+    }
+  }
+
+  return { totalTests, flakyTests, retryAttempts };
+}
+
+const metrics = await parseFlakinessMetrics(process.argv[2] ?? 'test-results');
+const flakinessRate = (metrics.flakyTests / metrics.totalTests) * 100;
+const retryRate = (metrics.retryAttempts / metrics.totalTests) * 100;
+
+console.log('=== Flakiness SLO Report ===');
+console.log(`Total tests:     ${metrics.totalTests}`);
+console.log(`Flaky tests:     ${metrics.flakyTests} (${flakinessRate.toFixed(1)}%)`);
+console.log(`Retry attempts:  ${metrics.retryAttempts} (${retryRate.toFixed(1)}%)`);
+console.log('');
+
+const violations: string[] = [];
+if (flakinessRate > SLO.maxFlakinessRatePercent)
+  violations.push(`Flakiness rate ${flakinessRate.toFixed(1)}% > SLO ${SLO.maxFlakinessRatePercent}%`);
+if (metrics.flakyTests > SLO.maxFlakyTestCount)
+  violations.push(`Flaky test count ${metrics.flakyTests} > SLO ${SLO.maxFlakyTestCount}`);
+if (retryRate > SLO.maxRetryRatePercent)
+  violations.push(`Retry rate ${retryRate.toFixed(1)}% > SLO ${SLO.maxRetryRatePercent}%`);
+
+if (violations.length > 0) {
+  console.error('SLO VIOLATIONS:');
+  violations.forEach(v => console.error('  ✗ ' + v));
+  process.exitCode = 1;
+} else {
+  console.log('All SLO thresholds met ✓');
+}
+```
+
+### Pattern 25 — Weekly Quarantine Review Automation [community]
+
+Quarantine backlogs grow without automated review pressure. A weekly GitHub Issue
+automatically lists all quarantined test cases, links them to their tracking issues,
+and assigns them to the test ownership team for review.
+
+```typescript
+// scripts/quarantine-review-issue.ts — post a weekly GitHub issue with quarantine status
+// Scheduled via .github/workflows/quarantine-review.yml (cron: '0 9 * * 1' — Mondays)
+
+import { Octokit } from '@octokit/rest';
+import { readdirSync, readFileSync, statSync } from 'fs';
+import { join } from 'path';
+
+const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+const [owner, repo] = (process.env.GITHUB_REPOSITORY ?? 'owner/repo').split('/');
+
+// Walk test files and collect QUARANTINE entries
+function findQuarantined(dir: string): Array<{ file: string; test: string; issue: string; age: string }> {
+  const results: Array<{ file: string; test: string; issue: string; age: string }> = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) results.push(...findQuarantined(full));
+    else if (entry.isFile() && entry.name.match(/\.(test|spec)\.(ts|tsx)$/)) {
+      const content = readFileSync(full, 'utf-8');
+      const matches = content.matchAll(/\/\/ \[QUARANTINE\][^\n]*\n[^\n]*(?:Issue|issue|PROJ|ENG)[^\n]*([A-Z]+-\d+)[^\n]*/g);
+      for (const m of matches) {
+        results.push({
+          file: full.replace(process.cwd() + '/', ''),
+          test: m[0].substring(0, 60) + '...',
+          issue: m[1],
+          age: 'unknown',
+        });
+      }
+    }
+  }
+  return results;
+}
+
+const quarantined = findQuarantined('src');
+const body = quarantined.length === 0
+  ? '## Quarantine Status\n✅ No quarantined tests found — backlog is clear!'
+  : `## Quarantine Status — ${new Date().toISOString().slice(0, 10)}\n\n` +
+    `⚠️ **${quarantined.length} quarantined test case(s)** require attention:\n\n` +
+    `| File | Tracking Issue |\n|------|----------------|\n` +
+    quarantined.map(q => `| \`${q.file}\` | ${q.issue} |`).join('\n') +
+    `\n\n**Action required:** Review each quarantined test, fix root cause, or escalate. SLA: 2 sprints.`;
+
+await octokit.issues.create({
+  owner, repo,
+  title: `[Flakiness Review] Weekly quarantine backlog — ${new Date().toISOString().slice(0, 10)}`,
+  body,
+  labels: ['flakiness', 'testing', 'review'],
+});
+
+console.log(`Created quarantine review issue for ${quarantined.length} quarantined test(s)`);
+```
+
+### Pattern 26 — Safe Async Timeout Helper (Promise.race) [community]
+
+Hard-coded timeouts in tests (`test('...', async () => {...}, 30000)`) are blunt instruments.
+A better pattern is a composable `withTimeout` helper that wraps any async operation with
+an explicit abort signal and a descriptive error message — making timeout flakiness
+diagnosable rather than opaque.
+
+```typescript
+// test-utils/with-timeout.ts — composable timeout with AbortSignal support
+/**
+ * Wraps an async operation with a timeout. If the operation does not complete
+ * within `ms` milliseconds, rejects with a descriptive TimeoutError.
+ * Uses AbortSignal to cancel the underlying operation if it supports it.
+ *
+ * Eliminates the pattern of setting `jest.setTimeout(30000)` globally —
+ * each async test operation declares its own timeout expectation.
+ */
+
+export class TimeoutError extends Error {
+  constructor(operationName: string, ms: number) {
+    super(`"${operationName}" timed out after ${ms}ms — possible flakiness: check for missing await, deadlock, or network call without mock`);
+    this.name = 'TimeoutError';
+  }
+}
+
+export function withTimeout<T>(
+  operationName: string,
+  ms: number,
+  fn: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+
+  return fn(controller.signal)
+    .then(result => { clearTimeout(timer); return result; })
+    .catch(err => {
+      clearTimeout(timer);
+      if (controller.signal.aborted) throw new TimeoutError(operationName, ms);
+      throw err;
+    });
+}
+
+// Usage in tests:
+import { withTimeout } from '../test-utils/with-timeout';
+
+it('fetches user data within 500ms', async () => {
+  const user = await withTimeout('fetchUser', 500, async (signal) => {
+    // Pass abort signal to fetch — operation is cancelled on timeout
+    const res = await fetch('/api/users/1', { signal });
+    return res.json();
+  });
+  expect(user.name).toBe('Alice');
+});
+
+// Integration test with explicit per-operation timeouts
+it('processes order pipeline', async () => {
+  const order = await withTimeout('createOrder', 1000, signal =>
+    OrderService.create({ items: ['sku-001'], signal })
+  );
+  const payment = await withTimeout('processPayment', 2000, signal =>
+    PaymentService.charge({ orderId: order.id, amount: 49_99, signal })
+  );
+  const shipment = await withTimeout('scheduleShipment', 1500, signal =>
+    ShipmentService.schedule({ orderId: order.id, signal })
+  );
+  expect(shipment.trackingId).toBeDefined();
+});
+```
+
+### Pattern 27 — Test Doubles Taxonomy for Flakiness Prevention [community]
+
+Misusing test doubles (confusing stubs, mocks, spies, and fakes) is a root cause of
+subtle flakiness. Using the right double type for the right purpose eliminates a class
+of assertion failures caused by unexpected interactions.
+
+```typescript
+// Taxonomy demonstration — each double type has a specific use case:
+
+import { jest } from '@jest/globals';
+import { EmailService } from './EmailService';
+import { UserService } from './UserService';
+import type { EmailClient } from './types';
+
+describe('UserService — test doubles taxonomy', () => {
+  // STUB: provides canned responses, ignores call details
+  // Use when: you need the dependency to return a value but don't care HOW it was called
+  it('creates user and returns user object (stub)', async () => {
+    const emailStub: EmailClient = {
+      send: async () => ({ messageId: 'stub-id', accepted: ['test@example.com'] }),
+    };
+    const service = new UserService(emailStub);
+    const user = await service.create({ name: 'Alice', email: 'alice@example.com' });
+    expect(user.id).toBeDefined(); // only asserting on the return value
+  });
+
+  // SPY: records calls, still executes real implementation
+  // Use when: you need to verify interaction WITHOUT replacing behavior
+  it('sends welcome email on user creation (spy)', async () => {
+    const realEmailClient = new RealEmailClient({ dryRun: true });
+    const sendSpy = jest.spyOn(realEmailClient, 'send');
+    const service = new UserService(realEmailClient);
+    await service.create({ name: 'Bob', email: 'bob@example.com' });
+    // Assert on the interaction — spy captures call details
+    expect(sendSpy).toHaveBeenCalledOnce();
+    expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({ to: 'bob@example.com' }));
+  });
+
+  // MOCK: pre-programmed with expectations, verifies at the end
+  // Use when: the interaction itself IS the test (collaboration test)
+  it('sends exactly one email with correct subject (mock)', async () => {
+    const emailMock = {
+      send: jest.fn<EmailClient['send']>().mockResolvedValue({
+        messageId: 'mock-id', accepted: ['carol@example.com'],
+      }),
+    };
+    const service = new UserService(emailMock);
+    await service.create({ name: 'Carol', email: 'carol@example.com' });
+    expect(emailMock.send).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ subject: 'Welcome to the platform, Carol!' })
+    );
+  });
+
+  // FAKE: lightweight real implementation (in-memory DB, no network)
+  // Use when: you need realistic behavior without external dependencies
+  // Fakes are NOT flaky — they behave identically every run
+  it('creates user and queries it back (fake)', async () => {
+    const fakeDb = new InMemoryUserDatabase(); // implements UserDatabase interface
+    const service = new UserService(new RealEmailClient({ dryRun: true }), fakeDb);
+    const created = await service.create({ name: 'Dave', email: 'dave@example.com' });
+    const found = await service.findById(created.id);
+    expect(found?.email).toBe('dave@example.com');
+  });
+});
+```
+
 ---
 
 ## Anti-Patterns
@@ -531,6 +1859,34 @@ describe.concurrent('UserService concurrent tests', () => {
 ### AP7 — Quarantine Without SLA [community]
 **What:** Tests marked `[QUARANTINE]` or `it.skip` with no due date, no owner, and no tracking issue.
 **Why harmful:** The quarantine backlog accumulates indefinitely. Coverage gaps grow. After 6 months, quarantined tests are effectively deleted — nobody remembers what they tested or why they broke.
+
+### AP8 — Sharding Without Seed Variation [community]
+**What:** Running the same shard split (`--shard=1/4`) on every CI run with the same implicit ordering.
+**Why harmful:** If test A and test B always land in the same shard in the same order, their order-dependency is never detected. True order-dependency detection requires varying the shard assignment across runs — either by varying the total shard count or by injecting a random seed into the sequencer.
+
+### AP9 — Snapshot Tests With Dynamic Data [community]
+**What:** Using `toMatchSnapshot()` on components or objects that include timestamps, UUIDs, random IDs, or other non-deterministic values.
+**Why harmful:** Every run produces a different snapshot. The test either always fails (with a fresh fixture each run) or always passes (if developers blindly update snapshots on failure). Neither outcome provides signal about actual regressions. Snapshot tests should capture *structural* intent, not incidental runtime values.
+
+### AP10 — Visual Tests Without Animation Freeze [community]
+**What:** Running Chromatic or Percy visual regression tests without pausing CSS animations and transitions.
+**Why harmful:** The snapshot is captured mid-animation at an arbitrary frame. The same component renders differently between captures depending on CI server speed. Chromatic's `pauseAnimationAtEnd` and Percy's `percy-css` overrides exist precisely for this reason — not using them is the primary cause of visual test flakiness.
+
+### AP11 — Hard-Coded Port Numbers in Test Setup [community]
+**What:** Test servers bound to fixed ports (e.g., `app.listen(3001)`).
+**Why harmful:** Two test suites running in parallel on the same machine or CI worker bind to the same port, producing `EADDRINUSE` errors that look like random failures. In monorepos with shared CI runners, this is a systemic problem. Fix: always use `port: 0` (OS-assigned) and retrieve the actual port from `server.address().port`.
+
+### AP12 — No Flakiness SLO or Metric [community]
+**What:** Teams track individual failing tests reactively but have no defined flakiness rate target, no measurement infrastructure, and no alert when the rate increases.
+**Why harmful:** Without a metric, you cannot improve. Flakiness accumulates silently until CI is too noisy to trust. With a defined SLO (e.g., flakiness rate < 5%), teams can measure progress, celebrate improvement, and catch regressions before they compound. SLOs without automation are ineffective — the SLO script must run in CI on every PR.
+
+### AP13 — Using Mocks When Fakes Are Appropriate [community]
+**What:** Replacing entire subsystems (DB, file system, queue) with `jest.mock()` rather than building lightweight in-memory fakes.
+**Why harmful:** Mocks encode the *expected call sequence*, not the *behavior*. When implementation details change (method renamed, parameter order swapped), mocks break even when the contract is identical — producing false-positive failures that look like non-determinism. In-memory fakes encode the *contract*, not the implementation, so they remain valid through refactoring.
+
+### AP14 — Global `jest.setTimeout()` Hiding Slow Tests [community]
+**What:** Setting `jest.setTimeout(60000)` globally to silence timeout failures.
+**Why harmful:** Slow tests are flakiness precursors — they pass under CI load today and timeout tomorrow when the runner is slower. A global timeout increase hides this signal. Fix: set per-operation timeouts with `withTimeout()` or Playwright's per-test `timeout` option, and audit tests that need more than 5 seconds.
 
 ---
 
@@ -566,9 +1922,25 @@ describe.concurrent('UserService concurrent tests', () => {
 10. **BuildPulse / Trunk Flaky Tests miss flakiness below their detection threshold.** [community]
     Third-party flakiness trackers (BuildPulse, Trunk) detect tests that fail in < X% of runs with zero code change. Tests that flake once a month (below the threshold) accumulate silently. Complement third-party tooling with a nightly 5× rerun job that explicitly reports pass-on-retry counts — this catches low-frequency flakiness the trackers miss.
 
----
+11. **`detectOpenHandles` reveals timer/Promise leaks invisible to retries.** [community]
+    Jest's `--detectOpenHandles` flag identifies tests that leave open `setTimeout`, `setInterval`, database connections, or unresolved Promises after the suite completes. These leaks don't cause the current test to fail — they cause the *next* test file's Jest worker to receive unexpected callbacks, producing order-dependent flakiness that's nearly impossible to reproduce locally. Enable `detectOpenHandles: true` in `jest.config.ts` on every project as a zero-cost flakiness prevention measure.
 
-## Tradeoffs & Alternatives
+12. **Shard-dependent flakiness is misattributed to "environment differences."** [community]
+    When a test suite is first moved to a sharded CI strategy (e.g., `--shard=1/4`), some teams see failures that "don't happen locally." The root cause is almost always order-dependency: the test was passing because another test in the same run set up global state (a registered handler, a populated cache) that the test under investigation depended on. Varying the shard count or seed between runs is the fastest diagnostic — if the failure moves across shards as the seed changes, the defect is order-dependent, not environmental.
+
+13. **Pact provider state handlers that fire-and-forget DB operations cause interaction-level flakiness.** [community]
+    The Pact verifier calls the state handler, receives a resolved Promise (or void), and immediately fires the interaction request. If the DB insert in the state handler is not `await`-ed, the interaction arrives before the database row exists, producing a 404 or 422 that looks non-deterministic. The fix is always `await` every async operation in state handlers, and return a teardown function (not a separate `afterEach`) so Pact controls the cleanup timing.
+
+14. **Database migration races in parallel test workers produce "relation already exists" errors.** [community]
+    When multiple Jest/Vitest workers each invoke the migration setup independently (e.g., in a global setup file), the first worker to acquire the DB connection wins and creates the schema; all others fail with `relation already exists`. This manifests as non-deterministic failures in the first test of each worker. Fix: use a distributed advisory lock (e.g., `pg_try_advisory_lock`) in the migration setup, or run migrations in a single `globalSetup` script before workers start.
+
+15. **CI environment variable differences cause tests to pass locally but fail in CI.** [community]
+    Tests that read `process.env.NODE_ENV`, `process.env.TZ`, or custom env vars without explicit defaults behave differently on developer machines (where `.env.test` is loaded) vs. CI runners (where only CI-set vars exist). The pattern manifests as a test that *always* passes locally and *intermittently* passes in CI — depending on which CI runner picks up the job and what environment variables that runner's profile sets. Fix: enforce `TZ=UTC` in CI and test config, use `dotenv-flow` with an explicit `.env.test.defaults` file that ships with the repo, and always check for `undefined` before using process.env values in tests.
+
+16. **Unsupported `AbortSignal` in older Node.js versions causes intermittent hang-then-crash flakiness.** [community]
+    Tests that pass `AbortSignal` to `fetch()`, `setTimeout()`, or custom async operations fail silently on Node.js < 18 (which shipped incomplete AbortSignal support) and hang until the process timeout kills the runner. This manifests as "tests that always pass locally (Node 20+) but sometimes timeout in CI" when CI runners use an older Node version. Fix: pin `"node": ">=20.0.0"` in `package.json` `engines`, configure Renovate/Dependabot to enforce it, and add `node --version` as the first CI step to detect mismatches immediately.
+
+---
 
 ### When quarantine-and-fix works well
 - Small-to-medium test suites (< 2000 tests) where flaky tests are rare events
@@ -623,12 +1995,19 @@ it('saves and retrieves a user', async () => {
 
 **Alternative: Third-party flakiness detection services.** BuildPulse, Trunk Flaky Tests, and GitHub's native flaky test detection (beta) automatically identify flaky tests from CI history without requiring manual nightly jobs. Trade-off: they require sending test results to an external service and have detection thresholds that miss infrequent flakiness.
 
+**Alternative: Flakiness SLO with JUnit XML parsing.** Instead of third-party services, parse JUnit XML from CI directly (Pattern 24) and assert against a team-defined SLO (e.g., flakiness rate < 5%). Zero external dependencies, full ownership of the threshold, and immediate PR-level feedback. Requires JUnit output from the test runner (`--reporter=junit` in Playwright/Vitest, `--json` + conversion in Jest).
+
+**Alternative: Node.js native `node:test` for lightweight scripts.** For TypeScript-first projects targeting Node.js 20+, the built-in `node:test` module provides retry, TAP output, and flakiness annotation without adding Jest or Vitest to the dependency tree. Suitable for microservice integration tests and utility scripts. Trade-off: fewer ecosystem plugins, no built-in MSW integration, less mature IDE tooling than Jest/Vitest.
+
 ### Known adoption costs
-- Quarantine tooling requires team agreement on tags and a process to review the backlog weekly
+- Quarantine tooling requires team agreement on tags and a process to review the backlog weekly; automate with the quarantine review issue script (Pattern 25) to prevent the weekly review from being skipped
 - Replacing `sleep()` with `waitFor()` requires understanding what condition to wait on — more thinking upfront, but the test becomes self-documenting
 - Fake timers (e.g., `jest.useFakeTimers`) can cause issues with async libraries that internally use `setTimeout` for debouncing (e.g., lodash debounce, React batched updates in older versions) — needs per-library investigation
 - MSW adds a test infrastructure dependency; handler maintenance burden grows with API surface area
 - Testcontainers requires Docker in CI; adds 5–30s cold-start latency per suite; Docker-in-Docker on some CI providers requires privileged mode
+- ESLint anti-flakiness rules (Pattern 20) require configuring overrides for test files only — applying globally triggers false positives in production code
+- The `withTimeout` helper (Pattern 26) requires AbortSignal support in the code under test — must be added to service interfaces if not already present; adds upfront refactoring cost but pays back in diagnosable timeouts
+- Flakiness SLO scripts (Pattern 24) require JUnit XML output from every test runner in the pipeline — verify reporter configuration before enabling the SLO gate
 
 ---
 
@@ -639,10 +2018,19 @@ it('saves and retrieves a user', async () => {
 | Eradicating Non-Determinism in Tests | Official | https://martinfowler.com/articles/nonDeterminism.html | Fowler's canonical taxonomy of flakiness root causes |
 | Flaky Tests at Google | Official | https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html | Scale data on flakiness rates and Google's quarantine approach |
 | Playwright Retries Docs | Official | https://playwright.dev/docs/test-retries | Retry configuration, trace on retry, flakiness reporting |
+| Playwright Test Steps | Official | https://playwright.dev/docs/api/class-test#test-step | `test.step()` for structured trace annotation |
 | Jest Retry Times | Official | https://jestjs.io/docs/configuration#retrytimes-number | jest-circus retry configuration |
+| Jest detectOpenHandles | Official | https://jestjs.io/docs/configuration#detectopenhandles-boolean | Detects timer/Promise/connection leaks between tests |
+| Vitest Pool Configuration | Official | https://vitest.dev/config/#pool | Concurrent test isolation settings (`forks` vs `threads`) |
+| Vitest Test Retry | Official | https://vitest.dev/config/#retry | Per-test and global retry configuration with verbose reporting |
+| Node.js Test Runner | Official | https://nodejs.org/api/test.html | Built-in `node:test` with retry, TAP output, and flakiness annotation |
 | Mock Service Worker | Community | https://mswjs.io/ | Network-level mocking that prevents real HTTP calls |
 | Testcontainers for Node | Community | https://testcontainers.com/guides/getting-started-with-testcontainers-for-nodejs/ | Hermetic DB/service containers to eliminate external dep flakiness |
 | @sinonjs/fake-timers | Community | https://github.com/sinonjs/fake-timers | Controllable clock for timing-sensitive tests |
 | BuildPulse | Community | https://buildpulse.io/ | Automated flaky test detection from CI history |
 | Trunk Flaky Tests | Community | https://trunk.io/flaky-tests | Flaky test tracking with auto-quarantine |
-| Vitest Pool Configuration | Official | https://vitest.dev/config/#pool | Concurrent test isolation settings |
+| Chromatic pauseAnimationAtEnd | Official | https://www.chromatic.com/docs/delay/ | Freeze animations for stable visual regression snapshots |
+| @octokit/rest | Community | https://octokit.github.io/rest.js/v20 | GitHub API for automated quarantine review issue creation |
+| @pact-foundation/pact | Official | https://docs.pact.io/implementation_guides/javascript | Consumer-driven contract testing — provider state handler patterns |
+| ISTQB CTFL 4.0 Syllabus | Official | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology: test case, test level, defect, test suite |
+| eslint-plugin-jest | Community | https://github.com/jest-community/eslint-plugin-jest | ESLint rules: `valid-expect`, `no-conditional-expect`, `no-floating-promises` |

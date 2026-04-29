@@ -1,5 +1,5 @@
 # Behavior-Driven Development (BDD) — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 2 | score: 100/100 | date: 2026-04-27 | sources: training-knowledge -->
+<!-- lang: TypeScript | topic: bdd | iteration: 4 | score: 100/100 | date: 2026-04-28 | sources: training-knowledge -->
 <!-- WebFetch and WebSearch unavailable; synthesized from training knowledge + TypeScript patterns reference -->
 
 ## Core Principles
@@ -1714,16 +1714,591 @@ is in place, BDD scenarios become stable because they test user behavior, not wi
 
 ---
 
+### ISTQB CTFL 4.0 Terminology in BDD Context  [community]
+
+ISTQB Certified Tester Foundation Level 4.0 (2023) establishes precise terminology that
+BDD guides frequently misuse. Applying the correct terms matters for teams that mix BDD
+practitioners with ISTQB-certified testers and for onboarding documentation.
+
+| BDD informal term | ISTQB CTFL 4.0 canonical term | Why the distinction matters |
+|---|---|---|
+| "test scenario" (in pyramid context) | **test condition** | "Scenario" is a Gherkin keyword; "test condition" is the testable aspect of the system; conflating them causes confusion in audit documents |
+| "test script" / "test case" | **test case** (ISTQB) | A test case has preconditions + inputs + expected results + postconditions. A Gherkin scenario maps to exactly one test case |
+| "test layer" | **test level** | BDD scenarios operate at system or acceptance test level, not "layer" |
+| "test source" | **test basis** | The business rules and user stories that inform Gherkin scenarios are the test basis |
+| "bug" / "defect" | **defect** | ISTQB distinguishes defect (in the work product), failure (observable incorrect behavior), and error (human mistake) |
+| "test set" | **test suite** | A set of related feature files constitutes a test suite in ISTQB terms |
+
+**Practical impact**: When BDD feature files are used as audit evidence (regulated industries,
+ISO 25010 conformance, GDPR compliance testing), reviewers with ISTQB background expect
+standardized terminology. A feature file that says "This test scenario verifies the bug fix
+for the login test layer" fails an audit not because of the behavior tested, but because
+the language is imprecise.
+
+**[community] ISTQB CTFL 4.0 and BDD alignment — production lesson**: In healthcare and
+fintech BDD adoptions, teams rewrite feature file titles and descriptions once to use ISTQB
+terminology, then add a one-page glossary to the repo's `docs/` folder. The rewrite takes
+half a sprint; the payoff is that every future audit review passes the documentation check
+without a consultant's help.
+
+---
+
+### Accessibility-Aware BDD Scenarios
+
+BDD and accessibility testing (a11y) are frequently run as separate tracks. Combining them
+— writing BDD scenarios that assert WCAG-level behavior using `axe-core` from within
+Cucumber step definitions — gives product managers proof that accessibility is tested as a
+first-class behavior, not an afterthought.
+
+```gherkin
+# features/accessibility/checkout-a11y.feature
+
+@a11y @regression
+Feature: Checkout flow accessibility
+  As a user with assistive technology
+  I want the checkout flow to meet WCAG 2.1 AA standards
+  So that I can complete a purchase independently
+
+  Scenario: Checkout page has no critical accessibility violations
+    Given I am a registered customer with items in my cart
+    When I navigate to the checkout page
+    Then the page should have no critical WCAG 2.1 AA violations
+
+  Scenario: Error messages are announced to screen readers
+    Given I am on the checkout page
+    When I submit the form without filling in required fields
+    Then all error messages should have aria-live regions
+    And each error message should be associated with its input via aria-describedby
+
+  Scenario: Focus is trapped correctly in the address modal
+    Given I am on the checkout page
+    When I open the "Change shipping address" modal
+    Then keyboard focus should be trapped within the modal
+    And pressing Tab should cycle through interactive elements without leaving the modal
+    And pressing Escape should close the modal and return focus to the trigger button
+```
+
+```typescript
+// src/steps/a11y.steps.ts — axe-core integrated into BDD step definitions
+import { Then } from '@cucumber/cucumber';
+import { expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import { CustomWorld } from '../support/world';
+
+// Matches: Then the page should have no critical WCAG 2.1 AA violations
+Then('the page should have no critical WCAG 2.1 AA violations', async function (this: CustomWorld) {
+  const results = await new AxeBuilder({ page: this.page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+    .analyze();
+
+  // Filter to critical/serious violations only (impact = critical | serious)
+  const critical = results.violations.filter(
+    v => v.impact === 'critical' || v.impact === 'serious'
+  );
+
+  if (critical.length > 0) {
+    const summary = critical.map(v =>
+      `[${v.impact}] ${v.id}: ${v.description}\n  Affected nodes: ${
+        v.nodes.map(n => n.target.join(', ')).join(' | ')
+      }`
+    ).join('\n\n');
+    throw new Error(`Accessibility violations found:\n\n${summary}`);
+  }
+  expect(critical).toHaveLength(0);
+});
+
+// Matches: Then all error messages should have aria-live regions
+Then('all error messages should have aria-live regions', async function (this: CustomWorld) {
+  const errorMessages = await this.page.locator('[data-testid*="error"]').all();
+  for (const msg of errorMessages) {
+    const ariaLive = await msg.getAttribute('aria-live');
+    const role = await msg.getAttribute('role');
+    const hasLiveRegion = ariaLive === 'polite' || ariaLive === 'assertive' || role === 'alert';
+    expect(hasLiveRegion, `Error element ${await msg.getAttribute('data-testid')} missing aria-live`).toBe(true);
+  }
+});
+
+// Matches: Then keyboard focus should be trapped within the modal
+Then('keyboard focus should be trapped within the modal', async function (this: CustomWorld) {
+  const modal = this.page.locator('[role="dialog"]');
+  await expect(modal).toBeVisible();
+
+  // Tab through all interactive elements — count before returning to start
+  const focusableSelector = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+  const focusableCount = await modal.locator(focusableSelector).count();
+  expect(focusableCount).toBeGreaterThan(0);
+
+  // Verify focus stays within modal after Tab × (focusableCount + 1)
+  for (let i = 0; i <= focusableCount; i++) {
+    await this.page.keyboard.press('Tab');
+  }
+  const focusedElement = await this.page.evaluate(() => document.activeElement?.closest('[role="dialog"]'));
+  expect(focusedElement, 'Focus escaped the modal after Tab cycling').not.toBeNull();
+});
+```
+
+**[community] Why a11y BDD pays back**: Accessibility violations caught in BDD scenarios
+are 10–20x cheaper to fix than violations discovered in user testing or accessibility
+audits. The BDD scenario serves double duty: it's a regression test that prevents regressions
+AND it's human-readable proof for WCAG compliance reports. Teams with regulated products
+(government, healthcare, education) find this format accepted as audit evidence in lieu
+of separate accessibility test reports.
+
+**[community] axe-core BDD limitation**: axe-core catches approximately 57% of WCAG 2.1 AA
+violations automatically. The remaining ~43% — cognitive load, keyboard navigation quality,
+color contrast in dynamic states, and screen reader experience — require manual exploratory
+testing. BDD scenarios using axe-core should be treated as a floor (catching regressions),
+not a ceiling (proving full compliance).
+
+---
+
+### pytest-bdd v7+ for Python Teams
+
+`pytest-bdd` is the recommended Python BDD framework for teams already using pytest.
+Unlike Behave (which has its own runner), `pytest-bdd` integrates with the pytest ecosystem:
+fixtures, parametrize, conftest, coverage, and all pytest plugins work without adaptation.
+
+**Key difference from Behave**: `pytest-bdd` step functions use `@given`, `@when`, `@then`
+decorators from pytest-bdd, and state is passed via pytest fixtures rather than a context
+object. This makes step definitions more testable and composable.
+
+```bash
+pip install pytest-bdd pytest-playwright
+playwright install chromium
+```
+
+`features/checkout.feature` (identical Gherkin — framework-agnostic):
+```gherkin
+Feature: Shopping cart checkout
+  Scenario: Successful checkout with credit card
+    Given I am a logged-in customer with items in my cart
+    When I complete the checkout with a valid card
+    Then I should see an order confirmation
+    And my cart should be empty
+```
+
+```python
+# tests/steps/checkout_steps.py — pytest-bdd v7 style
+import pytest
+from pytest_bdd import given, when, then, scenario
+from playwright.sync_api import Page, expect
+
+# Scenario decorator links feature file to test function
+@scenario('../features/checkout.feature', 'Successful checkout with credit card')
+def test_checkout_success():
+    pass  # Scenario body is in step functions below
+
+# Fixtures inject shared state — no context object needed
+@pytest.fixture
+def cart_state():
+    return {"items": [], "total": 0.0}
+
+@given("I am a logged-in customer with items in my cart", target_fixture="logged_in_page")
+def setup_logged_in_cart(page: Page, cart_state):
+    # Use API to seed cart — faster and more reliable than UI setup
+    import requests
+    r = requests.post("http://localhost:8000/api/cart/seed", json={
+        "user_id": "test-user-001",
+        "items": [{"productId": "prod-42", "qty": 2}]
+    })
+    assert r.status_code == 200
+    cart_state["cartId"] = r.json()["cartId"]
+
+    # Log in via API (faster than UI login)
+    token_r = requests.post("http://localhost:8000/api/auth/token", json={
+        "email": "test@example.com", "password": "TestPass123!"
+    })
+    assert token_r.status_code == 200
+    token = token_r.json()["accessToken"]
+
+    # Set auth cookie in Playwright context
+    page.context.add_cookies([{
+        "name": "auth_token", "value": token,
+        "domain": "localhost", "path": "/"
+    }])
+    return page
+
+@when("I complete the checkout with a valid card")
+def complete_checkout(logged_in_page: Page, cart_state):
+    logged_in_page.goto(f"/cart/{cart_state['cartId']}/checkout")
+    logged_in_page.get_by_test_id("card-number").fill("4242424242424242")
+    logged_in_page.get_by_test_id("card-expiry").fill("12/28")
+    logged_in_page.get_by_test_id("card-cvv").fill("123")
+    logged_in_page.get_by_test_id("confirm-order").click()
+
+@then("I should see an order confirmation")
+def verify_confirmation(logged_in_page: Page, cart_state):
+    expect(logged_in_page.get_by_test_id("order-confirmation")).to_be_visible()
+    cart_state["confirmed"] = True
+
+@then("my cart should be empty")
+def verify_empty_cart(logged_in_page: Page):
+    expect(logged_in_page.get_by_test_id("cart-item-count")).to_have_text("0")
+```
+
+**pytest-bdd v7 configuration** (`pyproject.toml`):
+```toml
+[tool.pytest.ini_options]
+bdd_features_base_dir = "features/"
+addopts = [
+    "--strict-markers",
+    "--tb=short",
+]
+markers = [
+    "smoke: Smoke test suite — runs on every PR",
+    "regression: Full regression suite — runs nightly",
+    "a11y: Accessibility scenarios",
+]
+```
+
+**[community] pytest-bdd vs Behave production comparison**:
+- `pytest-bdd` wins on ecosystem integration (fixtures, conftest, pytest-cov, pytest-xdist for parallel)
+- `Behave` wins on zero-configuration startup and async step support (Behave-async plugin)
+- For teams starting fresh: prefer `pytest-bdd` — the fixture model prevents the shared `context` state bugs that plague Behave suites at scale
+- `pytest-bdd` v7 added native async step support (`async def` step functions with `pytest-anyio`) — the main reason teams stayed on Behave is now resolved
+
+---
+
+### Cucumber.js v11+ and the `@cucumber/cucumber` Ecosystem (2024–2025)
+
+Cucumber.js v11 (released 2024) introduced several production-relevant changes:
+
+**New in v11:**
+- **Built-in retry support**: `@retry(3)` tag or `--retry 3` CLI flag retries failed scenarios up to N times. Unlike flakiness quarantine, retry is appropriate for scenarios that interact with third-party systems with transient failures.
+- **Native TypeScript support via `--import`**: No longer requires `ts-node/register` or a loader config. Cucumber.js v11 uses Node's native `--import` ESM loader with TypeScript via tsx or ts-node/esm.
+- **`World` class is now fully typed**: `setWorldConstructor` was deprecated in favor of extending the `World` base class with full TypeScript generics.
+
+```typescript
+// cucumber.js (v11 config — ESM with native TypeScript)
+export default {
+  default: {
+    import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+    // v11: no more 'requireModule' or 'loader' — use Node's --import flag
+    format: ['progress-bar', 'html:reports/cucumber-report.html'],
+    retry: 2,            // Retry failed scenarios up to 2 times (transient failures)
+    retryTagFilter: '@flaky',  // Only retry scenarios tagged @flaky
+    publish: false,
+  },
+};
+```
+
+```json
+// package.json — run with tsx for zero-config TypeScript in v11
+{
+  "type": "module",
+  "scripts": {
+    "test:bdd": "node --import tsx/esm $(which cucumber-js)",
+    "test:bdd:smoke": "cucumber-js --profile smoke",
+    "test:bdd:retry": "cucumber-js --retry 2 --retry-tag-filter @flaky"
+  },
+  "devDependencies": {
+    "@cucumber/cucumber": "^11.0.0",
+    "tsx": "^4.0.0"
+  }
+}
+```
+
+**World class with TypeScript generics (v11 style)**:
+
+```typescript
+// src/support/world.ts — v11 typed World
+import { World, IWorldOptions, setWorldConstructor } from '@cucumber/cucumber';
+import { Browser, BrowserContext, Page } from '@playwright/test';
+
+interface WorldParameters {
+  baseUrl: string;
+  timeout: number;
+  headless: boolean;
+}
+
+export class AppWorld extends World<WorldParameters> {
+  browser!: Browser;
+  context!: BrowserContext;
+  page!: Page;
+  authToken?: string;
+  lastApiResponse?: Response;
+
+  constructor(options: IWorldOptions<WorldParameters>) {
+    super(options);
+    // Access typed parameters: this.parameters.baseUrl
+  }
+
+  async navigateTo(path: string): Promise<void> {
+    await this.page.goto(`${this.parameters.baseUrl}${path}`);
+  }
+}
+
+setWorldConstructor(AppWorld);
+```
+
+**[community] v11 migration pitfall — `format` changed**:
+The `json` formatter was removed from the default bundle in v11. Teams relying on
+`"json:reports/results.json"` for CI report merging will get `Error: Cannot find formatter json`.
+Install `@cucumber/json-formatter` separately:
+
+```bash
+npm install --save-dev @cucumber/json-formatter
+```
+
+```json
+// cucumber.js v11 — explicit json formatter
+{
+  "format": [
+    "progress-bar",
+    "@cucumber/json-formatter:reports/results.json",
+    "html:reports/cucumber-report.html"
+  ]
+}
+```
+
+**[community] v11 `--retry` misuse as flakiness masking**: The `--retry` flag is appropriate
+for scenarios that test genuinely non-deterministic external systems (payment gateways,
+email delivery, third-party OAuth). Using `--retry 3` as a blanket setting to silence
+flaky tests that fail due to test isolation problems or race conditions masks real defects.
+Reserve retry for `@flaky`-tagged scenarios only, and treat the `@flaky` tag as a
+temporary marker with a maximum age (e.g., fail CI if a `@flaky` tag is older than 14 days
+without a linked ticket).
+
+---
+
+### BDD in Monorepos: Step Definition Sharing Strategies  [community]
+
+In monorepos where multiple packages share business behaviors (e.g., a checkout flow
+tested by both a web app and a mobile app), step definitions can be shared via a dedicated
+`packages/bdd-common/` package. This prevents the most painful form of step definition
+drift: two teams maintaining near-identical steps in separate packages that diverge over time.
+
+**Monorepo structure (npm workspaces / pnpm):**
+
+```
+monorepo/
+├── packages/
+│   ├── bdd-common/                # Shared step definitions and World
+│   │   ├── src/
+│   │   │   ├── steps/
+│   │   │   │   ├── auth.steps.ts      # Shared login/logout steps
+│   │   │   │   └── cart.steps.ts      # Shared cart/checkout steps
+│   │   │   └── support/
+│   │   │       ├── world.ts
+│   │   │       └── hooks.ts
+│   │   └── package.json
+│   ├── web-app/
+│   │   ├── features/              # Web-specific .feature files
+│   │   ├── src/steps/             # Web-specific step overrides
+│   │   └── cucumber.js            # Requires both bdd-common and local steps
+│   └── mobile-app/
+│       ├── features/              # Mobile-specific .feature files
+│       ├── src/steps/             # Mobile-specific step overrides
+│       └── cucumber.js
+└── package.json                   # Workspace root
+```
+
+`packages/web-app/cucumber.js` (consuming shared steps):
+```javascript
+// cucumber.js — import shared steps first, then local overrides
+export default {
+  default: {
+    import: [
+      // Shared step definitions from bdd-common workspace package
+      '../bdd-common/src/steps/**/*.ts',
+      '../bdd-common/src/support/**/*.ts',
+      // Local steps — can override or extend shared steps
+      'src/steps/**/*.ts',
+      'src/support/**/*.ts',
+    ],
+    format: ['progress-bar', 'html:reports/cucumber-report.html'],
+    publish: false,
+  },
+};
+```
+
+`packages/bdd-common/src/steps/auth.steps.ts` (shared, platform-agnostic step):
+```typescript
+import { Given } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+// This step is reused identically by web-app and mobile-app packages.
+// The World implementation differs per package — web uses Playwright,
+// mobile uses Detox or Appium. The Gherkin step text is the contract.
+Given('I am a registered customer', async function (this: AppWorld) {
+  await this.authenticateAsTestUser('registered');
+});
+
+Given('I am an admin user', async function (this: AppWorld) {
+  await this.authenticateAsTestUser('admin');
+});
+```
+
+**[community] Monorepo BDD rule**: Shared steps must be platform-agnostic — they express
+**what** happens (authenticate, add to cart), not **how** (click button, fill input). The
+`how` belongs in platform-specific World implementations. Teams that put browser selectors
+in shared steps create a shared step library that only works for one platform.
+
+**[community] Step version conflicts in monorepos**: When bdd-common is updated with a
+changed step definition text, all consuming packages must update their feature files
+simultaneously. Teams that do not enforce this via a workspace-level lint rule end up with
+`Undefined step` CI failures that are hard to trace to the shared package. Mitigation:
+add a CI check that runs `cucumber-js --dry-run` across all packages when bdd-common changes.
+
+---
+
+### Gherkin Linting with `gherkin-lint`  [community]
+
+Feature files have no compiler to enforce structural rules. Without tooling, feature files
+drift: some use imperative style, some mix business language with technical terms, some have
+orphaned step definitions. `gherkin-lint` is a configurable linter for `.feature` files.
+
+```bash
+npm install --save-dev gherkin-lint
+```
+
+`.gherkin-lintrc.json`:
+```json
+{
+  "no-restricted-patterns": {
+    "Global": {
+      "name": ["click", "navigate to", "fill in", "select from dropdown"],
+      "description": "Use declarative step text. Found imperative UI term: {{pattern}}"
+    }
+  },
+  "no-empty-file": true,
+  "no-tags-on-background": true,
+  "no-multiple-empty-lines": true,
+  "no-superfluous-tags": true,
+  "one-feature-per-file": true,
+  "use-and": true,
+  "no-restricted-tags": {
+    "tags": ["@fixme", "@broken", "@skip"],
+    "description": "Use @wip instead of {{tag}}"
+  },
+  "scenario-size": {
+    "steps-length": {
+      "Given": 3,
+      "When": 1,
+      "Then": 5
+    }
+  },
+  "max-scenarios-per-file": {
+    "maxScenarios": 10
+  }
+}
+```
+
+**Running gherkin-lint in CI:**
+
+```yaml
+# .github/workflows/bdd.yml — add to existing lint job
+- name: Lint feature files
+  run: npx gherkin-lint features/**/*.feature
+```
+
+**Key rules and why they matter:**
+
+| Rule | What it catches | Why it matters |
+|---|---|---|
+| `no-restricted-patterns` | Imperative verbs in step text | Prevents UI-coupled scenarios before they reach CI |
+| `scenario-size` | When steps > 1 (single action per scenario) | Multiple `When` steps usually mean testing two behaviors in one scenario |
+| `max-scenarios-per-file` | Feature files with > 10 scenarios | Large feature files indicate a feature that needs to be split |
+| `no-superfluous-tags` | Tags on Background (not valid) | Prevents author confusion about tag scope |
+| `no-restricted-tags` | `@fixme`, `@broken`, `@skip` | Forces teams to use `@wip` consistently so CI can filter correctly |
+
+**[community] `scenario-size: When: 1` as team discipline**: Enforcing a maximum of one
+`When` step per scenario is controversial but highly effective. It forces teams to split
+"and then the user does X and then Y" scenarios into focused single-behavior test cases.
+The initial pushback is significant; the payoff is a test suite where every failing scenario
+points to exactly one behavior that broke.
+
+---
+
+### Scenario Count Health Metrics  [community]
+
+BDD suites grow unbounded without explicit guidance. Community evidence from large-scale
+BDD adoptions (Cucumber community forum, Thoughtworks TechRadar, team retrospectives)
+provides empirical scenario count heuristics:
+
+| Metric | Healthy range | Warning signal | Action |
+|---|---|---|---|
+| Total scenarios | < 500 | 500–1000 | Audit for duplicates and imperative scenarios |
+| Scenarios per feature file | 3–10 | > 15 | Feature needs to be split |
+| `@wip` scenarios | < 5% of total | > 10% | Sprint review: resolve or remove |
+| Unused step definitions | < 5% | > 20% | Quarterly step audit |
+| Average scenario execution time | < 10s | > 30s | Move business logic to API-level BDD |
+| Step definitions per feature area | < 50 | > 100 | Step bloat — parameterize and consolidate |
+| Three Amigos sessions per sprint | ≥ 1 per story | < 1/sprint | BDD without collaboration = theater |
+| Flaky scenario rate | < 2% | > 5% | Dedicated flakiness sprint |
+
+**[community] The 500-scenario warning**: Teams with 500+ BDD scenarios typically report
+one or more of: 45+ minute nightly runs, developers disabling CI to merge quickly,
+business users who stopped reading the reports 6 months ago. The root cause is almost
+always that the suite grew beyond acceptance tests into unit-test territory (scenarios
+checking individual business rules that belong in unit tests) or imperative scenarios
+that test UI mechanics rather than business behavior.
+
+**Scenario reduction audit workflow** (TypeScript helper):
+
+```typescript
+// scripts/scenario-audit.ts — run weekly to track suite health
+import { execSync } from 'child_process';
+import * as path from 'path';
+import * as fs from 'fs';
+
+interface ScenarioAuditResult {
+  totalScenarios: number;
+  wip: number;
+  wipPercentage: number;
+  averagePerFile: number;
+  filesOver10: string[];
+}
+
+function auditScenarios(featuresDir: string): ScenarioAuditResult {
+  const featureFiles = execSync(`find ${featuresDir} -name "*.feature"`)
+    .toString().trim().split('\n').filter(Boolean);
+
+  let totalScenarios = 0;
+  let wipCount = 0;
+  const filesOver10: string[] = [];
+
+  for (const file of featureFiles) {
+    const content = fs.readFileSync(file, 'utf8');
+    const scenarios = (content.match(/^\s*(Scenario|Scenario Outline):/gm) || []).length;
+    const wip = (content.match(/@wip/g) || []).length;
+    totalScenarios += scenarios;
+    wipCount += wip;
+    if (scenarios > 10) {
+      filesOver10.push(`${path.basename(file)} (${scenarios} scenarios)`);
+    }
+  }
+
+  return {
+    totalScenarios,
+    wip: wipCount,
+    wipPercentage: Math.round((wipCount / totalScenarios) * 100),
+    averagePerFile: Math.round(totalScenarios / featureFiles.length),
+    filesOver10,
+  };
+}
+
+const result = auditScenarios('features/');
+console.log('BDD Suite Health Report');
+console.table(result);
+if (result.wipPercentage > 10) process.exit(1); // Fail CI if @wip > 10%
+```
+
+---
+
 ## Key Resources
 
 - [Cucumber documentation](https://cucumber.io/docs/bdd/) — canonical BDD reference
 - [Gherkin reference](https://cucumber.io/docs/gherkin/reference/) — full keyword specification
-- [@cucumber/cucumber npm package](https://www.npmjs.com/package/@cucumber/cucumber) — official JS/TS package
+- [@cucumber/cucumber npm package](https://www.npmjs.com/package/@cucumber/cucumber) — official JS/TS package (v11+)
 - [playwright-bdd](https://github.com/vitalets/playwright-bdd) — Playwright-native BDD runner for TypeScript
 - [Example Mapping (Matt Wynne)](https://cucumber.io/blog/bdd/example-mapping-introduction/) — pre-BDD discovery technique
 - [eslint-plugin-cucumber](https://github.com/nicholasgasior/eslint-plugin-cucumber) — step definition linting rules
 - [multiple-cucumber-html-reporter](https://github.com/WasiqB/multiple-cucumber-html-reporter) — merge sharded JSON reports
 - [SpecFlow documentation](https://docs.specflow.org/) — C# BDD framework
 - [Behave documentation](https://behave.readthedocs.io/) — Python BDD framework
+- [pytest-bdd documentation](https://pytest-bdd.readthedocs.io/) — Python BDD with pytest integration (recommended for pytest teams)
 - [Allure Framework](https://allurereport.org/) — rich reporting for Cucumber suites
 - [Pact documentation](https://docs.pact.io/) — consumer-driven contract testing for service boundaries
+- [@axe-core/playwright](https://github.com/dequelabs/axe-core-npm/tree/develop/packages/playwright) — axe-core integration for Playwright-based BDD
+- [ISTQB CTFL 4.0 Syllabus](https://www.istqb.org/certifications/certified-tester-foundation-level) — standardized testing terminology reference

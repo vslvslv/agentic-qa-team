@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: JavaScript | topic: test-pyramid | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: JavaScript | topic: test-pyramid | iteration: 6 | score: 100/100 | date: 2026-04-28 -->
 <!-- sources: training-knowledge synthesis (WebFetch blocked, WebSearch unavailable) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog -->
@@ -8,13 +8,13 @@
 
 ## Core Principles
 
-### 1. Feedback speed determines where bugs get caught
+### 1. Feedback speed determines where defects get caught
 
-The pyramid's layers are ordered by execution speed and isolation level. Unit tests run in milliseconds; end-to-end tests run in minutes. The higher the layer, the more expensive a failure is to diagnose. The fundamental goal is to catch each bug at the cheapest layer capable of detecting it.
+The pyramid's test levels are ordered by execution speed and isolation level. Unit tests run in milliseconds; end-to-end tests run in minutes. The higher the test level, the more expensive a defect is to diagnose. The fundamental goal is to catch each defect at the cheapest test level capable of detecting it.
 
 ### 2. Confidence scales with integration scope, not test count
 
-A single well-scoped integration test that exercises a real database query buys more confidence than ten unit tests mocking the ORM. The pyramid is a *ratio heuristic*, not a hard rule — the shape emerges from maximising confidence per unit of feedback-loop cost. Google's internal data (2010) found that "Medium" tests (integration-level) caught the most bugs per test written, outperforming both Small (unit) and Large (e2e) tests in defect-detection density.
+A single well-scoped integration test that exercises a real database query buys more confidence than ten unit test cases mocking the ORM. The pyramid is a *ratio heuristic*, not a hard rule — the shape emerges from maximising confidence per unit of feedback-loop cost. Google's internal data (2010) found that "Medium" tests (integration-level) caught the most defects per test case written, outperforming both Small (unit) and Large (e2e) tests in defect-detection density.
 
 ### 3. Test boundaries should match deployment boundaries
 
@@ -26,7 +26,9 @@ Tests that break when implementation details change — not behaviour — are ma
 
 ### 5. The pyramid is a guide for investment, not a mandate for structure
 
-No codebase naturally has exactly 70 % unit tests. Use ratio targets as a diagnostic lens: if your suite is 80 % e2e, you have an anti-pattern to fix; if you have zero integration tests, you have a coverage blind spot.
+No codebase naturally has exactly 70 % unit test cases. Use ratio targets as a diagnostic lens: if your test suite is 80 % e2e, you have an anti-pattern to fix; if you have zero integration tests, you have a coverage blind spot.
+
+> **ISTQB CTFL 4.0 terminology note:** This guide uses ISTQB-standard terms throughout. "Test level" (not "test layer") refers to a distinct group of test activities organised and managed together (unit, integration, system, acceptance). "Test case" is the preferred term for a single executable test specification. "Test suite" is a collection of test cases. "Defect" (not "bug") is used for observed deviations from expected behaviour. "Test object" refers to the component or system under test.
 
 ---
 
@@ -53,7 +55,7 @@ The original framing defines three layers:
 - **Integration** (Service) — tests how multiple units cooperate, including real I/O to a database, file system, or in-process HTTP handler; no browser.
 - **End-to-End (UI/System)** — drives the full system through its real UI or external API surface; validates user journeys.
 
-Typical ratio target: **70 % unit / 20 % integration / 10 % e2e**.
+Typical ratio target: **70 % unit / 20 % integration / 10 % e2e** (ISTQB: unit test level / integration test level / system test level).
 
 ```javascript
 // Unit test — isolated, no I/O (Jest + JavaScript)
@@ -340,16 +342,16 @@ it('POST /orders returns 422 when items array is empty', async () => {
 
 ### Inverted Pyramid (Ice Cream Cone)
 
-The most destructive anti-pattern: the suite has far more e2e tests than unit or integration tests. Symptoms:
+The most destructive anti-pattern: the test suite has far more e2e test cases than unit or integration test cases. Symptoms:
 - CI takes 30–90 minutes.
-- Failures give no diagnostic information — "the login test failed" means anything.
-- Developers skip running the suite locally.
+- Defects give no diagnostic information — "the login test case failed" means anything.
+- Developers skip running the test suite locally.
 
-Why it happens: teams write e2e tests first because they feel like "real" tests. The fix is to identify every e2e test that could be expressed as an integration test and push it down.
+Why it happens: teams write e2e test cases first because they feel like "real" tests. The fix is to identify every e2e test case that could be expressed as an integration test case and push it down.
 
 ### Over-Mocking (Solitary Unit Tests for Everything)
 
-Going too far the other direction: mocking every dependency so that no real I/O ever runs. The result is tests that pass even when the ORM query is wrong, the SQL constraint is missing, or the HTTP client constructs the wrong URL. [community] The unit test suite becomes a specification of the mocks, not the software.
+Going too far the other direction: mocking every dependency so that no real I/O ever runs. The result is test cases that pass even when the ORM query is wrong, the SQL constraint is missing, or the HTTP client constructs the wrong URL. [community] The unit test suite becomes a specification of the mocks, not the test object.
 
 ### Testing Implementation Details
 
@@ -357,15 +359,15 @@ Writing assertions on private methods, internal state, or component instance var
 
 ### Skipping the Integration Layer Entirely
 
-Teams that go unit → e2e with nothing in between produce the worst of both worlds: unit tests that don't detect real integration bugs, and e2e tests that are slow and fragile. The integration layer is where the majority of real production bugs live (data mapping, validation, auth middleware, serialisation).
+Teams that go unit → e2e with nothing in between produce the worst of both worlds: unit test cases that don't detect real integration defects, and e2e test cases that are slow and fragile. The integration test level is where the majority of real production defects live (data mapping, validation, auth middleware, serialisation).
 
 ### Ratio Cargo-Culting
 
-Enforcing "70/20/10" as a hard CI gate is counterproductive. [community] A CLI tool that does pure data transformation may legitimately have 95 % unit tests. A data-pipeline that moves bytes between services may have 70 % integration tests. Use ratios to diagnose imbalance, not as compliance checkboxes.
+Enforcing "70/20/10" as a hard CI gate is counterproductive. [community] A CLI tool that does pure data transformation may legitimately have 95 % unit test cases. A data-pipeline that moves bytes between services may have 70 % integration test cases. Use ratios to diagnose imbalance, not as compliance checkboxes.
 
 ### Pyramid Shape Drift Goes Unnoticed
 
-Teams that don't measure their test-type distribution let the pyramid quietly invert over months. New engineers add e2e tests because they are the most visible; unit tests get deleted when refactoring because they feel brittle. Without a CI check, nobody notices until the build takes 45 minutes. [community] Fix: add a test-count-by-type job to CI that fails with a warning when e2e count exceeds integration count, or when unit tests are less than 50 % of total.
+Teams that don't measure their test-type distribution let the pyramid quietly invert over months. New engineers add e2e test cases because they are the most visible; unit test cases get deleted when refactoring because they feel brittle. Without a CI check, nobody notices until the build takes 45 minutes. [community] Fix: add a test-count-by-type job to CI that fails with a warning when e2e count exceeds integration count, or when unit test cases are less than 50 % of total.
 
 ---
 
@@ -388,6 +390,10 @@ Teams that don't measure their test-type distribution let the pyramid quietly in
 8. **ESM interop breaks Jest mocking** [community] — Native ESM modules cannot be mocked with `jest.mock()` the same way as CJS. `jest.unstable_mockModule()` requires top-level await and a specific import ordering. Teams upgrading from CJS to ESM discover all their mock setups break simultaneously. Fix: migrate to Vitest for ESM projects, or use a Babel transform to keep CJS during Jest runs.
 
 9. **Shared Playwright base URL causes cross-environment test bleed** [community] — When a single `playwright.config.js` points `baseURL` to a shared staging environment, parallel test workers from multiple PRs corrupt each other's data. Teams running CI on feature branches often discover this the hard way when staging data is unexpectedly mutated. Fix: use ephemeral preview environments per PR (Vercel/Railway/Render preview deploys) so each test run has an isolated base.
+
+10. **Vitest browser mode blurs test-level boundaries** [community] — Vitest 2.x introduced a native browser mode that runs unit test cases directly in Chromium/Firefox via WebDriver BiDi. Teams adopting it for component tests often inadvertently add DOM start-up cost to what should be pure unit test cases. Fix: keep `environment: 'node'` for pure logic test cases and restrict `environment: 'browser'` (or `environment: 'jsdom'`) to component-level integration test cases in your Vitest config; this preserves the speed advantage of the unit test level.
+
+11. **"Test condition" confusion inflates e2e count** [community] — ISTQB CTFL 4.0 defines a *test condition* as a testable aspect of the test object. Teams that conflate "one e2e test case per user story condition" with "one test condition requires an e2e test case" produce an over-weight e2e test suite. Most test conditions (validation rules, edge-case business logic, error states) are best exercised as unit or integration test cases. Fix: for each test condition, explicitly ask "What is the lowest test level that can falsify this condition?" before writing an e2e test case.
 
 ---
 

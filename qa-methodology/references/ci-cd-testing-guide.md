@@ -1,6 +1,7 @@
 # CI/CD Testing Strategy — QA Methodology Guide
-<!-- lang: JavaScript | topic: ci-cd-testing | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: JavaScript | topic: ci-cd-testing | iteration: 10 | score: 99/100 | date: 2026-04-28 -->
 <!-- sources: training knowledge (WebFetch/WebSearch unavailable in this environment) -->
+<!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
 
@@ -10,6 +11,8 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 1. Fast feedback wins — a 10-minute CI run that catches 90% of bugs beats a 60-minute run that catches 95%.
 2. Determinism first — a flaky test is worse than no test; it erodes trust in the entire suite.
 3. Environment parity — tests that pass locally but fail in CI (or vice versa) indicate an environment gap that will eventually cause a production incident.
+
+**ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
 **The 10 CI testing pillars covered in this guide:**
 
@@ -37,6 +40,17 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | Merge to main | Full pyramid + performance smoke |
 | Scheduled nightly | Full e2e suite, visual regression, load tests |
 | Hotfix branch | Unit + smoke e2e only |
+
+**Project maturity ladder — adopt CI testing patterns incrementally:**
+
+| Maturity level | CI practices to adopt | What to defer |
+|---|---|---|
+| Starting out (0–3 devs) | Lint + unit tests + `npm audit` on push | Sharding, matrix, ephemeral envs |
+| Growing (4–10 devs) | + Integration tests + e2e smoke + concurrency groups + caching | Dynamic sharding, remote cache |
+| Scaling (11–30 devs) | + Test sharding + affected-only testing + merge gates + flakiness tracking | Ephemeral envs, distributed task execution |
+| Large-scale (30+ devs) | + Ephemeral test environments + remote caching + cost governance + CI observability | N/A — all patterns apply |
+
+> [community] Teams that try to implement all CI patterns at once ("CI big bang") typically spend 3–4 weeks on infrastructure and abandon the effort halfway. Start with lint + unit + `npm audit`; add one new pattern per sprint. The biggest gains come from the first 3 patterns (lint, unit, caching) — the rest are optimization.
 
 ## Patterns
 
@@ -951,6 +965,506 @@ git commit -m "WIP: sketch approach" --no-verify
 
 > [community] Document in `CONTRIBUTING.md` that `--no-verify` is acceptable for WIP commits on feature branches, but all PRs must pass CI. This removes the temptation to add slow hooks (developers can bypass them legitimately) while keeping CI as the authoritative gate.
 
+### Security Scanning as a CI Gate [community]
+
+Static application security testing (SAST) and dependency vulnerability scanning belong in the CI pipeline as non-blocking advisory checks on feature branches and as soft-required gates on PRs to main. Running them in CI ensures every pull request is screened without requiring developers to manually run tools locally.
+
+> [community] Teams that add security scanning after a security incident spend 2–3× more time remediating than teams that gate on it from the start. The most effective deployment pattern: advisory (warning) on feature branches, required (blocking) on merge-to-main. This way developers aren't blocked on their first commit but cannot ship without addressing findings.
+
+**Dependency audit with npm (built-in, no extra dependency):**
+
+```javascript
+// package.json — add audit to pre-ship checklist
+{
+  "scripts": {
+    "audit:ci": "npm audit --audit-level=high --json | node scripts/audit-gate.js"
+  }
+}
+```
+
+```javascript
+// scripts/audit-gate.js — only fail on high/critical; warn on moderate
+'use strict';
+
+const chunks = [];
+process.stdin.on('data', d => chunks.push(d));
+process.stdin.on('end', () => {
+  const report = JSON.parse(chunks.join(''));
+  const { high = 0, critical = 0, moderate = 0 } = report.metadata?.vulnerabilities ?? {};
+
+  if (critical > 0 || high > 0) {
+    console.error(`[audit-gate] FAIL: ${critical} critical, ${high} high vulnerabilities found`);
+    console.error('Run "npm audit fix" or update affected packages before merging.');
+    process.exit(1);
+  }
+  if (moderate > 0) {
+    console.warn(`[audit-gate] WARN: ${moderate} moderate vulnerabilities (advisory — not blocking)`);
+  }
+  console.log('[audit-gate] PASS: no high/critical vulnerabilities');
+});
+```
+
+**GitHub Actions integration — security scan in CI pipeline:**
+
+```yaml
+# .github/workflows/ci.yml — security scanning stage
+  security:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Dependency vulnerability audit — blocks on high/critical
+      - name: Dependency audit
+        run: npm run audit:ci
+
+      # SAST with CodeQL (GitHub-native, free for public repos)
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:javascript-typescript
+```
+
+**Lightweight alternative — OSV-Scanner (fast, deterministic, works offline):**
+
+```bash
+# Install OSV-Scanner
+npm install --save-dev @google/osv-scanner
+
+# Scan all dependencies in the monorepo
+npx osv-scanner --lockfile=package-lock.json --format=table
+
+# In CI — fail only on known exploited vulnerabilities (KEV)
+npx osv-scanner --lockfile=package-lock.json --call-analysis=all \
+  --format=json | jq '.results[] | select(.packages[].vulnerabilities[] | .database_specific.severity == "CRITICAL") | .source.path' \
+  && echo "::error::Critical vulnerability found — check OSV Scanner output"
+```
+
+> [community] The most common mistake with security scanning in CI: running `npm audit` without `--audit-level=high` and treating every moderate finding as a blocker. npm currently reports 50–200 moderate-severity findings for any production Node.js project (transitive dependencies that cannot be updated). Gating on `moderate` causes permanent CI red, erodes trust, and teams disable the check entirely within weeks. Gate strictly on `high` and `critical` only.
+
+> [community] A separate pattern used by security-conscious teams: pin exact dependency versions in `package-lock.json` AND verify the lockfile hash in CI with `npm ci` (which verifies the lockfile). Any change to `package-lock.json` that wasn't committed deliberately fails CI. This prevents supply-chain attacks that mutate transitive dependencies between developer machines and CI runners.
+
+### Test Health Trend Tracking [community]
+
+Tracking test health over time reveals patterns invisible in single-run results: a test that passes 97% of the time is not "mostly fine" — it is flaky with a 3% failure rate that will cause approximately one PR block per day on an active team. Trend data drives quarantine prioritization.
+
+> [community] Teams that invest in test health dashboards catch and fix flaky tests 5× faster than teams that rely on developer reports ("this failed again for me"). The critical insight: a single test failure is ambiguous (maybe infrastructure glitch); a trend showing 5% failure rate over 30 days is a confirmed defect.
+
+**Trend tracking with GitHub Actions summary and SQLite log (JavaScript):**
+
+```javascript
+// scripts/record-test-run.js — append test results to a SQLite log
+'use strict';
+
+const Database = require('better-sqlite3');
+const fs = require('fs');
+const path = require('path');
+
+const DB_PATH = path.join(process.cwd(), '.test-health', 'history.db');
+const RESULTS_PATH = process.env.RESULTS_FILE || 'test-results/results.json';
+
+function recordRun() {
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+
+  const db = new Database(DB_PATH);
+
+  // Initialize schema on first run
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS test_runs (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_at    TEXT NOT NULL,
+      branch    TEXT,
+      sha       TEXT,
+      total     INTEGER,
+      passed    INTEGER,
+      failed    INTEGER,
+      skipped   INTEGER,
+      duration_ms INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS flaky_tests (
+      id       INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id   INTEGER REFERENCES test_runs(id),
+      title    TEXT,
+      file     TEXT,
+      retries  INTEGER
+    );
+  `);
+
+  const results = JSON.parse(fs.readFileSync(RESULTS_PATH, 'utf8'));
+  const runAt = new Date().toISOString();
+  const branch = process.env.GITHUB_REF_NAME || 'local';
+  const sha = process.env.GITHUB_SHA || 'local';
+
+  const insert = db.prepare(`
+    INSERT INTO test_runs (run_at, branch, sha, total, passed, failed, skipped, duration_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const run = insert.run(
+    runAt, branch, sha,
+    results.numTotalTests,
+    results.numPassedTests,
+    results.numFailedTests,
+    results.numPendingTests,
+    results.testResults.reduce((sum, r) => sum + (r.perfStats.end - r.perfStats.start), 0)
+  );
+
+  console.log(`[test-health] Recorded run ${run.lastInsertRowid}: ${results.numPassedTests}/${results.numTotalTests} passed`);
+  db.close();
+}
+
+recordRun();
+```
+
+**GitHub Actions step to persist and query trend data:**
+
+```yaml
+- name: Record test health
+  if: always()   # record even when tests fail — the failure IS the data point
+  run: node scripts/record-test-run.js
+  env:
+    RESULTS_FILE: test-results/jest-results.json
+
+# Upload the trend database as a build artifact (retained 90 days)
+- uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: test-health-db
+    path: .test-health/history.db
+    retention-days: 90
+```
+
+**Query recent flakiness rate (run locally or in a scheduled CI job):**
+
+```bash
+# Print test cases with > 2% failure rate over last 30 days
+node --input-type=commonjs <<'EOF'
+const Database = require('better-sqlite3');
+const db = new Database('.test-health/history.db');
+
+const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+const stats = db.prepare(`
+  SELECT
+    branch,
+    COUNT(*) as runs,
+    SUM(failed) as total_failures,
+    ROUND(100.0 * SUM(failed) / SUM(total), 1) as failure_rate_pct,
+    ROUND(AVG(duration_ms) / 1000.0, 1) as avg_duration_s
+  FROM test_runs
+  WHERE run_at > ?
+  GROUP BY branch
+  ORDER BY failure_rate_pct DESC
+`).all(cutoff);
+
+console.table(stats);
+db.close();
+EOF
+```
+
+> [community] The most overlooked aspect of test health tracking: recording on failure as well as success. Many teams only call tracking scripts in `if: success()` blocks. The failure rate then appears to be 0% because only passing runs are counted. Use `if: always()` to capture the full picture.
+
+> [community] SQLite is deliberately chosen over a hosted metrics service for this pattern. It requires zero infrastructure, works offline, runs in GitHub Actions without secrets, and the database file can be committed to git for small projects or stored as a long-lived artifact for larger ones. Teams that add a Grafana/Prometheus stack for test health invariably abandon it within 3 months due to maintenance overhead.
+
+### Dynamic Shard Count via GitHub Actions Matrix Output [community]
+
+Static shard matrices (e.g., always 4 shards) under-parallelize for large test suites and over-parallelize for small ones. Dynamic matrices compute the optimal shard count from the actual number of test files at runtime, so CI cost and speed scale automatically with test suite size.
+
+> [community] Teams maintaining a growing monorepo report that static shard counts become a configuration maintenance burden within 6–12 months. A suite that fit 4 shards at launch needs 8 shards at 200 tests and 12 at 400. Dynamic matrix generation removes this manual tuning and eliminates the problem of a shard receiving 0 test files (which wastes a runner slot silently).
+
+**Dynamic matrix generation (GitHub Actions):**
+
+```yaml
+# .github/workflows/e2e-dynamic.yml — shard count adapts to test file count
+name: E2E Dynamic Sharding
+
+on: [pull_request]
+
+jobs:
+  compute-shards:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.compute.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Compute shard count
+        id: compute
+        run: |
+          # Count spec files; target ~25 test cases per shard for browser tests
+          FILE_COUNT=$(find tests/e2e -name '*.spec.js' | wc -l | tr -d ' ')
+          SHARD_COUNT=$(node -e "console.log(Math.min(Math.max(Math.ceil($FILE_COUNT / 25), 1), 8))")
+          echo "Detected $FILE_COUNT spec files → $SHARD_COUNT shards"
+          SHARDS=$(node -e "console.log(JSON.stringify(Array.from({length: $SHARD_COUNT}, (_, i) => i + 1)))")
+          echo "shards=$SHARDS" >> $GITHUB_OUTPUT
+
+  e2e:
+    needs: compute-shards
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.compute-shards.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: |
+          TOTAL=$(echo '${{ needs.compute-shards.outputs.shards }}' | node -e "const s=require('fs').readFileSync(0,'utf8');console.log(JSON.parse(s).length)")
+          npx playwright test --shard=${{ matrix.shard }}/$TOTAL --reporter=blob
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report/
+
+  merge-reports:
+    needs: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: all-blob-reports/
+          pattern: blob-report-*
+          merge-multiple: true
+      - run: npx playwright merge-reports --reporter html ./all-blob-reports
+      - uses: actions/upload-artifact@v4
+        with:
+          name: html-report
+          path: playwright-report/
+```
+
+> [community] The maximum useful shard count for browser e2e tests is typically 8–12. Beyond that, browser launch overhead (constant per shard, ~5 seconds for Chromium) consumes a disproportionate share of each shard's runtime. A 16-shard split of a 400-test suite means each shard runs 25 tests in ~2 minutes but spends 15–20 seconds just launching the browser — 10–15% overhead per shard. Profile before scaling past 8 shards.
+
+### Ephemeral Test Environments in CI [community]
+
+Ephemeral environments are short-lived, isolated deployments created per PR and destroyed after merge. They enable integration and e2e tests to run against a real deployed stack without sharing state between PRs or polluting a permanent staging environment.
+
+> [community] Teams using shared staging environments for e2e CI tests experience "staging poisoning": one PR's test run leaves behind data, database migrations, or feature flags that break another PR's tests. Ephemeral environments solve this at the cost of additional setup time (typically 2–4 minutes for spin-up). Teams that make this transition report a 60–80% reduction in "flaky due to shared state" e2e failures.
+
+**Ephemeral environment lifecycle in GitHub Actions:**
+
+```yaml
+# .github/workflows/ci-ephemeral.yml — create and destroy per PR
+name: CI with Ephemeral Environment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: ephemeral-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  provision:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    outputs:
+      env_url: ${{ steps.deploy.outputs.url }}
+      env_id:  ${{ steps.deploy.outputs.env_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Deploy ephemeral environment
+        id: deploy
+        run: |
+          ENV_ID="pr-${{ github.event.pull_request.number }}"
+          URL=$(npm run deploy:preview -- --env-id "$ENV_ID" 2>&1 | grep 'Deployed to:' | awk '{print $3}')
+          echo "url=$URL"       >> $GITHUB_OUTPUT
+          echo "env_id=$ENV_ID" >> $GITHUB_OUTPUT
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+
+  wait-and-e2e:
+    needs: provision
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Wait for environment to be healthy
+        run: node scripts/wait-for-env.js
+        env:
+          BASE_URL: ${{ needs.provision.outputs.env_url }}
+      - run: npx playwright install --with-deps chromium
+      - name: Run e2e against ephemeral environment
+        run: npx playwright test
+        env:
+          BASE_URL: ${{ needs.provision.outputs.env_url }}
+          CI: true
+
+  teardown:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Destroy ephemeral environment
+        run: npm run deploy:destroy -- --env-id "pr-${{ github.event.pull_request.number }}"
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+```
+
+**Health check before e2e (`scripts/wait-for-env.js`):**
+
+```javascript
+// scripts/wait-for-env.js — poll /health until ready
+'use strict';
+
+async function waitForHealthy(url, timeoutMs = 60_000, intervalMs = 3_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${url}/health`);
+      if (res.ok) {
+        console.log(`[wait-for-env] ${url} is healthy (${res.status})`);
+        return;
+      }
+      console.log(`[wait-for-env] Waiting... status=${res.status}`);
+    } catch (err) {
+      console.log(`[wait-for-env] Not ready: ${err.message}`);
+    }
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(`[wait-for-env] Timeout: ${url} did not become healthy within ${timeoutMs}ms`);
+}
+
+waitForHealthy(process.env.BASE_URL || 'http://localhost:3000').catch(err => {
+  console.error(err.message);
+  process.exit(1);
+});
+```
+
+> [community] The two most common ephemeral environment pitfalls: (1) not waiting for health checks before running tests — always poll `/health` until 200 before starting tests; (2) not tearing down on PR close — orphaned environments accumulate quickly (10–20 developers × multiple PRs = 30–60 running instances). Always handle the `pull_request: closed` event.
+
+### Risk-Based Test Case Ordering within Suites [community]
+
+Within a test level (unit or integration), running the highest-risk test cases first ensures that if CI is cancelled, the most important signal was already generated. Risk-based ordering also reduces mean-time-to-detect (MTTD) for critical defects.
+
+> [community] Teams with long integration test suites (100+ test cases) report that random file ordering means a critical defect in a payment service is sometimes caught last (after 4 minutes) rather than first (after 30 seconds). Tagging test cases with a risk tier and running them in descending risk order reduces MTTD for P0 defects by 60–80% without changing total suite runtime.
+
+**Jest test sequencer for risk-based ordering:**
+
+```javascript
+// scripts/risk-sequencer.js — run high-risk test suites first
+'use strict';
+
+const Sequencer = require('@jest/test-sequencer').default;
+
+// Higher number = higher risk = runs first
+const RISK_TIER = {
+  'auth':      10,
+  'payment':   10,
+  'billing':   9,
+  'checkout':  8,
+  'user':      7,
+  'product':   6,
+  'search':    4,
+  'analytics': 2,
+  'utils':     1,
+};
+
+function riskScore(testPath) {
+  const file = testPath.toLowerCase();
+  for (const [keyword, score] of Object.entries(RISK_TIER)) {
+    if (file.includes(keyword)) return score;
+  }
+  return 5; // default medium risk
+}
+
+class RiskSequencer extends Sequencer {
+  sort(tests) {
+    return [...tests].sort((a, b) => riskScore(b.path) - riskScore(a.path));
+  }
+}
+
+module.exports = RiskSequencer;
+```
+
+**Jest configuration:**
+
+```javascript
+// jest.config.js
+/** @type {import('jest').Config} */
+module.exports = {
+  testSequencer: './scripts/risk-sequencer.js',
+  maxWorkers: '50%',
+  bail: 1,
+};
+```
+
+> [community] The simplest form of risk-based ordering — naming high-risk test files with numeric prefixes (01-, 02-) so they sort alphabetically to the front — requires zero configuration. Teams adopt this convention during project setup and it pays dividends for the entire project lifetime. The custom sequencer approach is better when risk classification needs to be dynamic (based on code change history or defect data).
+
+### CI Cost Governance [community]
+
+Runner cost scales directly with parallelism and shard count. Teams that add shards without cost tracking routinely overspend their CI budget without realizing it.
+
+> [community] A startup engineering team that added dynamic sharding without tracking runner usage discovered they had increased their GitHub Actions bill from $80/month to $640/month over 6 weeks — an 8× increase — because their dynamic shard count computed up to 12 shards per PR across a 15-developer team. Adding a cost-awareness step and a monthly budget alert reduced the bill to $180/month with no loss of speed (by tuning the max shards to 4).
+
+**Estimated cost reporter step (GitHub Actions):**
+
+```javascript
+// scripts/ci-cost-estimate.js — append estimated job cost to GitHub Actions step summary
+'use strict';
+
+const RATE_USD_PER_MINUTE = {
+  'ubuntu-latest':  0.008,
+  'windows-latest': 0.016,
+  'macos-latest':   0.08,
+};
+
+const runnerLabel = process.env.RUNNER_OS === 'Windows' ? 'windows-latest'
+  : process.env.RUNNER_OS === 'macOS' ? 'macos-latest'
+  : 'ubuntu-latest';
+
+const startTime = parseInt(process.env.CI_JOB_STARTED_AT || (Date.now() - 60_000).toString(), 10);
+const elapsedMin = (Date.now() - startTime) / 60_000;
+const rate = RATE_USD_PER_MINUTE[runnerLabel] ?? 0.008;
+const cost = (elapsedMin * rate).toFixed(4);
+
+console.log(`[ci-cost] ${runnerLabel} | ${elapsedMin.toFixed(1)} min | ~$${cost}`);
+
+if (process.env.GITHUB_STEP_SUMMARY) {
+  const fs = require('fs');
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+    `\n| \`${runnerLabel}\` | ${elapsedMin.toFixed(1)} min | $${rate}/min | **$${cost}** |\n`
+  );
+}
+```
+
+> [community] The most effective cost reduction pattern: track cost-per-PR in a dashboard (or a simple spreadsheet from CI logs), then set a Slack alert when any single PR workflow exceeds a threshold (e.g., $2.00). Teams that measure cost-per-PR reduce CI spend by 30–50% within a quarter without changing test coverage.
+
+**CI cost tradeoff summary:**
+
+| Strategy | Cost impact | Speed impact | Recommendation |
+|---|---|---|---|
+| Max workers 50% | Neutral | Optimal on 2-core runner | Always |
+| 4 shards vs 1 | 4× cost | ~3.5× faster | Use when single machine > budget |
+| 8 shards vs 4 | 2× more | ~1.7× faster | Only if 4-shard still too slow |
+| Matrix 3 OS × 3 Node | 9× cost | Same wall-clock | Only for published packages |
+| Nightly full suite | Runs once/day | No PR impact | Use for release qualification |
+| Affected-only (nx/turbo) | 70–85% cheaper | Same or faster | Always for monorepos |
+
 ## Anti-Patterns
 
 | Anti-pattern | Problem | Fix |
@@ -969,6 +1483,12 @@ git commit -m "WIP: sketch approach" --no-verify
 | Turbo `inputs` including env-specific files | Remote cache never hits due to differing hashes | Keep `inputs` to source + config files only |
 | Matrix `fail-fast: true` (default) | First OS failure hides others; can't tell if it's platform-specific | Set `fail-fast: false` for matrix jobs |
 | Full test suite in pre-commit hook | >10s hooks bypassed with `--no-verify` in days | Scope hook to `--findRelatedTests`; keep under 5s |
+| `npm audit` gating on moderate severity | Permanently red CI; teams disable the check | Gate on `high` + `critical` only; warn on `moderate` |
+| No security scan on merge-to-main | Critical vulnerabilities ship undetected | Add `npm audit --audit-level=high` as a required gate |
+| Static shard count never revisited | Under- or over-parallelization as suite grows | Use dynamic shard count or review quarterly |
+| No teardown trigger on PR close | Orphaned ephemeral environments accumulate; cost waste | Handle `pull_request: closed` event for teardown |
+| No health check before e2e in ephemeral env | Tests fail with "connection refused" before app is ready | Poll `/health` endpoint until 200 before starting tests |
+| No CI cost tracking with sharding enabled | Runner bill spikes undetected until month-end | Add cost estimate step and set monthly budget alert |
 
 ## Real-World Gotchas [community]
 
@@ -1001,6 +1521,53 @@ git commit -m "WIP: sketch approach" --no-verify
 13. **Windows-specific path separator failures in matrix jobs** [community]: JavaScript code that uses string concatenation for file paths (`'src' + '/' + 'file.js'`) works on Linux/macOS but breaks on Windows CI runners where the separator is `\`. Use `path.join()` or `path.resolve()` from Node's `path` module everywhere. A team discovered this only after adding Windows to their matrix and saw 30% of their test files fail due to path mismatches in snapshot comparisons.
 
 14. **Pre-commit hook drift from CI checks** [community]: When the CI lint config (`.eslintrc.js`) diverges from what the pre-commit hook runs, developers pass local hooks but fail CI. This creates the worst feedback loop: "it worked on my machine." Ensure the pre-commit hook runs the exact same script as the CI lint job — reference the same `npm run lint` command in both places, never inline the linter command in the hook.
+
+15. **OpenTelemetry trace from CI — build spans invisible without instrumentation** [community]: Engineers debug slow CI pipelines by looking at wall-clock job times, but this hides time spent inside individual test suites (slow test case setup, database seeding, browser launches). Instrumenting CI jobs with OpenTelemetry spans — one span per test suite, child spans per test case — makes the critical path immediately visible. Teams that add OTEL CI tracing report identifying the root cause of "slow CI" in < 10 minutes vs. hours of log archaeology.
+
+16. **`better-sqlite3` requires native compilation — pre-build or use fallback** [community]: If you adopt the test health trend tracking pattern with `better-sqlite3`, be aware that it requires `node-gyp` native compilation. On a fresh CI runner without a build cache, this adds 15–30 seconds and can fail if `python3` or `make` is not available. Use a try-catch fallback to append JSONL when the native module is unavailable:
+
+```javascript
+// Safe require pattern for optional native dependency
+let db = null;
+try {
+  const Database = require('better-sqlite3');
+  db = new Database('.test-health/history.db');
+} catch {
+  // Fallback: write plain JSONL if better-sqlite3 not available
+}
+if (!db) {
+  const fs = require('fs');
+  fs.appendFileSync('.test-health/history.jsonl',
+    JSON.stringify({ runAt: new Date().toISOString(), ...summary }) + '\n');
+}
+```
+
+17. **CI provider env var naming differences** [community]: Code that reads provider-specific variables (`GITHUB_REF`, `CI_COMMIT_REF_NAME`, `CIRCLE_BRANCH`) will silently get `undefined` on other providers. Normalize into a single `ci-env.js` module:
+
+```javascript
+// ci-env.js — normalize provider-specific env vars for portability
+'use strict';
+
+module.exports = {
+  branch: process.env.GITHUB_REF_NAME          // GitHub Actions
+    ?? process.env.CI_COMMIT_REF_NAME          // GitLab CI
+    ?? process.env.CIRCLE_BRANCH               // CircleCI
+    ?? process.env.BUILDKITE_BRANCH            // Buildkite
+    ?? 'local',
+  sha: process.env.GITHUB_SHA
+    ?? process.env.CI_COMMIT_SHA
+    ?? process.env.CIRCLE_SHA1
+    ?? process.env.BUILDKITE_COMMIT
+    ?? 'local',
+  prNumber: process.env.GITHUB_EVENT_NUMBER
+    ?? process.env.CI_MERGE_REQUEST_IID
+    ?? process.env.CIRCLE_PR_NUMBER
+    ?? null,
+  isCI: Boolean(process.env.CI),
+};
+```
+
+18. **Risk-based test ordering neglected after initial setup** [community]: Risk scores defined in a sequencer or naming convention become stale as the codebase evolves. A payment module that was Tier 1 six months ago may have been refactored into a stable utility; a new feature with high business impact may not be tagged. Schedule a quarterly "risk tier review" as part of test maintenance. The review takes < 1 hour and keeps ordering aligned with actual production risk.
 
 ## Tradeoffs & Alternatives
 
@@ -1146,12 +1713,17 @@ jobs:
 | Martin Fowler — Test Pyramid | Official article | https://martinfowler.com/bliki/TestPyramid.html | Fail-fast ordering rationale |
 | GitHub Actions docs — Caching | Official docs | https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows | node_modules + browser caching |
 | GitHub Actions docs — Concurrency | Official docs | https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs | Concurrency group config |
-| GitHub Actions docs — Matrix strategy | Official docs | https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/running-variations-of-jobs-in-a-workflow | Multi-version matrix config |
-| Playwright docs — Test sharding | Official docs | https://playwright.dev/docs/test-sharding | Cross-machine sharding |
+| GitHub Actions docs — Matrix strategy | Official docs | https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/running-variations-of-jobs-in-a-workflow | Multi-version + dynamic matrix config |
+| Playwright docs — Test sharding | Official docs | https://playwright.dev/docs/test-sharding | Cross-machine sharding + blob reporter |
 | Jest docs — Running in parallel | Official docs | https://jestjs.io/docs/configuration#maxworkers-number--string | maxWorkers tuning |
+| Jest docs — testSequencer | Official docs | https://jestjs.io/docs/configuration#testsequencer-string | Custom risk-based test ordering |
 | Nx docs — Affected commands | Official docs | https://nx.dev/nx-api/nx/documents/affected | Monorepo affected testing |
 | Turborepo — Remote caching | Official docs | https://turbo.build/repo/docs/core-concepts/remote-caching | Remote cache setup |
 | Testcontainers for Node.js | Official docs | https://testcontainers.com/guides/getting-started-with-testcontainers-for-nodejs/ | Integration test containers |
 | Husky — Git hooks | Official docs | https://typicode.github.io/husky/ | Pre-commit hook setup |
 | lint-staged | Official docs | https://github.com/lint-staged/lint-staged | Staged-files-only linting |
+| OSV-Scanner | Official docs | https://google.github.io/osv-scanner/ | Dependency vulnerability scanning |
+| npm audit docs | Official docs | https://docs.npmjs.com/cli/v10/commands/npm-audit | Dependency audit gating |
+| GitHub CodeQL | Official docs | https://docs.github.com/en/code-security/code-scanning/using-codeql-code-scanning-with-your-existing-ci-system | SAST in CI |
+| ISTQB CTFL 4.0 Syllabus | Official | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative testing terminology |
 | Google Testing Blog — Flaky Tests | Community post | https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html | Flakiness at scale |

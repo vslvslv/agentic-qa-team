@@ -1,11 +1,20 @@
 # Test Data Strategy — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 2 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 4 | score: 100/100 | date: 2026-04-28 -->
 <!-- sources: training-knowledge (WebFetch blocked, WebSearch API unavailable; synthesized from training knowledge per skill fallback rule) -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html -->
 
 ---
 
 ## Core Principles
+
+> **ISTQB CTFL 4.0 terminology note:** throughout this guide, "test case" refers to a
+> specific documented set of inputs, preconditions, and expected results; "test suite"
+> to a collection of related test cases; "test basis" to the artefact from which test
+> conditions are derived; and "test object" to the item under test. Factory and fixture
+> patterns are implementation mechanisms for establishing *test preconditions* —
+> they do not change ISTQB terminology, but teams should understand the distinction
+> between a *test fixture* (ISTQB: setup/teardown environment) and a *fixture file*
+> (a static data snapshot loaded into a database).
 
 ### 1. Tests need data — but data should not own tests
 Test data is infrastructure. When tests couple tightly to raw database seeds or hardcoded literals, every schema change ripples across hundreds of files. Centralising data construction in factories or builders makes your tests resilient to model changes.
@@ -490,7 +499,174 @@ it('shows error banner when API returns 500', async () => {
 
 ---
 
-### Playwright `test.extend()` — E2E-Native Test Fixtures  [community]
+### GraphQL Test Data with `@graphql-tools/mock`  [community]
+
+For TypeScript projects using GraphQL, `@graphql-tools/mock` (from The Guild) generates
+mock resolvers directly from your GraphQL schema definition. Combined with factories,
+it provides schema-typed test data without a running GraphQL server.
+
+**Why it matters:** GraphQL's type system is the schema contract. Generating test data
+from the schema (not from a TypeScript interface that may have drifted) ensures that
+test cases exercise the actual API surface. When the schema changes, mock generation
+fails at setup — surfacing the breakage before a test case even runs.
+
+```typescript
+// test-helpers/graphql-mocks.ts
+import { buildSchema, GraphQLSchema } from 'graphql';
+import { addMocksToSchema } from '@graphql-tools/mock';
+import { makeExecutableSchema } from '@graphql-tools/schema';
+import { faker } from '@faker-js/faker';
+import { readFileSync } from 'fs';
+
+// Load schema from .graphql file — single source of truth
+const typeDefs = readFileSync('./src/schema.graphql', 'utf8');
+const schema: GraphQLSchema = makeExecutableSchema({ typeDefs });
+
+// Provide type-level mock resolvers — faker for realistic data
+export const mockedSchema = addMocksToSchema({
+  schema,
+  mocks: {
+    ID: () => faker.string.uuid(),
+    String: () => faker.lorem.word(),
+    Date: () => faker.date.past().toISOString(),
+    User: () => ({
+      id: faker.string.uuid(),
+      email: faker.internet.email(),
+      name: faker.person.fullName(),
+      status: 'ACTIVE',
+    }),
+    Order: () => ({
+      id: faker.string.uuid(),
+      totalCents: faker.number.int({ min: 100, max: 100_000 }),
+      status: 'PENDING',
+      createdAt: faker.date.recent().toISOString(),
+    }),
+  },
+  preserveResolvers: false,
+});
+```
+
+```typescript
+// test-helpers/graphql-test-client.ts — execute queries against mocked schema
+import { graphql } from 'graphql';
+import { mockedSchema } from './graphql-mocks';
+
+export async function executeQuery(
+  query: string,
+  variables?: Record<string, unknown>
+): Promise<{ data?: Record<string, unknown>; errors?: readonly unknown[] }> {
+  return graphql({ schema: mockedSchema, source: query, variableValues: variables });
+}
+
+// In a test case:
+// const { data } = await executeQuery(`
+//   query GetUser($id: ID!) { user(id: $id) { id email status } }
+// `, { id: 'usr-001' });
+// expect(data?.user?.status).toBe('ACTIVE');
+```
+
+---
+
+### Event-Sourced Systems — Command-Based Test Data  [community]
+
+In event-sourced / CQRS architectures, factories that produce entity *state snapshots*
+(`UserFactory.build()`) are semantically wrong: the system stores *events*, not current
+state. Test preconditions should be expressed as a sequence of domain commands or events
+that bring the aggregate to the desired state — mirroring how the system actually works.
+
+**Why it matters:** An entity-state factory for an event-sourced system creates test data
+that cannot be loaded via the normal event replay path. Test cases pass against the
+factory-produced snapshot but fail against event-replayed state if the projection logic
+has a bug — the most important thing you want to detect.
+
+```typescript
+// test-helpers/event-builder.ts — builds typed domain event sequences
+import { faker } from '@faker-js/faker';
+
+// Domain event types (from your event store schema)
+type UserRegistered = {
+  type: 'UserRegistered';
+  aggregateId: string;
+  email: string;
+  name: string;
+  occurredAt: Date;
+};
+
+type SubscriptionUpgraded = {
+  type: 'SubscriptionUpgraded';
+  aggregateId: string;
+  tier: 'FREE' | 'PREMIUM' | 'ENTERPRISE';
+  occurredAt: Date;
+};
+
+type AccountSuspended = {
+  type: 'AccountSuspended';
+  aggregateId: string;
+  reason: string;
+  occurredAt: Date;
+};
+
+type UserEvent = UserRegistered | SubscriptionUpgraded | AccountSuspended;
+
+// Fluent event sequence builder
+export class UserEventSequenceBuilder {
+  private aggregateId = faker.string.uuid();
+  private events: UserEvent[] = [];
+  private baseTime = new Date('2024-01-01T00:00:00Z');
+
+  withRegistration(overrides?: Partial<UserRegistered>): this {
+    this.events.push({
+      type: 'UserRegistered',
+      aggregateId: this.aggregateId,
+      email: faker.internet.email(),
+      name: faker.person.fullName(),
+      occurredAt: new Date(this.baseTime.getTime() + this.events.length * 1000),
+      ...overrides,
+    });
+    return this;
+  }
+
+  withUpgrade(tier: 'PREMIUM' | 'ENTERPRISE' = 'PREMIUM'): this {
+    this.events.push({
+      type: 'SubscriptionUpgraded',
+      aggregateId: this.aggregateId,
+      tier,
+      occurredAt: new Date(this.baseTime.getTime() + this.events.length * 1000),
+    });
+    return this;
+  }
+
+  withSuspension(reason = 'payment_failed'): this {
+    this.events.push({
+      type: 'AccountSuspended',
+      aggregateId: this.aggregateId,
+      reason,
+      occurredAt: new Date(this.baseTime.getTime() + this.events.length * 1000),
+    });
+    return this;
+  }
+
+  build(): { aggregateId: string; events: UserEvent[] } {
+    return { aggregateId: this.aggregateId, events: [...this.events] };
+  }
+}
+
+// In a test case — build preconditions through events, not state
+const { aggregateId, events } = new UserEventSequenceBuilder()
+  .withRegistration({ email: 'alice@example.com' })
+  .withUpgrade('PREMIUM')
+  .withSuspension('payment_failed')
+  .build();
+
+// Replay events through the actual projection to get state
+const userState = await userProjection.replay(aggregateId, events);
+expect(userState.status).toBe('SUSPENDED');
+expect(userState.subscriptionTier).toBe('PREMIUM');
+```
+
+---
+
+
 
 Playwright has a first-class fixture system (`test.extend()`) that scopes test data to the test or worker lifecycle. Unlike `beforeEach`/`afterEach` hooks, Playwright fixtures are composable, lazily evaluated, and automatically torn down — making them the idiomatic way to manage E2E test data in TypeScript/Playwright suites.
 
@@ -560,7 +736,141 @@ test('authenticated user can complete checkout', async ({ page, authenticatedPag
 
 ---
 
-### Factory Library Comparison for TypeScript
+### `using` / `await using` for Test Resource Cleanup (TypeScript 5.2+)  [community]
+
+TypeScript 5.2 introduced the `using` and `await using` declarations (Explicit Resource
+Management, TC39 Stage 4). When a test helper implements `Symbol.dispose()` or
+`Symbol.asyncDispose()`, cleanup is guaranteed — even on early `return` or uncaught
+`throw` — with no `try/finally` boilerplate. This is now the idiomatic approach for
+scoped test resource management in TypeScript 5.2+ projects.
+
+**Why it matters:** `beforeEach`/`afterEach` lifecycle hooks can be bypassed by an
+early `return` in the test body, leaving test data in the DB and causing flakiness
+in subsequent test cases. `using` ties the cleanup directly to the variable scope —
+the compiler enforces it, not the test runner.
+
+```typescript
+// test-helpers/disposable-user.ts
+import { db, users } from '../db';
+import { userFactory } from '../factories/user.factory';
+import { eq } from 'drizzle-orm';
+
+export class DisposableUser implements AsyncDisposable {
+  constructor(
+    public readonly id: string,
+    public readonly email: string,
+  ) {}
+
+  // Automatically called when the `await using` variable goes out of scope
+  async [Symbol.asyncDispose](): Promise<void> {
+    await db.delete(users).where(eq(users.id, this.id));
+  }
+}
+
+export async function createDisposableUser(
+  overrides?: Partial<{ email: string; subscriptionTier: string }>
+): Promise<DisposableUser> {
+  const created = await userFactory.create(overrides);
+  return new DisposableUser(created.id, created.email);
+}
+```
+
+```typescript
+// specs/checkout.test.ts — cleanup is guaranteed even on early return
+import { test, expect } from 'vitest';
+import { createDisposableUser } from '../test-helpers/disposable-user';
+
+test('blocked checkout returns account_suspended', async () => {
+  // Cleanup fires automatically when the test function returns (or throws)
+  await using user = await createDisposableUser({ status: 'suspended' });
+
+  const result = await checkoutService.initiate(user.id, cart);
+  expect(result.status).toBe('blocked');
+  expect(result.reason).toBe('account_suspended');
+  // No afterEach needed — user row is deleted as `user` goes out of scope
+});
+```
+
+**Requires:** `"target": "ES2022"` or higher and `"lib": ["es2022", "esnext.disposable"]`
+in `tsconfig.json`. Compatible with Vitest ≥ 1.4 and Jest ≥ 30 (with the `--experimental-vm-modules` flag).
+
+---
+
+### Prisma-First Factory Pattern  [community]
+
+In TypeScript projects using Prisma ORM (extremely common in 2026 Node.js stacks),
+factories that leverage Prisma's generated types provide zero-maintenance type safety:
+when the Prisma schema changes, TypeScript compilation immediately surfaces factory
+updates needed — no separate type file to keep in sync.
+
+**Why it matters:** The most common factory drift bug is a changed database column that
+is reflected in `prisma/schema.prisma` but not in the hand-written `User` interface used
+by the factory. Basing factories on `Prisma.UserCreateInput` eliminates this class of
+divergence entirely.
+
+```typescript
+// factories/user.factory.ts (Prisma-native)
+import { Prisma, PrismaClient } from '@prisma/client';
+import { faker } from '@faker-js/faker';
+
+const prisma = new PrismaClient();
+
+// Type is derived from Prisma's generated schema — zero manual maintenance
+export function buildUserInput(
+  overrides: Partial<Prisma.UserCreateInput> = {}
+): Prisma.UserCreateInput {
+  return {
+    email: faker.internet.email(),
+    name: faker.person.fullName(),
+    status: 'ACTIVE',
+    subscriptionTier: 'FREE',
+    createdAt: new Date(),
+    ...overrides,
+  };
+}
+
+// Persists to DB and returns the full Prisma User model (with generated id, timestamps)
+export async function createUser(
+  overrides: Partial<Prisma.UserCreateInput> = {}
+) {
+  return prisma.user.create({ data: buildUserInput(overrides) });
+}
+
+// In-memory only — no DB write (for unit test cases)
+export function buildUser(overrides: Partial<Prisma.UserCreateInput> = {}) {
+  return {
+    id: faker.string.uuid(),
+    ...buildUserInput(overrides),
+  };
+}
+```
+
+```typescript
+// Cleanup pattern: wrap Prisma in a transaction and rollback after each test case
+// (standard approach for Prisma integration test suites)
+import { PrismaClient } from '@prisma/client';
+
+let tx: Awaited<ReturnType<typeof prisma.$transaction>>;
+
+beforeEach(async () => {
+  // $transaction with interactive transactions keeps the connection open
+  await prisma.$transaction(async (client) => {
+    tx = client;
+    // Use tx inside test cases instead of prisma directly
+    await new Promise<void>((resolve) => {
+      (globalThis as any).__resolveTx = resolve;
+    });
+  }).catch(() => { /* rollback is expected */ });
+});
+
+afterEach(() => {
+  (globalThis as any).__resolveTx?.();
+});
+```
+
+---
+
+
 
 Use this table to choose the right tool for your project's scale and test type.
 
@@ -693,14 +1003,18 @@ export function buildUser(overrides: Partial<User> = {}): User {
 
 **Strategy 3 — Separate DB per worker (Vitest):**
 ```typescript
-// vitest.config.ts
+// vitest.config.ts — vmForks pool (Vitest 2.x, strongly isolated workers)
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    pool: 'forks',
+    // 'vmForks' runs each worker in a fresh V8 VM context — strongest isolation,
+    // prevents module-level state leaking between worker processes.
+    // Use 'forks' for slightly faster startup with process isolation only.
+    pool: 'vmForks',
     poolOptions: {
-      forks: {
+      vmForks: {
+        // Each fork gets its own module registry — no shared singleton services
         singleFork: false,
       },
     },
@@ -767,9 +1081,32 @@ it('test B', () => baseUser.withEmail('b@test.com').build()); // order-dependent
 ```
 **Why harmful:** If `withEmail` mutates `this.data` in place, test ordering determines the result. Always use `{ ...this.data }` in builder methods, or create a fresh builder per test.
 
+### 7. Deprecated `@faker-js/faker` v8 API calls in v9+ projects
+
+`faker.name.firstName()`, `faker.address.city()`, and `faker.datatype.uuid()` were
+deprecated in v8 and removed in v9. Projects that upgraded faker without updating
+factories silently break: the build passes (the API is not type-checked until runtime
+in some configurations), but test suites throw `TypeError: faker.name.firstName is not a function`.
+
+**Why harmful:** The migration is purely mechanical but affects every factory in the
+codebase. Without a codebase-wide search-and-replace, individual factories fail
+non-deterministically as faker v9 is adopted.
+
+**Replacements:**
+| v8 (removed) | v9+ (current) |
+|---|---|
+| `faker.datatype.uuid()` | `faker.string.uuid()` |
+| `faker.name.firstName()` | `faker.person.firstName()` |
+| `faker.name.fullName()` | `faker.person.fullName()` |
+| `faker.address.city()` | `faker.location.city()` |
+| `faker.address.zipCode()` | `faker.location.zipCode()` |
+| `faker.internet.email({ firstName, lastName })` | `faker.internet.email({ firstName, lastName, provider })` |
+
+Run `npx @faker-js/faker-codemod` to automatically migrate an entire codebase.
+
 ---
 
-## Real-World Gotchas  [community]
+
 
 1. **[community] Faker's `email()` generates collisions in uniqueness-constrained tables.**
    `faker.internet.email()` has a finite pool. In a large test suite with 10,000+ test runs, duplicate emails hit unique DB constraints. Fix: prefix with `faker.string.uuid()` or use `faker.internet.email({ provider: faker.string.uuid() + '.test' })`.
@@ -799,7 +1136,13 @@ it('test B', () => baseUser.withEmail('b@test.com').build()); // order-dependent
    Teams start with a shared `factories/` folder, but individual feature teams add domain-specific overrides locally over time. After 18 months, the same `UserFactory` exists in three places with subtly different defaults — tests in different modules build different `User` shapes and the discrepancies hide cross-module integration bugs. Designate a single source of truth: one factory per domain entity, in a shared `test/factories/` directory, reviewed as rigorously as production code. Consider lint rules (`import/no-restricted-paths`) that prevent importing from `../factories` outside the shared directory.
 
 10. **[community] In microservices, factories built for service A produce data shapes that silently diverge from what service B actually sends over the wire.**
-    A `UserFactory.build()` in the Orders service produces `{ id, email, name }` but the Users service now sends `{ userId, emailAddress, displayName }` after a field rename. The Orders service tests still pass (factory produces old shape), but production breaks. Fix: derive factories from the **contract schema** (Pact, OpenAPI, JSON Schema) rather than local domain types. When the contract changes, the factory changes automatically and contract violations surface at factory-build time, not in production.
+    A `UserFactory.build()` in the Orders service produces `{ id, email, name }` but the Users service now sends `{ userId, emailAddress, displayName }` after a field rename. The Orders service test cases still pass (factory produces old shape), but production breaks. Fix: derive factories from the **contract schema** (Pact, OpenAPI, JSON Schema) rather than local domain types. When the contract changes, the factory changes automatically and contract violations surface at factory-build time, not in production.
+
+11. **[community] ORM-generated types drift from hand-written factory types when migrations are not regenerated.**
+    In Prisma projects, a common failure mode: developer adds a required `phoneNumber` column to `schema.prisma`, runs `prisma migrate dev`, but the factory's hand-written `User` interface has not been updated. The factory still builds objects without `phoneNumber`, but `prisma.user.create()` now throws at runtime. Fix: base all factory input types on `Prisma.UserCreateInput` (the generated type) rather than a manual interface. When the schema changes, `prisma generate` updates the type automatically and the factory fails at compile time, not at runtime.
+
+12. **[community] `using` / `await using` resource cleanup requires `Symbol.asyncDispose` support in the test runner.**
+    TypeScript 5.2+ `await using` calls `Symbol.asyncDispose()` at scope exit, but only if the JavaScript runtime and test runner support the TC39 Explicit Resource Management proposal. Vitest ≥ 1.4 and Node ≥ 22 support it natively; older Node versions or Jest < 30 require polyfills (`core-js/proposals/explicit-resource-management`). Using `await using` in a test suite running on Node 18 without the polyfill silently falls through to manual cleanup — the `[Symbol.asyncDispose]` method is never called. Fix: verify Node version compatibility before adopting `await using` in test helpers, and add a runtime assertion: `if (typeof Symbol.asyncDispose === 'undefined') throw new Error('Upgrade Node or add polyfill')`.
 
 ---
 
@@ -854,3 +1197,6 @@ it('test B', () => baseUser.withEmail('b@test.com').build()); // order-dependent
 | Vitest worker isolation docs | Official | https://vitest.dev/config/#pool | Per-worker DB setup guide |
 | Playwright test fixtures docs | Official | https://playwright.dev/docs/test-fixtures | Composable E2E fixture lifecycle with `test.extend()` |
 | Pact.io | Official | https://docs.pact.io/ | Contract-schema-driven factory patterns for microservices |
+| Prisma — TypeScript ORM | Official | https://www.prisma.io/docs | Prisma.UserCreateInput pattern for zero-drift factories |
+| TC39 Explicit Resource Management | Proposal | https://github.com/tc39/proposal-explicit-resource-management | `using`/`await using` specification — test resource cleanup |
+| @anatine/zod-mock | Library | https://www.npmjs.com/package/@anatine/zod-mock | Alternative to zod-fixture; generates mock data from Zod schemas using faker |

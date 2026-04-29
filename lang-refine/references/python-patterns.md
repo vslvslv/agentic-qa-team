@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 5 | score: 100/100 | date: 2026-04-27 -->
+<!-- sources: mixed (official + community) | iteration: 7 | score: 100/100 | date: 2026-04-28 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -8,6 +8,9 @@
      STOP: delta < 3 for two consecutive iterations (iter 2 and iter 3)
      [New run] Iter 4 (this run iter 1): 100/100 (+0) — added structural pattern matching (match/case, Python 3.10+) and typing.NamedTuple idiom
      Iter 5 (this run iter 2): 100/100 (+0) — added 9th community gotcha (circular imports) and 3 new anti-pattern table rows
+     [Nightly run] Iter 6 (nightly iter 1): 100/100 (+0) — added Advanced Type Annotations section (TypeGuard, ParamSpec, LiteralString, Never/assert_never, PEP 695 type parameter syntax) sourced from docs.python.org/3/library/typing.html
+     Iter 7 (nightly iter 2): 100/100 (+0) — added __init_subclass__ idiom for lightweight class registration and plugin patterns (replaces metaclass-based approaches)
+     STOP: delta < 3 for two consecutive nightly iterations (iter 6 and iter 7 both delta=0)
 -->
 
 ## Core Philosophy
@@ -329,6 +332,70 @@ import os
 
 ---
 
+### Advanced Type Annotations (Python 3.10–3.13)
+Python's typing module has matured significantly. `TypeGuard`/`TypeIs` enable type narrowing via predicate functions; `ParamSpec` preserves callable signatures through decorators; `LiteralString` prevents injection attacks at the type level; `Never` and `assert_never` provide exhaustiveness checking; Python 3.12 adds `[T]` syntax for type parameters.
+
+```python
+from typing import TypeGuard, TypeIs, ParamSpec, LiteralString, Never, assert_never
+from collections.abc import Callable
+
+# TypeGuard — narrow a type inside a conditional branch
+def is_str_list(val: list[object]) -> TypeGuard[list[str]]:
+    return all(isinstance(x, str) for x in val)
+
+def join_if_strings(val: list[object]) -> str:
+    if is_str_list(val):
+        return ", ".join(val)   # val is now list[str] here
+    return ""
+
+# ParamSpec — preserve callable signatures through higher-order functions
+P = ParamSpec("P")
+
+def retry(times: int):
+    def decorator(fn: Callable[P, int]) -> Callable[P, int]:
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> int:
+            for attempt in range(times):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception:
+                    if attempt == times - 1:
+                        raise
+            return -1
+        return wrapper
+    return decorator
+
+@retry(3)
+def fetch_record(record_id: int, *, timeout: float = 5.0) -> int:
+    ...  # Signature is preserved: fn(record_id: int, *, timeout: float=5.0)
+
+# LiteralString — prevents dynamic SQL injection at the type level
+def execute_query(sql: LiteralString) -> None:
+    ...  # Type checker rejects f-strings with runtime variables
+
+# Never + assert_never — exhaustiveness checking for match/if-elif chains
+def process_status(status: int | str) -> str:
+    if isinstance(status, int):
+        return f"code {status}"
+    elif isinstance(status, str):
+        return status
+    else:
+        assert_never(status)  # mypy/pyright error if new union member added without handling
+
+# Python 3.12+ type parameter syntax (PEP 695)
+def first[T](seq: list[T]) -> T:
+    return seq[0]
+
+class Stack[T]:
+    def __init__(self) -> None:
+        self._items: list[T] = []
+    def push(self, item: T) -> None:
+        self._items.append(item)
+    def pop(self) -> T:
+        return self._items.pop()
+```
+
+---
+
 ### Structural Subtyping with `Protocol`
 `Protocol` enables duck typing with static analysis. Unlike `ABC`, the implementing class does not need to inherit from `Protocol` — any class with the required attributes satisfies it. This is Python's mechanism for structural typing (PEP 544).
 
@@ -613,6 +680,40 @@ visited: set[Coordinate] = {Coordinate(0.0, 0.0), Coordinate(1.0, 1.0)}
 ```
 
 ---
+
+### `__init_subclass__` for Lightweight Class Registration
+`__init_subclass__` is called automatically whenever a class is subclassed. It allows the base class to inspect or register subclasses without metaclasses, making plugin registries, ORM-style mapping, and command registrations simpler and more readable than metaclass-based alternatives.
+
+```python
+from typing import ClassVar
+
+class Command:
+    """Base class that auto-registers all subcommands by name."""
+    _registry: ClassVar[dict[str, type["Command"]]] = {}
+
+    def __init_subclass__(cls, name: str = "", **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        key = name or cls.__name__.lower()
+        if key in Command._registry:
+            raise TypeError(f"Duplicate command name: {key!r}")
+        Command._registry[key] = cls
+
+    def execute(self) -> str:
+        raise NotImplementedError
+
+class QuitCommand(Command, name="quit"):
+    def execute(self) -> str:
+        return "Quitting application."
+
+class HelpCommand(Command, name="help"):
+    def execute(self) -> str:
+        return f"Commands: {', '.join(Command._registry)}"
+
+# Auto-registered without manual bookkeeping
+print(Command._registry)  # {'quit': QuitCommand, 'help': HelpCommand}
+cmd = Command._registry["help"]()
+print(cmd.execute())       # Commands: quit, help
+```
 
 ## Real-World Gotchas  [community]
 

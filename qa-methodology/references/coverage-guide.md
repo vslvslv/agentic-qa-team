@@ -1,5 +1,5 @@
 # Test Coverage — QA Methodology Guide
-<!-- lang: JavaScript | topic: coverage | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: JavaScript | topic: coverage | iteration: 5 | score: 100/100 | date: 2026-04-28 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis (WebFetch + WebSearch unavailable) |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -55,6 +55,24 @@ In JavaScript projects, Jest and Vitest support two coverage providers:
 
 Rule of thumb: use V8 for fast CI feedback on line coverage; use Istanbul when branch
 accuracy matters (regulated code, payment paths, security logic).
+
+Note: when using Jest or Vitest with TypeScript, ensure `sourceMap: true` (or
+`inlineSourceMap: true`) is set in your `tsconfig.json`. Coverage providers instrument
+the compiled JavaScript; without source maps the HTML report shows compiled output rather
+than your original TypeScript source, making it nearly unusable for finding gaps. For
+Vitest with `@vitest/coverage-istanbul`, set `include: ['src/**/*.ts']` in the coverage
+config alongside `all: true` to capture uncovered TypeScript files that no test case
+imports.
+
+### 7. MC/DC coverage is rarely required outside regulated domains — but knowing it explains threshold decisions
+Modified Condition/Decision Coverage (MC/DC) requires that each condition in a decision
+independently affects the outcome. Defined in DO-178C (avionics) and used in
+ISO 26262 (automotive ASIL-D), MC/DC is far stricter than statement or branch coverage:
+it requires O(N) test cases per condition rather than 2^N. JavaScript applications
+rarely target MC/DC, but teams working in regulated contexts should understand that
+their Istanbul branch coverage numbers do **not** satisfy MC/DC requirements — DO-178C
+auditors require dedicated tool-generated MC/DC artefacts, not istanbul-lcov reports.
+ISTQB CTFL 4.0 defines MC/DC as a white-box test technique under "coverage criteria."
 
 ---
 
@@ -334,6 +352,121 @@ const GeneratedMessage = class { /* ... */ };
 module.exports = { GeneratedMessage };
 ```
 
+### Pattern 8 — NYC (Istanbul CLI) standalone coverage for non-Jest runners  [community]
+
+`nyc` is the command-line interface for Istanbul, useful when your test runner lacks native
+coverage support (tape, node:test, custom runners). It wraps any test command without
+requiring config changes to the runner itself. This makes it valuable for legacy
+codebases migrating off custom scripts or for projects that run multiple test runners.
+
+```javascript
+// package.json — wrap any test command with nyc
+{
+  "scripts": {
+    "test:unit":       "node --test test/unit/**/*.test.js",
+    "test:coverage":   "nyc --reporter=text-summary --reporter=lcov --reporter=html node --test test/unit/**/*.test.js",
+    "coverage:report": "nyc report --reporter=html",
+    "coverage:check":  "nyc check-coverage --lines 80 --branches 75 --functions 80"
+  },
+  "nyc": {
+    "include": ["src/**/*.js"],
+    "exclude": ["src/**/__mocks__/**", "src/**/*.stories.js"],
+    "all": true,
+    "branches": 75,
+    "lines": 80,
+    "functions": 80,
+    "statements": 80
+  }
+}
+```
+
+```bash
+# Install
+npm install --save-dev nyc
+
+# Run with coverage check (exits non-zero if thresholds not met)
+npx nyc --check-coverage npm test
+```
+
+### Pattern 9 — Collecting unified coverage across unit and integration test cases  [community]
+
+Running unit and integration test cases as separate processes normally produces separate
+coverage reports that cannot be combined. `nyc` solves this via the `--no-clean` flag,
+which accumulates coverage data from multiple runs before generating a merged report.
+Jest achieves the same through multiple `--projects` configs with `--coverage` on the
+root run. Without this, teams may report high unit test coverage while critical integration
+paths remain unmeasured.
+
+```javascript
+// package.json — staggered collection with nyc
+{
+  "scripts": {
+    "test:unit":        "nyc --no-clean --include='src/**' mocha test/unit/**/*.test.js",
+    "test:integration": "nyc --no-clean --include='src/**' mocha test/integration/**/*.test.js",
+    "test:all":         "nyc --no-clean --include='src/**' mocha 'test/**/*.test.js'",
+    "coverage:report":  "nyc report --reporter=html --reporter=text-summary",
+    "coverage:merge":   "npm run test:unit && npm run test:integration && npm run coverage:report"
+  }
+}
+```
+
+```javascript
+// jest.config.js — multi-project combined coverage
+/** @type {import('jest').Config} */
+module.exports = {
+  projects: [
+    { displayName: 'unit', testMatch: ['<rootDir>/test/unit/**/*.test.js'] },
+    { displayName: 'integration', testMatch: ['<rootDir>/test/integration/**/*.test.js'] },
+  ],
+  collectCoverageFrom: ['src/**/*.{js,mjs}'],
+  coverageDirectory: 'coverage',
+  // Run 'jest --coverage' at root: collects from both projects combined
+};
+```
+
+### Pattern 10 — Stryker with ESM and TypeScript projects  [community]
+
+Stryker 8+ supports native ESM and TypeScript projects without transpilation via its
+`@stryker-mutator/typescript-checker` plugin and `esm: true` flag. Without correct
+configuration, Stryker silently falls back to non-incremental mode or fails to instrument
+source files — both of which produce misleading mutation scores.
+
+```javascript
+// stryker.config.mjs — ESM + TypeScript project (Node 18+)
+import { defineConfig } from '@stryker-mutator/core';
+
+export default defineConfig({
+  testRunner: 'jest',                    // or 'vitest'
+  coverageAnalysis: 'perTest',           // incremental: only re-run mutants for changed files
+  checkers: ['typescript'],              // compile-check mutants before running tests
+  tsconfigFile: 'tsconfig.json',
+  mutate: [
+    'src/**/*.ts',
+    '!src/**/*.spec.ts',
+    '!src/**/*.test.ts',
+    '!src/**/__mocks__/**',
+    '!src/**/index.ts',
+  ],
+  thresholds: { high: 80, low: 60, break: 50 },
+  reporters: ['html', 'progress', 'json'],
+  timeoutMS: 5000,
+  concurrency: 4,
+  incremental: true,
+  incrementalFile: '.stryker-tmp/incremental.json',
+  // Vitest-specific: use @stryker-mutator/vitest-runner
+  // testRunner: 'vitest',
+  // vitest: { configFile: 'vitest.config.ts' },
+});
+```
+
+```bash
+# Install TypeScript checker plugin
+npm install --save-dev @stryker-mutator/typescript-checker
+
+# Run only on changed files (CI PR runs — avoids 30-minute full runs)
+npx stryker run --incremental --only-changed
+```
+
 ---
 
 ## Anti-Patterns
@@ -384,6 +517,14 @@ Exclude patterns in Jest/Vitest configs are legitimate for generated files and s
 but teams under coverage pressure use them to hide under-tested business logic. Treat
 aggressive `exclude` patterns in coverage config as a code review signal.
 
+### AP7 — Using `/* istanbul ignore */` comments as a first-line defence
+`/* istanbul ignore next */` and `/* c8 ignore next */` directives exist for genuinely
+unreachable branches (generated code, defensive platform guards). They are often
+misused to silence coverage failures on recently added code paths that are simply not
+yet tested. A PR that introduces new logic alongside suppress comments is a red flag —
+it means the author opted out of writing test cases rather than fixing the coverage gap.
+Policy: suppress comments in src/ directories require a PR comment justifying the exemption.
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -416,8 +557,8 @@ if branch coverage accuracy is a priority, even though V8 is faster.
 
 ### G5 — Test suites at 95 % coverage with zero assertions fail silently  [community]
 A real pattern in JavaScript codebases: teams using relaxed Jest matchers end up with
-tests that run green while never failing. `expect(result).not.toThrow()` counts as a
-passing test with coverage even when result is completely wrong. A mutation testing pass
+test cases that run green while never failing. `expect(result).not.toThrow()` counts as a
+passing test case with coverage even when result is completely wrong. A mutation testing pass
 immediately surfaces this pattern.
 
 ### G6 — Deleted tests after the merge are not caught by CI  [community]
@@ -445,6 +586,17 @@ Jest snapshot tests exercise many render branches but assert only serialised out
 A snapshot change causes a diff, not a failure, so component logic mutants survive
 silently. Branch coverage shows healthy numbers while meaningful assertion coverage is
 missing. Combine snapshots with explicit behavioural assertions for critical paths.
+
+### G10 — Monorepo coverage drift: each workspace reports its own threshold independently  [community]
+In npm/pnpm/Yarn workspaces, each package runs its own test suite and reports its own
+coverage. The root-level aggregate command (`npm run test --workspaces`) may show
+an 85 % global line coverage — but three packages in the monorepo may sit at 40 %
+while the most-tested utility package pulls the average up. Workspace-level CI jobs
+that each set their own thresholds and report upward to a central dashboard are the
+only reliable guard. Without this, monorepo coverage reports are an averaging artefact
+that hides the riskiest packages. A practical setup: each `package.json` declares
+`coverageThreshold` in its Jest/Vitest config, and the root CI job fails if any
+workspace job fails.
 
 ---
 
@@ -497,6 +649,8 @@ missing. Combine snapshots with explicit behavioural assertions for critical pat
 | Stryker — Getting started | Official | https://stryker-mutator.io/docs/stryker-js/getting-started/ | Step-by-step Jest/Vitest setup for JavaScript projects |
 | Jest coverage configuration | Official | https://jestjs.io/docs/configuration#coveragethreshold-object | coverageThreshold schema with per-file and per-directory support |
 | Vitest coverage docs | Official | https://vitest.dev/guide/coverage.html | Threshold config, v8 vs istanbul, per-file thresholds |
+| NYC (Istanbul CLI) | Official | https://istanbul.js.org/ | Standalone Istanbul CLI for non-Jest runners; supports staggered multi-run accumulation |
+| c8 — V8 Native Coverage | Official | https://github.com/bcoe/c8 | Lightweight V8 coverage CLI; no instrumentation overhead; useful for Node.js built-in test runner |
 | mutmut (Python) | Official | https://mutmut.readthedocs.io/ | Python mutation testing tool reference |
 | Pitest (Java) | Official | https://pitest.org/ | Java/JVM mutation testing |
 | fast-check (property-based) | Community | https://fast-check.io/ | Complement to coverage: explores input space without line counting |

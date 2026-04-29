@@ -1,5 +1,5 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 7 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 9 | score: 100/100 | date: 2026-04-28 -->
 
 ## Core Principles
 
@@ -484,6 +484,7 @@ cy.getByTestId('submit-btn').should('be.visible').click();
 
 ### 17. Scoped Queries with cy.within() and cy.wrap()
 
+
 Use `cy.within()` to scope subsequent `cy.get()` calls to a specific parent element. Use `cy.wrap()` to bring synchronous values (plain JS objects, DOM nodes, Promises) into the Cypress command chain.
 
 ```typescript
@@ -509,6 +510,280 @@ it('waits for async setup', () => {
   cy.wrap(
     fetch('/api/seed').then((r) => r.json())
   ).its('status').should('eq', 'ok');
+});
+```
+
+### 18. Page Object Model (TypeScript class-based)  [community]
+
+Encapsulate page interactions in typed POM classes. In Cypress, POM methods return `void` (or the POM instance for fluent chaining) rather than `WebElement` references, because Cypress subjects are ephemeral.
+
+```typescript
+// cypress/pages/LoginPage.ts
+export class LoginPage {
+  private readonly url = '/login';
+
+  visit(): this {
+    cy.visit(this.url);
+    return this;
+  }
+
+  fillEmail(email: string): this {
+    cy.get('[data-cy="email"]').clear().type(email);
+    return this;
+  }
+
+  fillPassword(password: string): this {
+    cy.get('[data-cy="password"]').clear().type(password);
+    return this;
+  }
+
+  submit(): this {
+    cy.get('[data-cy="submit"]').click();
+    return this;
+  }
+
+  assertErrorMessage(message: string): this {
+    cy.get('[data-cy="error-message"]').should('contain.text', message);
+    return this;
+  }
+}
+
+// cypress/pages/index.ts
+export { LoginPage } from './LoginPage';
+
+// In spec:
+import { LoginPage } from '../pages';
+
+describe('Authentication', () => {
+  it('shows error on invalid credentials', () => {
+    new LoginPage()
+      .visit()
+      .fillEmail('bad@user.com')
+      .fillPassword('wrong')
+      .submit()
+      .assertErrorMessage('Invalid credentials');
+  });
+});
+```
+
+### 19. File Upload with cy.selectFile()
+
+`cy.selectFile()` (added in Cypress 9.3) replaces the community plugin `cypress-file-upload`. It works with both real file paths and inline buffer content.
+
+```typescript
+it('uploads a CSV report', () => {
+  cy.visit('/import');
+
+  // Select a file from the fixtures directory
+  cy.get('[data-cy="file-input"]').selectFile('cypress/fixtures/report.csv');
+  cy.get('[data-cy="upload-btn"]').click();
+  cy.get('[data-cy="upload-status"]').should('contain.text', 'Import successful');
+});
+
+it('uploads a dynamically generated file', () => {
+  cy.visit('/import');
+
+  // Pass file content as a Cypress.Buffer for dynamic data
+  cy.get('[data-cy="file-input"]').selectFile({
+    contents: Cypress.Buffer.from('id,name\n1,Alice\n2,Bob'),
+    fileName: 'users.csv',
+    mimeType: 'text/csv',
+    lastModified: Date.now(),
+  });
+
+  cy.get('[data-cy="upload-btn"]').click();
+  cy.get('[data-cy="row-count"]').should('have.text', '2');
+});
+
+it('drag-drops a file onto a dropzone', () => {
+  cy.visit('/upload');
+
+  // Use action: 'drag-drop' for dropzone-based upload components
+  cy.get('[data-cy="dropzone"]').selectFile('cypress/fixtures/image.png', {
+    action: 'drag-drop',
+  });
+
+  cy.get('[data-cy="preview-image"]').should('be.visible');
+});
+```
+
+### 20. Type-safe Selector Maps with `as const`  [community]
+
+Define all `data-cy` selectors in a central const map using `as const`. This prevents typos, enables IDE autocomplete, and makes selector changes traceable.
+
+```typescript
+// cypress/support/selectors.ts
+export const SELECTORS = {
+  auth: {
+    emailInput:    '[data-cy="email"]',
+    passwordInput: '[data-cy="password"]',
+    submitButton:  '[data-cy="submit"]',
+    errorMessage:  '[data-cy="error-message"]',
+  },
+  nav: {
+    homeLink:    '[data-cy="nav-home"]',
+    profileLink: '[data-cy="nav-profile"]',
+    logoutBtn:   '[data-cy="nav-logout"]',
+  },
+  dashboard: {
+    welcomeText: '[data-cy="welcome-text"]',
+    statCards:   '[data-cy="stat-card"]',
+  },
+} as const;
+
+// Derive the nested value type for any autocomplete or type assertion
+type SelectorGroup = typeof SELECTORS;
+
+// Usage — typos become compile errors
+import { SELECTORS as S } from '../support/selectors';
+
+cy.get(S.auth.emailInput).type('alice@example.com');
+cy.get(S.auth.submitButton).click();
+cy.get(S.dashboard.welcomeText).should('contain', 'Alice');
+```
+
+### 21. Typed cy.task() with Generics  [community]
+
+`cy.task()` runs code in the Node.js plugin context. Use a typed task map interface to get IntelliSense on task names and return values across the entire test suite.
+
+```typescript
+// cypress/plugins/task-types.ts — central type contract
+export interface CypressTasks {
+  'db:seed': (scenario: string) => Promise<null>;
+  'db:query': (sql: string) => Promise<Record<string, unknown>[]>;
+  'email:get': (address: string) => Promise<{ subject: string; body: string } | null>;
+  log: (message: string) => null;
+}
+
+// cypress.config.ts — implement every task
+import type { CypressTasks } from './cypress/plugins/task-types';
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    setupNodeEvents(on) {
+      on('task', {
+        'db:seed': async (scenario) => {
+          await seedDatabase(scenario);
+          return null;                         // must return null, not undefined
+        },
+        'db:query': async (sql) => runQuery(sql),
+        'email:get': async (address) => getLatestEmail(address),
+        log: (message) => { console.log(message); return null; },
+      } satisfies CypressTasks);               // satisfies verifies all keys present
+    },
+  },
+});
+
+// Custom command wrapper for type-safe calls
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      task<K extends keyof CypressTasks>(
+        event: K,
+        arg?: Parameters<CypressTasks[K]>[0]
+      ): Chainable<Awaited<ReturnType<CypressTasks[K]>>>;
+    }
+  }
+}
+
+// Usage — fully typed
+cy.task('db:seed', 'fresh-user').then(() => {
+  cy.task('email:get', 'user@example.com').then((email) => {
+    expect(email?.subject).to.include('Welcome');
+  });
+});
+```
+
+### 22. Responsive Testing with cy.viewport()  [community]
+
+Test breakpoint-specific behavior systematically by parameterizing viewport sizes. Use `beforeEach` with a viewport map to avoid duplicating tests.
+
+```typescript
+// cypress/support/viewports.ts
+export const VIEWPORTS = {
+  mobile:  { width: 375,  height: 812,  label: 'mobile-portrait' },
+  tablet:  { width: 768,  height: 1024, label: 'tablet' },
+  desktop: { width: 1280, height: 720,  label: 'desktop' },
+} as const satisfies Record<string, { width: number; height: number; label: string }>;
+
+// Parameterized responsive spec
+import { VIEWPORTS } from '../support/viewports';
+
+const breakpoints = [VIEWPORTS.mobile, VIEWPORTS.tablet, VIEWPORTS.desktop] as const;
+
+breakpoints.forEach(({ width, height, label }) => {
+  describe(`Navigation at ${label}`, () => {
+    beforeEach(() => {
+      cy.viewport(width, height);
+      cy.visit('/');
+    });
+
+    it('shows appropriate nav for viewport', () => {
+      if (width <= 768) {
+        cy.get('[data-cy="hamburger-menu"]').should('be.visible');
+        cy.get('[data-cy="desktop-nav"]').should('not.be.visible');
+      } else {
+        cy.get('[data-cy="desktop-nav"]').should('be.visible');
+        cy.get('[data-cy="hamburger-menu"]').should('not.exist');
+      }
+    });
+  });
+});
+```
+
+### 23. URL and Location Assertions with cy.location()
+
+Use `cy.location()` to assert on specific URL parts (pathname, search, hash) without brittle full-URL string matching.
+
+```typescript
+it('redirects to the correct route with query params', () => {
+  cy.visit('/search?q=cypress&page=1');
+
+  // Assert on individual URL parts — more robust than cy.url().should('include', ...)
+  cy.location('pathname').should('eq', '/search');
+  cy.location('search').should('eq', '?q=cypress&page=1');
+  cy.location('hash').should('be.empty');
+
+  // Filter results and assert query string updated
+  cy.get('[data-cy="filter-active"]').click();
+  cy.location('search').should('include', 'filter=active');
+});
+
+it('stays on the same page after failed form submission', () => {
+  cy.visit('/register');
+  cy.get('[data-cy="submit"]').click();  // submit empty form
+
+  // Use location rather than url() to avoid full-URL fragility in multi-env setups
+  cy.location('pathname').should('eq', '/register');
+});
+```
+
+### 24. File I/O in Tests with cy.readFile() and cy.writeFile()  [community]
+
+Use `cy.readFile()` to assert on generated exports (CSV, JSON, PDF) and `cy.writeFile()` to persist test data or seed files without calling a server endpoint.
+
+```typescript
+it('exports data as a CSV file', () => {
+  cy.visit('/reports');
+  cy.get('[data-cy="export-csv"]').click();
+
+  // Wait for the download to complete, then assert on its content
+  cy.readFile('cypress/downloads/report.csv', { timeout: 15_000 })
+    .should('contain', 'id,name,date')
+    .and('contain', 'Alice');
+});
+
+it('seeds JSON fixture file for the next test', () => {
+  const testUser = { id: 'usr_test', email: 'e2e@example.com', role: 'admin' };
+
+  // Write a fixture dynamically — useful for parameterized test data generation
+  cy.writeFile('cypress/fixtures/current-user.json', testUser);
+
+  cy.intercept('GET', '/api/me', { fixture: 'current-user.json' }).as('getMe');
+  cy.visit('/dashboard');
+  cy.wait('@getMe');
+  cy.get('[data-cy="user-badge"]').should('contain', 'e2e@example.com');
 });
 ```
 
@@ -594,6 +869,10 @@ declare global {
 9. **`cy.task()` must return a value (not `undefined`)** [community] — If a `cy.task()` handler returns `undefined` or a Promise that resolves to `undefined`, Cypress throws `"cy.task('x') failed because the task handler did not return a value"`. Always return `null` as the sentinel no-value result.
 
 10. **Videos consuming CI storage** [community] — Cypress records a video for every spec by default, even passing ones. On a large suite this fills CI artifact storage quickly. Set `video: false` in `cypress.config.ts` and only enable it per-job when you need failure recordings.
+
+11. **`cypress-file-upload` plugin no longer needed** [community] — The legacy `cypress-file-upload` community plugin (`cy.attachFile()`) is incompatible with Cypress 12+ and causes subtle failures when the input element is hidden. Use the built-in `cy.selectFile()` (available since Cypress 9.3) instead; it handles both visible and programmatically triggered inputs and accepts `Cypress.Buffer` for dynamic file content, eliminating the dependency entirely.
+
+12. **POM methods returning DOM elements cause async issues** [community] — Teams porting Selenium-style POM to Cypress sometimes write methods that return `cy.get(...)` results (Cypress Chainable objects) and store them in variables. A Cypress Chainable is not a DOM element — it's a command queued for later execution. Using a stored Chainable reference after the queue has moved on produces confusing "subject changed" errors. POM methods in Cypress should return `this` (for fluency) or `void`, and assertions should live inside the method or in the calling test.
 
 ---
 
@@ -819,3 +1098,10 @@ describe('Checkout flow', { tags: ['@critical', '@smoke'] }, () => {
 | `Cypress.Commands.addQuery()` | Add a retrying synchronous query command | Custom element selectors |
 | `Cypress.Commands.overwrite()` | Wrap a built-in command with custom logic | Add logging/guards to `cy.visit()` |
 | `cypress.run(options)` | Programmatically invoke Cypress | Custom CI scripts, monorepo runners |
+| `cy.selectFile(file, options)` | Trigger file input / drag-drop upload | File upload testing (replaces `cypress-file-upload`) |
+| `cy.readFile(path)` | Read a file from the filesystem | Assert generated files, read fixtures dynamically |
+| `cy.writeFile(path, data)` | Write a file from the test | Create temp test data, persist test state to disk |
+| `cy.location(key)` | Assert on parts of the current URL | Check pathname, search params, hash without full URL match |
+| `cy.within(fn)` | Scope all subsequent queries to a parent | Target elements inside a repeated component |
+| `cy.wrap(subject)` | Bring a value/Promise into the Cypress chain | Assert on synchronous helpers or async setup |
+| `Cypress.Buffer.from(data)` | Create a binary buffer for file content | Dynamic file content in `cy.selectFile()` |

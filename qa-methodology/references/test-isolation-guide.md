@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: JavaScript | topic: test-isolation | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: JavaScript | topic: test-isolation | iteration: 6 | score: 100/100 | date: 2026-04-28 -->
 <!-- Sources: synthesized from training knowledge (WebFetch blocked, WebSearch unavailable) -->
 <!-- Primary references: martinfowler.com/bliki/UnitTest.html, xunitpatterns.com/Four Phase Test, -->
 <!--                     Google Testing Blog, Jest/Vitest docs, community production experience   -->
@@ -221,9 +221,29 @@ injected clock), use `jest.useFakeTimers()` to take control of the timer system.
 other test files running in the same worker.
 
 ```javascript
-const { scheduledNotifier } = require('./scheduledNotifier');
+// production code — uses setTimeout/setInterval directly
+class PollingNotifier {
+  constructor(callback, intervalMs) {
+    this._callback = callback;
+    this._intervalMs = intervalMs;
+    this._timerId = null;
+  }
+  start() {
+    this._timerId = setInterval(this._callback, this._intervalMs);
+  }
+  stop() {
+    if (this._timerId !== null) {
+      clearInterval(this._timerId);
+      this._timerId = null;
+    }
+  }
+}
+module.exports = { PollingNotifier };
 
-describe('scheduledNotifier', () => {
+// test — controlled timers, no real wall-clock waiting
+const { PollingNotifier } = require('./pollingNotifier');
+
+describe('PollingNotifier', () => {
   beforeEach(() => {
     // Take over all timer functions: setTimeout, setInterval, Date, etc.
     jest.useFakeTimers();
@@ -234,31 +254,37 @@ describe('scheduledNotifier', () => {
     jest.useRealTimers();
   });
 
-  it('does not fire callback before the delay expires', () => {
+  it('does not fire callback before the interval elapses', () => {
     const callback = jest.fn();
+    const notifier = new PollingNotifier(callback, 5000);
 
-    scheduledNotifier(callback, 5000); // fires after 5 seconds
-
+    notifier.start();
     jest.advanceTimersByTime(4999);   // advance clock by 4.999s
+
     expect(callback).not.toHaveBeenCalled();
+    notifier.stop();
   });
 
-  it('fires callback exactly once when delay expires', () => {
+  it('fires callback exactly once when first interval elapses', () => {
     const callback = jest.fn();
+    const notifier = new PollingNotifier(callback, 5000);
 
-    scheduledNotifier(callback, 5000);
-
+    notifier.start();
     jest.advanceTimersByTime(5000);   // advance past the threshold
+
     expect(callback).toHaveBeenCalledTimes(1);
+    notifier.stop();
   });
 
-  it('fires interval callback multiple times as clock advances', () => {
+  it('fires callback multiple times as clock advances by multiple intervals', () => {
     const callback = jest.fn();
+    const notifier = new PollingNotifier(callback, 1000); // fires every 1 second
 
-    scheduledNotifier.repeat(callback, 1000); // fires every 1 second
-
+    notifier.start();
     jest.advanceTimersByTime(3500);   // 3 full intervals have elapsed
+
     expect(callback).toHaveBeenCalledTimes(3);
+    notifier.stop();
   });
 });
 ```
@@ -459,6 +485,13 @@ module.exports = {
 
   // Limit workers to avoid port collisions in integration suites
   maxWorkers: '50%',
+
+  // Use 'node' environment for backend/server code (default in Jest 27+).
+  // Use 'jsdom' for browser-like globals (window, document, localStorage).
+  // Never mix environments in the same jest config without explicit override comments —
+  // using jsdom for server code silently provides window/document globals that mask
+  // isolation violations that would surface in real Node.js.
+  testEnvironment: 'node',
 };
 ```
 
@@ -577,6 +610,21 @@ Each test file must be fully self-contained from setup to teardown.
     objects) can still leak. Use `JSON.parse(JSON.stringify(process.env))` or only mutate string
     properties for guaranteed isolation.
 
+13. **ESM modules are not resetable with `jest.resetModules()` in native ESM mode.** [community]
+    When using Jest with `--experimental-vm-modules` (native ESM), `jest.resetModules()` does not
+    work as it does in CJS mode. ESM modules are cached by the JavaScript engine itself, not by Jest's
+    require cache. The workaround is to use dynamic `import()` with cache-busting query parameters
+    (`import('./mod.js?t=' + Date.now())`) or to convert singletons to explicitly reset factory
+    functions. Teams migrating CJS test suites to ESM often discover this limitation only after the
+    migration is complete.
+
+14. **`test.concurrent` in Vitest does not serialize `beforeEach`/`afterEach`.** [community]
+    Vitest's `test.concurrent` runs tests in the same describe block in parallel. This violates
+    the Independent property if the tests share any mutable state in the describe scope — even
+    a `let` variable reset in `beforeEach` is unsafe because concurrent tests race on the reset.
+    Only use `test.concurrent` with tests that are fully self-contained (no shared `let`, no
+    shared mocks). When in doubt, prefer serial execution with `test()`.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -593,7 +641,9 @@ but it requires that all test DB operations share a single transaction handle.
 **End-to-end tests** operate against a full stack and cannot isolate individual units. Apply
 isolation at the scenario level: each E2E scenario should set up its own preconditions via API calls
 and clean up after itself. Shared test accounts or shared database state in E2E suites is the
-primary source of E2E flakiness.
+primary source of E2E flakiness. In Playwright, use `test.use({ storageState: 'path/to/state.json' })`
+to give each worker its own browser storage (cookies, localStorage) and avoid session contamination
+across parallel workers.
 
 ### Known adoption costs
 
@@ -626,6 +676,22 @@ primary source of E2E flakiness.
 | Timer isolation | `jest.useFakeTimers()` / `jest.useRealTimers()` | `vi.useFakeTimers()` / `vi.useRealTimers()` |
 | Module singleton reset | `jest.resetModules()` | `vi.resetModules()` |
 | Per-test module isolation | `jest.isolateModules()` | `vi.isolateModules()` |
+| Concurrent test isolation | Not applicable (serial by default) | `test.concurrent` — use with caution (see Gotcha #14) |
+
+### ISTQB CTFL 4.0 terminology alignment
+
+The guides in this repository use ISTQB CTFL 4.0 standardized terminology. Key mappings for
+test isolation discussions:
+
+| Common informal term | ISTQB CTFL 4.0 preferred term | Notes |
+|---------------------|------------------------------|-------|
+| "test" (individual) | **test case** | A test case has explicit inputs, preconditions, expected results, postconditions |
+| "test set" / "spec file" | **test suite** | A collection of test cases grouped for execution |
+| "thing under test" | **test object** (or SUT) | The component, system, or item being tested |
+| "test scenario" | **test condition** | A testable aspect or situation derived from the test basis |
+| "bug" / "error" | **defect** | Prefer "defect" in formal reports; "bug" acceptable in informal contexts |
+| "test layer" | **test level** | Unit test level, integration test level, system test level |
+| "setup/teardown" | **test fixture** | The fixed state or context used to run a test case |
 
 ---
 
@@ -641,3 +707,5 @@ primary source of E2E flakiness.
 | Martin Fowler — Non-Determinism in Tests | Official | https://martinfowler.com/articles/nonDeterminism.html | Deep analysis of why tests become non-deterministic; covers shared state as root cause |
 | Jest Docs — Configuration Reference | Official | https://jestjs.io/docs/configuration | Authoritative reference for `clearMocks`, `restoreMocks`, `resetMocks`, `randomize` options |
 | Supertest — HTTP assertion library | Community | https://github.com/ladjs/supertest | Standard JavaScript library for integration-testing Express/Fastify servers without binding a port |
+| Playwright — Authentication & Storage State | Official | https://playwright.dev/docs/auth | Per-worker browser storage isolation for E2E test suites with parallel execution |
+| ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative source for standardized testing terminology used throughout this guide |

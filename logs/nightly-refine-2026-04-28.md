@@ -26,6 +26,21 @@
 
 ---
 
+## BATCH A SUPPLEMENTAL — manual bdd re-run (ITERATION OVERRIDE)
+
+| Topic | Output file | Final score | Iterations run | Stop reason |
+|-------|-------------|-------------|----------------|-------------|
+| bdd | qa-methodology/references/bdd-guide.md | 100/100 | 2 | delta=0 for 2 consecutive iterations (< 3 threshold) |
+
+**BDD re-run iteration trace:**
+- Iter 0 (existing): 100/100 — guide already at ceiling (Coverage 25 | Examples 25 | Tradeoffs 25 | Community 25)
+- Iter 1: 100/100 (delta=0) — added: ISTQB CTFL 4.0 terminology in BDD context, accessibility-aware BDD with axe-core (TypeScript), pytest-bdd v7+ Python section, Cucumber.js v11+ section with World generics, 6 new [community] lessons
+- Iter 2: 100/100 (delta=0) — added: BDD in monorepos step-sharing strategy, gherkin-lint configuration, scenario count health metrics with TypeScript audit script, 5 new [community] lessons
+
+**Sources used:** training-knowledge (WebFetch and WebSearch unavailable)
+
+---
+
 ## BATCH B — qa-refine core tools (5 tools)
 
 | Tool | Output file | Final score | Iterations |
@@ -62,7 +77,7 @@
 - **k6:** Fixed deprecated `k6/experimental/websockets` → stable `k6/websockets`; k6 v0.57+ runs `.ts` files natively via esbuild; CSV parameterisation requires papaparse + SharedArray
 - **Detox:** Added `getAttributes()`, biometrics simulation, Expo/EAS integration, React Navigation ghost screen strategy; 15 community gotchas total
 - **Methodology language correction:** Most methodology guides were updated from TypeScript to JavaScript examples (the project has no TypeScript dependency) — tdd, test-isolation, coverage, ci-cd-testing, shift-left, contract-testing, test-pyramid all rewrote code examples this run
-- **BDD:** `playwright-bdd` documented as TypeScript-native alternative to `@cucumber/cucumber`; `Cypress.Commands.addQuery()` is the correct retrying-selector API (not `Commands.add()`)
+- **BDD (re-run additions):** ISTQB CTFL 4.0 terminology alignment; accessibility-aware BDD with axe-core; Cucumber.js v11+ World generics + ESM config + JSON formatter migration; pytest-bdd v7+ Python section; gherkin-lint configuration; BDD monorepo step-sharing; scenario count health metrics + TypeScript audit script; 11 new [community] lessons added
 
 ---
 

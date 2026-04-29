@@ -1,5 +1,6 @@
 # Test-Driven Development (TDD) — QA Methodology Guide
-<!-- lang: JavaScript | topic: tdd | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: JavaScript | topic: tdd | iteration: 5 | score: 100/100 | date: 2026-04-28 -->
+<!-- sources: training-knowledge (WebSearch/WebFetch unavailable) | ISTQB CTFL 4.0 terminology applied -->
 
 ## Core Principles
 
@@ -365,6 +366,455 @@ npx vitest --watch -t "totals one item"
 
 The `bail: 1` setting is intentional during TDD: seeing one red test name clearly is more valuable than seeing ten failures scroll by. When CI runs the full suite, remove `bail` to get a complete picture of breakage.
 
+### Transformation Priority Premise (TPP) [community]
+
+Robert C. Martin's Transformation Priority Premise provides a formal ordering for the generalisation steps from fake-it to real implementation. Rather than choosing transformations arbitrarily, TPP ranks them from simplest to most complex. Following lower-priority transformations first keeps each TDD step as small as possible.
+
+Ordered from simplest (1) to most complex (9):
+1. `{} → nil` — return nothing
+2. `nil → constant` — return a literal constant
+3. `constant → constant+` — return a slightly more complex constant
+4. `constant → scalar` — replace a constant with a variable/argument
+5. `statement → statements` — add an unconditional statement
+6. `unconditional → if` — introduce a conditional
+7. `scalar → array` — scalar becomes a collection
+8. `array → container` — collection becomes a data structure
+9. `statement → tail-call` → introduce recursion
+
+In practice: always prefer the **lowest-numbered transformation** that makes the failing test case pass. If you find yourself reaching for recursion (9) to pass a test that could be satisfied by a conditional (6), the test cases are too large.
+
+```javascript
+// TPP demonstration: FizzBuzz red-green steps using lowest available transformation
+import { describe, it, expect } from 'vitest';
+import { fizzBuzz } from './fizzBuzz.js';
+
+// Test case 1: n=1 → "1"
+it('returns "1" for n=1', () => expect(fizzBuzz(1)).toBe('1'));
+// Transformation: {} → constant (cheapest). GREEN with: return '1';
+
+// Test case 2: n=2 → "2"
+it('returns "2" for n=2', () => expect(fizzBuzz(2)).toBe('2'));
+// Transformation: constant → scalar. GREEN with: return String(n);
+
+// Test case 3: n=3 → "Fizz"
+it('returns "Fizz" for n=3', () => expect(fizzBuzz(3)).toBe('Fizz'));
+// Transformation: unconditional → if (level 6). Must introduce a branch.
+// export function fizzBuzz(n) { return n % 3 === 0 ? 'Fizz' : String(n); }
+
+// Test case 4: n=5 → "Buzz"
+it('returns "Buzz" for n=5', () => expect(fizzBuzz(5)).toBe('Buzz'));
+// Transformation: add another if (still level 6 — same priority).
+// export function fizzBuzz(n) {
+//   if (n % 3 === 0) return 'Fizz';
+//   if (n % 5 === 0) return 'Buzz';
+//   return String(n);
+// }
+
+// Test case 5: n=15 → "FizzBuzz"
+it('returns "FizzBuzz" for n=15', () => expect(fizzBuzz(15)).toBe('FizzBuzz'));
+// Transformation: add one more conditional for the combined case.
+```
+
+**Why TPP matters in practice:** It prevents the common failure where a developer "jumps ahead" to a complex implementation (array, recursion) before the test suite has forced that complexity. A test suite developed using TPP produces implementations that are minimally complex relative to the examples given — a measurable property.
+
+### Test Doubles Taxonomy [community]
+
+The TDD community uses five distinct test double types (Gerard Meszaros, *xUnit Test Patterns*). Conflating them leads to over-mocking and brittle test suites. Each double has a specific role:
+
+| Type | What it does | When to use |
+|------|-------------|-------------|
+| **Dummy** | Passed but never used; satisfies a parameter requirement | Constructor requires a dep you don't need for this test case |
+| **Stub** | Returns a canned answer when called; no assertion on it | Control indirect inputs to the test object |
+| **Spy** | Records calls made to it; assertions checked after the fact | Verify that a side effect was triggered, without hard coupling |
+| **Mock** | Pre-programmed expectations; fails immediately on unexpected calls | Verify interaction protocol strictly (use sparingly) |
+| **Fake** | Working implementation with shortcut (e.g., in-memory DB) | Replace heavyweight infrastructure while keeping behaviour real |
+
+```javascript
+// vitest doubles taxonomy — each type demonstrated
+import { vi, describe, it, expect, beforeEach } from 'vitest';
+
+// ── DUMMY ────────────────────────────────────────────────────────────────────
+// OrderService constructor requires a logger, but we never call it in this
+// test case. Pass a dummy to satisfy the signature.
+const dummyLogger = { info: () => {}, error: () => {} };
+const service = new OrderService(realRepo, dummyLogger);
+
+// ── STUB ──────────────────────────────────────────────────────────────────────
+// Control what getExchangeRate returns so we test the discount logic in isolation.
+const rateStub = { getExchangeRate: vi.fn().mockResolvedValue(1.25) };
+const pricer = new Pricer(rateStub);
+await pricer.priceInCurrency('USD', 100); // rateStub drives the calculation path
+
+// ── SPY ───────────────────────────────────────────────────────────────────────
+// Verify that checkout triggered the email side-effect without asserting
+// on how many times save() was called internally.
+class SpyMailer {
+  sent = [];
+  async send(opts) { this.sent.push(opts); }
+}
+const mailerSpy = new SpyMailer();
+await checkoutService.complete({ orderId: '1', mailer: mailerSpy });
+expect(mailerSpy.sent).toHaveLength(1);
+expect(mailerSpy.sent[0]).toMatchObject({ subject: 'Order confirmed' });
+
+// ── MOCK ─────────────────────────────────────────────────────────────────────
+// Use vi.fn() with toHaveBeenCalledWith when you MUST enforce the exact call
+// protocol (e.g., verifying a payment gateway receives the correct payload).
+const gatewayMock = { charge: vi.fn().mockResolvedValue({ id: 'ch_123' }) };
+await paymentService.checkout({ amount: 50, token: 'tok_abc' });
+expect(gatewayMock.charge).toHaveBeenCalledWith({ amount: 50, token: 'tok_abc' });
+// WARNING: mock expectations break on internal refactors — prefer spy + fake.
+
+// ── FAKE ──────────────────────────────────────────────────────────────────────
+// In-memory repository is a real working implementation — not a mock.
+// Tests that use fakes survive internal refactors because they test behaviour.
+class InMemoryUserRepository {
+  #store = new Map();
+  async save(user)        { this.#store.set(user.id, user); return user; }
+  async findById(id)      { return this.#store.get(id) ?? null; }
+  async findByEmail(email){ return [...this.#store.values()].find(u => u.email === email) ?? null; }
+}
+
+it('registers a user and persists them', async () => {
+  const repo = new InMemoryUserRepository();
+  const svc  = new UserService(repo);
+  const user = await svc.register({ email: 'a@b.com', name: 'Alice' });
+  expect(await repo.findByEmail('a@b.com')).toMatchObject({ id: user.id });
+});
+```
+
+**Community signal:** The most common TDD mistake in JavaScript is using `vi.fn()` mocks for everything. Fakes (in-memory implementations) give you full behavioural verification and survive refactors. Reserve mocks for interaction protocol verification only, and document why in a comment.
+
+### Async TDD — Testing State Machines and Race Conditions [community]
+
+Async code introduces timing, ordering, and concurrency concerns that make test case authoring harder. TDD's value is highest here because the act of writing the test case first forces you to define expected async behaviour before any implementation exists.
+
+```javascript
+// TDD for an async state machine: order status transitions
+// Order can transition: pending → processing → shipped → delivered
+// Invalid transitions must throw.
+import { describe, it, expect } from 'vitest';
+import { Order } from './Order.js';
+
+// Test case 1: RED — valid transition
+it('transitions from pending to processing', async () => {
+  const order = new Order({ status: 'pending' });
+  await order.startProcessing();
+  expect(order.status).toBe('processing');
+});
+
+// Test case 2: RED — invalid transition throws
+it('throws when attempting to ship a pending order', async () => {
+  const order = new Order({ status: 'pending' });
+  await expect(order.ship()).rejects.toThrow('Cannot ship: order is not processing');
+});
+
+// Test case 3: RED — idempotent guard (calling startProcessing twice is a defect)
+it('throws on duplicate startProcessing call', async () => {
+  const order = new Order({ status: 'pending' });
+  await order.startProcessing();
+  await expect(order.startProcessing()).rejects.toThrow('Cannot process: order is already processing');
+});
+
+// Test case 4: RED — testing concurrent calls to startProcessing (race guard)
+it('handles concurrent startProcessing calls safely', async () => {
+  const order = new Order({ status: 'pending' });
+  const [result1, result2] = await Promise.allSettled([
+    order.startProcessing(),
+    order.startProcessing(),
+  ]);
+  // Exactly one should succeed; the second must reject
+  const successes = [result1, result2].filter(r => r.status === 'fulfilled').length;
+  const failures  = [result1, result2].filter(r => r.status === 'rejected').length;
+  expect(successes).toBe(1);
+  expect(failures).toBe(1);
+  expect(order.status).toBe('processing');
+});
+
+// GREEN: implement Order with optimistic concurrency guard
+export class Order {
+  #status;
+  #transitioning = false;
+
+  constructor({ status }) { this.#status = status; }
+  get status() { return this.#status; }
+
+  async #transition(from, to, errorMsg) {
+    if (this.#status !== from || this.#transitioning) {
+      throw new Error(errorMsg ?? `Cannot transition from ${this.#status} to ${to}`);
+    }
+    this.#transitioning = true;
+    try {
+      await Promise.resolve(); // yield to microtask queue (simulate async I/O)
+      this.#status = to;
+    } finally {
+      this.#transitioning = false;
+    }
+  }
+
+  startProcessing() { return this.#transition('pending', 'processing', 'Cannot process: order is already processing'); }
+  ship()            { return this.#transition('processing', 'shipped',  'Cannot ship: order is not processing'); }
+  deliver()         { return this.#transition('shipped',   'delivered', 'Cannot deliver: order is not shipped'); }
+}
+```
+
+### Characterisation Tests for Legacy Code [community]
+
+Before refactoring existing code, write test cases that lock down the current behaviour — including defects. These are "characterisation tests" (Michael Feathers): they characterise what the code *does*, not what it *should* do. Their purpose is to provide a safety net for the refactor, not to document correctness.
+
+```javascript
+// Legacy function with undocumented behaviour — don't understand it yet
+// parseLegacyDate.js (do not modify during characterisation)
+export function parseLegacyDate(str) {
+  // 80 lines of undocumented date parsing logic
+  // Known issues: returns null for invalid dates, sometimes returns NaN
+}
+
+// Step 1: Write characterisation test cases — probe with real inputs
+// These test cases describe the current behaviour, whatever it is.
+import { describe, it, expect } from 'vitest';
+import { parseLegacyDate } from './parseLegacyDate.js';
+
+describe('parseLegacyDate (characterisation)', () => {
+  it('parses "2024-01-15" → Date(2024, 0, 15)', () => {
+    const result = parseLegacyDate('2024-01-15');
+    // First: find out what it returns, then lock it in
+    expect(result).toEqual(new Date(2024, 0, 15));
+  });
+
+  it('returns null for empty string', () => {
+    expect(parseLegacyDate('')).toBeNull();
+  });
+
+  it('returns null for "not-a-date"', () => {
+    // Even if null is wrong, we lock this in before refactoring
+    expect(parseLegacyDate('not-a-date')).toBeNull();
+  });
+
+  it('parses "15/01/2024" → Date(2024, 0, 15)', () => {
+    const result = parseLegacyDate('15/01/2024');
+    expect(result).toEqual(new Date(2024, 0, 15));
+  });
+});
+
+// Step 2: All characterisation test cases pass → safe to refactor
+// Step 3: After refactoring, the characterisation test suite should still pass
+// Step 4: Add new TDD test cases for the corrected/intended behaviour
+```
+
+**Why this matters:** Characterisation tests are the bridge between untested legacy code and TDD. Teams that attempt to TDD-refactor legacy code without this step routinely introduce regressions because they did not understand the full behaviour of the existing code.
+
+### TCR (Test-and-Commit-or-Revert) [community]
+
+TCR is an extreme TDD discipline invented by Kent Beck: when tests pass, the code is committed automatically; when tests fail, the working tree is reverted automatically. This forces step sizes to be so small that failures are trivially undone.
+
+```bash
+# tcr.sh — TCR script for Vitest projects
+# Run from project root during a TDD session
+# Usage: ./tcr.sh
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+TCR_WATCH_PATH="${1:-src}"
+
+inotifywait -m -e close_write -r "$TCR_WATCH_PATH" --format '%w%f' 2>/dev/null | while read -r FILE; do
+  echo ">>> Changed: $FILE — running tests..."
+  if npx vitest run --reporter=dot 2>&1; then
+    echo ">>> PASS — committing"
+    git add -A && git commit -m "tcr: green after $(basename "$FILE")"
+  else
+    echo ">>> FAIL — reverting $FILE"
+    git checkout -- "$FILE"
+  fi
+done
+```
+
+```javascript
+// TCR forces TDD discipline by making failure recovery automatic.
+// The correct way to use TCR:
+//
+// 1. Write a tiny failing test case (one assertion, one new behaviour)
+// 2. Save the file → TCR runs tests → they fail → TCR reverts the test file
+//    (You lose the test! This trains you to write tests in a separate step.)
+//
+// Better TCR workflow for JavaScript TDD:
+// - Write the test case first and save → it fails → TCR reverts
+// - So instead: write test + minimal green implementation in one save
+//   OR use a two-file TCR that only reverts production code, not test files.
+//
+// Two-file pattern: TCR only reverts src/, never test/ files.
+// This lets you grow the test suite safely while TCR enforces green production code.
+
+// Example: write this and save in one edit to stay green under TCR:
+
+// counter.test.js
+describe('Counter', () => {
+  it('increments', () => {
+    const c = new Counter(0);
+    c.increment();
+    expect(c.value).toBe(1);
+  });
+});
+
+// counter.js (saved in the same edit as the test case above)
+export class Counter {
+  constructor(n) { this.value = n; }
+  increment() { this.value += 1; }
+}
+```
+
+### TDD for React Hooks — Extractable Logic Layer [community]
+
+TDD is awkward when applied directly to rendered components, but React hooks that contain business logic can be TDD'd in isolation using `@testing-library/react-hooks` (or Vitest's `renderHook`). The key: extract decision logic from render logic so TDD can target the pure part.
+
+```javascript
+// TDD for a useShoppingCart hook — testing logic without rendering UI
+// useShoppingCart.test.js
+import { describe, it, expect } from 'vitest';
+import { renderHook, act } from '@testing-library/react';
+import { useShoppingCart } from './useShoppingCart.js';
+
+// Test case 1: RED — hook starts with empty cart
+it('starts with an empty cart', () => {
+  const { result } = renderHook(() => useShoppingCart());
+  expect(result.current.items).toEqual([]);
+  expect(result.current.total).toBe(0);
+});
+
+// Test case 2: RED — adding an item updates total
+it('adds an item and recalculates total', () => {
+  const { result } = renderHook(() => useShoppingCart());
+  act(() => result.current.addItem({ sku: 'A', price: 25, qty: 2 }));
+  expect(result.current.items).toHaveLength(1);
+  expect(result.current.total).toBe(50);
+});
+
+// Test case 3: RED — removing an item
+it('removes an item by sku', () => {
+  const { result } = renderHook(() => useShoppingCart());
+  act(() => result.current.addItem({ sku: 'A', price: 25, qty: 1 }));
+  act(() => result.current.removeItem('A'));
+  expect(result.current.items).toEqual([]);
+  expect(result.current.total).toBe(0);
+});
+
+// Test case 4: RED — duplicate adds merge qty (domain rule)
+it('merges quantities when the same sku is added twice', () => {
+  const { result } = renderHook(() => useShoppingCart());
+  act(() => result.current.addItem({ sku: 'A', price: 10, qty: 1 }));
+  act(() => result.current.addItem({ sku: 'A', price: 10, qty: 3 }));
+  expect(result.current.items[0].qty).toBe(4);
+  expect(result.current.total).toBe(40);
+});
+
+// GREEN: implement the hook
+// useShoppingCart.js
+import { useState, useMemo } from 'react';
+
+export function useShoppingCart() {
+  const [items, setItems] = useState([]);
+
+  const addItem = (item) => setItems(prev => {
+    const existing = prev.find(i => i.sku === item.sku);
+    if (existing) {
+      return prev.map(i => i.sku === item.sku ? { ...i, qty: i.qty + item.qty } : i);
+    }
+    return [...prev, item];
+  });
+
+  const removeItem = (sku) => setItems(prev => prev.filter(i => i.sku !== sku));
+
+  const total = useMemo(
+    () => items.reduce((sum, i) => sum + i.price * i.qty, 0),
+    [items]
+  );
+
+  return { items, total, addItem, removeItem };
+}
+```
+
+**When to use `renderHook` vs pure function TDD:** If a hook contains only state + derived values (no side effects like `useEffect` with fetch), prefer extracting the logic into a pure reducer function and TDD that directly — no `renderHook` needed, faster feedback cycle.
+
+### Snapshot Testing Pitfalls in a TDD Codebase [community]
+
+Snapshot tests (Vitest `toMatchSnapshot()` or `toMatchInlineSnapshot()`) are frequently misused in TDD workflows. They can be valuable for stabilising complex serialisable output (AST nodes, API response shapes), but they harm TDD when used as a substitute for meaningful assertions.
+
+```javascript
+// ANTI-PATTERN: snapshot as a lazy assertion — locks in everything, tests nothing specific
+it('renders the user card', () => {
+  const { container } = render(<UserCard name="Alice" role="admin" />);
+  expect(container).toMatchSnapshot();
+  // Problem: the snapshot contains every CSS class, every aria attribute,
+  // every data-testid. Any UI change — even removing whitespace — fails the test.
+  // Developers learn to run `vitest --update-snapshots` without reading the diff.
+});
+
+// GOOD: explicit assertions on behaviour, snapshot only for complex data structures
+it('renders the user card with correct name and role badge', () => {
+  render(<UserCard name="Alice" role="admin" />);
+  expect(screen.getByRole('heading', { name: 'Alice' })).toBeInTheDocument();
+  expect(screen.getByText('admin')).toBeInTheDocument();
+  // Only use snapshot for the non-trivial serialised parts:
+  expect(getUserCardAriaStructure()).toMatchInlineSnapshot(`
+    {
+      "role": "article",
+      "aria-label": "User card: Alice",
+      "children": ["heading", "badge"]
+    }
+  `);
+});
+
+// RULE: if a snapshot covers more than 10 lines, split it into explicit assertions.
+// Snapshot tests that "just update" on every refactor are not test cases — they are
+// regression traps that erode confidence in the test suite.
+```
+
+**Community signal:** Teams using snapshot tests as their primary UI test strategy report the highest rates of `--update-snapshots` usage and the lowest defect detection rates at the UI layer. Snapshots are a documentation tool, not a verification tool.
+
+### Mutation Testing as a TDD Audit [community]
+
+Mutation testing (Stryker for JS) answers the question: "Do the test cases actually fail when the production code is broken?" It introduces artificial defects (mutations) and checks whether the test suite catches them. A high TDD mutation score (≥ 80%) indicates that the test cases are pinning real behaviour, not just covering lines.
+
+```javascript
+// stryker.config.mjs — Stryker configuration for a Vitest project
+export default {
+  packageManager: 'npm',
+  reporters: ['html', 'clear-text', 'progress'],
+  testRunner: 'vitest',
+  coverageAnalysis: 'perTest',
+  vitest: {
+    configFile: 'vitest.config.js',
+  },
+  mutate: [
+    'src/**/*.js',
+    '!src/**/*.test.js',
+    '!src/**/test-doubles/**/*.js',
+  ],
+  thresholds: {
+    high: 80,    // Green: mutation score ≥ 80%
+    low: 60,     // Yellow: 60–80% — review these survivors
+    break: 50,   // CI fails: < 50% — test cases are not verifying behaviour
+  },
+};
+
+// Run: npx stryker run
+// Survivors = mutations that no test case caught = gaps in TDD coverage
+// Each survivor represents a condition, boundary, or logic branch with no test case
+```
+
+```bash
+# Integrate mutation testing into CI as a monthly TDD health check
+# (too slow for every commit — run weekly or on release branches)
+# Example GitHub Actions step:
+# - name: Mutation test (TDD audit)
+#   run: npx stryker run
+#   env:
+#     STRYKER_DASHBOARD_API_KEY: ${{ secrets.STRYKER_DASHBOARD_API_KEY }}
+```
+
+**Practical guidance:** Run mutation testing on the most critical modules first (payment, auth, pricing). A TDD codebase with 90%+ line coverage often has only 65–70% mutation score on first run — revealing test cases that were written to pass, not to catch defects.
+
 ### Functional Core / Imperative Shell (TDD-Friendly Architecture) [community]
 
 The hardest part of TDD is managing side effects (I/O, network, time). Gary Bernhardt's "Functional Core, Imperative Shell" architecture separates pure decision logic (easy to TDD) from side-effectful orchestration (hard to TDD). The core is a set of pure functions — all inputs explicit, all outputs return values. The shell is thin: it reads from the world, calls the core, writes results back.
@@ -631,6 +1081,50 @@ export function getPool() {
 // Tests inject InMemoryDatabase instead; real pool never created during tests.
 ```
 
+12. **[community] Property-based testing finds boundary defects that TDD misses.** TDD produces test cases from hand-picked examples; property-based tests (fast-check, jsverify) generate hundreds of random examples. In production, teams find that TDD test suites have 95%+ line coverage yet miss edge cases at integer boundaries, empty collections, and Unicode input. Property-based testing complements TDD — run it on the same pure functions where TDD excels.
+
+```javascript
+// Property-based test complementing the TDD test suite for calculateTotal
+import { describe, it } from 'vitest';
+import * as fc from 'fast-check';
+import { calculateTotal } from './cart-logic.js';
+
+describe('calculateTotal (property-based)', () => {
+  it('never returns a negative total', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.record({
+          price: fc.float({ min: 0, max: 10_000 }),
+          qty: fc.integer({ min: 0, max: 999 }),
+        })),
+        (items) => calculateTotal(items, null) >= 0
+      )
+    );
+  });
+
+  it('total equals sum of (price × qty) with no discount', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.record({
+          price: fc.float({ min: 0, max: 100, noNaN: true }),
+          qty: fc.integer({ min: 0, max: 100 }),
+        })),
+        (items) => {
+          const expected = items.reduce((s, i) => s + i.price * i.qty, 0);
+          return Math.abs(calculateTotal(items, null) - expected) < 0.001;
+        }
+      )
+    );
+  });
+});
+```
+
+13. **[community] TCR (Test-and-Commit-or-Revert) is the fastest way to internalise baby-steps discipline.** Teams that run TCR for even one week report permanently smaller commit sizes and faster TDD cycles afterward, even after abandoning TCR itself. The key insight: when you know failing tests revert your work, you instinctively start writing the smallest possible test case that could fail — which is the TDD discipline distilled to a physical constraint.
+
+14. **[community] Snapshot tests treated as TDD test cases erode test suite trust.** Teams that use `toMatchSnapshot()` as a primary assertion strategy run `--update-snapshots` automatically whenever tests fail. This creates a false-green test suite: the tests pass, but they are no longer verifying behaviour. Snapshot tests should document complex serialisable structures, not replace explicit behavioural assertions.
+
+15. **[community] Mutation testing reveals that high coverage ≠ good TDD.** Teams running Stryker against a TDD codebase with 90%+ line coverage routinely find mutation scores of 60–70% on first run. The gap represents test cases written to achieve coverage rather than to catch defects. A mutation score below 70% on critical business logic is a signal to revisit TDD discipline, not just add more test cases.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -675,6 +1169,25 @@ export function getPool() {
 
 ---
 
+## ISTQB CTFL 4.0 Terminology Alignment
+
+The ISTQB Certified Tester Foundation Level 4.0 syllabus defines standardised terms used throughout this guide. Using precise terminology reduces ambiguity in team communication and aligns with industry certifications.
+
+| ISTQB term | Common informal term | Notes in TDD context |
+|-----------|---------------------|---------------------|
+| **Test case** | "test", "spec", "it block" | An `it(...)` block in Vitest is a test case. Avoid calling it just "a test." |
+| **Test suite** | "test file", "test set" | A `describe(...)` block or a whole `.test.js` file constitutes a test suite. |
+| **Test object** | "thing under test", "SUT" | The class/function/module being exercised by the test case. |
+| **Test level** | "test layer" | TDD primarily operates at unit test level; double-loop TDD adds the acceptance test level. |
+| **Test basis** | "requirements", "specs" | In TDD, the failing test case IS the test basis before implementation exists. |
+| **Defect** | "bug", "error" | TDD produces defects in the Red phase deliberately — this is intentional defect-first development. |
+| **Test condition** | "test scenario", "test idea" | The specific state + input combination a test case exercises (e.g., "empty cart"). |
+| **Test harness** | "test runner setup", "test infrastructure" | Vitest + in-memory fakes + build config = the test harness for a TDD project. |
+
+**Practical implication:** In code reviews and planning discussions, using "test case" instead of "test" and "test suite" instead of "spec file" reduces ambiguity when discussing test coverage, test case count in CI reports, and defect escape rates.
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -686,5 +1199,9 @@ export function getPool() {
 | Contributing Tests Wiki — Test Double / Justin Searls | Wiki | https://github.com/testdouble/contributing-tests/wiki/Test-Driven-Development | Pragmatic TDD guidance in modern JS; covers London vs Chicago schools and real adoption patterns |
 | *Clean Code* Ch. 9 — Robert C. Martin | Book chapter | https://www.oreilly.com/library/view/clean-code-a/9780136083238/ | Unit test guidelines, F.I.R.S.T. principles, keeping tests clean as production code |
 | *Boundaries* talk — Gary Bernhardt | Conference talk | https://www.destroyallsoftware.com/talks/boundaries | Functional core / imperative shell architecture; explains how to structure code to minimize mocking need |
+| *xUnit Test Patterns* — Gerard Meszaros | Book | https://xunitpatterns.com/ | Definitive reference for test doubles taxonomy (Dummy, Stub, Spy, Mock, Fake) |
+| Transformation Priority Premise — Robert C. Martin | Blog | https://blog.cleancoder.com/uncle-bob/2013/05/27/TheTransformationPriorityPremise.html | Formal ordering of TDD generalisation steps; prevents over-engineering during Green phase |
+| fast-check — property-based testing | Library | https://fast-check.io/ | JS property-based testing library that complements TDD by generating random test cases |
+| ISTQB CTFL 4.0 Syllabus | Certification | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology reference for test case, test suite, test level, defect, test basis |
 | Vitest — official docs | Docs | https://vitest.dev/ | Primary Vite-native test runner for modern JS projects; watch mode, coverage, snapshot support |
 | Jest — official docs | Docs | https://jestjs.io/ | Widely-used JS test runner; batteries-included with mocking, coverage, and snapshot support |

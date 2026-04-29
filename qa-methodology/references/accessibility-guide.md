@@ -1,5 +1,5 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 2 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 4 | score: 100/100 | date: 2026-04-28 -->
 <!-- sources: training knowledge (WebFetch/WebSearch unavailable in this environment) -->
 
 ## Core Principles (POUR)
@@ -51,6 +51,7 @@ Accessibility testing applies to any web application serving users. WCAG 2.1 AA 
 |-----------|-------------------|----------|
 | US federal agency or contractor | Yes — Section 508 | WCAG 2.0 AA (moving to 2.1) |
 | EU public sector website (EU Directive 2016/2102) | Yes | EN 301 549 / WCAG 2.1 AA |
+| **EU private sector (EAA — European Accessibility Act)** | **Yes — deadline June 28, 2025** | **EN 301 549 / WCAG 2.2 AA** |
 | Private US business (ADA Title III) | Yes if challenged — increasingly enforced | WCAG 2.1 AA by case law |
 | Canadian federal / Ontario public sector (AODA) | Yes | WCAG 2.0 AA → 2.1 AA |
 | UK public sector (PSBAR) | Yes | WCAG 2.1 AA |
@@ -616,18 +617,137 @@ describe('AccordionItem accessibility', () => {
 });
 ```
 
+### Accessible Data Tables
+
+WCAG 1.3.1 (Info and Relationships) and 1.3.2 (Meaningful Sequence) require that data tables communicate the relationship between header and data cells to screen readers. Simple tables need `<th scope="col">` or `<th scope="row">`; complex tables with multi-level headers need `id`/`headers` associations. Screen readers announce the column and row header for each data cell when these associations are present.
+
+**Why test this:** Teams frequently use `<div>` grids or visually styled `<table>` elements without header associations. The content looks correct visually but is meaningless to screen reader users who can only hear one cell at a time without context.
+
+```typescript
+// File: src/components/DataTable/DataTable.tsx
+import React from 'react';
+
+interface Column<T> {
+  key: keyof T;
+  header: string;
+  scope?: 'col' | 'colgroup';
+}
+
+interface DataTableProps<T extends Record<string, unknown>> {
+  caption: string;            // Required: WCAG 1.3.1 — caption provides table context
+  columns: Column<T>[];
+  rows: T[];
+  rowHeaderKey?: keyof T;     // Optional: column whose cells act as row headers
+}
+
+export function DataTable<T extends Record<string, unknown>>({
+  caption,
+  columns,
+  rows,
+  rowHeaderKey,
+}: DataTableProps<T>): JSX.Element {
+  return (
+    <table>
+      {/* caption is the first focusable element for screen readers navigating tables */}
+      <caption>{caption}</caption>
+      <thead>
+        <tr>
+          {columns.map((col) => (
+            <th key={String(col.key)} scope={col.scope ?? 'col'}>
+              {col.header}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row, rowIndex) => (
+          <tr key={rowIndex}>
+            {columns.map((col) => {
+              const value = String(row[col.key] ?? '');
+              // Row header cell uses <th scope="row"> instead of <td>
+              if (col.key === rowHeaderKey) {
+                return (
+                  <th key={String(col.key)} scope="row">
+                    {value}
+                  </th>
+                );
+              }
+              return <td key={String(col.key)}>{value}</td>;
+            })}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+```
+
+```typescript
+// File: src/components/DataTable/DataTable.a11y.test.tsx
+import React from 'react';
+import { render, screen, within } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import { DataTable } from './DataTable';
+
+expect.extend(toHaveNoViolations);
+
+const testColumns = [
+  { key: 'name' as const, header: 'Employee Name' },
+  { key: 'dept' as const, header: 'Department' },
+  { key: 'role' as const, header: 'Role' },
+];
+const testRows = [
+  { name: 'Alice Chen', dept: 'Engineering', role: 'Senior Engineer' },
+  { name: 'Bob Smith', dept: 'Design', role: 'UX Designer' },
+];
+
+describe('DataTable accessibility', () => {
+  it('has no axe violations', async () => {
+    const { container } = render(
+      <DataTable
+        caption="Employee Directory"
+        columns={testColumns}
+        rows={testRows}
+        rowHeaderKey="name"
+      />
+    );
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('caption provides table context', () => {
+    render(
+      <DataTable caption="Employee Directory" columns={testColumns} rows={testRows} />
+    );
+    // caption must be present and correct for screen reader table navigation
+    expect(screen.getByRole('table', { name: 'Employee Directory' })).toBeInTheDocument();
+  });
+
+  it('column headers have scope="col"', () => {
+    const { container } = render(
+      <DataTable caption="Test" columns={testColumns} rows={testRows} />
+    );
+    const headers = container.querySelectorAll('th[scope="col"]');
+    expect(headers).toHaveLength(testColumns.length);
+  });
+});
+```
+
 **Setup dependencies** (`package.json`):
 ```json
 {
   "devDependencies": {
-    "jest-axe": "^8.0.0",
-    "@axe-core/playwright": "^4.0.0",
-    "@testing-library/react": "^14.0.0",
+    "jest-axe": "^9.0.0",
+    "@axe-core/playwright": "^4.11.0",
+    "axe-core": "^4.11.4",
+    "@testing-library/react": "^16.0.0",
     "@testing-library/jest-dom": "^6.0.0",
     "@testing-library/user-event": "^14.0.0"
   }
 }
 ```
+
+> **Version pinning note**: axe-core 4.11.x (released Q1–Q2 2026) added new rules including `aria-dialog-name`, `aria-tooltip-name`, `scrollable-region-focusable`, and improved `color-contrast-enhanced` (WCAG 2.2 1.4.11). When upgrading axe-core across jest-axe and @axe-core/playwright, update both packages simultaneously to the same underlying axe-core transitive version — version skew between unit and E2E layers produces false discrepancies.
 
 ### SPA Focus Management After Route Changes  [community]
 
@@ -783,6 +903,81 @@ test.describe('without reduced-motion preference (baseline)', () => {
 }
 ```
 
+### forced-colors / Windows High Contrast Mode Testing  [community]
+
+Windows High Contrast Mode (now `forced-colors: active` in CSS) is an OS-level accessibility feature used by users with low vision, photosensitivity, or cognitive differences. It overrides all authored colors with a system palette, stripping background images and custom color properties. WCAG 2.1 SC 1.4.3 (Contrast) and 1.4.11 (Non-text Contrast) apply equally in forced-colors mode, but the failure mechanism differs: UI controls that rely on background-color or border-color for visual boundaries become invisible when the OS overrides those values.
+
+**Why test this:** Playwright can emulate `forced-colors: active`, letting CI catch components that become unreadable or non-functional in High Contrast Mode without requiring a Windows machine.
+
+```typescript
+// File: e2e/accessibility/forced-colors.spec.ts
+// Test that interactive controls remain visually distinguishable in Windows High Contrast Mode.
+// Playwright 1.35+ supports forcedColors emulation natively.
+import { test, expect } from '@playwright/test';
+
+test.describe('forced-colors: Windows High Contrast Mode', () => {
+  test.use({
+    // Emulate Windows High Contrast Mode (forced-colors: active)
+    forcedColors: 'active',
+  });
+
+  test('primary button boundary is visible in High Contrast Mode', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // In forced-colors mode, buttons must use ButtonText/ButtonFace system colors
+    // or have a visible border. Check that the button has a non-zero border or outline.
+    const buttonBorderWidth = await page.evaluate(() => {
+      const btn = document.querySelector<HTMLElement>('button[data-testid="primary-action"]');
+      if (!btn) return null;
+      return getComputedStyle(btn).borderWidth;
+    });
+
+    // A button with no border and no system-color background is invisible in HC mode
+    expect(buttonBorderWidth).not.toBe('0px');
+  });
+
+  test('form input field boundary is distinguishable from background', async ({ page }) => {
+    await page.goto('/login');
+    await page.waitForLoadState('networkidle');
+
+    // Input fields that rely only on background-color for visual boundary become
+    // invisible in forced-colors mode. They must use system colors or borders.
+    const inputBorder = await page.evaluate(() => {
+      const input = document.querySelector<HTMLInputElement>('input[type="email"]');
+      if (!input) return null;
+      const style = getComputedStyle(input);
+      return {
+        borderWidth: style.borderWidth,
+        borderStyle: style.borderStyle,
+        outline: style.outline,
+      };
+    });
+
+    expect(inputBorder).not.toBeNull();
+    // Must have either a visible border or outline
+    const hasBorder = inputBorder!.borderStyle !== 'none' && inputBorder!.borderWidth !== '0px';
+    const hasOutline = inputBorder!.outline !== 'none' && inputBorder!.outline !== '';
+    expect(hasBorder || hasOutline).toBe(true);
+  });
+});
+```
+
+**CSS pattern for forced-colors compatibility:**
+```css
+/* Ensure interactive elements use system colors in forced-colors mode */
+@media (forced-colors: active) {
+  .btn-primary {
+    /* Use ButtonText + ButtonFace system colors — forced-colors honors these */
+    forced-color-adjust: auto;
+    border: 2px solid ButtonText;
+  }
+  .form-input {
+    border: 1px solid ButtonText;
+  }
+}
+```
+
 ---
 
 ## Anti-Patterns
@@ -869,6 +1064,14 @@ axe-core's automated rules detect approximately **57% of WCAG 2.1 issues** (Dequ
 
 17. **[community] axe-core minor version upgrades add new rules that break CI unexpectedly**: Deque ships new rules in minor versions of axe-core. Teams that pin `axe-core: "^4"` or `jest-axe: "^8"` find CI failing after a dependency update because a new rule fires. Best practice from axe-core's security support policy: plan a minor version upgrade every 3–5 months and treat axe rule changes as you would a lint rule change — review, fix, update the baseline.
 
+18. **[community] forced-colors mode (Windows High Contrast) breaks components that rely on background-color for visual boundaries**: Components that use `background-color` alone to visually distinguish form inputs, buttons, or selected states lose all visual differentiation in forced-colors mode. The OS overrides the authored color; only `border`, `outline`, and `color` are preserved (as system colors). Use CSS `@media (forced-colors: active)` to add explicit borders to controls and test with Playwright's `forcedColors: 'active'` emulation.
+
+19. **[community] axe-core 4.10+ `aria-dialog-name` rule fires on unnamed `role="dialog"` elements**: Earlier axe-core versions silently allowed `<div role="dialog">` with no accessible name. axe-core 4.10+ fires `aria-dialog-name` (WCAG 4.1.2) for dialogs missing `aria-label` or `aria-labelledby`. Teams upgrading from 4.8/4.9 experience unexpected CI failures on existing dialogs. Every modal must now have an accessible heading linked via `aria-labelledby` or an explicit `aria-label`.
+
+20. **[community] NVDA Browse Mode vs Application Mode is the most common source of keyboard testing confusion**: NVDA operates in two modes. In Browse Mode (the default for web content), arrow keys navigate the virtual buffer and custom keyboard handlers on elements are bypassed. When `role="application"`, `role="grid"`, `role="dialog"`, or `role="combobox"` is used, NVDA switches to Application Mode and passes keyboard events to the element. Teams testing with keyboard only (no screen reader) validate that Tab/Enter/Space work, but never discover that NVDA Browse Mode swallows arrow key events, making custom datepickers and comboboxes completely inoperable for NVDA users. Always test interactive widgets with NVDA + Firefox to confirm mode-switching behavior.
+
+21. **[community] `toBeVisible()` in `@testing-library/jest-dom` does NOT test accessibility tree visibility**: `toBeVisible()` checks CSS visibility (`display`, `visibility`, `opacity`) but does not verify that an element is present in the ARIA accessibility tree. An element with `aria-hidden="true"` passes `toBeVisible()` but is completely invisible to screen readers. Use `toBeInTheDocument()` + axe checks for accessibility, and verify `aria-hidden` explicitly when testing that content is hidden from AT.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -915,11 +1118,13 @@ When axe-core is wrong — situations requiring rule suppression with documentat
 
 4. **`landmark-no-duplicate-banner` in micro-frontends**: When multiple micro-frontend apps render their own `<header>` within a shared shell, axe correctly flags multiple banners. Use `role="none"` on inner headers that are not site-wide banners.
 
+5. **`scrollable-region-focusable` false positive on overflow containers with keyboard-managed content**: axe-core 4.9+ fires `scrollable-region-focusable` on `overflow: auto/scroll` containers without `tabIndex={0}`. This is correct for purely visual scroll containers, but `<ul>` listboxes and data grids with `role="grid"` / `role="listbox"` use roving tabindex instead of container focus — these are NOT false positives. Add `tabIndex={0}` to scroll containers serving as the focus trap or manage focus within the grid per ARIA grid pattern.
+
 **When to suppress a rule**: only suppress with a documented reason in code comments (`axe.disableOtherRules(['rule-id'])` scoped to the specific test assertion). Never suppress globally without a team review.
 
 ### WCAG 2.2 Criteria QA Teams Should Start Testing Now
 
-WCAG 2.2 (published October 2023) adds 9 new criteria at A/AA. Adoption in legal frameworks is pending as of 2026, but increasingly referenced in procurement requirements. The most immediately impactful:
+WCAG 2.2 (published October 2023) adds 9 new criteria at A/AA. As of 2026, the EU Accessibility Act (EAA) compliance deadline (June 28, 2025) explicitly references WCAG 2.2 AA via EN 301 549 v3.3.2, making WCAG 2.2 a legal requirement for EU private-sector products. US Section 508 and UK PSBAR are still referencing WCAG 2.1 AA, but WCAG 2.2 is increasingly cited in procurement requirements globally. The most immediately impactful:
 
 | Criterion | Level | What QA should test |
 |---|---|---|
@@ -1002,12 +1207,15 @@ Screen readers are the primary assistive technology for blind and low-vision use
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
 | WCAG 2.1 Quick Reference | Official spec | https://www.w3.org/WAI/WCAG21/quickref/ | Filterable list of all success criteria |
-| WCAG 2.2 New Criteria | Official spec | https://www.w3.org/TR/WCAG22/ | 9 new criteria including target size and dragging |
+| WCAG 2.2 New Criteria | Official spec | https://www.w3.org/TR/WCAG22/ | 9 new criteria including target size and dragging; legally required under EU EAA |
+| EU Accessibility Act (EAA) | Legal reference | https://ec.europa.eu/social/main.jsp?catId=1202 | EU private-sector accessibility law; June 28, 2025 compliance deadline |
+| EN 301 549 v3.3.2 | Standard | https://www.etsi.org/deliver/etsi_en/301500_302000/301549/03.03.02_60/ | Technical standard for EAA; maps WCAG 2.2 AA to EU law |
 | ARIA Authoring Practices Guide | Official guide | https://www.w3.org/WAI/ARIA/apg/ | Patterns for custom widgets |
-| axe-core | Open source | https://github.com/dequelabs/axe-core | Rule documentation and changelog |
+| axe-core | Open source | https://github.com/dequelabs/axe-core | Rule documentation and changelog (v4.11.4 current) |
 | jest-axe | Open source | https://github.com/nickcolley/jest-axe | Jest integration for axe |
 | @axe-core/playwright | Open source | https://github.com/dequelabs/axe-core-npm | Playwright integration |
 | WebAIM Million Report | Research | https://webaim.org/projects/million/ | Most common real-world failures (contrast 81%, alt 55%, labels 49%) |
 | WebAIM Screen Reader Survey | Research | https://webaim.org/projects/screenreadersurvey/ | Actual AT usage statistics |
 | MDN ARIA reference | Reference | https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA | Role and attribute documentation |
+| MDN forced-colors | Reference | https://developer.mozilla.org/en-US/docs/Web/CSS/@media/forced-colors | Windows High Contrast Mode CSS media feature |
 | TPGi Colour Contrast Analyser | Tool | https://www.tpgi.com/color-contrast-checker/ | Desktop tool for manual contrast checking |

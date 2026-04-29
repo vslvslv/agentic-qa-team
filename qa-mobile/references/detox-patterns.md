@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 10 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 13 | score: 100/100 | date: 2026-04-28 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 
@@ -830,6 +830,55 @@ describe('Orientation tests', () => {
 handle `onSaveInstanceState`/`onRestoreInstanceState` correctly, the test will find a
 blank screen after rotation. This is a valid test finding — file it as an app bug.
 
+### Pattern 24 — Interacting with iOS system dialogs via by.system() [community]
+
+Pre-granting permissions in `launchApp` is always preferred (Pattern 9). But in some app
+flows (e.g., runtime permission requests triggered mid-test by a third-party SDK) the
+system dialog still appears. `by.system()` lets you tap buttons in iOS system dialogs that
+live outside your app's view hierarchy.
+
+```js
+// e2e/location-permission.test.js
+// Use ONLY when pre-granting in launchApp is not possible
+// by.system() targets iOS system-level elements — NOT available on Android
+
+it('grants location permission via system dialog at runtime', async () => {
+  // Trigger the permission dialog by using the feature that requests it
+  await element(by.id('use-my-location-button')).tap();
+
+  // The iOS system dialog is outside the app hierarchy — use by.system() to reach it
+  // system.label() matches the button label shown in the system dialog
+  await waitFor(element(by.system().label('Allow While Using App')))
+    .toBeVisible()
+    .withTimeout(5000);
+  await element(by.system().label('Allow While Using App')).tap();
+
+  // Back in the app — verify the feature proceeded
+  await waitFor(element(by.id('location-map')))
+    .toBeVisible()
+    .withTimeout(5000);
+});
+
+it('denies location permission and verifies fallback message', async () => {
+  await element(by.id('use-my-location-button')).tap();
+  await waitFor(element(by.system().label("Don't Allow")))
+    .toBeVisible()
+    .withTimeout(5000);
+  await element(by.system().label("Don't Allow")).tap();
+  await waitFor(element(by.id('location-denied-banner')))
+    .toBeVisible()
+    .withTimeout(3000);
+});
+```
+
+**When to use `by.system()` vs `permissions` in `launchApp`:**
+- `launchApp({ permissions: { location: 'inuse' } })` — preferred; grants permission before the app starts, no dialog ever appears
+- `by.system()` — use only when the dialog is triggered mid-test by third-party code you don't fully control
+
+**Android equivalent:** Android uses `UiAutomator2` to tap system dialogs. Detox on Android
+exposes this through `by.system()` as well (Detox 20+), but dialog button labels differ
+across Android API levels. Always pre-grant on Android when possible.
+
 ---
 
 
@@ -1133,6 +1182,45 @@ it('navigates to checkout and shows the correct total', async () => {
 
 ---
 
+### 16. iOS Keychain persists across `launchApp({ newInstance: true })` [community]
+
+**Root cause**: The iOS Simulator Keychain is not cleared by `launchApp({ newInstance: true })` or `device.reloadReactNative()`. If your auth flow stores tokens in the Keychain (via `react-native-keychain`, `expo-secure-store`, or similar), a test that logs in and writes a token will cause the *next* test's "fresh install" to appear already-authenticated. Tests that expect a login screen will find a home screen instead.
+
+**Fix**: Use `device.clearKeychain()` (Detox 20+) in `beforeAll` or `beforeEach` to purge the simulator Keychain:
+
+```js
+// e2e/setup.js — Keychain isolation for auth-sensitive test suites
+beforeAll(async () => {
+  // Clears ALL Keychain entries for the current simulator
+  // Requires Detox >= 20.0 and iOS simulator
+  await device.clearKeychain();
+
+  await device.launchApp({
+    newInstance: true,
+    permissions: { notifications: 'YES' },
+  });
+});
+```
+
+For older Detox versions, the workaround is to use `launchApp({ delete: true })` which
+uninstalls and reinstalls the app, wiping Keychain entries for that bundle ID:
+
+```js
+// Detox < 20 workaround — full app reinstall clears Keychain
+beforeAll(async () => {
+  await device.launchApp({
+    delete: true,   // uninstall + reinstall = clear Keychain, AsyncStorage, SQLite
+    permissions: { notifications: 'YES' },
+  });
+});
+```
+
+**Android equivalent**: Android Keystore entries are tied to the app's certificate. Uninstalling
+the app (via `delete: true` or ADB) removes the keys. There is no `clearKeychain()` equivalent
+for Android — use `delete: true` instead.
+
+---
+
 ## CI Considerations
 
 ### Animation disabling
@@ -1270,6 +1358,8 @@ apps: {
 | `device.setStatusBar(params)` | Override status bar display | Screenshot/visual consistency in CI |
 | `device.getPlatform()` | Returns `'ios'` or `'android'` | Conditional test logic per platform |
 | `device.takeScreenshot(name)` | Save a screenshot to artifacts | Manual debugging snapshots |
+| `device.clearKeychain()` | Purge iOS Simulator Keychain (Detox 20+) | Prevent token leak between auth test suites |
+| `by.system()` | Match system-level UI elements (alerts, permission dialogs) | When pre-granting in `launchApp` is not possible |
 
 ### Android-specific device APIs
 
@@ -1287,6 +1377,9 @@ apps: {
 | `device.setBiometricEnrollment(bool)` | Enroll/unenroll biometrics in simulator | Required before calling matchFace/matchFinger |
 | `device.setOrientation('landscape')` | Rotate device orientation | Landscape layout tests |
 | `device.setStatusBar(params)` | Override status bar display | Screenshot/visual consistency in CI |
+| `device.installApp()` | Install app binary on device without launching | Multi-device test setup |
+| `device.uninstallApp()` | Uninstall app binary from device | Full cleanup after multi-device tests |
+| `device.sendUserActivity(params)` | Simulate NSUserActivity / Handoff event (iOS) | Deep-link via Handoff, Spotlight, or Universal Links |
 
 ---
 
@@ -1432,6 +1525,7 @@ Use this checklist when a test passes locally but fails on CI:
 16. **Android lock screen** — Did the emulator lock screen appear before tests? Add `adb shell wm dismiss-keyguard` to CI pre-step (Gotcha 12).
 17. **React Navigation ghost** — Does the destination screen share a `testID` with the previous screen? Assert a unique landmark + `not.toBeVisible()` for the source (Gotcha 15).
 18. **Keyboard coverage** — Does the software keyboard obscure the submit button on small screens? Scroll the form container before tapping (Gotcha 13).
+19. **iOS Keychain token leak** — Does the app store auth tokens in the Keychain? Use `device.clearKeychain()` (Detox 20+) or `delete: true` in `beforeAll` (Gotcha 16).
 
 ---
 
@@ -1441,6 +1535,7 @@ Minimum setup to get a Detox project running from scratch:
 
 ```bash
 # 1. Install Detox CLI and dependencies
+# Note: Detox 20+ requires jest-circus (jasmine2 runner is no longer supported)
 npm install --save-dev detox jest jest-circus
 
 # 2. Initialize Detox configuration (adds .detoxrc.js skeleton)

@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: training knowledge (WebFetch + WebSearch unavailable) | iteration: 10 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: TypeScript | sources: training knowledge (WebFetch + WebSearch unavailable) | iteration: 2 | score: 100/100 | date: 2026-04-28 -->
 <!-- Note: WebFetch and WebSearch were unavailable during generation. Synthesized from official docs training knowledge + community experience. -->
 <!-- Re-run `/qa-refine Appium/WebDriverIO` with WebFetch enabled to pull live sources. -->
 
@@ -54,6 +54,53 @@ Key points:
 ```
 
 Pin `@wdio/types` to the same minor version as `webdriverio` — they're released separately and version drift causes TypeScript compilation failures with `strict: true`.
+
+### WebDriverIO v9 migration notes (released 2024)
+
+WebDriverIO v9 is the current stable release. Key breaking changes from v8:
+
+- **ESM-first:** `wdio.conf.ts` must use `export const config = ...` (already correct). CommonJS
+  `module.exports` no longer works. Verify `"type": "module"` in `package.json` OR rename your
+  config to `wdio.conf.mts` when using `"moduleResolution": "NodeNext"`.
+- **`ts-node` → `tsx`:** v9 switches its TypeScript loader from `ts-node` to `tsx` internally.
+  Remove `ts-node` from `devDependencies` and ensure `"tsx"` is present (installed automatically as
+  a peer). If you run `wdio run wdio.conf.ts` and see `ERR_UNKNOWN_FILE_EXTENSION`, you're still
+  using a ts-node shim — delete `ts-node` and let v9 pick up `tsx`.
+- **Built-in `expect`:** v9 ships `expect-webdriverio` bundled — no separate `npm install
+  expect-webdriverio`. `import { expect } from '@wdio/globals'` is the new canonical import.
+- **`@wdio/sync` removed:** There is no sync mode in v9. All code must be async/await; remove
+  any remaining `sync: true` capability references and synchronous chain calls.
+- **`browser.execute` return type narrowed:** The return type is now `Promise<unknown>` in strict
+  mode, requiring explicit type assertions or `as` casts on `mobile:` command results.
+- **`@wdio/appium-service` v9:** The `command` option is deprecated; use `appiumArgs` directly:
+  ```typescript
+  services: [['appium', {
+    appiumArgs: { port: 4723, 'base-path': '/' },
+  }]],
+  ```
+
+**v9 devDependencies (updated):**
+
+```json
+{
+  "devDependencies": {
+    "webdriverio": "9.x.x",
+    "@wdio/cli": "9.x.x",
+    "@wdio/local-runner": "9.x.x",
+    "@wdio/mocha-framework": "9.x.x",
+    "@wdio/spec-reporter": "9.x.x",
+    "@wdio/appium-service": "9.x.x",
+    "@wdio/allure-reporter": "9.x.x",
+    "@wdio/types": "9.x.x",
+    "appium": "2.x.x",
+    "appium-uiautomator2-driver": "3.x.x",
+    "appium-xcuitest-driver": "7.x.x",
+    "typescript": "5.x.x"
+  }
+}
+```
+
+> `ts-node` is **not** listed — v9 uses `tsx` internally and does not require it as a project dependency.
 
 ---
 
@@ -541,6 +588,59 @@ describe('Checkout flow', () => {
 
 **Never use** positional XPath (`//*[2]`) or CSS selectors for native apps (no DOM).
 
+### `getAttribute` vs `getProperty` — choosing the right introspection method
+
+```typescript
+// getAttribute — reads from the XML page source (always a string)
+const isEnabled = await $('~submit-btn').getAttribute('enabled');  // "true" or "false" (string)
+const iosValue  = await $('~text-field').getAttribute('value');    // iOS text field content
+
+// getProperty — reads the native property (typed return)
+const isChecked = await $('~checkbox').getProperty('checked') as boolean;  // actual boolean
+const inputVal  = await $('~text-field').getProperty('value') as string;   // input content
+
+// Rule: use getAttribute for XML-serialised state checks (enabled, selected, focused)
+//       use getProperty for reading runtime values (input content, checked state) where
+//       type fidelity matters for your assertion.
+//
+// On Android, getProperty('enabled') returns boolean; getAttribute('enabled') returns "true"/"false"
+// Both work, but !== comparisons fail on the string version:
+// BAD:  expect(await el.getAttribute('enabled')).toBe(true);   // "true" !== true → always fails
+// GOOD: expect(await el.getAttribute('enabled')).toBe('true'); // explicit string
+// GOOD: expect(await el.getProperty('enabled')).toBe(true);    // typed boolean
+```
+
+### Scoped child queries with `element.$$()` and `element.$()`
+
+Query within a container element to avoid ambiguity when multiple similar elements share the same
+screen. Scoped queries reduce the search scope, which is faster and less fragile than XPath
+ancestor-descendant paths.
+
+```typescript
+// Find a specific card by header, then query its children — no XPath
+const card = await $('~product-list').$('~product-card-0');
+const title   = await card.$('~card-title');
+const addBtn  = await card.$('~add-to-cart');
+
+await expect(title).toHaveText('Widget Pro');
+await addBtn.click();
+
+// Find all items in a list and assert count
+const items = await $('~cart-list').$$('~cart-item');
+expect(items).toHaveLength(3);
+
+// Iterate items and check each one
+for (const item of items) {
+  const price = await item.$('~item-price');
+  await expect(price).toBeDisplayed();
+}
+```
+
+**Why scoped queries:** A screen may have multiple `~confirm-button` elements (e.g. one in a
+modal and one on the page behind it). `$('~confirm-button')` returns the first match in the
+page source tree, which may be the background button. Scope to the modal container first:
+`$('~modal-container').$('~confirm-button')`.
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -564,6 +664,12 @@ describe('Checkout flow', () => {
 9. **[community] `browser.mock()` only works on simulators/emulators — silently no-ops on real devices** — Teams that work locally on simulators add network mocks via `browser.mock()`, then ship to CI which runs on real devices. The mocks are silently ignored and tests that relied on stubbed error responses always see the real API, breaking error-state coverage. WHY: WebDriverIO's `browser.mock()` uses Chrome DevTools Protocol (CDP) interception, which is only available in the simulator's browser runtime, not on physical hardware. Fix: use a real HTTP proxy (e.g. `mockttp` or `mitmproxy`) for device-farm scenarios; gate mock-based tests with `if (browser.isMobile && !process.env.REAL_DEVICE)`.
 
 10. **[community] TypeScript `strict: true` breaks at runtime when `@wdio/types` version lags behind `webdriverio`** — Enabling `strict: true` plus `exactOptionalPropertyTypes` causes TypeScript to flag WebDriverIO's own type definitions as invalid when the `@wdio/types` package version is one patch behind `webdriverio`. Tests fail to compile in CI because `devDependencies` resolves `@wdio/types` and `webdriverio` independently. WHY: `@wdio/types` and `webdriverio` are released as separate packages and their versions can drift. Fix: pin both to the same exact version in `package.json`; use `overrides` (npm v7+) or `resolutions` (yarn) to enforce the constraint.
+
+11. **[community] `addValue` vs `setValue` vs `keys()` — input method matters per Android version** — On Android API 30+, `$el.setValue('text')` clears the field then types via `sendKeys`. On older API levels or certain custom EditText components, the `clear()` step changes focus without clearing content, causing characters from the previous test to remain. WHY: Android's `clear()` is an accessibility action that depends on the IME handling of the component. Fix: use `$el.clearValue()` then `$el.addValue('text')` as two discrete steps; for PIN fields or masked inputs, use `driver.execute('mobile: type', { text: '1234' })` which bypasses the WebDriver typing mechanism entirely.
+
+12. **[community] iOS `XCUIElementTypeOther` wrapper silently absorbs taps** — Tapping `$('~my-button')` completes without error but the button's action never fires. WHY: A transparent `XCUIElementTypeOther` view is layered over the button — common with gesture recognisers added by navigation libraries. Appium's tap lands on the overlay, which consumes the event. Fix: use `$('-ios predicate string:type == "XCUIElementTypeButton" AND name == "my-button"')` to target the button type explicitly, bypassing overlay containers; or add `isAccessibilityElement = true` to the button in the app code to make it hittable.
+
+13. **[community] WebDriverIO v9 CI breaks silently when `ts-node` is still in `devDependencies`** — Upgrading `webdriverio` to v9 while keeping `ts-node` as a dev dependency causes the old `ts-node` TypeScript loader to conflict with v9's bundled `tsx` loader. The runner silently falls back to `ts-node` in some environments and fails with `Cannot use import statement in a module` or `SyntaxError: Unexpected token '{'` on the `wdio.conf.ts` file. WHY: Both `ts-node` and `tsx` register TypeScript transpilation hooks on Node's module system; two hooks fight over `.ts` file resolution. Fix: remove `ts-node` from `devDependencies` after upgrading to v9; run `npm dedupe` to clear the transitive install.
 
 ---
 
@@ -689,6 +795,7 @@ Slow element lookups are the most common cause of flaky timeouts on CI. These se
 // In capabilities — tune UiAutomator2 performance (Android)
 'appium:settings[waitForSelectorTimeout]': 0,   // disable implicit wait (use explicit waits only)
 'appium:settings[normalizeTagNames]': false,     // skip tag normalisation (faster XML serialisation)
+'appium:settings[disableIdLocatorAutocompletion]': true,  // stop UiAutomator2 appending package name to id selectors (avoids false misses)
 'appium:elementResponseAttributes': 'type,label,value,name,rect',  // reduce payload size
 ```
 
@@ -706,7 +813,8 @@ Slow element lookups are the most common cause of flaky timeouts on CI. These se
 | `el.setValue(text)` | Clear + type text | Form inputs |
 | `el.clearValue()` | Clear field | Before re-entering text |
 | `el.getText()` | Get visible text | Assertions on labels |
-| `el.getAttribute(name)` | Get element attribute | Checking state flags (e.g. `enabled`, `selected`) |
+| `el.getAttribute(name)` | Get XML attribute from page source (string values) | Checking `enabled`, `selected`, `checkable`, iOS `value` |
+| `el.getProperty(name)` | Get DOM/native property (typed) | Getting `checked` (boolean), `value` on inputs — prefer over `getAttribute` for typed values |
 | `el.getRect()` | Get `{x, y, width, height}` in one call | Gesture calculations (replaces `getLocation()+getSize()`) |
 | `el.waitForDisplayed({ timeout })` | Wait for element to appear | After navigation, async loads |
 | `el.waitForEnabled({ timeout })` | Wait for element to become interactive | Before clicking submit buttons |
@@ -1213,3 +1321,197 @@ Use this checklist to verify a new WebDriverIO/Appium test project is production
 - [ ] `maxInstances` matches available device count
 - [ ] `appium:wdaLocalPort` staggered for parallel iOS runs
 - [ ] Visual baseline images stored in git LFS (if using visual regression)
+- [ ] Appium plugins declared in `.appiumrc.json` and installed in CI setup step
+- [ ] `driver` used only for session-level commands; `browser` for all test interaction
+- [ ] Expo projects build a custom dev client (not Expo Go) before running Appium tests
+
+---
+
+## Appium Plugin System (Appium 2.x)
+
+Appium 2 introduced a plugin architecture that extends server behavior without modifying the core. Plugins are installed separately and must be declared in `.appiumrc.json` to survive cache invalidation in CI.
+
+### Useful plugins
+
+| Plugin | Purpose | Install |
+|--------|---------|---------|
+| `@appium/relaxed-caps-plugin` | Accept Appium 1 `desiredCapabilities` format (migration aid) | `appium plugin install relaxed-caps` |
+| `appium-wait-plugin` | Server-side element wait strategy (reduces network RTTs for `waitForDisplayed`) | `appium plugin install --source npm appium-wait-plugin` |
+| `@appium/images-plugin` | Image-based element finding (for screens without accessibility IDs) | `appium plugin install images` |
+| `appium-device-farm` | Multi-device routing — expose multiple real devices behind one Appium URL | `appium plugin install --source npm appium-device-farm` |
+
+### Declaring plugins in `.appiumrc.json`
+
+```json
+{
+  "server": {
+    "port": 4723,
+    "log-level": "info",
+    "plugins": ["relaxed-caps", "images"]
+  },
+  "driver": {
+    "uiautomator2": "3.7.5",
+    "xcuitest": "7.28.3"
+  }
+}
+```
+
+### Installing plugins in CI
+
+Add plugin installation **after** driver installation in the CI setup step. Plugins are stored in
+`APPIUM_HOME` alongside drivers — include them in the same cache:
+
+```yaml
+- name: Install Appium drivers and plugins
+  run: |
+    export APPIUM_HOME="${{ runner.temp }}/appium"
+    npx appium@2.5.0 driver install uiautomator2
+    npx appium@2.5.0 driver install xcuitest
+    npx appium@2.5.0 plugin install relaxed-caps  # migration aid for legacy caps
+```
+
+**Plugin activation in capabilities:** Some plugins require activation via a capability. For
+`appium-wait-plugin`, set `appium:settings[enableMultiWindows]` per their README. Check each
+plugin's docs — capabilities are plugin-specific and not standardised.
+
+---
+
+## `browser` vs `driver` — WebDriverIO Disambiguation
+
+WebDriverIO exposes two global objects in tests: `browser` and `driver`. They point to the same
+underlying WebDriver session, but their semantics differ and mixing them inconsistently is a common
+source of confusion and TypeScript errors.
+
+| Object | Type | Use for |
+|--------|------|---------|
+| `browser` | `Browser<'async'>` | Element queries (`$`, `$$`), waits, screenshots, mocks, URL navigation, `isIOS`/`isAndroid` flags |
+| `driver` | `AppiumBrowser` | Session-level Appium commands: `terminateApp`, `activateApp`, `installApp`, `removeApp`, `launchApp`, `getDeviceTime`, `shake`, `lock`/`unlock` |
+
+**Rule:** Use `browser` for everything related to the UI; use `driver` for everything related to
+the device or app lifecycle.
+
+```typescript
+// Correct — session management via driver
+await driver.terminateApp('com.example.app');
+await driver.activateApp('com.example.app');
+await driver.installApp('/path/to/app.apk');
+
+// Correct — UI interaction via browser
+await browser.waitUntil(() => $('~home-screen').isDisplayed(), { timeout: 10_000 });
+await browser.saveScreenshot('./screenshots/state.png');
+const isIos = browser.isIOS;
+
+// Anti-pattern: calling terminateApp on browser — compiles but type-unsafe in strict mode
+// BAD: await browser.terminateApp('com.example.app');  // works but wrong object
+// BAD: await driver.$('~home-screen')                  // driver lacks $ — throws at runtime
+```
+
+**TypeScript note:** `driver` is typed as `AppiumBrowser` which extends `Browser` with Appium-
+specific methods. `browser` is `Browser<'async'>` — narrower, no `terminateApp`. With
+`strict: true`, the TypeScript compiler will catch most cross-object misuses at compile time.
+
+---
+
+## Appium Inspector Workflow
+
+Appium Inspector is the official GUI tool for discovering element attributes (accessibility IDs,
+resource IDs, class names) without writing code. Use it to build your initial selector inventory
+before writing Page Objects.
+
+### Setup
+
+1. Install: `npm install -g appium-inspector` or download from the
+   [GitHub releases page](https://github.com/appium/appium-inspector/releases).
+2. Start your local Appium server: `npx appium --port 4723`.
+3. Open Appium Inspector → enter `Remote Host: 127.0.0.1`, `Port: 4723`, `Path: /`.
+4. Fill in capabilities (same JSON as your `wdio.conf.ts` capabilities block) and click **Start Session**.
+
+### Finding accessibility IDs
+
+In the Inspector's element tree:
+- Select an element → look for the `name` attribute (iOS) or `content-desc` attribute (Android).
+  These are the values you pass to `~accessibility-id` selectors.
+- If `name` / `content-desc` is empty, the element has no accessibility ID. Work with your app
+  developers to add `accessibilityLabel` (iOS) or `contentDescription` (Android) to the component.
+
+### XPath as a last resort
+
+Inspector shows XPath expressions — use these **only** to verify an element exists when other
+selectors fail. Never copy-paste Inspector-generated XPath into production Page Objects; it uses
+absolute paths (`//*[1]/android.view.View[3]`) that break on the next layout change.
+
+### Snapshot caching quirk  [community]
+
+Appium Inspector's "Refresh" button takes a new snapshot of the element tree by calling
+`getPageSource()` under the hood. On complex screens this can take 5–30 seconds. If the Inspector
+appears to freeze, it is building the element tree — do not click Refresh again. WHY: the
+UIAutomator2 XML serialiser walks the entire view hierarchy; snapshotMaxDepth controls how deep
+it goes (see Performance Tuning section).
+
+---
+
+## `scrollIntoView()` — Simplified Scroll-to-Element (WebDriverIO v8+)
+
+WebDriverIO v8 added `element.scrollIntoView()` as a convenience wrapper around the Appium
+`mobile: scrollGesture` command. Use it when you just need an element to appear in the viewport
+without needing to know scroll direction or percentages.
+
+```typescript
+// Simple: scroll until the element is visible
+const termsLink = $('~terms-and-conditions-link');
+await termsLink.scrollIntoView();
+await termsLink.click();
+
+// With options — control direction and alignment
+await $('~bottom-cta').scrollIntoView({ block: 'center' });
+```
+
+**Limitations:**
+- `scrollIntoView()` is a browser-context API in WebDriverIO — it works on WebViews and DOM
+  elements. For fully native screens on iOS/Android it delegates to `mobile: scrollGesture` via
+  the Appium driver, which requires the element to already be in the accessibility tree (even if
+  not yet in the viewport).
+- On Android, if the element is inside a `RecyclerView` that uses lazy loading (items not in the
+  tree until scrolled to), `scrollIntoView()` will not find the element. Use the `scrollToElement`
+  helper from Pattern 4 (manual gesture loop) in that case.
+- Prefer `scrollIntoView()` for simple linear scrolling; use `browser.execute('mobile:
+  scrollGesture', ...)` when you need precise control over scroll distance or direction.
+
+---
+
+## Expo Go vs Standalone Build — Appium Compatibility  [community]
+
+**Gotcha:** Appium cannot instrument Expo Go. Attempting to test a React Native app through the
+Expo Go app fails with `No App Bundle Found` or the session attaches to the Expo shell app
+instead of your JavaScript bundle.
+
+WHY: Expo Go is a pre-built shell that dynamically loads your Metro bundle at runtime. Appium
+(XCUITest / UiAutomator2) instruments the native host app, which in Expo Go's case is the Expo
+shell — not your app. Your `accessibilityLabel` values and screen structure are invisible to
+Appium unless the JavaScript bundle has been compiled into the host app binary.
+
+**Fix:** Build a custom Expo Development Client:
+
+```bash
+# Install the dev client package
+npx expo install expo-dev-client
+
+# Build a dev client for iOS simulator
+eas build --profile development --platform ios --local
+
+# Build a dev client for Android emulator
+eas build --profile development --platform android --local
+```
+
+Point `appium:app` in `wdio.conf.ts` at the output `.app` / `.apk` from the EAS build. The dev
+client includes your full React Native app and is instrumented normally by Appium.
+
+**For CI:** Cache the dev client build artifact (`.app` / `.apk`) alongside your app code hash
+so you only rebuild when native code changes. Pure JS changes do not require a new dev client
+build — you can inject the new bundle via Metro bundler running locally.
+
+```typescript
+// wdio.conf.ts — use EAS build output path
+'appium:app': process.env.IOS_APP_PATH ?? './ios/build/YourApp.app',
+// Never: 'appium:app': 'com.expo.go' — this attaches to the Expo shell, not your app
+```

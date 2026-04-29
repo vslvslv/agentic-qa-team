@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 1 | score: 100/100 | date: 2026-04-27 -->
+<!-- sources: official | community | mixed | iteration: 5 | score: 100/100 | date: 2026-04-28 -->
 
 ## Core Philosophy
 
@@ -316,6 +316,108 @@ public sealed class ReportWorker(
 }
 ```
 
+### Delegates — `Func<T>` and `Action<T>` over Custom Delegate Types
+
+Use the built-in `Func<>` and `Action<>` delegate types rather than declaring custom delegate types. They communicate intent (action vs. function), are composable, and avoid polluting the type namespace. Declare custom delegate types only when the signature is highly domain-specific and used in many places — even then, consider `Func<>` with a type alias.
+
+```csharp
+// Prefer Func<> and Action<> over declaring custom delegates
+Action<string> log = message => Console.WriteLine($"[LOG] {message}");
+Action<string, string> logWithLevel = (level, msg) => Console.WriteLine($"[{level}] {msg}");
+
+Func<string, int> parseId = text => int.Parse(text.Trim());
+Func<int, int, int> add = (x, y) => x + y;
+
+// Using in method signatures — makes combinators and callbacks generic
+public static IEnumerable<T> Filter<T>(
+    IEnumerable<T> source,
+    Func<T, bool> predicate)
+    => source.Where(predicate);
+
+// Composable pipeline: Func<T> chains naturally
+Func<string, string> trim = s => s.Trim();
+Func<string, string> toLower = s => s.ToLower();
+Func<string, string> normalize = s => toLower(trim(s));
+
+// Event handler shorthand with lambda — no need for a named method unless reuse needed
+button.Click += (sender, e) => HandleClick((Button)sender);
+```
+
+### CPU-Bound Async — Task.Run
+
+Use `Task.Run` to offload CPU-intensive work to a thread-pool thread so the calling thread (UI or request thread) stays responsive. Do NOT use `Task.Run` for I/O-bound work — that defeats the purpose of async. The distinction: I/O-bound operations wait for hardware; CPU-bound operations compute.
+
+```csharp
+// I/O-bound: await directly — no Task.Run needed
+public async Task<string> FetchPageAsync(string url, CancellationToken ct)
+    => await _httpClient.GetStringAsync(url, ct);
+
+// CPU-bound: offload to thread pool with Task.Run
+public async Task<byte[]> CompressImageAsync(byte[] imageBytes, CancellationToken ct)
+{
+    // Compression is CPU-intensive — offload so the caller stays responsive
+    return await Task.Run(() => ImageCompressor.Compress(imageBytes), ct);
+}
+
+// In a UI event handler: keep the UI thread free during heavy calculation
+private async void OnCalculateClicked(object sender, EventArgs e)
+{
+    var result = await Task.Run(() => RunHeavySimulation(inputData));
+    DisplayResult(result);
+}
+
+// Guideline: never use Task.Run in library code — let callers decide threading
+// DO in app-level code; DON'T in shared library methods that just do I/O
+```
+
+### IDisposable and IAsyncDisposable — The Dispose Pattern
+
+Implement `IDisposable` on any class that owns unmanaged resources or `IDisposable` fields. Use the protected `Dispose(bool disposing)` virtual method to allow subclasses to override cleanup. Call `GC.SuppressFinalize(this)` after explicit disposal to prevent the finalizer from running a second time. For async resources (database connections, async streams), implement `IAsyncDisposable` and use `await using`.
+
+```csharp
+// Standard Dispose pattern for classes that own IDisposable fields
+public sealed class DataService : IDisposable
+{
+    private readonly SqlConnection _connection;
+    private bool _disposed;
+
+    public DataService(string connectionString)
+        => _connection = new SqlConnection(connectionString);
+
+    public async Task<List<Row>> QueryAsync(string sql, CancellationToken ct)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _connection.OpenAsync(ct);
+        // ... query logic
+        return [];
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _connection.Dispose();
+        _disposed = true;
+        GC.SuppressFinalize(this);  // suppress finalizer — already cleaned up
+    }
+}
+
+// IAsyncDisposable for async resources
+public sealed class AsyncDataService : IAsyncDisposable
+{
+    private readonly DbConnection _connection = new SqlConnection(connectionString);
+
+    public async ValueTask DisposeAsync()
+    {
+        await _connection.DisposeAsync();
+        GC.SuppressFinalize(this);
+    }
+}
+
+// Caller: use 'await using' for IAsyncDisposable
+await using var service = new AsyncDataService();
+var results = await service.QueryAsync(ct);
+```
+
 ---
 
 ## Language Idioms
@@ -500,6 +602,146 @@ private async ValueTask<User?> FetchFromDatabaseAsync(int id, CancellationToken 
     if (user is not null) _cache[id] = user;
     return user;
 }
+```
+
+### Target-Typed `new()` Expression
+
+When the variable type is known from the declaration, use `new()` without repeating the type name. This reduces redundancy while preserving explicitness.
+
+```csharp
+// Traditional: type name repeated twice
+ExampleClass instance1 = new ExampleClass();
+
+// Target-typed new: compiler infers type from left side
+ExampleClass instance2 = new();
+
+// Useful in collection initializers and object initializers
+var items = new List<OrderItem>
+{
+    new() { ProductId = 1, Quantity = 2 },
+    new() { ProductId = 2, Quantity = 1 }
+};
+
+// In field/property initializers — eliminates repetition
+public class Config
+{
+    private readonly Dictionary<string, string> _settings = new();
+    private readonly List<string> _tags = new();
+}
+```
+
+### Async Method Naming Convention
+
+Append the `Async` suffix to every method that returns `Task`, `Task<T>`, `ValueTask`, or `ValueTask<T>`. This convention makes call sites self-documenting and helps callers notice that a method must be awaited. Exception: event handlers and interface implementations that fix the name (e.g., `Controller` action methods in ASP.NET Core don't require the suffix if the framework resolves them by route).
+
+```csharp
+// Convention: Async suffix on all async method signatures
+public interface IOrderService
+{
+    Task<Order> GetOrderAsync(int id, CancellationToken ct = default);
+    Task<IReadOnlyList<Order>> GetOrdersForCustomerAsync(int customerId, CancellationToken ct = default);
+    Task CreateOrderAsync(CreateOrderRequest request, CancellationToken ct = default);
+}
+
+// At call site, the suffix signals "await me"
+var order = await _orderService.GetOrderAsync(orderId, ct);
+
+// Event handlers: async void — Async suffix optional, not strictly required
+private async void OnOrderSubmitted(object sender, OrderEventArgs e)
+{
+    await _orderService.CreateOrderAsync(e.Request, CancellationToken.None);
+}
+```
+
+### `using` Directives Outside Namespace
+
+Place `using` directives at the top of the file, outside any namespace block. When `using` is inside a namespace, name resolution is context-sensitive and can break silently when a new type with a matching partial namespace is introduced by a dependency. Outside the namespace, the fully-qualified name is always used.
+
+```csharp
+// GOOD: using at file level — always resolves to fully qualified name
+using Azure;
+using System.Collections.Generic;
+
+namespace CoolStuff.AwesomeFeature;
+
+public class FeatureService
+{
+    public void Process(WaitUntil wait) { }  // unambiguously Azure.WaitUntil
+}
+
+// RISKY: using inside namespace — name resolution is order-dependent
+// namespace CoolStuff.AwesomeFeature
+// {
+//     using Azure;  // If CoolStuff.Azure is later added, this breaks silently
+//     ...
+// }
+```
+
+### `Span<T>` and `Memory<T>` for Zero-Allocation Buffer Operations
+
+`Span<T>` is a stack-only ref struct providing a view over contiguous memory (array, stack-allocated, or unmanaged) without allocation. Use it for synchronous parsing, slicing, and string operations in hot paths. Use `Memory<T>` when you need to store the buffer reference across `await` points or on the heap. Use `ReadOnlySpan<T>` / `ReadOnlyMemory<T>` for read-only access.
+
+```csharp
+// Parse without string allocation using ReadOnlySpan<char>
+static int SumCsvInts(ReadOnlySpan<char> input)
+{
+    int total = 0;
+    foreach (var part in new SpanSplitter(input, ','))
+        if (int.TryParse(part, out int value))
+            total += value;
+    return total;
+}
+
+// stackalloc for small buffers — no heap allocation
+Span<byte> buffer = stackalloc byte[256];
+int written = Encoding.UTF8.GetBytes("Hello, World!", buffer);
+var slice = buffer[..written];
+
+// Memory<T> for async scenarios — can cross await boundaries
+public async Task ProcessBufferAsync(Memory<byte> buffer, CancellationToken ct)
+{
+    await _stream.ReadAsync(buffer, ct);  // safe — Memory<T> survives await
+    var span = buffer.Span;               // get Span<T> for sync processing
+    ParseHeader(span);
+}
+
+// Rule: prefer Span<T> for sync APIs, Memory<T> for async APIs
+public int ParseLength(ReadOnlySpan<byte> header)   => ...; // sync — use Span
+public Task WriteAsync(ReadOnlyMemory<byte> payload) => ...; // async — use Memory
+```
+
+### Generic Constraints — `where T :` Clauses
+
+Generic constraints tell the compiler what a type parameter must support, enabling type-safe generic algorithms. Use `where T : IEquatable<T>` or `where T : IComparable<T>` to unlock equality/ordering operations on unbounded type parameters. Use `where T : class` for reference type semantics, `where T : struct` for value type semantics, and `where T : notnull` to exclude nullable types.
+
+```csharp
+// Without constraint: can only use System.Object members
+public static bool AreEqual<T>(T a, T b) => a!.Equals(b); // boxing for value types
+
+// With IEquatable<T> constraint: type-safe, no boxing
+public static bool AreEqual<T>(T a, T b) where T : IEquatable<T>
+    => a.Equals(b);  // calls T.Equals directly, no boxing
+
+// Multiple constraints: must be a reference type, implement interface, have new()
+public class Repository<T> where T : class, IEntity, new()
+{
+    public T Create() => new T();  // new() constraint enables this
+    public T? FindById(int id) => _items.FirstOrDefault(e => e.Id == id);
+}
+
+// notnull: excludes both nullable reference types and Nullable<T>
+public static T RequireValue<T>(T? value, string name) where T : notnull
+{
+    ArgumentNullException.ThrowIfNull(value, name);
+    return value;
+}
+
+// where T : unmanaged: enables sizeof and pointer operations on T
+public static unsafe int SizeOf<T>() where T : unmanaged => sizeof(T);
+
+// enum constraint: type-safe enum operations
+public static string GetName<T>(T value) where T : struct, Enum
+    => Enum.GetName(value) ?? value.ToString();
 ```
 
 ---
@@ -721,6 +963,196 @@ await foreach (var issue in _service.GetIssuesAsync("dotnet/docs", ct)
 }
 ```
 
+### **`async` Method Without `await` — Silent State Machine**  [community]
+
+An `async` method body that contains no `await` expression compiles successfully but generates a warning. The method runs synchronously but still bears the overhead of the compiler-generated state machine. WHY it causes problems: it misleads callers who assume the method yields, wastes allocation overhead, and usually indicates a developer forgot to `await` something — potentially a silent logic error rather than just inefficiency. Fix: either add the missing `await`, or remove `async` and return a completed task with `Task.FromResult`.
+
+```csharp
+// BAD: async with no await — compiler warning CS1998, state machine overhead
+public async Task<int> GetCountAsync()
+{
+    return _items.Count;  // no await — synchronous but wrapped in Task
+}
+
+// GOOD option 1: remove async, return Task.FromResult for synchronous result
+public Task<int> GetCountAsync()
+{
+    return Task.FromResult(_items.Count);
+}
+
+// GOOD option 2: if calling path truly needs async, await the real operation
+public async Task<int> GetCountAsync(CancellationToken ct)
+{
+    await _cache.WarmUpAsync(ct);
+    return _items.Count;
+}
+```
+
+### **LINQ + Async Lambdas — Deferred Execution Trap**  [community]
+
+Using async lambdas inside LINQ operators like `Select` creates `Task<T>` objects but does not start them or await them. The tasks are only created when the sequence is enumerated, and if the IEnumerable is never materialized before `Task.WhenAll`, tasks start sequentially rather than concurrently. WHY it causes problems: what looks like parallel fan-out is actually sequential, silently running at 1x speed. Fix: always call `.ToArray()` or `.ToList()` immediately on LINQ expressions that project async lambdas, then pass the tasks array to `Task.WhenAll`.
+
+```csharp
+// BAD: tasks created lazily, NOT all started before WhenAll
+var results = await Task.WhenAll(
+    userIds.Select(id => GetUserAsync(id)));  // deferred — tasks start one at a time
+
+// GOOD: materialize immediately so all tasks start before WhenAll
+var tasks = userIds.Select(id => GetUserAsync(id)).ToArray();
+var results = await Task.WhenAll(tasks);  // truly concurrent fan-out
+```
+
+### **Exception Swallowing in `catch` — Silent Corruption**  [community]
+
+Catching a general `Exception` and doing nothing (or logging only) lets the program continue in an invalid state. WHY it causes problems: downstream code sees objects in partially-initialized or corrupted state, leading to failures far from the original cause that are nearly impossible to diagnose. Fix: only catch exceptions you can actually handle. If you must catch broadly, always re-throw (bare `throw`, not `throw ex`) after logging to preserve the original stack trace.
+
+```csharp
+// BAD: swallows all exceptions — program continues in invalid state
+try
+{
+    await _repository.SaveAsync(order, ct);
+}
+catch (Exception)
+{
+    // nothing — order may not be saved, caller doesn't know
+}
+
+// BAD: throw ex — resets the stack trace, makes debugging impossible
+catch (Exception ex)
+{
+    _logger.LogError(ex, "Save failed");
+    throw ex;  // stack trace starts HERE, not at the original throw
+}
+
+// GOOD: log and re-throw with bare throw — preserves original stack trace
+catch (Exception ex) when (LogAndReturnTrue(ex))
+{
+    throw;  // re-throws with original stack trace intact
+}
+// Or simply: catch, log, throw;
+```
+
+### **`Span<T>` Stored on the Heap — Compile Error or Runtime Corruption**  [community]
+
+`Span<T>` is a stack-only ref struct. Storing it in a field, a `class`, a `List<T>`, or using it across an `await` point causes a compile error or unsafe behavior. WHY it causes problems: `Span<T>` wraps a pointer to stack memory; if that memory escapes to the heap, the pointer becomes dangling. Fix: use `Memory<T>` when you need a heap-storable buffer reference across async boundaries. Use `Span<T>` only for synchronous hot paths.
+
+```csharp
+// BAD: Span<T> cannot be a field — compile error
+public class DataProcessor
+{
+    private Span<byte> _buffer;  // CS8345: Field cannot be of type Span<T>
+}
+
+// BAD: Span<T> cannot cross await boundary — compile error
+public async Task ProcessAsync(Span<byte> data)  // CS4012: Span<T> cannot be parameter
+{
+    await Task.Delay(1);
+    // use data — not allowed
+}
+
+// GOOD: use Memory<T> for heap/async scenarios
+public async Task ProcessAsync(Memory<byte> data, CancellationToken ct)
+{
+    await Task.Delay(1, ct);
+    var span = data.Span;  // get Span<T> only for synchronous processing
+    Process(span);
+}
+
+// GOOD: use Span<T> for synchronous, zero-allocation parsing
+public static int ParseInt(ReadOnlySpan<char> input)
+    => int.Parse(input);  // no string allocation
+```
+
+### **`Span<T>` Stored on the Heap — Compile Error or Runtime Corruption**  [community]
+
+`Span<T>` is a stack-only ref struct. Storing it in a field, a `class`, a `List<T>`, or using it across an `await` point causes a compile error or unsafe behavior. WHY it causes problems: `Span<T>` wraps a pointer to stack memory; if that memory escapes to the heap, the pointer becomes dangling. Fix: use `Memory<T>` when you need a heap-storable buffer reference across async boundaries. Use `Span<T>` only for synchronous hot paths.
+
+```csharp
+// BAD: Span<T> cannot be a field — compile error
+public class DataProcessor
+{
+    private Span<byte> _buffer;  // CS8345: Field cannot be of type Span<T>
+}
+
+// BAD: Span<T> cannot cross await boundary — compile error
+public async Task ProcessAsync(Span<byte> data)  // CS4012: Span<T> cannot be parameter
+{
+    await Task.Delay(1);
+    // use data — not allowed
+}
+
+// GOOD: use Memory<T> for heap/async scenarios
+public async Task ProcessAsync(Memory<byte> data, CancellationToken ct)
+{
+    await Task.Delay(1, ct);
+    var span = data.Span;  // get Span<T> only for synchronous processing
+    Process(span);
+}
+
+// GOOD: use Span<T> for synchronous, zero-allocation parsing
+public static int ParseInt(ReadOnlySpan<char> input)
+    => int.Parse(input);  // no string allocation
+```
+
+### **`HttpClient` Instantiated per Request — Socket Exhaustion**  [community]
+
+Creating a new `HttpClient` instance per request or in a `using` block causes socket exhaustion under load. WHY it causes problems: `HttpClient.Dispose()` closes the TCP connection but doesn't immediately release the socket; the OS keeps the socket in TIME_WAIT state. With high request rates, new sockets can't be opened. Fix: inject `IHttpClientFactory` (registers a singleton `HttpMessageHandler` pool) or register typed clients via `AddHttpClient<T>`.
+
+```csharp
+// BAD: new HttpClient per request — socket exhaustion at scale
+public class WeatherService
+{
+    public async Task<string> GetForecastAsync()
+    {
+        using var client = new HttpClient();  // socket leak under load!
+        return await client.GetStringAsync("https://api.weather.com/forecast");
+    }
+}
+
+// GOOD: typed HttpClient — registered once, reuses pooled HttpMessageHandler
+public class WeatherClient(HttpClient client)
+{
+    public async Task<string> GetForecastAsync(CancellationToken ct)
+        => await client.GetStringAsync("/forecast", ct);
+}
+
+// Registration in Program.cs
+builder.Services.AddHttpClient<WeatherClient>(c =>
+    c.BaseAddress = new Uri("https://api.weather.com"));
+
+// Usage via DI — WeatherClient is injected with a properly managed HttpClient
+public class ForecastController(WeatherClient weather) : ControllerBase
+{
+    [HttpGet] public async Task<string> Get(CancellationToken ct)
+        => await weather.GetForecastAsync(ct);
+}
+```
+
+### **Static Mutable State — Thread-Safety and Data Corruption**  [community]
+
+`static` mutable fields are shared across all threads in the process. WHY it causes problems: in web applications, multiple request threads read and write static state concurrently without synchronization, leading to torn reads, lost writes, and non-deterministic failures that are nearly impossible to reproduce in isolation. Fix: avoid `static` mutable state; use `Interlocked` for counters, `ConcurrentDictionary<>` for caches, and per-request scoped services via DI.
+
+```csharp
+// BAD: static mutable counter — race condition on every increment
+public class RequestMetrics
+{
+    public static int RequestCount = 0;
+    public static void Increment() => RequestCount++;  // NOT thread-safe
+}
+
+// GOOD: Interlocked for atomic operations on primitives
+public static class RequestMetrics
+{
+    private static int _requestCount;
+    public static int RequestCount => _requestCount;
+    public static void Increment() => Interlocked.Increment(ref _requestCount);
+}
+
+// GOOD: ConcurrentDictionary for shared cache — all operations are atomic
+private static readonly ConcurrentDictionary<string, string> _cache = new();
+_cache.GetOrAdd(key, k => ComputeExpensiveValue(k));
+```
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -742,3 +1174,12 @@ await foreach (var issue in _service.GetIssuesAsync("dotnet/docs", ct)
 | Returning `Task<List<T>>` for large result sets | Buffers entire result in memory before first item is returned | Use `IAsyncEnumerable<T>` with `await foreach` for streaming |
 | Awaiting `ValueTask` more than once | Undefined behavior — underlying source may be recycled | Call `.AsTask()` once and store the `Task` if multiple awaits needed |
 | Class owns `IDisposable` but doesn't implement it | Resource leak — GC finalization is non-deterministic | Implement `IDisposable` and cascade `Dispose()` to owned fields |
+| Custom delegate types for generic callbacks | Clutters type namespace; harder to compose | Use `Func<T>` and `Action<T>` from the BCL |
+| `async` method with no `await` in body | Silent state machine overhead, likely missing an `await` | Add missing `await` or return `Task.FromResult` without `async` |
+| Task.Run in library code for I/O operations | Forces thread-pool usage onto callers; wrong for I/O | Only use `Task.Run` in app code for CPU-bound work |
+| LINQ async lambda without `.ToArray()` before `WhenAll` | Sequential execution instead of concurrent fan-out | Materialize tasks array first, then `await Task.WhenAll(tasks)` |
+| `using` directive inside namespace block | Name resolution is context-sensitive, breaks silently on new deps | Place all `using` directives at file level, outside namespace |
+| `catch (Exception ex)` then `throw ex` | Resets stack trace — original throw location is lost | Use bare `throw` to re-throw, preserving the original stack trace |
+| Storing `Span<T>` in a field or across `await` | Compile error or dangling pointer to freed stack memory | Use `Memory<T>` for heap-storable and async-safe buffer references |
+| `new HttpClient()` per request | Socket exhaustion — OS keeps sockets in TIME_WAIT state | Use `IHttpClientFactory` or typed clients registered via `AddHttpClient<T>` |
+| `static` mutable fields in web apps | Race conditions — multiple threads corrupt shared state | Use `Interlocked`, `ConcurrentDictionary`, or scoped DI services |

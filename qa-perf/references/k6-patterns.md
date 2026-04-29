@@ -1,5 +1,5 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-04-28 -->
 
 > Generated from official k6 documentation and community sources on 2026-04-27. Verified against k6 v1.7.1 (latest stable). Re-run `/qa-refine k6` to refresh.
 
@@ -705,16 +705,23 @@ export default function () {
 }
 ```
 
-### `handleSummary` — JUnit XML + JSON + CI-Friendly Text  [community]
+### `handleSummary` — JUnit XML + JSON + HTML + CI-Friendly Text  [community]
 
 CI systems (Jenkins, GitHub Actions, Azure DevOps) parse JUnit XML natively. Export
 it from `handleSummary` to get pass/fail results visible directly in the CI test report
-panel — without a separate Grafana dashboard.
+panel — without a separate Grafana dashboard. For stakeholder-facing HTML reports, use
+the community `k6-reporter` library.
 
 ```javascript
-// k6/scripts/load.js (complete handleSummary export)
+// k6/scripts/load.js (complete handleSummary export — JUnit + JSON + HTML)
 import { textSummary } from "https://jslib.k6.io/k6-summary/0.0.2/index.js";
 import { jUnit }       from "https://jslib.k6.io/k6-summary/0.0.2/index.js";
+
+// Community HTML reporter (bundle locally for offline use):
+// npm install @benc-uk/k6-reporter
+// import { htmlReport } from "../lib/k6-reporter.js";
+// OR reference from jslib.k6.io:
+// import { htmlReport } from "https://raw.githubusercontent.com/benc-uk/k6-reporter/main/dist/bundle.js";
 
 export function handleSummary(data) {
   // Build JUnit XML for CI test-results panel
@@ -726,20 +733,57 @@ export function handleSummary(data) {
     .map(([name]) => name);
 
   const report = {
-    timestamp:       new Date().toISOString(),
+    timestamp:        new Date().toISOString(),
     thresholdsFailed: failed,
-    passed:          failed.length === 0,
-    metrics:         data.metrics,
+    passed:           failed.length === 0,
+    metrics:          data.metrics,
   };
+
+  // Minimal built-in HTML report (no external lib)
+  const metricsHtml = Object.entries(data.metrics)
+    .filter(([, m]) => m.type === "trend")
+    .map(([name, m]) => {
+      const v = m.values;
+      return `<tr>
+        <td>${name}</td>
+        <td>${v["avg"] ? v["avg"].toFixed(2) + "ms" : "-"}</td>
+        <td>${v["p(95)"] ? v["p(95)"].toFixed(2) + "ms" : "-"}</td>
+        <td>${v["p(99)"] ? v["p(99)"].toFixed(2) + "ms" : "-"}</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  const html = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<title>k6 Load Test Report — ${new Date().toISOString()}</title>
+<style>body{font-family:sans-serif;padding:1rem}table{border-collapse:collapse;width:100%}
+th,td{border:1px solid #ccc;padding:8px;text-align:left}th{background:#f5f5f5}
+.pass{color:green}.fail{color:red}</style></head>
+<body>
+<h1>k6 Load Test Report</h1>
+<p><strong>Date:</strong> ${new Date().toISOString()}</p>
+<p><strong>Status:</strong> <span class="${failed.length === 0 ? "pass" : "fail"}">${failed.length === 0 ? "PASSED" : "FAILED"}</span></p>
+${failed.length > 0 ? `<p><strong>Failed thresholds:</strong> ${failed.join(", ")}</p>` : ""}
+<h2>Latency Metrics</h2>
+<table><tr><th>Metric</th><th>avg</th><th>p(95)</th><th>p(99)</th></tr>
+${metricsHtml}
+</table>
+</body></html>`;
 
   return {
     // stdout: CI-friendly text (no ANSI codes — caller should pass --no-color)
     stdout:                         textSummary(data, { indent: "→", enableColors: false }),
     "results/summary.json":         JSON.stringify(report, null, 2),
     "results/junit.xml":            junit,
+    "results/report.html":          html,
   };
 }
 ```
+
+> **[community]:** For richer HTML reports with charts, use the `@benc-uk/k6-reporter`
+> community library. It generates a complete HTML dashboard with metric graphs. Bundle it
+> locally (not via raw GitHub URLs) in production CI to avoid network dependency failures
+> during the summary phase.
 
 k6's stable WebSocket module (`k6/websockets`, stable since k6 v0.56) implements the
 WebSocket living standard with a global event loop — use it for all new scripts.
@@ -1365,6 +1409,33 @@ import { authParams } from "./lib/auth.js";
 Also: k6 does not support bare npm package imports (e.g., `import _ from "lodash"`) —
 bundle npm dependencies with webpack/rollup first and import the bundle.
 
+### 17. GraphQL 200-response errors bypass HTTP error thresholds  [community]
+crashes. A threshold on `http_req_failed` will show 0% failure even when 100% of queries are
+returning `{ "errors": [...] }` in the body.
+**WHY:** GraphQL spec mandates that the transport layer always uses HTTP 200 for query-level
+errors; only genuine network or server errors produce 4xx/5xx responses. `http_req_failed`
+monitors HTTP-layer errors only — it has no visibility into the GraphQL `errors` array.
+**Fix:** Create a `Rate` custom metric for GraphQL errors, populate it in your `check()` body
+assertion, and threshold on it:
+```javascript
+const graphqlErrors = new Rate("graphql_errors");
+// In check: graphqlErrors.add(body.errors && body.errors.length > 0 ? 1 : 0);
+thresholds: { "graphql_errors": ["rate<0.01"] }
+```
+
+### 18. `setup()` token cannot refresh itself — soak tests silently 401 after token expiry  [community]
+**What:** Tokens obtained in `setup()` are serialized once and distributed to all VUs at
+test start. They cannot be refreshed from within `setup()` because `setup()` runs once.
+For 8-hour soak tests with 1-hour JWT TTLs, all VUs start failing at the 55-minute mark
+while dashboards still show healthy throughput (because the 401 responses process quickly).
+**WHY:** k6 serializes `setup()`'s return value to JSON and passes copies to VUs. There is
+no mechanism for `setup()` to push a new value mid-run. Each VU must manage its own token
+state using a per-VU token manager (see JWT Token Refresh pattern above).
+**Fix:** Implement a token manager that tracks expiry and refreshes proactively. Initialize
+it in the VU's init context; never rely on `setup()` for credentials in soak tests.
+
+---
+
 ### 16. `k6/experimental/*` modules removed / deprecated in k6 v1.x  [community]
 **What:** Scripts using `k6/experimental/websockets`, `k6/experimental/redis`, or
 `k6/experimental/tracing` emit deprecation warnings in k6 v1.x and will break when
@@ -1376,6 +1447,1109 @@ debt that surfaces as breakage during k6 upgrades.
 - `k6/experimental/websockets` → `k6/websockets`
 - `k6/experimental/redis` → deprecated entirely (no stable replacement yet; use xk6-redis extension)
 - `k6/experimental/tracing` → use OpenTelemetry output (`--out opentelemetry`) instead
+
+### 17. GraphQL 200-response errors bypass HTTP error thresholds  [community]
+**What:** GraphQL servers return HTTP 200 even for auth failures, missing fields, and resolver
+crashes. A threshold on `http_req_failed` will show 0% failure even when 100% of queries are
+returning `{ "errors": [...] }` in the body.
+**WHY:** GraphQL spec mandates that the transport layer always uses HTTP 200 for query-level
+errors; only genuine network or server errors produce 4xx/5xx responses. `http_req_failed`
+monitors HTTP-layer errors only — it has no visibility into the GraphQL `errors` array.
+**Fix:** Create a `Rate` custom metric for GraphQL errors, populate it in your `check()` body
+assertion, and threshold on it:
+```javascript
+const graphqlErrors = new Rate("graphql_errors");
+// In check: graphqlErrors.add(body.errors && body.errors.length > 0 ? 1 : 0);
+thresholds: { "graphql_errors": ["rate<0.01"] }
+```
+
+### 18. `setup()` token cannot refresh itself — soak tests silently 401 after token expiry  [community]
+**What:** Tokens obtained in `setup()` are serialized once and distributed to all VUs at
+test start. They cannot be refreshed from within `setup()` because `setup()` runs once.
+For 8-hour soak tests with 1-hour JWT TTLs, all VUs start failing at the 55-minute mark
+while dashboards still show healthy throughput (because the 401 responses process quickly).
+**WHY:** k6 serializes `setup()`'s return value to JSON and passes copies to VUs. There is
+no mechanism for `setup()` to push a new value mid-run. Each VU must manage its own token
+state using a per-VU token manager (see JWT Token Refresh pattern above).
+**Fix:** Implement a token manager that tracks expiry and refreshes proactively. Initialize
+it in the VU's init context; never rely on `setup()` for credentials in soak tests.
+
+### 19. WebSocket `default` function runs once per VU, not in a loop  [community]
+**What:** Teams migrating from HTTP tests wrap WebSocket code in the `default` function and
+expect it to loop like HTTP. In the `k6/websockets` module, `default` runs **once** per VU —
+the event loop drives the scenario. Without a `setTimeout()` to close the socket, VUs block
+indefinitely, accumulating open connections until the test hangs.
+**WHY:** The `k6/websockets` module implements the W3C WebSocket living standard, which uses
+a persistent event loop. The VU is blocked by the active socket until it closes — there is
+no iteration loop.
+**Fix:** Always set a `setTimeout(() => ws.close(), durationMs)` inside `onopen`. For
+iteration-based WebSocket tests, use `setInterval` to send periodic messages and
+`setTimeout` for the connection lifetime cap.
+
+### 20. Async/eventual consistency latency hidden by fast HTTP publish response  [community]
+**What:** An event-driven endpoint responds in 5ms (accepted / 202 status). The `http_req_duration`
+threshold of p(95)<200ms passes with flying colors. The actual task takes 45 seconds to process.
+Teams declare the system "fast" based on publish latency, while users wait 45 seconds.
+**WHY:** k6 measures HTTP response time, not end-to-end business transaction time. For
+async workflows, the publish API's response time is entirely decoupled from the true SLO.
+**Fix:** Implement a polling loop after publish to measure actual completion time (see
+Async/Eventual Consistency Testing pattern above). Threshold on the custom `Trend` metric,
+not on `http_req_duration`.
+
+---
+
+## Lesser-Known Options
+
+These `options` fields are valid in any k6 script but rarely appear in tutorials. Use them to solve specific production problems.
+
+```javascript
+export const options = {
+  // Lifecycle function timeouts (default: "60s" each; Cloud max: 10m)
+  setupTimeout:    "2m",    // give setup() more time if it seeds a database
+  teardownTimeout: "1m",    // give teardown() time to clean up resources
+
+  // Minimum iteration duration — VUs sleep if they finish faster than this.
+  // Prevents arrival-rate executors from firing faster than intended under
+  // very-fast endpoints; also prevents "sleep()" math errors.
+  minIterationDuration: "1s",
+
+  // Cookie behavior per VU
+  noCookiesReset: false,   // true = cookies persist across iterations (session replay)
+
+  // Connection reuse settings
+  noVUConnectionReuse: false, // true = VU opens a new TCP connection each iteration
+  noConnectionReuse:   false, // true = close TCP connection after every request
+
+  // HTTP debug logging — WARNING: do NOT use in production load tests
+  // "full" logs request + response headers and bodies; "" disables
+  httpDebug: "",  // set to "full" for debugging auth issues locally
+
+  // DNS override — like /etc/hosts in a script
+  // Useful for routing requests to a staging host without changing the URL
+  hosts: {
+    "api.example.com":  "192.168.1.100",     // specific host
+    "*.cdn.example.com": "192.168.1.200",    // wildcard subdomain (k6 v0.46+)
+  },
+
+  // TLS — skip certificate verification (self-signed certs on staging)
+  insecureSkipTLSVerify: false,  // NEVER set true in production tests
+
+  // Client certificate auth (mTLS) — pass cert+key per domain
+  tlsAuth: [
+    {
+      domains: ["api.internal.example.com"],
+      cert: open("./certs/client.pem"),
+      key:  open("./certs/client-key.pem"),
+    },
+  ],
+
+  // System tags — remove tags you don't need to reduce metric cardinality
+  // Default: proto, subproto, status, method, url, name, group, check,
+  //          error, error_code, tls_version, scenario, service, expected_response
+  systemTags: ["status", "method", "url", "scenario", "check", "error"],
+};
+```
+
+> **[community]:** `minIterationDuration` is the cleanest solution when you want `constant-vus`
+> to behave more like `constant-arrival-rate` for fast endpoints. Instead of adding `sleep()`
+> math, set `minIterationDuration` to the desired inter-iteration gap — k6 handles the sleep
+> automatically and adjusts when iterations take longer than the minimum.
+
+### GraphQL API Load Testing  [community]
+
+GraphQL APIs receive all requests on a single endpoint. The k6 pattern differs from REST:
+you must parse the `errors` array in **200 responses** (GraphQL never returns 4xx for query
+errors), and use `tags.name` with the **operation name** (not URL) to prevent cardinality
+explosions.
+
+```javascript
+// k6/scripts/graphql-load.js
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { Rate } from "k6/metrics";
+
+const graphqlErrors = new Rate("graphql_errors");
+
+export const options = {
+  scenarios: {
+    graphql_load: {
+      executor: "ramping-vus",
+      stages: [
+        { duration: "30s", target: 20 },
+        { duration: "2m",  target: 20 },
+        { duration: "15s", target: 0  },
+      ],
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<300"],
+    http_req_failed:   ["rate<0.01"],
+    // GraphQL errors come back as 200 with errors[] array — threshold on custom metric
+    "graphql_errors":  ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:4000";
+const GQL_ENDPOINT = `${BASE}/graphql`;
+
+// Helper: send a GraphQL operation
+function gql(query, variables = {}, operationName = "") {
+  const res = http.post(
+    GQL_ENDPOINT,
+    JSON.stringify({ query, variables, operationName }),
+    {
+      headers: { "Content-Type": "application/json" },
+      tags: {
+        // Tag with operation name — prevents cardinality explosion from parameterized IDs
+        name: operationName || "graphql",
+      },
+    }
+  );
+  return res;
+}
+
+const LIST_ITEMS_QUERY = `
+  query ListItems($first: Int!) {
+    items(first: $first) {
+      edges {
+        node { id name status }
+      }
+    }
+  }
+`;
+
+const CREATE_ITEM_MUTATION = `
+  mutation CreateItem($input: CreateItemInput!) {
+    createItem(input: $input) {
+      item { id name }
+      errors { field message }
+    }
+  }
+`;
+
+export default function () {
+  // Query
+  const listRes = gql(LIST_ITEMS_QUERY, { first: 10 }, "ListItems");
+
+  check(listRes, {
+    "list: status 200": (r) => r.status === 200,
+    "list: no errors":  (r) => {
+      const body = r.json();
+      const hasErrors = body.errors && body.errors.length > 0;
+      graphqlErrors.add(hasErrors ? 1 : 0);
+      return !hasErrors;
+    },
+    "list: has data":   (r) => r.json("data.items.edges") !== null,
+  });
+
+  sleep(0.5);
+
+  // Mutation
+  const createRes = gql(
+    CREATE_ITEM_MUTATION,
+    { input: { name: `item-${__ITER}`, type: "test" } },
+    "CreateItem"
+  );
+
+  check(createRes, {
+    "create: status 200": (r) => r.status === 200,
+    "create: no errors":  (r) => {
+      const body = r.json();
+      const hasErrors = body.errors && body.errors.length > 0;
+      graphqlErrors.add(hasErrors ? 1 : 0);
+      return !hasErrors;
+    },
+    "create: has item id": (r) => r.json("data.createItem.item.id") !== null,
+  });
+
+  sleep(1);
+}
+```
+
+> **[community]:** GraphQL always returns HTTP 200 even for auth failures, validation errors,
+> and resolver crashes. A `check()` on `r.status === 200` will pass for 100% of requests —
+> even completely broken queries. Always check `body.errors` separately and track it with
+> a custom `Rate` metric to catch query-level failures.
+
+### JWT Token Refresh in Long-Running Tests  [community]
+
+Soak tests and nightly runs lasting 8+ hours outlive access tokens. Without refresh logic,
+the test silently accumulates 401 errors in the second hour while the dashboard shows
+healthy p(95) latency.
+
+```javascript
+// k6/lib/auth.js — reusable token manager with refresh
+import http from "k6/http";
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+// Token expiry margin — refresh 5 minutes before actual expiry
+const TOKEN_MARGIN_SEC = 300;
+
+export function createTokenManager() {
+  let token     = null;
+  let expiresAt = 0;  // Unix timestamp in seconds
+
+  function login() {
+    const res = http.post(
+      `${BASE}/api/auth/login`,
+      JSON.stringify({
+        email:    __ENV.E2E_USER_EMAIL    || "test@example.com",
+        password: __ENV.E2E_USER_PASSWORD || "password123",
+      }),
+      { headers: { "Content-Type": "application/json" } }
+    );
+
+    if (res.status !== 200) {
+      throw new Error(`auth failed: ${res.status} ${res.body}`);
+    }
+
+    token     = res.json("access_token");
+    const exp = res.json("expires_in") || 3600;
+    expiresAt = Math.floor(Date.now() / 1000) + exp - TOKEN_MARGIN_SEC;
+  }
+
+  return {
+    getToken() {
+      // Refresh proactively before expiry
+      if (!token || Math.floor(Date.now() / 1000) >= expiresAt) {
+        login();
+      }
+      return token;
+    },
+  };
+}
+
+// k6/scripts/soak-authed.js — usage
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { createTokenManager } from "../lib/auth.js";
+
+// One token manager per VU — created during init context
+const tokenManager = createTokenManager();
+
+export const options = {
+  scenarios: {
+    soak: {
+      executor: "ramping-vus",
+      stages: [
+        { duration: "5m", target: 20 },
+        { duration: "8h", target: 20 },
+        { duration: "5m", target: 0  },
+      ],
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<500"],
+    http_req_failed:   ["rate<0.01"],
+    checks:            ["rate>0.99"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  // Token automatically refreshed when near expiry — no manual tracking needed
+  const token = tokenManager.getToken();
+
+  const res = http.get(`${BASE}/api/resources`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  check(res, {
+    "status 200":       (r) => r.status === 200,
+    "not 401 (expired token)": (r) => r.status !== 401,
+  });
+
+  sleep(2);
+}
+```
+
+> **[community]:** Tokens obtained in `setup()` are serialized to JSON before being passed to
+> VUs. After serialization, the `expiresAt` timestamp is baked in but the token itself cannot
+> be refreshed via `setup()` — `setup()` runs once. For soak tests with expiring tokens,
+> each VU must manage its own token refresh using a per-VU token manager (as above) or via
+> a shared in-memory cache pattern.
+
+### gRPC Streaming  [community]
+
+k6's `k6/net/grpc` module supports server-side streaming in addition to unary calls.
+Load `.proto` files once in init context — not inside `default()` — to avoid recreating
+the client stub on every VU iteration.
+
+```javascript
+// k6/scripts/grpc-streaming.js
+import grpc from "k6/net/grpc";
+import { check, sleep } from "k6";
+
+// INIT CONTEXT: load proto once per VU
+const client = new grpc.Client();
+client.load(["./proto"], "streaming.proto");
+
+export const options = {
+  scenarios: {
+    grpc_stream: {
+      executor: "constant-vus",
+      vus: 10,
+      duration: "2m",
+    },
+  },
+  thresholds: {
+    "grpc_req_duration": ["p(95)<500"],
+    checks:               ["rate>0.99"],
+  },
+};
+
+const TARGET = __ENV.GRPC_TARGET || "localhost:50051";
+
+export default function () {
+  client.connect(TARGET, { plaintext: true });
+
+  // Server-side streaming: one request → multiple responses
+  const stream = new grpc.Stream(
+    client,
+    "streaming.EventService/StreamEvents",
+    null  // metadata — null for none
+  );
+
+  let eventCount = 0;
+
+  stream.on("data", (event) => {
+    check(event, {
+      "event has type": (e) => e.type !== undefined,
+      "event has id":   (e) => e.id !== undefined,
+    });
+    eventCount += 1;
+  });
+
+  stream.on("error", (err) => {
+    console.error("gRPC stream error:", err.message);
+  });
+
+  stream.on("end", () => {
+    check(eventCount, {
+      "received events": (n) => n > 0,
+    });
+  });
+
+  // Send the request to start the stream
+  stream.write({ filter: "category:test" });
+  stream.end();
+
+  client.close();
+  sleep(1);
+}
+```
+
+> **[community]:** k6 gRPC streaming does NOT support bidirectional streaming in the standard
+> `k6/net/grpc` module — only server-side and client-side streaming. For bidirectional use
+> the `k6/experimental/grpc` module (which graduates to stable in future versions). Always
+> verify the streaming mode supported before planning a load test against a streaming endpoint.
+
+---
+
+### Conditional Scenario Selection  [community]
+
+Use `__ENV` to conditionally include scenarios so a single script serves as smoke, load,
+and stress test. CI pipelines select the profile with a flag rather than maintaining
+multiple scripts.
+
+```javascript
+// k6/scripts/universal.js — one script, three modes
+import http from "k6/http";
+import { check, sleep } from "k6";
+
+const PROFILE = __ENV.PROFILE || "smoke";  // smoke | load | stress
+
+const PROFILES = {
+  smoke: {
+    scenarios: {
+      run: {
+        executor: "shared-iterations",
+        vus: 2,
+        iterations: 10,
+      },
+    },
+    thresholds: {
+      http_req_duration: ["p(95)<1000"],
+      http_req_failed:   ["rate<0.05"],
+    },
+  },
+  load: {
+    scenarios: {
+      run: {
+        executor: "ramping-vus",
+        stages: [
+          { duration: "1m",  target: 30 },
+          { duration: "3m",  target: 30 },
+          { duration: "30s", target: 0  },
+        ],
+      },
+    },
+    thresholds: {
+      http_req_duration: ["p(95)<300"],
+      http_req_failed:   ["rate<0.01"],
+    },
+  },
+  stress: {
+    scenarios: {
+      run: {
+        executor: "ramping-vus",
+        stages: [
+          { duration: "2m",  target: 100  },
+          { duration: "5m",  target: 100  },
+          { duration: "2m",  target: 200  },
+          { duration: "5m",  target: 200  },
+          { duration: "5m",  target: 0    },
+        ],
+      },
+    },
+    thresholds: {
+      http_req_duration: ["p(95)<2000"],
+      http_req_failed:   ["rate<0.05"],
+    },
+  },
+};
+
+// Merge the selected profile into options
+export const options = PROFILES[PROFILE];
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  const res = http.get(`${BASE}/api/items`);
+  check(res, { "status 200": (r) => r.status === 200 });
+  sleep(1);
+}
+```
+
+Run modes:
+```bash
+# Smoke test (fast, every PR)
+k6 run -e PROFILE=smoke k6/scripts/universal.js
+
+# Load test (nightly)
+k6 run -e PROFILE=load -e API_URL=https://staging.api.example.com k6/scripts/universal.js
+
+# Stress test (weekly / pre-release)
+k6 run -e PROFILE=stress -e API_URL=https://staging.api.example.com k6/scripts/universal.js
+
+# Run only a named scenario (k6 v0.43+)
+k6 run --scenario run k6/scripts/universal.js
+
+# Inspect script structure without executing
+k6 inspect k6/scripts/universal.js
+```
+
+> **[community]:** `k6 inspect` outputs scenario configuration and VU count without running
+> the test. Use it in CI to assert that a script has the expected structure before
+> wasting a full test run on a malformed options object.
+
+### Extensions (xk6)  [community]
+
+k6 extensions add capabilities beyond HTTP — Redis shared state, Kafka producers, SQL
+queries, Prometheus output, and more. Extensions require building a **custom k6 binary**.
+
+```bash
+# Install xk6 builder
+go install go.k6.io/xk6/cmd/xk6@latest
+
+# Build k6 with Redis extension
+xk6 build --with github.com/grafana/xk6-redis
+
+# Build with multiple extensions
+xk6 build \
+  --with github.com/grafana/xk6-redis \
+  --with github.com/mostafa/xk6-kafka \
+  --output ./k6-extended
+```
+
+Usage in script:
+```javascript
+// k6/scripts/redis-counter.js — shared counter across all VUs using Redis
+// Requires: xk6 build --with github.com/grafana/xk6-redis
+import { Client } from "k6/x/redis";
+import http from "k6/http";
+import { check } from "k6";
+
+// Redis client (connection established on first command call — init context)
+const redisClient = new Client({
+  addr: __ENV.REDIS_ADDR || "localhost:6379",
+});
+
+export const options = {
+  scenarios: {
+    concurrent_users: {
+      executor: "constant-vus",
+      vus: 50,
+      duration: "1m",
+    },
+  },
+};
+
+export async function setup() {
+  // Reset shared counter before test starts
+  await redisClient.set("total_orders", 0);
+}
+
+export default async function () {
+  const res = http.post(
+    `${__ENV.API_URL || "http://localhost:3001"}/api/orders`,
+    JSON.stringify({ item: "sku-001" }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+
+  if (check(res, { "order created": (r) => r.status === 201 })) {
+    // Atomic increment — safe across all VUs
+    await redisClient.incr("total_orders");
+  }
+}
+
+export async function teardown() {
+  const totalOrders = await redisClient.get("total_orders");
+  console.log(`Total orders created: ${totalOrders}`);
+}
+```
+
+> **[community]:** xk6 extensions modify the k6 binary — your CI pipeline must build and
+> cache the custom binary, not pull from the standard k6 release. Pin the extension version
+> in the `xk6 build` command to prevent silent breakage on new releases. Use Docker to
+> reproducibly build the extended binary:
+> ```bash
+> docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/xk6" grafana/xk6 \
+>   build --with github.com/grafana/xk6-redis@v0.4.0
+> ```
+
+---
+
+### WebSocket Load Testing — Authenticated + Throughput  [community]
+
+The stable `k6/websockets` module uses a browser-compatible event-loop model. Unlike the
+legacy `k6/ws` API, the `default` function runs **once per VU** (not in a loop) — the
+event loop drives execution until all listeners complete.
+
+```javascript
+// k6/scripts/ws-authed-throughput.js
+import { WebSocket } from "k6/websockets";
+import { check, sleep } from "k6";
+import { Counter, Trend } from "k6/metrics";
+
+const wsSent     = new Counter("ws_messages_sent");
+const wsReceived = new Counter("ws_messages_received");
+const wsLatency  = new Trend("ws_message_latency_ms", true);
+
+export const options = {
+  scenarios: {
+    ws_load: {
+      executor: "constant-vus",
+      vus: 20,
+      duration: "2m",
+    },
+  },
+  thresholds: {
+    "ws_message_latency_ms": ["p(95)<200"],
+    "ws_messages_received":  ["count>0"],
+    checks:                   ["rate>0.99"],
+  },
+};
+
+const WS_URL = (__ENV.API_URL || "http://localhost:3001")
+  .replace(/^http/, "ws")
+  + "/ws/feed";
+
+export default function () {
+  // Pass auth header + tag in params
+  const ws = new WebSocket(WS_URL, null, {
+    headers: { Authorization: `Bearer ${__ENV.WS_TOKEN || "test-token"}` },
+    tags: { name: "ws-feed" },
+  });
+
+  let sentAt = {};
+
+  ws.onopen = () => {
+    check(ws, { "connected": (s) => s.readyState === 1 });
+
+    // Subscribe to a channel
+    ws.send(JSON.stringify({ type: "subscribe", channel: "prices" }));
+    wsSent.add(1);
+
+    // Keep-alive ping every 30s
+    const pingInterval = setInterval(() => {
+      if (ws.readyState === 1) ws.ping();
+    }, 30_000);
+
+    // Close after 60s — prevent VU blocking forever
+    setTimeout(() => {
+      clearInterval(pingInterval);
+      ws.close();
+    }, 60_000);
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+
+    if (msg.type === "ack") {
+      wsReceived.add(1);
+      sentAt[msg.id] = Date.now();
+    }
+
+    if (msg.type === "price" && sentAt[msg.requestId]) {
+      wsLatency.add(Date.now() - sentAt[msg.requestId]);
+      check(msg, {
+        "has symbol": (m) => m.symbol !== undefined,
+        "has price":  (m) => typeof m.price === "number",
+      });
+    }
+  };
+
+  ws.onerror = (e) => {
+    // k6 sends "websocket: close sent" on clean close — filter it
+    if (e.error() !== "websocket: close sent") {
+      console.error(`WS error [VU ${__VU}]:`, e.error());
+    }
+  };
+
+  ws.onpong = () => {
+    // Pong received — connection still healthy
+  };
+}
+```
+
+### Async / Eventual Consistency Testing  [community]
+
+Event-driven systems (message queues, async workers) require polling patterns to measure
+true end-to-end latency. The key is measuring from publish to result available, not just
+the API response time of the publish call.
+
+```javascript
+// k6/scripts/async-e2e.js
+// Measures end-to-end latency: publish event → poll until result available
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { Trend, Rate } from "k6/metrics";
+
+const e2eLatency = new Trend("async_e2e_latency_ms", true);
+const completed  = new Rate("task_completed_rate");
+
+export const options = {
+  scenarios: {
+    async_tasks: {
+      executor: "constant-arrival-rate",
+      rate: 5,          // 5 tasks/sec — keep low for async workflows
+      timeUnit: "1s",
+      duration: "2m",
+      preAllocatedVUs: 20,
+      maxVUs: 50,
+    },
+  },
+  thresholds: {
+    // E2E latency includes processing time — set realistic SLO
+    "async_e2e_latency_ms": ["p(95)<5000"],    // 5s for 95% of tasks
+    "task_completed_rate":  ["rate>0.99"],     // >99% tasks complete
+    http_req_failed:         ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+const POLL_INTERVAL = 0.5;   // seconds between polls
+const POLL_TIMEOUT  = 30;    // seconds before giving up
+
+export default function () {
+  const startTime = Date.now();
+
+  // 1. Publish the event / create the task
+  const publishRes = http.post(
+    `${BASE}/api/tasks`,
+    JSON.stringify({ type: "image-process", data: `item-${__ITER}` }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+
+  check(publishRes, { "publish 202": (r) => r.status === 202 });
+  const taskId = publishRes.json("id");
+  if (!taskId) return;
+
+  // 2. Poll until completed or timeout
+  let done = false;
+  while (!done && (Date.now() - startTime) / 1000 < POLL_TIMEOUT) {
+    sleep(POLL_INTERVAL);
+
+    const statusRes = http.get(
+      `${BASE}/api/tasks/${taskId}`,
+      { tags: { name: "GET /api/tasks/:id" } }
+    );
+
+    check(statusRes, { "poll 200": (r) => r.status === 200 });
+
+    const status = statusRes.json("status");
+    if (status === "completed" || status === "failed") {
+      done = true;
+      e2eLatency.add(Date.now() - startTime);
+      completed.add(status === "completed" ? 1 : 0);
+    }
+  }
+
+  if (!done) {
+    // Timed out — log and count as incomplete
+    completed.add(0);
+    console.warn(`Task ${taskId} timed out after ${POLL_TIMEOUT}s`);
+  }
+}
+```
+
+> **[community]:** For async systems, `http_req_duration` measures only the publish call
+> latency (typically <50ms). The true SLO is end-to-end time from publish to result
+> available — always measure it with a custom `Trend` and polling loop. A system that
+> processes all tasks in <50ms for the API call but takes 120s for the actual work looks
+> "healthy" in k6 dashboards if you only monitor HTTP latency.
+
+---
+
+### Chaos Engineering with xk6-disruptor  [community]
+
+`xk6-disruptor` combines load testing with controlled fault injection — essential for
+validating circuit breakers, retry budgets, and error-rate SLOs under realistic failure
+conditions. Requires a Kubernetes cluster and the disruptor extension binary.
+
+```bash
+# Build k6 with disruptor extension
+xk6 build --with github.com/grafana/xk6-disruptor
+
+# Verify the extension loaded
+./k6 version  # should list xk6-disruptor in extensions
+```
+
+```javascript
+// k6/scripts/chaos-load.js
+// Combines sustained load + HTTP fault injection
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { ServiceDisruptor } from "k6/x/disruptor";
+import { Rate } from "k6/metrics";
+
+const errorRate = new Rate("error_rate");
+
+export const options = {
+  scenarios: {
+    load: {
+      executor: "constant-vus",
+      vus: 20,
+      duration: "3m",
+      exec: "loadFlow",
+      tags: { scenario: "load" },
+    },
+    inject_faults: {
+      executor: "shared-iterations",
+      vus: 1,
+      iterations: 1,
+      startTime: "30s",
+      exec: "injectFaults",
+      tags: { scenario: "chaos" },
+    },
+  },
+  thresholds: {
+    "error_rate": ["rate<0.20"],
+    "http_req_duration{scenario:load}": ["p(95)<2000"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export function loadFlow() {
+  const res = http.get(`${BASE}/api/items`);
+  check(res, { "ok": (r) => r.status < 500 });
+  errorRate.add(res.status >= 500 ? 1 : 0);
+  sleep(0.5);
+}
+
+export function injectFaults() {
+  const disruptor = new ServiceDisruptor(
+    __ENV.SERVICE_NAME       || "items-service",
+    __ENV.SERVICE_NAMESPACE  || "default"
+  );
+  disruptor.injectHTTPFaults(
+    { averageDelay: "500ms", errorRate: 0.05, errorCode: 503 },
+    "60s"
+  );
+}
+```
+
+> **[community]:** xk6-disruptor requires privileged Kubernetes access — it installs a
+> sidecar proxy on target pods. Use `startTime` on the chaos scenario to establish a clean
+> baseline before injecting faults; this separates pre-chaos from during-chaos metrics.
+
+### Distributed k6 with the k6 Operator (Kubernetes)  [community]
+
+For extremely high load requirements (>100 k req/s) or when your application runs inside
+a Kubernetes cluster, use the **k6 Operator** to distribute test execution across multiple
+pods. Each pod runs an independent k6 instance; the Operator coordinates start timing via
+a "starter" controller. Results aggregate into your configured output (Grafana Cloud,
+Prometheus, InfluxDB).
+
+**Install the k6 Operator:**
+```bash
+kubectl apply -f https://raw.githubusercontent.com/grafana/k6-operator/main/bundle.yaml
+```
+
+**Store your test script in a ConfigMap:**
+```bash
+# Single-file script
+kubectl create configmap my-load-test --from-file k6/scripts/load.js
+
+# Multi-file script + helpers (bundle as k6 archive first)
+k6 archive k6/scripts/load.js -e API_URL=placeholder
+kubectl create configmap my-load-test-archive --from-file archive.tar
+```
+
+**TestRun manifest:**
+```yaml
+# k6/k8s/testrun.yaml
+apiVersion: k6.io/v1alpha1
+kind: TestRun
+metadata:
+  name: load-test-run
+spec:
+  parallelism: 4        # 4 pods, each running 1/4 of the VU profile
+  script:
+    configMap:
+      name: my-load-test
+      file: load.js
+  separate: false
+  runner:
+    image: grafana/k6:latest
+    env:
+      - name: API_URL
+        valueFrom:
+          secretKeyRef:
+            name: k6-env-secrets
+            key: API_URL
+      - name: E2E_USER_EMAIL
+        valueFrom:
+          secretKeyRef:
+            name: k6-env-secrets
+            key: E2E_USER_EMAIL
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+  cleanup: "post"
+```
+
+**Run the test:**
+```bash
+kubectl apply -f k6/k8s/testrun.yaml
+
+# Watch status
+kubectl get testrun load-test-run -w
+
+# Follow logs from all runner pods
+kubectl logs -l app=k6 -f --prefix
+
+# Clean up manually if cleanup: "post" is not set
+kubectl delete -f k6/k8s/testrun.yaml
+```
+
+> **[community]:** With `parallelism: 4`, each pod receives `1/4` of the VU count defined in
+> your script's `options`. A script with 400 VUs becomes 100 VUs per pod. k6 uses the
+> `--execution-segment` flag automatically — you do NOT need to set it manually. Each pod
+> evaluates thresholds independently; use a Grafana dashboard to aggregate results
+> rather than relying on per-pod threshold pass/fail for the overall gate.
+
+### Per-Scenario Environment Variables  [community]
+
+Each scenario can define its own `env` block. This is the cleanest way to point multiple
+scenarios at different service tiers in a single test run — no global `__ENV` collisions.
+
+```javascript
+// k6/scripts/multi-env.js
+import http from "k6/http";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    // Read scenario hits the read replica
+    reads: {
+      executor: "constant-vus",
+      vus: 20,
+      duration: "2m",
+      exec: "readScenario",
+      env: { SERVICE_URL: "http://read.api.internal", TIER: "read" },
+      tags: { tier: "read" },
+    },
+    // Write scenario hits the primary
+    writes: {
+      executor: "constant-arrival-rate",
+      rate: 10,
+      timeUnit: "1s",
+      duration: "2m",
+      preAllocatedVUs: 10,
+      maxVUs: 30,
+      exec: "writeScenario",
+      env: { SERVICE_URL: "http://write.api.internal", TIER: "write" },
+      tags: { tier: "write" },
+      startTime: "10s",
+    },
+  },
+  thresholds: {
+    "http_req_duration{tier:read}":  ["p(95)<150"],
+    "http_req_duration{tier:write}": ["p(95)<400"],
+  },
+};
+
+export function readScenario() {
+  // Reads its own scenario-scoped SERVICE_URL — no global ENV needed
+  const res = http.get(`${__ENV.SERVICE_URL}/api/items`);
+  check(res, { "read ok": (r) => r.status === 200 });
+}
+
+export function writeScenario() {
+  const res = http.post(
+    `${__ENV.SERVICE_URL}/api/items`,
+    JSON.stringify({ name: `item-${__ITER}` }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+  check(res, { "write 201": (r) => r.status === 201 });
+}
+```
+
+---
+
+## Browser Module — Advanced Patterns
+
+### CPU and Network Throttling for Realistic Conditions  [community]
+
+The browser module's `throttleCPU()` and `throttleNetwork()` simulate constrained devices —
+essential for testing mobile users or slow-network scenarios. These are underused because
+teams focus on backend RPS, not frontend rendering performance.
+
+```javascript
+// k6/scripts/browser-mobile.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    mobile_slownet: {
+      executor: "shared-iterations",
+      vus: 2,
+      iterations: 5,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+  thresholds: {
+    // LCP budget for mobile users on slow 3G
+    "browser_web_vital_lcp": ["p(75)<4000"],
+    "browser_web_vital_fid": ["p(75)<300"],
+    checks:                   ["rate==1.0"],
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    // Simulate 4x CPU slowdown (mid-range Android device)
+    await page.throttleCPU({ rate: 4 });
+
+    // Simulate Slow 3G network conditions
+    await page.throttleNetwork({
+      latency:       400,      // ms round-trip
+      downloadThroughput: 500 * 1024 / 8,  // 500 kbps
+      uploadThroughput:   200 * 1024 / 8,   // 200 kbps
+    });
+
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/`);
+
+    // Wait for meaningful paint — not just document load
+    await page.waitForLoadState("networkidle");
+
+    const heading = page.getByRole("heading", { level: 1 });
+    await heading.waitFor({ state: "visible" });
+
+    check(await heading.textContent(), {
+      "heading visible": (h) => h && h.length > 0,
+    });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+### Mixed HTTP + Browser Scenario  [community]
+
+Run protocol-level (HTTP) and browser scenarios in the same k6 test. API VUs handle
+backend load; browser VUs validate UI correctness under that load. Keep browser VU
+counts very low — each Chromium subprocess uses ~200-400 MB RAM.
+
+```javascript
+// k6/scripts/mixed-protocol-browser.js
+import http from "k6/http";
+import { browser } from "k6/browser";
+import { check, sleep } from "k6";
+
+export const options = {
+  scenarios: {
+    // HTTP scenario — high throughput API load
+    api_load: {
+      executor: "constant-arrival-rate",
+      rate: 50,
+      timeUnit: "1s",
+      duration: "2m",
+      preAllocatedVUs: 30,
+      maxVUs: 100,
+      exec: "apiFlow",
+      tags: { type: "http" },
+    },
+    // Browser scenario — low VU count, validates UI under load
+    ui_check: {
+      executor: "constant-vus",
+      vus: 2,          // KEEP LOW — each browser VU = one Chromium process
+      duration: "2m",
+      exec: "uiFlow",
+      tags: { type: "browser" },
+      options: { browser: { type: "chromium" } },
+    },
+  },
+  thresholds: {
+    // HTTP SLOs
+    "http_req_duration{type:http}": ["p(95)<200"],
+    "http_req_failed{type:http}":   ["rate<0.01"],
+    // Browser Web Vitals
+    "browser_web_vital_lcp":        ["p(75)<3000"],
+    checks:                          ["rate>0.99"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export function apiFlow() {
+  const res = http.get(`${BASE}/api/items`);
+  check(res, { "items 200": (r) => r.status === 200 });
+  sleep(0.2);
+}
+
+export async function uiFlow() {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${BASE}/`);
+    await page.waitForLoadState("networkidle");
+    const title = page.getByRole("heading", { level: 1 });
+    await title.waitFor({ state: "visible" });
+    check(await title.textContent(), { "title visible": (t) => t?.length > 0 });
+    await page.screenshot({ path: `results/ui-${__ITER}.png` });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+> **Critical [community]:** Never define both HTTP and browser VUs inside the same `exec`
+> function. k6 enforces that browser context can only be used from the `exec` function
+> designated in a browser scenario. Mixing them in one function causes a `context deadline
+> exceeded` error. Always use separate `exec` functions.
 
 ---
 
@@ -1408,8 +2582,91 @@ debt that surfaces as breakage during k6 upgrades.
 | `options.thresholds` | Pass/fail gates on metrics | Every production script |
 | `options.tags` | Default tags added to all metrics | Environment / version labelling |
 | `options.discardResponseBodies` | Skip storing response bodies | High-throughput tests (saves memory) |
+| `options.minIterationDuration` | Enforce minimum iteration time (VU sleeps if faster) | Prevents VU loops from running at wire speed |
+| `options.noCookiesReset` | Keep cookies across iterations | Session-replay / stateful tests |
+| `options.setupTimeout` | Max time allowed for `setup()` | Database seeding, slow auth flows |
+| `options.hosts` | DNS override (like /etc/hosts) | Redirecting to staging without changing URLs |
+| `options.httpDebug` | Log HTTP request/response details | Debugging auth flows locally |
+| `options.insecureSkipTLSVerify` | Skip TLS cert validation | Self-signed certs on staging |
+| `options.tlsAuth` | Client cert (mTLS) per domain | mTLS/zero-trust internal APIs |
+| `options.systemTags` | Filter system tags on metrics | Reduce metric cardinality in dashboards |
 
----
+### k6/execution Module — Test Introspection
+
+The `k6/execution` module (k6 v0.34+) provides real-time execution context. Prefer it
+over `__VU` and `__ITER` for distributed-safe unique IDs.
+
+```javascript
+// k6/scripts/execution-context.js
+import http from "k6/http";
+import { check, sleep } from "k6";
+import exec from "k6/execution";
+
+export const options = {
+  scenarios: {
+    load: {
+      executor: "ramping-vus",
+      stages: [
+        { duration: "30s", target: 20 },
+        { duration: "1m",  target: 20 },
+        { duration: "10s", target: 0  },
+      ],
+    },
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  // exec.scenario.iterationInTest is globally unique across all VUs and instances
+  // Safer than __VU * __ITER for generating unique IDs in distributed runs
+  const globalIter   = exec.scenario.iterationInTest;
+  const vuIdInTest   = exec.vu.idInTest;
+  const scenarioName = exec.scenario.name;
+
+  // Progress monitoring — useful for long soak tests
+  const progress = (exec.scenario.progress * 100).toFixed(1);
+
+  // Abort the test from within VU code (use sparingly)
+  if (exec.vu.iterationInScenario === 0 && exec.vu.idInTest === 1) {
+    // First VU, first iteration — good place for pre-flight checks
+    const healthRes = http.get(`${BASE}/api/health`);
+    if (healthRes.status !== 200) {
+      // Gracefully abort: all VUs will finish their current iteration then stop
+      exec.test.abort("Health check failed at start of test");
+    }
+  }
+
+  const res = http.post(
+    `${BASE}/api/items`,
+    JSON.stringify({ name: `item-${globalIter}`, vuId: vuIdInTest }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+
+  check(res, { "created": (r) => r.status === 201 });
+  sleep(1);
+}
+```
+
+**`exec.test.abort(message)`** — programmatically stops the test from within VU code.
+Use for pre-flight failures (wrong environment, missing fixtures) where continuing would
+produce meaningless results. The test exits with a non-zero code.
+
+| exec property | Type | What it provides |
+|---------------|------|-----------------|
+| `exec.scenario.name` | string | Running scenario name |
+| `exec.scenario.executor` | string | Executor type |
+| `exec.scenario.startTime` | number | Unix ms timestamp |
+| `exec.scenario.progress` | number | 0.0–1.0 completion |
+| `exec.scenario.iterationInTest` | number | Global unique iteration ID |
+| `exec.vu.idInTest` | number | VU ID across full test (stable across segments) |
+| `exec.vu.idInInstance` | number | VU ID within k6 instance |
+| `exec.vu.iterationInScenario` | number | Per-VU iteration count within scenario |
+| `exec.instance.iterationsCompleted` | number | Total iterations done by this instance |
+| `exec.instance.currentTestRunDuration` | number | Milliseconds elapsed |
+| `exec.test.abort(msg)` | function | Gracefully abort the entire test |
+
+
 
 ## Executor Quick-Reference
 
@@ -1590,11 +2847,27 @@ Stream metrics to external systems during the run:
 k6 run --out influxdb=http://localhost:8086/k6 k6/scripts/load.js
 
 # Prometheus remote-write (requires Prometheus 2.x)
+# Note: still uses "experimental-prometheus-rw" name as of k6 v1.x
 K6_PROMETHEUS_RW_SERVER_URL=http://localhost:9090/api/v1/write \
   k6 run --out experimental-prometheus-rw k6/scripts/load.js
 
+# Prometheus remote-write with native histograms (Prometheus 2.40+)
+K6_PROMETHEUS_RW_SERVER_URL=http://localhost:9090/api/v1/write \
+K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true \
+K6_PROMETHEUS_RW_TREND_STATS=p(50),p(90),p(95),p(99),min,max \
+K6_PROMETHEUS_RW_STALE_MARKERS=true \
+  k6 run --tag testid=smoke-001 --out experimental-prometheus-rw k6/scripts/load.js
+
 # OpenTelemetry (stable as of k6 v1.3) — OTLP HTTP or gRPC
+# Metrics automatically prefixed with "k6_"; Rate → Int64Counter, Trend → Float64Histogram
 K6_OTEL_GRPC_EXPORTER_ENDPOINT=localhost:4317 \
+K6_OTEL_METRIC_PREFIX=k6_ \
+K6_OTEL_SERVICE_NAME=my-load-test \
+  k6 run --out opentelemetry k6/scripts/load.js
+
+# OpenTelemetry via HTTP/protobuf (for Tempo or Jaeger ingestion)
+K6_OTEL_HTTP_EXPORTER_ENDPOINT=http://localhost:4318 \
+K6_OTEL_EXPORTER_PROTOCOL=http/protobuf \
   k6 run --out opentelemetry k6/scripts/load.js
 
 # Datadog — add K6_STATSD_ENABLE_TAGS=true for tag support
@@ -1626,15 +2899,29 @@ k6/
     load.js               # ramping-vus — normal traffic
     stress.js             # ramping-vus — beyond normal
     soak.js               # long-running stability
+    soak-authed.js        # soak with per-VU JWT token refresh
     breakpoint.js         # ramping-arrival-rate — find max RPS
     mixed-load.js         # multi-scenario with scenarios API
+    universal.js          # single script — smoke/load/stress via PROFILE env var
     websocket-load.js     # WebSocket load pattern (uses k6/websockets stable module)
+    ws-authed-throughput.js # WebSocket with auth + latency metrics
     browser-smoke.js      # browser module UI smoke test
-    grpc-load.js          # gRPC load test
+    browser-mobile.js     # browser module with CPU/network throttling
+    mixed-protocol-browser.js  # HTTP + browser scenarios in one test
+    grpc-load.js          # gRPC unary load test
+    grpc-streaming.js     # gRPC server-side streaming
+    graphql-load.js       # GraphQL query + mutation load test
+    file-upload.js        # multipart file upload test
     csv-users-load.js     # CSV-parameterized load test
+    page-load.js          # batch requests simulating page load
+    user-journey.js       # multi-step user journey with groups
+    session-flow.js       # cookie jar session management
+    sequenced.js          # sequential scenario warm-up with startTime
+    async-e2e.js          # async/eventual consistency E2E latency
+    chaos-load.js         # load + xk6-disruptor fault injection (k8s only)
   lib/
-    auth.js               # shared setup() / getToken() helpers
-    thresholds.js         # reusable threshold presets
+    auth.js               # shared setup() / getToken() helpers + token manager
+    thresholds.js         # reusable threshold presets per environment
     data.js               # SharedArray test data loaders (JSON + CSV)
     retry.js              # httpGetWithRetry / httpPostWithRetry
     session.js            # cookie jar session helpers
@@ -1644,8 +2931,11 @@ k6/
     products.json         # product SKUs for checkout tests
   proto/
     items.proto           # .proto files for gRPC tests
+    streaming.proto       # .proto for streaming tests
+  k8s/
+    testrun.yaml          # k6 Operator TestRun manifest for distributed execution
   dist/                   # webpack bundles (gitignored)
-  results/                # .json / .csv summary exports (gitignored)
+  results/                # .json / .csv / .html / JUnit summary exports (gitignored)
   webpack.config.js       # optional — only needed for npm dependency bundling
   tsconfig.json           # optional — k6 v0.57+ runs .ts files natively via esbuild
 ```
@@ -1654,4 +2944,21 @@ k6/
 > for type annotations. Run `k6 run script.ts` directly. Note: k6's TypeScript support is
 > transpilation-only (esbuild strips types but does NOT type-check). For compile-time
 > safety, add a `tsc --noEmit` pre-check step in CI before running k6.
+>
+> **Recommended tsconfig.json for k6 TypeScript projects:**
+> ```json
+> {
+>   "compilerOptions": {
+>     "target": "ES2020",
+>     "module": "ESNext",
+>     "lib": ["ES2020"],
+>     "noEmit": true,
+>     "strict": true,
+>     "skipLibCheck": true,
+>     "types": ["k6"]
+>   }
+> }
+> ```
+> Install k6 type definitions: `npm install --save-dev @types/k6`
+> CI pre-check: `tsc --noEmit && k6 run script.ts`
 

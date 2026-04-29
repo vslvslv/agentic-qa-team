@@ -1,6 +1,26 @@
 # Contract Testing (Consumer-Driven) — QA Methodology Guide
-<!-- lang: JavaScript | topic: contract-testing | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: JavaScript | topic: contract-testing | iteration: 5 | score: 100/100 | date: 2026-04-28 -->
 <!-- sources: training knowledge (WebFetch/WebSearch unavailable) | official: docs.pact.io, pact-foundation/pact-js | community: production lessons -->
+
+## Terminology (ISTQB CTFL 4.0 alignment)
+
+This guide uses standardized ISTQB CTFL 4.0 terminology throughout. Key mappings:
+
+| Common informal term | ISTQB CTFL 4.0 term | Notes |
+|---|---|---|
+| "test layer" | **test level** | Pact sits at the component integration test level |
+| "thing under test" | **test object** | The provider service is the test object in verification |
+| "test set" | **test suite** | A pact file represents a consumer's test suite of interactions |
+| "bug" / "error" | **defect** | Used below except when quoting tool output |
+| "test scenario" | **test case** | Each Pact interaction is a test case |
+| "test source" | **test basis** | The consumer's API usage patterns are the test basis |
+
+> The contract testing test level sits **between** the component test level (unit tests) and the
+> component integration test level (integration tests). CDC replaces the structural concern
+> ("does the API shape match?") that would otherwise be validated at the component integration
+> test level, allowing integration tests to focus solely on behavioural correctness.
+
+---
 
 ## Core Principles
 
@@ -727,6 +747,102 @@ jobs:
 
 ---
 
+### package.json Pact Script Integration (JavaScript / Node.js)
+
+```json
+{
+  "name": "order-service",
+  "scripts": {
+    "test:pact:consumer": "jest --testPathPattern='\\.pact\\.spec\\.' --forceExit",
+    "test:pact:provider": "jest --testPathPattern='\\.provider\\.pact\\.' --forceExit",
+    "pact:publish": "pact-broker publish ./pacts --consumer-app-version $GIT_COMMIT --branch $GIT_BRANCH --broker-base-url $PACT_BROKER_URL --broker-token $PACT_BROKER_TOKEN",
+    "pact:can-deploy:staging": "pact-broker can-i-deploy --pacticipant OrderService --version $GIT_COMMIT --to-environment staging --broker-base-url $PACT_BROKER_URL --broker-token $PACT_BROKER_TOKEN --retry-while-unknown 5 --retry-interval 15",
+    "pact:can-deploy:prod": "pact-broker can-i-deploy --pacticipant OrderService --version $GIT_COMMIT --to-environment production --broker-base-url $PACT_BROKER_URL --broker-token $PACT_BROKER_TOKEN --retry-while-unknown 5 --retry-interval 15",
+    "pact:record-deploy:staging": "pact-broker record-deployment --pacticipant OrderService --version $GIT_COMMIT --environment staging --broker-base-url $PACT_BROKER_URL --broker-token $PACT_BROKER_TOKEN",
+    "pact:record-deploy:prod": "pact-broker record-deployment --pacticipant OrderService --version $GIT_COMMIT --environment production --broker-base-url $PACT_BROKER_URL --broker-token $PACT_BROKER_TOKEN"
+  },
+  "devDependencies": {
+    "@pact-foundation/pact": "^13.0.0",
+    "@pact-foundation/pact-cli": "^1.0.0",
+    "jest": "^29.0.0",
+    "wait-on": "^7.0.0"
+  }
+}
+```
+
+**Key points:**
+- `test:pact:consumer` and `test:pact:provider` are separate scripts — run them in separate CI jobs so they can execute independently against the Pact Broker
+- `pact:publish` publishes the generated pact files after consumer tests; always run immediately after `test:pact:consumer` succeeds
+- `pact:can-deploy:staging` and `pact:can-deploy:prod` are separate scripts per environment — staging may have a looser consumer version selector than production
+- `pact:record-deploy` is the often-forgotten companion to `can-i-deploy`: after a successful deployment, record it in the Broker so `deployedOrReleased` selectors stay accurate. Without this, `consumerVersionSelectors: [{ deployedOrReleased: true }]` in provider verification will not know what's actually deployed
+- These scripts work on Unix/macOS/Linux. On Windows CI, use `cross-env` or set vars in the CI step environment rather than inline `$VAR` syntax
+
+---
+
+### Consumer Version Selectors Reference (JavaScript — provider verification)
+
+Consumer version selectors tell the provider which consumer pact versions to verify. Choosing wrong selectors is a common source of over-testing or missed regressions.
+
+```javascript
+// inventory-service.provider.pact.spec.js — consumer version selectors explained
+import { VerifierV3 } from '@pact-foundation/pact';
+
+// RECOMMENDED: covers the important cases without over-fetching
+const recommendedSelectors = [
+  // Verify against the consumer's main branch (trunk)
+  { mainBranch: true },
+  // Verify against any consumer version currently deployed or released in any environment
+  { deployedOrReleased: true },
+];
+
+// DURING FEATURE DEVELOPMENT: also verify against the consumer's feature branch
+const developmentSelectors = [
+  { mainBranch: true },
+  { deployedOrReleased: true },
+  // Verify against a specific consumer branch (e.g., the consumer's feature branch for a new endpoint)
+  { branch: 'feature/new-checkout-flow', fallbackBranch: 'main' },
+];
+
+// LEGACY (pre-environment API): tag-based selectors — still works but deprecated
+const legacyTagSelectors = [
+  { tag: 'main', latest: true },          // latest consumer pact tagged 'main'
+  { tag: 'production', latest: true },    // latest consumer pact tagged 'production'
+  { tag: 'staging', latest: true },
+];
+
+// ANTI-PATTERN: verifying all consumer versions ever published
+// { all: true } — do NOT use; causes O(n) verification as pact history grows,
+// slows CI, and flags regressions in pacts that are no longer relevant
+
+describe('InventoryService provider verification — selector examples', () => {
+  it('verifies recommended selectors', async () => {
+    const verifier = new VerifierV3({
+      provider: 'InventoryService',
+      providerBaseUrl: `http://localhost:${process.env.PORT || 3001}`,
+      pactBrokerUrl: process.env.PACT_BROKER_URL,
+      pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+      consumerVersionSelectors: recommendedSelectors,
+      enablePending: true,
+      includeWipPactsSince: '2024-01-01',
+      publishVerificationResult: process.env.PUBLISH_VERIFICATION_RESULTS === 'true',
+      providerVersion: process.env.GIT_COMMIT,
+      providerVersionBranch: process.env.GIT_BRANCH,
+      stateHandlers: { /* ... */ },
+    });
+    await verifier.verifyProvider();
+  });
+});
+```
+
+**Key decision rules:**
+- `mainBranch: true` — always include; catches regressions before they merge to trunk
+- `deployedOrReleased: true` — always include; requires `record-deployment` to be accurate
+- `branch: 'X'` — add when a consumer and provider feature are being developed in parallel; remove once merged
+- `tag: 'X'` selectors — acceptable for brokers pre-v2.82; migrate to environment-based selectors when possible
+- Never use `{ all: true }` — it creates unbounded verification growth as pact history accumulates
+
+---
+
 ## Anti-Patterns
 
 | Anti-Pattern | Why It Hurts | Fix |
@@ -740,6 +856,9 @@ jobs:
 | Placing `can-i-deploy` in the wrong pipeline stage | Checking too early (before verification completes) yields "unknown" and blocks valid deploys | Gate exactly at the deploy step, after provider verification pipeline has had time to publish results |
 | Not enabling WIP/pending pacts | New consumer interactions block provider CI before the provider is ready to implement them | Set `enablePending: true` and `includeWipPactsSince` in `VerifierV3` during initial rollout |
 | Using Pact for third-party / external APIs | You cannot control the provider verification pipeline for external APIs | Use OpenAPI validation or API snapshot testing for third-party APIs |
+| Using `{ all: true }` consumer version selector | Provider verifies every pact ever published — O(n) verification cost grows unboundedly as the service ages | Use `{ mainBranch: true }` + `{ deployedOrReleased: true }` exclusively |
+| Skipping `record-deployment` after deploy | `deployedOrReleased` selector becomes inaccurate — provider stops verifying pacts for what is actually live | Always call `pact-broker record-deployment` immediately after each successful deployment in CI |
+| Interaction sprawl — one interaction per field combination | A single consumer with dozens of interactions slows provider verification linearly | Group interactions by feature or use-case, not by individual field; use matchers to handle variance |
 
 ---
 
@@ -764,6 +883,10 @@ jobs:
 9. **[community] Version tagging strategy matters more than most teams expect.** Early adopters tag consumer versions with branch names (`main`, `feature-x`). This works until branches diverge for weeks. Use Git SHA as the version and Git branch as the branch tag — the Pact Broker's `deployedOrReleased` selector then correctly identifies what's actually live.
 
 10. **[community] Contract tests are not a substitute for a schema registry.** In event-driven architectures (Kafka, SNS/SQS), Pact supports message pacts, but many teams overlook this and only test HTTP. If your services exchange async messages, apply CDC to message payloads with `MessageConsumerPact` — otherwise a broken event schema will only surface when consumers process live messages.
+
+11. **[community] `record-deployment` is the forgotten half of `can-i-deploy`.** Teams correctly implement `can-i-deploy` but skip `pact-broker record-deployment` after a successful deploy. Without it, the Broker's `deployedOrReleased` selector cannot track what is actually live in each environment, causing `consumerVersionSelectors: [{ deployedOrReleased: true }]` to silently under-select pacts for verification — a provider can break deployed consumers without its own CI catching the regression.
+
+12. **[community] TypeScript types and Pact matchers are orthogonal.** A common misconception: "our TypeScript types already enforce the contract." TypeScript types are compile-time guarantees within one codebase; they do nothing to prevent a provider from returning a different shape at runtime. Pact matchers verify the actual HTTP response at runtime, across a network boundary, in a separate process that TypeScript cannot reach. TypeScript types and Pact matchers should mirror each other but are not substitutes.
 
 ---
 
@@ -813,6 +936,8 @@ PactFlow's bi-directional contract testing allows providers to upload an OpenAPI
 - The team wants schema-level + consumer-specificity without provider code changes
 
 The tradeoff: bi-directional contracts don't run real code, so they cannot catch bugs in business logic or provider state transitions — only structural mismatches.
+
+---
 
 ---
 
@@ -909,6 +1034,8 @@ describe('SearchService → CatalogService contract (array matchers)', () => {
 
 ---
 
+### Reference Links
+
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
 | Pact Docs | Official | https://docs.pact.io/ | Full reference for all Pact concepts |
@@ -920,3 +1047,4 @@ describe('SearchService → CatalogService contract (array matchers)', () => {
 | Martin Fowler — Consumer-Driven Contracts | Article | https://martinfowler.com/articles/consumerDrivenContracts.html | Foundational article explaining CDC origins |
 | OpenAPI Specification | Spec | https://spec.openapis.org/oas/latest.html | For the lighter schema-validation alternative |
 | buf — Protobuf breaking change detection | Docs | https://buf.build/docs/breaking/ | gRPC/Protobuf CDC alternative |
+| ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology reference |

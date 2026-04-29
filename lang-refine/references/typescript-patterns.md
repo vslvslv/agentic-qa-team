@@ -1,5 +1,5 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 6 | score: 100/100 | date: 2026-04-27 -->
+<!-- sources: official | community | mixed | iteration: 9 | score: 100/100 | date: 2026-04-28 -->
 
 ## Core Philosophy
 
@@ -43,6 +43,35 @@ What each strict sub-flag catches:
 - `strictFunctionTypes` — enforces correct function parameter contravariance
 - `strictPropertyInitialization` — ensures class fields are initialized in the constructor
 - `useUnknownInCatchVariables` — makes caught values `unknown` instead of `any`, requiring a narrow before use
+
+Executable examples showing what strict sub-flags catch:
+
+```typescript
+// strictNullChecks: accessing a property that may be null
+function getLength(s: string | null): number {
+  // Without strict: TypeScript allows this — runtime crash on null
+  // With strictNullChecks: Error: Object is possibly 'null'
+  return s.length; // ERROR under strict
+  // Fix: return s?.length ?? 0;
+}
+
+// noImplicitAny: untyped parameter becomes any without annotation
+function double(x) { // ERROR: parameter 'x' implicitly has an 'any' type
+  return x * 2;
+}
+// Fix: function double(x: number): number { return x * 2; }
+
+// strictPropertyInitialization: class field used before assignment
+class Config {
+  apiUrl: string; // ERROR: not definitely assigned in constructor
+  constructor(env: 'prod' | 'dev') {
+    if (env === 'prod') this.apiUrl = 'https://api.example.com';
+    // dev branch never assigns — TypeScript catches the missing path
+  }
+}
+// Fix: apiUrl: string = ''; OR use definite assignment assertion (apiUrl!: string)
+//      OR initialize in every constructor branch.
+```
 
 ---
 
@@ -304,7 +333,121 @@ const service = new OrderService(mockHttpClient, mockLogger);
 
 ---
 
-### Assertion Functions (`asserts`)
+### Callback Types: `void` Return, Non-Optional Parameters, and Overload Arity
+Official TypeScript declaration guidelines specify three rules for callback types that are frequently violated in the wild.
+
+```typescript
+// Rule 1: Use void (not any) for ignored callback return values
+// void prevents accidental use of the return value; any disables all checking
+
+// WRONG
+function forEach<T>(items: T[], callback: (item: T) => any): void {
+  items.forEach(callback);
+}
+
+// CORRECT
+function forEach<T>(items: T[], callback: (item: T) => void): void {
+  items.forEach(callback);
+}
+
+// Rule 2: Write callback parameters as non-optional
+// Callers CAN ignore extra parameters (JS feature); marking them optional
+// creates ambiguity about whether the callback itself is optional.
+
+// WRONG
+interface DataFetcher {
+  fetch(done: (data: unknown, elapsed?: number) => void): void;
+}
+
+// CORRECT
+interface DataFetcher {
+  fetch(done: (data: unknown, elapsed: number) => void): void;
+}
+
+// Rule 3: For callbacks with varying arity, use a single max-arity overload
+// TypeScript's first-match rule means shorter overloads would shadow longer ones.
+
+// WRONG — shorter overload matches first, longer is unreachable
+declare function beforeAll(action: () => void, timeout?: number): void;
+declare function beforeAll(action: (done: DoneFn) => void, timeout?: number): void;
+
+// CORRECT — single overload with max parameters
+declare function beforeAll(
+  action: (done: DoneFn) => void,
+  timeout?: number
+): void;
+```
+
+---
+
+### Function Overloads — Most Specific First, Prefer Union Types
+TypeScript resolves overloads by matching the _first_ compatible signature. Poorly ordered or unnecessarily split overloads produce wrong return types and hide valid call patterns.
+
+```typescript
+// WRONG: general overload first — specific signatures are unreachable
+declare function process(x: unknown): unknown;
+declare function process(x: HTMLElement): number;
+declare function process(x: HTMLDivElement): string;
+
+// CORRECT: specific to general
+declare function process(x: HTMLDivElement): string;
+declare function process(x: HTMLElement): number;
+declare function process(x: unknown): unknown;
+
+// Prefer optional parameters over multiple trailing overloads
+// WRONG
+interface Formatter {
+  format(value: string): string;
+  format(value: string, locale: string): string;
+  format(value: string, locale: string, precision: number): string;
+}
+
+// CORRECT — fewer overloads, same expressiveness
+interface Formatter {
+  format(value: string, locale?: string, precision?: number): string;
+}
+
+// Prefer union types over same-shape overloads
+// WRONG — breaks pass-through functions
+interface Clock {
+  setOffset(offset: number): void;
+  setOffset(offset: string): void;
+}
+
+// CORRECT — works transparently with union inputs
+interface Clock {
+  setOffset(offset: number | string): void;
+}
+```
+
+---
+
+### Primitive Types: Use Lowercase, Avoid Boxed Wrappers
+TypeScript's `String`, `Number`, `Boolean`, `Symbol`, and `Object` are JavaScript's boxed object types — they are almost never what you want. Always use the lowercase counterparts.
+
+```typescript
+// WRONG: Boxed type — a String object, not a string primitive
+function reverseWrong(s: String): String {
+  return s.split('').reverse().join('');
+  // Error: Property 'split' does not exist on type 'String' (in strict mode)
+}
+
+// CORRECT: string primitive
+function reverse(s: string): string {
+  return s.split('').reverse().join('');
+}
+
+// WRONG: Object is not the same as object (non-primitive)
+declare function accept(value: Object): void;
+
+// CORRECT: object (lowercase) excludes primitives
+declare function accept(value: object): void;
+
+// Or more specifically, use a descriptive interface
+declare function accept(value: Record<string, unknown>): void;
+```
+
+Boxed types (`String`, `Number`) are assignable to their primitive counterparts but NOT vice versa — using them as parameter types silently rejects primitive literals unless narrowed first.
 Assertion functions are a first-class TypeScript pattern for expressing runtime invariants in the type system. Unlike type predicates (`pet is Fish`), assertion functions use the `asserts` keyword and narrow the *calling scope* when they return normally — or throw if the assertion fails.
 
 ```typescript
@@ -570,6 +713,34 @@ type StringProps<T> = {
 };
 ```
 
+**`override` keyword for safe method overriding (TypeScript 4.3+).** When a subclass method overrides a base class method, TypeScript can lose track of the relationship if the base is renamed or removed. The `override` keyword makes the intent explicit — the compiler errors if the named method doesn't exist in the base class, preventing "ghost overrides" that silently become new methods.
+
+```typescript
+class Animal {
+  speak(): string {
+    return 'generic sound';
+  }
+
+  move(distance: number): void {
+    console.log(`Moved ${distance}m`);
+  }
+}
+
+class Dog extends Animal {
+  override speak(): string {  // Compiler verifies Animal.speak exists
+    return 'woof';
+  }
+
+  // override moveTo(): void { ... }  // ERROR: 'moveTo' does not exist in Animal
+  // Without override: this silently creates a NEW method Dog.moveTo
+}
+
+// Enable noImplicitOverride: true in tsconfig to REQUIRE the override keyword
+// on all overriding methods — makes implicit overrides a compile error
+```
+
+Use `noImplicitOverride: true` in `tsconfig.json` alongside `override` declarations to close the hole: without the flag, forgetting `override` is still legal.
+
 **Module augmentation for extending third-party types.** When a library's types are missing a method your runtime polyfill adds, use `declare module` to extend the types without modifying the library source. This keeps vendor types separate from your additions and avoids casting.
 
 ```typescript
@@ -667,7 +838,94 @@ const arr2 = toReadonlyArray2(['a', 'b']); // readonly ["a", "b"]
 
 This removes the need to pepper call sites with `as const` for lookup tables, configuration arrays, and route definitions.
 
-**Branded (opaque) types for domain safety.** TypeScript's structural type system means `type UserId = string` and `type ProductId = string` are interchangeable. Branded types add a phantom property that makes them nominally distinct — the compiler rejects mixing them even though the underlying runtime type is identical.
+**`NoInfer<T>` utility type (TypeScript 5.4+).** Prevents TypeScript from using a specific parameter as a source for type argument inference. Useful when one parameter should be the authoritative source and others should be validated against it rather than expanding it.
+
+```typescript
+// Without NoInfer: "blue" expands C to string | "red" | "yellow" | "green"
+function createStreetLight<C extends string>(
+  colors: C[],
+  defaultColor?: C
+): void {}
+createStreetLight(['red', 'yellow', 'green'], 'blue'); // No error — unexpected!
+
+// With NoInfer: inference only from colors[], defaultColor checked against it
+function createStreetLight<C extends string>(
+  colors: C[],
+  defaultColor?: NoInfer<C>  // Not a source for inferring C
+): void {}
+createStreetLight(['red', 'yellow', 'green'], 'blue');
+// Error: Argument of type '"blue"' is not assignable to parameter of type '"red" | "yellow" | "green"'
+```
+
+**Variance annotations (`in`, `out`, `in out`) on generic parameters.** Explicitly mark how a type parameter varies — covariant (`out`), contravariant (`in`), or invariant (`in out`). This enables faster assignability checks (the compiler can short-circuit structural comparison) and makes the type intent self-documenting.
+
+```typescript
+// Covariant: only produced (readable) — Producer<Dog> is assignable to Producer<Animal>
+interface Producer<out T> {
+  make(): T;
+}
+
+// Contravariant: only consumed (writable) — Consumer<Animal> is assignable to Consumer<Dog>
+interface Consumer<in T> {
+  consume(item: T): void;
+}
+
+// Invariant: both produced and consumed — must be exact type
+interface Container<in out T> {
+  get(): T;
+  set(item: T): void;
+}
+
+// Practical example: ReadonlyArray is covariant, Array is invariant
+// This is why ReadonlyArray<Dog>[] is assignable to ReadonlyArray<Animal>[]
+// but Array<Dog>[] is NOT assignable to Array<Animal>[]
+```
+
+Use variance annotations on interfaces with large union hierarchies where TypeScript's structural check is slow — the explicit annotation bypasses the full structural walk.
+
+**Inferred type predicates (TypeScript 5.5+).** TypeScript 5.5 automatically infers type predicates for simple filtering functions, eliminating the need for manual `value is T` annotations on `filter` callbacks and similar utilities. The inference works when: (1) the function has no explicit return type, (2) it has a single `return` statement, (3) it doesn't mutate its parameter, and (4) it returns a boolean tied to parameter refinement.
+
+```typescript
+// Before TypeScript 5.5: filter loses type information
+const items: Array<string | undefined> = ['a', undefined, 'b', undefined, 'c'];
+
+// Manual predicate required — easy to forget or get wrong
+const withManual = items.filter((x): x is string => x !== undefined);
+
+// TypeScript 5.5+: predicate inferred automatically
+const withInferred = items.filter(x => x !== undefined);
+// Type: string[] — no manual predicate needed
+
+// Also works for inline helper predicates
+const isNumber = (x: unknown) => typeof x === 'number';
+// Inferred as: (x: unknown) => x is number
+
+const mixed: Array<string | number> = [1, 'a', 2, 'b', 3];
+const numbers = mixed.filter(isNumber); // Type: number[] (not (string | number)[])
+```
+
+Conditions that PREVENT inference: explicit return type annotation, multiple return paths, any mutation of the narrowed parameter.
+
+**`isolatedDeclarations` (TypeScript 5.5+) for fast parallel builds.** When enabled, TypeScript requires explicit type annotations on all exported functions and variables, making declaration emit deterministic without cross-file inference. This unblocks third-party build tools (esbuild, swc, Rollup) from emitting `.d.ts` files in parallel — dramatically speeding up monorepo builds.
+
+```typescript
+// With isolatedDeclarations: true, exported functions need explicit return types
+// ❌ Error: Function must have explicit return type annotation with isolatedDeclarations
+export function computeHash(input: string) {
+  return input.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+}
+
+// ✅ Correct: explicit annotation makes declaration emit deterministic
+export function computeHash(input: string): number {
+  return input.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+}
+
+// Trivial literals are still inferred (no annotation needed)
+export const MAX_RETRIES = 3;       // number — OK
+export const BASE_URL = '/api/v1';  // string — OK
+```
+
+Enable in `tsconfig.json`: `"isolatedDeclarations": true` (requires `"declaration": true`). Combine with `noImplicitOverride` and explicit return types for the highest build performance in monorepos. TypeScript's structural type system means `type UserId = string` and `type ProductId = string` are interchangeable. Branded types add a phantom property that makes them nominally distinct — the compiler rejects mixing them even though the underlying runtime type is identical.
 
 ```typescript
 // Create brands with an intersection and a unique phantom property
@@ -733,6 +991,21 @@ TypeScript resolves overloads by matching the _first_ compatible signature. When
 **Large monorepos without project references.** [community]
 In multi-package repositories, running `tsc` at the root causes the compiler to type-check every package in a single pass, sharing a single module cache that grows unbounded. Teams report 30–60 second incremental builds even for small changes because one modified file invalidates the shared cache. The root cause is that TypeScript has no concept of "already checked this package" without project references. **Fix:** Add `tsconfig.json` with `"composite": true` to each package and `"references": [...]` at the root to enable per-package incremental caching (`--build` mode). Changes in one package only re-check packages that depend on it.
 
+**Using boxed types (`String`, `Number`, `Boolean`) instead of primitives.** [community]
+Developers from Java or C# backgrounds occasionally write `function fn(x: String)` thinking it's the same as `string`. It isn't: `String` is the object wrapper type and does not accept string primitives in every context. Worse, `Object` is not the same as `object` — the uppercase version accepts primitives. This creates confusing type errors at assignability boundaries. **Fix:** Use lowercase primitives exclusively: `string`, `number`, `boolean`, `symbol`. Use `object` (lowercase) for non-primitive values, or define a specific interface.
+
+**Optional callback parameters.** [community]
+Marking callback parameters as optional (`(data: T, error?: Error) => void`) seems more flexible, but it breaks TypeScript's ability to type-check the callback invocation. The official declaration guidelines note that JS callers can always ignore extra parameters — making them optional on the type creates a false impression that the second argument might not be passed, which then prevents pass-through functions from working correctly. **Fix:** Declare all callback parameters as required even if callers typically ignore some of them.
+
+**Numeric enum assignability across namespaces.** [community]
+TypeScript allows assigning numeric enum values across different enum types — `First.SomeEnum.A = 0` is assignable to `Second.SomeEnum` even if the enums are unrelated, as long as the underlying values match. This is surprising structural typing behavior for a feature that most developers expect to be nominally typed. Since TypeScript 5.4, enums must have identical member values to be cross-assignable, but older codebases silently allow this. **Fix:** Prefer string enums (`enum Status { Active = 'active' }`) over numeric enums — string enums are not structurally assignable across types, giving you the nominal isolation you expect.
+
+**`readonly` does not mean immutable.** [community]
+`readonly` prevents reassignment of a property but does NOT prevent mutation of the object that property points to. `home.resident = x` errors, but `home.resident.age++` silently succeeds. Furthermore, a `readonly` property accessed through an aliased mutable reference can change at any time — TypeScript does not track mutation across variable aliases. Developers who use `readonly` as a correctness guarantee are surprised when values change unexpectedly. **Fix:** Use `Object.freeze()` for runtime immutability, or `as const` on literal objects. For deep immutability, model data as `Readonly<DeepReadonly<T>>` or use Immer for immutable update patterns.
+
+**Excess property checking only applies to object literals.** [community]
+TypeScript enforces extra-property checking only when you pass an object literal directly to a typed assignment target. As soon as the object is assigned to an intermediate variable first, excess property checking is bypassed — the variable's structural type is wider and passes validation. Teams sometimes exploit this inadvertently for mocks or test fixtures, then wonder why inline code errors but variable code does not. **Fix:** Be aware of the asymmetry. When you want shape validation without losing literal inference, use `satisfies` — it checks shape against a type without widening the value, and still catches excess properties on assignment.
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -756,3 +1029,10 @@ In multi-package repositories, running `tsc` at the root causes the compiler to 
 | Naked type params in conditional types | Unexpected distribution over unions | Wrap in `[T] extends [U]` when non-distributive behavior is needed |
 | `const enum` in library code | Inlining breaks across compilation boundaries and Babel/esbuild | Use string literal union types or regular `enum` at boundaries |
 | Stringly-typed `EventEmitter` | Any event name / any payload; errors only at runtime | Use `TypedEventEmitter<TEvents>` pattern with a `Record<string, unknown[]>` map |
+| Boxed types (`String`, `Number`, `Boolean`) | Not assignable to primitive counterparts; causes confusing errors | Use lowercase primitives: `string`, `number`, `boolean` |
+| Optional callback parameters | Breaks pass-through typing; implies argument might not be provided | Declare all callback parameters as required |
+| General overload before specific | Specific signatures become unreachable; wrong return type | Order overloads from most specific to most general |
+| Numeric enums across namespaces | Structurally assignable to unrelated enums; nominality not enforced | Use string enums or branded types for nominal identity |
+| Missing `override` on subclass methods | Base method rename turns override into ghost new method silently | Add `override` + enable `noImplicitOverride: true` |
+| `readonly` used for runtime immutability | Only prevents property reassignment; nested mutation allowed | Use `Object.freeze()` or `as const` for runtime safety |
+| Passing object literal to bypass excess check | Use intermediate variable to widen type | Use `satisfies` to validate shape while preserving literal inference |

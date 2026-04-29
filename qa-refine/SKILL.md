@@ -107,7 +107,7 @@ Target: **score ≥ 80** or **3 iterations** or **delta < 5** → stop.
 | Tool | Skill dir(s) | Pattern checklist |
 |------|-------------|-------------------|
 | Playwright | qa-web, qa-visual, qa-api | POM, fixture-based auth (storageState + IndexedDB), locator rank, web-first assertions, API request context, network mocking, soft assertions, test sharding, component testing (--ct), aria snapshots (toMatchAriaSnapshot), locator.describe(), failOnFlakyTests, per-project workers, async disposables (await using), Shadow DOM traversal |
-| Cypress | qa-web | cy.session() auth, cy.intercept() mocking, data-cy selectors, custom commands, cy.request() API testing, Component Testing, cy.fixture(), retry-ability |
+| Cypress | qa-web | cy.session() auth, cy.intercept() mocking, data-cy selectors, custom commands, cy.request() API testing, Component Testing, cy.fixture(), retry-ability, Page Object Model (TypeScript class-based), cy.selectFile() file uploads, typed selector maps (as const), typed cy.task() with generics, cy.location() URL assertions, responsive viewport testing |
 | Selenium | qa-web | By.* selector hierarchy, Page Object Model (language-specific), explicit waits (WebDriverWait + ExpectedConditions), fluent waits, headless mode, screenshot on failure, Actions class |
 | k6 | qa-perf | Test type taxonomy, scenarios/executors, thresholds + abortOnFail, check() patterns, setup/teardown auth, custom metrics, handleSummary |
 | JMeter | qa-perf | Thread Group (ramp-up, loop count), HTTP Request Sampler, CSV Data Set Config, Response Assertion, Summary/Aggregate Report, JMeter properties for CI, Dashboard generation, distributed testing, non-GUI mode |
@@ -236,8 +236,11 @@ Pages to fetch (append to base URL):
 - `https://docs.cypress.io/guides/references/best-practices`
 - `https://docs.cypress.io/api/commands/session`
 - `https://docs.cypress.io/api/commands/intercept`
+- `https://docs.cypress.io/api/commands/selectfile`
 - `https://docs.cypress.io/guides/end-to-end-testing/testing-strategies`
 - `https://docs.cypress.io/guides/component-testing/overview`
+
+**See also:** `qa-web/references/cypress-patterns.md` (TypeScript/JavaScript)
 
 **Selenium — language-independent docs (fetch for all `TARGET_LANG`):**
 - `https://www.selenium.dev/documentation/webdriver/`

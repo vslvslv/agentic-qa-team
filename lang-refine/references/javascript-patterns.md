@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 4 | score: 100/100 | date: 2026-04-27 -->
+<!-- sources: official | community | mixed | iteration: 7 | score: 100/100 | date: 2026-04-28 -->
 
 ## Core Philosophy
 
@@ -280,9 +280,68 @@ function waitForEvent(emitter, event) {
   return promise;
 }
 const data = await waitForEvent(stream, 'data');
+
+// Array.fromAsync (ES2024) — materialise an async iterable into an array
+// Equivalent to: const arr = []; for await (const v of iter) arr.push(v);
+async function collectPages(endpoint) {
+  async function* getPages() {
+    let page = 1;
+    while (true) {
+      const { items, hasMore } = await fetch(`${endpoint}?page=${page}`).then(r => r.json());
+      yield* items;
+      if (!hasMore) break;
+      page++;
+    }
+  }
+  return Array.fromAsync(getPages()); // [ ...all items across all pages ]
+}
+
+// Array.fromAsync with mapFn — transform each awaited element
+const doubled = await Array.fromAsync(
+  [Promise.resolve(1), Promise.resolve(2), Promise.resolve(3)],
+  async v => v * 2,
+); // [2, 4, 6]
+
+// NOTE: Array.fromAsync awaits elements SEQUENTIALLY (unlike Promise.all which is concurrent)
+// Use Promise.all when concurrency matters; use Array.fromAsync for ordered async streams
 ```
 
-### Error Handling — Extending Error Classes with Cause
+### Date Handling — `Date` Today, `Temporal` Tomorrow
+The built-in `Date` object is mutable, timezone-limited, and millisecond-precision. For new projects, use `date-fns` or `luxon` today; adopt the `Temporal` API (ES2025 proposal, limited browser support as of 2026 — polyfill required) for robust, immutable date handling.
+
+```javascript
+// Current production reality: date-fns (tree-shakeable, immutable)
+import { format, addDays, differenceInCalendarDays } from 'date-fns';
+
+const today   = new Date();
+const nextWeek = addDays(today, 7);
+console.log(format(nextWeek, 'yyyy-MM-dd'));  // "2026-05-05"
+console.log(differenceInCalendarDays(nextWeek, today)); // 7
+
+// Future-proof: Temporal API (use @js-temporal/polyfill until native support)
+// import { Temporal } from '@js-temporal/polyfill';
+
+const date = Temporal.PlainDate.from({ year: 2026, month: 5, day: 5 });
+const nextMonth = date.add({ months: 1 });
+console.log(nextMonth.toString()); // "2026-06-05" — immutable; date unchanged
+
+// ZonedDateTime — correct timezone-aware arithmetic
+const meeting = Temporal.ZonedDateTime.from({
+  year: 2026, month: 5, day: 15, hour: 9, timeZone: 'America/New_York',
+});
+const londonTime = meeting.withTimeZone('Europe/London');
+
+// Why Temporal over Date:
+// - Immutable: all operations return new values
+// - Timezone-correct: DST transitions handled properly
+// - Nanosecond precision
+// - Multiple calendar systems
+// - Clear separation: PlainDate (no time), Instant (no tz), ZonedDateTime (all)
+```
+
+**Recommendation:** For production code in 2026, use `date-fns` (immutable, tree-shakeable) or `luxon` for timezone-rich apps. Use `Temporal` with `@js-temporal/polyfill` in new projects — the API is stable even if native support is incomplete.
+
+
 Throwing strings or generic `Error` loses type information and makes catch blocks unable to distinguish error types. Extend `Error` for structured error handling. Use `cause` (ES2022) to preserve error chain context without losing stack traces.
 
 ```javascript
@@ -474,6 +533,114 @@ function makeWeakCache(getter) {
     return value;
   };
 }
+```
+
+### Explicit Resource Management — `using` and `await using` (ES2025)
+ES2025 introduces deterministic, lexically-scoped resource cleanup via `using` and `await using` declarations. Any object that implements `[Symbol.dispose]()` (or `[Symbol.asyncDispose]()` for async) is automatically cleaned up when the block exits — even on exception. This is JavaScript's RAII pattern and replaces fragile `try-finally` chains.
+
+```javascript
+// Define a disposable resource (implements Symbol.dispose)
+class DatabaseConnection {
+  #conn;
+  #isOpen = true;
+
+  constructor(url) {
+    this.#conn = openConnection(url); // hypothetical
+  }
+
+  query(sql) {
+    if (!this.#isOpen) throw new Error('Connection is closed');
+    return this.#conn.execute(sql);
+  }
+
+  [Symbol.dispose]() {
+    this.#isOpen = false;
+    this.#conn.close();
+    console.log('DB connection closed');
+  }
+}
+
+// 'using' guarantees disposal even if processRows() throws
+async function runQuery(url) {
+  using db = new DatabaseConnection(url);
+  const rows = db.query('SELECT * FROM users');
+  processRows(rows);
+  // db[Symbol.dispose]() called automatically here
+}
+
+// 'await using' for async cleanup (e.g., flush buffers, async close)
+class AsyncFileWriter {
+  #handle;
+  constructor(path) { this.#handle = openFile(path); }
+  write(data) { return this.#handle.write(data); }
+  async [Symbol.asyncDispose]() {
+    await this.#handle.flush();
+    await this.#handle.close();
+  }
+}
+
+async function writeReport(path) {
+  await using writer = new AsyncFileWriter(path);
+  await writer.write('line 1\n');
+  await writer.write('line 2\n');
+  // writer[Symbol.asyncDispose]() awaited automatically here
+}
+
+// DisposableStack — manage a group of resources acquired at different times
+async function processWithStack() {
+  await using stack = new AsyncDisposableStack();
+  const db  = stack.use(new DatabaseConnection('/db1'));
+  const db2 = stack.use(new DatabaseConnection('/db2'));
+  // ... both disposed in reverse order when scope exits
+}
+```
+
+**Why it matters over `try-finally`:** with `try-finally` a throw inside `finally` silently suppresses the original error. `using` aggregates all errors into a `SuppressedError` chain so nothing is lost, and cleanup order is guaranteed to be reverse-declaration.
+
+### Iterator Helpers (ES2025)
+`Iterator.prototype` now ships with `map`, `filter`, `take`, `drop`, `flatMap`, `reduce`, `toArray`, `forEach`, `some`, `every`, and `find` — the same operations you know from arrays, but **lazy**: no intermediate arrays are allocated, and evaluation stops as soon as possible.
+
+```javascript
+// Array approach: creates 3 intermediate arrays
+const result1 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  .filter(n => n % 2 === 0)   // [2,4,6,8,10] — full pass
+  .map(n => n * n)             // [4,16,36,64,100] — full pass
+  .slice(0, 3);                // [4,16,36]
+
+// Iterator approach: single lazy pass, stops after 3 items
+const result2 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].values()
+  .filter(n => n % 2 === 0)   // lazy — computes on demand
+  .map(n => n * n)             // lazy
+  .take(3)                     // stops early
+  .toArray();                  // [4, 16, 36]
+
+// Works with infinite generators — never creates the full sequence in memory
+function* fibonacci() {
+  let [a, b] = [1, 1];
+  while (true) { yield a; [a, b] = [b, a + b]; }
+}
+
+const firstFibOver1000 = fibonacci().find(n => n > 1000); // 1597
+
+const top5EvenSquares = fibonacci()
+  .filter(n => n % 2 === 0)   // even Fibonacci numbers
+  .map(n => n * n)             // square them
+  .take(5)                     // only first 5
+  .toArray();                  // [4, 16, 196, 1444, 9604]
+
+// Iterator.from() wraps any iterable/iterator with helper methods
+const mapIter = Iterator.from(new Map([['a', 1], ['b', 2], ['c', 3]]));
+const keys = mapIter.map(([k]) => k).toArray(); // ['a', 'b', 'c']
+```
+
+**Pitfall — shared data source:** iterator helpers share the underlying iterator. Consuming the original also advances the helper.
+```javascript
+const base = [1, 2, 3].values();
+const doubled = base.map(n => n * 2);
+
+console.log(base.next().value);    // 1 — advances shared state
+console.log(doubled.next().value); // 4 — sees element 2 (not 1!)
+// Fix: create independent iterators from the source array each time
 ```
 
 ---
@@ -799,9 +966,13 @@ const cleanup = attachListeners(myButton);
 // Later: cleanup(); — removes all three listeners simultaneously
 ```
 
----
+**11. `using` with Null/Non-Disposable Values** [community] — Assigning a non-disposable object (one without `[Symbol.dispose]`) to a `using` binding throws a `TypeError` at the point of disposal, not at assignment. WHY it causes problems: the error is deferred and unexpected — you write `using conn = maybeGetConnection()` thinking it's safe, but if `maybeGetConnection()` returns a plain object, the block exits with a confusing TypeError. Fix: only use `using` with objects that implement `[Symbol.dispose]`, or explicitly check `using conn = result ?? null` (null is allowed and is a no-op).
 
-## Anti-Patterns Quick Reference
+**12. Iterator Helpers Share the Underlying Iterator** [community] — Two helper chains created from the same base iterator share state; consuming one advances the other. WHY it causes problems: code that looks like two independent streams silently reads from the same source, producing interleaved or missing data. Fix: call `.values()` (or equivalent) on the source collection independently for each chain.
+
+**13. `Array.fromAsync` is Sequential, Not Concurrent** [community] — Developers reaching for `Array.fromAsync` to collect a set of Promises expect concurrent execution (like `Promise.all`), but `Array.fromAsync` awaits each element in sequence. WHY it causes problems: what would take 100 ms with `Promise.all` takes 500 ms with `Array.fromAsync` on 5 items, silently multiplying latency. Fix: use `Promise.all` for a fixed set of concurrent Promises; use `Array.fromAsync` only for sequential async iterables where order of production matters.
+
+
 
 | Anti-Pattern | Why It's Harmful | What to Do Instead |
 |---|---|---|
@@ -817,3 +988,6 @@ const cleanup = attachListeners(myButton);
 | Using `==` instead of `===` | Implicit type coercion produces surprising truthy/falsy results | Always use `===` and `!==` |
 | Missing `return` in `.then()` handler | Breaks promise chain; subsequent handlers receive `undefined` | Always `return` the next promise from `.then()` |
 | Catching and re-throwing without `cause` | Original stack trace is lost; root cause debugging is hard | Use `throw new Error('context', { cause: err })` |
+| `using` with non-disposable object | Deferred `TypeError` at block exit, not assignment — unexpected and hard to locate | Only bind disposable objects (or `null`) to `using` |
+| Sharing base iterator across helper chains | Two helpers from the same base interleave consumption silently | Call `.values()` independently for each chain |
+| `Array.fromAsync` for concurrent Promises | Awaits each element sequentially; 5× slower than `Promise.all` for 5 items | Use `Promise.all([...])` for concurrent; `Array.fromAsync` for sequential async streams |

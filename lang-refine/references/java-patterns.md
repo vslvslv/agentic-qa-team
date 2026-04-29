@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java) | community (practitioner synthesis, Effective Java principles, awesome-java) | mixed | iteration: 3 | score: 100/100 | date: 2026-04-27 -->
+<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java) | community (practitioner synthesis, Effective Java principles, awesome-java) | mixed | iteration: 5 | score: 100/100 | date: 2026-04-28 -->
 
 ## Core Philosophy
 
@@ -561,6 +561,36 @@ List<Employee> sorted = employees.stream()
     .toList();  // Java 16+ — unmodifiable list; use Collectors.toList() if mutation needed
 ```
 
+### @FunctionalInterface and Default Interface Methods
+Marking a single-abstract-method interface with `@FunctionalInterface` enforces at compile time that the interface has exactly one abstract method — making it a valid lambda target. `default` methods let you add behaviour to interfaces without breaking existing implementors.
+
+```java
+// @FunctionalInterface — compiler enforces exactly one abstract method
+@FunctionalInterface
+public interface Transformer<T, R> {
+    R transform(T input);
+
+    // Default method: behaviour added without forcing implementors to change
+    default Transformer<T, R> andLog(String label) {
+        return input -> {
+            R result = this.transform(input);
+            System.out.printf("[%s] %s → %s%n", label, input, result);
+            return result;
+        };
+    }
+
+    // Static factory method on the interface — groups related utilities
+    static <T> Transformer<T, T> identity() {
+        return t -> t;
+    }
+}
+
+// Usage — lambda satisfies the single abstract method
+Transformer<String, Integer> lengthOf = String::length;
+Transformer<String, Integer> logged   = lengthOf.andLog("size-check");
+int n = logged.transform("hello");  // prints: [size-check] hello → 5
+```
+
 ### Functional Interfaces and Lambda Composition
 Java's `java.util.function` package provides `Function`, `Predicate`, `Consumer`, and `Supplier`. Compose them with `andThen`, `compose`, and `and`/`or`/`negate` instead of writing imperative wrappers.
 
@@ -602,6 +632,36 @@ items.removeLast();                // remove tail
 // reversed() returns a reversed view without copying
 SequencedCollection<String> reversed = items.reversed();
 reversed.forEach(System.out::println);  // z, a, b, c
+```
+
+### Unnamed Patterns and Unnamed Variables (Java 22+)
+Java 22 introduced unnamed patterns (`_`) for ignoring components you don't need in pattern matching, and unnamed variables (`_`) for lambda parameters and catch clauses you don't use. This reduces boilerplate and makes intent clear.
+
+```java
+// Unnamed pattern — ignore components you don't need
+sealed interface Event permits OrderPlaced, PaymentReceived, ShipmentSent {}
+record OrderPlaced(String orderId, double amount) implements Event {}
+record PaymentReceived(String paymentId, double amount) implements Event {}
+record ShipmentSent(String trackingId) implements Event {}
+
+// Unnamed pattern: _ ignores the component we don't care about
+public boolean isFinancialEvent(Event event) {
+    return switch (event) {
+        case OrderPlaced(_, double amount) when amount > 0 -> true;
+        case PaymentReceived _  -> true;  // unnamed pattern: entire record ignored
+        case ShipmentSent _     -> false;
+    };
+}
+
+// Unnamed variable in catch — we're handling but not using the exception object
+try {
+    return Integer.parseInt(raw);
+} catch (NumberFormatException _) {   // _ signals: caught but intentionally unused
+    return 0;
+}
+
+// Unnamed variable in lambda — side-effect only
+list.forEach(_ -> counter.increment());  // parameter unused by intent
 ```
 
 ---
@@ -757,6 +817,67 @@ public record OrderId(String value) {}
 @Override public int hashCode() { return Objects.hash(value); }
 ```
 
+**13. Using HashMap.get() Instead of getOrDefault() / computeIfAbsent() [community]**
+Calling `map.get(key)` and immediately checking for null is verbose and error-prone; forgetting the null check causes a NPE. More critically, patterns like `if (!map.containsKey(k)) map.put(k, new ArrayList<>())` are not atomic and break under concurrent access even with `ConcurrentHashMap`. Fix: use `getOrDefault` for read-only lookups and `computeIfAbsent` for read-and-initialize patterns — both are atomic on `ConcurrentHashMap`.
+
+```java
+// BAD — two lookups, not atomic
+Map<String, List<String>> groups = new ConcurrentHashMap<>();
+if (!groups.containsKey(category)) {
+    groups.put(category, new ArrayList<>());  // race condition window
+}
+groups.get(category).add(item);
+
+// GOOD — atomic single operation on ConcurrentHashMap
+groups.computeIfAbsent(category, k -> new ArrayList<>()).add(item);
+
+// GOOD — read with default (no mutation)
+List<String> items = groups.getOrDefault(category, Collections.emptyList());
+```
+
+**14. Implementing `Comparable` When You Should Use `Comparator` [community]**
+Implementing `Comparable<T>` embeds a single "natural order" into the class, making it impossible to sort the same type in multiple ways without subclassing or external utilities. The root cause is conflating "entity identity" with "display or business sort order". Fix: implement `Comparable<T>` only for types with a single, universally agreed natural order (e.g., `BigDecimal`, `LocalDate`); use `Comparator` chains for business-specific sort orders to keep the ordering logic near its consumer.
+
+```java
+// QUESTIONABLE — baking a particular sort order into the domain object
+public class Product implements Comparable<Product> {
+    @Override
+    public int compareTo(Product other) {
+        return this.price.compareTo(other.price);  // forever price-ascending only
+    }
+}
+
+// BETTER — keep domain class clean; define orderings at the call site
+Comparator<Product> byPriceAsc  = Comparator.comparing(Product::price);
+Comparator<Product> byNameThenPrice = Comparator.comparing(Product::name)
+                                                 .thenComparing(Product::price);
+
+List<Product> sorted = products.stream().sorted(byPriceAsc).toList();
+```
+
+**15. Implementing Serializable Without Declaring serialVersionUID [community]**
+`java.io.Serializable` triggers automatic `serialVersionUID` generation based on class structure. Adding or removing a field regenerates the UID, causing `InvalidClassException` when deserializing data serialized with the old version. The root cause is treating serialization as a free persistence mechanism. Fix: declare `private static final long serialVersionUID = 1L;` explicitly on every `Serializable` class; or better, avoid `Serializable` entirely — use JSON/Protobuf/Avro for persistence and messaging.
+
+```java
+// BAD — compiler-generated serialVersionUID; changes with every class modification
+public class UserSession implements Serializable {
+    private String userId;
+    private Instant createdAt;
+    // implicitly: serialVersionUID = <unpredictable hash>
+}
+
+// ACCEPTABLE — explicit UID prevents accidental breakage
+public class UserSession implements Serializable {
+    private static final long serialVersionUID = 1L;
+    private String userId;
+    private Instant createdAt;
+}
+
+// BEST for new code — avoid Serializable; use explicit serialisation
+public record UserSession(String userId, Instant createdAt) {}
+// Serialize to JSON: objectMapper.writeValueAsString(session)
+```
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -781,3 +902,6 @@ public record OrderId(String value) {}
 | `synchronized` in virtual threads (Java 21) | Pins carrier OS thread; kills scalability | Use `ReentrantLock` instead of `synchronized` blocks |
 | Assuming `Stream.toList()` is mutable | `UnsupportedOperationException` at runtime | Use `Collectors.toList()` when mutation is needed |
 | `Optional<T>` as a field or collection element | Not Serializable; can itself be null; adds heap pressure | Store `null`/sentinel in fields; expose `Optional` only at return boundaries |
+| `map.get()` + null check instead of `computeIfAbsent` | Verbose; non-atomic under concurrency | Use `computeIfAbsent` (atomic); `getOrDefault` for reads |
+| Implementing `Comparable` for multiple sort orders | Locks in one sort order; inflexible | Use `Comparator` chains at the call site; reserve `Comparable` for natural order types |
+| `Serializable` without explicit `serialVersionUID` | Class changes silently break deserialization | Declare `serialVersionUID = 1L` or avoid `Serializable`; prefer JSON/Protobuf |

@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-04-27 -->
-<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer, /test-retries, /test-components -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 6 | score: 100/100 | date: 2026-04-28 -->
+<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis -->
 
 ---
 
@@ -634,6 +634,25 @@ test('creates a record', async ({ page, request }, testInfo) => {
 });
 ```
 
+### 16. `addLocatorHandler` does not trigger if the overlay renders after the first actionability check [community]
+**What:** A cookie banner or sign-up modal appears 500ms after page load. Tests run fine 90% of the time, but occasionally the modal appears during a `click()` or `fill()` and causes "element not found" or "element intercepts pointer events" errors.
+**WHY:** `addLocatorHandler` fires before each actionability check — but only when the locator is visible at that moment. If the overlay renders *after* the action starts (due to a slight render delay), the handler never fires for that particular action.
+**Fix:** Combine `addLocatorHandler` with a `waitFor({ state: 'hidden' })` poll in the handler body to ensure the dismissal animation completes before the main action proceeds:
+
+```typescript
+await page.addLocatorHandler(
+  page.locator('[data-testid="cookie-banner"]'),
+  async () => {
+    const acceptBtn = page.getByRole('button', { name: 'Accept all' });
+    await acceptBtn.click();
+    // Wait for the banner to fully disappear before yielding control
+    await page.locator('[data-testid="cookie-banner"]').waitFor({ state: 'hidden' });
+  }
+);
+```
+
+Alternatively, if the overlay renders at a predictable point (e.g., after the first page load), explicitly await its dismissal in the test body rather than relying on the handler.
+
 ---
 
 ## CI Considerations
@@ -666,7 +685,65 @@ npx playwright install chromium --with-deps
 # Omitting it causes silent browser crashes in headless environments
 ```
 
-### Animation and font stability
+### Running Playwright in Docker
+
+Use the official Playwright image — it includes browsers and system dependencies pre-installed. **Do not use Alpine Linux** — musl libc is incompatible with Chromium browser builds.
+
+```dockerfile
+# Dockerfile — pin to exact Playwright version to prevent version mismatch
+FROM mcr.microsoft.com/playwright:v1.59.0-noble
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+
+# Browsers are already installed in the base image
+CMD ["npx", "playwright", "test"]
+```
+
+```bash
+# Run with required flags for Chromium stability in Docker
+docker run --rm \
+  --init \           # prevent zombie processes (PID=1 signal handling)
+  --ipc=host \       # Chromium needs shared memory; without this, it crashes under load
+  -v $(pwd)/test-results:/app/test-results \
+  playwright-tests:latest
+```
+
+**Remote Playwright Server in Docker (run server in Docker, tests on host):**
+
+```bash
+# Start Playwright server in Docker, exposed on port 3000
+docker run --rm --init -p 3000:3000 \
+  mcr.microsoft.com/playwright:v1.59.0-noble \
+  npx playwright run-server --port 3000
+
+# Connect from local tests via environment variable
+PW_TEST_CONNECT_WS_ENDPOINT=ws://localhost:3000 npx playwright test
+```
+
+```typescript
+// Or connect programmatically in playwright.config.ts
+export default defineConfig({
+  use: {
+    // Connect to remote Playwright server (useful for distributed CI)
+    connectOptions: process.env.PW_TEST_CONNECT_WS_ENDPOINT
+      ? { wsEndpoint: process.env.PW_TEST_CONNECT_WS_ENDPOINT }
+      : undefined,
+  },
+});
+```
+
+**Docker CI tips:**
+- Pin the Docker image to the exact Playwright version matching `package.json`. A mismatch causes "browser not found" errors.
+- Use `--ipc=host` in both local Docker runs and CI container configurations.
+- For untrusted web content (scraping), use `--user pwuser --security-opt seccomp=...` to sandbox the browser.
+- The image includes Xvfb for headed browser testing on Linux — use `xvfb-run npx playwright test` if headed mode is needed.
+
+> Never cache `~/.cache/ms-playwright` in Docker-based CI — browser download time ≈ cache restoration time, so caching provides no benefit and adds complexity. [community]
+
+
 
 ```typescript
 // Disable CSS animations globally to prevent visual flakiness
@@ -787,6 +864,10 @@ npx playwright test --grep-invert @flaky --retries=2
 | Forgetting `respectGitIgnore: true` in monorepos | Test discovery crawls `node_modules/` or generated build directories | Set `respectGitIgnore: true` and explicit `testMatch` patterns |
 | CHIPS cookies tested with `secure: false` locally | Cookie attribute differs from production; may hide auth bugs | Use a local HTTPS dev server or document the known difference |
 | Passing complex live objects as component test props | Runtime error: class instances and closures cannot be passed to CT | Use plain data; wrap complex state in story components |
+| Calling `locator.normalize()` at runtime in tests | Adds overhead without fixing the underlying brittle selector | Use `normalize()` as a discovery tool; hardcode the improved selector |
+| `globalSetup` for test data seeding in large suites | Runs once globally — worker restarts wipe seeded state silently | Use `{ scope: 'worker', auto: true }` fixtures for idempotent per-worker setup |
+| `page.on('console', ...)` in every test for error monitoring | Verbose boilerplate; easy to forget; doesn't clean up | Use `{ auto: true }` console monitor fixture that applies to all tests |
+| Committing `.network-cache/` responses with auth tokens | Token in cache leaks credentials to everyone with repo access | Strip `Authorization` headers from cache files; use placeholder values |
 
 ---
 
@@ -804,6 +885,11 @@ npx playwright test --grep-invert @flaky --retries=2
 | `context.setStorageState({ path })` | Reset all storage state in-place (v1.59+) | Role-switching tests without new context |
 | `page.clearConsoleMessages()` | Clear accumulated console logs (v1.59+) | Reset log state mid-test |
 | `page.clearPageErrors()` | Clear accumulated page errors (v1.59+) | Reset error state mid-test |
+| `page.consoleMessages({ filter })` | Retrieve stored console log history (v1.59+) | Post-action console error assertions |
+| `page.pageErrors({ filter })` | Retrieve stored JS exception history (v1.59+) | Post-action uncaught error checks |
+| `page.requests({ filter })` | Retrieve stored network request history (v1.59+) | Verify API calls without event listeners |
+| `page.addLocatorHandler(locator, fn)` | Auto-dismiss overlays before actionability checks | Cookie banners, popups, modals |
+| `page.removeLocatorHandler(locator)` | Remove a previously added overlay handler | Cleanup after targeted page sections |
 
 ### Locators
 
@@ -818,6 +904,7 @@ npx playwright test --grep-invert @flaky --retries=2
 | `locator.and(other)` | Match two locator conditions simultaneously | Elements requiring dual qualification |
 | `locator.or(other)` | Match one of multiple alternatives | Conditional UI states |
 | `locator.nth(index)` | Select the N-th match | Ordered stable lists only |
+| `locator.normalize()` | Convert to best-practice locator (v1.59+) | Upgrade CSS/brittle selectors during refactors |
 
 ### Assertions (always import `expect` from `@playwright/test`)
 
@@ -1854,7 +1941,132 @@ test('checkout flow (HAR replay)', async ({ page }) => {
 
 ---
 
+### Network Response Caching with `playwright-network-cache` [community]
+
+For large suites with slow or flaky external APIs, the `playwright-network-cache` library caches actual API responses to the filesystem on first run and replays them on subsequent runs. Unlike HAR, responses are stored as human-readable JSON files that are easy to inspect and modify.
+
+```bash
+npm install --save-dev playwright-network-cache
+```
+
+```typescript
+// e2e/fixtures/cache.ts — shared network cache fixture
+import { test as base } from '@playwright/test';
+import { CacheRoute }   from 'playwright-network-cache';
+
+type CacheFixtures = { cacheRoute: CacheRoute };
+
+export const test = base.extend<CacheFixtures>({
+  cacheRoute: async ({ page }, use) => {
+    const cacheRoute = new CacheRoute(page, {
+      // Cache directory: .network-cache/<host>/<path>/<method>/
+      cacheDir:   '.network-cache',
+      // Re-record if cache is older than 7 days
+      ttl:        7 * 24 * 60 * 60,
+    });
+    await use(cacheRoute);
+  },
+});
+
+// e2e/specs/catalog.spec.ts — use cache for slow product catalog API
+import { test, expect } from '../fixtures/cache';
+
+test('product list renders', async ({ page, cacheRoute }) => {
+  // First run: real request is made and response saved to disk
+  // Subsequent runs: cached response is returned instantly
+  await cacheRoute.GET('https://api.example.com/products*');
+
+  await page.goto('/products');
+  await expect(page.getByRole('list', { name: 'Products' })).toBeVisible();
+});
+
+// Modify cached response per-test (e.g., inject a specific product state)
+test('shows out-of-stock label', async ({ page, cacheRoute }) => {
+  await cacheRoute.GET('https://api.example.com/products*', {
+    modifyJSON: (body) => {
+      body.items[0].inStock = false;
+      return body;
+    },
+  });
+  await page.goto('/products');
+  await expect(page.getByText('Out of stock')).toBeVisible();
+});
+```
+
+**Cache file structure:**
+```
+.network-cache/
+  api.example.com/
+    products/
+      GET/
+        headers.json    # response headers
+        body.json       # response body (pretty-printed JSON)
+```
+
+> Commit `.network-cache/` to source control so CI uses the same cached responses as local dev.
+> Set TTL to force re-recording periodically. For truly dynamic data (user-specific), use per-test
+> `extraDir: () => test.info().testId` to isolate cache entries by test. [community]
+
+---
+
+### Test Suite Scaling: `{ auto: true }` Fixtures for Global Reset
+
+At 200+ tests, global setup hooks (`beforeAll`, `globalSetup`) become fragile — they run once but workers restart. Use `{ auto: true }` worker-scoped fixtures for automatic, idempotent setup that runs once per worker process regardless of test count or ordering.
+
+```typescript
+// e2e/fixtures/db-reset.ts — auto-reset DB state before each test worker starts
+import { test as base } from '@playwright/test';
+
+export const test = base.extend<{}, { dbSeed: void }>({
+  dbSeed: [async ({ request }, use, workerInfo) => {
+    // Auto-seeding: runs once per worker without being declared in any test
+    const res = await request.post('/api/test/seed', {
+      data: { workerIndex: workerInfo.workerIndex, scenario: 'base' },
+    });
+    if (!res.ok()) {
+      console.warn(`[worker ${workerInfo.workerIndex}] DB seed failed: ${res.status()}`);
+    }
+    await use();  // all tests in this worker now run against seeded state
+    // Cleanup after all tests in this worker complete
+    await request.delete('/api/test/cleanup', {
+      data: { workerIndex: workerInfo.workerIndex },
+    });
+  }, { scope: 'worker', auto: true }],  // runs for every test without explicit request
+});
+```
+
+**Auto-fixture for console error monitoring:**
+
+```typescript
+// e2e/fixtures/console-monitor.ts — fail tests that produce console errors (auto-enabled)
+export const test = base.extend({
+  page: [async ({ page }, use, testInfo) => {
+    const consoleErrors: string[] = [];
+    page.on('console', msg => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    });
+
+    await use(page);
+
+    // After test completes, fail if any unexpected console errors appeared
+    if (testInfo.status === 'passed' && consoleErrors.length > 0) {
+      // Attach as annotation so it's visible in report without failing
+      await testInfo.attach('console-errors', {
+        body: consoleErrors.join('\n'), contentType: 'text/plain',
+      });
+    }
+  }, { scope: 'test', auto: true }],  // every test gets console monitoring
+});
+```
+
+> At 200+ tests, `{ auto: true }` fixtures for DB reset and console monitoring prevent entire
+> categories of intermittent failures without touching individual test files. They apply
+> silently to every test that imports from the merged fixture module. [community]
+
+---
+
 ### Advanced Interaction Patterns
+
 
 **File uploads:**
 ```typescript
@@ -2526,6 +2738,293 @@ test('shows error state on API failure', async ({ mount, router }) => {
 
 ---
 
+### `page.addLocatorHandler()` — Auto-Dismiss Overlays
+
+Automatically handle unpredictable overlays (cookie banners, newsletter popups, GDPR notices, chat widgets) that appear at random points and block your test actions. The handler fires before every Playwright actionability check whenever the locator becomes visible.
+
+```typescript
+// e2e/fixtures/overlays.ts — global overlay handler fixture
+import { test as base } from '@playwright/test';
+
+export const test = base.extend({
+  page: async ({ page }, use) => {
+    // Auto-dismiss cookie consent banner if it appears at any point
+    await page.addLocatorHandler(
+      page.getByRole('dialog', { name: /cookie|consent/i }),
+      async () => {
+        await page.getByRole('button', { name: /accept|agree|got it/i }).click();
+      }
+    );
+
+    // Auto-dismiss newsletter popup (run at most twice — dismiss, then ignore)
+    await page.addLocatorHandler(
+      page.getByText('Sign up to the newsletter'),
+      async () => {
+        await page.getByRole('button', { name: 'No thanks' }).click();
+      },
+      { times: 1 }  // only handle once; subsequent appearances are ignored
+    );
+
+    await use(page);
+  },
+});
+```
+
+```typescript
+// Inline: dismiss a specific overlay before an action
+await page.addLocatorHandler(
+  page.locator('[data-testid="promo-modal"]'),
+  async () => {
+    await page.locator('[aria-label="Close modal"]').click();
+  },
+  { noWaitAfter: true }  // don't wait for overlay to hide after clicking
+);
+
+await page.getByRole('button', { name: 'Checkout' }).click();
+// ↑ If promo-modal blocks Checkout, the handler fires first
+```
+
+**Rules for locator handlers:**
+- Handlers fire *before every actionability check* — they may run multiple times per test.
+- Actions inside handlers should be self-contained. Avoid relying on page focus or mouse position state left over from the handler, as it alters the page mid-action.
+- Use `{ times: N }` to limit handler invocations. `times: 1` + `noWaitAfter: true` is common for one-shot banners.
+- Handlers do not run recursively — a handler that triggers another overlay will not re-enter itself.
+- Remove a specific handler with `page.removeLocatorHandler(locator)`.
+
+> `addLocatorHandler` is the idiomatic replacement for fragile `try/catch` click patterns that used to wrap every test action to handle intermittent modals. [community]
+
+---
+
+### Post-Facto Inspection: `consoleMessages()`, `pageErrors()`, `requests()` (v1.59+)
+
+Access the recent history of console messages, page errors, and network requests without setting up event listeners in advance. Useful for post-action verification and fixture-based log capture.
+
+```typescript
+// Assert no console errors appeared during a navigation
+test('homepage has no console errors', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('main')).toBeVisible();
+
+  // Inspect accumulated console messages after navigation
+  const messages = await page.consoleMessages();
+  const errors = messages.filter(m => m.type() === 'error');
+  expect(errors, `Console errors: ${errors.map(m => m.text()).join('\n')}`).toHaveLength(0);
+});
+
+// Assert no uncaught JS exceptions during a user flow
+test('checkout flow has no JS exceptions', async ({ page }) => {
+  await page.goto('/cart');
+  await page.getByRole('button', { name: 'Checkout' }).click();
+  await page.waitForURL(/\/checkout/);
+
+  const pageErrors = await page.pageErrors();
+  expect(pageErrors, `Uncaught errors: ${pageErrors.map(e => e.message).join('\n')}`).toHaveLength(0);
+});
+
+// Inspect requests made since last navigation (not all-time)
+test('verifies analytics event was fired', async ({ page }) => {
+  await page.goto('/product/123');
+  await page.getByRole('button', { name: 'Add to cart' }).click();
+
+  // Get only requests since navigation started
+  const requests = await page.requests({ filter: 'since-navigation' });
+  const analyticsCall = requests.find(r => r.url().includes('/analytics/event'));
+  expect(analyticsCall).toBeDefined();
+  expect(await analyticsCall!.postDataJSON()).toMatchObject({ event: 'add_to_cart' });
+});
+```
+
+**Filtering options:**
+- `filter: 'all'` (default) — returns all stored messages/errors/requests (up to 200)
+- `filter: 'since-navigation'` — returns only items accumulated since the last navigation
+
+> These APIs eliminate the need for `page.on('console', ...)` setup in every test. Pair with `page.clearConsoleMessages()` and `page.clearPageErrors()` to reset state mid-test when a single test performs multiple navigations. [community]
+
+---
+
+### `locator.normalize()` — Upgrade to Best-Practice Locators (v1.59+)
+
+Convert implementation-detail locators (CSS classes, positional selectors) to best-practice equivalents (ARIA roles, test IDs, accessible names). Useful for incrementally upgrading existing test suites without a full rewrite.
+
+```typescript
+// Identify what the best-practice locator for an element is
+test('demonstrate normalize', async ({ page }) => {
+  await page.goto('/login');
+
+  // A brittle CSS selector — normalize() upgrades it
+  const brittle = page.locator('.login-form .submit-btn');
+  const normalized = brittle.normalize();
+
+  // normalized is now something like:
+  // page.getByRole('button', { name: 'Sign in' })
+  // Use it for the actual assertion
+  await expect(normalized).toBeEnabled();
+});
+```
+
+**Practical upgrade workflow:**
+
+```typescript
+// Step 1: During test investigation, find what normalize() produces
+const improved = page.locator('.nav-link.active').normalize();
+console.log(improved.toString());
+// Prints: "getByRole('link', { name: 'Dashboard' })"
+
+// Step 2: Replace the original selector in your POM/spec with the printed version
+// Step 3: Delete the normalize() call — it was a discovery tool, not a runtime pattern
+```
+
+> Use `locator.normalize()` as a **refactoring tool**, not a runtime call in production tests. The point is to discover the best-practice selector, then hardcode it. Calling `normalize()` in every test adds overhead and hides the brittle selector instead of fixing it. [community]
+
+---
+
+### Screencast API — Precise Video Recording (v1.59+)
+
+The `page.screencast` API provides fine-grained video recording control as an alternative to the `recordVideo` option. Unlike `recordVideo` (which records entire contexts), `page.screencast` lets you start/stop recording at specific test steps, add chapter annotations, and stream live frames.
+
+```typescript
+// Record only the failure-relevant portion of a test
+test('records video for slow critical flow', async ({ page }) => {
+  await page.goto('/dashboard');
+
+  // Start recording only for the slow/critical section
+  await page.screencast.start({
+    path: 'test-results/checkout-flow.webm',
+    size: { width: 1280, height: 720 },
+  });
+
+  await page.getByRole('link', { name: 'Shop' }).click();
+  await page.getByRole('button', { name: 'Add to cart' }).click();
+
+  // Add a chapter marker visible in the recording
+  await page.screencast.showChapter('Checkout step', {
+    description: 'User initiates checkout',
+    duration: 2_000,
+  });
+
+  await page.getByRole('button', { name: 'Checkout' }).click();
+  await page.waitForURL(/\/checkout/);
+
+  await page.screencast.stop();  // video saved to path
+});
+
+// Stream frames for custom processing (e.g., live preview, AI vision)
+test('capture frames for CI thumbnail', async ({ page }) => {
+  const frames: Buffer[] = [];
+
+  await page.screencast.start({
+    onFrame: ({ data }) => frames.push(Buffer.from(data)),
+    size: { width: 800, height: 600 },
+    quality: 80,
+  });
+
+  await page.goto('/app');
+  await page.getByRole('button', { name: 'Load report' }).click();
+  await expect(page.getByRole('main')).toBeVisible();
+
+  await page.screencast.stop();
+  // Use frames[0] as a CI thumbnail or feed to an AI vision model
+});
+```
+
+**Screencast vs. `recordVideo`:**
+| Feature | `recordVideo` | `page.screencast` |
+|---------|--------------|------------------|
+| Scope | Entire context | Per-page, manually controlled |
+| Start/stop control | No | Yes (start/stop anywhere in test) |
+| Chapter annotations | No | Yes (`showChapter()`) |
+| Visual action overlays | No | Yes (`showActions()`) |
+| Live frame streaming | No | Yes (`onFrame` callback) |
+| Use case | Always-on debug video | Precise demo/documentation recording |
+
+> `page.screencast` is most useful for recording demos, onboarding walkthroughs, and test evidence for specific steps — not as a replacement for `trace: 'on-first-retry'` for debugging. [community]
+
+---
+
+### Advanced Authentication: OAuth and MFA Flows [community]
+
+OAuth and MFA flows cannot use `storageState` directly — they require alternative strategies. These patterns prevent full UI OAuth round-trips in every test.
+
+**OAuth via API token (bypass UI login entirely):**
+
+```typescript
+// e2e/auth.setup.ts — trade OAuth code for API token directly
+setup('authenticate via OAuth token exchange', async ({ request }) => {
+  // Exchange a pre-issued OAuth client credentials token for a session
+  const tokenRes = await request.post('https://auth.example.com/token', {
+    form: {
+      grant_type:    'client_credentials',
+      client_id:     process.env.E2E_OAUTH_CLIENT_ID!,
+      client_secret: process.env.E2E_OAUTH_CLIENT_SECRET!,
+      scope:         'e2e-testing',
+    },
+  });
+  expect(tokenRes.ok()).toBeTruthy();
+  const { access_token } = await tokenRes.json();
+
+  // Use token to get a session cookie from the app's session endpoint
+  const sessionRes = await request.post('/api/auth/session', {
+    headers: { Authorization: `Bearer ${access_token}` },
+  });
+  await request.storageState({ path: 'e2e/.auth/user.json' });
+});
+```
+
+**MFA via TOTP (one-time password):**
+
+```typescript
+// Install: npm install --save-dev otpauth
+import * as OTPAuth from 'otpauth';
+
+setup('authenticate with MFA', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByLabel('Email').fill(process.env.E2E_MFA_EMAIL!);
+  await page.getByLabel('Password').fill(process.env.E2E_MFA_PASSWORD!);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+
+  // Generate current TOTP code from test account's secret
+  const totp = new OTPAuth.TOTP({ secret: process.env.E2E_MFA_SECRET! });
+  const otp  = totp.generate();
+
+  await page.getByLabel('One-time code').fill(otp);
+  await page.getByRole('button', { name: 'Verify' }).click();
+  await expect(page).not.toHaveURL(/login|mfa/);
+  await page.context().storageState({ path: 'e2e/.auth/user.json' });
+});
+```
+
+**Magic link auth (email-based):**
+
+```typescript
+// For magic link flows, intercept the email delivery via API
+setup('authenticate via magic link', async ({ page, request }) => {
+  await page.goto('/login');
+  await page.getByLabel('Email').fill(process.env.E2E_EMAIL!);
+  await page.getByRole('button', { name: 'Send magic link' }).click();
+
+  // Fetch the magic link from your test email API (e.g., Mailosaur, Ethereal)
+  const emailRes = await request.get(`https://mailosaur.io/api/messages/await`, {
+    headers: { Authorization: `api ${process.env.MAILOSAUR_API_KEY}` },
+    params: {
+      server:  process.env.MAILOSAUR_SERVER!,
+      timeout: 30_000,
+    },
+  });
+  const { html } = await emailRes.json();
+  // Extract magic link from email body
+  const linkMatch = html.body.match(/href="(https:\/\/[^"]*magic[^"]*)"/);
+  expect(linkMatch).toBeTruthy();
+
+  await page.goto(linkMatch![1]);  // follow the magic link
+  await expect(page).not.toHaveURL(/login/);
+  await page.context().storageState({ path: 'e2e/.auth/user.json' });
+});
+```
+
+> Never commit OAuth secrets or MFA seeds to source control. Use CI secrets (GitHub Secrets, Vault) injected as environment variables. The `E2E_MFA_SECRET` is a TOTP seed — treat it like a password. [community]
+
+---
+
 ## Project Structure Reference
 
 ```
@@ -2539,6 +3038,7 @@ e2e/
     axe.ts               # Shared AxeBuilder fixture for accessibility tests
     logging.ts           # Auto-attach console logs on failure
     matchers.ts          # Custom expect matchers (toHaveValidationError, toShowToast)
+    overlays.ts          # addLocatorHandler fixture for cookie/promo overlay dismissal
     index.ts             # mergeTests() composition point — import from here
   pages/
     index.ts             # Typed page factory (createPage<T>)
@@ -2728,4 +3228,19 @@ await expect(page).toHaveScreenshot('page.png', {
 // Auth role-switching in existing context (v1.59+)
 await context.setStorageState({ path: './e2e/.auth/admin.json' });
 await page.reload();
+
+// v1.59+ inspection APIs (no event listeners needed)
+const messages = await page.consoleMessages({ filter: 'since-navigation' });
+const errors   = await page.pageErrors();
+const requests = await page.requests({ filter: 'since-navigation' });
+
+// Auto-dismiss overlays before any action (v1.44+)
+await page.addLocatorHandler(
+  page.getByText('Accept cookies'),
+  async () => page.getByRole('button', { name: 'Accept' }).click(),
+  { times: 1 }
+);
+
+// Upgrade a brittle locator to best-practice (refactoring tool, v1.59+)
+const better = page.locator('.submit-button').normalize();  // → getByRole('button', { name: 'Submit' })
 ```

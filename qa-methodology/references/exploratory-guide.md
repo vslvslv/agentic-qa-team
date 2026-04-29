@@ -1,5 +1,7 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 2 | score: 100/100 | date: 2026-04-27 -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 10 | score: 100/100 | date: 2026-04-28 | sources: training-knowledge -->
+<!-- Note: WebFetch and WebSearch unavailable this run — synthesized from training knowledge and existing guide -->
+<!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers -->
 
 ## Core Principles
 
@@ -27,7 +29,9 @@ Cem Kaner, who coined the term in the 1980s, distinguished exploratory testing f
 
 9. **When to use**: Exploratory testing is most valuable for new features that lack mature test suites, areas undergoing major refactors, pre-release sign-off, and modules with no scripted coverage at all. It finds the bugs scripted tests can't anticipate because it doesn't assume the same things the script author assumed. This is its defining advantage: tests written before the feature existed cannot reflect what the feature actually does.
 
-10. **Complementary, not a replacement**: Scripted tests provide regression safety nets and are reproducible across builds. Exploratory testing finds novel bugs that require human judgment. Both together cover what neither can alone. The interaction is productive: exploration discovers, automation confirms; automation frees the tester from rote repetition so they can explore new territory.
+10. **Complementary, not a replacement**: Scripted tests provide regression safety nets and are reproducible across builds. Exploratory testing finds novel defects that require human judgment. Both together cover what neither can alone. The interaction is productive: exploration discovers, automation confirms; automation frees the tester from rote repetition so they can explore new territory.
+
+11. **ISTQB CTFL 4.0 classification**: ISTQB classifies exploratory testing as an **experience-based technique** (alongside error guessing and checklist-based testing). The standard notes that exploratory testing is most effective when combined with other techniques — it is not a standalone alternative to specification-based or structure-based testing, but a complement that applies tester experience to discover defects those techniques would miss. ISTQB also distinguishes between **static testing** (reviewing work products without execution) and **dynamic testing** (executing the test object); exploratory testing is always dynamic but often reveals insights that inform static review.
 
 ---
 
@@ -39,9 +43,11 @@ Cem Kaner, who coined the term in the 1980s, distinguished exploratory testing f
 | After a major refactor or merge | Changed code paths may break behavior scripted tests don't cover |
 | Release sign-off / release candidate | Catch late-breaking integration issues before shipping |
 | Areas with zero automated coverage | Any testing is better than none; exploration maps the territory |
-| Investigating a reported bug | Charter-based exploration around the bug area finds related defects |
+| Investigating a reported defect | Charter-based exploration around the defect area finds related faults |
 | User journey end-to-end flows | Scripted tests rarely cover realistic cross-feature user paths |
 | High-risk or high-complexity areas | Tester judgment and intuition outperform scripted coverage in complex UI flows |
+| Hot-fix verification (30-min rapid session) | Confirms the fix works and doesn't break adjacent flows; too quick to write scripted tests |
+| New REST API endpoints (API exploration) | Discovers missing error envelopes, schema drift, and undocumented nullable fields |
 
 ### When NOT to Use Exploratory Testing
 
@@ -70,6 +76,86 @@ Key insight: **charter writing on Day 1 exposes incomplete acceptance criteria**
 - 2-week sprint, 1 tester: budget 8 sessions × 90 min = 12 hours of exploration
 - 2-week sprint, 2 testers: 16 sessions total (split across feature areas)
 - Debrief and charter writing: ~20% overhead (rule of thumb from practitioners)
+
+**Continuous Delivery (no-sprint) variant:**
+
+Teams shipping multiple times per day cannot batch exploration into sprint ends. The adapted cadence:
+- Charter per PR (not per sprint): any PR touching high-risk areas triggers a rapid 30-minute charter on merge
+- Daily 60-minute "open exploration" slot: one tester per day runs an unchained session in the area of greatest recent change, using bug clustering from the previous week to guide focus
+- Weekly coverage review (15 min): which areas have had no sessions this week? Schedule targeted charters for the following day
+
+The key insight for CD teams: exploration doesn't need to be "sprinted" — it needs to be **continuous**. The daily open exploration slot is the CD equivalent of a sprint's exploratory sessions.
+
+**TypeScript: Release Readiness Check from Session Coverage**
+
+```typescript
+// src/testing/exploratory/release-readiness.ts
+// Checks whether session coverage meets a configurable release readiness threshold
+// before marking a release candidate as exploratory-tested.
+
+import type { SessionDebrief } from './debrief';
+
+export interface ReadinessPolicy {
+  /** Minimum sessions required per high-risk charter area */
+  minSessionsPerHighRiskArea: number;
+  /** Maximum allowed ratio of blocked time to total session time */
+  maxBlockedRatio: number;
+  /** Minimum average tester confidence score to approve release */
+  minAverageConfidence: number;
+  /** Require all debriefs to have releasable === true */
+  requireAllReleasable: boolean;
+}
+
+export interface ReadinessReport {
+  approved: boolean;
+  failureReasons: string[];
+  warnings: string[];
+  summary: string;
+}
+
+export function checkReleaseReadiness(
+  debriefs: SessionDebrief[],
+  policy: ReadinessPolicy
+): ReadinessReport {
+  const failures: string[] = [];
+  const warnings: string[] = [];
+
+  // Check releasable flags
+  if (policy.requireAllReleasable) {
+    const blocked = debriefs.filter((d) => !d.releasable);
+    if (blocked.length > 0) {
+      failures.push(
+        `${blocked.length} charter area(s) flagged as not releasable: ${blocked.map((d) => d.charter.mission.explore).join(', ')}`
+      );
+    }
+  }
+
+  // Check average confidence
+  const avgConf = debriefs.reduce((a, d) => a + d.testerConfidence, 0) / debriefs.length;
+  if (avgConf < policy.minAverageConfidence) {
+    failures.push(
+      `Average tester confidence ${avgConf.toFixed(1)} is below threshold ${policy.minAverageConfidence}`
+    );
+  }
+
+  // Check blocked time ratio
+  const totalPlanned = debriefs.reduce((a, d) => a + d.plannedMinutes, 0);
+  const totalBlocked = debriefs.reduce((a, d) => a + d.totalBlockedMinutes, 0);
+  const blockedRatio = totalBlocked / totalPlanned;
+  if (blockedRatio > policy.maxBlockedRatio) {
+    warnings.push(
+      `Blocked time ratio ${(blockedRatio * 100).toFixed(0)}% exceeds policy ${(policy.maxBlockedRatio * 100).toFixed(0)}% — some areas may be under-covered`
+    );
+  }
+
+  const approved = failures.length === 0;
+  const summary = approved
+    ? `Release readiness: APPROVED (${debriefs.length} sessions, avg confidence ${avgConf.toFixed(1)})`
+    : `Release readiness: BLOCKED — ${failures.length} failure(s)`;
+
+  return { approved, failureReasons: failures, warnings, summary };
+}
+```
 
 ---
 
@@ -150,9 +236,16 @@ SBTM was introduced by James Bach (Satisfice) and Jonathan Bach as a framework f
 
 - **Timeboxed sessions** (typically 60–120 minutes) prevent sessions from becoming shapeless marathons.
 - **One charter per session** keeps the tester focused. Multiple charters in one session indicate scope creep.
-- **Session sheets** (notes taken during the session) capture observations, questions, and bugs in real time.
+- **Session sheets** (notes taken during the session) capture observations, questions, and defects in real time.
 - **Coverage tracking via count of sessions** rather than count of test case IDs. Managers ask "how many sessions on the payment flow?" rather than "which test cases ran?"
 - **Debrief after each session** surfaces blockers, findings, and feeds next-session charter creation.
+
+**Rapid Software Testing (RST)** is the companion methodology from Michael Bolton and James Bach that extends SBTM with a deeper epistemological framework. Where SBTM provides the management structure (charters, sessions, metrics), RST provides the tester skill framework: how to form and test hypotheses about a product, how to use oracles rigorously, and how to communicate risk to stakeholders. Teams adopting exploratory testing should treat SBTM as the *process* and RST as the *skill development* framework. In practice: use SBTM to structure and report sessions; use RST to train testers on how to think, probe, and evaluate.
+
+Key RST concepts not in the original SBTM paper:
+- **"Testing is the process of evaluating a product by learning about it through exploration and experimentation"** — RST's broader definition that frames testing as an investigation, not a verification
+- **Test oracle heuristics** (HICCUPPS) — RST systematized these as the basis for deciding whether observed behavior is a defect
+- **The quality criteria matrix**: Explicit (stated requirements), Implicit (unstated but expected), Emergent (behavior that only appears in combination with other factors)
 
 SBTM metrics:
 - Session duration (planned vs actual)
@@ -166,8 +259,8 @@ SBTM metrics:
 
 **Example SBTM coverage report for a sprint:**
 
-| Charter Area | Sessions Planned | Sessions Done | Bugs Found | Blocked (min) |
-|-------------|-----------------|---------------|------------|---------------|
+| Charter Area | Sessions Planned | Sessions Done | Defects Found | Blocked (min) |
+|-------------|-----------------|---------------|--------------|---------------|
 | Guest Checkout | 2 | 2 | 4 | 15 |
 | Payment Processing | 2 | 1 | 2 | 45 |
 | Order Confirmation | 1 | 1 | 1 | 0 |
@@ -175,6 +268,20 @@ SBTM metrics:
 | **Totals** | **6** | **4** | **7** | **120** |
 
 Reading: Payment Processing is under-covered (1/2 sessions); Accessibility blocked entirely. These gaps feed directly into next-sprint charter planning.
+
+**SBTM KPI Reference Table:**
+
+Use these metrics to build a sprint-level exploratory testing dashboard. Track them over time — quarter-on-quarter trends reveal infrastructure health, tester skill development, and feature area riskiness.
+
+| KPI | Formula | Target | Actionable when... |
+|-----|---------|--------|--------------------|
+| Charter completion rate | Sessions fully covering charter / total sessions | ≥ 80% | < 80% → investigate environment blockers |
+| Defect density | Defects found / session-hour, by feature area | N/A (track trend) | Rising density → schedule follow-on charters |
+| Blocked time ratio | Total blocked minutes / total session minutes | < 20% | ≥ 30% → escalate infrastructure investment |
+| Follow-on charter rate | Sessions generating ≥ 1 follow-on / total sessions | 20–40% | < 20% → charters may be too shallow; > 50% → charters too broad |
+| Tester confidence average | Avg score (0–5) across all sessions in sprint | ≥ 3.5 | Areas below 2.5 need immediate follow-on charter |
+| Escape defect rate | Defects found in production that were in chartered area / total production defects | < 15% | Rising → charters missing key risk areas |
+| Session-to-automation conversion | Scenarios from exploration that became scripted test cases / total scenarios | 20–35% | < 10% → exploration insights not being captured; > 50% → over-automating obvious cases |
 
 ---
 
@@ -267,9 +374,9 @@ notes: "Payment Processing is highest risk — start there"
 
 ---
 
-### Bug Taxonomy & Reporting
+### Defect Taxonomy & Reporting
 
-Classifying bugs at the time of reporting speeds triage and helps identify systemic patterns.
+Classifying defects at the time of reporting speeds triage and helps identify systemic patterns. ISTQB CTFL 4.0 uses **"defect"** for a found fault in a work product (whether or not it causes a visible failure). The taxonomy below maps to defect categories rather than failure modes so reports are consistent with tool fields and audit language.
 
 | Category | Definition | Priority Indicator | Example |
 |----------|------------|-------------------|---------|
@@ -281,9 +388,9 @@ Classifying bugs at the time of reporting speeds triage and helps identify syste
 | Cosmetic | Visual defect with no functional impact (misaligned element, typo) | Low | "Procceed to payment" typo on checkout button |
 
 ```markdown
-## Bug Report Template
+## Defect Report Template
 
-**Bug ID**: BUG-<session-id>-<seq>
+**Defect ID**: DEF-<session-id>-<seq>
 **Date Found**: <YYYY-MM-DD>
 **Tester**: <name>
 **Session Charter**: CHR-<id>
@@ -375,24 +482,24 @@ Session notes are the raw in-session capture. They are taken during the session,
 [13:02] Navigated to guest checkout. Address form loads correctly. Tried US zip code first.
 [13:08] Tried UK postcode (SW1A 2AA). City field auto-populated "London" — correct.
 [13:15] Tried German postcode (10115). City field shows "undefined" — UNEXPECTED.
-[13:16] BUG: German postcode city lookup returns "undefined" instead of "Berlin". Full report: BUG-CHR-checkout-001.
+[13:16] DEF: German postcode city lookup returns "undefined" instead of "Berlin". Full report: DEF-CHR-checkout-001.
 [13:22] Tried entering card number. All standard test cards accepted as expected.
 [13:30] Tried declined card (4000 0000 0000 0002). Got error "Payment failed" — no retry prompt shown.
-[13:31] BUG: Declined card shows error but no "Try another card" CTA. Full report: BUG-CHR-checkout-002.
+[13:31] DEF: Declined card shows error but no "Try another card" CTA. Full report: DEF-CHR-checkout-002.
 [13:40] Navigated away mid-payment (pressed browser back). Cart still intact on return.
 [13:42] QUESTION: Does the payment intent remain active after user navigates back? Check with dev.
 [13:55] Tried expired card (any card with past date). Correct validation error shown.
 [14:05] Placed successful order. Confirmation page correct. Checked test email inbox — email arrived in 2 min.
 [14:10] Blocked: staging auth expired, had to re-login. Lost ~8 min.
 [14:18] Resumed. Tried order confirmation URL directly — no auth required. Customer data visible.
-[14:19] BUG: Order confirmation URL is guessable and publicly accessible. Security bug. BUG-CHR-checkout-003.
+[14:19] DEF: Order confirmation URL is guessable and publicly accessible. Security defect. DEF-CHR-checkout-003.
 [14:25] Session end.
 
 ---
 
 ### Summary Counts
 - Scenarios exercised: 11
-- Bugs filed: 3 (1 cosmetic/correctness, 1 UX, 1 Security)
+- Defects filed: 3 (1 cosmetic/correctness, 1 UX, 1 Security)
 - Open questions: 1 (payment intent lifecycle)
 - Blocked time: 8 min / auth session expiry
 - Coverage vs charter: Partial — international locales only partially covered (UK + DE), no FR or JP
@@ -417,10 +524,10 @@ A debrief converts one tester's session into shared team knowledge. It should ha
 - <Coverage area 2 and key scenarios exercised>
 
 ### What Was Found
-| Bug ID | Severity | Summary |
-|--------|----------|---------|
-| BUG-001 | High     | Cart quantity update accepts negative values |
-| BUG-002 | Cosmetic | Spinner overlaps order total on mobile |
+| Defect ID | Severity | Summary |
+|-----------|----------|---------|
+| DEF-001   | High     | Cart quantity update accepts negative values |
+| DEF-002   | Cosmetic | Spinner overlaps order total on mobile |
 
 ### What Was Blocked
 - <Blocker 1: missing test account credentials — 20 min lost>
@@ -432,8 +539,158 @@ A debrief converts one tester's session into shared team knowledge. It should ha
 
 ### Next Steps / Follow-on Charters
 - Charter needed: payment timeout behavior in production-like environment
-- Retest BUG-001 fix when patch is available
+- Retest DEF-001 fix when patch is available
 - Expand FEW HICCUPS 'C' (Collaboration) dimension — multi-user cart not explored
+```
+
+**TypeScript: Typed Debrief Data Structure**
+
+Structured debriefs can be stored as JSON and consumed by sprint reporting tools (coverage dashboards, release readiness checks). The following types capture the full debrief output in machine-readable form.
+
+```typescript
+// src/testing/exploratory/debrief.ts
+import type { SessionCharter, SessionBug } from './types';
+
+export interface DebriefBlocker {
+  description: string;
+  minutesLost: number;
+  type: 'environment' | 'credentials' | 'build' | 'test-data' | 'other';
+}
+
+export interface FollowOnCharter {
+  description: string;
+  priority: 'immediate' | 'next-sprint' | 'backlog';
+  triggerReason: string; // Why this follow-on is needed
+}
+
+export interface SessionDebrief {
+  charter: SessionCharter;
+  conductedDate: string;          // ISO 8601 — when the debrief happened
+  participants: string[];         // tester + any stakeholders who joined
+  plannedMinutes: number;
+  actualMinutes: number;
+
+  coverage: {
+    areasPlanned: string[];
+    areasCovered: string[];
+    areasSkipped: Array<{ area: string; reason: string }>;
+    coveragePercent: number;      // (areasCovered.length / areasPlanned.length) * 100
+  };
+
+  findings: {
+    defects: SessionBug[];
+    openQuestions: string[];
+    observations: string[];       // Notable behavior that is not a defect
+  };
+
+  blockers: DebriefBlocker[];
+  totalBlockedMinutes: number;
+
+  followOnCharters: FollowOnCharter[];
+  testerConfidence: 0 | 1 | 2 | 3 | 4 | 5;
+
+  releasable: boolean;            // Tester's judgment: is this area releasable given coverage?
+  releasableRationale?: string;   // Required when releasable === false
+}
+
+/** Compute aggregate metrics across multiple debriefs for a sprint report */
+export function aggregateDebriefs(debriefs: SessionDebrief[]): {
+  totalSessions: number;
+  totalDefects: number;
+  totalBlockedMinutes: number;
+  averageConfidence: number;
+  notReleasableAreas: string[];
+} {
+  const totalDefects = debriefs.reduce((acc, d) => acc + d.findings.defects.length, 0);
+  const totalBlockedMinutes = debriefs.reduce((acc, d) => acc + d.totalBlockedMinutes, 0);
+  const avgConfidence =
+    debriefs.reduce((acc, d) => acc + d.testerConfidence, 0) / debriefs.length;
+  const notReleasableAreas = debriefs
+    .filter((d) => !d.releasable)
+    .map((d) => d.charter.mission.explore);
+
+  return {
+    totalSessions: debriefs.length,
+    totalDefects,
+    totalBlockedMinutes,
+    averageConfidence: Math.round(avgConfidence * 10) / 10,
+    notReleasableAreas,
+  };
+}
+```
+
+---
+
+---
+
+### Rapid Exploratory Testing (30-Minute Sessions)  [community]
+
+Standard SBTM sessions are 60–90 minutes. But teams frequently need to run quick explorations: when a hot-fix lands, when there are only 30 minutes before a release window, or as a "smoke check" after a deployment. Rapid exploratory testing preserves the charter discipline but compresses the time budget.
+
+**30-minute session structure:**
+
+| Time | Activity |
+|------|----------|
+| 0–5 min | Write a focused micro-charter (1 sentence mission; 2 priority areas max; out-of-scope explicitly set) |
+| 5–25 min | Execute — use FEW HICCUPS as a fast mental checklist: only F (Function), E (Error), I (Interruptions) are checked in a rapid session |
+| 25–30 min | Instant debrief: 3 bullets — what was tested, what was found, what needs a follow-on charter |
+
+**Key constraints for rapid sessions:**
+- One tester only (pairing takes too much coordination time at this duration)
+- Defects logged as quick notes, full report written within 2 hours of session
+- No mind map — the micro-charter is the entire plan
+- If a defect is found in the first 10 minutes that blocks the main flow: stop, file the defect, and convert the session into a follow-on charter for a full session
+
+**TypeScript: Rapid Session Micro-Charter**
+
+```typescript
+// src/testing/exploratory/rapid-charter.ts
+// Micro-charter for rapid (30-minute) exploratory sessions.
+// Enforces the constraints: single focus area, 2 priority areas max, instant debrief format.
+
+export interface RapidCharter {
+  charterId: string;
+  tester: string;
+  triggerReason: 'hotfix' | 'deployment-smoke' | 'pre-release' | 'ad-hoc-request';
+  sessionDate: string;
+  timeboxMinutes: 30;       // Always 30 for rapid sessions
+  mission: string;          // Single sentence: "Explore X using Y to discover Z"
+  priorityAreas: [string, string]; // Exactly 2 — enforced by tuple type
+  outOfScope: string[];
+}
+
+export interface RapidDebriefNote {
+  charter: RapidCharter;
+  tested: string;           // What was actually tested (1 sentence)
+  found: string;            // What was found (or "nothing unexpected")
+  followOnNeeded: boolean;
+  followOnCharter?: string; // If true, one-sentence description of the follow-on
+}
+
+export function validateRapidCharter(charter: RapidCharter): string[] {
+  const errors: string[] = [];
+  if (charter.mission.split(' ').length > 30) {
+    errors.push('Mission too long — rapid charter mission must be concise (≤ 30 words)');
+  }
+  if (charter.outOfScope.length === 0) {
+    errors.push('Out-of-scope must be explicit — rapid sessions drift badly without it');
+  }
+  return errors;
+}
+
+// Usage:
+// const rapid: RapidCharter = {
+//   charterId: 'RAPID-hotfix-20260428-01',
+//   tester: 'Alice Chen',
+//   triggerReason: 'hotfix',
+//   sessionDate: '2026-04-28',
+//   timeboxMinutes: 30,
+//   mission: 'Explore guest checkout payment retry after hotfix PR #4521 using declined cards to discover whether the CTA now appears',
+//   priorityAreas: ['Declined card retry flow', 'Order confirmation page load after retry'],
+//   outOfScope: ['Address form validation (unchanged)', 'Email delivery (separate concern)'],
+// };
+// const errors = validateRapidCharter(rapid);
+// if (errors.length > 0) console.error('Charter issues:', errors);
 ```
 
 ---
@@ -936,6 +1193,125 @@ export function planSessions(areas: FeatureArea[]): SessionAllocation[] {
 
 ---
 
+### TypeScript: Exploratory API Testing Harness  [community]
+
+Exploratory testing applies equally to REST APIs. The tester explores endpoint behavior — unexpected response codes, schema drift, missing error envelopes, undocumented fields — using the same charter and session structure. Because APIs have no visual interface, the session harness is a TypeScript HTTP client that logs every request and response, with annotations added by the tester.
+
+API charters follow the same format:
+- **Explore**: The `/orders` resource and its pagination behavior
+- **Using**: Boundary values for `limit` and `offset` parameters, missing and malformed auth headers, concurrent requests with the same idempotency key
+- **To discover**: Whether pagination is stable under concurrent load, how error envelopes are structured, which fields are nullable vs required
+
+```typescript
+// src/testing/exploratory/api-session-harness.ts
+// Exploratory API session harness — wraps fetch() with automatic request/response logging.
+// Use exactly like ExploratorySessionHarness but for REST APIs: call note() for observations,
+// then request() for each exploratory probe. Session ends with end() to write the log.
+
+export interface ApiHarnessOptions {
+  charterId: string;
+  baseUrl: string;
+  defaultHeaders?: Record<string, string>;
+  outputFile: string;
+}
+
+export interface ApiProbeResult {
+  method: string;
+  url: string;
+  status: number;
+  durationMs: number;
+  responseBody: unknown;
+  responseHeaders: Record<string, string>;
+}
+
+export class ApiExploratoryHarness {
+  private log: string[] = [];
+  private probeIndex = 0;
+  private sessionStart = Date.now();
+
+  constructor(private opts: ApiHarnessOptions) {
+    this.note(`API session started. Charter: ${opts.charterId}. Base URL: ${opts.baseUrl}`);
+  }
+
+  note(observation: string): void {
+    const elapsed = Math.round((Date.now() - this.sessionStart) / 1000);
+    const entry = `[T+${elapsed}s] ${observation}`;
+    this.log.push(entry);
+    console.log(entry);
+  }
+
+  async request(
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    path: string,
+    options: { body?: unknown; headers?: Record<string, string>; label?: string } = {}
+  ): Promise<ApiProbeResult> {
+    const url = `${this.opts.baseUrl}${path}`;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...this.opts.defaultHeaders,
+      ...options.headers,
+    };
+    const label = options.label ?? `probe-${String(this.probeIndex++).padStart(3, '0')}`;
+    const t0 = Date.now();
+
+    const resp = await fetch(url, {
+      method,
+      headers,
+      body: options.body != null ? JSON.stringify(options.body) : undefined,
+    });
+
+    const durationMs = Date.now() - t0;
+    let responseBody: unknown;
+    const contentType = resp.headers.get('content-type') ?? '';
+    try {
+      responseBody = contentType.includes('json') ? await resp.json() : await resp.text();
+    } catch {
+      responseBody = '[unparseable response body]';
+    }
+
+    const responseHeaders: Record<string, string> = {};
+    resp.headers.forEach((value, key) => { responseHeaders[key] = value; });
+
+    this.note(
+      `[${label}] ${method} ${path} → ${resp.status} (${durationMs}ms)` +
+      ` | body: ${JSON.stringify(responseBody).slice(0, 120)}`
+    );
+
+    return { method, url, status: resp.status, durationMs, responseBody, responseHeaders };
+  }
+
+  /** Flag a potential defect found during the session */
+  defect(summary: string, probe: ApiProbeResult): void {
+    this.note(`DEF: ${summary} | ${probe.method} ${probe.url} → ${probe.status}`);
+  }
+
+  async end(): Promise<void> {
+    const fs = await import('fs');
+    fs.writeFileSync(this.opts.outputFile, this.log.join('\n'), 'utf-8');
+    console.log(`\nAPI session ended. Notes written to: ${this.opts.outputFile}`);
+  }
+}
+
+// Example usage in a session script:
+// const harness = new ApiExploratoryHarness({
+//   charterId: 'CHR-orders-api-20260428-01',
+//   baseUrl: 'https://api.staging.example.com',
+//   defaultHeaders: { Authorization: 'Bearer ' + process.env.STAGING_TOKEN! },
+//   outputFile: './session-output/orders-api-session.txt',
+// });
+// const r1 = await harness.request('GET', '/orders?limit=-1', { label: 'negative-limit' });
+// if (r1.status !== 400) harness.defect('Negative limit not rejected', r1);
+// await harness.end();
+```
+
+Key differences from UI exploratory testing:
+- No screenshots — log response bodies and status codes instead
+- Boundary testing is systematic (negative limits, 0 values, max-int values) rather than visual
+- Schema validation can be automated alongside exploration: compare response fields against OpenAPI spec on each probe
+- Security-oriented probing (missing auth header, token replay, IDOR via enumeration) is especially productive for new API endpoints
+
+---
+
 ### Pair Exploratory Testing  [community]
 
 Pair testing couples two people in a single session — one drives (uses the product), one observes and takes notes. Research in professional QA communities consistently shows that pairs find more bugs than two solo testers covering the same area. The observer is free to use HICCUPPS and FEW HICCUPS without interrupting flow; the driver can react to what they see without breaking to take notes.
@@ -1047,7 +1423,7 @@ Feeds raw session notes into a structured classifier to accelerate debrief. The 
 // In practice, teams pipe this to an LLM API; here shown as a rule-based classifier
 // that can be tested deterministically without an API key.
 
-export type NoteCategory = 'bug' | 'question' | 'observation' | 'blocked' | 'scenario' | 'uncategorised';
+export type NoteCategory = 'defect' | 'question' | 'observation' | 'blocked' | 'scenario' | 'uncategorised';
 
 export interface ClassifiedNote {
   timestamp: string;
@@ -1056,14 +1432,14 @@ export interface ClassifiedNote {
   confidence: 'high' | 'low';
 }
 
-const BUG_SIGNALS = ['bug:', 'unexpected', 'wrong', 'error', 'fail', 'broken', 'crash', 'security'];
+const DEFECT_SIGNALS = ['def:', 'defect:', 'bug:', 'unexpected', 'wrong', 'error', 'fail', 'broken', 'crash', 'security'];
 const QUESTION_SIGNALS = ['question:', 'why', 'check with dev', 'confirm', '?'];
 const BLOCKED_SIGNALS = ['blocked:', 'lost ~', 'expired', 'broken env', 'waiting for'];
 const SCENARIO_SIGNALS = ['tried', 'navigated', 'placed', 'clicked', 'entered', 'submitted'];
 
 function classifyLine(line: string): { category: NoteCategory; confidence: 'high' | 'low' } {
   const lower = line.toLowerCase();
-  if (BUG_SIGNALS.some((s) => lower.includes(s))) return { category: 'bug', confidence: 'high' };
+  if (DEFECT_SIGNALS.some((s) => lower.includes(s))) return { category: 'defect', confidence: 'high' };
   if (QUESTION_SIGNALS.some((s) => lower.includes(s))) return { category: 'question', confidence: 'high' };
   if (BLOCKED_SIGNALS.some((s) => lower.includes(s))) return { category: 'blocked', confidence: 'high' };
   if (SCENARIO_SIGNALS.some((s) => lower.includes(s))) return { category: 'scenario', confidence: 'high' };
@@ -1096,7 +1472,7 @@ export function generateDebriefDraft(classified: ClassifiedNote[]): string {
     `Scenarios exercised (${scenarios.length}):`,
     ...scenarios.map((n) => `  - ${n.rawText}`),
     ``,
-    `Bugs found (${bugs.length}):`,
+    `Defects found (${bugs.length}):`,
     ...bugs.map((n) => `  - [T+${n.timestamp}] ${n.rawText}`),
     ``,
     `Open questions (${questions.length}):`,
@@ -1120,14 +1496,17 @@ export function generateDebriefDraft(classified: ClassifiedNote[]): string {
 - **Session without a charter**: Exploration without a mission is wandering. Without a charter, results can't be reported and coverage can't be tracked.
 - **Charter that is a script**: "Click button X, enter Y, verify Z" is a test case, not a charter. Over-specifying removes the tester's ability to respond to what they observe.
 - **Skipping the debrief**: Findings that stay in a session sheet and never get communicated are wasted. Debriefs are mandatory, not optional.
-- **Using exploratory testing as a substitute for regression automation**: Exploratory testing does not confirm that previously fixed bugs stay fixed. Rerunning exploration is not equivalent to running a regression suite.
+- **Using exploratory testing as a substitute for regression automation**: Exploratory testing does not confirm that previously fixed defects stay fixed. Rerunning exploration is not equivalent to running a regression suite.
 - **No time tracking**: Without tracking actual vs planned time, you can't know whether your coverage estimates are realistic or whether blockers are eating your sessions.
-- **Heroic testing**: One tester doing all exploration alone, without pair testing or peer review of charters, produces blind spots. Diversity of perspective finds more bugs.
-- **Reporting only bugs, not coverage**: Stakeholders need to know both what was found and what was checked. A session that finds no bugs is valuable if coverage was thorough.
+- **Heroic testing**: One tester doing all exploration alone, without pair testing or peer review of charters, produces blind spots. Diversity of perspective finds more defects.
+- **Reporting only defects, not coverage**: Stakeholders need to know both what was found and what was checked. A session that finds no defects is valuable if coverage was thorough.
 - **"Automation-first" teams that never schedule exploration**: High-automation teams sometimes reach 90% line coverage and stop exploratory testing entirely. This is the most expensive anti-pattern: the 10% of untested paths and all integration behavior is never explored. Coverage percentage is not equivalent to product quality.
 - **Equal session time across all areas regardless of risk**: Assigning the same number of sessions to the payment processing flow and the cosmetic preference page wastes session capacity. Session allocation should be risk-based: more sessions on higher-risk, higher-impact, recently changed areas.
-- **Ignoring blocked time as a metric**: Teams that track only bugs found miss that 30–40% of session time spent blocked is a signal about infrastructure health, not tester performance. Blocked time should trigger an infrastructure improvement conversation, not just be absorbed as a cost of testing.
-- **Never evolving the heuristic set**: FEW HICCUPS and HICCUPPS are starting points, not a complete list. Teams that adopt them as dogma without adding team- or product-specific heuristics plateau in bug-finding ability. Senior testers should maintain and share a living heuristic cheat sheet specific to their domain.
+- **Ignoring blocked time as a metric**: Teams that track only defects found miss that 30–40% of session time spent blocked is a signal about infrastructure health, not tester performance. Blocked time should trigger an infrastructure improvement conversation, not just be absorbed as a cost of testing.
+- **Never evolving the heuristic set**: FEW HICCUPS and HICCUPPS are starting points, not a complete list. Teams that adopt them as dogma without adding team- or product-specific heuristics plateau in defect-finding ability. Senior testers should maintain and share a living heuristic cheat sheet specific to their domain.
+- **Conflating checklist-based testing with exploratory testing**: ISTQB CTFL 4.0 distinguishes these as two separate experience-based techniques. Checklist-based testing follows a fixed list of items derived from past experience; exploratory testing is dynamic and self-directing. Running through a checklist is not exploration — it is systematic but structured. The difference matters for coverage claims: a checklist gives coverage against known items; exploration discovers unknown ones.
+- **Recording sessions but skipping written notes**: Video recordings are useful evidence for defect reports but are not a substitute for written session notes. A 90-minute video takes 90 minutes to review; session notes take 5 minutes to scan. Teams that replace notes with recordings lose the ability to quickly audit coverage and find follow-on charter opportunities. Always take both.
+- **Using exploratory testing for API endpoints without OpenAPI schema validation**: API exploration without a schema reference misses an entire class of defects — fields that are nullable when not supposed to be, missing error envelope structure, incorrect HTTP status codes. Always load the OpenAPI spec before an API exploration session and use it as one oracle source.
 
 ---
 
@@ -1181,7 +1560,13 @@ export function generateDebriefDraft(classified: ClassifiedNote[]): string {
 
 24. **[community] Thread-based exploration works better than session isolation for highly connected feature areas.** In tightly integrated applications, a single 90-minute session charter that cuts across multiple subsystems (cart + checkout + email + order history) finds integration bugs that isolated per-feature charters miss. Practitioners call this a "thread" — following a complete user scenario end-to-end as a single charter mission. Thread-based charters produce more integration bugs per session-hour than single-area charters in mature products where the features individually are stable but their interaction is where bugs live.
 
-25. **[community] AI-assisted note analysis speeds debrief without replacing tester judgment.** Teams in 2024–2025 began feeding raw session notes into LLMs to generate draft debrief summaries, extract action items, and categorise observations as bug/question/observation/blocked. The human tester reviews and corrects the draft. This cuts debrief time from 30 minutes to 10 minutes without losing quality — and the structured output feeds directly into sprint planning tools. The key constraint: the AI classification is always reviewed by the tester, never accepted blindly.
+25. **[community] AI-assisted note analysis speeds debrief without replacing tester judgment.** Teams in 2024–2025 began feeding raw session notes into LLMs to generate draft debrief summaries, extract action items, and categorise observations as defect/question/observation/blocked. The human tester reviews and corrects the draft. This cuts debrief time from 30 minutes to 10 minutes without losing quality — and the structured output feeds directly into sprint planning tools. The key constraint: the AI classification is always reviewed by the tester, never accepted blindly.
+
+26. **[community] AI-generated charters sound plausible but lack domain knowledge.** Teams in 2025-2026 experiment with having LLMs auto-generate session charters from user stories or PR descriptions. The resulting charters cover obvious happy-path scenarios well but systematically miss the domain-specific edge cases that senior testers bring: unusual locale behavior, legacy data migration paths, specific hardware quirks. AI-generated charters are useful as a starting checklist for junior testers, but must be reviewed and extended by someone with domain context before a session begins.
+
+27. **[community] Autonomous AI exploratory agents (browser agents) find shallow defects but miss judgment-dependent ones.** In 2025-2026, autonomous browser agents capable of clicking through UIs and flagging anomalies are increasingly available. They excel at finding consistency defects (button states that don't match API responses, label mismatches, accessibility violations) and can run 24/7. They consistently miss judgment-dependent defects: behavior that is technically correct but confusing to a user in context, security implications of a feature design, or UX issues that only appear when a real user's mental model is violated. The practical pattern: run agents nightly for broad shallow coverage, then schedule human exploratory sessions focused on the judgment-dependent areas the agent cannot assess.
+
+28. **[community] Junior and senior testers use the same heuristics differently — and coaching the gap matters more than buying tools.** A junior tester using FEW HICCUPS covers all 10 dimensions mechanically; a senior tester knows which 2-3 dimensions are highest risk for this specific charter and front-loads them. The result is that a 60-minute senior session finds more defects than a 90-minute junior session on the same charter, even with identical tools. Teams that invest in structured coaching — senior testers explaining "why I picked this dimension first" during pair sessions — report measurable improvements in junior defect-find rates within 3 sprints. Tooling improvements have less leverage than this at the junior-to-mid transition.
 
 ---
 
@@ -1332,9 +1717,11 @@ Exploratory testing does not run in CI — it is a human activity. However, it i
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
 | Session-Based Test Management (James Bach) | Paper | https://www.satisfice.com/download/session-based-test-management | Foundational SBTM paper: charters, session sheets, debrief format, metrics |
-| Rapid Software Testing (Bach & Bolton) | Course/Blog | https://www.developsense.com/blog/ | HICCUPPS oracle, deep heuristics, "what is exploratory testing?" |
+| Rapid Software Testing (Bach & Bolton) | Course/Blog | https://www.developsense.com/blog/ | HICCUPPS oracle, deep heuristics, RST framework for tester skill development |
 | Explore It! (Elisabeth Hendrickson) | Book | https://pragprog.com/titles/ehxta/explore-it/ | Tours framework, charter patterns, practical structured exploration |
 | A Tutorial in Exploratory Testing (Cem Kaner) | Paper | https://kaner.com/pdfs/QAIExploring.pdf | Why exploration is skilled practice, not ad hoc — context-driven school foundations |
 | Exploratory Software Testing (Whittaker) | Book | https://www.oreilly.com/library/view/exploratory-software-testing/9780321684080/ | Microsoft-scale tours and exploration program case studies |
 | Testing from an Exploratory Perspective (Bolton) | Blog post | https://www.developsense.com/blog/2009/08/testing-from-an-exploratory-perspective/ | Explains the epistemic difference between scripted and exploratory testing |
 | Explore It! — GitHub sample code | GitHub | https://github.com/ElisabethHendrickson/explore-it | Companion code and charter examples from the Hendrickson book |
+| ISTQB CTFL 4.0 Syllabus | Certification syllabus | https://www.istqb.org/certifications/certified-tester-foundation-level | Standardized terminology; Chapter 4 covers experience-based techniques including exploratory testing |
+| Google Testing Blog | Blog | https://testing.googleblog.com/ | Production-scale QA lessons including exploratory testing at large-system scale; search "exploratory" for relevant posts |
