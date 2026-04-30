@@ -1,5 +1,5 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 6 | score: 100/100 | date: 2026-04-28 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 8 | score: 100/100 | date: 2026-04-30 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing -->
 <!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis -->
 
@@ -905,6 +905,9 @@ npx playwright test --grep-invert @flaky --retries=2
 | `locator.or(other)` | Match one of multiple alternatives | Conditional UI states |
 | `locator.nth(index)` | Select the N-th match | Ordered stable lists only |
 | `locator.normalize()` | Convert to best-practice locator (v1.59+) | Upgrade CSS/brittle selectors during refactors |
+| `locator.filter({ visible: true })` | Filter to only visible matches (v1.50+) | When DOM has duplicate visible/hidden elements |
+| `locator.contentFrame()` | Convert iframe `Locator` to `FrameLocator` (v1.43+) | Enter iframe contents starting from element handle |
+| `frameLocator.owner()` | Convert `FrameLocator` to iframe element `Locator` (v1.43+) | Assert on the iframe element itself |
 
 ### Assertions (always import `expect` from `@playwright/test`)
 
@@ -964,6 +967,7 @@ npx playwright test --grep-invert @flaky --retries=2
 | `test.extend<T>()` | Declare custom fixtures with type safety | All custom setup/teardown |
 | `test.use(overrides)` | Configure fixture values for a scope | Scoped configuration |
 | `mergeTests(a, b)` | Combine fixtures from multiple modules | Modular fixture composition |
+| `mergeExpects(a, b)` | Combine custom `expect` extensions from multiple modules (v1.39+) | Single import for all custom matchers |
 | `workerInfo.workerIndex` | Unique per-worker integer | Worker-scoped unique test data |
 | `testInfo.testId` | Globally unique test identifier | Per-test unique data seeds |
 | `testInfo.tags` | Array of tags applied to current test | Tag-based branching in fixtures |
@@ -3025,6 +3029,542 @@ setup('authenticate via magic link', async ({ page, request }) => {
 
 ---
 
+### Visibility-Based Locator Filtering (v1.50+)
+
+Use `filter({ visible: true })` to target only currently-rendered elements when a locator might match both visible and hidden DOM nodes (e.g., tabs, off-screen panels, hidden duplicates).
+
+```typescript
+// Filter to only visible todo items — ignores hidden/detached ones
+test('shows three visible items', async ({ page }) => {
+  await page.goto('/todos');
+  const visibleItems = page.getByTestId('todo-item').filter({ visible: true });
+  await expect(visibleItems).toHaveCount(3);
+});
+
+// Scope interactions to only what the user can actually see
+test('clicks visible Add button only', async ({ page }) => {
+  await page.goto('/dashboard');
+  // Many "Add" buttons in DOM — only one is visible at a time
+  await page.getByRole('button', { name: 'Add' }).filter({ visible: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+});
+```
+
+> Use `filter({ visible: true })` when your app renders duplicate elements for transitions or
+> animations and only one is visible at a time. Without it, Playwright's strict mode throws
+> "resolved to X elements". [community]
+
+---
+
+### Frame / FrameLocator Bidirectional Conversion (v1.43+)
+
+Convert between `Locator` (iframe element handle) and `FrameLocator` (content-frame accessor) in either direction. Useful when you need to both assert on the iframe element itself and interact with its contents.
+
+```typescript
+// FrameLocator → Locator: check the iframe element's visibility
+test('iframe is visible and content loads', async ({ page }) => {
+  await page.goto('/embed');
+  const frameLocator = page.frameLocator('iframe[title="Payment form"]');
+
+  // owner() returns the <iframe> element as a Locator
+  const iframeElement = frameLocator.owner();
+  await expect(iframeElement).toBeVisible();
+  await expect(iframeElement).toHaveAttribute('title', 'Payment form');
+
+  // Then interact with content via the FrameLocator
+  await frameLocator.getByLabel('Card number').fill('4111111111111111');
+});
+
+// Locator → FrameLocator: start with the element, then enter the frame
+test('enters frame from locator', async ({ page }) => {
+  await page.goto('/dashboard');
+  const iframeLocator = page.locator('iframe[data-widget="chart"]');
+
+  // contentFrame() converts to FrameLocator for inner interactions
+  const frame = iframeLocator.contentFrame();
+  await expect(frame.getByRole('img', { name: /chart/i })).toBeVisible();
+  await frame.getByRole('button', { name: 'Download' }).click();
+});
+```
+
+> `owner()` and `contentFrame()` eliminate the workaround of using `page.frame()` by name,
+> which requires knowing the frame's `name` attribute — often absent in third-party embeds. [community]
+
+---
+
+### `mergeExpects()` — Compose Custom Matchers (v1.39+)
+
+Just as `mergeTests()` composes fixture sets, `mergeExpects()` merges custom `expect` extensions from multiple modules into a single `expect` instance. Avoids re-importing matchers in every spec file.
+
+```typescript
+// e2e/fixtures/matchers/form.ts — form-specific matchers
+import { expect as baseExpect, type Locator } from '@playwright/test';
+
+export const expect = baseExpect.extend({
+  async toHaveValidationError(locator: Locator, message: string) {
+    const errEl = locator.locator('[data-testid="field-error"]');
+    const pass = await errEl.filter({ hasText: message }).isVisible();
+    return { pass, message: () => `Expected validation error "${message}"`, name: 'toHaveValidationError' };
+  },
+});
+
+// e2e/fixtures/matchers/a11y.ts — accessibility matchers
+import { expect as baseExpect, type Page } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+export const expect = baseExpect.extend({
+  async toPassA11y(page: Page) {
+    const results = await new AxeBuilder({ page }).analyze();
+    const pass = results.violations.length === 0;
+    return { pass, message: () => `Expected no a11y violations; got ${results.violations.length}`, name: 'toPassA11y' };
+  },
+});
+
+// e2e/fixtures/index.ts — merge all matchers into one export
+import { mergeTests, mergeExpects } from '@playwright/test';
+import { test as pageTest }  from './pages';
+import { test as apiTest }   from './api';
+import { expect as formExpect }  from './matchers/form';
+import { expect as a11yExpect }  from './matchers/a11y';
+
+export const test   = mergeTests(pageTest, apiTest);
+export const expect = mergeExpects(formExpect, a11yExpect);
+
+// e2e/specs/signup.spec.ts — single import for all matchers
+import { test, expect } from '../fixtures';
+
+test('signup form validates and is accessible', async ({ page }) => {
+  await page.goto('/signup');
+  await page.getByRole('button', { name: 'Create account' }).click();
+  await expect(page.getByTestId('email-field')).toHaveValidationError('Email is required');
+  await expect(page).toPassA11y();
+});
+```
+
+---
+
+### Project `teardown` — Guaranteed Cleanup (v1.34+)
+
+Link a cleanup project to a setup project via `teardown`. The teardown project runs after all dependent projects complete — even if tests fail — ensuring seeded data is always removed and external state is always cleaned up.
+
+```typescript
+// playwright.config.ts
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  projects: [
+    {
+      name:     'setup',
+      testMatch: /global\.setup\.ts/,
+      teardown: 'teardown',       // link the cleanup project
+    },
+    {
+      name:     'teardown',
+      testMatch: /global\.teardown\.ts/,
+    },
+    {
+      name:         'chromium',
+      use:          { ...devices['Desktop Chrome'] },
+      dependencies: ['setup'],    // waits for setup; teardown runs after chromium
+    },
+  ],
+});
+
+// e2e/global.setup.ts
+import { test as setup, expect } from '@playwright/test';
+
+setup('create test tenant', async ({ request }) => {
+  const res = await request.post('/api/test/tenants', {
+    data: { name: 'e2e-tenant', tier: 'pro' },
+  });
+  expect(res.ok()).toBeTruthy();
+  const { id } = await res.json();
+  process.env.TEST_TENANT_ID = String(id);
+});
+
+// e2e/global.teardown.ts
+import { test as teardown } from '@playwright/test';
+
+teardown('delete test tenant', async ({ request }) => {
+  if (process.env.TEST_TENANT_ID) {
+    await request.delete(`/api/test/tenants/${process.env.TEST_TENANT_ID}`);
+  }
+});
+```
+
+> `teardown` runs after **all** dependent projects complete, even when tests fail. This is
+> the correct pattern for cleaning up test databases, provisioned accounts, or external
+> service stubs — `afterAll` in a `globalSetup` file does NOT reliably run on CI failures. [community]
+
+---
+
+### `webServer.wait` — Dynamic Port Detection (v1.57+)
+
+Use a regex pattern with named capture groups in `webServer.wait.stdout` to capture the port your dev server prints on startup. Playwright populates the matched group as an environment variable, eliminating hard-coded port numbers.
+
+```typescript
+// playwright.config.ts
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  webServer: {
+    command: 'npm run dev',
+    wait: {
+      // Named capture group → process.env.VITE_PORT is set automatically
+      stdout: /Local:\s+http:\/\/localhost:(?<vite_port>\d+)/,
+    },
+    reuseExistingServer: !process.env.CI,
+    timeout: 60_000,
+  },
+  use: {
+    // Use the captured port — falls back to 5173 if not captured
+    baseURL: `http://localhost:${process.env.VITE_PORT ?? 5173}`,
+  },
+});
+```
+
+> Hard-coding `url: 'http://localhost:3000'` breaks when a port is already in use and Vite/Webpack
+> picks the next available one. `wait.stdout` with a named capture group solves this without
+> custom shell scripts. [community]
+
+---
+
+### TLS Client Certificates — Mutual TLS (v1.46+)
+
+Supply client-side certificates for services that require mutual TLS (mTLS) authentication. Configured globally in `playwright.config.ts` or per-context for targeted use.
+
+```typescript
+// playwright.config.ts — global mTLS certificate
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  use: {
+    clientCertificates: [
+      {
+        origin:      'https://internal-api.example.com',
+        certPath:    './e2e/certs/client.pem',
+        keyPath:     './e2e/certs/client-key.pem',
+        passphrase:  process.env.E2E_CERT_PASSPHRASE,  // never hard-code
+      },
+    ],
+  },
+});
+
+// Per-context: use different cert for different origins in the same test
+test('admin endpoint requires different cert', async ({ browser }) => {
+  const context = await browser.newContext({
+    clientCertificates: [
+      {
+        origin:   'https://admin.example.com',
+        certPath: './e2e/certs/admin.pem',
+        keyPath:  './e2e/certs/admin-key.pem',
+      },
+    ],
+  });
+  const page = await context.newPage();
+  await page.goto('https://admin.example.com/dashboard');
+  await expect(page.getByRole('heading', { name: 'Admin Dashboard' })).toBeVisible();
+  await context.close();
+});
+```
+
+**Also works with `apiRequestContext`:**
+
+```typescript
+test('API endpoint requires mTLS', async ({ playwright }) => {
+  const request = await playwright.request.newContext({
+    clientCertificates: [{
+      origin:   'https://api.example.com',
+      certPath: './e2e/certs/api-client.pem',
+      keyPath:  './e2e/certs/api-client-key.pem',
+    }],
+  });
+  const res = await request.get('https://api.example.com/protected');
+  expect(res.ok()).toBeTruthy();
+  await request.dispose();
+});
+```
+
+> Never commit `.pem` files to source control. Store them in CI secrets (e.g., GitHub Secrets)
+> and write them to a temp directory at the start of the CI job. Add `e2e/certs/` to `.gitignore`. [community]
+
+---
+
+### Test Data Factory Pattern
+
+Use a factory module to generate unique, type-safe test data objects. Centralizing data construction eliminates scattered hard-coded strings, makes parallel-safe unique identifiers automatic, and allows easy per-test customization via overrides.
+
+```typescript
+// e2e/factories/user.factory.ts
+import { faker } from '@faker-js/faker';
+
+export interface UserData {
+  name:     string;
+  email:    string;
+  password: string;
+  role:     'admin' | 'viewer' | 'editor';
+}
+
+/**
+ * Build a user data object. Pass overrides to customize specific fields.
+ * Email is unique by default (UUID suffix) — safe for parallel tests.
+ */
+export function buildUser(overrides: Partial<UserData> = {}): UserData {
+  return {
+    name:     faker.person.fullName(),
+    email:    `test-${crypto.randomUUID()}@example.com`,
+    password: faker.internet.password({ length: 12, memorable: true }),
+    role:     'viewer',
+    ...overrides,
+  };
+}
+
+// e2e/factories/order.factory.ts
+export interface OrderData {
+  productId: string;
+  quantity:  number;
+  discount:  number;
+}
+
+export function buildOrder(overrides: Partial<OrderData> = {}): OrderData {
+  return {
+    productId: `prod-${crypto.randomUUID()}`,
+    quantity:  faker.number.int({ min: 1, max: 10 }),
+    discount:  0,
+    ...overrides,
+  };
+}
+
+// e2e/specs/admin.spec.ts — compose factories in tests
+import { test, expect } from '@playwright/test';
+import { buildUser }    from '../factories/user.factory';
+import { buildOrder }   from '../factories/order.factory';
+
+test('admin can create an editor and assign an order', async ({ page, request }) => {
+  const user  = buildUser({ role: 'editor' });
+  const order = buildOrder({ quantity: 3, discount: 10 });
+
+  // Seed via API — no UI flows
+  const userRes = await request.post('/api/users', { data: user });
+  expect(userRes.ok()).toBeTruthy();
+  const { id: userId } = await userRes.json();
+
+  const orderRes = await request.post(`/api/users/${userId}/orders`, { data: order });
+  expect(orderRes.ok()).toBeTruthy();
+
+  await page.goto(`/admin/users/${userId}`);
+  await expect(page.getByText(user.name)).toBeVisible();
+  await expect(page.getByText('editor')).toBeVisible();
+});
+```
+
+> Use `crypto.randomUUID()` (Node 18+, no dependency) instead of `Date.now()` for unique identifiers.
+> UUIDs are collision-proof even when hundreds of parallel workers generate data simultaneously. [community]
+
+---
+
+### Network Throttling — Simulating Slow Connections [community]
+
+Playwright does not have a built-in slow-network throttle option, but you can simulate slow connections through two approaches: CDP (Chrome DevTools Protocol) for Chromium, or route-level artificial delays for cross-browser compatibility.
+
+```typescript
+// Approach 1: CDP network conditions (Chromium only)
+test('app shows loading skeleton on slow 3G', async ({ page, context }) => {
+  // Use CDP session to emulate slow 3G: 750 kbps down, 250 kbps up, 300ms RTT
+  const cdpSession = await context.newCDPSession(page);
+  await cdpSession.send('Network.enable');
+  await cdpSession.send('Network.emulateNetworkConditions', {
+    offline:            false,
+    downloadThroughput: 750 * 1024 / 8,  // 750 kbps in bytes/s
+    uploadThroughput:   250 * 1024 / 8,
+    latency:            300,
+  });
+
+  await page.goto('/');
+  // Skeleton loader should appear before content
+  await expect(page.getByTestId('skeleton-loader')).toBeVisible();
+  await expect(page.getByRole('main')).toBeVisible();
+});
+
+// Approach 2: Route-level delay (cross-browser, works with Firefox/WebKit)
+test('app shows loading state while API responds slowly', async ({ page }) => {
+  await page.route('**/api/products', async route => {
+    await new Promise(res => setTimeout(res, 2_000));  // 2s artificial delay
+    await route.continue();
+  });
+
+  await page.goto('/products');
+  await expect(page.getByTestId('loading-spinner')).toBeVisible();
+  await expect(page.getByRole('list', { name: 'Products' })).toBeVisible({ timeout: 10_000 });
+});
+
+// Approach 3: Offline mode
+test('app shows offline banner when disconnected', async ({ context, page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('main')).toBeVisible();
+
+  await context.setOffline(true);
+  await page.getByRole('button', { name: 'Refresh' }).click();
+  await expect(page.getByRole('alert', { name: /offline|no connection/i })).toBeVisible();
+
+  await context.setOffline(false);
+  // App should recover on reconnect
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.getByRole('alert')).toBeHidden();
+});
+```
+
+> CDP throttling only works in Chromium — skip the test on other browsers with
+> `test.skip(browserName !== 'chromium', 'CDP throttling is Chromium-only')`.
+> For cross-browser slow-network tests, use route delays instead. [community]
+
+---
+
+### Clipboard API Testing
+
+Test clipboard read/write interactions by granting the clipboard permission and using `page.evaluate` to interact with the Clipboard API. Playwright's auto-waiting doesn't extend to clipboard operations — assert the DOM change, not the clipboard state directly.
+
+```typescript
+// Grant clipboard permissions before the test
+test('copy button copies text to clipboard', async ({ browser }) => {
+  const context = await browser.newContext({
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
+  const page = await context.newPage();
+  await page.goto('/article/123');
+
+  await page.getByRole('button', { name: 'Copy link' }).click();
+
+  // Read clipboard via evaluate — requires clipboard-read permission
+  const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+  expect(clipboardText).toMatch(/https:\/\/example\.com\/article\/123/);
+  await context.close();
+});
+
+// Test paste-from-clipboard functionality
+test('paste into search pre-fills the query', async ({ browser }) => {
+  const context = await browser.newContext({
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
+  const page = await context.newPage();
+
+  // Write a value to clipboard before navigating
+  await page.goto('/');
+  await page.evaluate(text =>
+    navigator.clipboard.writeText(text), 'playwright typescript'
+  );
+
+  await page.goto('/search');
+  await page.getByPlaceholder('Search...').focus();
+  await page.keyboard.press('Control+v');  // or 'Meta+v' on macOS
+  await expect(page.getByPlaceholder('Search...')).toHaveValue('playwright typescript');
+  await context.close();
+});
+```
+
+> Clipboard permissions must be granted at context creation — you cannot add them later
+> via `context.grantPermissions()`. The clipboard behaves differently in headless vs. headed
+> mode; some CI environments block clipboard access entirely. Use feature flags to skip
+> clipboard tests in those environments. [community]
+
+---
+
+### Print Dialog Testing
+
+Test print functionality by intercepting `window.print()` or asserting that the print CSS styles apply correctly. Playwright cannot control OS-level print dialogs, but you can verify the print-triggered behavior.
+
+```typescript
+// Assert that window.print() is called when the Print button is clicked
+test('Print button triggers print dialog', async ({ page }) => {
+  await page.goto('/invoice/123');
+
+  // Intercept window.print() before clicking the button
+  let printCalled = false;
+  await page.exposeFunction('__recordPrint', () => { printCalled = true; });
+  await page.addInitScript(() => {
+    const original = window.print;
+    window.print = function() {
+      (window as any).__recordPrint();
+      // Do NOT call original.call(this) — prevent actual OS dialog
+    };
+  });
+
+  await page.getByRole('button', { name: 'Print' }).click();
+  expect(printCalled).toBe(true);
+});
+
+// Test print CSS by checking styles applied under @media print
+test('invoice hides navigation in print view', async ({ page }) => {
+  await page.goto('/invoice/123');
+
+  // Emulate print media type
+  await page.emulateMedia({ media: 'print' });
+
+  // Navigation should be hidden in print CSS
+  await expect(page.getByRole('navigation')).toBeHidden();
+  await expect(page.getByTestId('invoice-content')).toBeVisible();
+
+  // Take visual snapshot of print layout
+  await expect(page).toHaveScreenshot('invoice-print.png');
+
+  // Restore screen media
+  await page.emulateMedia({ media: 'screen' });
+});
+```
+
+> `page.emulateMedia({ media: 'print' })` applies `@media print` CSS rules and is the
+> correct way to test print styles — it does not open a print dialog. Combine with
+> `toHaveScreenshot()` for visual regression of print layouts. [community]
+
+---
+
+### `browser.bind()` for Multi-Client and Agent Scenarios (v1.59+)
+
+`browser.bind()` makes a running browser instance available for other processes or agents to connect to. Useful for orchestrating multi-agent workflows, browser reuse across processes, and interactive debugging sessions.
+
+```typescript
+// Process 1: Launch browser and bind it
+// scripts/start-shared-browser.ts
+import { chromium } from 'playwright';
+
+const browser = await chromium.launch({ headless: false });
+const { endpoint } = await browser.bind('test-session', {
+  host: 'localhost',
+  port: 0,  // OS assigns a free port
+});
+
+console.log(`Browser bound at: ${endpoint}`);
+// Save endpoint for Process 2 to use
+process.env.BROWSER_ENDPOINT = endpoint;
+
+// Process 2: Connect to the bound browser
+// e2e/specs/shared-browser.spec.ts
+import { chromium } from '@playwright/test';
+
+test('connects to shared browser session', async () => {
+  const endpoint = process.env.BROWSER_ENDPOINT!;
+  const browser  = await chromium.connect(endpoint);
+  const context  = await browser.newContext();
+  const page     = await context.newPage();
+
+  await page.goto('/admin');
+  // Multiple agents can now operate on the same browser simultaneously
+  await page.close();
+  await context.close();
+  // Do NOT call browser.close() — you're a client, not the owner
+});
+
+// Cleanup: unbind when done
+// await browser.unbind();
+// await browser.close();
+```
+
+> `browser.bind()` is designed for agentic/orchestration scenarios — avoid it in standard
+> parallel test suites where each worker should own its browser instance. Using a shared
+> bound browser in parallel tests without context isolation causes cross-test pollution. [community]
+
+---
+
 ## Project Structure Reference
 
 ```
@@ -3165,9 +3705,12 @@ page.locator('x-custom-element', { hasText: 'Details' }) // Shadow DOM host
 // Locator operations
 locator.describe('human label')                // annotate for trace readability (v1.52+)
 locator.filter({ hasText: 'Alice' })
+locator.filter({ visible: true })              // only visible matches (v1.50+)
 locator.and(page.getByTitle('Primary'))
 locator.or(page.getByText('Fallback'))
 locator.nth(0)
+locator.contentFrame()                         // Locator → FrameLocator (v1.43+)
+frameLocator.owner()                           // FrameLocator → iframe Locator (v1.43+)
 
 // Actions
 await locator.click();

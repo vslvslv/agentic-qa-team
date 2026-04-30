@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: training knowledge (WebFetch + WebSearch unavailable) | iteration: 2 | score: 100/100 | date: 2026-04-28 -->
+<!-- lang: TypeScript | sources: training knowledge (WebFetch + WebSearch unavailable) | iteration: 4 | score: 100/100 | date: 2026-04-30 -->
 <!-- Note: WebFetch and WebSearch were unavailable during generation. Synthesized from official docs training knowledge + community experience. -->
 <!-- Re-run `/qa-refine Appium/WebDriverIO` with WebFetch enabled to pull live sources. -->
 
@@ -180,6 +180,7 @@ Give every Page Object a shared base class that encodes the `waitForDisplayed` e
 
 ```typescript
 // src/pages/BasePage.ts
+import { writeFileSync } from 'fs';
 import type { ChainablePromiseElement } from 'webdriverio';
 
 export abstract class BasePage {
@@ -211,7 +212,7 @@ export abstract class BasePage {
     const ts = Date.now();
     await browser.saveScreenshot(`./allure-results/${label}-${ts}.png`);
     const src = await browser.getPageSource();
-    require('fs').writeFileSync(`./allure-results/${label}-${ts}.xml`, src);
+    writeFileSync(`./allure-results/${label}-${ts}.xml`, src);
   }
 }
 ```
@@ -241,7 +242,7 @@ class DashboardPage extends BasePage {
 export default new DashboardPage();
 ```
 
-
+### Selector Priority — Tier-by-Tier Reference
 
 Always prefer selectors in this order. Each step down increases brittleness.
 
@@ -1018,7 +1019,12 @@ describe('Login validation', () => {
 
 ```typescript
 // wdio.conf.ts — Allure with device metadata
-reporters: [
+import { writeFileSync } from 'fs';
+import type { Options } from '@wdio/types';
+
+export const config: Options.Testrunner = {
+  // ...existing config...
+  reporters: [
   'spec',
   ['allure', {
     outputDir: 'allure-results',
@@ -1033,7 +1039,7 @@ onPrepare: async (config, capabilities) => {
   const lines = (capabilities as WebdriverIO.Capabilities[]).map(cap =>
     `${cap.platformName}_device=${cap['appium:deviceName'] ?? 'unknown'}`
   );
-  require('fs').writeFileSync('allure-results/environment.properties', lines.join('\n'));
+  writeFileSync('allure-results/environment.properties', lines.join('\n'));
 },
 ```
 
@@ -1104,6 +1110,215 @@ const iosCapabilities = ['iPhone 15', 'iPhone 14', 'iPad Pro'].map((device, inde
   'appium:newCommandTimeout': 120,
 }));
 ```
+
+### Biometric Auth Simulation (Face ID / Touch ID)  [community]
+
+Apps that require Face ID or Touch ID need a way to simulate biometric prompts in tests.
+Appium provides `mobile: enrollBiometric` and `mobile: sendBiometricMatch` commands for
+iOS Simulator, and `finger-print` / `finger-remove` ADB commands for Android emulators.
+
+```typescript
+// test/helpers/biometricHelper.ts
+// iOS Simulator: enroll biometrics + simulate match/fail
+export async function enrollIosBiometric(): Promise<void> {
+  await driver.execute('mobile: enrollBiometric', { isEnabled: true });
+}
+
+export async function simulateIosBiometricMatch(match: boolean = true): Promise<void> {
+  await driver.execute('mobile: sendBiometricMatch', { type: 'faceId', match });
+}
+
+// Android emulator: simulate fingerprint authentication
+export async function simulateAndroidFingerprint(fingerprintId: number = 1): Promise<void> {
+  // Triggers the fingerprint sensor on the emulator (ADB fingerprint command via Appium)
+  await driver.execute('mobile: fingerprint', { fingerprintId });
+}
+```
+
+```typescript
+// test/specs/biometric-login.spec.ts
+import {
+  enrollIosBiometric,
+  simulateIosBiometricMatch,
+  simulateAndroidFingerprint,
+} from '../helpers/biometricHelper.js';
+import LoginPage from '../pages/LoginPage.js';
+
+describe('Biometric login', () => {
+  before(async () => {
+    if (browser.isIOS) await enrollIosBiometric();
+  });
+
+  it('should log in with biometric — success', async () => {
+    await LoginPage.tapBiometricLoginButton();
+    await $('~biometric-prompt').waitForDisplayed({ timeout: 5000 });
+
+    if (browser.isIOS) {
+      await simulateIosBiometricMatch(true);
+    } else {
+      await simulateAndroidFingerprint(1);
+    }
+
+    await expect($('~home-screen')).toBeDisplayed();
+  });
+
+  it('should show fallback PIN when biometric fails', async () => {
+    await LoginPage.tapBiometricLoginButton();
+    await $('~biometric-prompt').waitForDisplayed({ timeout: 5000 });
+
+    if (browser.isIOS) {
+      await simulateIosBiometricMatch(false);  // simulate failed match
+    } else {
+      await simulateAndroidFingerprint(0);  // fingerprintId 0 = failure on emulator
+    }
+
+    await expect($('~pin-fallback-screen')).toBeDisplayed();
+  });
+});
+```
+
+**Biometric testing caveats:**
+- `mobile: enrollBiometric` and `mobile: sendBiometricMatch` only work on iOS **Simulator** — not on real iOS devices. On real devices, Appium cannot intercept the secure enclave.
+- On Android **emulators**, `mobile: fingerprint` requires API level 23+ and the emulator must have fingerprints enrolled first (via AVD settings). On real Android devices, use the `fingerprint` ADB command via the test setup script.
+- Always gate biometric tests with a capability flag (`process.env.REAL_DEVICE !== 'true'`) to skip them on device farms where biometric simulation is unsupported.
+
+---
+
+## `expect()` Matchers vs `waitFor*()` Methods — Choosing the Right Approach
+
+WebDriverIO bundles `expect-webdriverio` (v9: built-in via `@wdio/globals`). Understanding when to use `expect()` matchers vs `waitFor*()` methods avoids test double-waiting and assertion confusion.
+
+| Approach | Behaviour | When to use |
+|----------|-----------|-------------|
+| `await expect(el).toBeDisplayed()` | Polls internally (default 3 s) — assertion FAILS if element never becomes visible | For test assertions — reads clearly as "I expect this to be visible" |
+| `await el.waitForDisplayed({ timeout })` | Polls until visible OR throws timeout error | When you need to gate further actions on visibility (not making an assertion) |
+| `await el.isDisplayed()` | Immediate — returns `true`/`false` at this instant | For conditional logic inside helper methods |
+
+```typescript
+// GOOD: assertion — expect polls internally, failure message is descriptive
+await expect($('~success-toast')).toBeDisplayed();
+await expect($('~user-name-header')).toHaveText('Alice');
+await expect($('~cart-badge')).toHaveAttribute('value', '3');
+
+// GOOD: gating action — waitForDisplayed before interacting
+await $('~submit-btn').waitForDisplayed({ timeout: 8_000 });
+await $('~submit-btn').click();
+// Don't assert on this — it throws a generic timeout error, not a readable test failure
+
+// GOOD: conditional branching — isDisplayed() for guard clauses
+async function dismissOnboardingIfPresent(): Promise<void> {
+  const onboarding = $('~onboarding-overlay');
+  if (await onboarding.isDisplayed()) {
+    await $('~skip-onboarding-btn').click();
+    await onboarding.waitForDisplayed({ reverse: true, timeout: 3_000 });
+  }
+}
+
+// BAD: double-wait — waitForDisplayed then expect redundantly re-polls
+await $('~success-toast').waitForDisplayed({ timeout: 8_000 });
+await expect($('~success-toast')).toBeDisplayed();  // polls again — wastes time, not wrong but noisy
+```
+
+**`expect()` timeout configuration:** Override the default 3 s globally or per-assertion:
+
+```typescript
+// wdio.conf.ts — set global expect timeout
+import { setOptions } from 'expect-webdriverio';
+
+export const config: Options.Testrunner = {
+  // ...
+  before: async () => {
+    setOptions({ wait: 8_000 });  // default wait for all expect() assertions
+  },
+};
+
+// Per-assertion override
+await expect($('~slow-animation')).toBeDisplayed({ wait: 15_000, interval: 500 });
+```
+
+---
+
+## Multi-App Testing — Switching Between Apps  [community]
+
+Some flows leave your app and open a third-party app (Share Sheet, OAuth browser redirect,
+in-app browser, system permission dialog). Handle these by switching the Appium session context
+or activating the target app, then returning to your app.
+
+```typescript
+// test/helpers/contextHelper.ts
+
+/**
+ * Switch to Safari (iOS) or Chrome (Android) after an OAuth redirect.
+ * WebdriverIO + Appium manage separate contexts for native vs. WebView.
+ */
+export async function switchToWebContext(): Promise<void> {
+  // Wait for WebView context to appear (app embedded browser opens asynchronously)
+  await browser.waitUntil(async () => {
+    const contexts = await browser.getContexts();
+    return contexts.some((ctx) => (ctx as string).startsWith('WEBVIEW'));
+  }, { timeout: 10_000, timeoutMsg: 'WebView context not found within 10 s' });
+
+  const contexts = await browser.getContexts();
+  const webCtx = (contexts as string[]).find((c) => c.startsWith('WEBVIEW'));
+  if (!webCtx) throw new Error('No WEBVIEW context available');
+  await browser.switchContext(webCtx);
+}
+
+export async function switchToNativeContext(): Promise<void> {
+  await browser.switchContext('NATIVE_APP');
+}
+
+/**
+ * Activate the system Settings app, perform an action, then return to the tested app.
+ */
+export async function openSystemSettings(bundleIdToReturn: string): Promise<void> {
+  if (browser.isIOS) {
+    await driver.execute('mobile: activateApp', { bundleId: 'com.apple.Preferences' });
+  } else {
+    await driver.activateApp('com.android.settings');
+  }
+  // Caller performs actions in Settings, then calls returnToApp()
+}
+
+export async function returnToApp(bundleId: string): Promise<void> {
+  await driver.activateApp(bundleId);
+  // Re-check that the app foregrounded correctly
+  await browser.waitUntil(
+    async () => {
+      const state = await driver.queryAppState(bundleId);
+      return state === 4;  // 4 = foreground running
+    },
+    { timeout: 5_000, timeoutMsg: `App ${bundleId} did not foreground in 5 s` }
+  );
+}
+```
+
+```typescript
+// test/specs/oauth-login.spec.ts
+import { switchToWebContext, switchToNativeContext } from '../helpers/contextHelper.js';
+
+describe('OAuth login flow', () => {
+  it('should complete OAuth via external browser', async () => {
+    await $('~sign-in-with-google').click();
+
+    // Wait for in-app browser / WebView to open
+    await switchToWebContext();
+
+    // Now operating in WebView — can use CSS selectors in the OAuth page
+    await $('input[type="email"]').setValue(process.env.TEST_EMAIL!);
+    await $('button[type="submit"]').click();
+
+    // Switch back to native after OAuth redirect returns to the app
+    await switchToNativeContext();
+    await expect($('~home-screen')).toBeDisplayed();
+  });
+});
+```
+
+**Context switching gotchas:**
+- `getContexts()` returns both `'NATIVE_APP'` and any open `WEBVIEW_<pid>` contexts. Multiple WebViews can be open simultaneously — select the one whose URL matches your OAuth provider.
+- On Android, switching to a WebView context requires ChromeDriver to be installed in `APPIUM_HOME`. Add `appium driver install --source npm appium-chromium-driver` to your CI setup step.
+- `queryAppState()` returns 4 for foreground — useful guard after `activateApp` to confirm the OS actually foregrounded the app before asserting on its UI.
 
 ---
 
@@ -1324,6 +1539,11 @@ Use this checklist to verify a new WebDriverIO/Appium test project is production
 - [ ] Appium plugins declared in `.appiumrc.json` and installed in CI setup step
 - [ ] `driver` used only for session-level commands; `browser` for all test interaction
 - [ ] Expo projects build a custom dev client (not Expo Go) before running Appium tests
+- [ ] Biometric auth tests gated with `REAL_DEVICE` env flag (simulator-only APIs)
+- [ ] Multi-app flows use `switchContext()` for WebView / OAuth redirects
+- [ ] `expect()` matchers used for assertions; `waitForDisplayed()` used for action gating
+- [ ] ChromeDriver installed in CI for WebView context switching on Android
+- [ ] No `require()` in test files — ESM imports (`import { writeFileSync } from 'fs'`) used throughout
 
 ---
 

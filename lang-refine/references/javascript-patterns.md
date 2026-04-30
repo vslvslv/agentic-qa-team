@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 7 | score: 100/100 | date: 2026-04-28 -->
+<!-- sources: official | community | mixed | iteration: 17 | score: 100/100 | date: 2026-04-30 -->
 
 ## Core Philosophy
 
@@ -213,6 +213,46 @@ async function loadESM() {
 | Top-level `await` | ESM only |
 | Synchronous config loading | CJS `require()` or `createRequire()` workaround in ESM |
 
+### Module Aggregation and Import Maps
+
+**Module aggregation** (barrel files) centralises re-exports, allowing consumers to import from one path instead of many deep paths. **Import maps** (browser) let you use bare specifiers without a bundler.
+
+```javascript
+// ── Barrel file / module aggregation ────────────────────────────────
+// src/shapes/index.js — re-exports everything from child modules
+export { Square }   from './square.js';
+export { Circle }   from './circle.js';
+export { Triangle } from './triangle.js';
+
+// Consumer imports from one place — no deep paths leaking into calling code
+import { Square, Circle } from './shapes/index.js';
+
+// ── Import Maps (browser, ES2024+) ───────────────────────────────────
+// In HTML — maps bare specifiers to real URLs (no bundler needed in dev)
+// <script type="importmap">
+// {
+//   "imports": {
+//     "lodash":  "/node_modules/lodash-es/lodash.js",
+//     "lodash/": "/node_modules/lodash-es/"
+//   }
+// }
+// </script>
+
+import { debounce } from 'lodash';           // resolves via import map
+import { cloneDeep } from 'lodash/cloneDeep.js';
+
+// ── Import Attributes (ES2025) — explicitly type non-JS imports ─────
+import config from './config.json' with { type: 'json' };
+import styles from './styles.css'  with { type: 'css' };  // Safari/Chrome
+
+// ── Cyclic dependency safeguard ────────────────────────────────────
+// Cyclic imports (a imports b, b imports a) work in ESM but the imported
+// binding is undefined on the first pass. Avoid shared mutable state
+// across a cycle; prefer dependency injection to break the cycle.
+```
+
+**Barrel file pitfall:** large barrel files that re-export everything prevent tree-shaking because bundlers may not be able to determine which exports are used statically. Keep barrel files for public APIs; don't create them for every internal directory.
+
 ---
 
 ### ES2022+ Language Features
@@ -261,6 +301,12 @@ const sorted   = arr.toSorted();               // [1, 1, 3, 4, 5] — arr unchan
 const reversed = arr.toReversed();             // [5, 1, 4, 1, 3] — arr unchanged
 const updated  = arr.with(2, 99);             // [3, 1, 99, 1, 5] — arr unchanged
 const spliced  = arr.toSpliced(1, 2, 9, 8);  // [3, 9, 8, 1, 5]  — arr unchanged
+
+// Array.findLast / findLastIndex (ES2023) — search from end
+const nums = [1, 2, 3, 4, 5];
+const lastEven      = nums.findLast(n => n % 2 === 0);      // 4
+const lastEvenIndex = nums.findLastIndex(n => n % 2 === 0); // 3
+// Compare: arr.findIndex() + arr.lastIndexOf() don't accept predicates
 
 // Object.groupBy (ES2024) — group array items into an object by key
 const people = [
@@ -341,6 +387,8 @@ const londonTime = meeting.withTimeZone('Europe/London');
 
 **Recommendation:** For production code in 2026, use `date-fns` (immutable, tree-shakeable) or `luxon` for timezone-rich apps. Use `Temporal` with `@js-temporal/polyfill` in new projects — the API is stable even if native support is incomplete.
 
+
+### Structured Error Handling with Custom Error Classes
 
 Throwing strings or generic `Error` loses type information and makes catch blocks unable to distinguish error types. Extend `Error` for structured error handling. Use `cause` (ES2022) to preserve error chain context without losing stack traces.
 
@@ -501,6 +549,52 @@ console.log(buf.length);             // Byte length (may differ from char length
 const safe = Buffer.alloc(16);
 ```
 
+### Web Workers and worker_threads — CPU-Bound Off-Thread Work
+The event loop is single-threaded. CPU-intensive work (image processing, encryption, parsing large files) blocks it for all concurrent requests. Move that work to Web Workers (browser) or `worker_threads` (Node.js).
+
+```javascript
+// ── Browser: Web Worker ──────────────────────────────────────────────
+// main.js — spawn worker, transfer data without copy
+const worker = new Worker(new URL('./fib.worker.js', import.meta.url));
+const bigBuffer = new Uint8Array(1024 * 1024 * 32);
+
+// Transferable: ownership moves to worker — zero-copy, bigBuffer unusable here after
+worker.postMessage(bigBuffer.buffer, [bigBuffer.buffer]);
+
+worker.addEventListener('message', ({ data }) => {
+  console.log('Result from worker:', data.result);
+  worker.terminate();
+});
+
+// fib.worker.js — runs on a background thread (no DOM access)
+self.onmessage = ({ data }) => {
+  const view = new Uint8Array(data);
+  // ... heavy computation with view ...
+  self.postMessage({ result: view.byteLength });
+};
+
+// ── Node.js: worker_threads ───────────────────────────────────────────
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
+
+if (isMainThread) {
+  const worker = new Worker(import.meta.filename, {
+    workerData: { input: [1, 2, 3, 4, 5] },
+  });
+  worker.once('message', result => console.log('Sum:', result));
+  worker.once('error', err  => console.error(err));
+} else {
+  // Worker thread code — same file, different branch
+  const sum = workerData.input.reduce((a, b) => a + b, 0);
+  parentPort.postMessage(sum);
+}
+```
+
+**Key rules:**
+- Workers have **no DOM access** (browser) and **no shared event loop** (Node).
+- Pass data by **structured clone** (copy) or **transfer** (zero-copy, source becomes detached).
+- Use `SharedArrayBuffer` + `Atomics` for true shared memory, but only when you need synchronisation primitives — complexity is high.
+- Always call `worker.terminate()` or the worker exits when `postMessage` closes.
+
 ### WeakMap / WeakRef for Memory-Safe Caches
 Use `WeakMap` to associate data with objects without preventing garbage collection. Use `WeakRef` + `FinalizationRegistry` only in long-running cache scenarios where you want automatic eviction when the GC collects keys.
 
@@ -641,6 +735,323 @@ const doubled = base.map(n => n * 2);
 console.log(base.next().value);    // 1 — advances shared state
 console.log(doubled.next().value); // 4 — sees element 2 (not 1!)
 // Fix: create independent iterators from the source array each time
+```
+
+---
+
+## GoF Design Patterns in JavaScript
+
+The classic Gang of Four patterns adapt naturally to JavaScript's first-class functions and prototype system. These are the four most common in production JS codebases.
+
+### Observer Pattern (EventTarget)
+Extend `EventTarget` to get a standards-compliant event bus. All browser APIs and many Node.js APIs implement this pattern — prefer it over ad-hoc callback registries.
+
+```javascript
+class DataStore extends EventTarget {
+  #data = null;
+
+  set data(value) {
+    this.#data = value;
+    this.dispatchEvent(new CustomEvent('change', { detail: { data: value } }));
+  }
+
+  get data() { return this.#data; }
+}
+
+const store = new DataStore();
+store.addEventListener('change', ({ detail }) => {
+  console.log('Updated:', detail.data);
+});
+store.data = { userId: 1, name: 'Alice' }; // Triggers observer
+```
+
+### Strategy Pattern
+Functions are first-class in JavaScript — the Strategy pattern is naturally expressed as a map of functions. No abstract base class needed.
+
+```javascript
+const serializers = {
+  json: data => JSON.stringify(data),
+  csv:  data => Object.values(data).join(','),
+  tsv:  data => Object.values(data).join('\t'),
+};
+
+class DataExporter {
+  #format;
+  constructor(format = 'json') { this.#format = format; }
+  setFormat(format) {
+    if (!serializers[format]) throw new Error(`Unknown format: ${format}`);
+    this.#format = format;
+  }
+  export(data) { return serializers[this.#format](data); }
+}
+
+const exporter = new DataExporter('json');
+exporter.export({ name: 'Alice', age: 30 }); // '{"name":"Alice","age":30}'
+exporter.setFormat('csv');
+exporter.export({ name: 'Alice', age: 30 }); // 'Alice,30'
+```
+
+### Factory Pattern
+Centralise object construction to decouple consumers from concrete implementations. In JS, static methods or plain functions work equally well.
+
+```javascript
+class Logger {
+  log(msg) { throw new Error('Not implemented'); }
+}
+
+class ConsoleLogger extends Logger {
+  log(msg) { console.log(`[CONSOLE] ${msg}`); }
+}
+
+class RemoteLogger extends Logger {
+  constructor(url) { super(); this.url = url; }
+  log(msg) { fetch(this.url, { method: 'POST', body: JSON.stringify({ msg }) }); }
+}
+
+// Factory — consumers never call `new` directly
+function createLogger(type, options = {}) {
+  switch (type) {
+    case 'console': return new ConsoleLogger();
+    case 'remote':  return new RemoteLogger(options.url);
+    default:        throw new Error(`Unknown logger type: ${type}`);
+  }
+}
+
+const logger = createLogger('console');
+logger.log('App started');
+```
+
+### Singleton Pattern
+Module-level constants are the simplest Singleton in ESM: modules are executed once and cached. The explicit `#instance` class pattern is useful when lazy initialization is required.
+
+```javascript
+// ESM singleton — simplest form (preferred in modern JS)
+// db.js
+const pool = createConnectionPool({ max: 10 }); // runs once per process
+export { pool }; // same pool object wherever db.js is imported
+
+// Class-based singleton with lazy init (use when init is expensive/async)
+class ConfigManager {
+  static #instance = null;
+  #config = {};
+
+  static getInstance() {
+    if (!ConfigManager.#instance) {
+      ConfigManager.#instance = new ConfigManager();
+    }
+    return ConfigManager.#instance;
+  }
+
+  load(data) { this.#config = { ...this.#config, ...data }; }
+  get(key)   { return this.#config[key]; }
+}
+
+const c1 = ConfigManager.getInstance();
+const c2 = ConfigManager.getInstance();
+console.log(c1 === c2); // true
+```
+
+---
+
+## Dependency Injection and Testability
+
+JavaScript's closures and first-class functions make dependency injection natural — no framework required.
+
+### Factory Functions for Injectable Services
+Prefer factory functions over imported singletons for any code that you need to test or run in multiple configurations. The factory receives dependencies; the consumer never hard-codes `import` calls to concrete implementations.
+
+```javascript
+// HARD TO TEST — module-level singleton; impossible to swap logger in tests
+import logger from './logger.js';
+export function createUser(name) {
+  logger.info(`Creating user: ${name}`);
+  return { name };
+}
+
+// TESTABLE — factory receives dependencies as parameters
+export function createUserService({ logger, db, cache }) {
+  return {
+    async create(name) {
+      logger.info(`Creating user: ${name}`);
+      const user = await db.insert({ name });
+      cache.set(user.id, user);
+      return user;
+    },
+    async findById(id) {
+      return cache.get(id) ?? await db.findById(id);
+    },
+  };
+}
+
+// Production wiring
+const userService = createUserService({ logger, db, cache });
+
+// Test wiring — all dependencies are stubs
+const testDeps = {
+  logger: { info: vi.fn() },
+  db:     { insert: vi.fn().mockResolvedValue({ id: 1, name: 'Alice' }),
+             findById: vi.fn() },
+  cache:  { get: vi.fn().mockReturnValue(null), set: vi.fn() },
+};
+const svc = createUserService(testDeps);
+```
+
+### Inversion of Control via Callback Injection
+When you need to inject behaviour (not just data), pass functions as parameters. This eliminates branching and coupling to specific side-effect implementations.
+
+```javascript
+// HARD TO TEST — side effects hard-coded
+async function placeOrder(order) {
+  await db.save(order);
+  await sendEmail(order.userEmail, 'Order confirmed');
+  await auditLog.write({ type: 'ORDER_PLACED', order });
+}
+
+// TESTABLE — inject all side-effecting actions
+async function placeOrder(order, { persist, notify, audit }) {
+  await persist(order);
+  await notify(order.userEmail, 'Order confirmed');
+  await audit({ type: 'ORDER_PLACED', order });
+}
+
+// Test: all effects are captured, none actually fire
+const effects = { calls: [] };
+const spyFn = label => async (...args) => effects.calls.push({ label, args });
+
+await placeOrder(order, {
+  persist: spyFn('persist'),
+  notify:  spyFn('notify'),
+  audit:   spyFn('audit'),
+});
+expect(effects.calls).toHaveLength(3);
+expect(effects.calls[0].label).toBe('persist');
+```
+
+---
+
+## Functional Patterns in JavaScript
+
+JavaScript's first-class functions make functional patterns idiomatic without libraries. These are practical, production-proven patterns.
+
+### Pipe and Compose
+`pipe` chains functions left-to-right (data flows in reading order). `compose` chains right-to-left. Both are zero-dependency utility functions that enable declarative data transformation.
+
+```javascript
+// pipe: left-to-right (most readable for data transformation pipelines)
+const pipe = (...fns) => x => fns.reduce((v, f) => f(v), x);
+
+// compose: right-to-left (mathematical function composition)
+const compose = (...fns) => x => fns.reduceRight((v, f) => f(v), x);
+
+// Example: normalise a user-submitted tag
+const normaliseTag = pipe(
+  s => s.trim(),
+  s => s.toLowerCase(),
+  s => s.replace(/\s+/g, '-'),
+  s => s.replace(/[^a-z0-9-]/g, ''),
+);
+
+normaliseTag('  Hello World! '); // 'hello-world'
+
+// async pipe — handles async stages cleanly
+const pipeAsync = (...fns) => x => fns.reduce((p, f) => p.then(f), Promise.resolve(x));
+
+const processOrder = pipeAsync(
+  validateOrder,
+  applyDiscount,
+  chargePayment,
+  sendConfirmation,
+);
+await processOrder(orderData);
+```
+
+### Maybe Pattern (Null-Safety without Guards)
+Wrap potentially-null values in a `Maybe` container. All operations short-circuit on `null`/`undefined` without scattered guard clauses.
+
+```javascript
+class Maybe {
+  #value;
+  constructor(value) { this.#value = value; }
+
+  static of(value) { return new Maybe(value); }
+  isNothing()       { return this.#value == null; }
+
+  map(fn)    { return this.isNothing() ? this  : Maybe.of(fn(this.#value)); }
+  flatMap(fn){ return this.isNothing() ? this  : fn(this.#value); }
+  filter(fn) { return this.isNothing() || fn(this.#value) ? this : Maybe.of(null); }
+  getOrElse(def) { return this.isNothing() ? def : this.#value; }
+}
+
+// Compare:
+// Guard-clause style
+const city = user && user.address && user.address.city
+  ? user.address.city.toLowerCase()
+  : 'unknown';
+
+// Maybe style — chain of transforms, single fallback
+const city2 = Maybe.of(user)
+  .map(u  => u.address)
+  .map(a  => a.city)
+  .map(c  => c.toLowerCase())
+  .getOrElse('unknown');
+```
+
+### Either Pattern (Typed Error Handling)
+`Either` models a computation that may fail. `Right` holds success; `Left` holds an error. Unlike try-catch, the error is a value — it can be mapped, logged, or forwarded without side effects.
+
+```javascript
+class Either {
+  #value; #isRight;
+  constructor(value, isRight) { this.#value = value; this.#isRight = isRight; }
+
+  static right(v) { return new Either(v, true);  }
+  static left(e)  { return new Either(e, false); }
+
+  map(fn)       { return this.#isRight ? Either.right(fn(this.#value)) : this; }
+  flatMap(fn)   { return this.#isRight ? fn(this.#value) : this; }
+  fold(lFn, rFn){ return this.#isRight ? rFn(this.#value) : lFn(this.#value); }
+}
+
+const safeParseJSON = str => {
+  try { return Either.right(JSON.parse(str)); }
+  catch (e) { return Either.left(e.message); }
+};
+
+safeParseJSON('{"name":"Alice"}')
+  .map(obj => obj.name.toUpperCase())
+  .fold(
+    err  => console.error('Parse error:', err),
+    name => console.log('User:', name),  // 'ALICE'
+  );
+```
+
+### Currying and Partial Application
+Currying transforms a multi-argument function into a chain of single-argument functions, enabling reusable specialisations without wrapper functions.
+
+```javascript
+// Generic curry — works with any arity
+const curry = fn => {
+  const arity = fn.length;
+  return function curried(...args) {
+    return args.length >= arity ? fn(...args) : (...more) => curried(...args, ...more);
+  };
+};
+
+const add = (a, b, c) => a + b + c;
+const curriedAdd = curry(add);
+const add5  = curriedAdd(5);
+const add5to3 = curriedAdd(5)(3);
+curriedAdd(1)(2)(3); // 6
+curriedAdd(1, 2)(3); // 6
+
+// Partial application — fix early arguments, leave the rest open
+const partial = (fn, ...fixed) => (...rest) => fn(...fixed, ...rest);
+
+const log = (level, message, data) => console.log({ level, message, data });
+const logError = partial(log, 'ERROR');
+const logWarn  = partial(log, 'WARN');
+
+logError('DB connection failed', { host: 'db1' }); // level: ERROR
 ```
 
 ---
@@ -856,6 +1267,244 @@ const byDept = Map.groupBy(people, p => p.dept);
 
 ---
 
+## Security Patterns
+
+### XSS Prevention — textContent over innerHTML
+Never insert user-controlled data as HTML. Use `textContent` for plain text. Use a sanitization library (DOMPurify) when HTML rendering is unavoidable.
+
+```javascript
+// BAD — arbitrary HTML injection; executes attacker scripts
+document.getElementById('output').innerHTML = userInput;
+
+// GOOD — text is never parsed as HTML
+document.getElementById('output').textContent = userInput;
+
+// GOOD — when HTML is genuinely needed, sanitize first
+import DOMPurify from 'dompurify';
+const clean = DOMPurify.sanitize(userInput, { ALLOWED_TAGS: ['b', 'i', 'em'] });
+document.getElementById('output').innerHTML = clean;
+```
+
+### Prototype Pollution Prevention
+Avoid recursive merge of untrusted objects. If a user-controlled payload contains `__proto__`, `constructor`, or `prototype` keys, a naive merge poisons every subsequent object creation.
+
+```javascript
+// BAD — merging untrusted JSON directly onto an object
+function merge(target, source) {
+  for (const key in source) target[key] = source[key]; // allows __proto__ injection
+}
+
+// GOOD — block dangerous keys and use hasOwnProperty
+function safeMerge(target, source) {
+  for (const key in source) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    target[key] = source[key];
+  }
+  return target;
+}
+
+// BEST — use Map for untrusted key-value data (not subject to prototype pollution)
+const safe = new Map(Object.entries(untrustedData));
+
+// ALSO GOOD — Object.create(null) has no prototype at all
+const bare = Object.assign(Object.create(null), trustedDefaults);
+```
+
+### eval / Function Constructor Avoidance
+`eval()`, `new Function(code)`, `setTimeout(string, ...)`, and `setInterval(string, ...)` execute arbitrary strings as code. They bypass CSP, are impossible to statically analyse, and open RCE vectors in Node.js.
+
+```javascript
+// BAD — eval is essentially an injection sink
+const result = eval(userExpression);
+
+// BAD — equivalent to eval; bypasses CSP 'unsafe-eval' in browsers
+const fn = new Function('x', userCode);
+
+// GOOD — use a sandboxed interpreter for user expressions, or whitelist operations
+const ALLOWED_OPS = { add: (a, b) => a + b, mul: (a, b) => a * b };
+function safeEval(op, a, b) {
+  const fn = ALLOWED_OPS[op];
+  if (!fn) throw new Error(`Disallowed operation: ${op}`);
+  return fn(a, b);
+}
+```
+
+---
+
+## Testing Patterns
+
+### Async Test Patterns (Jest / Vitest / Node Test Runner)
+Always `return` or `await` promises in tests. Without it, tests complete before the assertion runs, giving false passes.
+
+```javascript
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// GOOD — await the async function under test
+it('returns user profile', async () => {
+  const profile = await fetchUserProfile(42);
+  expect(profile).toMatchObject({ id: 42 });
+});
+
+// GOOD — .resolves / .rejects matchers (cleaner for simple cases)
+it('rejects on missing user', async () => {
+  await expect(fetchUserProfile(999)).rejects.toThrow('Not Found');
+});
+
+// GOOD — mock fetch with vi.fn() to control HTTP in tests
+it('calls /api/users/:id', async () => {
+  const mockFetch = vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({ id: 1, name: 'Alice' }),
+  });
+  vi.stubGlobal('fetch', mockFetch);
+
+  await fetchUserProfile(1);
+
+  expect(mockFetch).toHaveBeenCalledWith('/api/users/1');
+  vi.unstubAllGlobals();
+});
+
+// GOOD — fake timers to test debounce / throttle without real waits
+it('debounced search fires after 300ms quiet period', async () => {
+  vi.useFakeTimers();
+  const handler = vi.fn();
+  const debounced = debounce(handler, 300);
+
+  debounced('a');
+  debounced('ab');
+  debounced('abc');         // fires once after quiet period
+  expect(handler).not.toHaveBeenCalled();
+
+  vi.advanceTimersByTime(300);
+  expect(handler).toHaveBeenCalledOnce();
+  expect(handler).toHaveBeenCalledWith('abc');
+  vi.useRealTimers();
+});
+```
+
+### Test Isolation — No Shared Mutable State
+Tests that share global state or DB seeds become order-dependent. One failing test corrupts state for all subsequent tests.
+
+```javascript
+// BAD — shared counter bleeds between tests
+let counter = 0;
+it('increments', () => { counter++; expect(counter).toBe(1); });
+it('increments again', () => { counter++; expect(counter).toBe(2); }); // breaks if order changes
+
+// GOOD — each test creates its own state
+it('increments from 0', () => {
+  const c = createCounter(0);
+  c.increment();
+  expect(c.value()).toBe(1);
+});
+
+// GOOD — DB tests: each test creates and cleans up its own data
+beforeEach(async () => { await db.deleteWhere({ testRun: testId }); });
+afterEach( async () => { await db.deleteWhere({ testRun: testId }); });
+```
+
+---
+
+## Performance Patterns
+
+### Memory Management and Object Lifecycle
+JavaScript uses mark-and-sweep garbage collection. Objects are collected when unreachable from root. Understanding this prevents subtle memory leaks in long-lived applications.
+
+```javascript
+// GOOD — WeakMap for DOM-associated data: entries collected when node is GC'd
+const nodeMetadata = new WeakMap();
+function annotate(domNode, data) {
+  nodeMetadata.set(domNode, data); // No cleanup needed — auto-released with node
+}
+
+// GOOD — break large object references early in long functions
+async function processLargeDataset() {
+  let data = await loadHugeDataset();  // 200 MB
+  const summary = computeSummary(data);
+  data = null;  // eligible for GC immediately — don't wait for function return
+  await longRunningNotify(summary);   // GC can collect data here
+  return summary;
+}
+
+// GOOD — object pooling for hot paths (avoid allocations in tight loops)
+class ObjectPool {
+  #free = [];
+  acquire()    { return this.#free.pop() ?? {}; }
+  release(obj) { Object.keys(obj).forEach(k => delete obj[k]); this.#free.push(obj); }
+}
+
+const pool = new ObjectPool();
+for (const item of millionItems) {
+  const ctx = pool.acquire();
+  ctx.id = item.id;
+  processWithContext(ctx);
+  pool.release(ctx);  // Reused instead of allocated each iteration
+}
+```
+
+### Efficient Data Structures — TypedArrays for Numeric Data
+For numeric computations, `TypedArray` views (`Float64Array`, `Int32Array`, etc.) store data in contiguous memory, enabling CPU vectorisation and avoiding V8 boxing overhead.
+
+```javascript
+// SLOW — plain array of numbers (V8 must box each value)
+function dotProductSlow(a, b) {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += a[i] * b[i];
+  return sum;
+}
+
+// FAST — Float64Array (contiguous, unboxed, vectorisable by JIT)
+function dotProductFast(a, b) {
+  // a, b are Float64Array instances
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += a[i] * b[i];
+  return sum;
+}
+
+const size = 1_000_000;
+const a = new Float64Array(size).fill(1.5);
+const b = new Float64Array(size).fill(2.5);
+dotProductFast(a, b); // 2-10× faster than plain array on large inputs
+
+// Shared memory between workers (no copy overhead)
+const sharedBuffer = new SharedArrayBuffer(size * Float64Array.BYTES_PER_ELEMENT);
+const shared = new Float64Array(sharedBuffer);
+```
+
+### Debounce and Throttle for Event-Driven Performance
+High-frequency events (scroll, resize, input) should not fire expensive handlers on every event. Debounce delays execution until the user stops; throttle caps the call rate.
+
+```javascript
+// Debounce — wait for 300ms of silence before firing (search inputs)
+function debounce(fn, delay) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delay);
+  };
+}
+
+// Throttle — fire at most once per interval (scroll handlers, resize)
+function throttle(fn, interval) {
+  let lastRun = 0;
+  return (...args) => {
+    const now = Date.now();
+    if (now - lastRun >= interval) {
+      lastRun = now;
+      return fn(...args);
+    }
+  };
+}
+
+const onInput   = debounce(search, 300);   // fires 300ms after last keystroke
+const onScroll  = throttle(updateUI, 100); // fires at most 10× per second
+input.addEventListener('input', onInput);
+window.addEventListener('scroll', onScroll);
+```
+
+---
+
 ## Real-World Gotchas  [community]
 
 **1. Floating Promises** [community] — Calling an async function without `await` or `.catch()` creates a "floating" promise. The operation runs but errors are silently discarded. WHY it causes problems: in production this hides failed operations (DB writes, API calls) that callers assume succeeded. Fix: always `await` or chain `.catch()`.
@@ -972,7 +1621,93 @@ const cleanup = attachListeners(myButton);
 
 **13. `Array.fromAsync` is Sequential, Not Concurrent** [community] — Developers reaching for `Array.fromAsync` to collect a set of Promises expect concurrent execution (like `Promise.all`), but `Array.fromAsync` awaits each element in sequence. WHY it causes problems: what would take 100 ms with `Promise.all` takes 500 ms with `Array.fromAsync` on 5 items, silently multiplying latency. Fix: use `Promise.all` for a fixed set of concurrent Promises; use `Array.fromAsync` only for sequential async iterables where order of production matters.
 
+**14. `return promise` Without `await` Truncates Stack Traces** [community] — Returning a Promise directly from an `async` function (without `await`) removes that function from the async stack trace. WHY it causes problems: in production you lose the call site from the trace; debugging becomes significantly harder because the function that "caused" the error simply doesn't appear in the stack. Fix: always `return await promise` inside `async` functions so the function stays in the call stack — the performance difference is negligible, and the debugging benefit is enormous.
 
+```javascript
+// BAD — fetchUser disappears from stack traces on error
+async function fetchUser(id) {
+  return fetch(`/api/users/${id}`).then(r => r.json()); // no await
+}
+
+// GOOD — fetchUser appears in stack traces, enabling root-cause debugging
+async function fetchUser(id) {
+  return await fetch(`/api/users/${id}`).then(r => r.json());
+}
+```
+
+**15. Environment Variables Accessed Lazily, Not Validated at Startup** [community] — Reading `process.env.DATABASE_URL` deep inside a module function means missing config isn't discovered until that code path executes. WHY it causes problems: the app starts successfully but fails minutes (or hours) later when the first request hits the unconfigured path, leaving the system in a partially-started state. Fix: validate all required environment variables at startup (before the server starts accepting requests), and fail fast with a clear error if any are missing.
+
+```javascript
+// BAD — validation deferred until first use
+async function saveUser(user) {
+  const db = await connect(process.env.DATABASE_URL); // crashes later
+  return db.save(user);
+}
+
+// GOOD — fail fast at startup before accepting any traffic
+const REQUIRED_ENV = ['DATABASE_URL', 'JWT_SECRET', 'PORT'];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+}
+// Only start listening after validation passes
+app.listen(process.env.PORT);
+```
+
+**16. Barrel Files That Block Tree-Shaking** [community] — Re-exporting everything through a large `index.js` barrel file is convenient but prevents bundlers from statically determining which exports are actually used. WHY it causes problems: what appears to be a clean import (`import { one } from './utils'`) actually includes the entire module graph in the bundle because static analysis fails on wildcard re-exports. Fix: use barrel files only for public package APIs; never create deep internal barrel files; prefer direct deep imports for internal use.
+
+**17. Requiring Modules Inside Functions** [community] — Calling `require()` (or dynamic `import()`) inside a function body rather than at the module top level defers the synchronous disk read to request-handling time. WHY it causes problems: first-request latency spikes; if the module has a syntax error or missing dependency, the failure surfaces mid-request rather than at startup, bypassing your crash detection. Fix: always place `require()` calls at the top of the file; use static `import` declarations in ESM; only use dynamic `import()` for genuine lazy-load scenarios (code splitting by route/feature).
+
+**18. Prototype Pollution via `__proto__` in User-Supplied JSON** [community] — Merging untrusted input objects onto application objects without checking for prototype-polluting keys (`__proto__`, `constructor`, `prototype`) lets attackers inject properties onto `Object.prototype`, making them appear on every subsequent object in the process. WHY it causes problems: authentication bypasses, unexpected truthy checks, and hard-to-trace crashes across completely unrelated code paths. Fix: use `safeMerge` with an explicit blocklist, use `Map` for untrusted data, or use `JSON.parse` with a reviver that rejects dangerous keys.
+
+**19. Using `innerHTML` with User Input** [community] — Setting `element.innerHTML = userContent` executes any script tags or event-handler attributes in `userContent`. WHY it causes problems: stored or reflected XSS allows attackers to steal session cookies, perform actions as the victim, or exfiltrate data. Fix: use `textContent` for plain text; when HTML rendering is required, pass through DOMPurify before assignment.
+
+**20. Forgetting to Null Large Objects After Use in Long Functions** [community] — Holding a reference to a large object in a local variable keeps it alive until the function returns, even if all useful work with it is done. WHY it causes problems: in async functions that `await` long operations after processing the large data, the GC cannot collect it during the wait period, causing sustained memory pressure and GC pauses. Fix: explicitly set the variable to `null` as soon as you're done with it.
+
+**21. Premature Performance Micro-Optimisations** [community] — Caching `array.length` in a loop variable (`for (let i=0, len=arr.length; i<len; i++)`) or avoiding `for...of` out of habit were valid 2012-era tricks. WHY it causes problems: modern V8 performs these optimisations automatically, but writing non-idiomatic code reduces readability and confuses reviewers without yielding measurable gains. Fix: write idiomatic, readable code first; profile and optimise only bottlenecks identified by measurement.
+
+**22. No Graceful Shutdown Handler** [community] — Node.js processes that don't handle `SIGTERM` / `SIGINT` terminate immediately, mid-request. WHY it causes problems: in-flight HTTP requests are dropped, database transactions left open, and message queue jobs lost. Kubernetes and Docker send `SIGTERM` before forcibly killing a container — an ignored signal means every deploy drops active requests. Fix: listen for `SIGTERM`, stop accepting new connections, wait for active requests to complete, then exit.
+
+```javascript
+// Graceful shutdown pattern — required for containerised Node.js
+const server = app.listen(3000);
+
+async function shutdown(signal) {
+  console.log(`Received ${signal}; starting graceful shutdown`);
+  server.close(async () => {           // Stop accepting new connections
+    await db.end();                    // Flush DB connection pool
+    await messageQueue.close();        // Drain queue consumer
+    console.log('Shutdown complete');
+    process.exit(0);
+  });
+  // Force-kill if shutdown takes > 10s (stuck connections)
+  setTimeout(() => { console.error('Forced shutdown'); process.exit(1); }, 10_000);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
+```
+
+**23. Running CPU-Intensive Work on the Event Loop Thread** [community] — Synchronous loops over large datasets, encryption, image processing, or JSON parsing of large payloads all block the V8 event loop. WHY it causes problems: while one request is hashing a 5 MB payload synchronously, every other concurrent request waiting for I/O also stalls — the server appears non-responsive under load even though the CPU is busy. Fix: offload CPU-bound work to Web Workers (browser) or `worker_threads` (Node.js), or use a worker pool library (`Piscina`).
+
+**24. Not Returning or Awaiting Promises in Tests** [community] — Writing `it('works', () => fetchData().then(expect...))` without a `return` statement (or without making the test function `async` with `await`) causes the test to finish before the assertion executes — giving a false pass even when the tested code is broken. WHY it causes problems: CI stays green while production fails; the bug is only discovered when the feature visibly breaks in the field. Fix: always `return` promise chains in test functions, or use `async/await` consistently.
+
+**25. Module-Level Singleton Imports That Prevent Test Isolation** [community] — Importing a concrete dependency (logger, DB client, HTTP client) at the module top level and calling it directly makes unit tests impossible without patching the module system (`jest.mock`, `vi.mock`). WHY it causes problems: tests become order-dependent, slow (real network calls), and fragile (environment-dependent). Mock setup in test files becomes a maintenance burden as the import chain grows. Fix: use factory functions that accept dependencies as parameters; inject stubs in tests without needing module-level patching.
+
+**26. Accidentally Mutating Shared Arrays with `.sort()` and `.reverse()`** [community] — `Array.prototype.sort()` and `.reverse()` mutate the array in place and return the same reference. WHY it causes problems: when the same array reference is used in multiple places (component state, cache, a closed-over variable), a sort in one place changes what every other consumer sees, producing subtle, hard-to-reproduce bugs. Fix: prefer `arr.toSorted()` and `arr.toReversed()` (ES2023); they return a new array and leave the original unchanged.
+
+```javascript
+// BAD — mutates the original; all references to users now see sorted order
+const sorted = users.sort((a, b) => a.name.localeCompare(b.name));
+displayTable(sorted);
+// Somewhere else: users is now sorted — surprising if you passed it by reference
+
+// GOOD — original users array is unchanged
+const sorted = users.toSorted((a, b) => a.name.localeCompare(b.name));
+```
+
+## Anti-Patterns Quick Reference
 
 | Anti-Pattern | Why It's Harmful | What to Do Instead |
 |---|---|---|
@@ -991,3 +1726,14 @@ const cleanup = attachListeners(myButton);
 | `using` with non-disposable object | Deferred `TypeError` at block exit, not assignment — unexpected and hard to locate | Only bind disposable objects (or `null`) to `using` |
 | Sharing base iterator across helper chains | Two helpers from the same base interleave consumption silently | Call `.values()` independently for each chain |
 | `Array.fromAsync` for concurrent Promises | Awaits each element sequentially; 5× slower than `Promise.all` for 5 items | Use `Promise.all([...])` for concurrent; `Array.fromAsync` for sequential async streams |
+| `return promise` without `await` in async fn | Removes the function from async stack traces; debugging in production is severely hampered | Use `return await promise` so the function stays in the call stack |
+| Lazy `process.env` access in deep code paths | App starts successfully but crashes later on first use of unconfigured path | Validate all required env vars at startup; fail fast before accepting traffic |
+| Oversized barrel files (`index.js` re-exports all) | Prevents tree-shaking; entire module graph bundled even when only one export is needed | Use barrel files only for public APIs; prefer direct deep imports internally |
+| `require()` inside function bodies | First-request latency spikes; errors surface mid-request instead of at startup | Place `require()` at top of file; use static `import` in ESM |
+| `innerHTML = userInput` without sanitization | XSS: attacker-controlled HTML executes scripts; session theft, CSRF | Use `textContent` for plain text; use DOMPurify when HTML is required |
+| Merging untrusted objects without `__proto__` check | Prototype pollution: injects properties onto all objects; auth bypasses and unexpected crashes | Block `__proto__`, `constructor`, `prototype` keys; use `Map` for untrusted data |
+| `eval()` / `new Function(code)` with user input | Arbitrary code execution; bypasses CSP; impossible to statically analyse | Whitelist operations; use sandboxed interpreters; never execute user strings as code |
+| CPU work on the main thread | Blocks event loop; all concurrent requests/frames stall while computation runs | Offload to Web Workers (browser) or `worker_threads` (Node.js) |
+| Not calling `worker.terminate()` after use | Worker thread stays alive consuming memory until process exits | Call `worker.terminate()` or confirm the worker exits naturally |
+| `.sort()` / `.reverse()` on shared arrays | Mutates in place; all references to that array silently see the sorted/reversed order | Use `.toSorted()` / `.toReversed()` (ES2023) which return new arrays |
+| Module-level singleton imports in testable code | Unit tests require module-system patching (`jest.mock`); creates fragile, order-dependent tests | Use factory functions with injected dependencies; pass stubs at test time |

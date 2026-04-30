@@ -106,14 +106,14 @@ Target: **score ≥ 80** or **3 iterations** or **delta < 5** → stop.
 
 | Tool | Skill dir(s) | Pattern checklist |
 |------|-------------|-------------------|
-| Playwright | qa-web, qa-visual, qa-api | POM, fixture-based auth (storageState + IndexedDB), locator rank, web-first assertions, API request context, network mocking, soft assertions, test sharding, component testing (--ct), aria snapshots (toMatchAriaSnapshot), locator.describe(), failOnFlakyTests, per-project workers, async disposables (await using), Shadow DOM traversal |
-| Cypress | qa-web | cy.session() auth, cy.intercept() mocking, data-cy selectors, custom commands, cy.request() API testing, Component Testing, cy.fixture(), retry-ability, Page Object Model (TypeScript class-based), cy.selectFile() file uploads, typed selector maps (as const), typed cy.task() with generics, cy.location() URL assertions, responsive viewport testing |
+| Playwright | qa-web, qa-visual, qa-api | POM, fixture-based auth (storageState + IndexedDB), locator rank, web-first assertions, API request context, network mocking, soft assertions, test sharding, component testing (--ct), aria snapshots (toMatchAriaSnapshot), locator.describe(), failOnFlakyTests, per-project workers, async disposables (await using), Shadow DOM traversal, visibility filter (filter({visible:true})), frame/frameLocator conversion (owner/contentFrame), mergeExpects, project teardown, webServer.wait (stdout capture), TLS client certificates, test data factory, network throttling (CDP + route delay), clipboard testing, print emulation, browser.bind() multi-client |
+| Cypress | qa-web | cy.session() auth, cy.intercept() mocking (with times option + req.alias dynamic aliasing), data-cy selectors, custom commands (addQuery/overwrite), cy.request() API testing (form data/multipart), Component Testing (with providers: React Context/Redux), cy.fixture(), retry-ability, Page Object Model (TypeScript class-based), cy.selectFile() file uploads, typed selector maps (as const), typed cy.task() with generics, cy.location() URL assertions, responsive viewport testing, Shadow DOM traversal (includeShadowDom + .shadow()), iframe testing (cypress-iframe), cy.exec() shell commands, cy.its()/cy.invoke() property/method access, uncaught:exception handling, cy.all() parallel assertions (v13.4+), CDP network throttling (Cypress.automation), sinon.match matchers, cy.each() iteration, cy.focused() keyboard accessibility, cy.go()/cy.reload() navigation, chai-subset API assertions, cy.title()/cy.hash(), cy.window()/cy.document() state access, GraphQL intercept by operationName, multi-alias cy.wait([]), cookie management (getCookie/setCookie/clearCookie), cy.clock()/cy.tick() timer control, cy.intercept() times option, Cypress.config() runtime reading, download testing (readFile + downloadsFolder), conditional testing anti-pattern, .should(callback) complex assertions, .filter()/.not() collection narrowing, localStorage testing (getAllLocalStorage/onBeforeLoad), DOM traversal (find/closest/siblings/parent/children), Cypress._ Lodash utilities, spec-level config overrides, multi-step wizard pattern, keyboard shortcuts (type special keys), cy.check()/cy.uncheck()/cy.select(), window.open()/window.print() stubs, slow typing with delay option, experimentalWebKitSupport, experimentalModifyObstructiveThirdPartyCode, Cypress Cloud Smart Orchestration |
 | Selenium | qa-web | By.* selector hierarchy, Page Object Model (language-specific), explicit waits (WebDriverWait + ExpectedConditions), fluent waits, headless mode, screenshot on failure, Actions class |
-| k6 | qa-perf | Test type taxonomy, scenarios/executors, thresholds + abortOnFail, check() patterns, setup/teardown auth, custom metrics, handleSummary |
+| k6 | qa-perf | Test type taxonomy, scenarios/executors, thresholds + abortOnFail, check() patterns, setup/teardown auth, custom metrics, handleSummary, secrets management (k6/secrets), MFA/TOTP auth, distributed tracing (http-instrumentation-tempo), browser module (getBy* locators + throttling), gRPC, WebSocket, GraphQL, HMAC signing, v2.0.0 migration |
 | JMeter | qa-perf | Thread Group (ramp-up, loop count), HTTP Request Sampler, CSV Data Set Config, Response Assertion, Summary/Aggregate Report, JMeter properties for CI, Dashboard generation, distributed testing, non-GUI mode |
 | Locust | qa-perf | HttpUser vs FastHttpUser, @task with weight, on_start/on_stop, wait_time strategies, headless run flags, events hook for custom metrics, CSV output, environment parametrization |
-| Detox | qa-mobile | Matcher priority, auto-sync/disableSynchronization, waitFor idioms, beforeEach reset, CI animation disable, artifact collection |
-| Appium / WebDriverIO | qa-mobile | Page Object pattern, accessibility-id selector, mobile gestures, parallel device execution, CI Appium server config |
+| Detox | qa-mobile | Matcher priority (by.id/by.label/by.value/by.type/by.text/by.system), auto-sync/disableSynchronization (narrow scope with try/finally), waitFor idioms (toBeVisible/toHaveValue/toHaveLabel/toHaveToggleValue), beforeEach reset (newInstance/reloadReactNative/delete), CI animation disable, artifact collection, advanced gestures (adjustSliderToPosition/longPressAndDrag/tapAtPoint), accessibility testing (toHaveLabel/toHaveToggleValue), TypeScript setup (e2e/tsconfig.json, ts-jest, built-in types), captureViewHierarchy for debugging, --debug-synchronization CLI flag |
+| Appium / WebDriverIO | qa-mobile | Page Object pattern, accessibility-id selector, mobile gestures, parallel device execution, CI Appium server config, biometric auth simulation, multi-app context switching, expect() matchers vs waitFor*() |
 | Maestro | qa-mobile | Flow YAML structure, appId, tapOn/inputText/assertVisible, runFlow (sub-flows), envFile for secrets, scroll/swipe, launchApp/stopApp, CI headless runner |
 
 ---
@@ -213,19 +213,27 @@ Pages to fetch (append to base URL):
 - `https://grafana.com/docs/k6/latest/using-k6/scenarios/`
 - `https://grafana.com/docs/k6/latest/using-k6/thresholds/`
 - `https://grafana.com/docs/k6/latest/javascript-api/k6-metrics/`
+- `https://grafana.com/docs/k6/latest/javascript-api/k6-secrets/`  (v1.4+ secrets management)
+- `https://grafana.com/docs/k6/latest/javascript-api/k6-browser/`   (browser module getBy* locators)
+- `https://grafana.com/docs/k6/latest/set-up/upgrade-to-k6-v2/`    (v2.0.0 migration guide)
+<!-- See also: qa-perf/references/k6-patterns.md — verified against k6 v1.7.1; v2.0.0-rc1 breaking changes documented including: externally-controlled executor removed, CLI commands removed, browser_web_vital_fid → browser_web_vital_inp, options.ext.loadimpact → options.cloud, --no-summary → --summary-mode=disabled -->
 
 **Detox (JS only):**
 - `https://wix.github.io/Detox/docs/guide/design-principles`
 - `https://wix.github.io/Detox/docs/api/matchers`
+- `https://wix.github.io/Detox/docs/api/expect`
 - `https://wix.github.io/Detox/docs/guide/test-flakiness`
 - `https://wix.github.io/Detox/docs/api/device`
 - `https://wix.github.io/Detox/docs/config/overview`
+- `https://wix.github.io/Detox/docs/introduction/typescript`
+
+**See also:** `qa-mobile/references/detox-patterns.md` (JavaScript/TypeScript) — includes patterns for: matcher priority, auto-sync, waitFor, beforeEach reset, CI animation disable, artifact collection, advanced gestures (adjustSliderToPosition, longPressAndDrag, tapAtPoint), accessibility testing (toHaveLabel, toHaveToggleValue), TypeScript setup, captureViewHierarchy for debugging, and `--debug-synchronization` CLI flag.
 
 **Appium / WebDriverIO — URL set depends on TARGET_LANG:**
 
 | Language | Client docs |
 |----------|-------------|
-| TypeScript / JavaScript | `https://webdriver.io/docs/bestpractices/`, `https://webdriver.io/docs/pageobjects/`, `https://webdriver.io/docs/selectors/` |
+| TypeScript / JavaScript | `https://webdriver.io/docs/bestpractices/`, `https://webdriver.io/docs/pageobjects/`, `https://webdriver.io/docs/selectors/`, `https://appium.io/docs/en/2.0/guides/` |
 | Java | `https://appium.io/docs/en/2.0/guides/` + `https://github.com/appium/java-client` README |
 | Python | `https://appium.io/docs/en/2.0/guides/` + `https://github.com/appium/python-client` README |
 | C# | `https://appium.io/docs/en/2.0/guides/` + `https://github.com/appium/dotnet-client` README |
@@ -240,7 +248,7 @@ Pages to fetch (append to base URL):
 - `https://docs.cypress.io/guides/end-to-end-testing/testing-strategies`
 - `https://docs.cypress.io/guides/component-testing/overview`
 
-**See also:** `qa-web/references/cypress-patterns.md` (TypeScript/JavaScript)
+**See also:** `qa-web/references/cypress-patterns.md` (TypeScript/JavaScript) — 66 patterns including Shadow DOM, GraphQL intercept, CDP throttling, cy.all(), WebKit testing, Smart Orchestration, and 35 [community] gotchas
 
 **Selenium — language-independent docs (fetch for all `TARGET_LANG`):**
 - `https://www.selenium.dev/documentation/webdriver/`

@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 13 | score: 100/100 | date: 2026-04-28 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 16 | score: 100/100 | date: 2026-04-30 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 
@@ -879,6 +879,107 @@ it('denies location permission and verifies fallback message', async () => {
 exposes this through `by.system()` as well (Detox 20+), but dialog button labels differ
 across Android API levels. Always pre-grant on Android when possible.
 
+### Pattern 25 — Advanced gestures: slider, long-press-drag, coordinate tap
+
+Detox provides several interaction APIs beyond `tap()` and `typeText()`. These are
+needed for rich native controls (sliders, drag-and-drop, canvas interactions).
+
+```js
+// e2e/gestures.test.js
+
+it('adjusts a volume slider to 75%', async () => {
+  // adjustSliderToPosition: 0.0 = minimum, 1.0 = maximum
+  // Only works on native <Slider> components with testID set
+  await element(by.id('volume-slider')).adjustSliderToPosition(0.75);
+
+  // Verify the new value via getAttributes
+  const attrs = await element(by.id('volume-slider')).getAttributes();
+  expect(parseFloat(attrs.value)).toBeCloseTo(0.75, 1);
+});
+
+it('long-presses a list item to open the context menu', async () => {
+  await element(by.id('message-item-7')).longPress();
+  await waitFor(element(by.id('context-menu')))
+    .toBeVisible()
+    .withTimeout(3000);
+  await element(by.id('context-menu-delete')).tap();
+});
+
+it('drags a card from one column to another (Kanban board)', async () => {
+  // longPressAndDrag: (duration, normalizedPositionX, normalizedPositionY,
+  //                    targetElement, targetNormalizedPositionX, targetNormalizedPositionY,
+  //                    speed, holdDuration)
+  await element(by.id('card-42')).longPressAndDrag(
+    500,             // long press duration (ms) before drag starts
+    0.5, 0.5,        // drag start position within element (center)
+    element(by.id('column-done')),  // target element
+    0.5, 0.5,        // drop position within target (center)
+    'fast',          // drag speed: 'fast' | 'slow'
+    0                // hold duration at destination (ms)
+  );
+  await waitFor(element(by.id('card-42')))
+    .toBeVisible()
+    .withTimeout(3000);
+  // Verify the card is now in the "Done" column
+  await expect(
+    element(by.id('card-42').withAncestor(by.id('column-done')))
+  ).toBeVisible();
+});
+
+it('taps at a specific coordinate within an element', async () => {
+  // tapAtPoint: useful for canvas elements, map pins, or custom gesture areas
+  // x, y are pixel offsets from the element's top-left corner
+  await element(by.id('map-view')).tapAtPoint({ x: 120, y: 80 });
+  await waitFor(element(by.id('map-pin-popup')))
+    .toBeVisible()
+    .withTimeout(3000);
+});
+```
+
+**When to use each:**
+- `adjustSliderToPosition(0–1)` — native Slider components only; not for custom JS sliders
+- `longPress()` — context menus, peek/pop, selection modes
+- `longPressAndDrag()` — drag-and-drop, reordering lists, Kanban board moves
+- `tapAtPoint({ x, y })` — map interactions, canvas elements, custom gesture responders
+
+### Pattern 26 — View hierarchy capture for debugging element-not-found failures [community]
+
+When `element(by.id(...))` fails with "No elements found" and the element is visually
+present, `device.captureViewHierarchy()` dumps the full native accessibility tree to a
+file. This reveals the actual `testID`, `accessibilityLabel`, and `type` values that
+Detox sees — which may differ from what you specified in React Native.
+
+```js
+// e2e/debug-hierarchy.test.js
+// NOTE: captureViewHierarchy is a debugging utility — remove from production tests
+
+it('captures view hierarchy when debugging selector failures', async () => {
+  await element(by.id('settings-screen')).tap();
+
+  // Dumps the native view hierarchy to .artifacts/hierarchy-<name>.viewhierarchy
+  // Open with Xcode → Debug → View Hierarchy (File → Open the .viewhierarchy file)
+  await device.captureViewHierarchy('settings-screen-state');
+
+  // After inspecting the dump, replace with the correct selector:
+  await expect(element(by.id('settings-screen'))).toBeVisible();
+});
+```
+
+```js
+// Practical workflow for a "No elements found" failure:
+// 1. Add captureViewHierarchy() BEFORE the failing line
+// 2. Run the test once — it will still fail but save the hierarchy file
+// 3. Open .artifacts/<test-name>/*.viewhierarchy in Xcode
+// 4. Find the element, read its actual identifier/label/type
+// 5. Update your selector, remove the captureViewHierarchy call
+
+// Common discovery: React Native's <Text> inside a <Pressable> sometimes bridges
+// to native as RCTTextView instead of RCTButton — requiring by.type('RCTTextView')
+// instead of by.type('RCTButton') to match it.
+```
+
+**Android equivalent:** On Android, use `adb shell uiautomator dump /sdcard/window_dump.xml && adb pull /sdcard/window_dump.xml` to get the UiAutomator view hierarchy. Detox does not yet expose a direct API for this on Android.
+
 ---
 
 
@@ -888,10 +989,11 @@ Ranked from most stable to most fragile:
 |------|----------|-----|-------|
 | 1 | `testID` prop | `by.id('testID')` | Best — survives refactors, localization, style changes |
 | 2 | Accessibility label | `by.label('Submit')` | Good — doubles as a11y; survives layout changes |
-| 3 | Accessibility type | `by.type('RCTTextInput')` | OK — use to narrow when testID is absent |
-| 4 | Visible text | `by.text('Log in')` | Fragile — breaks on copy changes and i18n |
-| 5 | XPath / CSS | n/a (not supported) | Not supported in Detox — do not attempt |
-| 6 | System elements | `by.system()` | iOS only — target system-level elements (permission dialogs, alerts) not in your app's view hierarchy |
+| 3 | Accessibility value | `by.value('75%')` | Good for sliders/progress indicators — matches accessibilityValue |
+| 4 | Accessibility type | `by.type('RCTTextInput')` | OK — use to narrow when testID is absent |
+| 5 | Visible text | `by.text('Log in')` | Fragile — breaks on copy changes and i18n |
+| 6 | XPath / CSS | n/a (not supported) | Not supported in Detox — do not attempt |
+| 7 | System elements | `by.system()` | iOS only — target system-level elements (permission dialogs, alerts) not in your app's view hierarchy |
 
 **Rule**: Add `testID` to every button, input, screen root, and list item that a test will touch. Coordinate with app developers to add them proactively.
 
@@ -1325,12 +1427,14 @@ apps: {
 | `element(by.id(id))` | Select element by `testID` | Primary selector for all interactions |
 | `element(by.label(label))` | Select by accessibility label | When `testID` is absent |
 | `element(by.text(text))` | Select by visible text | Assertions only; avoid for actions |
+| `element(by.value(val))` | Select by accessibility value | Sliders, progress bars, toggles |
 | `element(by.type(type))` | Select by native component type | Narrowing when testID is shared |
 | `.and(matcher)` | Compound matcher | Combining matchers for precision |
 | `.withAncestor(matcher)` | Scopes to ancestor container | Resolving ambiguous matches in lists |
 | `.withDescendant(matcher)` | Scopes to descendant | Checking child element presence |
 | `.atIndex(n)` | Select nth match | Only when multiple distinct elements match |
 | `.tap()` | Simulates a tap | Buttons, list items, toggles |
+| `.tapAtPoint({ x, y })` | Taps at a pixel offset within element | Canvas, map pins, custom gesture areas |
 | `.typeText(str)` | Types text into an input | Text fields |
 | `.clearText()` | Clears a text input | Before re-typing in an already-filled field |
 | `.replaceText(str)` | Clears and types in one call | Faster than clearText+typeText |
@@ -1339,11 +1443,16 @@ apps: {
 | `.scrollTo(edge)` | Scrolls to `'top'`, `'bottom'`, `'left'`, `'right'` | Quick edge scrolling |
 | `.swipe(direction, speed, norm)` | Swipe gesture | Carousels, dismissible modals |
 | `.longPress()` | Long press | Context menus, drag handles |
+| `.longPressAndDrag(...)` | Long press then drag to target element | Drag-and-drop, Kanban, reordering |
 | `.pinch(scale, speed)` | Pinch gesture (iOS) | Zoom interactions |
+| `.adjustSliderToPosition(0–1)` | Set native Slider value (0=min, 1=max) | Native slider controls |
 | `expect(el).toBeVisible()` | Asserts element is on screen and visible | Primary visibility assertion |
 | `expect(el).toExist()` | Asserts element is in React tree | Checking unmounted vs mounted |
 | `expect(el).toHaveText(str)` | Asserts element displays text | Text content assertions |
 | `expect(el).toHaveValue(val)` | Asserts input has a value | TextInput value assertion |
+| `expect(el).toHaveLabel(str)` | Asserts element's accessibilityLabel | Screen reader / a11y validation |
+| `expect(el).toHaveToggleValue(bool)` | Asserts accessible toggle is on/off | Switch, CheckBox, accessibilityRole=switch |
+| `expect(el).toHaveId(str)` | Asserts element has a specific testID | Verifying correct element is found |
 | `expect(el).not.toBeVisible()` | Asserts element is hidden or absent | Verifying dismissal |
 | `waitFor(el).toBeVisible().withTimeout(ms)` | Waits up to ms for element to appear | Async data load, navigation transitions |
 | `waitFor(el).toBeVisible().whileElement(by.id).scroll(px, dir)` | Scroll until element visible | Dynamic lists |
@@ -1358,6 +1467,7 @@ apps: {
 | `device.setStatusBar(params)` | Override status bar display | Screenshot/visual consistency in CI |
 | `device.getPlatform()` | Returns `'ios'` or `'android'` | Conditional test logic per platform |
 | `device.takeScreenshot(name)` | Save a screenshot to artifacts | Manual debugging snapshots |
+| `device.captureViewHierarchy(name)` | Dump native accessibility tree to .viewhierarchy file | Debug "element not found" — open in Xcode |
 | `device.clearKeychain()` | Purge iOS Simulator Keychain (Detox 20+) | Prevent token leak between auth test suites |
 | `by.system()` | Match system-level UI elements (alerts, permission dialogs) | When pre-granting in `launchApp` is not possible |
 
@@ -1499,7 +1609,10 @@ Review your tests against this list when diagnosing a CI failure:
 | React Navigation ghost screen false positive | Assert unique destination landmark + `not.toBeVisible()` for source (Gotcha 15) |
 | Keyboard covering submit button on small screen | Scroll container to bottom before tapping, or dismiss keyboard first (Gotcha 13) |
 | Expo OTA update firing during test startup | Block expo.dev URLs with `device.setURLBlacklist` or disable in app.json |
-| Using `device.launchApp({url})` vs `device.openURL()` incorrectly | Use `launchApp({url})` for cold-start deep links; use `device.openURL()` to open a URL while app is already running |
+| Using `tapAtPoint` with hardcoded pixels for tappable UI | Add `testID` and use `tap()` instead; `tapAtPoint` is for canvas/map only |
+| `adjustSliderToPosition` on a custom JS slider | Only works on native RN `<Slider>`; use JS test helpers for custom sliders |
+| Leaving `captureViewHierarchy` calls in production tests | Debug utility only — remove before merging; it adds ~500ms per call |
+| Using `launchApp({url})` for a warm deep link | Use `device.openURL()` when app is already running; `launchApp({url})` cold-starts the app |
 
 ---
 
@@ -1563,6 +1676,119 @@ npx detox test -c ios.sim.release --loglevel verbose
   }
 }
 ```
+
+---
+
+## TypeScript Setup for Detox
+
+Detox ships TypeScript types from `detox` package directly (`@types/detox` is deprecated
+since Detox 18). Using TypeScript provides autocomplete for the entire Detox API and
+catches matcher/assertion typos at compile time.
+
+### Installation
+
+```bash
+# Install TypeScript and ts-jest (or babel with @babel/preset-typescript)
+npm install --save-dev typescript ts-jest @types/node
+
+# Detox 18+ ships its own types — no @types/detox needed
+# Verify the types are present:
+ls node_modules/detox/index.d.ts
+```
+
+### tsconfig for e2e
+
+```json
+// e2e/tsconfig.json — TypeScript config scoped to the e2e folder only
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node", "detox"]
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["../node_modules"]
+}
+```
+
+### jest.config.ts (TypeScript runner config)
+
+```ts
+// e2e/jest.config.ts
+import type { Config } from 'jest';
+
+const config: Config = {
+  rootDir: '..',
+  testMatch: ['<rootDir>/e2e/**/*.test.ts'],
+  testTimeout: 120000,
+  retryTimes: process.env.CI ? 1 : 0,
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', {
+      tsconfig: '<rootDir>/e2e/tsconfig.json',
+    }],
+  },
+  globalSetup: 'detox/runners/jest/globalSetup',
+  globalTeardown: 'detox/runners/jest/globalTeardown',
+  testEnvironment: 'detox/runners/jest/testEnvironment',
+  reporters: ['detox/runners/jest/reporter'],
+};
+
+export default config;
+```
+
+### TypeScript test file
+
+```ts
+// e2e/login.test.ts
+// Detox globals (element, by, waitFor, device, expect) are injected by testEnvironment
+// TypeScript sees them via "types": ["detox"] in tsconfig.json
+
+const { TIMEOUT } = require('./constants');
+
+describe('Login flow', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  beforeEach(async () => {
+    await device.reloadReactNative();
+  });
+
+  it('authenticates with valid credentials', async () => {
+    await element(by.id('email-input')).replaceText('user@example.com');
+    await element(by.id('password-input')).replaceText('secret123');
+    await element(by.id('login-button')).tap();
+    await waitFor(element(by.id('home-screen')))
+      .toBeVisible()
+      .withTimeout(TIMEOUT.long);
+  });
+});
+```
+
+### TypeScript constants file
+
+```ts
+// e2e/constants.ts
+const IS_CI = process.env.CI === 'true';
+
+export const TIMEOUT = {
+  short:  IS_CI ? 5000  : 2000,
+  medium: IS_CI ? 10000 : 3000,
+  long:   IS_CI ? 20000 : 5000,
+  launch: IS_CI ? 30000 : 10000,
+} as const;
+
+export type TimeoutKey = keyof typeof TIMEOUT;
+```
+
+**Gotcha [community]:** If `element`, `by`, `waitFor`, `device`, and `expect` show
+TypeScript errors ("Cannot find name 'element'"), verify that `"types": ["detox"]` is
+set in the `e2e/tsconfig.json` — NOT the project root `tsconfig.json`. Adding it to the
+root `tsconfig.json` pollutes the app compilation with Detox types and causes conflicts
+with React Native's own `expect` type from Jest.
 
 ---
 
@@ -1944,12 +2170,133 @@ it('shows the feedback dialog when device is shaken', async () => {
 
 ---
 
+## Accessibility (a11y) Testing
+
+Detox tests that check accessibility labels and toggle values simultaneously validate
+functional behavior AND screen-reader compatibility. Adding a11y assertions costs nothing
+extra and ensures VoiceOver/TalkBack users get the same experience.
+
+```js
+// e2e/accessibility.test.js
+
+it('verifies form labels are set correctly for screen readers', async () => {
+  // toHaveLabel() asserts the element's accessibilityLabel property
+  // This is what VoiceOver and TalkBack read aloud
+  await expect(element(by.id('email-input'))).toHaveLabel('Email address');
+  await expect(element(by.id('password-input'))).toHaveLabel('Password');
+  await expect(element(by.id('login-button'))).toHaveLabel('Log in');
+});
+
+it('verifies toggle switch state is announced correctly', async () => {
+  // toHaveToggleValue(true|false) asserts an accessible toggle's on/off state
+  // Works with Switch, CheckBox, and any component with accessibilityRole="switch"
+  const toggle = element(by.id('notifications-toggle'));
+  await expect(toggle).toHaveToggleValue(false);  // initially off
+
+  await toggle.tap();
+  await expect(toggle).toHaveToggleValue(true);   // now on
+});
+
+it('verifies image has a meaningful accessibility label', async () => {
+  // Decorative images should have accessibilityLabel set to '' (empty)
+  // or accessibilityElementsHidden={true}
+  // Informative images must have a descriptive accessibilityLabel
+  await expect(element(by.id('hero-image'))).toHaveLabel('Woman using the app on a phone');
+});
+
+it('verifies disabled button is not interactive', async () => {
+  // Verify via getAttributes that an element is disabled before asserting non-interactivity
+  const attrs = await element(by.id('submit-button')).getAttributes();
+  expect(attrs.enabled).toBe(false);
+  // A disabled button should not respond to taps — no need to tap and assert
+  await expect(element(by.id('submit-button'))).toBeVisible();
+});
+```
+
+**Note:** `toHaveLabel()` checks the React Native `accessibilityLabel` prop, NOT `testID`
+or displayed text. These are independent: an element can have `testID="login-btn"` (for
+Detox) AND `accessibilityLabel="Log in to your account"` (for screen readers).
+
+**Integration with a11y CI audits:** Run `toHaveLabel()` assertions in a dedicated
+`accessibility.test.js` suite to prevent a11y regressions from reaching production.
+
+---
+
+## CLI Debugging Reference
+
+### --debug-synchronization: diagnose infinite hangs
+
+When a `waitFor` call or an `element()` call hangs indefinitely, Detox is waiting for the
+app to become idle. Add `--debug-synchronization 3000` to the CLI command to print the
+synchronization status every 3 seconds — revealing exactly which subsystem is keeping the
+app busy (animation, network, timer, etc.):
+
+```bash
+# Add --debug-synchronization to any detox test invocation
+npx detox test -c ios.sim.debug --debug-synchronization 3000
+
+# Example output while test is hanging:
+# [Detox] Synchronization status:
+# - 1 animations running
+# - 1 tracked timers (delay < 1500ms)
+# - 1 network requests in flight: https://api.amplitude.com/2/httpapi
+```
+
+This output directly tells you to add `https://api.amplitude.com` to `device.setURLBlacklist()`.
+
+### --loglevel and --record-logs for CI debugging
+
+```bash
+# verbose: shows every Detox action and its result
+npx detox test -c ios.sim.release --loglevel verbose
+
+# Record full device logs to .artifacts/ even on pass
+npx detox test -c ios.sim.release --record-logs all
+
+# Record videos on all tests (not just failures)
+npx detox test -c ios.sim.release --record-videos all
+
+# Take screenshots at every test lifecycle event
+npx detox test -c ios.sim.release --take-screenshots all
+```
+
+### --testNamePattern for targeted retries
+
+When debugging a single flaky test, run only that test instead of the full suite:
+
+```bash
+# Run only tests whose name matches the pattern
+npx detox test -c ios.sim.release --testNamePattern "logs in with valid credentials"
+
+# Run a specific test file
+npx detox test -c ios.sim.release e2e/login.test.js
+
+# Run and retry failed tests (combine with Jest --bail to stop early)
+npx detox test -c ios.sim.release --bail 1
+```
+
+### Resetting simulator state between runs
+
+```bash
+# Full reset of a specific simulator — clears all apps and data
+xcrun simctl erase "iPhone 15"
+
+# List all available simulators
+xcrun simctl list devices
+
+# Kill and restart a hung simulator
+xcrun simctl shutdown "iPhone 15" && xcrun simctl boot "iPhone 15"
+```
+
+---
+
 - Detox Official Docs: https://wix.github.io/Detox/
 - Detox Getting Started: https://wix.github.io/Detox/docs/introduction/getting-started
 - Detox Flakiness Guide: https://wix.github.io/Detox/docs/troubleshooting/flakiness
 - Detox Synchronization: https://wix.github.io/Detox/docs/articles/synchronization
 - Detox Matchers API: https://wix.github.io/Detox/docs/api/matchers
 - Detox `waitFor` API: https://wix.github.io/Detox/docs/api/expect#waitforexpect
+- Detox Expect API (toHaveLabel, toHaveToggleValue): https://wix.github.io/Detox/docs/api/expect
 - Detox Artifacts: https://wix.github.io/Detox/docs/config/artifacts
 - Detox CI Guide: https://wix.github.io/Detox/docs/introduction/ci
 - Detox URL Blacklist: https://wix.github.io/Detox/docs/api/device#deviceseturlblacklisturls
@@ -1958,5 +2305,7 @@ it('shows the feedback dialog when device is shaken', async () => {
 - Detox `getAttributes()`: https://wix.github.io/Detox/docs/api/actions-core#getattributes
 - Detox `setLocation()`: https://wix.github.io/Detox/docs/api/device#devicesetlocationlat-lon
 - Detox Biometrics (iOS): https://wix.github.io/Detox/docs/api/device#devicematchface
+- Detox View Hierarchy Capture: https://wix.github.io/Detox/docs/api/device#devicecaptureviewhierarchyname
+- Detox TypeScript types: https://wix.github.io/Detox/docs/introduction/typescript
 - Expo Detox Integration: https://docs.expo.dev/build-reference/e2e-tests/
 - React Navigation Testing: https://reactnavigation.org/docs/testing/

@@ -1,7 +1,9 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-04-28 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-04-30 -->
 
-> Generated from official k6 documentation and community sources on 2026-04-27. Verified against k6 v1.7.1 (latest stable). Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-04-30. Verified against k6 v1.7.1 (stable); k6 v2.0.0-rc1 breaking changes documented below. Re-run `/qa-refine k6` to refresh.
+
+> **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), and the `k6/experimental/redis` module. See [v2.0.0 Migration](#v200-migration) section.
 
 ## Core Principles
 
@@ -444,10 +446,10 @@ const BASE = __ENV.API_URL || "http://localhost:3001";
 export default function () {
   const res = http.get(`${BASE}/api/items`);
   check(res, { "status 200": (r) => r.status === 200 });
+  // NOTE: No sleep() in arrival-rate executors — the rate/timeUnit controls pacing.
+  // Adding sleep() reduces actual throughput and causes dropped iterations.
 }
 ```
-
-### HTTP `params` — Per-Request Configuration
 
 The `params` object controls headers, timeouts, tags, cookies, and response handling on
 a per-request basis. Build a shared params helper in `lib/auth.js` to avoid repetition:
@@ -1074,6 +1076,91 @@ export default function () {
 }
 ```
 
+### HMAC Request Signing  [community]
+
+APIs that use HMAC signatures (AWS Signature v4, custom HMAC auth) require a valid
+signature on every request. k6's legacy `k6/crypto` module provides `hmac()` for
+synchronous signing; the newer WebCrypto `crypto.subtle` API supports async HMAC
+and PBKDF2 for production-grade cryptographic operations.
+
+```javascript
+// k6/scripts/hmac-signed-load.js — HMAC request signing (synchronous legacy API)
+import http from "k6/http";
+import { check, sleep } from "k6";
+import crypto from "k6/crypto";
+
+const SECRET_KEY = __ENV.HMAC_SECRET || "test-hmac-secret-32bytes-padding!";
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+/**
+ * Simple HMAC-SHA256 request signing helper.
+ * Each request includes: X-Timestamp, X-Signature headers.
+ */
+function signedRequest(method, path, body = "") {
+  const timestamp = String(Date.now());
+  const signingString = `${method}\n${path}\n${timestamp}\n${body}`;
+
+  // k6/crypto.hmac() — synchronous, no async overhead
+  const signature = crypto.hmac("sha256", SECRET_KEY, signingString, "hex");
+
+  return {
+    headers: {
+      "Content-Type":  "application/json",
+      "X-Timestamp":   timestamp,
+      "X-Signature":   signature,
+    },
+  };
+}
+
+export const options = {
+  scenarios: {
+    signed_load: {
+      executor: "constant-vus",
+      vus: 10,
+      duration: "2m",
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<300"],
+    http_req_failed:   ["rate<0.01"],
+    checks:            ["rate>0.99"],
+  },
+};
+
+export default function () {
+  const path = "/api/secure/items";
+
+  // GET — no body to sign
+  const getRes = http.get(
+    `${BASE}${path}`,
+    signedRequest("GET", path)
+  );
+  check(getRes, {
+    "list 200":         (r) => r.status === 200,
+    "not 401":          (r) => r.status !== 401,  // catches invalid signatures
+  });
+
+  // POST with body signature
+  const body = JSON.stringify({ name: `item-${__ITER}` });
+  const postRes = http.post(
+    `${BASE}${path}`,
+    body,
+    signedRequest("POST", path, body)
+  );
+  check(postRes, {
+    "create 201":       (r) => r.status === 201,
+    "not 401":          (r) => r.status !== 401,
+  });
+
+  sleep(1);
+}
+```
+
+> **[community]:** Never use the `k6/crypto` `hmac()` function with rotating secrets
+> loaded from `open()`. The secret is baked at init time per VU — if the secret rotates
+> during a soak test, VUs continue using stale secrets and produce 401 errors. Use
+> `k6/secrets` with async `get()` per iteration for rotating HMAC secrets.
+
 ### Cookie Jar & Session Management  [community]
 
 For scenarios requiring persistent session state across requests — such as login + cart +
@@ -1409,31 +1496,6 @@ import { authParams } from "./lib/auth.js";
 Also: k6 does not support bare npm package imports (e.g., `import _ from "lodash"`) —
 bundle npm dependencies with webpack/rollup first and import the bundle.
 
-### 17. GraphQL 200-response errors bypass HTTP error thresholds  [community]
-crashes. A threshold on `http_req_failed` will show 0% failure even when 100% of queries are
-returning `{ "errors": [...] }` in the body.
-**WHY:** GraphQL spec mandates that the transport layer always uses HTTP 200 for query-level
-errors; only genuine network or server errors produce 4xx/5xx responses. `http_req_failed`
-monitors HTTP-layer errors only — it has no visibility into the GraphQL `errors` array.
-**Fix:** Create a `Rate` custom metric for GraphQL errors, populate it in your `check()` body
-assertion, and threshold on it:
-```javascript
-const graphqlErrors = new Rate("graphql_errors");
-// In check: graphqlErrors.add(body.errors && body.errors.length > 0 ? 1 : 0);
-thresholds: { "graphql_errors": ["rate<0.01"] }
-```
-
-### 18. `setup()` token cannot refresh itself — soak tests silently 401 after token expiry  [community]
-**What:** Tokens obtained in `setup()` are serialized once and distributed to all VUs at
-test start. They cannot be refreshed from within `setup()` because `setup()` runs once.
-For 8-hour soak tests with 1-hour JWT TTLs, all VUs start failing at the 55-minute mark
-while dashboards still show healthy throughput (because the 401 responses process quickly).
-**WHY:** k6 serializes `setup()`'s return value to JSON and passes copies to VUs. There is
-no mechanism for `setup()` to push a new value mid-run. Each VU must manage its own token
-state using a per-VU token manager (see JWT Token Refresh pattern above).
-**Fix:** Implement a token manager that tracks expiry and refreshes proactively. Initialize
-it in the VU's init context; never rely on `setup()` for credentials in soak tests.
-
 ---
 
 ### 16. `k6/experimental/*` modules removed / deprecated in k6 v1.x  [community]
@@ -1489,14 +1551,158 @@ iteration-based WebSocket tests, use `setInterval` to send periodic messages and
 ### 20. Async/eventual consistency latency hidden by fast HTTP publish response  [community]
 **What:** An event-driven endpoint responds in 5ms (accepted / 202 status). The `http_req_duration`
 threshold of p(95)<200ms passes with flying colors. The actual task takes 45 seconds to process.
-Teams declare the system "fast" based on publish latency, while users wait 45 seconds.
-**WHY:** k6 measures HTTP response time, not end-to-end business transaction time. For
-async workflows, the publish API's response time is entirely decoupled from the true SLO.
-**Fix:** Implement a polling loop after publish to measure actual completion time (see
-Async/Eventual Consistency Testing pattern above). Threshold on the custom `Trend` metric,
-not on `http_req_duration`.
+
+### 21. `browser_web_vital_fid` removed in k6 v2.0 — dashboards silently stop reporting  [community]
+**What:** k6 v2.0 removes the `browser_web_vital_fid` metric (First Input Delay). CI pipelines
+and Grafana dashboards that threshold on it receive no data — thresholds silently pass because
+there is nothing to evaluate against.
+**WHY:** Google replaced FID with INP (Interaction to Next Paint) as a Core Web Vital in March
+2024. k6 v2.0 followed suit by removing FID tracking. Existing thresholds on `browser_web_vital_fid`
+pass vacuously rather than failing with an error, masking a broken monitoring pipeline.
+**Fix:** Update all browser thresholds to use `browser_web_vital_inp`. INP measures responsiveness
+across all user interactions, not just the first one — the budget is higher (200ms recommended
+vs. 100ms for FID).
+```javascript
+// BEFORE (k6 v1.x)
+thresholds: { "browser_web_vital_fid": ["p(75)<100"] }
+
+// AFTER (k6 v2.0)
+thresholds: { "browser_web_vital_inp": ["p(75)<200"] }
+```
+
+### 22. `externally-controlled` executor removed in k6 v2.0 — scripts silently misconfigured  [community]
+**What:** k6 v2.0 removes the `externally-controlled` executor entirely. A script with this
+executor fails immediately at startup. CI pipelines that were controlling VUs via the k6 REST
+API also break — the pause/resume/scale endpoints are gone.
+**WHY:** The REST API for external control was a rarely-used feature requiring a separate
+operator process. The k6 team removed it to simplify the runtime. The `k6 pause`, `k6 resume`,
+`k6 scale`, and `k6 status` commands also relied on it and are all removed in v2.0.
+**Fix:** Replace `externally-controlled` with `ramping-vus` using explicit `stages`. For
+external sequencing, use `startTime` offsets between scenarios. For CI-driven VU changes,
+use `k6 run` with different `options` objects per CI step.
+
+### 23. `--no-summary` flag removed in k6 v2.0 — CI scripts error out on upgrade  [community]
+**What:** k6 v2.0 removes the `--no-summary` CLI flag. Scripts and CI steps that use it
+fail with an unrecognised flag error — typically surfacing as a `108 Usage error` exit code.
+**WHY:** The flag was replaced by the more flexible `--summary-mode` option which supports
+`disabled`, `compact`, `full`, and `legacy` modes. The goal was a consistent, extensible
+summary control API rather than a simple boolean toggle.
+**Fix:** Replace `--no-summary` with `--summary-mode=disabled` in all CI pipeline steps.
+
+### 24. OTEL Rate metrics format changed in k6 v2.0 — Grafana dashboards break silently  [community]
+**What:** k6 v2.0 changes how Rate custom metrics are exported via OpenTelemetry. Previously
+Rate metrics exported as a pair of counters (`metric_name.occurred` / `metric_name.total`).
+In v2.0, they export as a single `Int64Counter` with a `condition` attribute (`zero` / `nonzero`).
+Existing dashboards and queries that used `metric_name.occurred` stop working silently.
+**WHY:** The pair-of-counters approach required consumers to know about k6's internal
+structure. The attribute-based approach follows OTEL conventions for categorical data.
+**Fix:** Update Grafana panels that query OTEL Rate metrics. Replace `metric_name.occurred`
+queries with a filter on the `condition="nonzero"` attribute on the unified counter.
+
+### 25. Cloud non-threshold abort exit code changed to 97 in k6 v2.0  [community]
+**What:** In k6 v1.x, k6 cloud tests aborted for non-threshold reasons (infrastructure failures,
+programmatic `exec.test.abort()` calls) returned exit code `0`. Pipelines that checked `exit 0`
+as "test passed" would silently accept these as successes. k6 v2.0 changes this to exit code `97`.
+**WHY:** Returning `0` for an infrastructure abort was a misleading success signal. Exit code `97`
+allows CI pipelines to distinguish between "test passed" (0), "threshold failed" (99), and
+"test aborted abnormally" (97).
+**Fix:** Update CI success conditions. Check for exit code `0` specifically for threshold-clean
+passes; handle `97` as an abnormal abort requiring investigation; `99` as a threshold failure.
+
+### 26. `sleep()` in arrival-rate executor iterations causes dropped iterations  [community]
+**What:** Adding `sleep()` at the end of an iteration in a `constant-arrival-rate` or
+`ramping-arrival-rate` script defeats the executor's pacing logic. The executor controls
+iteration rate via the `rate` and `timeUnit` options — a VU blocked by `sleep()` cannot
+accept new iterations, causing the rate to be lower than intended and iterations to be dropped.
+**WHY:** Arrival-rate executors are open-model: they schedule iterations independently of
+response time. Unlike `ramping-vus` where `sleep()` models think time, arrival-rate
+executors already bake the inter-iteration gap into the `rate` parameter. Adding `sleep()`
+effectively reduces the executor's actual throughput capacity.
+**Fix:** Remove `sleep()` from arrival-rate executor scripts. If you want to model think
+time as part of the load profile, factor it into the `rate` calculation or use
+`ramping-vus` which is a closed-model executor designed for think-time simulation.
+```javascript
+// ❌ Wrong — sleep in arrival-rate halves effective throughput
+export default function () {
+  http.get(`${BASE}/api/items`);
+  sleep(1);  // blocks VU for 1s, preventing new arrivals from being handled
+}
+
+// ✓ Correct — no sleep needed; rate/timeUnit controls pacing
+export default function () {
+  const res = http.get(`${BASE}/api/items`);
+  check(res, { "status 200": (r) => r.status === 200 });
+}
+```
+
+### 27. `http_req_duration` excludes DNS + TCP + TLS — user-perceived SLO validation is incomplete  [community]
+**What:** `http_req_duration` measures only `sending + waiting + receiving` — it does NOT include
+DNS resolution, TCP handshake, or TLS negotiation time. A threshold of `p(95)<200ms` on
+`http_req_duration` can pass while users experience 600ms on cold connections (200ms DNS +
+150ms TCP + 50ms TLS + 200ms server = 600ms).
+**WHY:** k6 separates connection overhead (`http_req_blocked`, `http_req_connecting`,
+`http_req_tls_handshaking`) from server processing (`http_req_waiting`) and data transfer
+(`http_req_sending`, `http_req_receiving`). This is intentional — it lets you pinpoint WHERE
+latency comes from. But teams only threshold on `http_req_duration` and miss the full picture.
+**Fix:** Add a custom `Trend` metric for total perceived latency:
+```javascript
+const perceived = new Trend("perceived_latency_ms", true);
+// After each request:
+const t = res.timings;
+perceived.add(t.blocked + t.connecting + t.tls_handshaking + t.duration);
+```
+Then threshold on `perceived_latency_ms` for user-facing SLOs, and `http_req_duration`
+for server-side SLOs separately.
+
+### 28. Dynamic URL IDs cause metric cardinality explosion — thresholds become unusable  [community]
+**What:** URLs like `/api/users/123/orders` and `/api/users/456/orders` are tracked as
+separate metrics by k6's URL tag. With 10,000 unique user IDs, you get 10,000 metric
+series in InfluxDB/Prometheus — dashboards crash, threshold expressions become impossible
+to write, and storage costs spike.
+**WHY:** k6 auto-tags each request with the full URL string. Dynamic path segments generate
+a unique metric series per distinct URL value. At 100+ unique IDs this is noisy; at 10k+ it
+causes cardinality-related storage failures in most time-series databases.
+**Fix:** Use the `name` tag to normalize URLs to a route pattern:
+```javascript
+http.get(
+  `${BASE}/api/users/${userId}/orders`,
+  { tags: { name: "GET /api/users/:id/orders" } }  // normalized name → 1 metric series
+);
+
+// For REST CRUD APIs, helper to auto-normalize:
+function api(method, path, body, params = {}) {
+  // Replace numeric IDs with :id placeholder
+  const name = path.replace(/\/\d+/g, "/:id");
+  return http.request(method, `${BASE}${path}`, body,
+    { ...params, tags: { ...params.tags, name: `${method} ${name}` } }
+  );
+}
+// Usage: api("GET", `/api/users/${id}/orders`, null)
+// Metric name tag: "GET /api/users/:id/orders"
+```
 
 ---
+
+### 29. `__VU` is per-instance in cloud runs — data distribution logic breaks  [community]
+**What:** In Grafana Cloud k6 with geographic distribution, `__VU` resets per load-generator
+instance. If you use `testUsers[__VU % testUsers.length]` to distribute test users across VUs,
+multiple instances generate overlapping `__VU` values — VUs on different instances use the SAME
+test user credentials, causing lock contention, false auth failures, and skewed results.
+**WHY:** `K6_CLOUDRUN_INSTANCE_ID` identifies the load generator instance; `__VU` is local
+to that instance. With 4 cloud instances running 25 VUs each, VU IDs are 1-25 on each instance
+— they are NOT globally unique across the test.
+**Fix:** Use `exec.scenario.iterationInTest` (globally unique across all instances) or combine
+`K6_CLOUDRUN_INSTANCE_ID` with `__VU` for distributed-safe unique user assignment:
+```javascript
+import exec from "k6/execution";
+
+// Globally unique across all distributed k6 instances
+const globalVuId = exec.vu.idInTest;  // unique across all cloud instances
+
+// OR use scenario.iterationInTest for per-iteration unique IDs
+const userIdx = exec.scenario.iterationInTest % testUsers.length;
+const user = testUsers[userIdx];
+```
 
 ## Lesser-Known Options
 
@@ -1773,6 +1979,83 @@ export default function () {
 > each VU must manage its own token refresh using a per-VU token manager (as above) or via
 > a shared in-memory cache pattern.
 
+### Distributed Tracing — HTTP Instrumentation  [community]
+
+Correlate k6 load test requests with backend traces in Grafana Tempo, Jaeger, or any
+OpenTelemetry-compatible tracing backend. The `http-instrumentation-tempo` jslib automatically
+injects trace context headers (`Traceparent` for W3C, `Uber-Trace-Id` for Jaeger) into all
+HTTP requests, enabling end-to-end trace correlation across microservices under load.
+
+> **Migration note:** `k6/experimental/tracing` was removed in k6 v2.0. Use the
+> `http-instrumentation-tempo` jslib instead — it's a drop-in replacement.
+
+```javascript
+// k6/scripts/traced-load.js
+// Requires Grafana Tempo or any OTEL-compatible trace collector
+import tempo from "https://jslib.k6.io/http-instrumentation-tempo/1.0.1/index.js";
+import http from "k6/http";
+import { check, sleep } from "k6";
+
+// Initialize ONCE in init context — automatically injects trace headers into all requests
+tempo.instrumentHTTP({
+  propagator: "w3c",    // "w3c" (Traceparent) or "jaeger" (Uber-Trace-Id)
+});
+
+export const options = {
+  scenarios: {
+    traced: {
+      executor: "constant-vus",
+      vus: 10,
+      duration: "2m",
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<500"],
+    http_req_failed:   ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  // All requests automatically include W3C TraceContext headers:
+  // Traceparent: 00-<trace_id>-<span_id>-01
+  const itemsRes = http.get(
+    `${BASE}/api/items`,
+    {
+      headers: { "X-Test-Iteration": String(__ITER) },
+      tags: { name: "GET /api/items" },
+    }
+  );
+  check(itemsRes, { "items 200": (r) => r.status === 200 });
+
+  // POST also gets traced — trace IDs appear in Tempo linked to each k6 iteration
+  const createRes = http.post(
+    `${BASE}/api/items`,
+    JSON.stringify({ name: `item-traced-${__ITER}` }),
+    {
+      headers: { "Content-Type": "application/json" },
+      tags: { name: "POST /api/items" },
+    }
+  );
+  check(createRes, { "create 201": (r) => r.status === 201 });
+
+  sleep(1);
+}
+```
+
+**Trace headers injected:**
+
+| Propagator | Header injected | Trace ID format |
+|-----------|-----------------|-----------------|
+| `w3c` | `traceparent: 00-<32hex>-<16hex>-01` | W3C Trace Context v1 |
+| `jaeger` | `Uber-Trace-Id: <trace>:<span>:<parent>:<flags>` | Jaeger B3 format |
+
+> **[community]:** Trace IDs are not included in k6's default summary output — correlate
+> them via the metrics output (InfluxDB/Prometheus tag `trace_id`) or by parsing the raw
+> JSON output from `--out json=results/k6-raw.json`. In Grafana, link k6 dashboards to
+> Tempo using the `trace_id` tag as a drill-down dimension.
+
 ### gRPC Streaming  [community]
 
 k6's `k6/net/grpc` module supports server-side streaming in addition to unary calls.
@@ -1941,11 +2224,25 @@ k6 run --scenario run k6/scripts/universal.js
 
 # Inspect script structure without executing
 k6 inspect k6/scripts/universal.js
+
+# Analyze script dependencies — identifies required extensions and k6 version constraints
+k6 deps k6/scripts/universal.js
+# JSON output (for CI parsing)
+k6 deps --json k6/scripts/universal.js > k6/results/deps.json
 ```
 
 > **[community]:** `k6 inspect` outputs scenario configuration and VU count without running
 > the test. Use it in CI to assert that a script has the expected structure before
 > wasting a full test run on a malformed options object.
+
+> **[community]:** `k6 deps` (k6 v1.6+) analyzes script imports and identifies which k6
+> extensions are required. Use it in CI to validate that the k6 binary in your pipeline
+> has all required extensions before running a potentially long test:
+> ```bash
+> # Fail CI early if extensions are missing
+> k6 deps --json k6/scripts/load.js | jq '.customBuildRequired' | grep -q false \
+>   || { echo "ERROR: Script requires custom k6 binary with extensions"; exit 1; }
+> ```
 
 ### Extensions (xk6)  [community]
 
@@ -2279,6 +2576,83 @@ export function injectFaults() {
 > sidecar proxy on target pods. Use `startTime` on the chaos scenario to establish a clean
 > baseline before injecting faults; this separates pre-chaos from during-chaos metrics.
 
+### Grafana Cloud k6 — Geographic Load Distribution  [community]
+
+Grafana Cloud k6 supports running load from multiple geographic zones simultaneously.
+Use `options.cloud.distribution` to split VUs across AWS/Azure regions for latency
+profiling from different geographic origin points.
+
+```javascript
+// k6/scripts/geo-load.js — k6 Cloud geographic distribution
+export const options = {
+  cloud: {
+    // Group multiple runs under the same test name for trending
+    name: "Global checkout flow",
+    projectID: __ENV.K6_CLOUD_PROJECT_ID,
+  },
+
+  scenarios: {
+    global_load: {
+      executor: "ramping-vus",
+      startVUs: 0,
+      stages: [
+        { duration: "30s", target: 20 },
+        { duration: "2m",  target: 20 },
+        { duration: "15s", target: 0  },
+      ],
+
+      // Distribute VUs across geographic zones
+      // Each zone key: "provider:region:city" — percentages must sum to 100
+      // Zones: amazon (AWS), azure (Azure), linode (Akamai)
+      // Run k6 cloud zones list to see all available zones
+      env: { ZONE: __ENV.ZONE || "us-east" },
+    },
+  },
+
+  // Geographic distribution — applies to the entire test
+  ext: {
+    loadimpact: {
+      distribution: {
+        "amazon:us:ashburn":  { loadZone: "amazon:us:ashburn",  percent: 34 },
+        "amazon:gb:london":   { loadZone: "amazon:gb:london",   percent: 33 },
+        "amazon:au:sydney":   { loadZone: "amazon:au:sydney",   percent: 33 },
+      },
+    },
+  },
+
+  thresholds: {
+    http_req_duration: ["p(95)<500"],
+    http_req_failed:   ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  const { sleep, check } = require("k6");
+  const http = require("k6/http");
+  const res = http.get(`${BASE}/api/items`);
+  check(res, { "items ok": (r) => r.status === 200 });
+}
+```
+
+**Run from CLI:**
+```bash
+# Authenticate once (store credentials)
+k6 cloud login --token "$K6_CLOUD_API_TOKEN" --stack "$K6_CLOUD_STACK"
+
+# Run cloud test with distribution
+k6 cloud run k6/scripts/geo-load.js
+
+# Watch results in real time via Grafana Cloud UI or:
+k6 cloud run --watch k6/scripts/geo-load.js
+```
+
+> **[community]:** Geographic distribution does NOT proportionally scale VU count per zone.
+> If you configure 50% US + 50% EU with 100 VUs, each zone runs 50 VUs independently — total
+> actual VU count is 100 (not 200). Latency results include zone-origin latency; always
+> tag requests with `{ tags: { zone: __ENV.ZONE } }` to differentiate latency by origin.
+
 ### Distributed k6 with the k6 Operator (Kubernetes)  [community]
 
 For extremely high load requirements (>100 k req/s) or when your application runs inside
@@ -2359,6 +2733,142 @@ kubectl delete -f k6/k8s/testrun.yaml
 > evaluates thresholds independently; use a Grafana dashboard to aggregate results
 > rather than relying on per-pod threshold pass/fail for the overall gate.
 
+### Secrets Management with `k6/secrets`  [community]
+
+The `k6/secrets` module (k6 v1.4+) provides secure secrets retrieval at runtime. Secrets
+are automatically redacted as `***SECRET_REDACTED***` in all k6 logs — preventing accidental
+credential leakage in CI output. Three source types are supported: `mock` (testing),
+`file` (local), and `url` (HTTP endpoint).
+
+```javascript
+// k6/scripts/authed-with-secrets.js
+// Requires k6 run --secret-source=mock=default,api_key="s3cr3t" script.js
+import secrets from "k6/secrets";
+import http from "k6/http";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    load: { executor: "constant-vus", vus: 10, duration: "1m" },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<300"],
+    http_req_failed:   ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default async function () {
+  // Fetch secret at runtime — value is redacted in logs
+  const apiKey = await secrets.get("api_key");
+
+  const res = http.get(`${BASE}/api/data`, {
+    headers: {
+      "X-API-Key": apiKey,
+      "Content-Type": "application/json",
+    },
+  });
+
+  check(res, {
+    "status 200":    (r) => r.status === 200,
+    "not 401":       (r) => r.status !== 401,  // catches expired/revoked keys
+  });
+}
+```
+
+Multiple sources (for staging vs. production credentials):
+
+```bash
+# Mock source (local dev / CI testing)
+k6 run --secret-source=mock=default,api_key="test-key-12345" script.js
+
+# URL source (fetch from HashiCorp Vault, AWS Secrets Manager, etc.)
+k6 run --secret-source=url=https://vault.internal/v1/secret/k6 script.js
+
+# Named sources (use secrets.source("name").get("key") in script)
+k6 run \
+  --secret-source=mock=primary,api_key="staging-key" \
+  --secret-source=url=https://vault.internal=secondary \
+  script.js
+```
+
+> **[community]:** Before `k6/secrets`, teams embedded credentials in `--env` flags or
+> hardcoded them in scripts. Both methods leak values into k6's stdout and CI logs. With
+> `k6/secrets`, the actual value is only visible inside VU code — never in logs, never in
+> the summary output. Rotate secrets in the source without changing the script.
+
+### MFA / TOTP Authentication  [community]
+
+Load testing MFA-protected endpoints requires generating real TOTP codes per iteration.
+Use the `totp` jslib with `k6/secrets` to generate codes from a stored shared secret.
+
+```javascript
+// k6/scripts/mfa-load.js
+// Requires: k6 run --secret-source=mock=default,totp_seed="BASE32SEED" script.js
+import secrets from "k6/secrets";
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { TOTP } from "https://jslib.k6.io/totp/1.0.0/index.js";
+
+export const options = {
+  scenarios: {
+    mfa_load: {
+      executor: "constant-vus",
+      vus: 5,    // Keep low — MFA flows are expensive (multiple round trips)
+      duration: "2m",
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<2000"],  // MFA flows are slower
+    http_req_failed:   ["rate<0.01"],
+    checks:            ["rate>0.99"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default async function () {
+  // 1. Fetch TOTP seed from secrets (redacted in logs)
+  const totpSeed = await secrets.get("totp_seed");
+  const totp = new TOTP(totpSeed, 6);
+  const code = await totp.gen();
+
+  // 2. First factor: username + password
+  const loginRes = http.post(
+    `${BASE}/api/auth/login`,
+    JSON.stringify({ email: __ENV.E2E_USER_EMAIL || "mfa@example.com", password: __ENV.E2E_USER_PASSWORD }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+  check(loginRes, { "login 200": (r) => r.status === 200 });
+  const challengeToken = loginRes.json("challenge_token");
+
+  // 3. Second factor: TOTP code
+  const mfaRes = http.post(
+    `${BASE}/api/auth/mfa`,
+    JSON.stringify({ challenge_token: challengeToken, totp_code: code }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+  check(mfaRes, {
+    "mfa 200":       (r) => r.status === 200,
+    "has jwt":       (r) => r.json("access_token") !== undefined,
+  });
+
+  // 4. Proceed with authenticated request
+  const profileRes = http.get(`${BASE}/api/profile`, {
+    headers: { Authorization: `Bearer ${mfaRes.json("access_token")}` },
+  });
+  check(profileRes, { "profile 200": (r) => r.status === 200 });
+
+  sleep(2);
+}
+```
+
+> **[community]:** TOTP codes are time-based (30-second windows). At high VU counts, clock
+> skew between the k6 runner and the authentication server causes intermittent MFA failures.
+> Test against an NTP-synced server; add `totp.gen(undefined, 1)` (bias=1) to generate
+> the code for the next window if within the last 5 seconds.
+
 ### Per-Scenario Environment Variables  [community]
 
 Each scenario can define its own `env` block. This is the cleanest way to point multiple
@@ -2419,6 +2929,63 @@ export function writeScenario() {
 ---
 
 ## Browser Module — Advanced Patterns
+
+### Locator Selector Priority
+
+k6 browser's `getBy*` locators (available since k6 v0.54+) match the Playwright API.
+Use them in priority order — more semantic = more resilient to DOM changes:
+
+| Priority | Locator | Best for |
+|----------|---------|---------|
+| 1 | `page.getByRole('button', { name: 'Submit' })` | Interactive elements with ARIA roles |
+| 2 | `page.getByLabel('Email address')` | Form inputs with associated labels |
+| 3 | `page.getByPlaceholder('Search...')` | Inputs with placeholder text |
+| 4 | `page.getByText('Delete account')` | Links, buttons, text elements |
+| 5 | `page.getByAltText('Company Logo')` | Images with alt text |
+| 6 | `page.getByTestId('user-profile-card')` | Elements with `data-testid` attribute |
+| 7 | `page.locator('[data-cy="submit"]')` | Custom data attributes |
+| 8 | `page.locator('.css-class')` | CSS selectors — fragile, last resort |
+| 9 | `page.locator('//xpath')` | XPath — most fragile, avoid |
+
+**Strict mode:** All `getBy*` and `locator()` methods throw if more than one element matches.
+For multi-element assertions, use `.all()` or scope with a parent locator.
+
+```javascript
+// k6/scripts/browser-locators.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    ui: { executor: "shared-iterations", vus: 1, iterations: 1,
+          options: { browser: { type: "chromium" } } },
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/login`);
+
+    // Semantic locators — resilient to DOM refactors
+    await page.getByLabel("Email address").fill("test@example.com");
+    await page.getByLabel("Password").fill(__ENV.E2E_USER_PASSWORD || "password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+
+    // Wait for navigation then assert with role
+    await page.waitForLoadState("networkidle");
+    const welcome = page.getByRole("heading", { level: 1 });
+    check(await welcome.textContent(), { "logged in": (t) => t && t.length > 0 });
+
+    // Scope a locator inside a region for precision
+    const navRegion = page.getByRole("navigation");
+    const homeLink  = navRegion.getByRole("link", { name: "Home" });
+    await homeLink.click();
+  } finally {
+    await page.close();
+  }
+}
+```
 
 ### CPU and Network Throttling for Realistic Conditions  [community]
 
@@ -2553,6 +3120,67 @@ export async function uiFlow() {
 
 ---
 
+## HTTP Timing Metrics — What They Measure
+
+A critical point often missed: **`http_req_duration` does NOT include DNS lookup or TCP connection time**. Thresholding only on `http_req_duration` may miss user-perceived latency spikes caused by connection overhead.
+
+| Metric | What it measures | Includes |
+|--------|-----------------|---------|
+| `http_req_blocked` | Time waiting for a free TCP connection slot | Before DNS resolution |
+| `http_req_lookup` | DNS resolution time | DNS only |
+| `http_req_connecting` | TCP handshake time | Network round-trip to establish connection |
+| `http_req_tls_handshaking` | TLS negotiation time | Certificate validation + key exchange |
+| `http_req_sending` | Time to send the request | Upload body transfer |
+| `http_req_waiting` | Time to first byte (TTFB) | Server processing time |
+| `http_req_receiving` | Response download time | Download body transfer |
+| **`http_req_duration`** | **`sending + waiting + receiving`** | **Does NOT include DNS, TCP, or TLS** |
+
+**User-perceived latency = `http_req_blocked + http_req_connecting + http_req_tls_handshaking + http_req_duration`**
+
+```javascript
+// k6/scripts/full-timing.js — measure complete user-perceived latency
+import http from "k6/http";
+import { check } from "k6";
+import { Trend } from "k6/metrics";
+
+// Capture complete perceived latency including connection overhead
+const perceivedLatency = new Trend("perceived_latency_ms", true);
+
+export const options = {
+  scenarios: {
+    timing_test: { executor: "constant-vus", vus: 10, duration: "2m" },
+  },
+  thresholds: {
+    http_req_duration:   ["p(95)<300"],       // server processing SLO
+    "perceived_latency_ms": ["p(95)<500"],    // user-perceived SLO (includes connection)
+    http_req_failed:     ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  const res = http.get(`${BASE}/api/items`);
+
+  // res.timings has all phases in milliseconds
+  const t = res.timings;
+  const totalPerceived = t.blocked + t.connecting + t.tls_handshaking + t.duration;
+  perceivedLatency.add(totalPerceived);
+
+  // Log if connection overhead is > 50% of total perceived time (network problem)
+  if (t.connecting > totalPerceived * 0.5) {
+    console.warn(`High connection overhead: ${t.connecting.toFixed(1)}ms of ${totalPerceived.toFixed(1)}ms total`);
+  }
+
+  check(res, { "status 200": (r) => r.status === 200 });
+}
+```
+
+> **[community]:** In a warm test with HTTP keep-alive enabled (the k6 default), `http_req_connecting`
+> is 0 for most requests — connections are reused. But on cold starts, first-VU iterations, or
+> after connection resets, the TCP+TLS overhead adds 50-200ms that `http_req_duration` silently
+> ignores. Always add a `perceived_latency` custom trend for accurate user-facing SLO validation.
+
 ## Key APIs
 
 | API | What it does | When to use |
@@ -2590,6 +3218,13 @@ export async function uiFlow() {
 | `options.insecureSkipTLSVerify` | Skip TLS cert validation | Self-signed certs on staging |
 | `options.tlsAuth` | Client cert (mTLS) per domain | mTLS/zero-trust internal APIs |
 | `options.systemTags` | Filter system tags on metrics | Reduce metric cardinality in dashboards |
+| `secrets.get(name)` | Retrieve secret from default source (async) | Credentials, API keys — values are log-redacted |
+| `secrets.source(id).get(name)` | Retrieve from named secret source | Multi-environment credential routing |
+| `page.frameLocator(selector)` | Locate elements inside an iframe | Testing embedded widgets / third-party frames |
+| `page.waitForRequest(urlPattern)` | Wait for a specific HTTP request to fire | Asserting API calls are made on UI interactions |
+| `locator.pressSequentially(text)` | Type character-by-character with key events | Realistic input for auto-complete / event-driven fields |
+| `page.evaluate(fn)` | Execute JavaScript in page context | Reading DOM state, counting elements, querying hidden data |
+| `page.goBack()` / `page.goForward()` | Navigate browser history | Testing back-navigation flows |
 
 ### k6/execution Module — Test Introspection
 
@@ -2691,8 +3326,13 @@ k6 returns a non-zero exit code when thresholds fail, making it a first-class CI
 | Exit code | Meaning |
 |-----------|---------|
 | `0` | All thresholds passed — test succeeded |
+| `97` | Cloud test aborted for non-threshold reason (k6 v2.0+) |
 | `99` | One or more thresholds failed |
 | `108` | Usage error (bad flags, missing script) |
+
+> **v2.0 change:** Cloud non-threshold aborts (e.g., infrastructure failures, `exec.test.abort()`)
+> now return exit code `97` instead of `0`. CI pipelines that checked for `exit 0` as "success" will
+> need to differentiate between `97` (infrastructure/programmatic abort) and `99` (threshold failure).
 
 In any CI pipeline, check `$?` or rely on the non-zero exit to fail the build:
 
@@ -2830,6 +3470,29 @@ export function handleSummary(data) {
     return http.get(url, params); // final attempt
   }
   ```
+- For **rate-limited APIs (HTTP 429)**, respect the `Retry-After` response header:
+  ```javascript
+  function httpGetRespectingRateLimit(url, params, maxRetries = 3) {
+    for (let i = 0; i < maxRetries; i++) {
+      const res = http.get(url, params);
+      if (res.status === 429) {
+        // Respect Retry-After header (seconds); fall back to exponential back-off
+        const retryAfter = res.headers["Retry-After"]
+          ? Number(res.headers["Retry-After"])
+          : Math.pow(2, i);   // 1s, 2s, 4s
+        sleep(retryAfter);
+        continue;
+      }
+      if (res.status !== 0 && res.status < 500) return res;
+      sleep(0.5 * (i + 1));  // 5xx back-off: 0.5s, 1s, 1.5s
+    }
+    return http.get(url, params); // final attempt — let caller check status
+  }
+  ```
+  > **[community]:** Load testing a rate-limited API with no retry logic reports misleading
+  > 429 errors as "failures." For APIs where rate limiting is expected behavior (not a bug),
+  > use a custom Rate metric to track 429 responses separately from genuine failures:
+  > `const rateLimited = new Rate("rate_limited"); rateLimited.add(res.status === 429);`
 - Use `delayAbortEval` on `abortOnFail` thresholds to let the system warm up before
   evaluating: `delayAbortEval: "30s"` is a good default; use `"60s"` for soak tests.
 - Common CI error messages and their causes:
@@ -2869,6 +3532,19 @@ K6_OTEL_SERVICE_NAME=my-load-test \
 K6_OTEL_HTTP_EXPORTER_ENDPOINT=http://localhost:4318 \
 K6_OTEL_EXPORTER_PROTOCOL=http/protobuf \
   k6 run --out opentelemetry k6/scripts/load.js
+
+# OpenTelemetry with custom service name, prefix, and flush settings
+K6_OTEL_GRPC_EXPORTER_ENDPOINT=localhost:4317 \
+K6_OTEL_METRIC_PREFIX=k6_ \
+K6_OTEL_SERVICE_NAME=my-load-test \
+K6_OTEL_FLUSH_INTERVAL=1s \
+K6_OTEL_EXPORT_INTERVAL=10s \
+  k6 run --out opentelemetry k6/scripts/load.js
+
+# Note: k6 v2.0 removed the exporterType option and SingleCounterForRate.
+# Use K6_OTEL_EXPORTER_PROTOCOL instead of exporterType.
+# Rate metrics now export as a single counter with "condition" attribute (zero/nonzero)
+# instead of the legacy pair-of-counters format (metric.occurred / metric.total).
 
 # Datadog — add K6_STATSD_ENABLE_TAGS=true for tag support
 K6_STATSD_ADDR=localhost:8125 \
@@ -2919,6 +3595,8 @@ k6/
     sequenced.js          # sequential scenario warm-up with startTime
     async-e2e.js          # async/eventual consistency E2E latency
     chaos-load.js         # load + xk6-disruptor fault injection (k8s only)
+    mfa-load.js           # TOTP MFA authentication load test
+    browser-advanced.js   # browser module with iframe, navigation, request interception
   lib/
     auth.js               # shared setup() / getToken() helpers + token manager
     thresholds.js         # reusable threshold presets per environment
@@ -2941,9 +3619,11 @@ k6/
 ```
 
 > **TypeScript note (k6 v0.57+):** k6 now runs `.ts` files directly — no bundler required
-> for type annotations. Run `k6 run script.ts` directly. Note: k6's TypeScript support is
-> transpilation-only (esbuild strips types but does NOT type-check). For compile-time
-> safety, add a `tsc --noEmit` pre-check step in CI before running k6.
+> for type annotations. Run `k6 run script.ts` directly. In k6 v0.57+, TypeScript support
+> is enabled by default (the `experimental-enhanced-mode` flag was removed). k6 uses esbuild
+> to transpile `.ts` files. Note: k6's TypeScript support is transpilation-only (esbuild
+> strips types but does NOT type-check). For compile-time safety, add a `tsc --noEmit`
+> pre-check step in CI before running k6.
 >
 > **Recommended tsconfig.json for k6 TypeScript projects:**
 > ```json
@@ -2961,4 +3641,175 @@ k6/
 > ```
 > Install k6 type definitions: `npm install --save-dev @types/k6`
 > CI pre-check: `tsc --noEmit && k6 run script.ts`
+
+---
+
+## v2.0.0 Migration
+
+k6 v2.0.0 (RC1 as of early 2026) is a major-version release with significant breaking changes.
+Audit your scripts and CI pipelines before upgrading.
+
+### What Was Removed
+
+| Removed | Replacement |
+|---------|-------------|
+| `externally-controlled` executor | Use `ramping-vus` or `constant-vus` |
+| `k6 pause`, `k6 resume`, `k6 scale`, `k6 status` | No replacement — use scenario `startTime` for sequencing |
+| `k6 login` | `k6 cloud login` |
+| `k6 cloud script.js` | `k6 cloud run script.js` |
+| `--upload-only` | `k6 cloud upload script.js` |
+| `--no-summary` | `--summary-mode=disabled` |
+| `options.ext.loadimpact` | `options.cloud` |
+| `k6/experimental/redis` | `k6/x/redis` (xk6 extension) |
+| `browser_web_vital_fid` metric | `browser_web_vital_inp` (Interaction to Next Paint) |
+
+### Migration Checklist
+
+```bash
+# 1. Find scripts using externally-controlled executor
+grep -r "externally-controlled" k6/scripts/
+
+# 2. Find scripts using deprecated CLI syntax in CI pipelines
+grep -r "k6 cloud " .github/ .gitlab-ci.yml Jenkinsfile
+
+# 3. Find deprecated browser metric in thresholds
+grep -r "browser_web_vital_fid" k6/
+
+# 4. Find scripts using --no-summary or options.ext.loadimpact
+grep -r "no-summary\|loadimpact" k6/
+
+# 5. Find k6/experimental/redis imports
+grep -r "experimental/redis" k6/
+```
+
+### Before/After Examples
+
+```javascript
+// BEFORE (v1.x) — externally-controlled executor
+export const options = {
+  scenarios: {
+    controlled: {
+      executor: "externally-controlled",
+      vus: 10,
+      maxVUs: 100,
+    },
+  },
+};
+
+// AFTER (v2.0) — use ramping-vus with explicit stages
+export const options = {
+  scenarios: {
+    controlled: {
+      executor: "ramping-vus",
+      startVUs: 10,
+      stages: [
+        { duration: "2m",  target: 10  },
+        { duration: "1m",  target: 50  },
+        { duration: "2m",  target: 0   },
+      ],
+    },
+  },
+};
+```
+
+```javascript
+// BEFORE (v1.x) — options.ext.loadimpact / cloud config
+export const options = {
+  ext: {
+    loadimpact: {
+      projectID: 12345,
+      name: "My Load Test",
+    },
+  },
+};
+
+// AFTER (v2.0) — options.cloud
+export const options = {
+  cloud: {
+    projectID: 12345,
+    name: "My Load Test",
+  },
+};
+```
+
+```javascript
+// BEFORE (v1.x) — browser Web Vitals threshold
+thresholds: {
+  "browser_web_vital_fid": ["p(75)<100"],  // First Input Delay — removed
+}
+
+// AFTER (v2.0) — use INP (Interaction to Next Paint — the Core Web Vital replacement)
+thresholds: {
+  "browser_web_vital_inp": ["p(75)<200"],  // INP replaces FID as a Core Web Vital
+}
+```
+
+> **[community]:** `browser_web_vital_fid` was removed because Google replaced First Input
+> Delay (FID) with Interaction to Next Paint (INP) as a Core Web Vital in March 2024.
+> INP measures responsiveness across all interactions, not just the first — it is a more
+> reliable indicator of real-world page responsiveness. Update dashboards and thresholds
+> accordingly.
+
+### Browser Module — New APIs (k6 v0.52+)
+
+```javascript
+// k6/scripts/browser-advanced.js — iframe + navigation + request interception
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    ui: {
+      executor: "shared-iterations",
+      vus: 1,
+      iterations: 3,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+  thresholds: {
+    "browser_web_vital_lcp": ["p(75)<2500"],
+    "browser_web_vital_inp": ["p(75)<200"],   // INP replaces FID in v2.0
+    checks:                   ["rate==1.0"],
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/`);
+
+    // waitForRequest: assert that a specific API call fires on button click
+    const apiRequestPromise = page.waitForRequest("**/api/data");
+    await page.getByRole("button", { name: "Load Data" }).click();
+    const apiRequest = await apiRequestPromise;
+    check(apiRequest.url(), { "correct endpoint": (u) => u.includes("/api/data") });
+
+    // frameLocator: interact with content inside an iframe
+    const frame = page.frameLocator("iframe#embedded-widget");
+    const frameBtn = frame.locator("button.submit");
+    if (await frameBtn.isVisible()) {
+      await frameBtn.click();
+    }
+
+    // pressSequentially: character-by-character typing (triggers keyboard events)
+    const searchInput = page.getByPlaceholder("Search...");
+    await searchInput.pressSequentially("test query", { delay: 50 });
+
+    // evaluate: run arbitrary JS in page context
+    const itemCount = await page.evaluate(() => {
+      return document.querySelectorAll(".item-card").length;
+    });
+    check(itemCount, { "items loaded": (n) => n > 0 });
+
+    // goBack / goForward: browser history navigation
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/page2`);
+    await page.goBack();
+    check(page.url(), { "back to home": (u) => u.endsWith("/") || u.endsWith("/page1") });
+
+    await page.screenshot({ path: `results/screenshot-${__ITER}.png` });
+  } finally {
+    await page.close();
+  }
+}
+```
 
