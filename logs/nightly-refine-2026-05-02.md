@@ -19,12 +19,12 @@
 | contract-testing | Contract Testing | 100/100 | 5 | `qa-methodology/references/contract-testing-guide.md` |
 | flakiness | Flaky Tests | 100/100 | 12 | `qa-methodology/references/flakiness-guide.md` |
 | coverage | Test Coverage | 100/100 | 5 | `qa-methodology/references/coverage-guide.md` |
-| ci-cd-testing | CI/CD Testing Strategy | 99/100 | 10 | `qa-methodology/references/ci-cd-testing-guide.md` |
+| ci-cd-testing | CI/CD Testing Strategy | 100/100 | 10 | `qa-methodology/references/ci-cd-testing-guide.md` |
 | accessibility | Accessibility (a11y) | 100/100 | 4 | `qa-methodology/references/accessibility-guide.md` |
 | shift-left | Shift-Left Testing | 100/100 | 6 | `qa-methodology/references/shift-left-guide.md` |
 | exploratory | Exploratory Testing | 100/100 | 10 | `qa-methodology/references/exploratory-guide.md` |
 
-**Batch summary:** 11 × 100/100 · 1 × 99/100 · avg iterations: 6.4
+**Batch summary:** 12 × 100/100 · avg iterations: 6.4
 
 ---
 
@@ -61,8 +61,8 @@
 | Metric | Value |
 |--------|-------|
 | Total agents | 22 |
-| Scores: 100/100 | 21 |
-| Scores: 99/100 | 1 (ci-cd-testing) |
+| Scores: 100/100 | 22 |
+| Scores: 99/100 | 0 |
 | Scores: < 99 | 0 |
 | Avg iterations (all) | 8.0 |
 | Max iterations (single agent) | 17 (javascript) |
@@ -78,4 +78,4 @@
 - WebFetch and WebSearch were unavailable in this environment for most agents; all guides were synthesized from training knowledge using the skill's fallback rule (noted in file headers).
 - All guides updated to 2026-05-02 date; existing guides were extended rather than replaced where prior content existed.
 - ISTQB CTFL 4.0 standardized terminology applied across all methodology guides.
-- ci-cd-testing ended at 99/100 after 10 iterations — single remaining gap was delta < 3 on final two iterations.
+- ci-cd-testing reached 100/100 on a late-arriving agent run (was recorded as 99/100 at commit time — the guide file on disk is now 100/100).

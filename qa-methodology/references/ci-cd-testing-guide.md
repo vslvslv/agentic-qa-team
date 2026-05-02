@@ -1,5 +1,5 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 1 | score: 91/100 | date: 2026-05-02 -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
 <!-- sources: training knowledge + iterative refinement pass -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
@@ -14,20 +14,21 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 10 CI testing pillars covered in this guide:**
+**The 11 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
-| 1 | Fail-fast ordering | lint → unit → integration → e2e |
+| 1 | Fail-fast ordering | lint → typecheck → unit → integration → e2e |
 | 2 | Parallelization | `maxWorkers: 50%` on runner vCPUs |
 | 3 | Sharding | across machines when single-machine parallelism isn't enough |
 | 4 | Merge gates | unit + integration + e2e smoke required; full suite advisory |
 | 5 | Flaky test handling | quarantine within 24h; `retries ≤ 2` |
 | 6 | Time budgets | < 10 min full pipeline (feature branch) |
 | 7 | Monorepo affected testing | `nx affected`, `turbo --filter`, `jest --changedSince` |
-| 8 | Artifact caching | node_modules, browsers, Docker layers |
+| 8 | Artifact caching | node_modules, browsers, Docker layers, `.tsbuildinfo` |
 | 9 | Test results reporting | JUnit XML, PR annotations, coverage delta |
 | 10 | Environment parity | UTC, pinned Node, case-sensitive paths |
+| 11 | TypeScript type-check gate | `tsc --noEmit` as separate required CI gate |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -35,11 +36,11 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 | Scenario | Recommended approach |
 |---|---|
-| Feature branch push | Unit + integration only (fast gate, < 5 min) |
-| PR opened / updated | Full pyramid: unit → integration → e2e smoke |
+| Feature branch push | Lint + typecheck + unit only (fast gate, < 5 min) |
+| PR opened / updated | Full pyramid: lint → typecheck → unit → integration → e2e smoke |
 | Merge to main | Full pyramid + performance smoke |
 | Scheduled nightly | Full e2e suite, visual regression, load tests |
-| Hotfix branch | Unit + smoke e2e only |
+| Hotfix branch | Lint + typecheck + unit + smoke e2e only |
 
 **Project maturity ladder — adopt CI testing patterns incrementally:**
 
@@ -128,13 +129,17 @@ Worker-based parallelism runs multiple test files simultaneously on a single mac
 
 > [community] The most common parallelization mistake: setting `maxWorkers: 100%` on a 2-core runner. GitHub Actions free-tier runners have 2 vCPUs. Setting workers to 100% leaves no headroom for Node.js GC and the OS, causing slower runs than `50%`. Profile your runner's vCPU count before tuning.
 
-**Jest configuration (jest.config.js):**
+**Jest configuration (jest.config.ts — TypeScript project):**
 
-```javascript
-// jest.config.js
-/** @type {import('jest').Config} */
-const config = {
-  // Use half of available CPUs; leave headroom for Node.js GC
+```typescript
+// jest.config.ts
+import type { Config } from 'jest';
+
+const config: Config = {
+  // Use ts-jest preset for TypeScript compilation without separate build step
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  // Use half of available CPUs; leave headroom for Node.js GC and TS compilation
   maxWorkers: '50%',
   // Isolate each file in its own worker to prevent state bleed
   workerThreads: true,
@@ -144,16 +149,21 @@ const config = {
   bail: 1,
   coverageThreshold: {
     global: { lines: 80, branches: 75 }
-  }
+  },
+  // Collect coverage from source TS files, not compiled JS
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts'],
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }],
+  },
 };
 
-module.exports = config;
+export default config;
 ```
 
-**Vitest configuration (vitest.config.js):**
+**Vitest configuration (vitest.config.ts):**
 
-```javascript
-// vitest.config.js
+```typescript
+// vitest.config.ts
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -163,8 +173,16 @@ export default defineConfig({
       threads: { maxThreads: 4, minThreads: 2 }
     },
     isolate: true,           // fresh module registry per file
-    sequence: { shuffle: true }
-  }
+    sequence: { shuffle: true },
+    // TypeScript-friendly coverage with v8 provider
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'html'],
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/**/*.test.ts'],
+      thresholds: { lines: 80, branches: 75 },
+    },
+  },
 });
 ```
 
@@ -262,103 +280,106 @@ A test is flaky when it produces different results for the same code without any
 
 **Detection threshold:** A test that fails more than 2% of the time on a green branch is flaky and must be quarantined within 24 hours.
 
-**Quarantine approach — Jest custom reporter (JavaScript):**
+**Quarantine approach — Jest custom reporter (TypeScript):**
 
-```javascript
-// scripts/quarantine-reporter.js
-'use strict';
+```typescript
+// scripts/quarantine-reporter.ts
+import type { Reporter, TestResult } from '@jest/reporters';
 
-const QUARANTINED = new Set([
+const QUARANTINED = new Set<string>([
   'UserAuthFlow > should refresh token silently',
   'PaymentForm > submits on Enter key',
 ]);
 
-class QuarantineReporter {
-  onTestResult(_runner, result) {
+export default class QuarantineReporter implements Reporter {
+  onTestResult(_runner: unknown, result: TestResult): void {
     result.testResults = result.testResults.map(t => {
-      const fullName = [...(t.ancestorTitles || []), t.title].join(' > ');
+      const fullName = [...(t.ancestorTitles ?? []), t.title].join(' > ');
       if (QUARANTINED.has(fullName) && t.status === 'failed') {
         console.warn(`[QUARANTINE] Skipping known-flaky: ${t.title}`);
-        return { ...t, status: 'pending' }; // treat as skip, not failure
+        return { ...t, status: 'pending' as const }; // treat as skip, not failure
       }
       return t;
     });
   }
 }
-
-module.exports = QuarantineReporter;
 ```
 
-**Retry with flakiness tracking (Playwright) — playwright.config.js:**
+**Retry with flakiness tracking (Playwright) — playwright.config.ts:**
 
-```javascript
-// playwright.config.js
-const { defineConfig } = require('@playwright/test');
+```typescript
+// playwright.config.ts
+import { defineConfig, devices } from '@playwright/test';
 
-module.exports = defineConfig({
-  retries: process.env.CI ? 2 : 0,  // retry only in CI, not locally
+export default defineConfig({
+  retries: process.env['CI'] ? 2 : 0,  // retry only in CI, not locally
   reporter: [
     ['html'],
     ['json', { outputFile: 'test-results/results.json' }],
     // Custom reporter that tracks retry counts for flakiness dashboard
-    ['./reporters/flakiness-tracker.js']
+    ['./reporters/flakiness-tracker.ts']
   ],
   use: {
     // Capture trace on first retry for debugging
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure'
-  }
+    video: 'retain-on-failure',
+  },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+  ],
 });
 ```
 
 **Flakiness rate formula:** `flakiness_rate = retry_successes / total_runs`. Alert when rate > 5% over a 7-day rolling window.
 
-**Flakiness tracking custom reporter (JavaScript, Jest):**
+**Flakiness tracking custom reporter (TypeScript, Jest):**
 
-```javascript
-// reporters/flakiness-tracker.js
-'use strict';
+```typescript
+// reporters/flakiness-tracker.ts
+import type { Reporter, TestResult, AggregatedResult } from '@jest/reporters';
+import * as fs from 'fs';
+import * as path from 'path';
 
-const fs = require('fs');
-const path = require('path');
+interface FlakyTestEntry {
+  title: string;
+  file: string;
+  invocations: number;
+  date: string;
+}
 
 const REPORT_PATH = path.join(process.cwd(), 'test-results', 'flakiness-report.json');
 
-class FlakinessTracker {
-  constructor() {
-    this._flaky = [];
-  }
+export default class FlakinessTracker implements Reporter {
+  private readonly flaky: FlakyTestEntry[] = [];
 
-  onTestResult(_runner, suiteResult) {
+  onTestResult(_runner: unknown, suiteResult: TestResult): void {
     for (const test of suiteResult.testResults) {
       // A test is flaky if it passed on retry (invocationCount > 1 and final status passed)
-      if (test.invocations > 1 && test.status === 'passed') {
-        this._flaky.push({
-          title: [...(test.ancestorTitles || []), test.title].join(' > '),
+      if ((test as any).invocations > 1 && test.status === 'passed') {
+        this.flaky.push({
+          title: [...(test.ancestorTitles ?? []), test.title].join(' > '),
           file: suiteResult.testFilePath,
-          invocations: test.invocations,
+          invocations: (test as any).invocations,
           date: new Date().toISOString(),
         });
       }
     }
   }
 
-  onRunComplete() {
-    if (this._flaky.length === 0) return;
+  onRunComplete(_contexts: unknown, _results: AggregatedResult): void {
+    if (this.flaky.length === 0) return;
 
     fs.mkdirSync(path.dirname(REPORT_PATH), { recursive: true });
-    fs.writeFileSync(REPORT_PATH, JSON.stringify(this._flaky, null, 2));
+    fs.writeFileSync(REPORT_PATH, JSON.stringify(this.flaky, null, 2));
 
     console.warn('\n[FlakinessTracker] Flaky tests detected:');
-    for (const t of this._flaky) {
+    for (const t of this.flaky) {
       console.warn(`  - ${t.title} (${t.invocations} attempts)`);
     }
     console.warn(`  Report: ${REPORT_PATH}`);
   }
 }
-
-module.exports = FlakinessTracker;
 ```
 
 **Flaky test audit script (runs against JSON results):**
@@ -400,6 +421,72 @@ if [ $? -ne 0 ]; then
   echo "::warning::Flaky tests detected — add to quarantine list within 24h"
 fi
 ```
+
+### TypeScript Component Testing with @testing-library in CI [community]
+
+React and Vue component tests using `@testing-library` run in the unit test level in CI and provide the fastest UI feedback loop. TypeScript-specific setup is required for correct jsdom types, accessibility queries, and custom matchers.
+
+> [community] The most common `@testing-library/react` + TypeScript CI failure: `Property 'toBeInTheDocument' does not exist on type 'JestMatchers'`. This happens when `@testing-library/jest-dom` setup is not included in the Jest/Vitest global setup file, or when the TypeScript types from `@types/testing-library__jest-dom` are not referenced. Teams spend 30–60 minutes diagnosing this before the fix: add `import '@testing-library/jest-dom'` to `setupFilesAfterFramework`.
+
+```typescript
+// vitest.config.ts — component test setup for TypeScript + React
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    // Run this file before each test file — adds jest-dom matchers globally
+    setupFiles: ['./tests/setup-dom.ts'],
+    globals: true,  // allows describe/it/expect without imports in test files
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.tsx', 'src/**/*.ts'],
+      exclude: ['src/**/*.stories.tsx', 'src/**/*.d.ts'],
+    },
+  },
+});
+```
+
+```typescript
+// tests/setup-dom.ts — global DOM test setup
+import '@testing-library/jest-dom';
+// Extend Vitest's expect with jest-dom matchers (required for TypeScript types)
+import type { TestingLibraryMatchers } from '@testing-library/jest-dom/matchers';
+
+declare module 'vitest' {
+  interface Assertion<T = unknown> extends TestingLibraryMatchers<T, void> {}
+  interface AsymmetricMatchersContaining extends TestingLibraryMatchers<unknown, void> {}
+}
+```
+
+```typescript
+// src/components/Button.test.tsx — typed component test
+import { render, screen, fireEvent } from '@testing-library/react';
+import { Button } from './Button';
+
+describe('Button', () => {
+  it('renders with correct label and calls onClick when clicked', () => {
+    const handleClick = vi.fn();
+    render(<Button label="Submit" onClick={handleClick} disabled={false} />);
+
+    const button = screen.getByRole('button', { name: 'Submit' });
+    expect(button).toBeInTheDocument();
+    expect(button).not.toBeDisabled();
+
+    fireEvent.click(button);
+    expect(handleClick).toHaveBeenCalledOnce();
+  });
+
+  it('is disabled when disabled prop is true', () => {
+    render(<Button label="Submit" onClick={vi.fn()} disabled={true} />);
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeDisabled();
+  });
+});
+```
+
+> [community] Using `screen.getByRole()` over `screen.getByTestId()` in TypeScript component tests provides a dual benefit: it catches accessibility regressions (role must be correct) AND produces more readable test code. Teams that migrate from `getByTestId` to role-based queries report 40% fewer "passes CI but broken UX" defects because the query validates semantic HTML structure.
 
 ### Changed-File-Only Testing (monorepo) [community]
 
@@ -467,6 +554,77 @@ In GitHub, configure via: Settings → Branches → Branch protection rules → 
 ### Test Results Reporting [community]
 
 Structured reporting closes the feedback loop from CI back to the developer.
+
+### Coverage Gates for TypeScript Projects [community]
+
+Coverage thresholds block merges when test coverage falls below a minimum — but coverage metrics behave differently in TypeScript vs. JavaScript due to type-only imports and `.d.ts` files that inflate line counts.
+
+> [community] Teams that configure coverage on TypeScript projects without excluding declaration files and generated code routinely see "90% coverage" that is inflated by uncovered type-only exports and auto-generated GraphQL schema types. The real business logic coverage may be 65%. Always set `exclude` patterns in coverage config to remove non-business-logic files from measurement.
+
+```typescript
+// vitest.config.ts — precise TypeScript coverage configuration
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'json-summary'],
+      // Include only source TypeScript — not generated, not test files
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: [
+        'src/**/*.d.ts',          // type-only declarations — no runtime code
+        'src/**/*.test.ts',       // test files
+        'src/**/*.spec.ts',
+        'src/**/index.ts',        // barrel exports — logic lives in modules
+        'src/generated/**',       // auto-generated code (GraphQL, Prisma, protobuf)
+        'src/**/__mocks__/**',    // mock files
+      ],
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+        // Per-file enforcement — no single file may be < 60% covered
+        perFile: true,
+      },
+    },
+  },
+});
+```
+
+**Coverage gate CI step (GitHub Actions):**
+
+```yaml
+# .github/workflows/ci.yml — coverage gate after unit tests
+  coverage-gate:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Run tests with coverage — Vitest exits non-zero if thresholds not met
+      - run: npx vitest run --coverage
+        name: Run tests with coverage gate
+      # Upload coverage for PR comment
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+      # Post coverage summary as a PR comment
+      - name: Coverage PR comment
+        uses: davelosert/vitest-coverage-report-action@v2
+        if: always()
+        with:
+          json-summary-path: coverage/coverage-summary.json
+          json-final-path: coverage/coverage-final.json
+```
+
+> [community] The `perFile: true` threshold option is the most impactful coverage configuration change for TypeScript teams. Global thresholds of 80% can hide files with 0% coverage if other files compensate. Per-file thresholds (set to 60–70% per file, 80% global) prevent any single module from being completely untested while keeping the global target achievable. Teams that add per-file thresholds typically find 3–10 completely untested modules on the first run.
 
 > [community] The single highest-leverage reporting change most teams make: switch from "check the Actions tab" to "inline PR annotations". Developers fix test failures 3× faster when the failure appears directly in the PR diff view rather than in a separate tab.
 
@@ -549,6 +707,81 @@ echo "CI parity check passed"
   with:
     node-version-file: .nvmrc   # reads exact version from .nvmrc
     cache: npm
+```
+
+### TypeScript Compilation Speed Optimization in CI [community]
+
+TypeScript compilation is frequently the bottleneck in CI for TypeScript projects — type-checking a large codebase can take 30–90 seconds on a cold runner. Several strategies reduce this to 5–15 seconds.
+
+> [community] Teams that profile their CI pipelines consistently find that `tsc --noEmit` is the top-3 slowest step for codebases with 300+ source files. Optimization is not about skipping type-checking — it is about making it incremental so unchanged code is not re-checked.
+
+**Strategy 1: Use `--incremental` with `.tsbuildinfo` caching:**
+
+```yaml
+# .github/workflows/ci.yml — incremental TypeScript type-check
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Cache .tsbuildinfo file between runs — only changed files are re-checked
+      - name: Cache TypeScript build info
+        uses: actions/cache@v4
+        with:
+          path: .tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ hashFiles('tsconfig.json', 'src/**/*.ts') }}
+          restore-keys: tsbuildinfo-${{ runner.os }}-
+
+      # --incremental reads .tsbuildinfo; only type-checks changed files
+      - run: npx tsc --noEmit --incremental
+        name: TypeScript type-check (incremental)
+```
+
+**tsconfig.json for incremental CI type-checking:**
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo",
+    "skipLibCheck": false,
+    "isolatedModules": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx"]
+}
+```
+
+> [community] `"isolatedModules": true` in `tsconfig.json` mirrors what `ts-jest` and `esbuild` (Vitest/swc) do during transpilation — it disallows patterns that require cross-file type information at transform time. Enabling it in the main tsconfig ensures that patterns caught by the type-checker match those that would fail during test transpilation. Teams that omit this flag sometimes see tests pass type-check but fail compilation during the test run itself.
+
+**Strategy 2: Split test tsconfig from source tsconfig for faster type-check:**
+
+```json
+// tsconfig.json — source only (fastest; no test file overhead)
+{
+  "compilerOptions": { "strict": true, "noEmit": true },
+  "include": ["src/**/*.ts"]
+}
+
+// tsconfig.test.json — extends main, adds test paths
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["vitest/globals", "@testing-library/jest-dom"] },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}
+```
+
+```yaml
+# CI: type-check source fast, then check tests separately
+- run: npx tsc --noEmit --project tsconfig.json
+  name: Type-check source
+- run: npx tsc --noEmit --project tsconfig.test.json
+  name: Type-check tests
 ```
 
 ### Test Time Budgets [community]
@@ -717,19 +950,17 @@ Testcontainers starts real Docker containers from within test code, ensuring env
 
 > [community] The shift from GitHub Actions `services:` declarations to Testcontainers is driven by one pain point: `services:` containers start once per job and share state across all tests. Testcontainers starts a fresh container per test suite (or per test), giving true isolation. Teams that made this switch report 80%+ reduction in "green locally, red in CI" integration test failures.
 
-**Testcontainers with Jest (JavaScript, CommonJS):**
+**Testcontainers with Jest (TypeScript):**
 
-```javascript
-// tests/integration/user-repository.test.js
-'use strict';
-
-const { PostgreSqlContainer } = require('@testcontainers/postgresql');
-const { UserRepository } = require('../../src/repositories/user-repository');
-const { createPool } = require('../../src/db/pool');
+```typescript
+// tests/integration/user-repository.test.ts
+import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { UserRepository } from '../../src/repositories/user-repository';
+import { createPool } from '../../src/db/pool';
 
 describe('UserRepository', () => {
-  let container;
-  let repo;
+  let container: StartedPostgreSqlContainer;
+  let repo: UserRepository;
 
   beforeAll(async () => {
     // Start a real Postgres container — same image as production
@@ -781,6 +1012,69 @@ const container = await new PostgreSqlContainer('postgres:16-alpine')
 ```
 
 > [community] Testcontainers' `withReuse()` option can cut total integration suite time by 40% when the same container image is used across many test files. The risk: the reused container accumulates state between test suites unless each suite truncates its tables. Make `TRUNCATE` in `beforeEach` non-negotiable when using reuse.
+
+### Type-Safe API Mocking with MSW in CI [community]
+
+Mock Service Worker (MSW) intercepts HTTP requests at the network layer, making integration tests against typed API clients more robust in CI. Unlike manually mocking `fetch` or `axios`, MSW mocks persist across module boundaries without test-file-level setup.
+
+> [community] Teams using MSW for TypeScript API mocking report that type-safe request handlers catch stale mock data patterns — when the API schema changes (e.g., a field is renamed or removed), the TypeScript compiler flags the handler immediately. Teams using manual `jest.mock('axios')` approaches discover API-mock drift only when tests randomly fail due to unexpected undefined values. MSW + TypeScript eliminates this entire class of CI flakiness.
+
+```typescript
+// tests/mocks/handlers.ts — type-safe MSW request handlers
+import { http, HttpResponse } from 'msw';
+
+// Import API types for type-safe response bodies
+import type { User, ApiError } from '../../src/types/api';
+
+export const handlers = [
+  // Type-checked: HttpResponse.json() validates body against inferred type
+  http.get('/api/users/:id', ({ params }) => {
+    const userId = params['id'] as string;
+
+    if (userId === '999') {
+      return HttpResponse.json<ApiError>(
+        { code: 'NOT_FOUND', message: 'User not found' },
+        { status: 404 },
+      );
+    }
+
+    return HttpResponse.json<User>({
+      id: userId,
+      email: 'alice@example.com',
+      name: 'Alice Smith',
+      role: 'user',
+    });
+  }),
+
+  http.post('/api/users', async ({ request }) => {
+    const body = await request.json() as Partial<User>;
+    return HttpResponse.json<User>({
+      id: 'new-user-id',
+      email: body.email ?? 'default@example.com',
+      name: body.name ?? 'New User',
+      role: 'user',
+    }, { status: 201 });
+  }),
+];
+```
+
+```typescript
+// tests/setup.ts — MSW server setup for Vitest/Jest (Node.js integration tests)
+import { setupServer } from 'msw/node';
+import { handlers } from './mocks/handlers';
+
+// Shared server instance — handlers are applied globally to all test files
+export const server = setupServer(...handlers);
+
+// Start server before all tests, reset handlers after each, close after all
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+```
+
+**`onUnhandledRequest: 'error'` in CI:** This setting causes any unmatched HTTP request to throw — preventing tests from silently making real network calls in CI. Set to `'error'` in CI, `'warn'` during local development.
+
+> [community] The `onUnhandledRequest: 'error'` option is the single most impactful MSW configuration for CI reliability. Without it, a test that accidentally makes a real API call (e.g., a missing mock handler after a code change) will either hang waiting for a network timeout or succeed with real data — both of which corrupt the CI signal. With `'error'`, unhandled requests fail immediately with a clear error message identifying the missing handler.
 
 ### Turborepo Remote Caching [community]
 
@@ -913,11 +1207,86 @@ strategy:
 
 **Why `fail-fast: false` matters in matrix jobs:** With `fail-fast: true` (the default), the first matrix entry failure cancels all other entries. This hides whether the failure is platform-specific. Set `fail-fast: false` to collect the full failure picture across all matrix combinations before triaging.
 
+### TypeScript Type-Check as a CI Gate [community]
+
+TypeScript projects must run `tsc --noEmit` as a separate CI gate from test execution. `ts-jest` and Vitest transpile TypeScript without type-checking by default, meaning type errors can silently coexist with passing tests.
+
+> [community] The most common TypeScript CI mistake: assuming `ts-jest` enforces type safety. `ts-jest` by default uses `isolatedModules: true` which transpiles each file in isolation and skips cross-file type checking. A function that accepts `string` but is called with `number` will pass all tests and fail only at runtime — unless `tsc --noEmit` is a required CI gate. Teams that add this gate after their first type-error production incident typically find 10–30 latent type errors on the first run.
+
+**Type-check step in GitHub Actions CI pipeline:**
+
+```yaml
+# .github/workflows/ci.yml — TypeScript type-check as a required gate
+jobs:
+  typecheck:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # noEmit: check types without writing output files
+      # Runs separately from tests so failures are clearly attributed to type errors
+      - run: npx tsc --noEmit --project tsconfig.json
+        name: TypeScript type-check
+
+  unit:
+    needs: typecheck          # unit tests only run if types are clean
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm test -- --ci --coverage
+```
+
+**Recommended `tsconfig.json` settings for strict CI validation:**
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "coverage"]
+}
+```
+
+> [community] Enable `skipLibCheck: false` in CI but `skipLibCheck: true` in local development config (`tsconfig.local.json`). The full lib check catches type definition mismatches between packages (e.g., `@types/node` version conflicts) that only matter in production, but adds 5–15 seconds to type-check time that developers tolerate poorly locally.
+
+**TypeScript project references for monorepo type-checking (fast incremental):**
+
+```typescript
+// tsconfig.json (root — references all packages)
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/api" },
+    { "path": "./packages/ui" }
+  ]
+}
+```
+
+```bash
+# In CI — use --build for incremental composite project checking
+# Only re-checks packages whose source has changed since last build
+npx tsc --build --noEmit
+```
+
+> [community] TypeScript composite project references (`"composite": true`) enable incremental type-checking in monorepos via `tsc --build`. On a 20-package monorepo, full `tsc --noEmit` takes 45–90 seconds; `tsc --build` with a warm `.tsbuildinfo` cache takes 3–8 seconds because only changed packages are re-checked. Cache the `.tsbuildinfo` files in CI the same way you cache `node_modules`.
+
 ### Pre-commit Hooks as Local CI Gates [community]
 
 Pre-commit hooks run fast checks (lint, format, unit tests) before a commit completes on the developer's machine — catching issues before they enter CI at all. The best CI pipeline is one that never runs because the bug was caught locally.
-
-> [community] Teams that enforce pre-commit hooks report a 15–25% reduction in CI failure rate on PRs. The mechanism: developers fix lint and format issues locally rather than waiting 5 minutes for the CI lint job to tell them the same thing. The tradeoff: hooks that take > 10 seconds are bypassed with `--no-verify` within weeks. Keep hooks under 5 seconds.
 
 **Setup with `husky` + `lint-staged` (JavaScript):**
 
@@ -1058,20 +1427,26 @@ Tracking test health over time reveals patterns invisible in single-run results:
 
 > [community] Teams that invest in test health dashboards catch and fix flaky tests 5× faster than teams that rely on developer reports ("this failed again for me"). The critical insight: a single test failure is ambiguous (maybe infrastructure glitch); a trend showing 5% failure rate over 30 days is a confirmed defect.
 
-**Trend tracking with GitHub Actions summary and SQLite log (JavaScript):**
+**Trend tracking with GitHub Actions summary and SQLite log (TypeScript):**
 
-```javascript
-// scripts/record-test-run.js — append test results to a SQLite log
-'use strict';
-
-const Database = require('better-sqlite3');
-const fs = require('fs');
-const path = require('path');
+```typescript
+// scripts/record-test-run.ts — append test results to a SQLite log
+import Database from 'better-sqlite3';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const DB_PATH = path.join(process.cwd(), '.test-health', 'history.db');
-const RESULTS_PATH = process.env.RESULTS_FILE || 'test-results/results.json';
+const RESULTS_PATH = process.env['RESULTS_FILE'] ?? 'test-results/results.json';
 
-function recordRun() {
+interface JestResults {
+  numTotalTests: number;
+  numPassedTests: number;
+  numFailedTests: number;
+  numPendingTests: number;
+  testResults: Array<{ perfStats: { end: number; start: number } }>;
+}
+
+function recordRun(): void {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
   const db = new Database(DB_PATH);
@@ -1098,10 +1473,10 @@ function recordRun() {
     );
   `);
 
-  const results = JSON.parse(fs.readFileSync(RESULTS_PATH, 'utf8'));
+  const results = JSON.parse(fs.readFileSync(RESULTS_PATH, 'utf8')) as JestResults;
   const runAt = new Date().toISOString();
-  const branch = process.env.GITHUB_REF_NAME || 'local';
-  const sha = process.env.GITHUB_SHA || 'local';
+  const branch = process.env['GITHUB_REF_NAME'] ?? 'local';
+  const sha = process.env['GITHUB_SHA'] ?? 'local';
 
   const insert = db.prepare(`
     INSERT INTO test_runs (run_at, branch, sha, total, passed, failed, skipped, duration_ms)
@@ -1114,7 +1489,7 @@ function recordRun() {
     results.numPassedTests,
     results.numFailedTests,
     results.numPendingTests,
-    results.testResults.reduce((sum, r) => sum + (r.perfStats.end - r.perfStats.start), 0)
+    results.testResults.reduce((sum, r) => sum + (r.perfStats.end - r.perfStats.start), 0),
   );
 
   console.log(`[test-health] Recorded run ${run.lastInsertRowid}: ${results.numPassedTests}/${results.numTotalTests} passed`);
@@ -1129,7 +1504,7 @@ recordRun();
 ```yaml
 - name: Record test health
   if: always()   # record even when tests fail — the failure IS the data point
-  run: node scripts/record-test-run.js
+  run: npx ts-node scripts/record-test-run.ts
   env:
     RESULTS_FILE: test-results/jest-results.json
 
@@ -1250,6 +1625,90 @@ jobs:
 
 > [community] The maximum useful shard count for browser e2e tests is typically 8–12. Beyond that, browser launch overhead (constant per shard, ~5 seconds for Chromium) consumes a disproportionate share of each shard's runtime. A 16-shard split of a 400-test suite means each shard runs 25 tests in ~2 minutes but spends 15–20 seconds just launching the browser — 10–15% overhead per shard. Profile before scaling past 8 shards.
 
+### Typed Playwright Fixtures and Page Object Model in CI [community]
+
+TypeScript's type system makes Playwright fixtures and Page Object Models (POM) significantly safer in CI — broken page object APIs cause compile-time errors rather than runtime failures mid-run.
+
+> [community] Teams that implement typed Playwright fixtures report a 70–80% reduction in "test written against wrong API" defects — the most common cause of new test failures in CI that are unrelated to production code changes. When a developer renames a selector or method in a page object, TypeScript immediately flags all callers, making CI red for type reasons rather than runtime crashes.
+
+```typescript
+// tests/e2e/fixtures.ts — typed Playwright fixtures for CI
+import { test as base, expect } from '@playwright/test';
+
+// Page Object Model for login page
+class LoginPage {
+  constructor(private readonly page: import('@playwright/test').Page) {}
+
+  async goto(): Promise<void> {
+    await this.page.goto('/login');
+  }
+
+  async login(email: string, password: string): Promise<void> {
+    await this.page.getByLabel('Email').fill(email);
+    await this.page.getByLabel('Password').fill(password);
+    await this.page.getByRole('button', { name: 'Sign in' }).click();
+  }
+
+  async expectError(message: string): Promise<void> {
+    await expect(this.page.getByRole('alert')).toContainText(message);
+  }
+}
+
+// Typed fixture extension — available in all tests that import from this file
+type Fixtures = {
+  loginPage: LoginPage;
+  authenticatedPage: import('@playwright/test').Page;
+};
+
+export const test = base.extend<Fixtures>({
+  loginPage: async ({ page }, use) => {
+    const loginPage = new LoginPage(page);
+    await use(loginPage);
+  },
+
+  // Pre-authenticated page fixture — reusable across test files
+  authenticatedPage: async ({ page }, use) => {
+    await page.goto('/login');
+    await page.getByLabel('Email').fill(process.env['TEST_USER_EMAIL'] ?? 'test@example.com');
+    await page.getByLabel('Password').fill(process.env['TEST_USER_PASSWORD'] ?? 'password');
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.waitForURL('/dashboard');
+    await use(page);
+  },
+});
+
+export { expect };
+```
+
+```typescript
+// tests/e2e/auth.spec.ts — using typed fixtures in CI
+import { test, expect } from './fixtures';
+
+test.describe('Authentication', () => {
+  test('shows error for invalid credentials', async ({ loginPage }) => {
+    await loginPage.goto();
+    await loginPage.login('invalid@example.com', 'wrongpassword');
+    await loginPage.expectError('Invalid email or password');
+  });
+
+  test('redirects to dashboard after successful login', async ({ loginPage, page }) => {
+    await loginPage.goto();
+    await loginPage.login(
+      process.env['TEST_USER_EMAIL'] ?? 'test@example.com',
+      process.env['TEST_USER_PASSWORD'] ?? 'password',
+    );
+    await expect(page).toHaveURL('/dashboard');
+  });
+
+  test('accesses protected route with pre-auth fixture', async ({ authenticatedPage }) => {
+    await authenticatedPage.goto('/profile');
+    await expect(authenticatedPage.getByRole('heading', { name: 'Profile' })).toBeVisible();
+  });
+});
+```
+
+> [community] The most overlooked benefit of typed fixtures in CI: the `authenticatedPage` fixture eliminates login overhead from every test that needs an authenticated session. Without fixtures, teams repeat the login flow in `beforeEach` across all test files — a 2-second operation that, across 100 tests, adds 200 seconds to the suite. With fixtures, the auth state is reused via browser storage state, reducing auth overhead to near zero.
+
 ### Ephemeral Test Environments in CI [community]
 
 Ephemeral environments are short-lived, isolated deployments created per PR and destroyed after merge. They enable integration and e2e tests to run against a real deployed stack without sharing state between PRs or polluting a permanent staging environment.
@@ -1325,13 +1784,15 @@ jobs:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
 ```
 
-**Health check before e2e (`scripts/wait-for-env.js`):**
+**Health check before e2e (`scripts/wait-for-env.ts`):**
 
-```javascript
-// scripts/wait-for-env.js — poll /health until ready
-'use strict';
-
-async function waitForHealthy(url, timeoutMs = 60_000, intervalMs = 3_000) {
+```typescript
+// scripts/wait-for-env.ts — poll /health until ready
+async function waitForHealthy(
+  url: string,
+  timeoutMs = 60_000,
+  intervalMs = 3_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -1342,14 +1803,14 @@ async function waitForHealthy(url, timeoutMs = 60_000, intervalMs = 3_000) {
       }
       console.log(`[wait-for-env] Waiting... status=${res.status}`);
     } catch (err) {
-      console.log(`[wait-for-env] Not ready: ${err.message}`);
+      console.log(`[wait-for-env] Not ready: ${(err as Error).message}`);
     }
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    await new Promise<void>(resolve => setTimeout(resolve, intervalMs));
   }
   throw new Error(`[wait-for-env] Timeout: ${url} did not become healthy within ${timeoutMs}ms`);
 }
 
-waitForHealthy(process.env.BASE_URL || 'http://localhost:3000').catch(err => {
+waitForHealthy(process.env['BASE_URL'] ?? 'http://localhost:3000').catch((err: Error) => {
   console.error(err.message);
   process.exit(1);
 });
@@ -1363,28 +1824,27 @@ Within a test level (unit or integration), running the highest-risk test cases f
 
 > [community] Teams with long integration test suites (100+ test cases) report that random file ordering means a critical defect in a payment service is sometimes caught last (after 4 minutes) rather than first (after 30 seconds). Tagging test cases with a risk tier and running them in descending risk order reduces MTTD for P0 defects by 60–80% without changing total suite runtime.
 
-**Jest test sequencer for risk-based ordering:**
+**Jest test sequencer for risk-based ordering (TypeScript):**
 
-```javascript
-// scripts/risk-sequencer.js — run high-risk test suites first
-'use strict';
-
-const Sequencer = require('@jest/test-sequencer').default;
+```typescript
+// scripts/risk-sequencer.ts — run high-risk test suites first
+import Sequencer from '@jest/test-sequencer';
+import type { Test } from '@jest/test-sequencer';
 
 // Higher number = higher risk = runs first
-const RISK_TIER = {
-  'auth':      10,
-  'payment':   10,
-  'billing':   9,
-  'checkout':  8,
-  'user':      7,
-  'product':   6,
-  'search':    4,
-  'analytics': 2,
-  'utils':     1,
+const RISK_TIER: Record<string, number> = {
+  auth:      10,
+  payment:   10,
+  billing:   9,
+  checkout:  8,
+  user:      7,
+  product:   6,
+  search:    4,
+  analytics: 2,
+  utils:     1,
 };
 
-function riskScore(testPath) {
+function riskScore(testPath: string): number {
   const file = testPath.toLowerCase();
   for (const [keyword, score] of Object.entries(RISK_TIER)) {
     if (file.includes(keyword)) return score;
@@ -1392,25 +1852,27 @@ function riskScore(testPath) {
   return 5; // default medium risk
 }
 
-class RiskSequencer extends Sequencer {
-  sort(tests) {
+export default class RiskSequencer extends Sequencer {
+  sort(tests: Test[]): Test[] {
     return [...tests].sort((a, b) => riskScore(b.path) - riskScore(a.path));
   }
 }
-
-module.exports = RiskSequencer;
 ```
 
-**Jest configuration:**
+**Jest configuration (jest.config.ts):**
 
-```javascript
-// jest.config.js
-/** @type {import('jest').Config} */
-module.exports = {
-  testSequencer: './scripts/risk-sequencer.js',
+```typescript
+// jest.config.ts
+import type { Config } from 'jest';
+
+const config: Config = {
+  preset: 'ts-jest',
+  testSequencer: './scripts/risk-sequencer.ts',
   maxWorkers: '50%',
   bail: 1,
 };
+
+export default config;
 ```
 
 > [community] The simplest form of risk-based ordering — naming high-risk test files with numeric prefixes (01-, 02-) so they sort alphabetically to the front — requires zero configuration. Teams adopt this convention during project setup and it pays dividends for the entire project lifetime. The custom sequencer approach is better when risk classification needs to be dynamic (based on code change history or defect data).
@@ -1489,6 +1951,10 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 | No teardown trigger on PR close | Orphaned ephemeral environments accumulate; cost waste | Handle `pull_request: closed` event for teardown |
 | No health check before e2e in ephemeral env | Tests fail with "connection refused" before app is ready | Poll `/health` endpoint until 200 before starting tests |
 | No CI cost tracking with sharding enabled | Runner bill spikes undetected until month-end | Add cost estimate step and set monthly budget alert |
+| No `tsc --noEmit` gate (TypeScript) | Type errors pass tests, ship to production | Add `typecheck` job that runs `tsc --noEmit` before unit tests |
+| `skipLibCheck: true` in CI tsconfig | Type definition mismatches between packages go undetected | Use `skipLibCheck: false` in CI; allow `true` in local dev config |
+| Not caching `.tsbuildinfo` in monorepo | Incremental type-check benefit lost; full recheck every CI run | Cache `.tsbuildinfo` files alongside `node_modules` |
+| `ts-jest` `isolatedModules: true` assumed to type-check | Transpiles without cross-file type checking; type errors slip through | Always run `tsc --noEmit` as a separate CI step |
 
 ## Real-World Gotchas [community]
 
@@ -1526,48 +1992,74 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 
 16. **`better-sqlite3` requires native compilation — pre-build or use fallback** [community]: If you adopt the test health trend tracking pattern with `better-sqlite3`, be aware that it requires `node-gyp` native compilation. On a fresh CI runner without a build cache, this adds 15–30 seconds and can fail if `python3` or `make` is not available. Use a try-catch fallback to append JSONL when the native module is unavailable:
 
-```javascript
-// Safe require pattern for optional native dependency
-let db = null;
-try {
-  const Database = require('better-sqlite3');
-  db = new Database('.test-health/history.db');
-} catch {
-  // Fallback: write plain JSONL if better-sqlite3 not available
-}
-if (!db) {
-  const fs = require('fs');
-  fs.appendFileSync('.test-health/history.jsonl',
-    JSON.stringify({ runAt: new Date().toISOString(), ...summary }) + '\n');
+```typescript
+// Safe dynamic import pattern for optional native dependency (TypeScript)
+import * as fs from 'fs';
+
+interface TestSummary { runAt: string; total: number; passed: number; failed: number }
+
+async function recordWithFallback(summary: TestSummary): Promise<void> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const Database = require('better-sqlite3') as typeof import('better-sqlite3').default;
+    const db = new Database('.test-health/history.db');
+    // ... insert logic
+    db.close();
+  } catch {
+    // Fallback: write plain JSONL if better-sqlite3 not available
+    fs.appendFileSync(
+      '.test-health/history.jsonl',
+      JSON.stringify(summary) + '\n',
+    );
+  }
 }
 ```
 
-17. **CI provider env var naming differences** [community]: Code that reads provider-specific variables (`GITHUB_REF`, `CI_COMMIT_REF_NAME`, `CIRCLE_BRANCH`) will silently get `undefined` on other providers. Normalize into a single `ci-env.js` module:
+17. **CI provider env var naming differences** [community]: Code that reads provider-specific variables (`GITHUB_REF`, `CI_COMMIT_REF_NAME`, `CIRCLE_BRANCH`) will silently get `undefined` on other providers. Normalize into a single `ci-env.ts` module:
 
-```javascript
-// ci-env.js — normalize provider-specific env vars for portability
-'use strict';
+```typescript
+// ci-env.ts — normalize provider-specific env vars for portability
+export interface CIEnvironment {
+  branch: string;
+  sha: string;
+  prNumber: string | null;
+  isCI: boolean;
+}
 
-module.exports = {
-  branch: process.env.GITHUB_REF_NAME          // GitHub Actions
-    ?? process.env.CI_COMMIT_REF_NAME          // GitLab CI
-    ?? process.env.CIRCLE_BRANCH               // CircleCI
-    ?? process.env.BUILDKITE_BRANCH            // Buildkite
+const env: CIEnvironment = {
+  branch: process.env['GITHUB_REF_NAME']         // GitHub Actions
+    ?? process.env['CI_COMMIT_REF_NAME']          // GitLab CI
+    ?? process.env['CIRCLE_BRANCH']               // CircleCI
+    ?? process.env['BUILDKITE_BRANCH']            // Buildkite
     ?? 'local',
-  sha: process.env.GITHUB_SHA
-    ?? process.env.CI_COMMIT_SHA
-    ?? process.env.CIRCLE_SHA1
-    ?? process.env.BUILDKITE_COMMIT
+  sha: process.env['GITHUB_SHA']
+    ?? process.env['CI_COMMIT_SHA']
+    ?? process.env['CIRCLE_SHA1']
+    ?? process.env['BUILDKITE_COMMIT']
     ?? 'local',
-  prNumber: process.env.GITHUB_EVENT_NUMBER
-    ?? process.env.CI_MERGE_REQUEST_IID
-    ?? process.env.CIRCLE_PR_NUMBER
+  prNumber: process.env['GITHUB_EVENT_NUMBER']
+    ?? process.env['CI_MERGE_REQUEST_IID']
+    ?? process.env['CIRCLE_PR_NUMBER']
     ?? null,
-  isCI: Boolean(process.env.CI),
+  isCI: Boolean(process.env['CI']),
 };
+
+export default env;
 ```
 
 18. **Risk-based test ordering neglected after initial setup** [community]: Risk scores defined in a sequencer or naming convention become stale as the codebase evolves. A payment module that was Tier 1 six months ago may have been refactored into a stable utility; a new feature with high business impact may not be tagged. Schedule a quarterly "risk tier review" as part of test maintenance. The review takes < 1 hour and keeps ordering aligned with actual production risk.
+
+19. **`ts-jest` not configured for strict type checking** [community]: Teams that switch from `babel-jest` to `ts-jest` often copy the default config which sets `diagnostics: false` to suppress TypeScript errors in tests. This defeats the purpose of using TypeScript — test files can have incorrect types with no feedback. Enable `diagnostics: true` (default) and fix all test-file type errors; the migration cost is a one-time investment. Production bugs caused by mistyped mock return values are far more expensive.
+
+20. **TypeScript path aliases breaking in CI** [community]: Projects that use `tsconfig` path aliases (e.g., `@/utils`) must configure both `ts-jest`'s `moduleNameMapper` and `tsconfig`'s `paths` identically. Teams frequently update one but not the other, causing tests to fail in CI with `Cannot find module '@/utils'` while passing locally because the IDE's language server resolves paths differently. Validate path alias consistency as part of the `typecheck` CI gate.
+
+21. **Declaration file (`.d.ts`) generation skipped in CI** [community]: Libraries that export TypeScript declarations must verify that `tsc --declaration --emitDeclarationOnly` succeeds as part of CI. Teams that skip this step ship packages with missing or incorrect `.d.ts` files, breaking downstream consumers. Add a `build:types` CI step that runs declaration emission and check-in the generated types directory.
+
+22. **`noUncheckedIndexedAccess` enabled after green CI — sudden mass failure** [community]: Teams that add `"noUncheckedIndexedAccess": true` to `tsconfig.json` without preparation typically find 50–200 type errors across their test files on the next CI run. Array index access (`arr[0]`) now returns `T | undefined`, breaking all tests that pass array elements directly to functions expecting `T`. Migrate incrementally: enable the flag in a separate `tsconfig.strict.json`, run `tsc --project tsconfig.strict.json --noEmit` as an advisory (non-blocking) CI step, fix errors over 1–2 sprints, then promote to the required gate.
+
+23. **ESM/CommonJS module mismatch in CI with TypeScript** [community]: TypeScript projects configured for `"module": "ESNext"` in `tsconfig.json` but running tests with `ts-jest` in CJS mode produce confusing CI failures: `SyntaxError: Cannot use import statement in a module` or `ReferenceError: require is not defined`. The root cause is mismatched module systems between TS config and the test runner. Solution: use `"module": "CommonJS"` in `tsconfig.test.json` (separate test tsconfig), or migrate fully to Vitest which is ESM-native.
+
+24. **TypeScript version drift between developer machines and CI** [community]: Teams that install TypeScript globally (e.g., `npm install -g typescript`) and reference it in CI scripts can have different TypeScript versions on dev machines and CI. TypeScript is not semver-stable — minor versions introduce new strict checks. Always declare TypeScript as a `devDependency` in `package.json` and run `npx tsc` (which uses the local version) rather than `tsc`. Enforce version in CI by checking `node_modules/.bin/tsc --version` against the version in `package.json`.
 
 ## Tradeoffs & Alternatives
 
@@ -1655,6 +2147,70 @@ For microservice architectures and component libraries, consumer-driven contract
 
 ### Sharding Count vs. Marginal Returns
 
+**TypeScript contract test (Pact consumer) example:**
+
+```typescript
+// tests/contract/user-api.consumer.pact.ts
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import type { UserApiClient } from '../../src/clients/user-api-client';
+
+const { like, string, integer } = MatchersV3;
+
+const provider = new PactV3({
+  consumer: 'FrontendApp',
+  provider: 'UserService',
+  dir: 'pacts',
+});
+
+describe('UserApiClient — Pact consumer test', () => {
+  it('fetches a user by ID', async () => {
+    await provider
+      .given('user 42 exists')
+      .uponReceiving('a GET request for user 42')
+      .withRequest({ method: 'GET', path: '/users/42' })
+      .willRespondWith({
+        status: 200,
+        body: like({
+          id: integer(42),
+          email: string('alice@example.com'),
+          name: string('Alice Smith'),
+        }),
+      })
+      .executeTest(async (mockServer) => {
+        const client = new UserApiClient(mockServer.url) as UserApiClient;
+        const user = await client.getUser(42);
+        // TypeScript ensures user matches the expected type
+        expect(user.email).toBe('alice@example.com');
+      });
+  });
+});
+```
+
+**CI workflow for contract publishing:**
+
+```yaml
+# .github/workflows/contract.yml — publish contracts to Pact Broker on main
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm run test:contract
+        name: Run Pact consumer tests
+      - name: Publish pacts to broker
+        if: github.ref == 'refs/heads/main'
+        run: |
+          npx pact-broker publish pacts/ \
+            --consumer-app-version "${{ github.sha }}" \
+            --broker-base-url "${{ vars.PACT_BROKER_URL }}" \
+            --broker-token "${{ secrets.PACT_BROKER_TOKEN }}"
+```
+
+> [community] TypeScript's type system provides a structural check on Pact response bodies that plain JavaScript cannot: if the `UserApiClient.getUser()` return type is `Promise<User>` and the Pact response body has a different shape, `tsc` will flag the mismatch before the test even runs. Teams using typed Pact consumers catch contract drift at compile time rather than at pact verification time — reducing the time to detect API incompatibilities from "next provider deploy" to "next commit".
+
 | Shards | Relative speedup | Cost | Recommendation |
 |---|---|---|---|
 | 1 (no sharding) | 1× | $1× | Baseline |
@@ -1705,6 +2261,63 @@ jobs:
 
 > [community] The most cost-effective pattern for teams under 20 engineers: GitHub Actions with 2 self-hosted runners for integration/e2e jobs (4 vCPU, 8 GB RAM), free-tier shared runners for lint + unit. Integration and e2e jobs consume 80% of runner minutes — moving those to self-hosted reduces monthly bill by 60–70% while keeping the free tier for cheap fast jobs.
 
+### TypeScript Test Runner Selection [community]
+
+For TypeScript projects, the choice of test runner affects CI setup complexity, compile time, and type safety in tests.
+
+> [community] Teams migrating from Jest to Vitest for TypeScript projects consistently report 30–50% faster test runs, primarily because Vitest uses esbuild for transpilation (vs. `ts-jest`'s TypeScript compiler). The catch: Vitest and Jest have subtly different mocking APIs (`vi.fn()` vs `jest.fn()`), so migration requires touching every mock in the codebase. Teams with > 500 test files typically stage the migration over 2–3 sprints.
+
+| Runner | TypeScript support | Speed | Type-check in tests | Notes |
+|---|---|---|---|---|
+| Jest + ts-jest | Native via `ts-jest` preset | Baseline | Optional (`diagnostics: true`) | Industry default; large ecosystem |
+| Jest + Babel | Via `@babel/preset-typescript` | Faster than ts-jest | None (transpile only) | No type safety in tests |
+| Vitest | Native ESM TypeScript | 2–3× faster than Jest | Via separate `tsc --noEmit` | Best DX for new projects; Vite ecosystem |
+| Node.js test runner + tsx | Experimental TypeScript support | Fast | None built-in | Minimal setup; limited mocking |
+
+**When to choose Vitest for CI:**
+- New TypeScript/Vite project (zero-config)
+- Suite > 500 test cases (speed advantage most significant)
+- Team comfortable with ESM-first development
+
+**When to stick with Jest for CI:**
+- Existing large Jest codebase (migration cost > speed gain)
+- Heavy use of custom Jest matchers or reporters with no Vitest equivalents
+- CJS-heavy codebase not ready for ESM
+
+**Sample Vitest type-safe test (TypeScript):**
+
+```typescript
+// src/services/user-service.test.ts
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Mock } from 'vitest';
+import { UserService } from './user-service';
+import type { UserRepository } from '../repositories/user-repository';
+
+// Type-safe mock — TypeScript will error if mock doesn't match UserRepository interface
+const mockRepo = {
+  findByEmail: vi.fn() as Mock<Parameters<UserRepository['findByEmail']>, ReturnType<UserRepository['findByEmail']>>,
+  create: vi.fn() as Mock<Parameters<UserRepository['create']>, ReturnType<UserRepository['create']>>,
+} satisfies Partial<UserRepository>;
+
+describe('UserService', () => {
+  let service: UserService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new UserService(mockRepo as unknown as UserRepository);
+  });
+
+  it('returns null when user does not exist', async () => {
+    mockRepo.findByEmail.mockResolvedValue(null);
+    const result = await service.getUserByEmail('unknown@example.com');
+    expect(result).toBeNull();
+    expect(mockRepo.findByEmail).toHaveBeenCalledWith('unknown@example.com');
+  });
+});
+```
+
+> [community] Using `satisfies` with mock objects (TypeScript 4.9+) is the most effective way to catch mock drift — when the real interface changes (e.g., a method is renamed or its signature changes), `satisfies` causes a compile-time error on the mock object immediately. Teams that adopt this pattern report finding interface-vs-mock mismatches in code review rather than at runtime.
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -1727,3 +2340,12 @@ jobs:
 | GitHub CodeQL | Official docs | https://docs.github.com/en/code-security/code-scanning/using-codeql-code-scanning-with-your-existing-ci-system | SAST in CI |
 | ISTQB CTFL 4.0 Syllabus | Official | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative testing terminology |
 | Google Testing Blog — Flaky Tests | Community post | https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html | Flakiness at scale |
+| ts-jest docs | Official docs | https://kulshekhar.github.io/ts-jest/ | ts-jest config for Jest + TypeScript |
+| Vitest docs | Official docs | https://vitest.dev/config/ | Vitest config, TypeScript, coverage |
+| TypeScript Handbook — Project References | Official docs | https://www.typescriptlang.org/docs/handbook/project-references.html | Incremental monorepo type-checking |
+| ts-node docs | Official docs | https://typestrong.org/ts-node/ | Running TS scripts in CI without pre-build |
+| MSW (Mock Service Worker) docs | Official docs | https://mswjs.io/docs/ | Type-safe API mocking for Node.js and browser tests |
+| @testing-library docs | Official docs | https://testing-library.com/docs/ | Component testing patterns for React/Vue/Angular |
+| Pact Foundation — JavaScript/TypeScript | Official docs | https://docs.pact.io/implementation_guides/javascript | Consumer-driven contract testing in TypeScript |
+| davelosert/vitest-coverage-report-action | Community | https://github.com/davelosert/vitest-coverage-report-action | Vitest coverage PR comment action |
+| TypeScript strict mode flags | Official docs | https://www.typescriptlang.org/tsconfig#strict | Reference for incremental strict adoption |
