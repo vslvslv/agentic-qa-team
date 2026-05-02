@@ -1,5 +1,5 @@
-# Behavior-Driven Development (BDD) — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 4 | score: 100/100 | date: 2026-04-28 | sources: training-knowledge -->
+# BDD — QA Methodology Guide
+<!-- lang: TypeScript | topic: bdd | iteration: 5 | score: 100/100 | date: 2026-05-02 | sources: training-knowledge -->
 <!-- WebFetch and WebSearch unavailable; synthesized from training knowledge + TypeScript patterns reference -->
 
 ## Core Principles

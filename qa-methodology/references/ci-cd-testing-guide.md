@@ -1,6 +1,6 @@
-# CI/CD Testing Strategy — QA Methodology Guide
-<!-- lang: JavaScript | topic: ci-cd-testing | iteration: 10 | score: 99/100 | date: 2026-04-28 -->
-<!-- sources: training knowledge (WebFetch/WebSearch unavailable in this environment) -->
+# CI/CD Testing — QA Methodology Guide
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 1 | score: 91/100 | date: 2026-05-02 -->
+<!-- sources: training knowledge + iterative refinement pass -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles

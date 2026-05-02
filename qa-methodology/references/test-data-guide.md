@@ -1,5 +1,5 @@
-# Test Data Strategy — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 4 | score: 100/100 | date: 2026-04-28 -->
+# Test Data — QA Methodology Guide
+<!-- lang: TypeScript | topic: test-data | iteration: 5 | score: 99/100 | date: 2026-05-02 -->
 <!-- sources: training-knowledge (WebFetch blocked, WebSearch API unavailable; synthesized from training knowledge per skill fallback rule) -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html -->
 

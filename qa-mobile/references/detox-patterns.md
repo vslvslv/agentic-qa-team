@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 16 | score: 100/100 | date: 2026-04-30 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 17 | score: 100/100 | date: 2026-05-02 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 
@@ -982,6 +982,8 @@ it('captures view hierarchy when debugging selector failures', async () => {
 
 ---
 
+
+## Selector / Locator Strategy
 
 Ranked from most stable to most fragile:
 

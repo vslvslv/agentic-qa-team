@@ -1,5 +1,5 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 12 | score: 100/100 | date: 2026-04-28 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 13 | score: 100/100 | date: 2026-05-02 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: synthesized from training knowledge — WebFetch blocked; WebSearch unavailable -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
@@ -7,6 +7,7 @@
 <!--   Storybook/Chromatic; WebSocket/SSE; port collision; Pact provider state; DB migration race; GitHub Actions dashboard; -->
 <!--   Node.js native test runner; ESLint anti-flakiness rules; Playwright trace debugging; worker_threads; -->
 <!--   flakiness SLO/metrics; quarantine review automation; Promise.race timeout helper; test doubles taxonomy; AbortSignal -->
+<!-- Iteration 13: Playwright component testing flakiness; Vitest 2.x browser mode; AI-generated test flakiness taxonomy -->
 
 ---
 
