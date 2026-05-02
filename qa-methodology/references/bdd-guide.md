@@ -1061,6 +1061,109 @@ content. Mutation testing surfaces these weak assertions systematically.
 
 ---
 
+## Tradeoffs & Alternatives
+
+### When BDD Adds Value
+
+| Context | BDD Benefit | Estimated ROI timeline |
+|---|---|---|
+| Complex business rules | Forces rule articulation before code | Pays back in sprint 2–3 |
+| Multiple stakeholders | Single source of truth for all parties | Immediate, first Three Amigos |
+| High-turnover teams | Feature files onboard new members fast | Pays back after 1st team change |
+| Regulated industries | Human-readable audit evidence | Pays back at first audit |
+| Long-lived products (2+ years) | Living documentation stays current | Compounds monthly |
+
+### When BDD Adds Overhead
+
+| Context | Why BDD Hurts |
+|---|---|
+| Solo developer | Collaboration overhead with no collaboration |
+| Prototype / MVP | Gherkin + step code doubles test authoring time |
+| Pure UI testing | No semantic advantage over plain selectors |
+| Team without buy-in | Becomes just a slow, verbose test framework |
+| Microservice internals | Unit/integration tests serve better |
+
+**Known adoption cost:** Teams typically require 2–3 sprints to establish a stable BDD practice. The primary cost drivers are: (1) Three Amigos session discipline (recurring calendar commitment), (2) step definition code review (treating Gherkin as production documentation), and (3) CI integration for automated scenario execution. Teams that underestimate this cost commonly abandon BDD after one sprint when the payoff is not yet visible.
+
+### Named Alternatives
+
+| Approach | Setup Cost | Collaboration Benefit | Business Readability | Best For |
+|---|---|---|---|---|
+| Full BDD (Gherkin + Cucumber) | High (2–3 sprints) | Maximum | Maximum | Cross-functional teams, regulated industries |
+| Example Mapping only | Low (1 meeting) | High | Medium (ticket text) | Teams wanting discovery without tool overhead |
+| Plain Playwright + page objects | Medium | None | Low (code) | Developer-led QA, no PO involvement in tests |
+| Vitest + describe/it (BDD-style) | Very Low | Low | Medium (code) | TypeScript teams, unit/integration BDD without Cucumber |
+| Jest + Testing Library | Low | None | Low (code) | Component/unit behavior, fast feedback loop |
+| pytest-bdd (Python) | Medium | Medium | Medium | Python teams wanting BDD without Behave's limitations |
+
+**Alternative 1 — Example Mapping (without Gherkin):** Run the Three Amigos workshop, produce structured acceptance criteria in ticket comments, then write regular tests. Captures BDD's collaboration benefit without the tooling investment. This is the recommended starting point for teams evaluating BDD — get the collaboration right before adding the automation layer.
+
+**Alternative 2 — Plain Playwright + page objects:** 90% of the coverage, 50% of the setup overhead. Best for teams that do not need the business-readable layer. A well-named test like `test('guest user cannot access admin panel')` communicates intent without Gherkin.
+
+**Alternative 3 — Vitest BDD-style (TypeScript):** For TypeScript projects already using Vitest, the `describe`/`it`/`expect` vocabulary enables a BDD-style approach at unit and integration level without any Gherkin toolchain. Product managers can read these test names in the CI report (`vitest --reporter=verbose`) and understand the behavior being verified without requiring Gherkin tooling.
+
+```typescript
+// src/features/discount/discount.spec.ts — BDD-style with Vitest
+import { describe, it, expect } from 'vitest';
+import { applyDiscount } from './discount.service';
+import { createTestCart } from '../__fixtures__/cart.factory';
+
+describe('Discount code application', () => {
+  describe('when a valid percentage discount code is applied', () => {
+    it('reduces the order total by the specified percentage', () => {
+      const cart = createTestCart({ total: 100 });
+      const result = applyDiscount(cart, { code: 'SAVE10', type: 'percent', value: 10 });
+      expect(result.total).toBe(90);
+      expect(result.discountApplied).toBe(true);
+    });
+
+    it('does not reduce the total below zero', () => {
+      const cart = createTestCart({ total: 20 });
+      const result = applyDiscount(cart, { code: 'ALL100', type: 'percent', value: 100 });
+      expect(result.total).toBe(0);
+    });
+  });
+
+  describe('when an expired discount code is applied', () => {
+    it('rejects the code and returns an error message', () => {
+      const cart = createTestCart({ total: 100 });
+      const expiredCode = { code: 'EXPIRED23', type: 'percent' as const, value: 20, expiresAt: new Date('2023-01-01') };
+      expect(() => applyDiscount(cart, expiredCode)).toThrow('Code has expired');
+    });
+  });
+
+  describe('when the same code is used twice by the same customer', () => {
+    it('rejects the second use with a clear error', () => {
+      const cart = createTestCart({ total: 100, usedCodes: ['SAVE10'] });
+      expect(() => applyDiscount(cart, { code: 'SAVE10', type: 'percent', value: 10 }))
+        .toThrow('Code already used');
+    });
+  });
+});
+```
+
+The nested `describe` blocks mirror Given/When/Then structure without requiring Gherkin parsing or step definitions.
+
+**Alternative 4 — SpecFlow (C#):** Equivalent to `@cucumber/cucumber` for .NET teams. Same Gherkin syntax, same step binding model, first-class Visual Studio integration.
+
+**Alternative 5 — Behave/pytest-bdd (Python):** Gherkin syntax identical to Cucumber; `pytest-bdd` v7+ adds native async step support making it the recommended choice for Python teams on modern async frameworks.
+
+### Team Maturity Requirements for Full BDD
+
+BDD is not a plug-and-play tool. It requires organizational preconditions to deliver its stated benefits:
+
+| Maturity Requirement | Why It Matters | Warning Sign |
+|---|---|---|
+| Product owner participation | Without a business voice, scenarios become developer-invented test cases | PO only reviews scenarios at sprint review |
+| QA in discovery phase | QA's value is in pre-code scenario surfacing, not post-code test writing | QA writes Gherkin from finalized tickets |
+| Developer commitment to clean steps | Step definition bloat is inevitable without code review discipline | >300 step functions after 6 months |
+| CI pipeline integration | Feature files not wired to CI are just documentation | Scenarios run only manually |
+| Gherkin review process | Unreviewed Gherkin drifts imperative; requires same review rigor as code | Feature files bypass PR review |
+
+A team that scores "warning sign" in 3+ of these areas will experience BDD as overhead with no benefit. The honest diagnostic question: "If we ran our feature files today, would they all pass?" If the answer is uncertain, the practice has already broken down.
+
+---
+
 ## BDD Readiness Checklist
 
 Use this before committing to BDD adoption. Teams that skip this assessment commonly
@@ -1085,186 +1188,6 @@ find themselves maintaining "BDD theater" — all the overhead, none of the bene
 - [ ] Last Three Amigos session was this sprint (not 2+ sprints ago)
 
 If fewer than 6 of these boxes are checked, start with **Example Mapping only** (no Gherkin/Cucumber) for one quarter. Get the collaboration right before adding the automation layer.
-
----
-
-
-
-### Team Maturity Requirements
-
-BDD is not a plug-and-play tool. It requires organizational preconditions to deliver its stated benefits:
-
-| Maturity Requirement | Why It Matters | Warning Sign |
-|---|---|---|
-| Product owner participation | Without a business voice, scenarios become developer-invented test cases | PO only reviews scenarios at sprint review |
-| QA in discovery phase | QA's value is in pre-code scenario surfacing, not post-code test writing | QA writes Gherkin from finalized tickets |
-| Developer commitment to clean steps | Step definition bloat is inevitable without code review discipline | >300 step functions after 6 months |
-| CI pipeline integration | Feature files not wired to CI are just documentation | Scenarios run only manually |
-| Gherkin review process | Unreviewed Gherkin drifts imperative; requires same review rigor as code | Feature files bypass PR review |
-
-A team that scores "warning sign" in 3+ of these areas will experience BDD as overhead with no benefit. The honest diagnostic question: "If we ran our feature files today, would they all pass?" If the answer is uncertain, the practice has already broken down.
-
-### When BDD Adds Value
-
-| Context | BDD Benefit | Estimated ROI timeline |
-|---|---|---|
-| Complex business rules | Forces rule articulation before code | Pays back in sprint 2–3 |
-| Multiple stakeholders | Single source of truth for all parties | Immediate, first Three Amigos |
-| High-turnover teams | Feature files onboard new members fast | Pays back after 1st team change |
-| Regulated industries | Human-readable audit evidence | Pays back at first audit |
-| Long-lived products (2+ years) | Living documentation stays current | Compounds monthly |
-
-### When BDD Adds Overhead
-
-| Context | Why BDD Hurts |
-|---|---|
-| Solo developer | Collaboration overhead with no collaboration |
-| Prototype / MVP | Gherkin + step code doubles test authoring time |
-| Pure UI testing | No semantic advantage over plain selectors |
-| Team without buy-in | Becomes just a slow, verbose test framework |
-| Microservice internals | Unit/integration tests serve better |
-
-### Lighter Alternatives
-
-| Approach | Setup Cost | Collaboration Benefit | Business Readability | Best For |
-|---|---|---|---|---|
-| Full BDD (Gherkin + Cucumber) | High (2–3 sprints) | Maximum | Maximum | Cross-functional teams, regulated industries |
-| Example Mapping only | Low (1 meeting) | High | Medium (ticket text) | Teams wanting discovery without tool overhead |
-| Plain Playwright + page objects | Medium | None | Low (code) | Developer-led QA, no PO involvement in tests |
-| Vitest + describe/it (BDD-style) | Very Low | Low | Medium (code) | TypeScript teams, unit/integration BDD without Cucumber |
-| Jest + Testing Library | Low | None | Low (code) | Component/unit behavior, fast feedback loop |
-| pytest-bdd (Python) | Medium | Medium | Medium | Python teams wanting BDD without Behave's limitations |
-
-- **Plain Playwright + page objects**: 90% of the coverage, 50% of the setup overhead. Best for teams that do not need the business-readable layer. A well-named test like `test('guest user cannot access admin panel')` communicates intent without Gherkin.
-
-- **Vitest + describe/it (BDD-style in TypeScript)**: For TypeScript projects already using Vitest, the `describe`/`it`/`expect` vocabulary enables a BDD-style approach at unit and integration level without any Gherkin toolchain. This is appropriate when stakeholder collaboration happens informally (small team, trusted PO) and the team wants the *thinking model* of BDD without the ceremony:
-
-  ```typescript
-  // src/features/discount/discount.spec.ts — BDD-style with Vitest
-  import { describe, it, expect, beforeEach } from 'vitest';
-  import { applyDiscount } from './discount.service';
-  import { createTestCart } from '../__fixtures__/cart.factory';
-
-  describe('Discount code application', () => {
-    describe('when a valid percentage discount code is applied', () => {
-      it('reduces the order total by the specified percentage', () => {
-        const cart = createTestCart({ total: 100 });
-        const result = applyDiscount(cart, { code: 'SAVE10', type: 'percent', value: 10 });
-        expect(result.total).toBe(90);
-        expect(result.discountApplied).toBe(true);
-      });
-
-      it('does not reduce the total below zero', () => {
-        const cart = createTestCart({ total: 20 });
-        const result = applyDiscount(cart, { code: 'ALL100', type: 'percent', value: 100 });
-        expect(result.total).toBe(0);
-      });
-    });
-
-    describe('when an expired discount code is applied', () => {
-      it('rejects the code and returns an error message', () => {
-        const cart = createTestCart({ total: 100 });
-        const expiredCode = { code: 'EXPIRED23', type: 'percent' as const, value: 20, expiresAt: new Date('2023-01-01') };
-        expect(() => applyDiscount(cart, expiredCode)).toThrow('Code has expired');
-      });
-    });
-
-    describe('when the same code is used twice by the same customer', () => {
-      it('rejects the second use with a clear error', () => {
-        const cart = createTestCart({ total: 100, usedCodes: ['SAVE10'] });
-        expect(() => applyDiscount(cart, { code: 'SAVE10', type: 'percent', value: 10 }))
-          .toThrow('Code already used');
-      });
-    });
-  });
-  ```
-
-  The nested `describe` blocks mirror Given/When/Then structure without requiring Gherkin parsing or step definitions. Product managers can read these test names in the CI report (`vitest --reporter=verbose`) and understand the behavior being verified.
-
-- **Example Mapping** (without Gherkin): Run the Three Amigos workshop, produce structured acceptance criteria in ticket comments, then write regular tests. Captures BDD's collaboration benefit without the tooling investment. This is the recommended starting point for teams evaluating BDD — get the collaboration right before adding the automation layer.
-- **SpecFlow (C#)**: Equivalent to `@cucumber/cucumber` for .NET teams. Same Gherkin syntax, same step binding model, first-class Visual Studio integration.
-
-  ```csharp
-  // File: Steps/CheckoutSteps.cs
-  using TechTalk.SpecFlow;
-  using FluentAssertions;
-
-  [Binding]
-  public class CheckoutSteps
-  {
-      private readonly ScenarioContext _context;
-      private readonly HttpClient _client;
-
-      public CheckoutSteps(ScenarioContext context, HttpClient client)
-      {
-          _context = context;
-          _client = client;
-      }
-
-      [Given(@"I am a registered customer with items in my cart")]
-      public async Task GivenRegisteredCustomerWithItems()
-      {
-          var response = await _client.PostAsJsonAsync("/api/cart/seed",
-              new { userId = "test-user-001", items = new[] { "prod-42" } });
-          response.EnsureSuccessStatusCode();
-          _context["cartId"] = await response.Content.ReadAsStringAsync();
-      }
-
-      [When(@"I complete the checkout process")]
-      public async Task WhenCheckoutCompletes()
-      {
-          var cartId = _context["cartId"].ToString();
-          var response = await _client.PostAsJsonAsync($"/api/orders",
-              new { cartId, paymentMethod = "test-card-4242" });
-          response.EnsureSuccessStatusCode();
-          _context["orderId"] = await response.Content.ReadAsStringAsync();
-      }
-
-      [Then(@"my order should be confirmed")]
-      public void ThenOrderConfirmed()
-      {
-          _context["orderId"].Should().NotBeNullOrEmpty();
-      }
-  }
-  ```
-
-- **Behave (Python)**: The Python BDD framework. Gherkin syntax identical to Cucumber; steps written in Python. Common in Django and FastAPI projects.
-
-  ```python
-  # File: features/steps/checkout_steps.py
-  from behave import given, when, then
-  import requests
-
-  BASE_URL = "http://localhost:8000"
-
-  @given("I am a registered customer with items in my cart")
-  def step_setup_cart(context):
-      response = requests.post(f"{BASE_URL}/api/cart/seed", json={
-          "user_id": "test-user-001",
-          "items": ["prod-42"]
-      })
-      assert response.status_code == 200
-      context.cart_id = response.json()["cartId"]
-
-  @when("I complete the checkout process")
-  def step_checkout(context):
-      response = requests.post(f"{BASE_URL}/api/orders", json={
-          "cart_id": context.cart_id,
-          "payment_method": "test-card-4242"
-      })
-      assert response.status_code == 201
-      context.order_id = response.json()["orderId"]
-
-  @then("my order should be confirmed")
-  def step_order_confirmed(context):
-      assert context.order_id is not None
-      assert len(context.order_id) > 0
-
-  @then("I should receive an order number")
-  def step_order_number(context):
-      assert context.order_id.startswith("ORD-"), \
-          f"Expected order ID to start with ORD-, got: {context.order_id}"
-  ```
 
 ---
 

@@ -1,5 +1,5 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 8 | score: 100/100 | date: 2026-04-30 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing -->
 <!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis -->
 
@@ -653,6 +653,60 @@ await page.addLocatorHandler(
 
 Alternatively, if the overlay renders at a predictable point (e.g., after the first page load), explicitly await its dismissal in the test body rather than relying on the handler.
 
+### 17. `page.accessibility.snapshot()` removed in v1.57 causes CI-only failures [community]
+**What:** Tests that use `page.accessibility.snapshot()` (or `page.accessibility`) start failing after upgrading to Playwright 1.57 with `TypeError: page.accessibility is not a function`.
+**WHY:** The `page.accessibility` API was fully removed in v1.57. It was deprecated for several releases, but the removal is breaking for suites that did not migrate during the deprecation window.
+**Fix:** Replace `page.accessibility.snapshot()` with `expect(locator).toMatchAriaSnapshot()` for structural accessibility assertions, or `@axe-core/playwright` for WCAG violation scanning. These APIs are actively maintained and more capable.
+
+```typescript
+// BEFORE (broken in v1.57+)
+// const snapshot = await page.accessibility.snapshot();
+
+// AFTER — use toMatchAriaSnapshot for structural checks
+await expect(page.getByRole('navigation')).toMatchAriaSnapshot(`
+  - navigation:
+    - list:
+      - listitem: Home
+`);
+
+// AFTER — use axe-core for WCAG compliance
+import AxeBuilder from '@axe-core/playwright';
+const results = await new AxeBuilder({ page }).analyze();
+expect(results.violations).toHaveLength(0);
+```
+
+### 18. Upgrading past v1.57 breaks Docker headless mode silently [community]
+**What:** After upgrading Playwright past v1.57 in CI, tests start failing with "browser not found" or "executable not found at /usr/bin/google-chrome" in Docker environments.
+**WHY:** v1.57 switched from the Chromium build to Chrome for Testing. Headed mode now uses `chrome`; headless uses `chrome-headless-shell`. Docker images built before v1.57 have the old binaries and need to be rebuilt.
+**Fix:** Rebuild your Docker image using the matching `mcr.microsoft.com/playwright:vX.Y.Z-noble` base image. Pin both `package.json` and the `FROM` line to the same Playwright version. Never use `:latest` for the Docker image tag.
+
+```dockerfile
+# CORRECT — pin to exact matching version
+FROM mcr.microsoft.com/playwright:v1.59.0-noble
+
+# WRONG — 'latest' diverges from your package.json
+# FROM mcr.microsoft.com/playwright:latest
+```
+
+---
+
+## Breaking Changes Reference (v1.45–v1.59)
+
+A summary of removals and behavioral changes that require action when upgrading.
+
+| Version | Change | Migration |
+|---------|--------|-----------|
+| v1.57 | `page.accessibility` API **removed** | Use `toMatchAriaSnapshot()` for structure, `@axe-core/playwright` for WCAG |
+| v1.57 | Browser switch: headed→`chrome`, headless→`chrome-headless-shell` | Rebuild Docker images; pin `mcr.microsoft.com/playwright:vX.Y.Z-noble` |
+| v1.57 | React 16/17 component testing **removed** | Upgrade to React 18+ or test via e2e |
+| v1.57 | `_react`/`_vue` component selectors **removed** | Use `getByTestId`, `getByRole`, `getByText` |
+| v1.55 | macOS 13 & 14 WebKit support **dropped** | Use macOS 15+ or run WebKit tests in the Playwright Docker image |
+| v1.52 | `toHaveClass('active disabled')` asserts the full class list | Use `toContainClass('active')` for partial class presence (v1.52+) |
+| v1.50 | `updateSnapshots` default changed to `'missing'` | Set `updateSnapshots: 'changed'` in config to prevent overwriting stable baselines |
+| v1.46 | `maxRetries` added to `APIRequestContext` options | Use `{ maxRetries: 3 }` instead of wrapping in try/catch |
+
+> Always pin your Playwright version in `package.json` and the Docker base image to the same version. A mismatch causes "browser not found" errors. [community]
+
 ---
 
 ## CI Considerations
@@ -868,6 +922,9 @@ npx playwright test --grep-invert @flaky --retries=2
 | `globalSetup` for test data seeding in large suites | Runs once globally — worker restarts wipe seeded state silently | Use `{ scope: 'worker', auto: true }` fixtures for idempotent per-worker setup |
 | `page.on('console', ...)` in every test for error monitoring | Verbose boilerplate; easy to forget; doesn't clean up | Use `{ auto: true }` console monitor fixture that applies to all tests |
 | Committing `.network-cache/` responses with auth tokens | Token in cache leaks credentials to everyone with repo access | Strip `Authorization` headers from cache files; use placeholder values |
+| Using `page.accessibility` (removed v1.57) | `page.accessibility` API was fully removed in v1.57 | Use `expect(locator).toMatchAriaSnapshot()` for structural checks or `@axe-core/playwright` for WCAG scanning |
+| Assuming Docker base image uses Chromium browser binary | Since v1.57, headed mode uses `chrome` and headless uses `chrome-headless-shell` — not the old Chromium build | Rebuild Docker images after upgrading past v1.57; always pin `FROM mcr.microsoft.com/playwright:vX.Y.Z-noble` |
+| Using `@playwright/experimental-ct-react` with React 16/17 | Support for React 16/17 in CT was removed in v1.57 | Upgrade to React 18+ or use e2e tests for legacy components |
 
 ---
 
@@ -905,6 +962,7 @@ npx playwright test --grep-invert @flaky --retries=2
 | `locator.or(other)` | Match one of multiple alternatives | Conditional UI states |
 | `locator.nth(index)` | Select the N-th match | Ordered stable lists only |
 | `locator.normalize()` | Convert to best-practice locator (v1.59+) | Upgrade CSS/brittle selectors during refactors |
+| `locator.ariaSnapshot(opts?)` | Get raw ARIA tree string (v1.59+) | Discover snapshot strings during test development; pass `{ depth: N }` to limit levels |
 | `locator.filter({ visible: true })` | Filter to only visible matches (v1.50+) | When DOM has duplicate visible/hidden elements |
 | `locator.contentFrame()` | Convert iframe `Locator` to `FrameLocator` (v1.43+) | Enter iframe contents starting from element handle |
 | `frameLocator.owner()` | Convert `FrameLocator` to iframe element `Locator` (v1.43+) | Assert on the iframe element itself |
@@ -1192,6 +1250,14 @@ reporter: [
   ['blob'],
   ['./e2e/reporters/slack-reporter.ts'],
 ],
+```
+
+**Timeline visualization in merged reports (v1.58+):** When you merge shard reports with `npx playwright merge-reports`, the HTML report now includes a Timeline view that shows all tests across shards in chronological order. Use this to identify workers that are significantly slower than others — an imbalance signal to rebalance test distribution.
+
+```bash
+# Download all shard artifacts, then merge with timeline view
+npx playwright merge-reports --reporter html ./all-blob-reports
+# Open playwright-report/index.html → Timeline tab
 ```
 
 ---
@@ -2174,6 +2240,28 @@ test('homepage navigation aria snapshot', async ({ page }) => {
 });
 ```
 
+**`locator.ariaSnapshot()` with depth/mode options (v1.59+):**
+
+`locator.ariaSnapshot()` returns the raw ARIA tree string — useful for debugging what `toMatchAriaSnapshot()` actually captures before writing a snapshot.
+
+```typescript
+// Inspect the raw ARIA tree during test development
+test('inspect aria tree of navigation', async ({ page }) => {
+  await page.goto('/');
+  // Get ARIA tree as a string for debugging — no assertion
+  const ariaTree = await page.getByRole('navigation').ariaSnapshot();
+  console.log(ariaTree);
+
+  // depth option: limit how many levels deep to capture (default: full depth)
+  const shallowTree = await page.getByRole('navigation').ariaSnapshot({ depth: 2 });
+
+  // mode option: 'normalizeWhitespace' (default) | 'raw' for exact whitespace
+  const rawTree = await page.getByRole('navigation').ariaSnapshot({ mode: 'raw' });
+});
+```
+
+> Use `locator.ariaSnapshot()` during test development to discover the correct snapshot string before writing `toMatchAriaSnapshot()`. The returned string can be pasted directly into the test. [community]
+
 > `toMatchAriaSnapshot()` tests fail intentionally when ARIA roles or labels change — making accessibility regressions explicit rather than invisible. Use `--update-snapshots` to regenerate after intentional changes. [community]
 
 ---
@@ -2940,6 +3028,30 @@ test('capture frames for CI thumbnail', async ({ page }) => {
 | Visual action overlays | No | Yes (`showActions()`) |
 | Live frame streaming | No | Yes (`onFrame` callback) |
 | Use case | Always-on debug video | Precise demo/documentation recording |
+
+**Enable visual action overlays in screencast (v1.59+):**
+
+```typescript
+// Show action annotations (click target highlights, fill values) in the recording
+test('records with action overlay for demo', async ({ page }) => {
+  await page.screencast.start({
+    path: 'test-results/demo.webm',
+    size: { width: 1280, height: 720 },
+  });
+
+  // Enable visual overlays showing where clicks/fills happen
+  await page.screencast.showActions({
+    position: 'top-right',  // overlay position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+  });
+
+  await page.goto('/login');
+  await page.getByLabel('Email').fill('admin@example.com');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+
+  await page.screencast.stop();
+  // Recording shows annotated click targets and filled values — useful for demos
+});
+```
 
 > `page.screencast` is most useful for recording demos, onboarding walkthroughs, and test evidence for specific steps — not as a replacement for `trace: 'on-first-retry'` for debugging. [community]
 

@@ -1,5 +1,5 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-04-30 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
 
 > Generated from official k6 documentation and community sources on 2026-04-30. Verified against k6 v1.7.1 (stable); k6 v2.0.0-rc1 breaking changes documented below. Re-run `/qa-refine k6` to refresh.
 
@@ -2584,11 +2584,24 @@ profiling from different geographic origin points.
 
 ```javascript
 // k6/scripts/geo-load.js — k6 Cloud geographic distribution
+// NOTE: In k6 v2.0, use options.cloud (NOT options.ext.loadimpact which is removed)
+import http from "k6/http";
+import { check, sleep } from "k6";
+
 export const options = {
+  // cloud block unifies name, projectID, and geographic distribution
+  // k6 v2.0+: options.ext.loadimpact is removed — use options.cloud
   cloud: {
-    // Group multiple runs under the same test name for trending
     name: "Global checkout flow",
     projectID: __ENV.K6_CLOUD_PROJECT_ID,
+    // Distribution: percentages must sum to 100
+    // Zones: amazon (AWS), azure (Azure), linode (Akamai)
+    // Run: k6 cloud zones list   to see all available zones
+    distribution: {
+      "amazon:us:ashburn":  { loadZone: "amazon:us:ashburn",  percent: 34 },
+      "amazon:gb:london":   { loadZone: "amazon:gb:london",   percent: 33 },
+      "amazon:au:sydney":   { loadZone: "amazon:au:sydney",   percent: 33 },
+    },
   },
 
   scenarios: {
@@ -2600,23 +2613,7 @@ export const options = {
         { duration: "2m",  target: 20 },
         { duration: "15s", target: 0  },
       ],
-
-      // Distribute VUs across geographic zones
-      // Each zone key: "provider:region:city" — percentages must sum to 100
-      // Zones: amazon (AWS), azure (Azure), linode (Akamai)
-      // Run k6 cloud zones list to see all available zones
       env: { ZONE: __ENV.ZONE || "us-east" },
-    },
-  },
-
-  // Geographic distribution — applies to the entire test
-  ext: {
-    loadimpact: {
-      distribution: {
-        "amazon:us:ashburn":  { loadZone: "amazon:us:ashburn",  percent: 34 },
-        "amazon:gb:london":   { loadZone: "amazon:gb:london",   percent: 33 },
-        "amazon:au:sydney":   { loadZone: "amazon:au:sydney",   percent: 33 },
-      },
     },
   },
 
@@ -2629,10 +2626,9 @@ export const options = {
 const BASE = __ENV.API_URL || "http://localhost:3001";
 
 export default function () {
-  const { sleep, check } = require("k6");
-  const http = require("k6/http");
   const res = http.get(`${BASE}/api/items`);
   check(res, { "items ok": (r) => r.status === 200 });
+  sleep(1);
 }
 ```
 
@@ -3010,7 +3006,7 @@ export const options = {
   thresholds: {
     // LCP budget for mobile users on slow 3G
     "browser_web_vital_lcp": ["p(75)<4000"],
-    "browser_web_vital_fid": ["p(75)<300"],
+    "browser_web_vital_inp": ["p(75)<300"],   // INP (replaces FID removed in k6 v2.0)
     checks:                   ["rate==1.0"],
   },
 };
@@ -3313,7 +3309,7 @@ produce meaningless results. The test exits with a non-zero code.
 | `ramping-vus` | `stages[]` | Ramp-up / load / ramp-down |
 | `constant-arrival-rate` | `rate`, `duration` | Fixed RPS / TPS |
 | `ramping-arrival-rate` | `stages[]` (rate targets) | Gradually increasing RPS |
-| `externally-controlled` | (CLI / REST API) | Manual or CI-driven VU changes |
+| ~~`externally-controlled`~~ | ~~(CLI / REST API)~~ | **Removed in k6 v2.0** — use `ramping-vus` + `startTime` |
 
 ---
 
@@ -3561,8 +3557,9 @@ k6 run \
 ```
 
 > **[community]:** When streaming to cloud (InfluxDB, Prometheus), add
-> `--no-thresholds --no-summary` to avoid duplicate computation. These flags skip the
+> `--no-thresholds --summary-mode=disabled` to avoid duplicate computation. These flags skip the
 > local summary output — useful when the external system handles alerting.
+> Note: `--no-summary` was removed in k6 v2.0; use `--summary-mode=disabled` instead.
 
 ---
 

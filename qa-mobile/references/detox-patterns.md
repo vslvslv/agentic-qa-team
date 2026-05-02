@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 17 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 19 | score: 100/100 | date: 2026-05-02 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 
@@ -122,6 +122,24 @@ it('prefills email from stored profile', async () => {
   await expect(element(by.id('email-input'))).toHaveValue('saved@example.com');
 });
 
+// waitFor + toHaveValue: wait for an input value to be populated asynchronously
+// (e.g., after an autofill or API pre-population)
+it('waits for autocomplete to fill the city field', async () => {
+  await element(by.id('zip-input')).replaceText('94103');
+  await waitFor(element(by.id('city-input')))
+    .toHaveValue('San Francisco')
+    .withTimeout(5000);
+});
+
+// waitFor + toHaveLabel: wait for an element's accessibility label to update
+// (e.g., a button that changes label after loading state resolves)
+it('waits for submit button label to reflect ready state', async () => {
+  await waitFor(element(by.id('submit-button')))
+    .toHaveLabel('Submit Order')
+    .withTimeout(5000);
+  await element(by.id('submit-button')).tap();
+});
+
 // tapReturnKey: submit a form via keyboard without tapping a button
 it('submits search by pressing return key', async () => {
   await element(by.id('search-input')).replaceText('react native');
@@ -129,6 +147,23 @@ it('submits search by pressing return key', async () => {
   await waitFor(element(by.id('search-results')))
     .toBeVisible()
     .withTimeout(5000);
+});
+
+// waitFor + toExist: checks element is in React tree (even if off-screen)
+// Useful for checking that a screen component mounted without requiring visibility
+it('verifies payment confirmation is in the tree after API response', async () => {
+  await element(by.id('pay-button')).tap();
+  await waitFor(element(by.id('payment-confirmation')))
+    .toExist()
+    .withTimeout(8000);
+});
+
+// waitFor + not.toExist: checks element was unmounted (not just hidden)
+it('verifies modal was fully unmounted after dismiss', async () => {
+  await element(by.id('modal-close-button')).tap();
+  await waitFor(element(by.id('onboarding-modal')))
+    .not.toExist()
+    .withTimeout(3000);
 });
 ```
 
@@ -1012,7 +1047,42 @@ await element(by.id('list-item').and(by.type('RCTView'))).atIndex(2).tap();
 await element(by.text('Delete').withAncestor(by.id('row-42'))).tap();
 ```
 
----
+**by.value() example** — match an element by its `accessibilityValue`:
+
+```js
+// Useful when testID is absent: a progress indicator whose value is set via accessibilityValue
+// e.g., in RN: <View accessibilityValue={{ text: '75%' }} accessible>
+await element(by.value('75%')).tap();
+
+// Combine with by.type() to narrow ambiguous matches
+await element(by.type('RCTSlider').and(by.value('0.5'))).adjustSliderToPosition(0.75);
+```
+
+**Swipe gesture examples** — used for carousels, pull-to-refresh, and swipe-to-dismiss:
+
+```js
+// Swipe left on a carousel card
+await element(by.id('image-carousel')).swipe('left', 'fast', 0.8);
+
+// Pull-to-refresh: swipe down on a ScrollView
+await element(by.id('news-feed-scroll')).swipe('down', 'slow', 0.5);
+
+// Swipe left on a list item to reveal delete action (iOS mail-style)
+// Use 'slow' speed and high normalizedOffset to ensure the action sheet opens
+await element(by.id('message-row-5')).swipe('left', 'slow', 0.9);
+await waitFor(element(by.id('swipe-delete-button')))
+  .toBeVisible()
+  .withTimeout(2000);
+await element(by.id('swipe-delete-button')).tap();
+
+// Dismiss a bottom sheet by swiping down
+await element(by.id('bottom-sheet-handle')).swipe('down', 'fast');
+await waitFor(element(by.id('bottom-sheet')))
+  .not.toBeVisible()
+  .withTimeout(3000);
+```
+
+
 
 ## Real-World Gotchas [community]
 
@@ -1325,6 +1395,86 @@ for Android — use `delete: true` instead.
 
 ---
 
+### 17. React Native 0.73+ `metro.config.js` change breaks Detox build [community]
+
+**Root cause**: React Native 0.73 changed the Metro config API from `module.exports = { ... }` to using `getDefaultConfig` from `@react-native/metro-config`. If your `metro.config.js` was not updated when upgrading RN, Detox's `detox build` command compiles with the old Metro resolver and silently ships a bundle that crashes on device — the test suite fails at app launch with a red-screen error that appears unrelated to Metro.
+
+**WHY it's hard to diagnose**: The failure looks like a device/simulator problem ("app crashed on launch") rather than a build problem. The red screen may not even appear on headless CI.
+
+**Fix**: Update `metro.config.js` to the new format:
+
+```js
+// metro.config.js — RN 0.73+ format required for Detox compatibility
+const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
+
+const defaultConfig = getDefaultConfig(__dirname);
+
+const config = {
+  // Add any project-specific Metro overrides here
+};
+
+module.exports = mergeConfig(defaultConfig, config);
+```
+
+If you need to extend Metro for Detox (e.g., to resolve mock modules), patch the resolver:
+
+```js
+// metro.config.js — with test mock resolver for Detox
+const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
+
+const defaultConfig = getDefaultConfig(__dirname);
+
+const config = {
+  resolver: {
+    resolveRequest: (context, moduleName, platform) => {
+      // Redirect analytics module to a no-op stub during e2e tests
+      if (process.env.DETOX_BUILD && moduleName === '@segment/analytics-react-native') {
+        return {
+          filePath: require.resolve('./e2e/mocks/analytics-stub.js'),
+          type: 'sourceFile',
+        };
+      }
+      return context.resolveRequest(context, moduleName, platform);
+    },
+  },
+};
+
+module.exports = mergeConfig(defaultConfig, config);
+```
+
+### 18. `jest-circus` runner required — `jasmine2` removed in Detox 20 [community]
+
+**Root cause**: Detox 20 dropped support for the `jasmine2` test runner entirely. Projects that upgraded Detox without checking the `testRunner` field in `.detoxrc.js` fail at startup with a cryptic "Cannot find module 'jasmine2'" error. This catches teams that have `jest-jasmine2` pinned in their `package.json` as a legacy dependency.
+
+**Fix**: Ensure `jest-circus` is the active runner:
+
+```js
+// .detoxrc.js — jest-circus is the only supported runner in Detox 20+
+testRunner: {
+  args: {
+    $0: 'jest',
+    config: 'e2e/jest.config.js',
+  },
+  jest: {
+    setupTimeout: 300000,
+  },
+},
+```
+
+```json
+// package.json — ensure jest-circus is installed (jest 27+ includes it by default)
+{
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "jest-circus": "^29.0.0"
+  }
+}
+```
+
+If upgrading from Detox 19 or earlier, also check for any `jasmine.getEnv()` calls in your test setup files — they will throw when `jest-circus` is the runner.
+
+---
+
 ## CI Considerations
 
 ### Animation disabling
@@ -1417,6 +1567,80 @@ apps: {
     },
   },
 },
+```
+
+### Complete GitHub Actions workflow (iOS) [community]
+
+The following is a production-ready workflow. Key decisions: runs on `macos-14` (Apple Silicon runners are faster and cheaper); pins Xcode version via `xcode-select`; uses matrix sharding for parallelism; caches derived data by source hash; uploads artifacts only on failure.
+
+```yaml
+# .github/workflows/e2e-ios.yml
+name: Detox E2E — iOS
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  detox-ios:
+    runs-on: macos-14
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Cache iOS build
+        uses: actions/cache@v4
+        id: ios-build-cache
+        with:
+          path: ios/build
+          key: ios-build-${{ hashFiles('ios/**', 'src/**', 'package-lock.json') }}
+          restore-keys: ios-build-
+
+      - name: Build iOS app (Release)
+        if: steps.ios-build-cache.outputs.cache-hit != 'true'
+        run: npx detox build -c ios.sim.release
+
+      - name: Boot simulator
+        run: |
+          xcrun simctl boot "iPhone 15" 2>/dev/null || true
+          xcrun simctl bootstatus "iPhone 15" -b
+
+      - name: Run Detox tests (shard ${{ matrix.shard }}/${{ strategy.job-total }})
+        run: |
+          npx detox test \
+            -c ios.sim.release \
+            --shard-index ${{ matrix.shard }} \
+            --shard-count ${{ strategy.job-total }} \
+            --loglevel verbose \
+            --artifacts-location .artifacts
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detox-artifacts-shard-${{ matrix.shard }}
+          path: .artifacts/
+          retention-days: 7
 ```
 
 

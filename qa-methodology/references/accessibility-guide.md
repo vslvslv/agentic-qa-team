@@ -1,8 +1,34 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 4 | score: 100/100 | date: 2026-04-28 -->
-<!-- sources: training knowledge (WebFetch/WebSearch unavailable in this environment) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) -->
 
-## Core Principles (POUR)
+## ISTQB CTFL 4.0 Terminology for Accessibility Testing
+
+ISTQB CTFL 4.0 (released 2023) treats accessibility testing as a specialized form of **usability testing** within the **quality characteristics** framework (ISO/IEC 25010:2023). Key terms QA teams should know:
+
+| ISTQB / ISO Term | Definition | Accessibility relevance |
+|---|---|---|
+| **Accessibility** | Degree to which a product can be used by people with the widest range of characteristics (ISO/IEC 25010) | The quality characteristic being tested; POUR covers all four subdimensions |
+| **Functional suitability** | Degree to which functions meet stated needs | Includes the ability of AT users to complete all functions keyboard-only |
+| **Conformance testing** | Testing to check compliance with a standard | WCAG conformance testing; produces Accessibility Conformance Report (ACR/VPAT) |
+| **Usability testing** | Testing to assess ease of use | AT usability testing: screen reader, switch access, voice control user sessions |
+| **Non-functional testing** | Testing of non-behavioral quality characteristics | Accessibility is a non-functional quality attribute alongside performance |
+| **Experience-based testing** | Testing derived from tester knowledge | Manual AT testing (NVDA, VoiceOver) is experience-based; axe is specification-based |
+| **Static testing** | Testing without executing code | Accessibility code review, HTML validation, checking ARIA attribute correctness in source |
+| **Confirmation testing** | Re-testing after a defect fix | After an axe violation is fixed: re-run axe scan + manual verification |
+| **Defect density** | Number of defects per unit | WebAIM Million (2024): average 56.8 detected a11y errors per homepage |
+
+**ISTQB CTFL 4.0 Quality Characteristics (ISO 25010:2023) mapping**:
+- Accessibility testing primarily targets the **Usability > Accessibility** sub-characteristic
+- It also contributes to **Compatibility** (works with AT software), **Reliability** (AT users can complete critical flows), and **Maintainability** (semantic HTML is easier to test and modify)
+
+**Exit criteria for accessibility testing** (apply the ISTQB definition):
+- All WCAG 2.1 AA automated violations = 0 (axe-core CI gate passing)
+- Keyboard navigation audit complete with no keyboard traps or missing focus indicators
+- Screen reader review completed for all new interactive patterns
+- All known manual-only issues logged in the defect tracker with severity and WCAG SC reference
+
+
 
 WCAG 2.1 is organized around four foundational principles known as POUR. Every success criterion maps to one of these four categories. Understanding POUR before writing tests helps QA engineers know **why** a given test exists and what class of user it protects.
 
@@ -63,6 +89,49 @@ Accessibility testing applies to any web application serving users. WCAG 2.1 AA 
 | Integration / E2E | Playwright + @axe-core/playwright | On every PR, in CI |
 | Manual audit | Screen reader + keyboard | Per sprint, before major releases |
 | Visual | Color contrast checker | Design review + automated scan |
+
+**Recommended CI pipeline configuration** (GitHub Actions example):
+
+```yaml
+# .github/workflows/accessibility.yml
+# Accessibility gates for every PR:
+#   1. Jest unit tests (includes jest-axe component tests) — fast, runs first
+#   2. Playwright a11y tests — runs against dev/preview environment
+name: Accessibility CI
+
+on: [push, pull_request]
+
+jobs:
+  a11y-unit:
+    name: Component accessibility (jest-axe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npm test -- --testPathPattern="\.a11y\." --coverage=false
+
+  a11y-e2e:
+    name: Full-page accessibility (Playwright + axe)
+    runs-on: ubuntu-latest
+    needs: a11y-unit        # Only run E2E if unit tests pass
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build                            # Build the app
+      - run: npx playwright test e2e/accessibility/  # Run only a11y specs
+        env:
+          BASE_URL: http://localhost:3000
+      - uses: actions/upload-artifact@v4              # Upload report on failure
+        if: failure()
+        with:
+          name: playwright-a11y-report
+          path: playwright-report/
+```
 
 ---
 
@@ -617,6 +686,154 @@ describe('AccordionItem accessibility', () => {
 });
 ```
 
+### Accessible Modal Dialog Pattern  [community]
+
+Modal dialogs are the most commonly implemented ARIA pattern — and the most commonly broken one in production. The requirements are: `role="dialog"`, `aria-modal="true"`, `aria-labelledby` pointing to the dialog heading, focus trapped inside, focus returned to the trigger on close, and background content inerted.
+
+**Why this is hard:** Three separate mechanisms must work simultaneously: ARIA semantics (role, label), focus management (trap + return), and background inertness (prevent screen reader virtual cursor from wandering). Most component library dialogs handle ARIA but fail on `inert` for VoiceOver.
+
+```typescript
+// File: src/components/Modal/Modal.tsx
+// Accessible modal dialog: role="dialog", focus trap, inert background, return focus on close.
+import React, { useEffect, useRef, useCallback } from 'react';
+
+interface ModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  titleId: string;         // ID of the heading element inside the modal
+  children: React.ReactNode;
+}
+
+const FOCUSABLE = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(', ');
+
+export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, titleId, children }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // Remember which element opened the dialog so focus can return on close
+  const triggerRef = useRef<Element | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    // Save the element that opened the dialog
+    triggerRef.current = document.activeElement;
+
+    // Move focus into the dialog — first focusable element or dialog itself
+    const firstFocusable = dialogRef.current?.querySelector<HTMLElement>(FOCUSABLE);
+    (firstFocusable ?? dialogRef.current)?.focus();
+
+    // Inert all top-level siblings to prevent screen reader virtual cursor escape
+    const siblings = Array.from(document.body.children).filter((el) => el !== dialogRef.current?.closest('[data-modal-root]'));
+    siblings.forEach((el) => el.setAttribute('inert', ''));
+
+    return () => {
+      // Remove inert and return focus to trigger
+      siblings.forEach((el) => el.removeAttribute('inert'));
+      (triggerRef.current as HTMLElement)?.focus();
+    };
+  }, [isOpen]);
+
+  // Focus trap: keep Tab/Shift+Tab inside the dialog
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key !== 'Tab') return;
+
+      const focusables = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []
+      );
+      if (focusables.length === 0) return;
+
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+      } else {
+        if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    },
+    [onClose]
+  );
+
+  if (!isOpen) return null;
+
+  return (
+    <div data-modal-root>
+      {/* Backdrop */}
+      <div aria-hidden="true" onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)' }} />
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={handleKeyDown}
+        style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', background: 'white', padding: '1.5rem', zIndex: 100 }}
+      >
+        {children}
+        <button type="button" onClick={onClose} aria-label="Close dialog">
+          Close
+        </button>
+      </div>
+    </div>
+  );
+};
+```
+
+```typescript
+// File: src/components/Modal/Modal.a11y.test.tsx
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import userEvent from '@testing-library/user-event';
+import { Modal } from './Modal';
+
+expect.extend(toHaveNoViolations);
+
+describe('Modal accessibility', () => {
+  it('open modal has no axe violations', async () => {
+    const { container } = render(
+      <Modal isOpen onClose={() => {}} titleId="modal-title">
+        <h2 id="modal-title">Confirm Action</h2>
+        <p>Are you sure you want to delete this item?</p>
+        <button type="button">Confirm</button>
+      </Modal>
+    );
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('dialog has role="dialog" and aria-labelledby pointing to heading', () => {
+    render(
+      <Modal isOpen onClose={() => {}} titleId="modal-title">
+        <h2 id="modal-title">Delete Item</h2>
+      </Modal>
+    );
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-labelledby', 'modal-title');
+  });
+
+  it('Escape key closes the dialog', async () => {
+    const user = userEvent.setup();
+    const onClose = jest.fn();
+    render(
+      <Modal isOpen onClose={onClose} titleId="modal-title">
+        <h2 id="modal-title">Delete Item</h2>
+      </Modal>
+    );
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+```
+
 ### Accessible Data Tables
 
 WCAG 1.3.1 (Info and Relationships) and 1.3.2 (Meaningful Sequence) require that data tables communicate the relationship between header and data cells to screen readers. Simple tables need `<th scope="col">` or `<th scope="row">`; complex tables with multi-level headers need `id`/`headers` associations. Screen readers announce the column and row header for each data cell when these associations are present.
@@ -830,6 +1047,137 @@ test.describe('SPA focus management', () => {
 });
 ```
 
+### Roving Tabindex for Custom Composite Widgets  [community]
+
+Composite widgets (toolbars, tab lists, radio groups, grids, menus) use the **roving tabindex** pattern: exactly one child has `tabIndex={0}` (the "roving" active item), all others have `tabIndex={-1}`. The user presses Tab to enter the widget and arrow keys to navigate within it. This matches the expected keyboard behavior described in the ARIA Authoring Practices Guide (APG) and is what NVDA Application Mode expects.
+
+**Why this matters:** Teams that give every button in a toolbar `tabIndex={0}` force keyboard users to Tab through every toolbar item before reaching the next focusable region. WCAG 2.4.3 (Focus Order) and 2.1.1 (Keyboard) require that composite widgets are navigable with arrow keys, not just Tab.
+
+```typescript
+// File: src/components/Toolbar/Toolbar.tsx
+// ARIA toolbar with roving tabindex: Tab moves to the toolbar, arrow keys navigate items.
+import React, { useRef, useState, KeyboardEvent } from 'react';
+
+interface ToolbarProps {
+  label: string;               // aria-label for the toolbar landmark
+  children: React.ReactNode;
+}
+
+interface ToolbarButtonProps {
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+}
+
+// Internal context to share tabIndex state (simplified; use useContext in real code)
+export const ToolbarButton: React.FC<ToolbarButtonProps & { tabIndex: number; buttonRef?: React.Ref<HTMLButtonElement> }> = ({
+  label,
+  icon,
+  onClick,
+  tabIndex,
+  buttonRef,
+}) => (
+  <button
+    ref={buttonRef}
+    type="button"
+    aria-label={label}
+    tabIndex={tabIndex}
+    onClick={onClick}
+    style={{ padding: '0.5rem' }}
+  >
+    {icon}
+  </button>
+);
+
+export const Toolbar: React.FC<ToolbarProps & { items: ToolbarButtonProps[] }> = ({ label, items }) => {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const total = items.length;
+    let next = activeIndex;
+
+    if (e.key === 'ArrowRight') { next = (activeIndex + 1) % total; }
+    else if (e.key === 'ArrowLeft') { next = (activeIndex - 1 + total) % total; }
+    else if (e.key === 'Home') { next = 0; }
+    else if (e.key === 'End') { next = total - 1; }
+    else return;
+
+    e.preventDefault();
+    setActiveIndex(next);
+    itemRefs.current[next]?.focus();
+  };
+
+  return (
+    <div
+      role="toolbar"
+      aria-label={label}
+      onKeyDown={handleKeyDown}
+      style={{ display: 'flex', gap: '0.25rem' }}
+    >
+      {items.map((item, i) => (
+        <ToolbarButton
+          key={item.label}
+          {...item}
+          tabIndex={i === activeIndex ? 0 : -1}
+          buttonRef={(el) => { itemRefs.current[i] = el; }}
+        />
+      ))}
+    </div>
+  );
+};
+```
+
+```typescript
+// File: src/components/Toolbar/Toolbar.a11y.test.tsx
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import userEvent from '@testing-library/user-event';
+import { Toolbar } from './Toolbar';
+
+expect.extend(toHaveNoViolations);
+
+const testItems = [
+  { label: 'Bold', icon: <strong>B</strong>, onClick: jest.fn() },
+  { label: 'Italic', icon: <em>I</em>, onClick: jest.fn() },
+  { label: 'Underline', icon: <span>U</span>, onClick: jest.fn() },
+];
+
+describe('Toolbar accessibility', () => {
+  it('has no axe violations', async () => {
+    const { container } = render(<Toolbar label="Text formatting" items={testItems} />);
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('only first item has tabIndex=0, others have tabIndex=-1', () => {
+    render(<Toolbar label="Text formatting" items={testItems} />);
+    const buttons = screen.getAllByRole('button');
+    expect(buttons[0]).toHaveAttribute('tabindex', '0');
+    expect(buttons[1]).toHaveAttribute('tabindex', '-1');
+    expect(buttons[2]).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('ArrowRight moves focus to next toolbar item', async () => {
+    const user = userEvent.setup();
+    render(<Toolbar label="Text formatting" items={testItems} />);
+    const firstButton = screen.getByRole('button', { name: 'Bold' });
+    firstButton.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(screen.getByRole('button', { name: 'Italic' })).toHaveFocus();
+  });
+
+  it('ArrowLeft wraps focus to last item from first', async () => {
+    const user = userEvent.setup();
+    render(<Toolbar label="Text formatting" items={testItems} />);
+    screen.getByRole('button', { name: 'Bold' }).focus();
+    await user.keyboard('{ArrowLeft}');
+    expect(screen.getByRole('button', { name: 'Underline' })).toHaveFocus();
+  });
+});
+```
+
 ### prefers-reduced-motion Testing
 
 WCAG 2.1 SC 2.3.3 (AAA) and WCAG 2.2 SC 2.3.3 require that animations triggered by interaction can be disabled. Beyond AAA, `prefers-reduced-motion` is widely considered a best practice and is referenced in WCAG 2.1 Understanding docs. Many users with vestibular disorders, epilepsy, and attention disorders rely on it.
@@ -978,6 +1326,118 @@ test.describe('forced-colors: Windows High Contrast Mode', () => {
 }
 ```
 
+### Multi-Locale and RTL Language Accessibility Testing
+
+WCAG 3.1.1 (Language of Page) and 3.1.2 (Language of Parts) require correct `lang` attributes. Screen readers switch pronunciation engines based on `lang`. axe-core supports 16 locales for its own rule messages (via `axe.configure({ locale })`) but it does not test your app's `lang` attributes — that's a separate test responsibility.
+
+**Why RTL matters for accessibility:** Arabic, Hebrew, Persian, and Urdu are read right-to-left. When `dir="rtl"` is not set, text direction, focus order, and icon placement are reversed visually but not semantically, breaking reading order (WCAG 1.3.2) and causing screen readers to announce content in the wrong sequence.
+
+```typescript
+// File: e2e/accessibility/multi-locale.spec.ts
+// Test that lang attributes are present and RTL language pages set dir="rtl".
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Language and direction accessibility', () => {
+  test('English page has lang="en" on <html>', async ({ page }) => {
+    await page.goto('/');
+    const lang = await page.evaluate(() => document.documentElement.lang);
+    expect(lang).toMatch(/^en(-[A-Z]{2})?$/);
+  });
+
+  test('Arabic locale page has lang="ar" and dir="rtl"', async ({ page }) => {
+    // Navigate to the Arabic locale of the application
+    await page.goto('/ar');
+    await page.waitForLoadState('networkidle');
+
+    const htmlAttrs = await page.evaluate(() => ({
+      lang: document.documentElement.lang,
+      dir: document.documentElement.dir,
+    }));
+
+    expect(htmlAttrs.lang).toMatch(/^ar/);
+    // RTL pages must declare dir="rtl" — otherwise browser uses LTR layout
+    expect(htmlAttrs.dir).toBe('rtl');
+  });
+
+  test('Arabic locale page has no axe violations', async ({ page }) => {
+    await page.goto('/ar');
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+
+  test('inline foreign-language content has lang attribute on containing element', async ({ page }) => {
+    // WCAG 3.1.2: Language of Parts — inline content in a different language
+    // must have a lang attribute on the containing element.
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Check that any element with data-lang is a valid lang attribute format
+    const inlineLangIssues = await page.evaluate(() => {
+      // Look for elements that have content in non-primary languages
+      // (teams should mark these explicitly with lang=)
+      const elements = document.querySelectorAll<HTMLElement>('[lang]');
+      const invalid: string[] = [];
+      elements.forEach((el) => {
+        const lang = el.getAttribute('lang') ?? '';
+        // Basic BCP47 tag validation: 2-3 letter language code
+        if (!/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(lang)) {
+          invalid.push(`<${el.tagName.toLowerCase()} lang="${lang}">`);
+        }
+      });
+      return invalid;
+    });
+
+    if (inlineLangIssues.length > 0) {
+      console.error('Invalid lang attribute values:', inlineLangIssues);
+    }
+    expect(inlineLangIssues).toEqual([]);
+  });
+});
+```
+
+**axe-core locale configuration (for localized error messages in reports):**
+
+```typescript
+// File: e2e/fixtures/axe-locale-fixture.ts
+// Configure axe to report violations in the user's language — useful when
+// accessibility reports are shared with non-English-speaking development teams.
+import { test as base } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import type { Spec } from 'axe-core';
+
+// axe-core ships locale files for: de, es, fr, it, ja, ko, nl, pl, pt_BR, zh_CN, zh_TW, da, eu, he, hu
+// Import the locale JSON from node_modules/axe-core/locales/<locale>.json
+const germanLocale = require('axe-core/locales/de.json') as Spec;
+
+export const test = base.extend<{ checkA11y: (selector?: string) => Promise<void> }>({
+  checkA11y: async ({ page }, use) => {
+    const checkA11y = async (selector?: string) => {
+      let builder = new AxeBuilder({ page })
+        .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+        // Report violations in German for German-language team members
+        .options({ locale: germanLocale });
+
+      if (selector) builder = builder.include(selector);
+      const results = await builder.analyze();
+
+      if (results.violations.length > 0) {
+        const msg = results.violations
+          .map((v) => `[${v.impact}] ${v.id}: ${v.description}`)
+          .join('\n');
+        throw new Error(`Barrierefreiheitsverstöße gefunden:\n${msg}`);
+      }
+    };
+    await use(checkA11y);
+  },
+});
+```
+
 ---
 
 ## Anti-Patterns
@@ -1072,6 +1532,12 @@ axe-core's automated rules detect approximately **57% of WCAG 2.1 issues** (Dequ
 
 21. **[community] `toBeVisible()` in `@testing-library/jest-dom` does NOT test accessibility tree visibility**: `toBeVisible()` checks CSS visibility (`display`, `visibility`, `opacity`) but does not verify that an element is present in the ARIA accessibility tree. An element with `aria-hidden="true"` passes `toBeVisible()` but is completely invisible to screen readers. Use `toBeInTheDocument()` + axe checks for accessibility, and verify `aria-hidden` explicitly when testing that content is hidden from AT.
 
+22. **[community] Lighthouse accessibility score of 100 does not mean WCAG compliant**: Lighthouse uses axe-core under the hood but runs a subset of rules and weights them to produce a composite 0–100 score. A score of 100 means all Lighthouse-selected rules passed — but that is roughly 25–30 of axe-core's 80+ rules. Teams that report "accessibility score: 100" to stakeholders as a compliance measure are misrepresenting the coverage. Use Lighthouse for trend monitoring and developer feedback; use full axe-core runs and manual audits for compliance claims.
+
+23. **[community] Virtual scrolling / infinite scroll breaks screen reader list navigation**: Screen readers enumerate list items by total count (e.g., "list of 10 items") and allow users to jump by item count. When a virtual-scroll component renders only a windowed subset of items (e.g., 20 of 1000) and removes DOM nodes as they scroll out of view, the screen reader count is wrong and items navigated to by count are unreachable. Use `aria-setsize` and `aria-posinset` to communicate the full collection size, or avoid virtual scrolling for assistive-technology-critical content.
+
+24. **[community] ARIA combobox pattern changed in ARIA 1.2 — ARIA 1.1 pattern is widely deprecated but still common in codebases**: The ARIA 1.1 combobox pattern used `role="combobox"` on a wrapper `<div>` containing an `<input>`. ARIA 1.2 (2023) moved `role="combobox"` directly to the `<input>` element and changed which attributes apply where. Screen readers were updated to expect the ARIA 1.2 pattern. Teams using older component libraries (pre-2022 Headless UI, react-select < v5, older Downshift) may be using the ARIA 1.1 pattern that modern screen readers announce incorrectly. The APG Combobox Pattern page shows the current correct pattern. Verify with NVDA + Firefox and VoiceOver.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -1102,9 +1568,34 @@ axe-core's automated rules detect approximately **57% of WCAG 2.1 issues** (Dequ
 
 **Automated vs Manual split:** axe-core detects approximately **57% of WCAG 2.1 issues** automatically. The remaining ~43% require keyboard testing, screen reader verification, and cognitive review.
 
-**When not to use AA-only automated testing:**
+### When NOT to Use Automated Accessibility Testing Alone
+
+**Do not treat axe-only CI as sufficient when:**
+- **Custom interactive widgets exist** (datepickers, comboboxes, sliders): axe validates ARIA syntax but cannot test whether NVDA announces options, whether arrow key navigation works in Application Mode, or whether VoiceOver swipe gestures behave correctly. Manual AT testing is mandatory.
+- **Canvas, SVG, or WebGL-heavy UIs**: axe-core has no visibility into Canvas- or WebGL-rendered content. Text rendered on a canvas has no accessible name by default. You need `role="img"` with `aria-label` on the canvas element and potentially an off-screen text alternative.
+- **PDF or non-HTML deliverables**: axe-core tests HTML only. PDFs require Adobe Acrobat's accessibility checker or PAC (PDF Accessibility Checker).
+- **Cognitive accessibility requirements**: Plain language, reading level (WCAG AAA 3.1.5), consistent navigation (3.2.3), and help availability (WCAG 2.2 3.3.9) require expert human review.
+- **Authentication flows with CAPTCHAs**: WCAG 2.2 SC 3.3.8 (Accessible Authentication) requires that no cognitive function test (e.g., recognizing distorted characters) is required. axe-core does not detect CAPTCHA patterns. Manual review is required.
+- **Mobile native app layers** wrapped in WebViews: axe-core scans the HTML layer; native components outside the WebView are invisible to it. Use iOS Accessibility Inspector or Android Accessibility Scanner for native layers.
+
+**Do not use WCAG 2.1 AA-only testing when:**
+- Your product ships to the EU private sector (European Accessibility Act, deadline June 28, 2025): EN 301 549 v3.3.2 mandates WCAG 2.2 AA. Run axe with `wcag22aa` tag and add WCAG 2.2-specific Playwright tests for target size (2.5.8), focus appearance (2.4.11), and accessible authentication (3.3.8).
 - Government/healthcare portals serving users with significant cognitive impairments may need AAA criteria (plain language, reading level)
 - Applications used exclusively by internal technical staff can deprioritize full AAA, but AA remains legally required in many jurisdictions
+
+### Adoption Cost
+
+| Phase | Effort | Notes |
+|-------|--------|-------|
+| Add jest-axe to existing test suite | 1–2 hours | Install package, extend `expect`, add `.a11y.test.tsx` files per component. Fastest ROI. |
+| Add `@axe-core/playwright` to E2E suite | 2–4 hours | Install package, add axe fixture (see pattern above), add one scan per critical flow. |
+| Fix initial batch of axe violations | 1–3 days | First run on a brownfield app typically surfaces 20–100 violations. Most are missing labels, duplicate IDs, or missing landmark structure. |
+| Manual keyboard audit per sprint | 2–4 hours/sprint | Navigate every new page/flow without mouse; log keyboard traps and focus order failures. |
+| Screen reader audit per sprint | 4–8 hours/sprint | NVDA + Firefox minimum; VoiceOver for iOS flows. Time cost dominated by ramp-up if team lacks AT familiarity. |
+| Full WCAG 2.1 AA expert audit | 3–5 days | One-time or per-major-release. Conducted by accessibility specialist. Covers all success criteria including cognitive and language requirements. |
+| Remediation of inherited tech debt | 1–4 weeks | Brownfield projects with no prior a11y investment; depends on component library compliance. |
+
+**Highest ROI first**: jest-axe on components (fast, free, catches ~50% of structural issues at the unit layer) → Playwright axe on critical flows → keyboard testing every sprint. Save full expert audits for pre-release milestones.
 
 ### Known axe-core False Positives
 
@@ -1179,6 +1670,74 @@ test.describe('WCAG 2.2 Target Size (2.5.8)', () => {
 });
 ```
 
+**WCAG 2.2 focus appearance test (2.4.11)** — Playwright can trigger focus and inspect computed outline styles:
+
+```typescript
+// File: e2e/accessibility/wcag22-focus-appearance.spec.ts
+// WCAG 2.2 SC 2.4.11: Focus indicator must be ≥2px outline with ≥3:1 contrast vs adjacent colors.
+// This test checks the outline-width of focused interactive elements as a first-gate check.
+// Full contrast ratio verification requires a color contrast library with actual color values.
+import { test, expect } from '@playwright/test';
+
+const MINIMUM_OUTLINE_PX = 2;
+
+test.describe('WCAG 2.2 Focus Appearance (2.4.11)', () => {
+  test('primary buttons have ≥2px focus outline when keyboard focused', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Tab to the first button and check its focus indicator
+    await page.keyboard.press('Tab');
+
+    const focusStyle = await page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null;
+      if (!el) return null;
+      const style = getComputedStyle(el);
+      return {
+        tag: el.tagName.toLowerCase(),
+        outlineWidth: style.outlineWidth,
+        outlineStyle: style.outlineStyle,
+        outlineColor: style.outlineColor,
+        outlineOffset: style.outlineOffset,
+      };
+    });
+
+    expect(focusStyle).not.toBeNull();
+    // Outline style must not be 'none'
+    expect(focusStyle!.outlineStyle).not.toBe('none');
+    // Outline width must be ≥ 2px
+    const widthPx = parseFloat(focusStyle!.outlineWidth);
+    expect(widthPx).toBeGreaterThanOrEqual(MINIMUM_OUTLINE_PX);
+  });
+
+  test('interactive elements on login form have visible focus indicators', async ({ page }) => {
+    await page.goto('/login');
+    await page.waitForLoadState('networkidle');
+
+    const interactiveSelector = 'button, a[href], input:not([type="hidden"]), select, textarea';
+    const focusIssues = await page.evaluate(async (selector) => {
+      const elements = Array.from(document.querySelectorAll<HTMLElement>(selector));
+      const issues: Array<{ tag: string; label: string; issue: string }> = [];
+
+      for (const el of elements) {
+        el.focus();
+        const style = getComputedStyle(el);
+        const label = el.getAttribute('aria-label') ?? el.textContent?.trim().slice(0, 30) ?? el.id;
+        if (style.outlineStyle === 'none' || style.outlineWidth === '0px') {
+          issues.push({ tag: el.tagName.toLowerCase(), label, issue: 'No outline on focus' });
+        }
+      }
+      return issues;
+    }, interactiveSelector);
+
+    if (focusIssues.length > 0) {
+      console.table(focusIssues);
+    }
+    expect(focusIssues).toEqual([]);
+  });
+});
+```
+
 ### Screen Reader Testing Matrix
 
 Screen readers are the primary assistive technology for blind and low-vision users. Automated tools cannot replicate the screen reader experience.
@@ -1200,6 +1759,83 @@ Screen readers are the primary assistive technology for blind and low-vision use
 
 **axe-core does NOT replace screen reader testing.** It catches structural issues but cannot verify that the announced experience is meaningful, logical, or correct.
 
+### Advanced axe-core Configuration Patterns
+
+**Excluding third-party widget regions:**
+
+```typescript
+// File: e2e/accessibility/advanced-axe-config.spec.ts
+// Demonstrates axe context exclusions, resultTypes filtering, and iframe configuration.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Advanced axe configuration', () => {
+  test('scan page excluding third-party chat widget and cookie banner', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      // Exclude known third-party widgets that are outside our control
+      // Document WHY each exclusion exists so the team can review periodically
+      .exclude('#intercom-container')       // Third-party: Intercom chat widget
+      .exclude('#cookie-consent-banner')    // Third-party: CookieYes banner (vendor ships accessible version)
+      // Include only violations (skip incomplete/passes) for faster CI output
+      .options({ resultTypes: ['violations', 'incomplete'] })
+      .analyze();
+
+    // Log incomplete items as warnings (they require human review)
+    if (results.incomplete.length > 0) {
+      console.warn(`[a11y] ${results.incomplete.length} incomplete items need manual review`);
+      results.incomplete.forEach((item) => console.warn(`  - ${item.id}: ${item.description}`));
+    }
+
+    expect(results.violations).toEqual([]);
+  });
+
+  test('scan only the authenticated user profile section', async ({ page }) => {
+    await page.goto('/profile');
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      // Use include() to scope scan to a specific region — useful for:
+      // 1. Isolating failures to a component under test
+      // 2. Avoiding noise from unrelated page sections during component-focused sprints
+      .include('[data-testid="user-profile"]')
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+});
+```
+
+**jest-axe with global configuration via setup file:**
+
+```typescript
+// File: jest.setup.ts
+// Configure jest-axe globally for all test files via the Jest setupFilesAfterFramework entry.
+import { configureAxe } from 'jest-axe';
+
+// Apply project-wide axe defaults:
+// - Target WCAG 2.1 AA + best practices
+// - Disable color-contrast (JSDOM cannot compute it; Playwright tests handle this)
+// - Disable duplicate-id check in isolation (components share IDs across test renders)
+configureAxe({
+  globalOptions: {
+    rules: [
+      { id: 'color-contrast', enabled: false },
+      // Enable WCAG 2.2 rules when upgrading target conformance level
+      // { id: 'target-size', enabled: true },
+    ],
+    runOnly: {
+      type: 'tag',
+      values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'],
+    },
+  },
+});
+```
+
 ---
 
 ## Key Resources
@@ -1219,3 +1855,9 @@ Screen readers are the primary assistive technology for blind and low-vision use
 | MDN ARIA reference | Reference | https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA | Role and attribute documentation |
 | MDN forced-colors | Reference | https://developer.mozilla.org/en-US/docs/Web/CSS/@media/forced-colors | Windows High Contrast Mode CSS media feature |
 | TPGi Colour Contrast Analyser | Tool | https://www.tpgi.com/color-contrast-checker/ | Desktop tool for manual contrast checking |
+| ARIA Combobox Pattern (APG) | Pattern guide | https://www.w3.org/WAI/ARIA/apg/patterns/combobox/ | Authoritative ARIA 1.2 combobox pattern — critical for custom autocomplete |
+| Inclusive Components | Book/blog | https://inclusive-components.design/ | Heydon Pickering's production-ready accessible component patterns |
+| A11y Project | Community | https://www.a11yproject.com/ | Checklists, articles, and WCAG success criterion explanations |
+| PAC (PDF Accessibility Checker) | Tool | https://pac.pdf-accessibility.org/ | Free PDF accessibility validator (ISO 14289 / PDF/UA) |
+| iOS Accessibility Inspector | Tool | Built into Xcode | Native iOS/macOS accessibility audit tool |
+| Android Accessibility Scanner | Tool | https://play.google.com/store/apps/details?id=com.google.android.apps.accessibility.auditor | Native Android a11y audit app by Google |

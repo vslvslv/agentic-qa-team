@@ -194,7 +194,7 @@ Also check the detailed reference guide:
 
 **k6**:
 > Reference: [k6 patterns guide](references/k6-patterns.md)
-> Key patterns: test type taxonomy · scenarios/executors (`ramping-vus`, `constant-arrival-rate`, `ramping-arrival-rate`) · thresholds + `abortOnFail` · `check()` · `setup()`/`teardown()` auth · custom metrics (Trend/Rate/Counter/Gauge) · `handleSummary` · `http.batch()` · `group()` · browser module (getBy* locators) · gRPC · WebSocket · SharedArray · CSV data with papaparse · per-environment thresholds
+> Key patterns: test type taxonomy · scenarios/executors (`ramping-vus`, `constant-arrival-rate`, `ramping-arrival-rate`) · thresholds + `abortOnFail` · `check()` · `setup()`/`teardown()` auth · custom metrics (Trend/Rate/Counter/Gauge) · `handleSummary` (JUnit/JSON/HTML) · `http.batch()` · `group()` · browser module (getBy* locators, CPU/network throttling) · gRPC (unary + streaming) · WebSocket (stable `k6/websockets` module) · GraphQL (200-response error detection) · HMAC signing (`k6/crypto`) · secrets management (`k6/secrets`) · MFA/TOTP auth · distributed tracing (`http-instrumentation-tempo`) · SharedArray · CSV data with papaparse · per-environment thresholds · k6 v2.0.0 migration (removed: `externally-controlled`, `--no-summary`, `options.ext.loadimpact`, `browser_web_vital_fid`)
 > See also: `qa-perf/references/k6-patterns-baseline.md` (original baseline for comparison)
 
 **NBomber** (C# native — use when `_TARGET_LANG=csharp`):

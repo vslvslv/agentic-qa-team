@@ -1,5 +1,5 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 10 | score: 100/100 | date: 2026-04-30 -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
 
 ## Core Principles
 
@@ -43,11 +43,39 @@ export function loginAsUser(email: string, password: string): void {
 
 // In a spec:
 beforeEach(() => loginAsUser('alice@example.com', 'secret'));
+
+// Role-specific session keys — prevents stale cache when users have different permissions
+export function loginAsRole(role: 'admin' | 'user' | 'viewer'): void {
+  const credentials: Record<typeof role, { email: string; password: string }> = {
+    admin:  { email: 'admin@example.com',  password: Cypress.env('ADMIN_PASS') },
+    user:   { email: 'user@example.com',   password: Cypress.env('USER_PASS') },
+    viewer: { email: 'viewer@example.com', password: Cypress.env('VIEWER_PASS') },
+  };
+  const { email, password } = credentials[role];
+
+  cy.session(
+    [role, email],                             // role in key — separate cache per role
+    () => {
+      cy.visit('/login');
+      cy.get('[data-cy="email"]').type(email);
+      cy.get('[data-cy="password"]').type(password);
+      cy.get('[data-cy="submit"]').click();
+      cy.url().should('include', '/dashboard');
+    },
+    {
+      validate() {
+        cy.request({ url: '/api/me', failOnStatusCode: false })
+          .its('body.role').should('eq', role);  // validate ROLE, not just auth status
+      },
+      cacheAcrossSpecs: true,
+    }
+  );
+}
 ```
 
 ### 2. Network Mocking with cy.intercept()
 
-Intercept and stub HTTP traffic to isolate the UI from backend flakiness.
+Intercept and stub HTTP traffic to isolate the UI from backend flakiness. Use the `routeMatcher` object form for precise matching on method, URL, headers, query params, and body.
 
 ```typescript
 describe('Product listing', () => {
@@ -66,6 +94,20 @@ describe('Product listing', () => {
     cy.visit('/products');
     cy.wait('@getProductsFail');
     cy.get('[data-cy="error-banner"]').should('be.visible');
+  });
+
+  it('intercepts only requests with specific headers (routeMatcher object form)', () => {
+    // Use RouteMatcher object for multi-dimension matching
+    cy.intercept({
+      method: 'GET',
+      url: '/api/products*',
+      headers: { 'x-api-version': '2' },
+      query: { sort: 'price' },
+    }, { fixture: 'products-v2-sorted.json' }).as('getProductsV2Sorted');
+
+    cy.visit('/products?sort=price');
+    cy.wait('@getProductsV2Sorted');
+    cy.get('[data-cy="product-card"]').first().should('have.attr', 'data-price');
   });
 });
 ```
@@ -1004,6 +1046,31 @@ it('renders logged-in user profile', () => {
   cy.get('[data-cy="user-name"]').should('have.text', 'Alice');
   cy.get('[data-cy="admin-badge"]').should('be.visible');
 });
+
+// React Context (custom context provider) — no Redux
+import { UserContext, UserContextValue } from '../../src/contexts/UserContext';
+import { NotificationBanner } from '../../src/components/NotificationBanner';
+
+it('shows notification banner when UserContext has an alert', () => {
+  const mockContextValue: UserContextValue = {
+    user: { id: 'usr_1', name: 'Bob', role: 'user' },
+    alert: { type: 'warning', message: 'Your trial expires tomorrow' },
+    dismissAlert: cy.stub().as('dismissAlert'),
+  };
+
+  cy.mount(
+    <UserContext.Provider value={mockContextValue}>
+      <NotificationBanner />
+    </UserContext.Provider>
+  );
+
+  cy.get('[data-cy="notification-banner"]')
+    .should('be.visible')
+    .and('contain.text', 'Your trial expires tomorrow');
+
+  cy.get('[data-cy="dismiss-btn"]').click();
+  cy.get('@dismissAlert').should('have.been.calledOnce');
+});
 ```
 
 ### 31. Network Throttling via Chrome DevTools Protocol (CDP)  [community]
@@ -1124,6 +1191,15 @@ it('loads page data from multiple endpoints', () => {
   );
 
   cy.get('[data-cy="dashboard-ready"]').should('be.visible');
+});
+
+// Version guard — cy.all() requires Cypress 13.4+
+// Add to cypress/support/e2e.ts
+before(() => {
+  const version = Cypress.version.split('.').map(Number);
+  if (version[0] < 13 || (version[0] === 13 && version[1] < 4)) {
+    throw new Error(`cy.all() requires Cypress 13.4+. Current version: ${Cypress.version}`);
+  }
 });
 ```
 
@@ -1272,6 +1348,7 @@ Use `chai-subset` to assert that an object *contains* a subset of keys without s
 ```typescript
 // cypress/support/e2e.ts
 import chaiSubset from 'chai-subset';
+// npm install -D chai-subset @types/chai-subset
 chai.use(chaiSubset);
 
 // Usage in a spec
@@ -2388,6 +2465,23 @@ cy.get('[data-cy="complete-order"]').click();
 cy.wait('@createOrder').its('response.statusCode').should('eq', 201);
 cy.wait('@processPayment').its('response.body.status').should('eq', 'succeeded');
 cy.get('[data-cy="confirmation-number"]').should('be.visible');
+
+// Combining times + req.alias: intercept the first request dynamically, pass rest through
+cy.intercept('GET', '/api/products*', (req) => {
+  const page = new URL(req.url).searchParams.get('page') ?? '1';
+  req.alias = `productsPage${page}`;
+  if (page === '1') {
+    req.reply({ fixture: 'products-page1.json' });
+  }
+  // Pages 2+ hit the real server
+});
+
+cy.visit('/products');
+cy.wait('@productsPage1').its('response.body.items').should('have.length', 20);
+
+cy.get('[data-cy="next-page"]').click();
+// Page 2 goes to real server — no stub
+cy.get('[data-cy="product-list"]').should('be.visible');
 ```
 
 ---
@@ -2523,6 +2617,10 @@ declare global {
 
 35. **`req.alias` in `cy.intercept()` handler overrides the `.as()` alias** [community] — If you call both `cy.intercept(...).as('myAlias')` and set `req.alias = 'dynamicAlias'` inside the handler, the `req.alias` takes precedence. This is by design and documented, but teams often expect the `.as()` name to win. Decide on one aliasing strategy per intercept — either use `.as()` for static aliases or `req.alias` for dynamic ones, never both on the same intercept.
 
+36. **`cy.intercept()` does not intercept WebSocket or Server-Sent Events** [community] — `cy.intercept()` only intercepts HTTP/XHR/fetch requests. If your app uses WebSocket connections (e.g., `ws://` or `wss://`) or SSE streams (`text/event-stream`), Cypress cannot stub or spy on them directly. The workaround is to stub the WebSocket constructor via `cy.window().then(win => cy.stub(win, 'WebSocket').as('ws'))` for constructor-level assertions, or use `cy.task()` to control the server side directly. For SSE, intercept the initial HTTP handshake request but know that the streaming data is not interceptable.
+
+37. **Nested `cy.intercept()` in `beforeEach` causes route accumulation** [community] — Each call to `cy.intercept()` adds a new route to Cypress's routing table. If you register the same route in `beforeEach()` for a 50-test suite, you end up with 50 stacked intercepts for that route. While the last registration wins, the accumulated routes consume memory and can cause subtle ordering issues. Use `cy.intercept()` inside individual tests only when the stub is unique per test; use `before()` for shared stubs that should exist for the entire suite.
+
 ---
 
 ## CI Considerations
@@ -2538,6 +2636,10 @@ declare global {
 - **`experimentalOriginDependencies`** — Set to `true` in `cypress.config.ts` to allow `cy.origin()` to load custom commands defined in the support file inside origin callbacks; without it, commands like `cy.loginViaApi()` are not available inside `cy.origin()`.
 - **Flakiness root-cause beyond retries** — Retries mask symptoms; fix root causes: (1) ensure `cy.intercept()` is registered before `cy.visit()`; (2) replace `cy.wait(ms)` with `cy.wait('@alias')`; (3) use `beforeEach` state resets; (4) avoid `cy.get().then()` snapshot patterns for assertions.
 - **Cypress Cloud Flaky Test Detection** — Cypress Cloud automatically marks tests as "flaky" when they pass on retry. Review the Flaky Tests dashboard weekly; a test flaking in CI 3+ times signals a test design issue, not just infrastructure noise.
+- **Spec grouping for monorepos** — Use `--group` to label parallel runs by app/service: `npx cypress run --record --parallel --group "app-checkout"`. View separate dashboards per group in Cypress Cloud without merging results.
+- **`--auto-cancel-after-failures N`** — Cancel the entire parallel run after N failures to save CI minutes on catastrophic regressions. Set N to 5-10 for large suites; too low causes false cancellations on known-flaky tests.
+- **Memory leak detection in long runs** — Large suites (200+ tests) can accumulate memory. Use `experimentalMemoryManagement: true` and `numTestsKeptInMemory: 5` together. Watch for browser crashes in CI — they typically signal memory pressure, not test logic failures.
+- **Cypress Dashboard API for custom reporting** — Use the Cypress Cloud REST API (`GET /projects/:id/runs`) to pull flakiness rates into internal dashboards or Slack alerts. Token auth via `CYPRESS_API_KEY`.
 
 ```typescript
 // cypress.config.ts — production-ready CI config

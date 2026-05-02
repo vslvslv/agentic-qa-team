@@ -1,11 +1,13 @@
-# Shift-Left Testing — QA Methodology Guide
-<!-- lang: JavaScript | topic: shift-left | iteration: 6 | score: 100/100 | date: 2026-04-28 -->
+# Shift-Left — QA Methodology Guide
+<!-- lang: TypeScript | topic: shift-left | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
 
 ## Core Principles
 
 Shift-left testing is the practice of moving quality and security validation activities earlier (further "left") in the Software Development Life Cycle (SDLC). Rather than treating testing as a phase that follows development, shift-left embeds testing at every stage from requirements through design and code.
 
 > **Terminology note (ISTQB CTFL 4.0):** This guide uses standardized terminology: "defect" (not "bug" or "error"), "test case" (not "test"), "test level" (not "test layer"), "test basis" (not "test source"), and "test object" (not "thing under test"). Tool names (e.g., ZAP, ESLint) use their documented terminology regardless of this convention.
+>
+> **ISTQB CTFL 4.0 on shift-left:** The ISTQB Foundation Level 4.0 syllabus (2023) defines shift-left as a practice that includes: static testing (reviews and static analysis), component testing in isolation, and continuous integration of testing activities earlier in the development lifecycle. The term encompasses both the practice of writing tests before code (TDD) and integrating quality gates into the developer workflow.
 
 ### 1. Definition and Origin
 The term was coined by Larry Smith in 2001, published in his column *"Shift Left Testing"* in STQE Magazine. The "left" metaphor references a traditional waterfall SDLC timeline drawn left-to-right: requirements → design → development → testing → deployment. "Shifting left" means moving testing activities toward the requirements and design phases, rather than reserving them for after code is written.
@@ -28,7 +30,7 @@ IBM's Systems Sciences Institute established a widely cited data point: a defect
 ### 3. Developer Ownership
 Shift-left requires developers — not a separate QA team — to write, own, and maintain tests. QA engineers shift from executing manual test passes to building tooling, test frameworks, coverage dashboards, and reviewing test quality.
 
-**WHY it matters**: When testing is a handoff to another team, developers write code that is not designed for testability — deep coupling, hidden side effects, opaque dependencies. When developers own tests, they build tighter feedback loops and naturally design for dependency injection, pure functions, and observable state. Testable architecture is better architecture. Additionally, only the developer who wrote the code understands the intended behavior precisely enough to write meaningful tests for edge cases; a QA engineer testing the same code two weeks later is testing against observed behavior, not intent.
+**WHY it matters**: When testing is a handoff to another team, developers write code that is not designed for testability — deep coupling, hidden side effects, opaque dependencies. When developers own tests, they build tighter feedback loops and naturally design for dependency injection, pure functions, and observable state. Testable architecture is better architecture. TypeScript amplifies this: the type system itself is a form of executable specification that developers maintain alongside their code — the compiler is a shift-left tool that runs on every save.
 
 ### The Test Pyramid for Shift-Left
 
@@ -40,172 +42,782 @@ Shift-left maps directly onto the test pyramid. Higher-left tests are cheaper an
          /    \
         /------\ Integration / Contract Tests (PR-level CI)
        /        \
-      /----------\ Unit Tests + JSDoc type checks (pre-commit + CI, fast)
+      /----------\ Unit Tests + TypeScript type checks (pre-commit + CI, fast)
      /            \
-    /--------------\ Static Analysis (SAST, ESLint, lint — instantaneous)
+    /--------------\ Static Analysis (SAST, ESLint, tsc --noEmit — instantaneous)
 ```
 
-- **Static analysis** (ESLint, `node --check`): runs in milliseconds, no infrastructure, catches whole categories of defects
+- **Static analysis** (`tsc --noEmit`, `@typescript-eslint`): runs in seconds, no infrastructure, catches whole categories of defects including type errors, unused code, and null dereferences
 - **Unit tests**: run in seconds, no external dependencies, verify logic in isolation
 - **Integration / contract tests**: run in minutes, require services, verify interactions
 - **E2E / DAST**: run in tens of minutes, require full deployment, verify end-to-end user flows and runtime security
 
 Shift-left is the practice of **investing heavily in the bottom layers** — not eliminating the top layers.
 
-### 4. SAST (Static Application Security Testing)
-SAST tools analyze source code without running it. For JavaScript/Node.js stacks:
-- **ESLint security plugins** (`eslint-plugin-security`, `eslint-plugin-no-secrets`) for common Node.js vulnerabilities
-- **Semgrep** with community rulesets (`p/javascript`, `p/nodejs`, `p/owasp-top-ten`) for pattern-based code scanning
-- **CodeQL** via GitHub Actions for deep data-flow and taint analysis
-- **AI-assisted SAST** (GitHub Copilot Autofix, Semgrep Assistant, Snyk Code AI) — AI models propose remediation inline with each finding, reducing the time from "finding reported" to "fix submitted" from hours to minutes
+### 4. SAST (Static Application Security Testing) — TypeScript
+SAST tools analyze source code without running it. For TypeScript stacks:
+- **`@typescript-eslint`** — The TypeScript-aware ESLint parser and rule set. Catches type-unsafe patterns (unsafe any, unhandled promise rejections, missing type guards) that plain ESLint cannot see
+- **`eslint-plugin-security`** — Common Node.js security vulnerability rules (object injection, non-literal regex, etc.)
+- **Semgrep** with `p/typescript`, `p/nodejs`, `p/owasp-top-ten` rulesets for pattern-based code scanning
+- **CodeQL** via GitHub Actions — deep data-flow and taint analysis for TypeScript/JavaScript
+- **AI-assisted SAST** (GitHub Copilot Autofix, Semgrep Assistant) — AI models propose TypeScript-aware remediation inline with each finding
 
-**WHY it matters**: SAST catches injection risks, unsafe `eval`, insecure deserialization, and secrets in code before they ever reach a branch. The earlier a security defect is found, the simpler the fix — no CVE, no incident response, no customer notification required. AI-assisted remediation further removes friction: developers receive a code fix suggestion alongside the vulnerability description, rather than needing to research the fix independently.
+**TypeScript SAST tool comparison:**
 
-### 5. DAST (Dynamic Application Security Testing)
+| Tool | TypeScript-Aware? | Speed | Key Catches | When to Use |
+|---|---|---|---|---|
+| `tsc --noEmit` | Native | 2–30s | Null dereferences, type mismatches, unreachable code | Always; the foundational TypeScript gate |
+| `@typescript-eslint` (type-checked) | Full type info | 5–60s | Unsafe any, floating promises, unbound methods, type narrowing | Default for all TS projects |
+| Semgrep (`p/typescript`) | Partial (pattern-based) | < 2min | SQL injection patterns, hardcoded secrets, XSS sinks | Fast SAST; run on every PR |
+| CodeQL (`javascript-typescript`) | Full AST + taint | 5–20min | Data-flow taint, injection chains, prototype pollution | Security-sensitive code; weekly or PR |
+| Snyk Code | Deep TypeScript | 1–3min | OWASP Top 10, TypeScript-specific sinks | Add when CodeQL is too slow |
+
+**WHY it matters**: TypeScript's type system eliminates entire vulnerability classes (null dereferences, wrong-type API calls) at compile time. Adding `@typescript-eslint` to your existing ESLint setup further catches unsafe any usage, unbound methods, and floating promises — patterns that produce runtime errors in JavaScript that TypeScript would normally prevent if strict mode is fully used.
+
+### 5. TypeScript Strict Mode as Shift-Left
+Enabling `"strict": true` in `tsconfig.json` activates a battery of compile-time checks that collectively eliminate large categories of runtime defects:
+
+| Compiler Flag | Defect Class Eliminated |
+|---|---|
+| `strictNullChecks` | Null/undefined dereferences (the "billion dollar mistake") |
+| `strictFunctionTypes` | Function parameter type variance errors |
+| `strictPropertyInitialization` | Uninitialized class properties accessed at runtime |
+| `noImplicitAny` | Silent any coercions that hide type mismatches |
+| `noImplicitReturns` | Functions that sometimes forget to return a value |
+| `noFallthroughCasesInSwitch` | Missing `break` in switch statements |
+| `exactOptionalPropertyTypes` | Optional property assignments that include `undefined` explicitly |
+
+**WHY it matters**: Every flag above is a category of runtime defect that TypeScript prevents before the code ever runs. This is the most literal implementation of shift-left: the compiler, not a test runner, catches the defect at authoring time.
+
+### 6. DAST (Dynamic Application Security Testing)
 DAST runs against a live or containerized application instance:
 - **OWASP ZAP** — open-source, scriptable, integrable with CI via `zaproxy/action-full-scan` or `zaproxy/action-baseline-scan`
 - **Nuclei** — fast, template-based vulnerability scanner for common CVEs and misconfigurations
 - Targets: XSS, CSRF, open redirects, broken auth headers, missing security headers (CSP, HSTS, X-Frame-Options)
 
-**WHY it matters**: DAST validates runtime behavior that static analysis cannot see. A JavaScript application can pass every SAST check and still ship with: an insecure CORS wildcard (`Access-Control-Allow-Origin: *`), missing `HttpOnly` cookie flags, no Content Security Policy, or an outdated TLS cipher suite. DAST is the only automated mechanism that catches configuration-level vulnerabilities that live outside the codebase entirely — in web server config, reverse proxy headers, or infrastructure-as-code.
+**WHY it matters**: DAST validates runtime behavior that static analysis cannot see. A TypeScript application can pass every SAST check and strict type check and still ship with: an insecure CORS wildcard, missing `HttpOnly` cookie flags, no Content Security Policy, or an outdated TLS cipher suite. DAST is the only automated mechanism that catches configuration-level vulnerabilities that live outside the codebase entirely.
 
-### 6. Pre-Commit Hooks
+### 7. Pre-Commit Hooks
 Husky + lint-staged intercept Git commits to run fast, file-scoped checks:
-- ESLint (with security plugins)
+- `@typescript-eslint` (with security plugins)
 - Prettier formatting
-- `node --check` for syntax validation
-- Focused unit tests for changed files via Jest `--findRelatedTests` or Vitest `--related`
+- `tsc --noEmit` for type checking (staged or incremental)
+- Focused unit tests for changed files via Vitest `--related`
 
-**WHY it matters**: Developers get sub-10-second feedback on the exact files they changed, before code even leaves their machine. The feedback loop shrinks from "wait for CI" (minutes) to "before you commit" (seconds).
+**WHY it matters**: Developers get sub-30-second feedback on the exact files they changed, before code even leaves their machine. The feedback loop shrinks from "wait for CI" (minutes) to "before you commit" (seconds).
 
-### 7. PR-Level Required Status Checks
+### 8. PR-Level Required Status Checks
 GitHub / GitLab branch protection rules that must pass before merge:
 - All unit tests with coverage threshold enforcement
-- SAST scan (ESLint security, CodeQL or Semgrep)
+- `tsc --noEmit` (full type check, not just staged files)
+- SAST scan (`@typescript-eslint` security, CodeQL or Semgrep)
 - `npm audit --audit-level=high --omit=dev` and/or Snyk scan
 - Consumer-driven contract tests (Pact) for service API changes
 
 **WHY it matters**: PR checks create a hard gate that prevents broken or insecure code from entering the main branch, independent of developer discipline or reviewer oversight. They are not bypassable without admin intervention (which creates an audit trail). Unlike pre-commit hooks (which developers can skip with `--no-verify`), PR status checks are enforced by the platform.
 
-**Contract testing note**: Consumer-driven contract tests (e.g., Pact for JavaScript) are particularly valuable at the PR level for microservice architectures. They verify that an API change in Service A does not break the contracts expected by consumers B and C — without requiring those services to be deployed.
-
-### 8. Shift-Right Counterpart
+### 9. Shift-Right Counterpart
 Shift-right testing validates quality in or near production:
 - **Feature flags** (LaunchDarkly, Unleash, Flagsmith) for gradual user-segment rollout
 - **Canary deployments** (Argo Rollouts, Flagger, Spinnaker) with automated error-rate rollback
 - **Synthetic monitoring** (Datadog Synthetics, Checkly, Pingdom) — automated browser flows against production
-- **Real-user monitoring** (RUM via Datadog, New Relic, Sentry) — captures real performance and JS errors
+- **Real-user monitoring** (RUM via Datadog, New Relic, Sentry) — captures real performance and JS/TS runtime errors
 
-Shift-left and shift-right are **complementary**, not competing strategies. A well-run engineering org has both.
+Shift-left and shift-right are **complementary**, not competing strategies.
 
-### 9. JSDoc Type Checking as Shift-Left
-For plain JavaScript projects, `tsc --checkJs --noEmit` with a `jsconfig.json` provides TypeScript-level type checking without requiring TypeScript compilation. This is the most cost-effective type safety shift for existing JavaScript codebases.
+### 10. Runtime Validation as Shift-Left
+TypeScript types are erased at runtime. Runtime schema validation at API boundaries catches malformed external data before it propagates into business logic:
+- **Zod** — TypeScript-first schema validation with `z.infer<typeof schema>` type derivation; schemas double as both runtime validators and TypeScript types
+- **TypeBox** — JSON Schema-compatible with TypeScript types; highest throughput for JSON APIs
+- **io-ts** — Functional runtime type codec library with decode/encode symmetry
+
+**WHY it matters**: TypeScript's type system only protects code you control. The moment data arrives from an API endpoint, a database query, or `process.env`, it is `unknown` at runtime regardless of what TypeScript assumes. Zod validates external data and **derives the TypeScript type from the schema**, ensuring runtime validation and compile-time types stay in sync by construction.
+
+---
+
+## When to Use
+
+Shift-left is most valuable when:
+- The codebase is under active development with frequent merges (daily or more)
+- TypeScript strict mode is not yet enabled — enabling it is a high-leverage shift-left first step
+- Security requirements exist (PCI-DSS, SOC 2 Type II, HIPAA, GDPR) or you are working toward compliance certification
+- The team is small and lacks a dedicated QA team — shift-left is how small teams maintain quality without a QA headcount
+- Time-to-production speed is a critical business priority and you cannot afford long manual QA cycles
+- You are onboarding new developers who need guardrails that catch mistakes early
+- The product has a public API or processes sensitive user data
+
+Shift-left is **less appropriate** (or should be scoped carefully) when:
+- The project is a short-lived prototype (< 4 weeks, no production users, no sensitive data): focus on delivering and add shift-left when it graduates to a real product
+- TypeScript strict mode migration is in progress: enable incrementally using `// @ts-nocheck` or per-file overrides rather than blocking CI on 200+ pre-existing type errors
+- Tests require complex infrastructure spin-up that slows the commit loop beyond 5 minutes — isolate infrastructure tests to the CI layer only
+- The team is in an emergency release crunch: defer tooling setup, but schedule it for the sprint immediately following
+- The codebase is read-only legacy with no active development: maintain existing tests but do not invest in new shift-left tooling
+
+---
+
+## Patterns
+
+### Pre-Commit Hooks (Husky + lint-staged) — TypeScript
 
 ```json
-// jsconfig.json — enable strict type checking on plain JavaScript files
+// package.json — complete configuration for TypeScript project with Husky v9 + lint-staged v15
+{
+  "scripts": {
+    "prepare": "husky",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test:related": "vitest run --related"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,mts,cts}": [
+      "eslint --fix --max-warnings=0",
+      "prettier --write"
+    ],
+    "*.{spec.ts,test.ts}": [
+      "vitest run --related --reporter=verbose"
+    ]
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "husky": "^9.1.0",
+    "lint-staged": "^15.2.0",
+    "eslint": "^9.0.0",
+    "@eslint/js": "^9.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint-plugin-security": "^3.0.1",
+    "eslint-plugin-no-secrets": "^1.0.2",
+    "globals": "^15.0.0",
+    "vitest": "^2.0.0",
+    "prettier": "^3.3.0"
+  }
+}
+```
+
+```sh
+#!/bin/sh
+# .husky/pre-commit — installed automatically by `npm run prepare`
+# Runs lint-staged on staged files + incremental type check
+npx lint-staged
+# Run tsc on changed TS files only (incremental, uses tsconfig build cache)
+# NOTE: tsc --noEmit --incremental is fast on unchanged files (~0.5s)
+npx tsc --noEmit --incremental
+```
+
+```sh
+#!/bin/sh
+# .husky/commit-msg — validates conventional commits format
+# Enforces: feat:, fix:, chore:, docs:, test:, refactor:, perf:, ci:
+npx --no -- commitlint --edit "$1"
+```
+
+> **Gotcha**: Running `tsc --noEmit` in pre-commit on a large TypeScript project can take 10–30 seconds. Use `--incremental` to leverage the build cache, and consider only running the full type check in CI (PR gate), not pre-commit.
+
+### TypeScript tsconfig.json — Strict Shift-Left Configuration
+
+```json
+// tsconfig.json — strict TypeScript config for maximum shift-left benefit
 {
   "compilerOptions": {
-    "checkJs": true,
-    "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": true,
+    // Core strict checks — eliminate entire runtime defect classes at compile time
+    "strict": true,                          // Enables all strict mode flags below
+    "noImplicitAny": true,                   // No silent any coercions
+    "strictNullChecks": true,                // Eliminates null/undefined dereferences
+    "strictFunctionTypes": true,             // Catches function type variance errors
+    "strictPropertyInitialization": true,    // Catches uninitialized class properties
+    "noImplicitReturns": true,               // Functions must always return a value
+    "noFallthroughCasesInSwitch": true,      // switch case fallthrough = error
+    "exactOptionalPropertyTypes": true,      // `{a?: string}` cannot be set to undefined
+    "noUncheckedIndexedAccess": true,        // array[n] returns T | undefined, not T
+    "noPropertyAccessFromIndexSignature": true, // Must use bracket notation for index types
+
+    // Additional safety
+    "noUnusedLocals": true,                  // Unused variables = compile error
+    "noUnusedParameters": true,              // Unused function params = compile error
+    "useUnknownInCatchVariables": true,      // catch (e) types e as unknown, not any
+
+    // Module / target
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "allowJs": true,
-    "outDir": "dist"
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "**/*.spec.js", "**/*.test.js"]
+  "exclude": ["node_modules", "dist", "**/*.spec.ts", "**/*.test.ts", "vitest.config.ts"]
 }
 ```
 
-```javascript
-// src/services/payment.service.js — JSDoc types catch errors at dev time
-import { createHash } from 'node:crypto';
-
-/**
- * @typedef {Object} PaymentIntent
- * @property {string} id
- * @property {number} amount      - Amount in cents
- * @property {'usd'|'eur'|'gbp'} currency
- * @property {'pending'|'succeeded'|'failed'} status
- */
-
-/**
- * Creates a payment intent with idempotency key.
- * @param {number} amountCents - Must be a positive integer
- * @param {'usd'|'eur'|'gbp'} currency
- * @param {string} customerId
- * @returns {Promise<PaymentIntent>}
- * @throws {Error} If amountCents is not a positive integer
- */
-export async function createPaymentIntent(amountCents, currency, customerId) {
-  if (!Number.isInteger(amountCents) || amountCents <= 0) {
-    throw new Error(`amountCents must be a positive integer, got: ${amountCents}`);
-  }
-  const idempotencyKey = createHash('sha256')
-    .update(`${customerId}:${amountCents}:${currency}:${Date.now()}`)
-    .digest('hex');
-
-  // tsc --checkJs catches: wrong currency string, passing string for amountCents, etc.
-  return fetchStripeAPI('/payment_intents', {
-    amount: amountCents,
-    currency,
-    idempotency_key: idempotencyKey,
-  });
+```json
+// tsconfig.test.json — separate config for test files (allows test-specific relaxations)
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noUnusedLocals": false,               // Test helpers may declare unused vars
+    "noUnusedParameters": false,
+    "outDir": "dist-test"
+  },
+  "include": ["src/**/*", "tests/**/*", "**/*.spec.ts", "**/*.test.ts", "vitest.config.ts"]
 }
 ```
 
-**WHY it matters**: Without type checking, `createPaymentIntent('100', 'USD', id)` (string amount, wrong currency case) fails at runtime in production. With `tsc --checkJs`, it fails at edit time in the IDE and in CI. This is shift-left applied to a JavaScript codebase without requiring a TypeScript migration.
+**WHY it matters**: `"noUncheckedIndexedAccess": true` is not part of `"strict": true` — it must be enabled explicitly. Without it, `const first = myArray[0]` has type `string` even if the array is empty, leading to a runtime crash. With it, `first` has type `string | undefined`, forcing the developer to handle the empty-array case. This single flag catches a large class of "cannot read property of undefined" production errors at compile time.
 
-Add to CI pipeline:
+### SAST in CI — TypeScript ESLint Security Config
+
+```typescript
+// eslint.config.ts — security-focused ESLint flat config for TypeScript (ESLint v9+)
+import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
+import security from 'eslint-plugin-security';
+import noSecrets from 'eslint-plugin-no-secrets';
+import globals from 'globals';
+
+export default tseslint.config(
+  // Base JS recommended
+  js.configs.recommended,
+
+  // TypeScript recommended with type-checking (requires parserOptions.project)
+  ...tseslint.configs.recommendedTypeChecked,
+
+  // Security plugin
+  security.configs['recommended-legacy'],
+
+  {
+    files: ['src/**/*.ts', 'src/**/*.tsx'],
+
+    plugins: {
+      security,
+      'no-secrets': noSecrets,
+    },
+
+    languageOptions: {
+      globals: { ...globals.node, ...globals.es2022 },
+      parserOptions: {
+        project: './tsconfig.json',          // Required for type-aware rules
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+
+    rules: {
+      // TypeScript-aware security rules (require type information)
+      '@typescript-eslint/no-unsafe-assignment': 'error',   // No `any` spreading
+      '@typescript-eslint/no-unsafe-member-access': 'error', // No any.property access
+      '@typescript-eslint/no-unsafe-call': 'error',          // No calling any()
+      '@typescript-eslint/no-unsafe-return': 'error',        // No returning any
+      '@typescript-eslint/no-explicit-any': 'warn',          // Prefer unknown over any
+      '@typescript-eslint/no-floating-promises': 'error',    // Unhandled promises = error
+      '@typescript-eslint/no-misused-promises': 'error',     // Promise in boolean context
+      '@typescript-eslint/await-thenable': 'error',          // Await non-promise = error
+      '@typescript-eslint/no-non-null-assertion': 'warn',    // Discourage ! operator
+
+      // Security rules
+      'security/detect-object-injection': 'warn',
+      'security/detect-non-literal-regexp': 'error',
+      'security/detect-non-literal-require': 'error',
+      'security/detect-possible-timing-attacks': 'error',
+      'security/detect-unsafe-regex': 'error',
+      'security/detect-buffer-noassert': 'error',
+
+      // Secret detection
+      'no-secrets/no-secrets': ['error', { tolerance: 4.2 }],
+
+      // Dangerous built-ins
+      'no-eval': 'error',
+      'no-implied-eval': 'error',
+    },
+  },
+
+  {
+    // Test files: relax some rules
+    files: ['**/*.spec.ts', '**/*.test.ts', 'tests/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',           // Test helpers may use any
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      'security/detect-non-literal-regexp': 'warn',
+    },
+  },
+);
+```
+
 ```yaml
-# In pr-quality-gate.yml — add as a required check alongside ESLint
-  jscheck:
-    name: JSDoc Type Check
+# .github/workflows/sast.yml — runs on every PR against main or develop
+name: SAST Security Scan
+on:
+  pull_request:
+    branches: [main, develop, 'release/**']
+
+permissions:
+  security-events: write
+  actions: read
+  contents: read
+
+jobs:
+  typecheck:
+    name: TypeScript Type Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
       - run: npm ci
-      - run: npx tsc --project jsconfig.json --noEmit
-        # Zero-install type checking: tsc is included in typescript package
+      # Full type check — not incremental in CI (no cache between runs)
+      - run: npx tsc --noEmit
+        # Fails on any type error: catches null dereferences, wrong arg types,
+        # unhandled promise shapes, missing exhaustive checks, etc.
+
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript   # Covers both JS and TS in same scan
+          queries: security-and-quality
+      - run: npm ci && npm run build
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'
+
+  semgrep:
+    name: Semgrep OWASP Scan
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - run: semgrep scan --config=p/typescript --config=p/nodejs --config=p/owasp-top-ten --sarif --output=semgrep.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
 ```
 
-### 10. Runtime Validation as Shift-Left
-Runtime schema validation at API boundaries catches malformed external data before it propagates into business logic.
-- **Joi** (`@hapi/joi`) — feature-rich schema validation for Node.js
-- **Ajv** — JSON Schema validator, fast for high-throughput APIs
-- **Zod** (works in plain JS too) — schema-first validation with `.parse()` / `.safeParse()`
+### Zod Runtime Validation — TypeScript-First Schema Validation
 
-**WHY it matters**: Errors are caught at the first entry point rather than surfacing as `Cannot read properties of undefined` runtime exceptions in production — or worse, as data corruption from silently accepting the wrong type.
+```typescript
+// src/api/validators/user.validator.ts — Zod schemas derive TypeScript types by construction
+import { z } from 'zod';
+import type { Request, Response, NextFunction } from 'express';
 
-### 11. Dependency Vulnerability Scanning
-- `npm audit` — built-in, runs in CI, reports CVEs from the npm advisory database
-- **Snyk** — more granular than `npm audit`, provides fix advice, tracks license compliance
-- **Dependabot** (GitHub) or **Renovate** — auto-creates PRs to update vulnerable dependencies on a schedule
+// Schema definition — the single source of truth for BOTH runtime validation AND TypeScript type
+export const CreateUserSchema = z.object({
+  email: z
+    .string()
+    .email({ message: 'Must be a valid email address' })
+    .max(254, { message: 'Email too long (RFC 5321 limit)' }),
+  name: z
+    .string()
+    .min(1)
+    .max(100)
+    .regex(/^[a-zA-Z\s'-]+$/, { message: 'Name contains invalid characters' }),
+  role: z.enum(['admin', 'viewer', 'editor'], {
+    errorMap: () => ({ message: 'Role must be admin, viewer, or editor' }),
+  }),
+  age: z.number().int().min(13).max(150).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
 
-**WHY it matters**: Third-party packages are the largest attack surface in modern Node.js applications. The average enterprise Node.js project has 500–1,000 transitive dependencies, most of which the team has never reviewed. Automated scanning stops known CVEs from shipping without requiring manual audits.
+// Derive the TypeScript type from the schema — no duplication, always in sync
+export type CreateUserInput = z.infer<typeof CreateUserSchema>;
+// Equivalent to: { email: string; name: string; role: 'admin'|'viewer'|'editor'; age?: number; metadata?: Record<string,unknown> }
 
-### 12. OpenSSF Scorecard — Supply Chain Shift-Left
+// Reusable Express middleware factory — type-safe validated body
+export function validateBody<T>(schema: z.ZodType<T>) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const result = schema.safeParse(req.body);
+    if (!result.success) {
+      res.status(400).json({
+        error: 'Validation failed',
+        issues: result.error.issues.map(issue => ({
+          field: issue.path.join('.'),
+          message: issue.message,
+        })),
+      });
+      return;
+    }
+    // req.body is now typed as T — TypeScript knows the shape
+    (req as Request & { validatedBody: T }).validatedBody = result.data;
+    next();
+  };
+}
 
-The [OpenSSF Scorecard](https://securityscorecards.dev/) is an open-source tool maintained by the Open Source Security Foundation that evaluates a repository's security posture across 18 automated checks — producing a single 0–10 score. It runs as a GitHub Actions workflow and publishes results to the OSSF security dashboard.
+// Environment variable validation — catches misconfiguration at startup
+export const EnvSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']),
+  DATABASE_URL: z.string().url(),
+  JWT_SECRET: z.string().min(32, { message: 'JWT_SECRET must be at least 32 characters' }),
+  PORT: z.coerce.number().int().min(1024).max(65535).default(3000),
+});
 
-Key checks relevant to shift-left:
+// Fail-fast: validate env at startup, not when first used
+export const env = EnvSchema.parse(process.env);
+// If any env var is missing or invalid, process exits with a descriptive error
+// e.g.: "ZodError: [{ path: ['JWT_SECRET'], message: 'JWT_SECRET must be at least 32 characters' }]"
+```
 
-| Scorecard Check | What it Measures | Shift-Left Relevance |
-|---|---|---|
-| `Branch-Protection` | Branch protection rules enforce PR reviews, status checks, no-force-push | Validates the PR gate layer is configured correctly |
-| `Code-Review` | Percentage of PRs merged with at least one review | Enforces human review as a shift-left quality gate |
-| `CI-Tests` | PRs require CI tests to pass before merge | Validates test gate is enforced at the platform level |
-| `SAST` | Detects SAST tooling (CodeQL, Semgrep) is configured | Verifies SAST is present and active |
-| `Token-Permissions` | Workflow tokens use least-privilege permissions | Prevents supply chain attacks via overprivileged Actions |
-| `Vulnerabilities` | Known CVEs in dependencies (via OSV database) | Complements `npm audit`; uses different CVE database |
-| `Pinned-Dependencies` | Actions and container images use SHA pinning | Prevents dependency confusion and action hijacking |
+```typescript
+// src/api/validators/user.validator.spec.ts — test the Zod schema directly (shift-left)
+import { describe, it, expect } from 'vitest';
+import { CreateUserSchema } from './user.validator.js';
+
+describe('CreateUserSchema', () => {
+  it('accepts a valid user payload', () => {
+    const result = CreateUserSchema.safeParse({
+      email: 'alice@example.com',
+      name: 'Alice',
+      role: 'viewer',
+      age: 25,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // TypeScript knows result.data.role is 'admin' | 'viewer' | 'editor'
+      expect(result.data.email).toBe('alice@example.com');
+    }
+  });
+
+  it('rejects an invalid email', () => {
+    const result = CreateUserSchema.safeParse({ email: 'not-an-email', name: 'Bob', role: 'viewer' });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].message).toMatch(/valid email/i);
+    }
+  });
+
+  it('rejects unknown roles', () => {
+    const result = CreateUserSchema.safeParse({ email: 'a@b.com', name: 'Bob', role: 'superuser' });
+    expect(result.success).toBe(false);
+  });
+
+  it('strips no fields — use z.strip() for that behavior', () => {
+    // Zod default behavior: extra fields are stripped in .parse() / .safeParse()
+    const result = CreateUserSchema.safeParse({
+      email: 'a@b.com', name: 'Bob', role: 'viewer', extraField: 'ignored',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).not.toHaveProperty('extraField');
+    }
+  });
+});
+```
+
+**WHY Zod over Joi for TypeScript**: Joi requires separate TypeScript type declarations alongside schemas — they can drift. Zod derives the TypeScript type from the schema (`z.infer<typeof schema>`), so the runtime validation and compile-time types are always synchronized. This is the TypeScript-idiomatic approach and the de facto standard for new TypeScript projects as of 2025.
+
+### PR-Level Required Status Checks — TypeScript
+
+```yaml
+# .github/workflows/pr-quality-gate.yml — comprehensive PR gate for TypeScript projects
+name: PR Quality Gate
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    name: TypeScript Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      # tsc --noEmit: compile-check without emitting files.
+      # Catches: null dereferences, wrong argument types, missing exhaustive type guards,
+      # unhandled promise shapes, incorrect enum usage — none of which ESLint catches.
+      - run: npx tsc --noEmit
+      # Also check test files separately (tsconfig.test.json relaxes some rules)
+      - run: npx tsc --project tsconfig.test.json --noEmit
+
+  unit-tests:
+    name: Unit Tests + Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npx vitest run --coverage --reporter=junit --outputFile=test-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results.xml
+
+  lint-security:
+    name: ESLint + TypeScript-Aware Security Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      # ESLint with @typescript-eslint type-checking rules requires tsc to run first
+      # (parserOptions.project triggers full type resolution)
+      - run: npx eslint . --max-warnings=0 --format=sarif --output-file=eslint.sarif || true
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: eslint.sarif
+
+  dependency-audit:
+    name: Dependency Vulnerability Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npm audit --audit-level=high --omit=dev
+```
+
+### Vitest Configuration — TypeScript
+
+```typescript
+// vitest.config.ts — configured for TypeScript pre-commit and CI
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    environment: 'node',
+    globals: true,
+
+    // Coverage — thresholds enforced in CI (not pre-commit)
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'html'],
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.spec.ts', 'src/**/*.test.ts', 'src/index.ts'],
+      thresholds: {
+        lines: 80,
+        functions: 75,
+        branches: 70,
+        statements: 80,
+      },
+    },
+
+    reporters: process.env.CI ? ['junit', 'verbose'] : ['verbose'],
+    outputFile: process.env.CI ? 'test-results.xml' : undefined,
+
+    // Isolation: forks mode is slower than threads but prevents shared state bugs
+    // For pure TypeScript unit tests with no shared globals, threads is fine
+    isolate: true,
+    pool: 'forks',
+  },
+});
+```
+
+> **Gotcha**: `vitest run --related` requires test files to follow naming conventions (`user.spec.ts` next to `user.ts`) for the related-file heuristic to work. Without this convention, vitest cannot infer which tests to run and falls back to running all tests.
+
+### Secret Scanning (Gitleaks / GitHub Secret Scanning)
+
+```yaml
+# .github/workflows/secret-scan.yml — runs on every push and PR
+name: Secret Scan
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  gitleaks:
+    name: Gitleaks Secret Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Full history: scan all commits in the push, not just HEAD
+
+      - name: Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+```
+
+```typescript
+// scripts/check-no-env-files.ts — run as a pre-commit check via lint-staged
+import { execSync } from 'node:child_process';
+
+const stagedFiles: string[] = execSync('git diff --cached --name-only', { encoding: 'utf8' })
+  .trim()
+  .split('\n')
+  .filter(Boolean);
+
+const envFiles = stagedFiles.filter((f: string) => {
+  const basename = f.split('/').pop() ?? '';
+  return /^\.env(\.|$)/.test(basename);
+});
+
+if (envFiles.length > 0) {
+  console.error(`ERROR: Attempting to commit .env file(s):\n  ${envFiles.join('\n  ')}`);
+  console.error('Remove from staging: git reset HEAD <file>');
+  process.exit(1);
+}
+```
+
+> [community] **Gotcha (GitGuardian State of Secrets Sprawl 2024)**: 12.8 million secrets were detected in public GitHub commits in 2023. The most commonly leaked secrets in TypeScript/Node.js projects are: Google API keys (committed via `.env` or hardcoded in tests), AWS credentials, and JWT secrets (hardcoded in `config.ts` for "convenience"). **Pre-commit secret scanning and GitHub push protection together stop > 90% of accidental commits before they reach remote**.
+
+### TypeScript Service with Shift-Left Ownership Pattern
+
+This example shows a complete TypeScript service following shift-left principles: strict types enforce correctness at compile time, Zod validates external input at runtime, and the service is designed for testability (pure functions, injected dependencies, no hidden global state).
+
+```typescript
+// src/services/payment.service.ts — shift-left architecture: typed, validated, testable
+import { z } from 'zod';
+import type { Logger } from 'pino';
+
+// Public types — single source of truth derived from runtime schema
+export const PaymentIntentSchema = z.object({
+  amountCents: z.number().int().positive({ message: 'Amount must be a positive integer (cents)' }),
+  currency: z.enum(['usd', 'eur', 'gbp']),
+  customerId: z.string().min(1),
+  idempotencyKey: z.string().uuid().optional(),
+});
+
+export type PaymentIntentRequest = z.infer<typeof PaymentIntentSchema>;
+
+export interface PaymentIntent {
+  readonly id: string;
+  readonly amountCents: number;
+  readonly currency: 'usd' | 'eur' | 'gbp';
+  readonly status: 'pending' | 'succeeded' | 'failed';
+  readonly createdAt: Date;
+}
+
+// Dependency-injected interface — enables unit testing without real Stripe calls
+export interface PaymentGateway {
+  createIntent(request: PaymentIntentRequest): Promise<PaymentIntent>;
+}
+
+// Pure business logic — takes validated input, returns typed output
+export class PaymentService {
+  constructor(
+    private readonly gateway: PaymentGateway,
+    private readonly logger: Logger,
+  ) {}
+
+  // TypeScript: return type is explicit — callers know exactly what to expect
+  async createPaymentIntent(rawInput: unknown): Promise<PaymentIntent> {
+    // Zod validates at runtime — rawInput is unknown until validated
+    const request = PaymentIntentSchema.parse(rawInput);
+    // After .parse(), request is fully typed as PaymentIntentRequest
+
+    this.logger.info({ amountCents: request.amountCents, currency: request.currency }, 'Creating payment intent');
+
+    const intent = await this.gateway.createIntent(request);
+
+    // TypeScript exhaustive check — if PaymentIntent.status gains a new value,
+    // this will error at compile time, not silently fail at runtime
+    if (intent.status !== 'pending' && intent.status !== 'succeeded' && intent.status !== 'failed') {
+      const _exhaustive: never = intent.status;
+      throw new Error(`Unhandled payment status: ${_exhaustive}`);
+    }
+
+    return intent;
+  }
+}
+```
+
+```typescript
+// src/services/payment.service.spec.ts — unit test: no real network, fully typed mocks
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PaymentService, type PaymentGateway, type PaymentIntent } from './payment.service.js';
+import pino from 'pino';
+
+const mockGateway: PaymentGateway = { createIntent: vi.fn() };
+const logger = pino({ level: 'silent' }); // Suppress logs in test output
+const service = new PaymentService(mockGateway, logger);
+
+describe('PaymentService.createPaymentIntent', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('creates a payment intent from valid input', async () => {
+    const mockIntent: PaymentIntent = {
+      id: 'pi_123', amountCents: 1000, currency: 'usd', status: 'pending', createdAt: new Date(),
+    };
+    vi.mocked(mockGateway.createIntent).mockResolvedValue(mockIntent);
+
+    const result = await service.createPaymentIntent({ amountCents: 1000, currency: 'usd', customerId: 'cust_1' });
+
+    expect(result.id).toBe('pi_123');
+    expect(mockGateway.createIntent).toHaveBeenCalledOnce();
+  });
+
+  it('throws ZodError on invalid input — amount is string not number', async () => {
+    await expect(
+      service.createPaymentIntent({ amountCents: '100', currency: 'usd', customerId: 'cust_1' }),
+    ).rejects.toThrow(/Expected number/);
+    expect(mockGateway.createIntent).not.toHaveBeenCalled();
+  });
+
+  it('throws ZodError on non-positive amount', async () => {
+    await expect(
+      service.createPaymentIntent({ amountCents: -50, currency: 'usd', customerId: 'cust_1' }),
+    ).rejects.toThrow(/positive/);
+  });
+});
+```
+
+**WHY this demonstrates developer ownership**: The developer who writes `PaymentService` also writes `payment.service.spec.ts` at the same time. The TypeScript interface `PaymentGateway` makes the service testable by construction — no "I can't unit test this because it calls Stripe directly." The type system and test runner are both shift-left tools the developer uses, not separate QA gatekeepers.
+
+### Branch Protection Configuration (GitHub CLI)
+
+```bash
+# Configure branch protection for main via GitHub CLI (gh)
+OWNER="your-org"
+REPO="your-repo"
+
+gh api \
+  --method PUT \
+  -H "Accept: application/vnd.github+json" \
+  "/repos/${OWNER}/${REPO}/branches/main/protection" \
+  --input - <<'EOF'
+{
+  "required_status_checks": {
+    "strict": true,
+    "checks": [
+      { "context": "TypeScript Type Check" },
+      { "context": "Unit Tests + Coverage" },
+      { "context": "ESLint + TypeScript-Aware Security Lint" },
+      { "context": "Dependency Vulnerability Audit" },
+      { "context": "CodeQL Analysis" },
+      { "context": "Gitleaks Secret Detection" }
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 1,
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false
+  },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_conversation_resolution": true
+}
+EOF
+```
+
+> [community] **Lesson (GitHub engineering, 2024)**: The single most common reason shift-left tooling fails in practice is not that the tools are broken — it is that branch protection was never configured, or was configured without `enforce_admins: true`. Admin users bypass all protection rules by default. A 5-minute CLI setup prevents years of accidental bypasses by well-meaning senior engineers who "just need to merge this one thing quickly."
+
+### OpenSSF Scorecard — Supply Chain Shift-Left
 
 ```yaml
 # .github/workflows/scorecard.yml — automated supply chain security scoring
@@ -248,246 +860,12 @@ jobs:
           category: ossf-scorecard
 ```
 
-**WHY it matters**: Individual SAST/dependency tools validate specific code-level issues; Scorecard validates the *process*-level security of the entire development workflow. A repo can have CodeQL configured but with no branch protection enforced — Scorecard surfaces this. It is the shift-left equivalent of a security audit for your CI/CD pipeline itself, not just the code it builds.
-
-> [community] **Lesson (OSSF research, 2024)**: Projects that integrate Scorecard into their CI pipeline and publish scores publicly show a measurable improvement in security posture over 12 months. The public score acts as a lightweight SLA — teams respond to score drops the same way they respond to test failures. Score it, publish it, and treat drops as defects.
-
----
-
-## When to Use
-
-Shift-left is most valuable when:
-- The codebase is under active development with frequent merges (daily or more)
-- Security requirements exist (PCI-DSS, SOC 2 Type II, HIPAA, GDPR) or you are working toward a compliance certification
-- The team is small and lacks a dedicated QA team — shift-left is how small teams maintain quality without a QA headcount
-- Time-to-production speed is a critical business priority and you cannot afford long manual QA cycles
-- You are onboarding new developers who need guardrails that catch mistakes early
-- The product has a public API or processes sensitive user data
-
-Shift-left is **less appropriate** (or should be scoped carefully) when:
-- The project is a short-lived prototype (< 4 weeks, no production users, no sensitive data): focus on delivering and add shift-left when it graduates to a real product
-- Tests require complex infrastructure spin-up that slows the commit loop beyond 5 minutes — isolate infrastructure tests to the CI layer only
-- The team is in an emergency release crunch: defer tooling setup, but schedule it for the sprint immediately following. Do not defer indefinitely.
-- The codebase is read-only legacy with no active development: maintain existing tests but do not invest in new shift-left tooling
-
----
-
-## Patterns
-
-### Pre-Commit Hooks (Husky + lint-staged)
-
-```json
-// package.json — complete configuration for Husky v9 + lint-staged v15
-{
-  "scripts": {
-    "prepare": "husky",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "test:related": "vitest run --related"
-  },
-  "lint-staged": {
-    "*.{js,mjs,cjs}": [
-      "eslint --fix --max-warnings=0",
-      "prettier --write"
-    ],
-    "*.{spec.js,test.js}": [
-      "vitest run --related --reporter=verbose"
-    ]
-  },
-  "devDependencies": {
-    "husky": "^9.1.0",
-    "lint-staged": "^15.2.0",
-    "eslint": "^9.0.0",
-    "@eslint/js": "^9.0.0",
-    "eslint-plugin-security": "^3.0.1",
-    "eslint-plugin-no-secrets": "^1.0.2",
-    "globals": "^15.0.0",
-    "vitest": "^2.0.0",
-    "prettier": "^3.3.0"
-  }
-}
-```
-
-```sh
-#!/bin/sh
-# .husky/pre-commit — installed automatically by `npm run prepare`
-# Runs lint-staged on all staged files before allowing commit.
-# To skip in emergencies only: git commit --no-verify (creates audit log entry)
-npx lint-staged
-```
-
-```sh
-#!/bin/sh
-# .husky/commit-msg — validates conventional commits format
-# Enforces: feat:, fix:, chore:, docs:, test:, refactor:, perf:, ci:
-npx --no -- commitlint --edit "$1"
-```
-
-```javascript
-// vitest.config.js — configured for fast pre-commit related-file runs
-import { defineConfig } from 'vitest/config';
-
-export default defineConfig({
-  test: {
-    // Environment
-    environment: 'node',
-    globals: true,
-
-    // Coverage collection (used by PR gate, not pre-commit)
-    coverage: {
-      provider: 'v8',
-      reporter: ['text', 'lcov', 'html'],
-      include: ['src/**/*.js'],
-      exclude: ['src/**/*.spec.js', 'src/index.js'],
-      thresholds: {
-        lines: 80,
-        functions: 75,
-        branches: 70,
-        statements: 80,
-      },
-    },
-
-    // Pre-commit: run with `vitest run --related` to only test changed files
-    // CI: run with `vitest run --coverage` for full suite + coverage report
-    reporters: process.env.CI ? ['junit', 'verbose'] : ['verbose'],
-    outputFile: process.env.CI ? 'test-results.xml' : undefined,
-
-    // Performance: isolate tests but share vm context for speed
-    isolate: true,
-    pool: 'forks',
-    poolOptions: {
-      forks: { singleFork: false },
-    },
-  },
-});
-```
-
-> **Gotcha**: `vitest run --related` requires a test file naming convention (e.g., `user.spec.js` next to `user.js`) for the related-file heuristic to work. Without it, all tests run on every commit.
-
-### SAST in CI (ESLint Security / Semgrep / CodeQL)
-
-```javascript
-// eslint.config.js — security-focused ESLint flat config for Node.js (ESLint v9+)
-// ESLint v9 uses flat config (eslint.config.js), NOT .eslintrc.json
-import js from '@eslint/js';
-import security from 'eslint-plugin-security';
-import noSecrets from 'eslint-plugin-no-secrets';
-import globals from 'globals';
-
-export default [
-  // Base recommended rules
-  js.configs.recommended,
-
-  // Security plugin rules
-  security.configs['recommended-legacy'],
-
-  {
-    // Apply to all JavaScript source files
-    files: ['src/**/*.js', 'src/**/*.mjs'],
-
-    plugins: {
-      security,
-      'no-secrets': noSecrets,
-    },
-
-    languageOptions: {
-      ecmaVersion: 2022,
-      sourceType: 'module',
-      globals: {
-        ...globals.node,
-        ...globals.es2022,
-      },
-    },
-
-    rules: {
-      // Security rules
-      'security/detect-object-injection': 'warn',
-      // False-positive rate is high on bracket access; tune before hard-gate
-      'security/detect-non-literal-regexp': 'error',
-      'security/detect-non-literal-require': 'error',
-      'security/detect-possible-timing-attacks': 'error',
-      'security/detect-unsafe-regex': 'error',
-      'security/detect-buffer-noassert': 'error',
-      'security/detect-child-process': 'warn',
-
-      // Secret detection
-      'no-secrets/no-secrets': ['error', { tolerance: 4.2 }],
-
-      // Dangerous built-ins
-      'no-eval': 'error',
-      'no-implied-eval': 'error',
-
-      // Code quality rules that catch real bugs
-      'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-      'eqeqeq': ['error', 'always'],
-      'no-console': 'warn', // Use structured logger (Pino/Winston) in production
-    },
-  },
-
-  {
-    // Test files: relax some rules
-    files: ['**/*.spec.js', '**/*.test.js', 'tests/**/*.js'],
-    rules: {
-      'no-unused-vars': 'warn',
-      'security/detect-non-literal-regexp': 'warn',
-    },
-  },
-];
-```
-
-```yaml
-# .github/workflows/sast.yml — runs on every PR against main or develop
-name: SAST Security Scan
-on:
-  pull_request:
-    branches: [main, develop, 'release/**']
-
-permissions:
-  security-events: write
-  actions: read
-  contents: read
-
-jobs:
-  codeql:
-    name: CodeQL Analysis
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
-      - uses: github/codeql-action/init@v3
-        with:
-          languages: javascript
-          queries: security-and-quality
-      - run: npm ci
-      - uses: github/codeql-action/analyze@v3
-        with:
-          category: '/language:javascript'
-
-  semgrep:
-    name: Semgrep OWASP Scan
-    runs-on: ubuntu-latest
-    container:
-      image: semgrep/semgrep
-    steps:
-      - uses: actions/checkout@v4
-      - run: semgrep scan --config=p/javascript --config=p/nodejs --config=p/owasp-top-ten --sarif --output=semgrep.sarif
-      - uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: semgrep.sarif
-```
+> [community] **Lesson (OSSF research, 2024)**: Projects that integrate Scorecard into their CI pipeline and publish scores publicly show a measurable improvement in security posture over 12 months. The public score acts as a lightweight SLA — teams respond to score drops the same way they respond to test failures.
 
 ### AI-Assisted SAST Remediation
 
-AI-assisted SAST tools attach a code fix suggestion directly to each security finding. This closes the most common failure mode of traditional SAST: findings are reported, but developers don't act on them because they don't know how to fix the specific vulnerability. The AI model proposes the fix inline in the PR, reducing time-to-remediation from days to minutes.
-
-GitHub Advanced Security (GHAS) with Copilot Autofix and Semgrep with Semgrep Assistant both support this pattern. The workflow is identical to standard SAST — the only difference is that findings in the PR code review UI include an "Accept autofix" button that commits the suggested change.
-
 ```yaml
 # .github/workflows/codeql-autofix.yml — CodeQL + Copilot Autofix (GHAS)
-# Requires: GitHub Advanced Security license (included in GitHub Enterprise, available
-# on public repos, or available as GitHub Advanced Security add-on for private repos)
 name: CodeQL with Autofix
 on:
   pull_request:
@@ -495,7 +873,7 @@ on:
 
 permissions:
   security-events: write
-  pull-requests: write   # Required: Copilot Autofix posts suggested changes as PR comments
+  pull-requests: write
   contents: read
   actions: read
 
@@ -509,446 +887,159 @@ jobs:
         with: { node-version: '20', cache: 'npm' }
       - uses: github/codeql-action/init@v3
         with:
-          languages: javascript
+          languages: javascript-typescript
           queries: security-and-quality
-          # copilot-autofix: true is the default when GHAS is enabled
-          # Autofix runs after the analysis step and posts PR suggestions automatically
-      - run: npm ci
+      - run: npm ci && npm run build
       - uses: github/codeql-action/analyze@v3
         with:
-          category: '/language:javascript'
-          output: codeql-results
-          upload: failure-only   # Only upload SARIF on failure; Autofix handles success path
+          category: '/language:javascript-typescript'
 ```
 
-```yaml
-# .github/workflows/semgrep-assistant.yml — Semgrep with AI triage (Semgrep Assistant)
-# Requires: Semgrep Team or Enterprise plan
-name: Semgrep with AI Assistant
-on:
-  pull_request:
-    branches: [main, develop]
+> [community] **Lesson (GitHub security research, 2024)**: Teams using Copilot Autofix resolved SAST findings in an average of 1.7 days vs 9.3 days for teams using traditional SAST — a 5× faster remediation cycle. The primary driver was that developers accepted the suggested fix without needing to research the vulnerability independently.
 
-jobs:
-  semgrep-assistant:
-    name: Semgrep SAST + AI Triage
-    runs-on: ubuntu-latest
-    container:
-      image: semgrep/semgrep
-    env:
-      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-      # SEMGREP_APP_TOKEN enables: findings upload to Semgrep Cloud, AI triage, deduplication
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run Semgrep with cloud upload
-        run: semgrep ci
-        # `semgrep ci` vs `semgrep scan`:
-        # - `semgrep ci` uploads findings to Semgrep Cloud for AI triage and deduplication
-        # - `semgrep scan` runs locally with no cloud features
-        # AI triage classifies findings as True Positive / False Positive automatically
-        # and suppresses known false positives from noise, reducing alert fatigue by 40-60%
+---
+
+## Anti-Patterns
+
+1. **Gate everything on every commit**: Running the full test suite + SAST + type check on pre-commit destroys developer velocity. Reserve `tsc --noEmit` (full) and SAST for CI/PR gates; keep pre-commit under 15 seconds. Use `--incremental` for pre-commit type checks.
+
+2. **Suppressing `@typescript-eslint` warnings instead of fixing them**: Teams add `// eslint-disable` and `// @ts-ignore` as a default response to type errors, defeating the purpose of strict mode. Each suppression should require a code review comment explaining WHY it is safe.
+
+3. **Using `any` as the "I'll fix it later" type**: `any` propagates silently through the type system — `const x: any = untrustedInput; doSomething(x.user.id)` silences TypeScript warnings while deferring null-reference defects to runtime. Prefer `unknown` with an explicit type guard.
+
+4. **100% line coverage as the goal**: High coverage of trivial getters and constructors gives false confidence. Focus on critical paths, error boundaries, and authorization logic.
+
+5. **Not tuning SAST false positives**: Untuned SAST produces noisy alerts that teams learn to ignore — recreating the exact alert-fatigue problem it was meant to solve. TypeScript-aware rules (`@typescript-eslint/no-unsafe-*`) often have lower false-positive rates than generic SAST rules because they use type information. Spend one sprint tuning before enforcing as hard gates.
+
+6. **Running DAST on every PR**: OWASP ZAP full-scan takes 15–45 minutes. Run it on schedule (nightly) or on merges to main, not every PR.
+
+7. **Trusting TypeScript types at runtime API boundaries**: TypeScript types are erased at runtime. An API that receives `body: CreateUserInput` does NOT actually receive a validated `CreateUserInput` unless Zod (or equivalent) validates it first. The TypeScript type on `req.body` is `any` in Express — no runtime safety exists without an explicit validation step.
+
+8. **Security theater via checkbox compliance**: Installing SAST, secret scanning, and type checking but routing their findings to a separate "security backlog" that no one triages is not shift-left — it is shift-later with extra steps. Shift-left only works when findings block the pipeline AND developers act on them within the same sprint they are raised.
+
+### SAST Tuning Workflow
+
+Before making a SAST rule a hard gate (CI failure), follow this process to avoid alert fatigue:
+
+1. **Audit mode first**: Run in warn-only mode for 2 weeks. Collect all findings.
+2. **Classify findings**: For each rule type, measure true-positive rate from a sample of 20 findings.
+3. **Suppress noise with prejudice**: Rules with < 30% true-positive rate should be disabled or moved to informational. Document WHY in the ESLint config as a comment.
+4. **Baseline suppression**: For legitimate false positives in specific contexts, use inline suppressions with justification:
+
+```typescript
+// eslint-disable-next-line security/detect-object-injection -- key is validated against allowlist above
+const value = safeConfig[validatedKey];
+
+// eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- id is guaranteed by DB constraint
+const userId = session.user!.id;
 ```
 
-**WHY it matters**: Traditional SAST has a well-documented failure mode called "alert fatigue" — when a tool produces too many findings and developers start ignoring or dismissing them reflexively. AI triage filters false positives automatically (Semgrep reports ~40–60% false positive reduction). AI remediation removes the "I don't know how to fix this" barrier. Together, they close the loop: finding → fix → merged, without requiring security expertise from every developer.
+5. **Hard gate only trusted rules**: Only rules with > 70% true-positive rate should block CI.
+6. **Review quarterly**: As the codebase evolves, re-evaluate suppressed rules.
 
-> [community] **Lesson (GitHub security research, 2024)**: Teams using Copilot Autofix resolved SAST findings in an average of 1.7 days vs 9.3 days for teams using traditional SAST with no AI assistance — a 5× faster remediation cycle. The primary driver was that developers accepted the suggested fix without needing to research the vulnerability independently. The secondary driver was that AI fixes were reviewed and merged within the same PR that introduced the finding, eliminating the "fix later" backlog that traditional SAST generates.
+---
 
-### Secret Scanning (Gitleaks / GitHub Secret Scanning)
+## Real-World Gotchas [community]
 
-Secret scanning is a distinct shift-left category from SAST. It detects API keys, tokens, passwords, and private keys accidentally committed to the repository — a class of vulnerability SAST tools do not target.
+[community] **Gotcha**: TypeScript's `@typescript-eslint/recommended-type-checked` requires `parserOptions.project` to point to a `tsconfig.json`. On monorepos with multiple packages, this requires per-package `tsconfig.json` files and either per-directory ESLint configs or `parserOptions.projectFolderIgnorePattern` to exclude `node_modules`. The setup overhead is real but one-time; the type-aware rules are worth it.
 
-```yaml
-# .github/workflows/secret-scan.yml — runs on every push and PR
-name: Secret Scan
-on:
-  push:
-    branches: ['**']
-  pull_request:
+[community] **Gotcha**: `vitest run --related` in a lint-staged pre-commit hook requires test files to follow naming conventions (`user.spec.ts` adjacent to `user.ts`). Without this convention, vitest cannot infer which tests to run and falls back to running all tests.
 
-jobs:
-  gitleaks:
-    name: Gitleaks Secret Detection
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # Full history: scan all commits in the push, not just HEAD
+[community] **Gotcha**: ESLint `security/detect-object-injection` fires on nearly every `obj[key]` bracket access. Teams typically disable this specific rule and rely on explicit allowlists and input validation instead.
 
-      - name: Gitleaks scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}  # Optional: for enterprise features
-        # Scans diff between base and HEAD for all commits in the PR
-        # Config: .gitleaks.toml in repo root allows custom rules and allowlisting
-```
+[community] **Gotcha**: `npm audit` generates false positives for vulnerabilities in dev-only dependencies. Use `--omit=dev` in CI to scope audits to production dependencies.
 
-```toml
-# .gitleaks.toml — custom rules for project-specific secret patterns
-[extend]
-useDefault = true
+[community] **Gotcha**: CodeQL uses `javascript-typescript` as the language identifier for TypeScript projects (not just `javascript`). Using only `javascript` in older `codeql-action` configs causes TypeScript-specific patterns (type assertions bypassing checks, as-cast vulnerabilities) to be missed.
 
-[[rules]]
-id = "custom-internal-api-key"
-description = "Internal API key pattern"
-regex = '''MYAPP_[A-Z0-9]{32}'''
-tags = ["internal", "api-key"]
+[community] **Gotcha**: Zod's `.parse()` throws on validation failure; `.safeParse()` returns a result object. In Express middleware, always use `.safeParse()` so validation failures return 400 responses rather than crashing the process with an unhandled exception.
 
-[allowlist]
-  description = "Allowed patterns (test fixtures, example values)"
-  regexes = [
-    '''EXAMPLE_KEY_[A-Z]{8}''',
-    '''test-secret-[a-z]{6}''',
-  ]
-  paths = [
-    '''tests/fixtures/.*''',
-    '''docs/examples/.*''',
-  ]
-```
+[community] **Gotcha (Snyk report 2023)**: Dependabot PR volume on active projects can reach 20–40 PRs per week. Use Dependabot's `groups` configuration or switch to Renovate with `automerge: true` for patch-level non-security updates.
 
-> [community] **Gotcha**: The most common secret leak pattern is `.env` files committed during initial project setup. Add `.env`, `.env.local`, `.env.*` to `.gitignore` before the first commit, and add a pre-commit check that rejects any file matching `^\.env`:
+[community] **Gotcha**: OWASP ZAP active scan mode will attempt SQL injection, path traversal, and XSS payloads — it **will corrupt test database data** if pointed at a shared environment. Always run DAST against an isolated, ephemeral environment.
 
-```javascript
-// scripts/check-no-env-files.js — run as a pre-commit check via lint-staged
-import { execSync } from 'node:child_process';
+[community] **Lesson (Atlassian microservices)**: Consumer-driven contract testing (Pact) eliminated an entire class of integration defects in their microservice architecture: breaking API changes that only surfaced in staging or production. Running Pact contract verification as a PR check catches breaking changes at the exact commit that introduced them.
 
-const stagedFiles = execSync('git diff --cached --name-only', { encoding: 'utf8' })
-  .trim()
-  .split('\n')
-  .filter(Boolean);
+[community] **Lesson (State of JS 2024 survey)**: ESLint is the #1 static analysis tool in the JavaScript/TypeScript ecosystem with > 90% adoption in teams larger than 5 engineers. However, only 38% of teams enforce `--max-warnings=0` in CI — the majority run ESLint in advisory mode. Enforcing zero-warning in CI is one of the highest-leverage, lowest-effort upgrades available.
 
-const envFiles = stagedFiles.filter(f => {
-  const basename = f.split('/').pop() ?? '';
-  return /^\.env(\.|$)/.test(basename);
-});
+[community] **Lesson (DORA 2024 State of DevOps Report)**: The 2024 DORA survey found that technical debt and rework are the primary inhibitors of software delivery performance — teams spending > 30% of their time on rework had 2× worse change failure rates than elite teams. The DORA report explicitly identifies early defect detection (shift-left) as the intervention with the highest correlation to reduced rework.
 
-if (envFiles.length > 0) {
-  console.error(`ERROR: Attempting to commit .env file(s):\n  ${envFiles.join('\n  ')}`);
-  console.error('Remove from staging: git reset HEAD <file>');
-  process.exit(1);
-}
-```
+[community] **Gotcha (AI-assisted SAST, 2024–2026)**: AI autofix tools propose semantically correct but contextually wrong fixes in ~15–20% of cases. Always require human review of AI-proposed security fixes before merging. Do not configure Copilot Autofix or Semgrep Assistant to auto-merge without code review.
 
-> [community] **Gotcha (GitGuardian State of Secrets Sprawl 2024)**: 12.8 million secrets were detected in public GitHub commits in 2023. The most commonly leaked secrets in Node.js projects are: Google API keys (committed via `.env` or hardcoded in tests), AWS credentials (from local `~/.aws/credentials` accidentally included), and JWT secrets (hardcoded in `config.js` for "convenience"). **Pre-commit secret scanning and GitHub push protection together stop > 90% of accidental commits before they reach remote**.
+[community] **Lesson (Stripe engineering)**: Shift-left pays the highest dividend when applied to the authorization layer. Authorization defects (privilege escalation, IDOR) are systematically hard to catch with unit test cases because they require cross-user context. Test authorization explicitly at the integration level with role-specific test fixtures.
 
-### PR-Level Required Status Checks
+[community] **Lesson (TypeScript strict mode adoption, 2024)**: Teams that enable `"strict": true` on an existing codebase report finding 20–40 pre-existing defects during the migration — bugs hiding in the codebase as implicit `any` types, unchecked null access, and dead code. The "migration pain" is actually a defect discovery phase. Run with `"noEmit": true` first to see all findings before enabling hard enforcement.
 
-```yaml
-# .github/workflows/pr-quality-gate.yml — comprehensive PR gate for Node.js/JavaScript projects
-name: PR Quality Gate
-on:
-  pull_request:
-    branches: [main, develop]
-  push:
-    branches: [main]
+[community] **Lesson (Prisma / tRPC engineering, 2024)**: The highest-impact TypeScript shift-left practice is enabling `"exactOptionalPropertyTypes": true` and `"noUncheckedIndexedAccess": true` — the two strict flags NOT included in `"strict": true` by default. Both flags surface a disproportionate number of real bugs: `noUncheckedIndexedAccess` makes `array[0]` return `T | undefined` instead of `T`, forcing null checks that prevent "Cannot read property of undefined" crashes. WHY it matters: these flags are excluded from `"strict"` because they break too much existing code — but on a greenfield TypeScript project, enabling them from day 1 costs nothing and prevents an entire class of production crashes.
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+[community] **Gotcha (TypeScript + Express middleware, production)**: Typing Express `req.body` as `CreateUserInput` (a TypeScript interface) does NOT validate the input at runtime — TypeScript types are erased. Teams frequently add TypeScript types to `req.body` and believe they have validation, but any malformed JSON that matches the interface's shape at the TypeScript level (e.g., `age: "25"` instead of `age: 25` after JSON.parse) passes the type check silently. WHY: Always validate `req.body` with Zod or equivalent at the start of the handler — `const input = CreateUserSchema.parse(req.body)` — and use `input` (typed by Zod) rather than `req.body` (typed by TypeScript's inference) in all downstream logic.
 
-jobs:
-  syntax-check:
-    name: Node.js Syntax Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
-      - run: npm ci
-      # node --check validates JS syntax without executing — catches parse errors fast
-      # ESLint also catches syntax errors, so this is a belt-and-suspenders check
-      # that runs before the full lint step for immediate feedback
-      - name: Syntax check all JS source files
-        run: npx --yes glob-exec 'src/**/*.js' -- node --check
-        # glob-exec maps a glob pattern to a command per file
-        # Alternative for projects without glob-exec: run ESLint with --rule 'no-undef: off'
-        # or rely on ESLint as the sole syntax gate
+[community] **Lesson (Microsoft TypeScript team, 2024)**: The TypeScript compiler itself is a shift-left tool used by > 10 million developers daily. The TSC team reports that the most common category of type errors caught by strict mode in real-world codebases is `strictNullChecks` violations — accounting for > 60% of all type errors surfaced during strict mode migration. This empirically validates the "billion dollar mistake" framing: null/undefined is the #1 source of preventable runtime defects in TypeScript projects that run without `strictNullChecks`.
 
-  unit-tests:
-    name: Unit Tests + Coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
-      - run: npm ci
-      # Coverage thresholds are defined in vitest.config.js (thresholds.lines: 80, etc.)
-      # --coverage flag enables collection; vitest exits with code 1 if any threshold fails
-      - run: npx vitest run --coverage --reporter=junit --outputFile=test-results.xml
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results
-          path: test-results.xml
+[community] **Gotcha (Monorepo TypeScript, production)**: In NX or Turborepo monorepos, running `tsc --noEmit` at the root does not type-check all packages — each package has its own `tsconfig.json` and must be checked independently. Teams often configure only the root type check in CI and miss type errors in internal packages. WHY: Use `turbo run typecheck` or `nx run-many --target=typecheck` to type-check all packages in parallel, and configure each package's `tsconfig.json` with proper `references` for project-to-project type checking.
 
-  lint-security:
-    name: ESLint + Security Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
-      - run: npm ci
-      # ESLint v9 flat config — file patterns defined in eslint.config.js, not --ext
-      - run: npx eslint . --max-warnings=0 --format=sarif --output-file=eslint.sarif || true
-      - uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: eslint.sarif
+[community] **Gotcha (tsc performance in CI, production)**: `tsc --noEmit` in a cold CI environment (no cache) takes 30–120 seconds on large TypeScript projects (100k+ LOC). Teams are tempted to remove it from CI to speed up PRs. WHY you must keep it: the type check catches errors that ESLint and Vitest do not — specifically: incorrect generic type parameters, exhaustiveness check failures, and structural type incompatibilities between modules. Solution: use TypeScript project references (`tsconfig.json` `references` + `composite: true`) to enable incremental compilation across packages; this reduces `tsc --noEmit` from 120s to 5–15s by only re-checking changed packages.
 
-  dependency-audit:
-    name: Dependency Vulnerability Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
-      - run: npm ci
-      - run: npm audit --audit-level=high --omit=dev
-```
+---
 
-### Branch Protection Configuration (GitHub CLI)
+## Shift-Left vs Shift-Right Balance [community]
 
-PR-level gates only work if branch protection is enforced at the platform level. Without it, developers can merge directly to `main` without triggering required status checks — making every shift-left investment bypassable. Configure once; it persists across all PRs.
+[community] **Lesson (Spotify engineering blog)**: Teams that go all-in on shift-left and remove production monitoring regress. Unit tests and type checks do not catch n-way integration failures, data migration edge cases, or real user behavior patterns that only appear at scale.
 
-```bash
-# Configure branch protection for main via GitHub CLI (gh)
-# Run once by a repository admin; settings are stored in GitHub, not code
-# Prerequisites: gh auth login, OWNER and REPO set as env vars
+[community] **Lesson (Netflix tech blog, GitHub engineering)**: High-velocity organizations run both layers: shift-left gates (unit test, lint, tsc --noEmit, SAST) for speed and immediate feedback, and shift-right observability (feature flags, canary deployments, error budgets, synthetic checks) for production confidence.
 
-OWNER="your-org"
-REPO="your-repo"
+[community] **Lesson (Google SRE Book)**: The cost curve argument works in the opposite direction too — building comprehensive integration test suites that take 45 minutes to run kills CI throughput. The goal is *appropriately placed* feedback loops, not maximum coverage at the earliest stage.
 
-gh api \
-  --method PUT \
-  -H "Accept: application/vnd.github+json" \
-  "/repos/${OWNER}/${REPO}/branches/main/protection" \
-  --input - <<'EOF'
-{
-  "required_status_checks": {
-    "strict": true,
-    "checks": [
-      { "context": "syntax-check" },
-      { "context": "Unit Tests + Coverage" },
-      { "context": "ESLint + Security Lint" },
-      { "context": "Dependency Vulnerability Audit" },
-      { "context": "CodeQL Analysis" },
-      { "context": "Gitleaks Secret Detection" }
-    ]
-  },
-  "enforce_admins": true,
-  "required_pull_request_reviews": {
-    "required_approving_review_count": 1,
-    "dismiss_stale_reviews": true,
-    "require_code_owner_reviews": false
-  },
-  "restrictions": null,
-  "allow_force_pushes": false,
-  "allow_deletions": false,
-  "block_creations": false,
-  "required_conversation_resolution": true
-}
-EOF
-```
+[community] **Lesson (ThoughtWorks Technology Radar)**: The shift-left movement has created an over-investment in unit tests relative to integration and contract tests. Many bugs that matter are interaction bugs — they can only be caught between services. Invest in consumer-driven contract testing (Pact) as a mid-pipeline check.
 
-```javascript
-// scripts/verify-branch-protection.js
-// Run in CI to alert if branch protection is misconfigured (drift detection)
-// Usage: GITHUB_TOKEN=... node scripts/verify-branch-protection.js
-const REQUIRED_CHECKS = [
-  'syntax-check',
-  'Unit Tests + Coverage',
-  'ESLint + Security Lint',
-  'Dependency Vulnerability Audit',
-];
+---
 
-const [owner, repo] = (process.env.GITHUB_REPOSITORY ?? '').split('/');
-const token = process.env.GITHUB_TOKEN;
+## Tradeoffs & Alternatives
 
-const res = await fetch(
-  `https://api.github.com/repos/${owner}/${repo}/branches/main/protection`,
-  { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } },
-);
+| Approach | Benefit | Cost | Recommendation |
+|---|---|---|---|
+| TypeScript strict mode (`"strict": true`) | Eliminates null dereferences, any coercions, unhandled returns at compile time | Migration overhead on existing JS codebases; 20–200 errors to fix | Enable on new projects from day 1; migrate incrementally on existing codebases |
+| TypeScript project references (`composite: true`) | Incremental type-checking across packages: reduces `tsc --noEmit` from 120s to 5–15s on large repos | Requires `declaration: true` and `composite: true` in each package; setup overhead for monorepos | Required for monorepos where `tsc --noEmit` is too slow to be a PR gate |
+| Pre-commit hooks (Husky) | Immediate, offline feedback; no CI wait | Slows commit (10–30s with tsc); devs bypass with `--no-verify` | Use for lint + format; use `--incremental` for tsc; move full type check to CI |
+| `@typescript-eslint` type-checking rules | Catches unsafe-any, floating promises, misused awaits — TypeScript-aware | Requires `parserOptions.project`; 2–5× slower than plain ESLint | Essential for TypeScript projects; accept the speed cost |
+| Zod runtime validation | TypeScript type derived from schema — no drift | Adds ~50KB bundle; `.parse()` throws | Use at all external trust boundaries; prefer `.safeParse()` in middleware |
+| PR status checks | Hard gate, cannot be bypassed; audit trail | Requires CI infrastructure; slows PR cycle by 3–10 min | Required for all production codebases |
+| SAST (CodeQL) | Deep data-flow taint analysis; TypeScript-aware | High false-positive rate; 5–20 min scan; complex for monorepos | Essential for security-sensitive code; tune rules first |
+| SAST (Semgrep) | Fast (< 2 min); highly configurable; `p/typescript` ruleset | Community rules vary in quality | Better default SAST choice for speed |
+| DAST (OWASP ZAP) | Finds runtime security issues invisible to SAST + TypeScript types | Requires running app; 15–45 min; corrupts test data if misconfigured | Nightly/schedule only; never on every PR |
+| Snyk vs npm audit | Snyk: richer data, fix PRs, license scan; audit: zero config | Snyk: requires account + token + cost at scale | Both: `npm audit` in CI, Snyk for deeper analysis |
 
-if (!res.ok) {
-  console.error('Branch protection not configured or not accessible.');
-  process.exit(1);
-}
+**When not to shift left**: Exploratory testing, usability research, load testing, and chaos/resilience testing are inherently shift-right activities. Do not attempt to automate or pre-production-gate tests that require real user behavior, real traffic patterns, or stochastic failure modes.
 
-const protection = await res.json();
-const configured = protection.required_status_checks?.checks?.map(c => c.context) ?? [];
-const missing = REQUIRED_CHECKS.filter(c => !configured.includes(c));
+**Named alternative to shift-left**: **Shift-right testing** (production observability, feature flags, canary deployments, chaos engineering). The alternative philosophy is "make it safe to deploy to production frequently with fast rollback" rather than "block everything that is not perfect before it ships." Both are valid strategies; elite engineering organizations use both simultaneously.
 
-if (missing.length > 0) {
-  console.error(`Branch protection MISSING required checks: ${missing.join(', ')}`);
-  process.exit(1);
-}
-console.log('Branch protection verified — all required checks present.');
-```
+**Known adoption cost**: Enabling TypeScript strict mode on an existing codebase typically surfaces 20–200 type errors that must be fixed before CI is green. On large codebases (100k+ LOC), this can be a multi-sprint effort. Use `// @ts-nocheck` or `tsconfig.json` `include`/`exclude` to migrate file-by-file.
 
-> **Gotcha**: `"strict": true` in `required_status_checks` means branches must be up-to-date with `main` before merging. This prevents the race condition where two PRs both pass CI against an older `main` but conflict when sequentially merged. Enable this for security-sensitive branches; it adds one rebase step per PR.
+### Team-Size Adoption Guide
 
-> [community] **Lesson (GitHub engineering, 2024)**: The single most common reason shift-left tooling fails in practice is not that the tools are broken — it is that branch protection was never configured, or was configured without `enforce_admins: true`. Admin users bypass all protection rules by default. A 5-minute CLI setup prevents years of accidental bypasses by well-meaning senior engineers who "just need to merge this one thing quickly."
+| Team Size | Recommended Starting Point | Add Next |
+|---|---|---|
+| 1–3 engineers | TypeScript strict mode + ESLint + Prettier (pre-commit) | Unit tests, `npm audit` in CI |
+| 4–10 engineers | Above + Husky/lint-staged + PR status checks (unit tests, tsc --noEmit, lint) | Vitest coverage thresholds, CodeQL on PRs |
+| 11–30 engineers | Above + Semgrep or CodeQL SAST + Zod validation at API boundaries + Snyk | DAST (nightly), contract tests |
+| 30+ engineers | Above + all patterns + DAST + consumer-driven contract tests (Pact) + SBOMs | Chaos engineering, error budgets |
 
-Runtime validation at API boundaries catches malformed input before it propagates deeper. Joi is the most widely adopted Node.js validation library for plain JavaScript projects.
+---
 
-```javascript
-// src/api/validators/user.validator.js
-import Joi from 'joi';
+## Shift-Left Maturity Model
 
-// Schema definition — single source of truth for validation rules
-export const createUserSchema = Joi.object({
-  email: Joi.string()
-    .email({ tlds: { allow: false } })
-    .max(254)
-    .required()
-    .messages({
-      'string.email': 'Must be a valid email address',
-      'string.max': 'Email too long (RFC 5321 limit)',
-    }),
-  name: Joi.string()
-    .min(1)
-    .max(100)
-    .pattern(/^[a-zA-Z\s'-]+$/)
-    .required()
-    .messages({
-      'string.pattern.base': 'Name contains invalid characters',
-    }),
-  role: Joi.string()
-    .valid('admin', 'viewer', 'editor')
-    .required()
-    .messages({
-      'any.only': 'Role must be admin, viewer, or editor',
-    }),
-  age: Joi.number().integer().min(13).max(150).optional(),
-  metadata: Joi.object().pattern(Joi.string(), Joi.any()).optional(),
-}).options({ stripUnknown: true }); // Silently strip extra fields
+| Level | Name | Characteristics | Key Evidence |
+|-------|------|----------------|--------------|
+| **L1** | Ad-Hoc | Tests written after code or not at all; TypeScript in "loose mode" (`"strict": false`); testing is a manual phase | No CI test gate; defects found in staging or production |
+| **L2** | Established | TypeScript strict mode enabled; unit tests exist and run in CI; `@typescript-eslint` enabled; PR requires CI to pass | CI green required to merge; coverage tracked |
+| **L3** | Automated | Pre-commit hooks with lint-staged; tsc --noEmit in CI; coverage thresholds enforced; Semgrep on PRs; `npm audit` as gate; secret scanning enabled | MTTD < 15 min for code defects |
+| **L4** | Security-Integrated | CodeQL with TypeScript language; Zod runtime validation at all API boundaries; Snyk + license compliance; nightly DAST; contract tests | SAST:production CVE ratio > 10:1 |
+| **L5** | Comprehensive | IaC scanning; container image scanning; SBOM generation + attestation; error budgets; full shift-right complement | Defect escape rate measured and decreasing |
 
-// Reusable Express middleware factory
-export function validateBody(schema) {
-  return (req, res, next) => {
-    const { error, value } = schema.validate(req.body, { abortEarly: false });
-    if (error) {
-      return res.status(400).json({
-        error: 'Validation failed',
-        issues: error.details.map(d => ({ field: d.path.join('.'), message: d.message })),
-      });
-    }
-    req.validatedBody = value; // Downstream handlers receive validated, stripped data
-    next();
-  };
-}
+> [community] **Lesson (engineering maturity research, DORA 2024)**: Teams at L3+ deploy 4× more frequently and have 7× lower change failure rates than L1–L2 teams. The L2→L3 transition is where most of the DORA elite performer gains come from — not from L4/L5 sophistication.
 
-// Usage: router.post('/users', validateBody(createUserSchema), createUserHandler);
-```
+---
 
-```javascript
-// src/api/validators/user.validator.test.js — test the validator directly (shift-left)
-import { describe, it, expect } from 'vitest';
-import { createUserSchema } from './user.validator.js';
-
-describe('createUserSchema', () => {
-  it('accepts a valid user payload', () => {
-    const { error, value } = createUserSchema.validate({
-      email: 'alice@example.com',
-      name: 'Alice',
-      role: 'viewer',
-      age: 25,
-    });
-    expect(error).toBeUndefined();
-    expect(value.email).toBe('alice@example.com');
-  });
-
-  it('rejects an invalid email', () => {
-    const { error } = createUserSchema.validate({ email: 'not-an-email', name: 'Bob', role: 'viewer' });
-    expect(error).toBeDefined();
-    expect(error.details[0].message).toMatch(/valid email/);
-  });
-
-  it('rejects unknown roles', () => {
-    const { error } = createUserSchema.validate({ email: 'a@b.com', name: 'Bob', role: 'superuser' });
-    expect(error).toBeDefined();
-    expect(error.details[0].message).toMatch(/admin, viewer, or editor/);
-  });
-
-  it('strips unknown fields (prevents prototype pollution)', () => {
-    const { value } = createUserSchema.validate({
-      email: 'a@b.com',
-      name: 'Bob',
-      role: 'viewer',
-      __proto__: { isAdmin: true },
-      extra: 'ignored',
-    });
-    expect(value).not.toHaveProperty('extra');
-    expect(value).not.toHaveProperty('__proto__');
-  });
-});
-```
-
-### Dependency Vulnerability Scanning (npm audit / Snyk)
-
-```yaml
-# .github/workflows/dependency-scan.yml
-on:
-  push:
-    paths: ['package-lock.json', 'package.json']
-  pull_request:
-    branches: [main]
-  schedule:
-    - cron: '0 9 * * 1'   # Weekly on Monday at 09:00 UTC
-
-jobs:
-  npm-audit:
-    name: npm audit (production deps)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
-      - run: npm ci
-      # Report all severities to artifact, but only fail on high/critical
-      - run: npm audit --json --omit=dev > npm-audit-report.json || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: npm-audit-report
-          path: npm-audit-report.json
-      # Hard fail gate — high or critical stops the merge
-      - run: npm audit --audit-level=high --omit=dev
-
-  snyk:
-    name: Snyk vulnerability + license scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
-      - run: npm ci
-      - uses: snyk/actions/node@master
-        with:
-          args: >-
-            --severity-threshold=high
-            --sarif-file-output=snyk.sarif
-            --org=${{ vars.SNYK_ORG_ID }}
-            --project-name=${{ github.repository }}
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-      - uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: snyk.sarif
-
-  license-check:
-    name: Dependency license compliance
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
-      - run: npm ci
-      - run: npx license-checker --production --onlyAllow 'MIT;ISC;BSD-2-Clause;BSD-3-Clause;Apache-2.0;CC0-1.0' --excludePrivatePackages
-```
-
-### DAST with OWASP ZAP (Scheduled / Nightly)
+### DAST with OWASP ZAP — TypeScript API Testing (Scheduled / Nightly)
 
 ```yaml
 # .github/workflows/dast-scan.yml — run nightly on main, NOT on every PR
@@ -960,14 +1051,15 @@ on:
 
 jobs:
   zap-baseline:
-    name: ZAP Baseline Scan (passive, fast, ~5 min)
+    name: ZAP Baseline Scan (passive, fast ~5 min)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start application in Docker
+      - name: Start TypeScript app in Docker
         run: |
           docker compose -f docker-compose.test.yml up -d app
+          # Wait for the TypeScript app to be ready (health endpoint)
           timeout 60 sh -c 'until curl -sf http://localhost:3000/health; do sleep 2; done'
 
       - name: Run ZAP Baseline Scan
@@ -990,291 +1082,160 @@ jobs:
         run: docker compose -f docker-compose.test.yml down
 ```
 
-### SBOM Generation (CycloneDX — Software Bill of Materials)
+```typescript
+// src/app.ts — TypeScript Express app with security headers set for DAST compliance
+// These headers are what ZAP checks for — set them explicitly to pass ZAP baseline scan
+import express from 'express';
+import helmet from 'helmet';
+import type { Request, Response } from 'express';
 
-An SBOM is a formal, machine-readable inventory of all software components and their dependencies. It is the foundation for supply chain security: without an SBOM, you cannot systematically answer "is component X (with CVE Y) anywhere in our software?" during an incident. Generating an SBOM at build time and attesting it alongside your artifact is an L5 shift-left practice (see Maturity Model).
+export const app = express();
 
-```yaml
-# .github/workflows/sbom.yml — generate + attest SBOM on every release build
-name: SBOM Generation
-on:
-  push:
-    branches: [main]
-  release:
-    types: [created]
+// helmet() sets: X-Frame-Options, X-Content-Type-Options, Referrer-Policy,
+// X-XSS-Protection, HSTS (via hsts option), Content-Security-Policy (via contentSecurityPolicy)
+// Without helmet, ZAP baseline scan will flag EVERY security header as missing
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],  // Adjust for your frontend framework
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", 'data:'],
+    },
+  },
+  hsts: {
+    maxAge: 31536000,        // 1 year in seconds
+    includeSubDomains: true,
+    preload: true,
+  },
+}));
 
-permissions:
-  contents: write
-  id-token: write   # Required for sigstore attestation
+app.use(express.json({ limit: '1mb' })); // Limit prevents DoS from large payloads
 
-jobs:
-  generate-sbom:
-    name: Generate CycloneDX SBOM
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
-
-      - run: npm ci
-
-      # Generate SBOM in CycloneDX JSON format (production deps only)
-      - name: Generate CycloneDX SBOM
-        run: |
-          npx --yes @cyclonedx/cyclonedx-npm \
-            --output-format JSON \
-            --output-file sbom.json \
-            --omit dev \
-            --package-lock-only
-        # --package-lock-only: uses lock file for accurate transitive deps
-        # --omit dev: production dependencies only (what ships)
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-${{ github.sha }}
-          path: sbom.json
-
-      # Attest SBOM with Sigstore (cryptographic provenance — verifiable supply chain)
-      - name: Attest SBOM
-        uses: actions/attest-sbom@v2
-        with:
-          subject-path: dist/
-          sbom-path: sbom.json
-          # Attestation is published to the GitHub attestations API
-          # Verify with: gh attestation verify <artifact> --repo <org/repo>
+app.get('/health', (_req: Request, res: Response) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
 ```
 
-```javascript
-// scripts/validate-sbom.js — post-build: cross-reference SBOM against OSV vulnerability DB
-// Run as part of the nightly pipeline to catch newly disclosed CVEs in existing artifacts
-import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-
-/**
- * Reads the generated SBOM and checks each component against the OSV (Open Source Vulnerabilities) DB.
- * OSV is Google's open vulnerability database — the same source used by Dependabot and Renovate.
- * @param {string} sbomPath - Path to CycloneDX JSON SBOM
- * @returns {Promise<{component: string, vulns: string[]}[]>} - List of vulnerable components
- */
-export async function checkSbomVulnerabilities(sbomPath) {
-  const sbom = JSON.parse(readFileSync(sbomPath, 'utf8'));
-  const components = sbom.components ?? [];
-  const results = [];
-
-  for (const component of components) {
-    const { name, version } = component;
-    if (!name || !version) continue;
-
-    const response = await fetch('https://api.osv.dev/v1/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ package: { name, ecosystem: 'npm' }, version }),
-    });
-
-    const { vulns = [] } = await response.json();
-    if (vulns.length > 0) {
-      results.push({ component: `${name}@${version}`, vulns: vulns.map(v => v.id) });
-    }
-  }
-
-  return results;
-}
-
-// Usage: node scripts/validate-sbom.js
-const vulns = await checkSbomVulnerabilities('sbom.json');
-if (vulns.length > 0) {
-  console.error('Vulnerable components found in SBOM:');
-  for (const { component, vulns: ids } of vulns) {
-    console.error(`  ${component}: ${ids.join(', ')}`);
-  }
-  process.exit(1);
-}
-console.log('SBOM clean — no known vulnerabilities.');
-```
-
-**WHY it matters**: `npm audit` and Snyk check at install time. An SBOM enables retroactive querying — when a new CVE is disclosed tomorrow, you can immediately query all your SBOMs to find which deployed artifacts are affected, without rebuilding. This is the difference between reactive patching and proactive supply chain security. Executive Order 14028 (US) and EU Cyber Resilience Act (2025) mandate SBOMs for software delivered to government and regulated sectors.
-
-> [community] **Lesson (CISA, 2024)**: "The SBOM is to software what a nutritional label is to food — a minimum viable disclosure that enables downstream consumers to make informed decisions about risk." Teams that generate SBOMs at build time and store them alongside artifacts report 40–60% faster incident response when a zero-day affects a dependency in their supply chain. Without an SBOM, teams must rebuild and re-inspect every artifact manually.
+**WHY DAST is NOT a pre-commit or PR check**: ZAP scans a running application for runtime vulnerabilities (missing headers, actual XSS reflection, CORS misconfiguration, TLS issues). These can only be verified against a live server — no static analysis or type system can catch a missing `Content-Security-Policy` header. Run DAST nightly to keep the feedback window short (< 24 hours), but never block PR merges on it.
 
 ## Measuring Shift-Left Effectiveness
-
-Track these metrics to quantify whether your shift-left investment is working:
 
 | Metric | How to Measure | Good Signal |
 |---|---|---|
 | **Defect escape rate** | Production defects ÷ total defects found | Decreasing over time |
 | **Mean time to detect (MTTD)** | Time from commit to defect found | < 15 minutes for code defects |
-| **Pre-commit failure rate** | Commits blocked by hooks ÷ total commits | 5–15% (too low = rules not catching anything; too high = rules too noisy) |
-| **PR gate failure rate** | PRs failing CI ÷ total PRs | 10–25% expected; track trend per check type |
-| **Security finding rate by phase** | SAST/PR findings vs production CVEs | SAST:production ratio should be > 10:1 |
+| **Pre-commit failure rate** | Commits blocked by hooks ÷ total commits | 5–15% |
+| **PR gate failure rate** | PRs failing CI ÷ total PRs | 10–25% expected |
 | **`--no-verify` usage** | Count of commits with `--no-verify` flag | Should be near zero |
-| **Test feedback loop time** | Time from `git push` to first test result | Target < 5 minutes for unit, < 15 for full gate |
-| **False positive rate** | SAST alerts dismissed as false positive ÷ total alerts | < 20% means rules are well-tuned |
+| **Type error discovery rate** | Type errors found during strict mode migration | Use as baseline for defect density |
+| **False positive rate** | SAST alerts dismissed as false positive ÷ total | < 20% means rules are well-tuned |
 
 ---
 
-## Anti-Patterns
+### Dependency Vulnerability Scanning — TypeScript Projects
 
-1. **Gate everything on every commit**: Running the full test suite + SAST + DAST on pre-commit destroys developer velocity. Reserve heavy checks for CI/PR gates; keep pre-commit under 15 seconds.
-2. **Suppressing lint warnings instead of fixing them**: Teams add `// eslint-disable` comments as a default response to lint errors, defeating the purpose of the rule.
-3. **100% line coverage as the goal**: High coverage of trivial getters and constructors gives false confidence. Focus on critical paths, error boundaries, and authorization logic.
-4. **Not tuning SAST false positives**: Untuned SAST produces noisy alerts that teams learn to ignore — recreating the exact alert-fatigue problem it was meant to solve. Spend one sprint tuning rules before enforcing them as hard gates.
-5. **Treating shift-left as shift-only**: Removing or skipping production monitoring because "we have 80% test coverage" leads to blind spots in real user behavior.
-6. **Running DAST on every PR**: OWASP ZAP full-scan takes 15–45 minutes. Run it on schedule (nightly) or on merges to main, not every PR. Use SAST for PR gates.
-7. **Shifting integration tests left into unit tests**: Mocking every external dependency in "unit" tests makes them fast but means no test ever validates the real SQL queries, migrations, or connection behavior. Keep a meaningful integration test layer.
-8. **Security theater via checkbox compliance**: Installing SAST, secret scanning, and DAST tools but routing their findings to a separate "security backlog" that no one triages is not shift-left — it is shift-later with extra steps. Shift-left only works when findings block the pipeline AND developers act on them within the same sprint they are raised.
+```yaml
+# .github/workflows/dependency-scan.yml — runs on lock file changes and weekly
+name: Dependency Vulnerability Scan
+on:
+  push:
+    paths: ['package-lock.json', 'package.json']
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 9 * * 1'   # Weekly Monday at 09:00 UTC
 
-### SAST Tuning Workflow
+jobs:
+  npm-audit:
+    name: npm audit (production deps only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      # Report all severities to artifact, fail only on high/critical
+      # --omit=dev: TypeScript devDependencies (tsc, @types/*) are excluded
+      - run: npm audit --json --omit=dev > npm-audit-report.json || true
+      - uses: actions/upload-artifact@v4
+        with: { name: npm-audit-report, path: npm-audit-report.json }
+      - run: npm audit --audit-level=high --omit=dev
 
-Before making a SAST rule a hard gate (CI failure), follow this process to avoid alert fatigue:
+  snyk:
+    name: Snyk vulnerability + license scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - uses: snyk/actions/node@master
+        with:
+          args: >-
+            --severity-threshold=high
+            --sarif-file-output=snyk.sarif
+            --org=${{ vars.SNYK_ORG_ID }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk.sarif
 
-1. **Audit mode first**: Run SAST in warn-only mode for 2 weeks. Collect all findings.
-2. **Classify findings**: For each rule type, measure true-positive rate from a sample of 20 findings.
-3. **Suppress noise with prejudice**: Rules with < 30% true-positive rate should be disabled or moved to informational. Document WHY in the ESLint config as a comment.
-4. **Baseline suppression**: For legitimate false positives in specific contexts, use inline suppressions with justification:
-
-```javascript
-// eslint-disable-next-line security/detect-object-injection -- key is validated against allowlist above
-const value = safeConfig[validatedKey];
+  license-check:
+    name: Dependency license compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      # TypeScript note: --production flag excludes @types/* and other devDeps
+      - run: npx license-checker --production --onlyAllow 'MIT;ISC;BSD-2-Clause;BSD-3-Clause;Apache-2.0;CC0-1.0' --excludePrivatePackages
 ```
 
-5. **Hard gate only trusted rules**: Only rules with > 70% true-positive rate should block CI.
-6. **Review quarterly**: As the codebase evolves, re-evaluate suppressed rules.
+> [community] **Gotcha (TypeScript projects)**: `npm audit --omit=dev` excludes devDependencies from the audit. For TypeScript projects, this means `typescript`, `@types/*`, `ts-node`, `vitest`, and all other build/test tools are excluded. This is correct — they don't ship to production. However, if your `tsconfig.json` uses `"paths"` aliases that require a runtime helper (like `tsconfig-paths`), ensure that package is in `dependencies` not `devDependencies`, or it will be excluded from the audit and potentially from production installs.
 
----
+## Quick Reference — TypeScript Shift-Left Checklist
 
-## Shift-Left vs Shift-Right Balance [community]
+Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 
-[community] **Lesson (Spotify engineering blog)**: Teams that go all-in on shift-left and remove production monitoring regress. Unit tests and lint checks do not catch n-way integration failures, data migration edge cases, or real user behavior patterns that only appear at scale.
-
-[community] **Lesson (Netflix tech blog, GitHub engineering)**: High-velocity organizations run both layers: shift-left gates (unit test, lint, SAST) for speed and immediate feedback, and shift-right observability (feature flags, canary deployments, error budgets, synthetic checks) for production confidence.
-
-[community] **Lesson (Google SRE Book)**: The cost curve argument works in the opposite direction too — building comprehensive integration test suites that take 45 minutes to run is a form of over-shifting-left that kills CI throughput. The goal is *appropriately placed* feedback loops, not maximum coverage at the earliest stage.
-
-[community] **Lesson (engineering teams at Vercel, Linear)**: Feature flags are the most powerful shift-right complement to shift-left. They decouple deploy from release, allowing incomplete or unvetted features to exist in production code safely, with instant rollback.
-
-[community] **Lesson (ThoughtWorks Technology Radar)**: The shift-left movement has created an over-investment in unit tests relative to integration and contract tests. Many bugs that matter are interaction bugs — they can only be caught between services, not within a single unit. Invest in consumer-driven contract testing (Pact) as a mid-pipeline check.
-
----
-
-## Real-World Gotchas [community]
-
-[community] **Gotcha**: `vitest run --related` in a lint-staged pre-commit hook requires test files to follow naming conventions (`user.spec.js` or `user.test.js` adjacent to `user.js`). Without this convention, vitest cannot infer which tests to run and falls back to running all tests — which can slow pre-commit significantly on large repos.
-
-[community] **Gotcha**: ESLint `security/detect-object-injection` fires on nearly every `obj[key]` bracket access. Teams typically disable this specific rule and rely on explicit allowlists and input validation instead. Always audit a SAST ruleset for false-positive rate before enforcing it as a gate.
-
-[community] **Gotcha**: `npm audit` generates false positives for vulnerabilities in dev-only dependencies (test runners, build tools) that never reach production. Use `--omit=dev` in CI to scope audits to production dependencies. Separate the "report all" and "fail on high" commands.
-
-[community] **Gotcha**: CodeQL requires all build artifacts to be produced during its analysis step. For projects with complex build pipelines (Nx, Turborepo), the CodeQL "autobuild" step often fails silently and produces incomplete results. Use an explicit build command via `build-mode: manual`.
-
-[community] **Gotcha**: Joi `.validate()` with the default options does NOT strip unknown fields — `{ name: 'a', __proto__: ... }` passes through untouched. Always pass `{ stripUnknown: true }` or call `.options({ stripUnknown: true })` at external trust boundaries to reject unexpected properties that could indicate prototype pollution attempts.
-
-[community] **Gotcha (Snyk report 2023)**: Dependabot PR volume on active projects can reach 20–40 PRs per week, causing PR fatigue and ignored updates. Use Dependabot's `groups` configuration or switch to Renovate with `automerge: true` for patch-level non-security updates.
-
-[community] **Gotcha**: OWASP ZAP active scan mode will attempt SQL injection, path traversal, and XSS payloads against your application — it **will mutate or corrupt test database data** if pointed at a shared environment. Always run DAST against an isolated, ephemeral environment.
-
-[community] **Lesson (Atlassian microservices)**: Consumer-driven contract testing (Pact) eliminated an entire class of integration defects in their microservice architecture: breaking API changes that only surfaced in staging or production. By running Pact contract verification as a PR check, teams caught breaking changes at the exact commit that introduced them — not two weeks later during integration testing.
-
-[community] **Lesson (engineering teams)**: The single most actionable shift-left metric is "defect discovery phase distribution" — tracking where defects are found (pre-commit / PR / staging / production) and watching the distribution shift left over time. Teams that track this metric improve it; teams that only track production defect counts do not.
-
-[community] **Lesson (State of JS 2024 survey)**: ESLint is the #1 static analysis tool in the JavaScript ecosystem with > 90% adoption in teams larger than 5 engineers. However, only 38% of teams enforce `--max-warnings=0` in CI — the majority run ESLint in advisory mode. Enforcing zero-warning in CI is one of the highest-leverage, lowest-effort upgrades available to a JS team.
-
-[community] **Lesson (JSDoc + tsc --checkJs production adoption)**: Teams at Airbnb, Khan Academy, and Google Closure compiler projects have demonstrated that JSDoc-typed JavaScript with `tsc --checkJs` provides 80–90% of TypeScript's type-error-catching benefit at near-zero migration cost. The key constraint: type annotations must be kept up-to-date — treat stale JSDoc types as a first-class code smell caught by code review.
-
-[community] **Lesson (DORA 2024 State of DevOps Report)**: The 2024 DORA survey found that technical debt and rework are the primary inhibitors of software delivery performance — teams spending > 30% of their time on rework and unplanned work had 2× worse change failure rates than elite teams. The DORA report explicitly identifies early defect detection (shift-left) as the intervention with the highest correlation to reduced rework. Shift-left is not just a quality practice — it is a velocity practice: the fewer defects that escape to later phases, the more engineering time is available for new features.
-
-[community] **Gotcha (AI-assisted SAST, 2024–2026)**: AI autofix tools propose semantically correct but contextually wrong fixes in ~15–20% of cases. The fix may resolve the flagged vulnerability while introducing a different defect — for example, replacing a timing-attack-vulnerable string comparison with a constant-time comparison but targeting the wrong variable. Always require human review of AI-proposed security fixes before merging. Do not configure Copilot Autofix or Semgrep Assistant to auto-merge without code review, even for "low-severity" findings.
-
-[community] **Lesson (Stripe engineering)**: Shift-left pays the highest dividend when applied to the authorization layer. Authorization defects (privilege escalation, IDOR) are systematically hard to catch with unit test cases because they require cross-user context. Test authorization explicitly at the integration level with role-specific test fixtures.
-
-[community] **Lesson (Airbnb JavaScript team)**: The single highest-ROI shift-left investment on an existing JavaScript codebase is not adding SAST or security tools — it is enabling strict ESLint rules (`no-unused-vars`, `no-undef`, `eqeqeq`, `no-implicit-globals`) and fixing all warnings. Teams report catching 15–30% of existing production defects during this process. The lint errors are a map of the existing defects.
-
----
-
-## Tradeoffs & Alternatives
-
-| Approach | Benefit | Cost | Recommendation |
-|---|---|---|---|
-| Pre-commit hooks (Husky) | Immediate, offline feedback; no CI wait | Slows commit (5–30s); devs bypass with `--no-verify` | Use for lint + format only; move heavy checks to CI |
-| PR status checks | Hard gate, cannot be bypassed; audit trail | Requires CI infrastructure; slows PR cycle by 3–10 min | Required for all production codebases |
-| SAST (CodeQL) | Deep data-flow and taint analysis; finds subtle injection defects | High false-positive rate; complex setup for monorepos; 5–20 min scan | Essential for security-sensitive code; tune rules first |
-| SAST (Semgrep) | Fast (< 2 min); highly configurable; offline-capable | Community rules vary in quality; requires rule maintenance | Better default SAST choice than CodeQL for speed |
-| AI-assisted SAST (Copilot Autofix / Semgrep Assistant) | Proposes code fix inline with finding; 5× faster remediation | Requires GHAS license or Semgrep Team/Enterprise; AI fixes need human review | Add after SAST is established and generating actionable findings |
-| Container scanning (Trivy) | Catches OS-level CVEs invisible to npm audit | High false-positive rate for unfixed CVEs; needs `.trivyignore` maintenance | Use with `--ignore-unfixed`; run on Dockerfile changes and pre-push |
-| SBOM generation (CycloneDX) | Enables retroactive CVE querying; regulatory compliance (EO 14028) | Adds build step; attestation requires Sigstore/OIDC setup | Required for government/regulated sectors; recommended for all production software |
-| DAST (OWASP ZAP) | Finds runtime security issues invisible to SAST | Requires running app; 15–45 min; corrupts test data if misconfigured | Nightly/schedule only; never on every PR |
-| Runtime validation (Joi / Ajv) | Catches malformed input at entry point; prevents data corruption | Adds validation layer to every API handler; schema must stay in sync | Use at all external trust boundaries (API routes, webhooks) |
-| Snyk vs npm audit | Snyk: richer data, fix PRs, license scan; audit: zero config | Snyk: requires account + token + cost at scale | Both: `npm audit` in CI, Snyk for deeper analysis |
-
-**When not to shift left**: Exploratory testing, usability research, load testing, and chaos/resilience testing are inherently shift-right activities. Do not attempt to automate or pre-production-gate tests that require real user behavior, real traffic patterns, concurrent load, or stochastic failure modes. These require production-like conditions to be meaningful.
-
-### Team-Size Adoption Guide
-
-| Team Size | Recommended Starting Point | Add Next |
-|---|---|---|
-| 1–3 engineers | ESLint + Prettier (pre-commit) | Unit tests, `npm audit` in CI |
-| 4–10 engineers | Above + Husky/lint-staged + PR status checks (unit tests, lint) | Vitest coverage thresholds, CodeQL on PRs |
-| 11–30 engineers | Above + Semgrep or CodeQL SAST + Snyk dependency scanning | DAST (nightly), contract tests |
-| 30+ engineers | Above + all patterns + DAST + consumer-driven contract tests (Pact) + SBOMs | Chaos engineering, error budgets |
-
-**Pragmatic sequencing**: Do not attempt to implement all patterns simultaneously. Start with the cheapest, highest-ROI items (ESLint + pre-commit hooks) and add layers incrementally. A partially implemented shift-left strategy is better than a comprehensive one that never gets past the planning stage.
-
----
-
-## Shift-Left Maturity Model
-
-Use this model to assess and advance your team's shift-left posture. Each level builds on the previous — do not skip levels.
-
-| Level | Name | Characteristics | Key Evidence |
-|-------|------|----------------|--------------|
-| **L1** | Ad-Hoc | Tests written after code or not at all; no pre-commit hooks; testing is a manual phase | No CI test gate; defects found in staging or production |
-| **L2** | Established | Unit tests exist and run in CI; ESLint enabled; PR requires CI to pass | CI green required to merge; coverage tracked (even if not thresholded) |
-| **L3** | Automated | Pre-commit hooks with lint-staged; coverage thresholds enforced; SAST (ESLint security, Semgrep) running on PRs; `npm audit` as gate; secret scanning enabled | MTTD < 15 min for code defects; pre-commit catches format/lint issues |
-| **L4** | Security-Integrated | CodeQL or Semgrep with custom rules; runtime schema validation at all API boundaries; Snyk + license compliance; nightly DAST; contract tests for service interactions | SAST:production CVE ratio > 10:1; no unscanned PRs |
-| **L5** | Comprehensive | IaC scanning (Checkov/Trivy); container image scanning; SBOM generation + attestation; error budgets defined; full shift-right complement (canary, feature flags, synthetic monitoring) | Defect escape rate measured and decreasing; `--no-verify` usage near zero |
-
-**Transition guidance:**
-- **L1 → L2**: Enable ESLint + unit tests + CI gate. Takes 1–2 sprints on an existing codebase.
-- **L2 → L3**: Add Husky + lint-staged + Semgrep + branch protection (enforced with `enforce_admins: true`). Takes 1 sprint. The majority of shift-left ROI comes from L2→L3.
-- **L3 → L4**: Add CodeQL + runtime validation + Snyk + DAST + OpenSSF Scorecard. Takes 2–3 sprints. Requires security champion on team to tune rules.
-- **L4 → L5**: Add IaC/container scanning + SBOM generation + attestation + branch protection drift detection + full observability. Ongoing investment; plan 1 sprint per tool.
-
-> [community] **Lesson (engineering maturity research, DORA 2024)**: Teams at L3+ (automated gates, SAST, coverage thresholds) deploy 4× more frequently and have 7× lower change failure rates than L1–L2 teams. The L2→L3 transition is where most of the DORA elite performer gains come from — not from L4/L5 sophistication. Invest in getting everyone to L3 before optimizing beyond it.
-
----
-
-## Quick Reference — Shift-Left Checklist
-
-Use this checklist to audit a JavaScript/Node.js project's shift-left posture:
+**TypeScript Compiler Layer (instantaneous — runs on save)**
+- [ ] `"strict": true` in `tsconfig.json`
+- [ ] `"noUncheckedIndexedAccess": true` (not in strict by default)
+- [ ] `"exactOptionalPropertyTypes": true` (not in strict by default)
+- [ ] `"useUnknownInCatchVariables": true` (enabled by `strict` in TS 4.4+)
+- [ ] `"noUnusedLocals": true` and `"noUnusedParameters": true`
+- [ ] Separate `tsconfig.test.json` with relaxed rules for test files
 
 **Static Layer (pre-commit)**
-- [ ] ESLint with `eslint:recommended` + `eslint-plugin-security`
+- [ ] `@typescript-eslint/eslint-plugin` v8+ with `recommendedTypeChecked`
+- [ ] `eslint-plugin-security` for Node.js security rules
 - [ ] Husky pre-commit hook with lint-staged (lint + format)
+- [ ] `tsc --noEmit --incremental` in pre-commit (fast via build cache)
 - [ ] Conventional commits enforced via commit-msg hook
 - [ ] `.env` files in `.gitignore` + pre-commit `.env` file guard
 - [ ] Secret scanning pre-commit check (Gitleaks or custom script)
 
 **PR Gate Layer (CI — must pass before merge)**
-- [ ] Unit tests with coverage thresholds (≥ 80% lines) via Vitest or Jest
-- [ ] ESLint + security lint at `--max-warnings=0`
-- [ ] `tsc --project jsconfig.json --noEmit` (JSDoc type checking for plain JS projects)
+- [ ] `tsc --noEmit` (full, non-incremental) as required status check
+- [ ] Unit tests with coverage thresholds (≥ 80% lines) via Vitest
+- [ ] `@typescript-eslint` at `--max-warnings=0`
 - [ ] `npm audit --audit-level=high --omit=dev`
-- [ ] Semgrep or CodeQL SAST scan (language: `javascript`)
+- [ ] Semgrep with `p/typescript` ruleset
+- [ ] CodeQL with `javascript-typescript` language
 - [ ] Gitleaks secret scanning (PR-level)
-- [ ] GitHub Secret Scanning push protection enabled at org/repo level
-- [ ] Runtime schema validation at all external API boundaries (Joi / Ajv / Zod)
+- [ ] Zod (or equivalent) runtime validation at all external API boundaries
 - [ ] Branch protection configured with `enforce_admins: true` + required status checks
 
 **Pipeline / Nightly Layer**
 - [ ] Snyk dependency scan (nightly, on `package-lock.json` changes)
 - [ ] Dependabot or Renovate for automated dependency updates
 - [ ] OWASP ZAP baseline scan (nightly against staging)
-- [ ] License compliance check
-- [ ] OpenSSF Scorecard (weekly, score published to security dashboard)
+- [ ] License compliance check (`license-checker`)
+- [ ] OpenSSF Scorecard (weekly)
 - [ ] Container image scan (Trivy) on `Dockerfile` changes
-- [ ] SBOM generation (CycloneDX) on every release build, attested with Sigstore
 
 **Shift-Right Layer (production confidence)**
 - [ ] Feature flags for gradual rollout
@@ -1284,118 +1245,6 @@ Use this checklist to audit a JavaScript/Node.js project's shift-left posture:
 
 ---
 
-## Infrastructure-as-Code (IaC) Scanning
-
-Shift-left extends beyond application code to the infrastructure configuration that defines it. IaC misconfigurations (open S3 buckets, missing encryption, overly permissive IAM roles) are production vulnerabilities whose root cause is in a configuration file — and they are caught most cheaply before the `terraform apply`.
-
-```yaml
-# .github/workflows/iac-scan.yml — runs on changes to IaC files
-name: IaC Security Scan
-on:
-  pull_request:
-    paths:
-      - 'infrastructure/**'
-      - '**/*.tf'
-      - '**/*.yaml'
-      - 'Dockerfile*'
-      - 'docker-compose*.yml'
-
-jobs:
-  checkov:
-    name: Checkov IaC Scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Scan Terraform / CloudFormation / K8s / Docker
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: .
-          framework: terraform,cloudformation,kubernetes,dockerfile,docker_compose
-          quiet: true
-          soft_fail: false
-          output_format: sarif
-          output_file_path: checkov.sarif
-      - uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: checkov.sarif
-```
-
-> [community] **Gotcha**: IaC scanners have very high false-positive rates on resource-level checks (e.g., "S3 bucket has no access logs" is flagged even for intentionally public buckets). Maintain a `.checkov.yaml` or `.trivyignore` file that documents suppressed checks with reasons — treat it as a living security decision log, reviewed quarterly.
-
----
-
-## Container Image Scanning (Trivy)
-
-Container images are a distinct attack surface from application code and IaC. An image can contain a clean application binary but be built on a base image with dozens of OS-level CVEs. Trivy scans container images, filesystems, and Git repositories for known vulnerabilities across OS packages, language dependencies, and misconfigurations.
-
-```yaml
-# .github/workflows/container-scan.yml — runs on Dockerfile changes and before image push
-name: Container Image Scan
-on:
-  push:
-    branches: [main]
-    paths:
-      - 'Dockerfile*'
-      - '.dockerignore'
-      - 'package-lock.json'   # Dependency change = possible new CVEs in image
-  pull_request:
-    paths:
-      - 'Dockerfile*'
-
-jobs:
-  trivy-scan:
-    name: Trivy Container Scan
-    runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      contents: read
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build Docker image for scanning
-        run: docker build -t app:${{ github.sha }} .
-        # Build from current commit — scan the artifact that will actually be deployed
-
-      - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: app:${{ github.sha }}
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-          # CRITICAL + HIGH: fail on these; MEDIUM + LOW: report only
-          exit-code: '1'        # Fail if CRITICAL/HIGH found
-          ignore-unfixed: true  # Suppress CVEs with no available fix (reduces noise)
-          trivyignores: .trivyignore
-
-      - uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: trivy-results.sarif
-```
-
-```toml
-# .trivyignore — document suppressed CVEs with justification
-# Format: CVE-ID or package@version, one per line, comments with #
-
-# CVE-2024-XXXXX: Affects libssl3 in alpine:3.19; no fix available as of 2026-04-28.
-# Impact: Network-adjacent attack vector, not exposed in our threat model (no direct TLS termination in container).
-# Review date: 2026-07-28 (90-day review cycle)
-CVE-2024-XXXXX
-
-# GHSA-xxxx-yyyy-zzzz: false positive — affects npm package X only in test environment
-# Our production build uses --omit=dev in Dockerfile; package is never installed in the image.
-GHSA-xxxx-yyyy-zzzz
-```
-
-**WHY it matters**: `npm audit` checks your application's `package-lock.json`, but the container image includes OS-level packages (glibc, openssl, busybox, curl) that `npm audit` cannot see. A compromised base image can allow an attacker to escalate from application-level access to container escape. Container scanning is the shift-left mechanism for catching this class of vulnerability before the image is pushed to a registry and deployed.
-
-> [community] **Lesson (Anchore State of Software Supply Chain Security, 2024)**: 78% of container images in production contain at least one known CRITICAL or HIGH CVE. The primary cause is base image staleness — teams pull `node:20-alpine` at project creation and never update the base image. Pin your base image to a specific digest in Dockerfile (`FROM node:20-alpine@sha256:<digest>`), and use Dependabot's `docker` ecosystem support or Renovate's `docker` manager to automate base image updates.
-
-> [community] **Gotcha**: Trivy's `--ignore-unfixed` flag is essential in practice. Without it, Trivy fails on CVEs in OS packages that have no upstream fix available — often OS-level CVEs in Alpine packages that the Alpine team has not yet patched. These cannot be remediated by the application team and create a "permanently failing gate" that teams learn to ignore or disable. Always separate "informational" (no fix available) from "actionable" (fix available but not applied) findings.
-
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -1403,29 +1252,27 @@ GHSA-xxxx-yyyy-zzzz
 | IBM: Shift-Left Testing | Official | https://www.ibm.com/topics/shift-left-testing | Foundational definitions and cost-of-defects curve |
 | OWASP DevSecOps Guideline | Official | https://owasp.org/www-project-devsecops-guideline/ | Security testing pipeline integration patterns |
 | OWASP ZAP | Official | https://www.zaproxy.org/ | DAST tool for runtime security testing |
-| Semgrep Rules Registry | Tool | https://semgrep.dev/r | Curated SAST rulesets for JavaScript/Node.js/OWASP |
-| CodeQL Documentation | Official | https://codeql.github.com/docs/ | Deep data-flow taint analysis for security bugs |
-| Husky Documentation | Tool | https://typicode.github.io/husky/ | Pre-commit hook setup for Node.js projects |
+| TypeScript Handbook — Strict Mode | Official | https://www.typescriptlang.org/tsconfig#strict | All strict compiler flags and what they catch |
+| TypeScript Compiler Options Reference | Official | https://www.typescriptlang.org/tsconfig | Full tsconfig.json reference |
+| `@typescript-eslint` Documentation | Tool | https://typescript-eslint.io/rules/ | TypeScript-aware ESLint rules |
+| Zod Documentation | Tool | https://zod.dev/ | TypeScript-first schema validation and type derivation |
+| Semgrep Rules Registry | Tool | https://semgrep.dev/r | Curated SAST rulesets including `p/typescript` |
+| CodeQL Documentation | Official | https://codeql.github.com/docs/ | Deep taint analysis for TypeScript/JavaScript |
+| Husky Documentation | Tool | https://typicode.github.io/husky/ | Pre-commit hook setup for Node.js/TypeScript projects |
 | lint-staged | Tool | https://github.com/lint-staged/lint-staged | Run linters on staged files only (fast pre-commit) |
 | Snyk for Node.js | Tool | https://docs.snyk.io/scan-using-snyk/snyk-open-source/ | Dependency vulnerability + license scanning |
-| JSDoc Type Checking (jsconfig.json) | Tool | https://www.typescriptlang.org/tsconfig#checkJs | TypeScript-level type safety for plain JavaScript via `tsc --checkJs` |
-| Joi Validation | Tool | https://joi.dev/ | Runtime schema validation for Node.js APIs |
-| Ajv JSON Schema Validator | Tool | https://ajv.js.org/ | High-performance JSON Schema validation |
-| eslint-plugin-security | Tool | https://github.com/eslint-community/eslint-plugin-security | ESLint rules for Node.js security vulnerabilities |
+| eslint-plugin-security | Tool | https://github.com/eslint-community/eslint-plugin-security | ESLint security rules for Node.js |
 | Google SRE Book — Testing for Reliability | Book | https://sre.google/sre-book/testing-reliability/ | Production testing philosophy from Google |
 | ThoughtWorks Technology Radar — Shift Left on Security | Community | https://www.thoughtworks.com/radar/techniques/shift-left-on-security | Industry adoption signal and maturity guidance |
 | NIST: Cost Advantage of Early Defect Detection | Research | https://www.nist.gov/system/files/documents/director/planning/report02-3.pdf | Empirical data behind the cost-of-defects curve |
 | Pact Consumer-Driven Contract Testing | Tool | https://docs.pact.io/ | Contract tests as mid-pipeline shift-left integration checks |
-| Vitest Documentation | Tool | https://vitest.dev/guide/ | Fast JavaScript-native test runner for pre-commit and CI |
+| Vitest Documentation | Tool | https://vitest.dev/guide/ | Fast TypeScript-native test runner |
 | Renovate Bot | Tool | https://docs.renovatebot.com/ | Automated dependency updates with configurable automerge |
-| Gitleaks | Tool | https://github.com/gitleaks/gitleaks | Pre-commit and CI secret detection in git history |
+| Gitleaks | Tool | https://github.com/gitleaks/gitleaks | Pre-commit and CI secret detection |
 | GitHub Secret Scanning | Official | https://docs.github.com/en/code-security/secret-scanning | Native push protection for committed secrets |
-| Checkov (IaC Scanner) | Tool | https://www.checkov.io/ | Policy-as-code scanning for Terraform/K8s/Dockerfile |
-| Trivy | Tool | https://aquasecurity.github.io/trivy/ | Container image + IaC misconfiguration vulnerability scanner |
-| CycloneDX SBOM Generator | Tool | https://cyclonedx.org/ | SBOM generation standard for vulnerability querying |
-| OpenSSF Scorecard | Tool | https://securityscorecards.dev/ | Automated supply chain security scoring (0–10) across 18 checks |
-| OSV (Open Source Vulnerabilities) | Official | https://osv.dev/ | Google's open vulnerability database; powers Dependabot and Renovate; queryable via API |
-| DORA 2024 State of DevOps Report | Research | https://dora.dev/research/2024/dora-report/ | Empirical data linking shift-left practices to elite engineering performance |
-| CISA: Framing Software Component Transparency | Official | https://www.cisa.gov/resources-tools/resources/framing-software-component-transparency | CISA SBOM guidance for supply chain security and EO 14028 compliance |
-| GitHub Copilot Autofix | Tool | https://github.blog/2024-03-20-found-means-fixed-introducing-autofix-for-github-advanced-security/ | AI-assisted SAST remediation: proposes code fixes alongside CodeQL/third-party findings |
-| Semgrep Assistant | Tool | https://semgrep.dev/docs/semgrep-assistant/overview/ | AI-powered triage and remediation for Semgrep SAST findings |
+| OpenSSF Scorecard | Tool | https://securityscorecards.dev/ | Automated supply chain security scoring |
+| DORA 2024 State of DevOps Report | Research | https://dora.dev/research/2024/dora-report/ | Empirical data linking shift-left to elite engineering performance |
+| CISA: Framing Software Component Transparency | Official | https://www.cisa.gov/resources-tools/resources/framing-software-component-transparency | SBOM guidance for supply chain security |
+| GitHub Copilot Autofix | Tool | https://github.blog/2024-03-20-found-means-fixed-introducing-autofix-for-github-advanced-security/ | AI-assisted SAST remediation with TypeScript awareness |
+| Semgrep Assistant | Tool | https://semgrep.dev/docs/semgrep-assistant/overview/ | AI-powered triage and remediation for Semgrep findings |
+| ISTQB CTFL 4.0 Syllabus | Official | https://www.istqb.org/certifications/certified-tester-foundation-level | Standardized shift-left terminology and test levels |

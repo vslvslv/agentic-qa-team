@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java) | community (practitioner synthesis, Effective Java principles, awesome-java) | mixed | iteration: 5 | score: 100/100 | date: 2026-04-28 -->
+<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
 
 ## Core Philosophy
 
@@ -63,6 +63,57 @@ HttpRequest req = new HttpRequest.Builder("https://api.example.com/data")
         .timeoutMs(10_000)
         .followRedirects(false)
         .build();
+```
+
+### Static Factory Methods (Effective Java Item 1)
+Prefer static factory methods over constructors. They have names (making intent clear), can return cached/singleton instances, can return subtypes, and can encapsulate complex initialization logic. This is the pattern behind `Optional.of()`, `List.of()`, `Path.of()`, and `Comparator.comparing()`.
+
+```java
+public final class Connection {
+    private final String url;
+    private final boolean readOnly;
+
+    // Private constructor — all creation goes through factories
+    private Connection(String url, boolean readOnly) {
+        this.url = url;
+        this.readOnly = readOnly;
+    }
+
+    // Named factory methods — intent is explicit
+    public static Connection readWrite(String url) {
+        return new Connection(url, false);
+    }
+
+    public static Connection readOnly(String url) {
+        return new Connection(url, true);
+    }
+
+    // Factory that returns cached instances (flyweight-style)
+    private static final Connection DEV_CONNECTION =
+        new Connection("jdbc:h2:mem:test", false);
+
+    public static Connection dev() {
+        return DEV_CONNECTION;  // same instance every time
+    }
+}
+
+// Usage — intent is self-documenting
+var conn = Connection.readOnly("jdbc:postgresql://prod-db/myapp");
+var dev  = Connection.dev();
+
+// Enum-based factory: maps domain types to implementations
+public sealed interface Parser<T> permits JsonParser, XmlParser, CsvParser {
+    T parse(String input);
+
+    static <T> Parser<T> forFormat(String format, Class<T> type) {
+        return switch (format.toLowerCase()) {
+            case "json" -> new JsonParser<>(type);
+            case "xml"  -> new XmlParser<>(type);
+            case "csv"  -> new CsvParser<>(type);
+            default     -> throw new IllegalArgumentException("Unknown format: " + format);
+        };
+    }
+}
 ```
 
 ### Optional\<T\> — Representing Absence Explicitly
@@ -262,7 +313,53 @@ Money tax   = new Money(new BigDecimal("0.80"), Currency.getInstance("USD"));
 Money total = price.add(tax);  // returns new Money(10.79, USD)
 ```
 
-### Generics with Bounded Type Parameters
+### Defensive Programming with `java.util.Objects`
+The `Objects` utility class (since Java 7, significantly enhanced through Java 16+) provides null-safe operations and precondition checks that should be used in all public API entry points.
+
+```java
+import java.util.Objects;
+
+public final class Invoice {
+    private final String invoiceId;
+    private final List<LineItem> lineItems;
+    private final BigDecimal discount;
+
+    public Invoice(String invoiceId, List<LineItem> lineItems, BigDecimal discount) {
+        // Fail-fast validation with meaningful messages
+        this.invoiceId  = Objects.requireNonNull(invoiceId, "invoiceId must not be null");
+        this.lineItems  = List.copyOf(Objects.requireNonNull(lineItems, "lineItems"));
+        this.discount   = Objects.requireNonNullElse(discount, BigDecimal.ZERO); // fallback
+    }
+
+    // Null-safe equality — avoids NPE when either side may be null
+    public boolean sameInvoice(Invoice other) {
+        return Objects.equals(this.invoiceId, other.invoiceId);
+    }
+
+    // Null-safe hash for use in collections
+    @Override
+    public int hashCode() {
+        return Objects.hash(invoiceId, discount);
+    }
+
+    // Java 9+: Objects.requireNonNullElseGet for lazy default
+    public static Invoice withDefaults(String id, List<LineItem> items) {
+        BigDecimal discount = Objects.requireNonNullElseGet(
+            fetchDiscount(id),
+            () -> BigDecimal.ZERO  // only computed if fetchDiscount returns null
+        );
+        return new Invoice(id, items, discount);
+    }
+
+    // Java 9+: Objects.checkIndex / checkFromToIndex for array bounds
+    public LineItem getItem(int index) {
+        Objects.checkIndex(index, lineItems.size()); // throws IndexOutOfBoundsException if invalid
+        return lineItems.get(index);
+    }
+}
+```
+
+
 Use bounded wildcards to write flexible, reusable APIs. The PECS mnemonic — **Producer Extends, Consumer Super** — tells you when to use `? extends T` (you're reading from the collection) vs. `? super T` (you're writing to it).
 
 ```java
@@ -664,6 +761,84 @@ try {
 list.forEach(_ -> counter.increment());  // parameter unused by intent
 ```
 
+### Scoped Values (Java 21 preview / Java 23 standard)
+`ScopedValue` is the modern, thread-safe alternative to `ThreadLocal` for passing context through a call tree without explicit parameter threading. Unlike `ThreadLocal`, scoped values are immutable within a scope and automatically cleaned up when the scope ends — making them safe for virtual threads.
+
+```java
+import java.lang.ScopedValue;
+
+public class RequestHandler {
+
+    // Declare a scoped value — typically a public static final
+    private static final ScopedValue<User> CURRENT_USER = ScopedValue.newInstance();
+    private static final ScopedValue<String> REQUEST_ID  = ScopedValue.newInstance();
+
+    // Bind values for the duration of a request
+    public void handle(HttpRequest request) {
+        User user = authenticate(request);
+        String requestId = UUID.randomUUID().toString();
+
+        ScopedValue.where(CURRENT_USER, user)
+                   .where(REQUEST_ID, requestId)
+                   .run(() -> {
+                       // All code called within this block can read these values
+                       processRequest(request);
+                   });
+        // Values automatically cleaned up after run() completes
+    }
+
+    // Deep in the call stack — no parameter needed
+    private void processRequest(HttpRequest request) {
+        User user = CURRENT_USER.get();       // type-safe, no cast
+        String rid = REQUEST_ID.get();
+        log.info("Processing request {} for user {}", rid, user.name());
+        // ...
+    }
+}
+```
+
+**Why prefer ScopedValue over ThreadLocal for virtual threads:**
+- `ThreadLocal` survives the thread's lifetime and must be explicitly removed — in virtual-thread-per-task models, this causes leaks.
+- `ScopedValue` bindings are **immutable** within the scope and automatically cleaned up.
+- Virtual threads can inherit scoped values from their parent structured concurrency scope.
+
+### Stream Gatherers (Java 22+ — JEP 485)
+`Stream.gather(Gatherer)` is a new terminal-like intermediate operation that enables custom intermediate stream operations beyond what `map`, `filter`, and `flatMap` support. Useful for sliding windows, stateful transformations, and grouping without collecting.
+
+```java
+import java.util.stream.Gatherer;
+import java.util.stream.Gatherers;
+
+// Built-in gatherers (Java 22+)
+List<Integer> numbers = List.of(1, 2, 3, 4, 5, 6, 7, 8);
+
+// Sliding window of size 3
+List<List<Integer>> windows = numbers.stream()
+    .gather(Gatherers.windowSliding(3))
+    .toList();
+// [[1,2,3], [2,3,4], [3,4,5], [4,5,6], [5,6,7], [6,7,8]]
+
+// Fixed window (tumbling)
+List<List<Integer>> chunks = numbers.stream()
+    .gather(Gatherers.windowFixed(3))
+    .toList();
+// [[1,2,3], [4,5,6], [7,8]]
+
+// Custom gatherer: running total
+Gatherer<Integer, ?, Integer> runningTotal = Gatherer.ofSequential(
+    () -> new int[]{0},                                       // initializer
+    (state, element, downstream) -> {                         // integrator
+        state[0] += element;
+        return downstream.push(state[0]);
+    }
+);
+
+List<Integer> totals = numbers.stream()
+    .gather(runningTotal)
+    .toList();
+// [1, 3, 6, 10, 15, 21, 28, 36]
+```
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -878,6 +1053,86 @@ public record UserSession(String userId, Instant createdAt) {}
 // Serialize to JSON: objectMapper.writeValueAsString(session)
 ```
 
+**16. CompletableFuture Swallowing Exceptions Silently [community]**
+`CompletableFuture` chains that use `thenApply` or `thenAccept` without a terminal `exceptionally` or `whenComplete` handler will silently swallow exceptions. If the result `CompletableFuture` is never observed (e.g., fire-and-forget), the exception is lost with no log or alert. The root cause is that unlike `Thread.UncaughtExceptionHandler`, there is no default handler for unobserved `CompletableFuture` failures.
+
+```java
+// BAD — exceptions vanish if nobody calls .get() or .join() on the future
+CompletableFuture.supplyAsync(() -> riskyOperation())
+    .thenApply(result -> transform(result));  // if supplyAsync throws, nobody sees it
+
+// GOOD — always attach exceptionally() or whenComplete() for error handling
+CompletableFuture.supplyAsync(() -> riskyOperation())
+    .thenApply(result -> transform(result))
+    .exceptionally(ex -> {
+        log.error("Async operation failed", ex);
+        return defaultValue();
+    });
+
+// GOOD — whenComplete always runs (success or failure)
+CompletableFuture.supplyAsync(() -> riskyOperation())
+    .whenComplete((result, ex) -> {
+        if (ex != null) log.error("Failed", ex);
+        else processResult(result);
+    });
+```
+**WHY:** A `CompletableFuture` is not a fire-and-forget mechanism. Unobserved exceptions are "dropped" at the CompletableFuture level without propagating to any thread's uncaught exception handler. In production services, this creates silent failures that are nearly impossible to debug.
+
+**17. Using ThreadLocal with Virtual Threads Causes Memory Leaks [community]**
+`ThreadLocal` variables are designed for OS threads where the thread is expensive to create and lives for a long time. With `Executors.newVirtualThreadPerTaskExecutor()`, a new virtual thread is created per task — potentially millions — and if any `ThreadLocal` values are set but not removed via `ThreadLocal.remove()`, they accumulate heap pressure. The root cause is that virtual threads are pooled differently from OS threads but still share `ThreadLocal` semantics. Fix: use `ScopedValue` (Java 21+) for context propagation in virtual-thread-heavy code; always call `threadLocal.remove()` in `finally` blocks if `ThreadLocal` must be used.
+
+```java
+// BAD — ThreadLocal leaks with virtual threads
+private static final ThreadLocal<RequestContext> CONTEXT = new ThreadLocal<>();
+
+public void handleRequest(Request req) {
+    CONTEXT.set(new RequestContext(req.userId()));  // set but potentially never removed
+    try {
+        processRequest(req);
+    } finally {
+        CONTEXT.remove();  // MUST remove; easy to forget
+    }
+}
+
+// GOOD — ScopedValue; automatically cleaned up when scope exits
+private static final ScopedValue<RequestContext> CONTEXT = ScopedValue.newInstance();
+
+public void handleRequest(Request req) {
+    ScopedValue.where(CONTEXT, new RequestContext(req.userId()))
+               .run(() -> processRequest(req));  // cleanup is automatic
+}
+```
+**WHY:** Each virtual thread that sets a `ThreadLocal` and never removes it retains a reference to the object even after the task completes. With millions of short-lived virtual threads, this silently exhausts heap memory.
+
+**18. Not Defensively Copying Mutable Inputs in Constructors [community]**
+Storing a mutable collection passed by a caller allows the caller to modify the object's internal state after construction, breaking immutability invariants. This is especially subtle with `List`, `Map`, and `Date` (mutable!). The root cause is assuming the caller will not retain and modify their reference.
+
+```java
+// BAD — caller still holds a reference to the list
+public class Order {
+    private final List<LineItem> items;
+
+    public Order(List<LineItem> items) {
+        this.items = items;  // if caller does items.add(...) later, our order changes!
+    }
+}
+
+// GOOD — defensive copy on entry
+public class Order {
+    private final List<LineItem> items;
+
+    public Order(List<LineItem> items) {
+        this.items = List.copyOf(items);  // immutable snapshot; null-safe
+    }
+
+    // ALSO: defensive copy on return if exposing a mutable view
+    public List<LineItem> getItems() {
+        return Collections.unmodifiableList(items);  // or List.copyOf(items)
+    }
+}
+```
+**WHY:** An object that allows external mutation of its fields is not truly immutable. "Final" only prevents reassigning the reference — it does not make the referenced list immutable. Use `List.copyOf()` (null-safe, throws on null elements) or `Collections.unmodifiableList()` depending on whether you need snapshot semantics or a live read-only view.
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -885,6 +1140,7 @@ public record UserSession(String userId, Instant createdAt) {}
 | Anti-Pattern | Why it's harmful | What to do instead |
 |---|---|---|
 | Returning null | Propagates NPE to callers silently | Return `Optional<T>` or throw a well-named exception |
+| Overloaded constructors with same parameters | Ambiguous; callers must count arguments | Use static factory methods with descriptive names |
 | Overusing inheritance | Couples subclasses to superclass internals; fragile base class problem | Favour composition; use interfaces |
 | God class | Single class accretes all logic; impossible to test or change | Apply SRP; split into focused, injected collaborators |
 | Magic numbers/strings | Undocumented intent; refactoring breaks silently | Name constants with `static final` or enums |
@@ -900,6 +1156,7 @@ public record UserSession(String userId, Instant createdAt) {}
 | `new Thread()` without pool | Uncontrolled thread creation; OOM under load | Use `ExecutorService` / virtual threads (Java 21) |
 | Blocking inside reactive/async code | Defeats concurrency model; stalls thread pools | Use non-blocking APIs; offload to separate executor |
 | `synchronized` in virtual threads (Java 21) | Pins carrier OS thread; kills scalability | Use `ReentrantLock` instead of `synchronized` blocks |
+| `ThreadLocal` in virtual-thread code | Memory leaks; one leak per task × millions of tasks | Use `ScopedValue` (Java 21+) for context propagation |
 | Assuming `Stream.toList()` is mutable | `UnsupportedOperationException` at runtime | Use `Collectors.toList()` when mutation is needed |
 | `Optional<T>` as a field or collection element | Not Serializable; can itself be null; adds heap pressure | Store `null`/sentinel in fields; expose `Optional` only at return boundaries |
 | `map.get()` + null check instead of `computeIfAbsent` | Verbose; non-atomic under concurrency | Use `computeIfAbsent` (atomic); `getOrDefault` for reads |

@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 17 | score: 100/100 | date: 2026-04-30 -->
+<!-- sources: official | community | mixed | iteration: 27 | score: 100/100 | date: 2026-05-02 -->
 
 ## Core Philosophy
 
@@ -277,6 +277,19 @@ const second = items.at(1);
 // Object.hasOwn() — safer than obj.hasOwnProperty() (ES2022)
 if (Object.hasOwn(user, 'email')) { /* ... */ }
 
+// Error.isError() — robust error detection across realms (ES2027, polyfill available)
+// Unlike `instanceof Error`, works across iframe boundaries and rejects prototype-faked objects
+Error.isError(new Error());    // true
+Error.isError(new TypeError()); // true
+Error.isError({ __proto__: Error.prototype }); // false — prototype spoofing rejected
+// Cross-realm: error from iframe
+const xError = new iframeWindow.Error();
+Error.isError(xError);         // true  — instanceof Error would return false!
+
+// Normalize caught values (libraries may throw strings)
+function toError(e) {
+  return Error.isError(e) ? e : new Error(String(e));
+}
 // Class private fields and methods (ES2022)
 class EventEmitter {
   #listeners = new Map();   // Private field — inaccessible outside class
@@ -1265,6 +1278,189 @@ const byDept = Map.groupBy(people, p => p.dept);
 // Map { 'eng' => [Alice, Carol], 'design' => [Bob] }
 ```
 
+### Set Methods — Set Algebra (ES2025 / Baseline 2024)
+
+`Set` now ships with algebraic operations: `union`, `intersection`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, and `isDisjointFrom`. All methods accept any _set-like_ object (anything with a `size`, `has()`, and `keys()`) and return a new `Set` without mutating either operand.
+
+```javascript
+const frontend = new Set(['Alice', 'Bob', 'Carol']);
+const backend  = new Set(['Bob', 'David', 'Eve']);
+
+// union — all members of either group
+frontend.union(backend);
+// Set { 'Alice', 'Bob', 'Carol', 'David', 'Eve' }
+
+// intersection — members in both groups
+frontend.intersection(backend);
+// Set { 'Bob' }
+
+// difference — in frontend but NOT in backend
+frontend.difference(backend);
+// Set { 'Alice', 'Carol' }
+
+// symmetricDifference — in either group but not both
+frontend.symmetricDifference(backend);
+// Set { 'Alice', 'Carol', 'David', 'Eve' }
+
+// Subset / superset checks
+const core = new Set(['Alice', 'Bob']);
+core.isSubsetOf(frontend);    // true — core ⊆ frontend
+frontend.isSupersetOf(core);  // true — frontend ⊇ core
+frontend.isDisjointFrom(new Set(['Zoe'])); // true — no overlap
+
+// Works with any set-like object — e.g., a Map's keys
+const roleMap = new Map([['Alice', 'admin'], ['Bob', 'viewer']]);
+frontend.intersection(roleMap); // Set { 'Alice', 'Bob' }
+```
+
+**Why it matters:** before ES2025 you had to write these manually with `filter` + `has` calls; now they are O(min(|A|,|B|)) built-ins, and the intent is self-documenting.
+
+### `Promise.try()` — Uniform Sync/Async Wrapping (ES2025)
+
+`Promise.try(fn)` calls `fn` synchronously and wraps the return value (or thrown error) in a Promise. It closes the longstanding gap where mixing sync-throwing and async-rejecting code required manual `try/new Promise` scaffolding.
+
+```javascript
+// Without Promise.try — awkward wrapping needed
+function callbackToPromise(maybeAsync) {
+  return new Promise((resolve) => resolve(maybeAsync()))
+    .catch(handleError);
+}
+
+// With Promise.try — concise, handles sync throws + async rejects uniformly
+function callbackToPromise(maybeAsync) {
+  return Promise.try(maybeAsync).catch(handleError);
+}
+
+// Practical: wrapping a route handler that might be sync or async
+function wrapHandler(fn) {
+  return (req, res, next) => Promise.try(fn, req, res).catch(next);
+}
+
+// All four behaviours handled identically:
+Promise.try(() => 'sync value').then(console.log);         // 'sync value'
+Promise.try(() => { throw new Error('sync throw'); }).catch(console.error);
+Promise.try(async () => 'async value').then(console.log);  // 'async value'
+Promise.try(async () => { throw new Error('async'); }).catch(console.error);
+```
+
+**Key distinction from `Promise.resolve().then(fn)`:** `Promise.try` calls `fn` _synchronously_ in the current microtask; `Promise.resolve().then(fn)` schedules it as a microtask. This matters when `fn` has side effects that must happen before the next tick.
+
+### `RegExp.escape()` — Safe Dynamic Patterns (ES2025 / Baseline May 2025)
+
+`RegExp.escape(str)` returns a copy of `str` with all regex-special characters escaped, making user-supplied strings safe to embed into dynamic `RegExp` patterns without injection risk.
+
+```javascript
+// BAD — user input treated as regex syntax (injection risk)
+function highlight(text, searchTerm) {
+  return text.replace(new RegExp(searchTerm, 'gi'), '<mark>$&</mark>');
+}
+// highlight('foo.bar', '.') — '.' matches ANY char, not just literal dot
+
+// GOOD — RegExp.escape prevents special chars from acting as operators
+function highlight(text, searchTerm) {
+  return text.replace(
+    new RegExp(RegExp.escape(searchTerm), 'gi'),
+    '<mark>$&</mark>',
+  );
+}
+highlight('foo.bar baz', '.');  // marks only the actual dots
+
+// Practical: safe URL domain matching
+function stripDomain(text, domain) {
+  const escaped = RegExp.escape(domain); // e.g. 'example.com' → 'example\\.com'
+  return text.replace(new RegExp(`https?://${escaped}`, 'g'), '');
+}
+stripDomain('Visit https://my.site.io/page', 'my.site.io');
+// → 'Visit /page'
+```
+
+---
+
+## Internationalisation (Intl) Patterns
+
+The `Intl` namespace provides locale-aware formatting with zero external dependencies. Always prefer `Intl` over manual string concatenation for dates, numbers, lists, and relative time — manual approaches miss locale nuance and are a maintenance burden.
+
+```javascript
+// ── Intl.NumberFormat — currency, compact notation, unit formatting ──
+const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+usd.format(1234567.89);  // "$1,234,567.89"
+
+// Compact notation — display large numbers concisely
+const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+compact.format(1_500_000); // "1.5M"
+compact.format(25_000);    // "25K"
+
+// formatToParts — extract components for custom rendering
+const parts = new Intl.NumberFormat('en-US', {
+  style: 'currency', currency: 'EUR',
+}).formatToParts(1234.56);
+// [ {type:'currency',value:'€'}, {type:'integer',value:'1,234'}, ... ]
+
+// ── Intl.DateTimeFormat ───────────────────────────────────────────────
+const dtf = new Intl.DateTimeFormat('en-GB', {
+  dateStyle: 'full', timeStyle: 'short',
+});
+dtf.format(new Date()); // "Saturday, 2 May 2026 at 10:30"
+
+// formatRange — date range in one call
+const fmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
+fmt.formatRange(new Date('2026-05-01'), new Date('2026-05-07')); // "May 1–7"
+
+// ── Intl.RelativeTimeFormat — human-friendly "time ago" ──────────────
+const rtf = new Intl.RelativeTimeFormat('en-US', { numeric: 'auto' });
+rtf.format(-1, 'day');   // "yesterday"
+rtf.format(-3, 'month'); // "3 months ago"
+rtf.format(2, 'week');   // "in 2 weeks"
+
+function timeAgo(date) {
+  const seconds = Math.round((date - Date.now()) / 1000);
+  const thresholds = [
+    [60,     'second'],
+    [3600,   'minute'],
+    [86400,  'hour'],
+    [604800, 'day'],
+    [2592000,'week'],
+    [Infinity,'month'],
+  ];
+  for (const [limit, unit] of thresholds) {
+    const divisor = unit === 'second' ? 1 : thresholds.find(([l]) => l === limit)?.[0] / 60 || 1;
+    if (Math.abs(seconds) < limit) {
+      return rtf.format(Math.round(seconds / (limit / thresholds.length)), unit);
+    }
+  }
+}
+
+// ── Intl.ListFormat — grammatical list joining ────────────────────────
+const list = new Intl.ListFormat('en-US', { style: 'long', type: 'conjunction' });
+list.format(['Alice', 'Bob', 'Carol']); // "Alice, Bob, and Carol"
+
+const disjunction = new Intl.ListFormat('en-US', { type: 'disjunction' });
+disjunction.format(['cash', 'card', 'crypto']); // "cash, card, or crypto"
+
+// ── Intl.Segmenter — locale-aware text segmentation ──────────────────
+// Correctly counts visual characters in multilingual text (handles emoji, CJK)
+const seg = new Intl.Segmenter('en', { granularity: 'grapheme' });
+const graphemes = [...seg.segment('🏳️‍🌈')].length; // 1 (not 6 code points)
+
+// Word segmentation — more accurate than splitting on \s
+const wordSeg = new Intl.Segmenter('ja', { granularity: 'word' }); // Japanese has no spaces
+const words = [...wordSeg.segment('日本語テキスト')]
+  .filter(s => s.isWordLike)
+  .map(s => s.segment);
+
+// ── Intl.PluralRules — language-aware pluralisation ──────────────────
+const pr = new Intl.PluralRules('en-US');
+const messages = { one: '1 item', other: '%d items' };
+function itemCount(n) {
+  return messages[pr.select(n)].replace('%d', n);
+}
+itemCount(1); // "1 item"
+itemCount(5); // "5 items"
+// Russian: pr.select(2) → 'few', pr.select(5) → 'many' — handled automatically
+```
+
+**Rule of thumb:** build-time i18n libraries (i18next, formatjs) manage translation strings; `Intl` handles the _format_ of dates, numbers, and lists within those strings. They complement each other.
+
 ---
 
 ## Security Patterns
@@ -1329,6 +1525,56 @@ function safeEval(op, a, b) {
   return fn(a, b);
 }
 ```
+
+### Content Security Policy (CSP) + Trusted Types
+
+CSP limits which scripts, styles, and resources a page can load. **Trusted Types** (Chrome 83+, Firefox 130+) enforce that only policy-processed values reach dangerous DOM sinks (`innerHTML`, `eval`, etc.), eliminating a whole class of DOM XSS at the platform level.
+
+```javascript
+// Server-side: nonce-based strict CSP (better than allowlists)
+// Express middleware
+import { randomUUID } from 'crypto';
+
+app.use((req, res, next) => {
+  res.locals.nonce = randomUUID();
+  res.setHeader(
+    'Content-Security-Policy',
+    // script-src: only scripts with the matching nonce are executed
+    // require-trusted-types-for: enforcement for DOM injection sinks
+    `script-src 'nonce-${res.locals.nonce}'; ` +
+    `object-src 'none'; base-uri 'none'; ` +
+    `require-trusted-types-for 'script'; ` +
+    `trusted-types myPolicy empty`,
+  );
+  next();
+});
+
+// HTML template: render nonce into every script tag
+// <script nonce="<%= nonce %>">...</script>
+
+// Browser: Trusted Types policy — sanitize before any DOM injection
+const domPolicy = trustedTypes.createPolicy('myPolicy', {
+  createHTML(input) {
+    // Only allow through DOMPurify-sanitized HTML
+    return DOMPurify.sanitize(input, { RETURN_TRUSTED_TYPE: true });
+  },
+  createScript(input) {
+    throw new Error('Inline scripts not allowed via Trusted Types');
+  },
+  createScriptURL(input) {
+    const allowed = ['https://cdn.example.com'];
+    const url = new URL(input);
+    if (!allowed.includes(url.origin)) throw new Error(`Blocked script URL: ${input}`);
+    return input;
+  },
+});
+
+// Safe DOM injection: Trusted Types enforces policy is called
+element.innerHTML = domPolicy.createHTML(userContent); // ✅ sanitized
+element.innerHTML = userContent;                        // ❌ throws TypeError under Trusted Types CSP
+```
+
+**Why this matters:** Trusted Types + strict CSP provides defense-in-depth that survives library upgrades introducing new injection sinks. When a dependency silently adds `innerHTML` calls, your CSP catches it in CI before production.
 
 ---
 
@@ -1404,6 +1650,65 @@ beforeEach(async () => { await db.deleteWhere({ testRun: testId }); });
 afterEach( async () => { await db.deleteWhere({ testRun: testId }); });
 ```
 
+### Node.js Built-in Test Runner (`node:test`)
+
+Node.js 18+ ships a full-featured test runner requiring zero external dependencies. Use it for server-side code, CLI tools, and packages that need minimal dependency footprint.
+
+```javascript
+import { describe, it, before, beforeEach, afterEach, mock } from 'node:test';
+import assert from 'node:assert/strict';
+
+// Basic describe/it structure with lifecycle hooks
+describe('UserService', () => {
+  let service;
+
+  beforeEach(() => {
+    service = createUserService({
+      db: { findById: mock.fn().mockResolvedValue({ id: 1, name: 'Alice' }) },
+      cache: new Map(),
+    });
+  });
+
+  afterEach(() => mock.reset()); // Restore all mocks after each test
+
+  it('returns user from DB on cache miss', async () => {
+    const user = await service.findById(1);
+    assert.equal(user.name, 'Alice');
+  });
+
+  it('caches user after first fetch', async () => {
+    await service.findById(1);
+    await service.findById(1); // second call should hit cache
+    // DB was only called once — second was served from cache
+    const dbCalls = service.db.findById.mock.callCount();
+    assert.equal(dbCalls, 1);
+  });
+});
+
+// Timer mocking — test debounce/throttle without real waits
+it('debounced handler fires once after quiet period', (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const handler = context.mock.fn();
+  const debounced = debounce(handler, 300);
+
+  debounced('a'); debounced('ab'); debounced('abc');
+  assert.equal(handler.mock.callCount(), 0);
+  context.mock.timers.tick(300);
+  assert.equal(handler.mock.callCount(), 1);
+  assert.deepEqual(handler.mock.calls[0].arguments, ['abc']);
+});
+```
+
+**Running tests:**
+```bash
+node --test                              # auto-discovers test files
+node --test "**/*.test.js"               # glob pattern
+node --test --experimental-test-coverage # with coverage
+node --test --watch                      # watch mode
+```
+
+**Key advantage over Jest/Vitest:** zero install, always available in Node.js 18+, no config files needed for simple projects. Use Jest/Vitest when you need snapshot testing, JSX transforms, or richer ecosystem integrations.
+
 ---
 
 ## Performance Patterns
@@ -1470,6 +1775,22 @@ dotProductFast(a, b); // 2-10× faster than plain array on large inputs
 // Shared memory between workers (no copy overhead)
 const sharedBuffer = new SharedArrayBuffer(size * Float64Array.BYTES_PER_ELEMENT);
 const shared = new Float64Array(sharedBuffer);
+
+// Float16Array (ES2025 / Baseline April 2025) — half the memory of Float32Array
+// Ideal for WebGPU, WebGL, and ML inference workloads (Stable Diffusion weights, etc.)
+const weights = new Float16Array(1024); // 2 bytes/element vs 4 bytes for Float32
+weights[0] = 0.5;
+console.log(weights.BYTES_PER_ELEMENT); // 2 — half the size of Float32Array
+
+// DataView for explicit byte-order control with Float16
+const buf = new ArrayBuffer(2);
+const view = new DataView(buf);
+view.setFloat16(0, 3.14);
+console.log(view.getFloat16(0)); // ~3.14 (float16 precision)
+
+// Math.f16round — round to nearest float16 value (useful for quantization checks)
+console.log(Math.f16round(5.5));    // 5.5
+console.log(Math.f16round(5.0005)); // 5 (float16 loses precision at this scale)
 ```
 
 ### Debounce and Throttle for Event-Driven Performance
@@ -1501,6 +1822,66 @@ const onInput   = debounce(search, 300);   // fires 300ms after last keystroke
 const onScroll  = throttle(updateUI, 100); // fires at most 10× per second
 input.addEventListener('input', onInput);
 window.addEventListener('scroll', onScroll);
+```
+
+### requestAnimationFrame for Smooth Animations
+
+Use `requestAnimationFrame` (rAF) for all DOM animations. Unlike `setTimeout`, rAF synchronises with the browser's paint cycle, preventing jank (dropped frames) and pausing automatically in hidden tabs.
+
+```javascript
+// ❌ Bad — setTimeout doesn't sync with refresh rate; causes jank
+let x = 0;
+function animateBad() {
+  x += 1;
+  element.style.transform = `translateX(${x}px)`;
+  if (x < 300) setTimeout(animateBad, 16); // ~60fps but drifts
+}
+
+// ✅ Good — rAF runs once per paint frame; exact timing, auto-paused when hidden
+function animateGood(timestamp) {
+  const progress = (timestamp - startTime) / duration; // 0.0 → 1.0
+  const x = easeInOut(progress) * 300;
+  element.style.transform = `translateX(${x}px)`;
+  if (progress < 1) requestAnimationFrame(animateGood);
+}
+const startTime = performance.now();
+requestAnimationFrame(animateGood);
+
+// Cancel animation (e.g., on component unmount)
+const rafId = requestAnimationFrame(animateGood);
+cancelAnimationFrame(rafId);
+```
+
+### Performance API for Precise Measurement
+
+Use `performance.mark` / `performance.measure` instead of `Date.now()` for high-resolution timing. `PerformanceObserver` captures entries asynchronously without blocking the thread.
+
+```javascript
+// Mark + Measure pattern — microsecond precision
+performance.mark('db-query-start');
+const rows = await db.query('SELECT * FROM users');
+performance.mark('db-query-end');
+performance.measure('db-query', 'db-query-start', 'db-query-end');
+
+const [entry] = performance.getEntriesByName('db-query');
+console.log(`Query took ${entry.duration.toFixed(2)}ms`);
+
+// Clear to prevent memory accumulation in long-lived processes
+performance.clearMarks('db-query-start');
+performance.clearMarks('db-query-end');
+performance.clearMeasures('db-query');
+
+// PerformanceObserver — non-blocking, continuous measurement
+const observer = new PerformanceObserver((list) => {
+  for (const entry of list.getEntries()) {
+    if (entry.duration > 100) {
+      console.warn(`Slow operation: ${entry.name} (${entry.duration.toFixed(0)}ms)`);
+    }
+  }
+});
+observer.observe({ entryTypes: ['measure', 'longtask', 'navigation'] });
+// Disconnect when no longer needed:
+// observer.disconnect();
 ```
 
 ---
@@ -1706,6 +2087,78 @@ displayTable(sorted);
 // GOOD — original users array is unchanged
 const sorted = users.toSorted((a, b) => a.name.localeCompare(b.name));
 ```
+
+---
+
+## JSDoc Type Checking (Plain JS + TypeScript Checker)
+
+For projects that want type safety without a TypeScript build pipeline, `@ts-check` + JSDoc gives you the same static analysis the TS compiler provides, with zero compilation step.
+
+```javascript
+// @ts-check  ← add to top of any JS file to enable TS type checking in editor + tsc
+
+/**
+ * @typedef {Object} User
+ * @property {string} id
+ * @property {string} name
+ * @property {string} email
+ * @property {boolean} [isActive]   Optional field
+ */
+
+/**
+ * Fetch a user by ID. Returns null if not found.
+ * @param {string} userId
+ * @returns {Promise<User | null>}
+ */
+async function getUser(userId) {
+  const res = await fetch(`/api/users/${userId}`);
+  if (!res.ok) return null;
+  return /** @type {User} */ (await res.json());
+}
+
+/**
+ * Generic cache factory.
+ * @template K, V
+ * @param {(key: K) => Promise<V>} fetcher
+ * @returns {{ get: (key: K) => Promise<V> }}
+ */
+function createCache(fetcher) {
+  const map = /** @type {Map<K, V>} */ (new Map());
+  return {
+    async get(key) {
+      if (!map.has(key)) map.set(key, await fetcher(key));
+      return /** @type {V} */ (map.get(key));
+    },
+  };
+}
+```
+
+**Enabling project-wide checking without compiling:**
+```json
+// tsconfig.json — zero emit, type-check JS files only
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "target": "ES2022",
+    "module": "NodeNext"
+  },
+  "include": ["src/**/*.js"]
+}
+```
+
+```bash
+npx tsc --noEmit        # type-check; no output files
+npx tsc --noEmit --watch # live checking
+```
+
+**When to use JSDoc vs TypeScript:**
+- Use JSDoc + `@ts-check` for: scripts, libraries that ship plain JS, teams that can't add a build step
+- Use TypeScript for: larger codebases, teams that value `interface`/`enum`/decorator syntax, frameworks that expect `.ts` source
+
+---
 
 ## Anti-Patterns Quick Reference
 

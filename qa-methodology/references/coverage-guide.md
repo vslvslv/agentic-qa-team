@@ -1,8 +1,9 @@
-# Test Coverage — QA Methodology Guide
-<!-- lang: JavaScript | topic: coverage | iteration: 5 | score: 100/100 | date: 2026-04-28 -->
+# Coverage — QA Methodology Guide
+<!-- lang: TypeScript | topic: coverage | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
-<!-- sources: training knowledge synthesis (WebFetch + WebSearch unavailable) |
+<!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
+     stryker-mutator.io/docs (synthesized) |
      community: production experience patterns synthesized from training knowledge -->
 
 ## Core Principles
@@ -44,7 +45,7 @@ encounter. A test that calls every function but asserts only `expect(true).toBe(
 scores 100 % coverage and provides zero protection.
 
 ### 6. The instrumentation provider changes what gets measured
-In JavaScript projects, Jest and Vitest support two coverage providers:
+In TypeScript/JavaScript projects, Jest and Vitest support two coverage providers:
 - **V8** (Node's built-in) — fast, low overhead, but instruments at the engine level.
   Coarse branch detection: `||`/`&&` short-circuits and optional chaining `?.` are often
   not tracked as separate branches. New projects see higher numbers switching to V8 while
@@ -56,7 +57,7 @@ In JavaScript projects, Jest and Vitest support two coverage providers:
 Rule of thumb: use V8 for fast CI feedback on line coverage; use Istanbul when branch
 accuracy matters (regulated code, payment paths, security logic).
 
-Note: when using Jest or Vitest with TypeScript, ensure `sourceMap: true` (or
+When using Jest or Vitest with TypeScript, ensure `sourceMap: true` (or
 `inlineSourceMap: true`) is set in your `tsconfig.json`. Coverage providers instrument
 the compiled JavaScript; without source maps the HTML report shows compiled output rather
 than your original TypeScript source, making it nearly unusable for finding gaps. For
@@ -68,11 +69,34 @@ imports.
 Modified Condition/Decision Coverage (MC/DC) requires that each condition in a decision
 independently affects the outcome. Defined in DO-178C (avionics) and used in
 ISO 26262 (automotive ASIL-D), MC/DC is far stricter than statement or branch coverage:
-it requires O(N) test cases per condition rather than 2^N. JavaScript applications
+it requires O(N) test cases per condition rather than 2^N. TypeScript applications
 rarely target MC/DC, but teams working in regulated contexts should understand that
 their Istanbul branch coverage numbers do **not** satisfy MC/DC requirements — DO-178C
 auditors require dedicated tool-generated MC/DC artefacts, not istanbul-lcov reports.
 ISTQB CTFL 4.0 defines MC/DC as a white-box test technique under "coverage criteria."
+
+### 8. Mutation testing tools by ecosystem
+Each language ecosystem has a primary mutation testing tool:
+- **Stryker** — JavaScript/TypeScript (Jest, Vitest, Karma); also has .NET variant
+- **Pitest** — Java/JVM; integrates with Maven and Gradle; widely used in enterprise Java
+- **mutmut** — Python; minimal setup, integrates with pytest; readable diff-style output
+
+All three follow the same principle: inject small source mutations, run the test suite,
+count surviving mutants. A surviving mutant = a fault your tests cannot detect.
+
+### Coverage type quick reference
+
+| Coverage type | Question answered | Tool (TypeScript) | Gameable? | Speed |
+|---------------|------------------|--------------------|-----------|-------|
+| Line | Was this line executed? | V8 / Istanbul | Yes — run without asserting | Fastest |
+| Branch | Was each true/false path exercised? | Istanbul preferred | Yes — but harder | Fast |
+| Statement | Was each statement executed? | V8 / Istanbul | Yes | Fastest |
+| Function | Was each function called? | V8 / Istanbul | Yes | Fast |
+| Mutation (MSI) | Does a fault cause any test to fail? | Stryker | No | 5–30x slower |
+| MC/DC | Does each condition independently affect outcome? | Specialised tools | No | Very slow |
+
+**Takeaway**: Mutation Score Indicator (MSI) is the only non-gameable metric. All
+line/branch/statement/function coverage numbers can be inflated with assertion-free tests.
 
 ---
 
@@ -102,21 +126,25 @@ Coverage metrics add **little value** when:
 
 ## Patterns
 
-### Pattern 1 — Configure per-file thresholds with Jest (JavaScript)  [community]
+### Pattern 1 — Configure per-file thresholds with Jest (TypeScript)  [community]
 
 Per-file or per-directory thresholds catch coverage collapse in critical modules even
 when the overall aggregate looks fine. A single file with complex business logic sitting
 at 40 % drags down the average but may not breach a global threshold.
 
-```javascript
-// jest.config.js
-/** @type {import('jest').Config} */
-module.exports = {
+```typescript
+// jest.config.ts
+import type { Config } from 'jest';
+
+const config: Config = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
   collectCoverageFrom: [
-    'src/**/*.{js,mjs,cjs}',
+    'src/**/*.ts',
     '!src/**/__mocks__/**',
-    '!src/**/index.js',           // re-export barrel files add noise
-    '!src/**/*.stories.js',
+    '!src/**/index.ts',           // re-export barrel files add noise
+    '!src/**/*.stories.ts',
+    '!src/**/*.d.ts',
   ],
   coverageProvider: 'v8',         // or 'babel' for Istanbul instrumentation
   coverageReporters: ['text-summary', 'lcov', 'json-summary'],
@@ -141,15 +169,17 @@ module.exports = {
     },
   },
 };
+
+export default config;
 ```
 
-### Pattern 2 — Vitest coverage with per-file thresholds (JavaScript)
+### Pattern 2 — Vitest coverage with per-file thresholds (TypeScript)
 
 Vitest's `perFile: true` flag applies the global threshold to every individual file,
 catching hotspot collapse without requiring explicit per-path configuration.
 
-```javascript
-// vitest.config.js
+```typescript
+// vitest.config.ts
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -158,8 +188,13 @@ export default defineConfig({
       provider: 'istanbul',       // use Istanbul for accurate branch tracking
       reporter: ['text', 'lcov', 'html'],
       reportsDirectory: './coverage',
-      include: ['src/**/*.js'],
-      exclude: ['src/**/__mocks__/**', 'src/**/*.stories.js'],
+      include: ['src/**/*.ts'],
+      exclude: [
+        'src/**/__mocks__/**',
+        'src/**/*.stories.ts',
+        'src/**/*.d.ts',
+      ],
+      all: true,                  // include uncovered TypeScript files
       thresholds: {
         lines: 80,
         branches: 75,
@@ -172,25 +207,28 @@ export default defineConfig({
 });
 ```
 
-### Pattern 3 — Stryker mutation testing for JavaScript
+### Pattern 3 — Stryker mutation testing for TypeScript
 
 Stryker runs your test suite against thousands of source mutations (flipped operators,
 removed conditions, swapped return values) and reports each surviving mutant as an
 untested defect hypothesis. This is the only metric that directly measures whether
 your tests can detect real bugs.
 
-```javascript
-// stryker.config.mjs
-/** @type {import('@stryker-mutator/api/core').PartialStrykerOptions} */
-export default {
+```typescript
+// stryker.config.ts
+import type { PartialStrykerOptions } from '@stryker-mutator/api/core';
+
+const config: PartialStrykerOptions = {
   testRunner: 'jest',
   coverageAnalysis: 'perTest',   // enables incremental mutation runs — much faster
+  checkers: ['typescript'],      // compile-check mutants before running tests
+  tsconfigFile: 'tsconfig.json',
   mutate: [
-    'src/**/*.js',
-    '!src/**/*.spec.js',
-    '!src/**/*.test.js',
+    'src/**/*.ts',
+    '!src/**/*.spec.ts',
+    '!src/**/*.test.ts',
     '!src/**/__mocks__/**',
-    '!src/**/index.js',          // skip barrel files — minimal logic
+    '!src/**/index.ts',          // skip barrel files — minimal logic
   ],
   thresholds: {
     high: 80,     // green above this
@@ -204,6 +242,17 @@ export default {
   incremental: true,
   incrementalFile: '.stryker-tmp/incremental.json',
 };
+
+export default config;
+```
+
+```bash
+# Install Stryker with TypeScript checker
+npm install --save-dev @stryker-mutator/core @stryker-mutator/jest-runner \
+  @stryker-mutator/typescript-checker
+
+# Run only on changed files (CI PR runs — avoids 30-minute full runs)
+npx stryker run --incremental
 ```
 
 ### Pattern 4 — Coverage ratchet in CI (GitHub Actions)  [community]
@@ -227,7 +276,7 @@ jobs:
         with:
           node-version: '20'
       - run: npm ci
-      - name: Run tests with coverage
+      - name: Run TypeScript tests with coverage
         run: npx jest --coverage --coverageReporters=json-summary
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -240,34 +289,45 @@ jobs:
           json-summary-path: coverage/coverage-summary.json
 ```
 
-### Pattern 5 — Measuring branch coverage gaps  [community]
+### Pattern 5 — Measuring branch coverage gaps in TypeScript  [community]
 
 Branch coverage surfaces untested conditional paths that line coverage misses entirely.
-This example shows how a function looks covered by line metrics but has critical
-untested branches — and how to write the tests that close them.
+This example shows how a TypeScript function looks covered by line metrics but has
+critical untested branches — and how to write the tests that close them.
 
-```javascript
-// src/auth/permissions.js
-function canEditPost(user, post) {
+```typescript
+// src/auth/permissions.ts
+export interface User {
+  isActive: boolean;
+  role: 'admin' | 'user' | 'guest';
+  id: string;
+}
+
+export interface Post {
+  authorId: string;
+  id: string;
+}
+
+export function canEditPost(user: User, post: Post): boolean {
   if (!user.isActive) return false;             // branch A: inactive user
   if (user.role === 'admin') return true;       // branch B: admin always can
   if (post.authorId === user.id) return true;   // branch C: owner can edit
   return false;                                 // branch D: default deny
 }
-
-module.exports = { canEditPost };
 ```
 
-```javascript
-// src/auth/permissions.test.js
-const { canEditPost } = require('./permissions');
+```typescript
+// src/auth/permissions.test.ts
+import { canEditPost, User, Post } from './permissions';
+
+const makeUser = (overrides: Partial<User>): User => ({
+  isActive: true, role: 'user', id: 'u1', ...overrides,
+});
+const makePost = (overrides: Partial<Post>): Post => ({
+  authorId: 'u2', id: 'p1', ...overrides,
+});
 
 describe('canEditPost', () => {
-  const makeUser = (overrides) => ({
-    isActive: true, role: 'user', id: 'u1', ...overrides,
-  });
-  const makePost = (overrides) => ({ authorId: 'u2', ...overrides });
-
   it('denies inactive users regardless of role (branch A)', () => {
     const user = makeUser({ isActive: false, role: 'admin' });
     expect(canEditPost(user, makePost())).toBe(false);
@@ -297,20 +357,18 @@ describe('canEditPost', () => {
 When Stryker reports a surviving mutant, write a test that kills it and add it to
 the suite permanently. The fix becomes reusable documentation of an edge case.
 
-```javascript
-// src/utils/clamp.js
-function clamp(value, min, max) {
+```typescript
+// src/utils/clamp.ts
+export function clamp(value: number, min: number, max: number): number {
   if (value < min) return min;   // mutant: value <= min  (boundary flip)
   if (value > max) return max;   // mutant: value >= max  (boundary flip)
   return value;
 }
-
-module.exports = { clamp };
 ```
 
-```javascript
-// src/utils/clamp.test.js
-const { clamp } = require('./clamp');
+```typescript
+// src/utils/clamp.test.ts
+import { clamp } from './clamp';
 
 // Basic tests — don't kill boundary mutants
 it('clamps low values', () => expect(clamp(0, 1, 5)).toBe(1));
@@ -334,9 +392,9 @@ suppress coverage for unreachable branches in production code (e.g., defensive f
 generated enums). Misuse to hide real code is an anti-pattern; legitimate use prevents
 false coverage failures on code that cannot be exercised in unit tests.
 
-```javascript
-// src/config/env.js — legitimate use: defensive runtime guard
-function requireEnvVar(name) {
+```typescript
+// src/config/env.ts — legitimate use: defensive runtime guard
+export function requireEnvVar(name: string): string {
   const value = process.env[name];
   /* istanbul ignore next — unreachable in tests when env is always mocked */
   if (value === undefined) {
@@ -344,99 +402,30 @@ function requireEnvVar(name) {
   }
   return value;
 }
+```
 
-// src/generated/proto-types.js — suppress entire generated file from coverage
+```typescript
+// src/generated/proto-types.ts — suppress entire generated file from coverage
 /* istanbul ignore file */
 // This file is auto-generated by protoc — do not add tests here.
-const GeneratedMessage = class { /* ... */ };
-module.exports = { GeneratedMessage };
-```
-
-### Pattern 8 — NYC (Istanbul CLI) standalone coverage for non-Jest runners  [community]
-
-`nyc` is the command-line interface for Istanbul, useful when your test runner lacks native
-coverage support (tape, node:test, custom runners). It wraps any test command without
-requiring config changes to the runner itself. This makes it valuable for legacy
-codebases migrating off custom scripts or for projects that run multiple test runners.
-
-```javascript
-// package.json — wrap any test command with nyc
-{
-  "scripts": {
-    "test:unit":       "node --test test/unit/**/*.test.js",
-    "test:coverage":   "nyc --reporter=text-summary --reporter=lcov --reporter=html node --test test/unit/**/*.test.js",
-    "coverage:report": "nyc report --reporter=html",
-    "coverage:check":  "nyc check-coverage --lines 80 --branches 75 --functions 80"
-  },
-  "nyc": {
-    "include": ["src/**/*.js"],
-    "exclude": ["src/**/__mocks__/**", "src/**/*.stories.js"],
-    "all": true,
-    "branches": 75,
-    "lines": 80,
-    "functions": 80,
-    "statements": 80
-  }
+export class GeneratedMessage {
+  // auto-generated content
 }
 ```
 
-```bash
-# Install
-npm install --save-dev nyc
+### Pattern 8 — TypeScript-aware Stryker with Vitest runner  [community]
 
-# Run with coverage check (exits non-zero if thresholds not met)
-npx nyc --check-coverage npm test
-```
-
-### Pattern 9 — Collecting unified coverage across unit and integration test cases  [community]
-
-Running unit and integration test cases as separate processes normally produces separate
-coverage reports that cannot be combined. `nyc` solves this via the `--no-clean` flag,
-which accumulates coverage data from multiple runs before generating a merged report.
-Jest achieves the same through multiple `--projects` configs with `--coverage` on the
-root run. Without this, teams may report high unit test coverage while critical integration
-paths remain unmeasured.
-
-```javascript
-// package.json — staggered collection with nyc
-{
-  "scripts": {
-    "test:unit":        "nyc --no-clean --include='src/**' mocha test/unit/**/*.test.js",
-    "test:integration": "nyc --no-clean --include='src/**' mocha test/integration/**/*.test.js",
-    "test:all":         "nyc --no-clean --include='src/**' mocha 'test/**/*.test.js'",
-    "coverage:report":  "nyc report --reporter=html --reporter=text-summary",
-    "coverage:merge":   "npm run test:unit && npm run test:integration && npm run coverage:report"
-  }
-}
-```
-
-```javascript
-// jest.config.js — multi-project combined coverage
-/** @type {import('jest').Config} */
-module.exports = {
-  projects: [
-    { displayName: 'unit', testMatch: ['<rootDir>/test/unit/**/*.test.js'] },
-    { displayName: 'integration', testMatch: ['<rootDir>/test/integration/**/*.test.js'] },
-  ],
-  collectCoverageFrom: ['src/**/*.{js,mjs}'],
-  coverageDirectory: 'coverage',
-  // Run 'jest --coverage' at root: collects from both projects combined
-};
-```
-
-### Pattern 10 — Stryker with ESM and TypeScript projects  [community]
-
-Stryker 8+ supports native ESM and TypeScript projects without transpilation via its
-`@stryker-mutator/typescript-checker` plugin and `esm: true` flag. Without correct
+Stryker 8+ supports native TypeScript and Vitest without transpilation. Without correct
 configuration, Stryker silently falls back to non-incremental mode or fails to instrument
-source files — both of which produce misleading mutation scores.
+source files — producing misleading mutation scores.
 
-```javascript
-// stryker.config.mjs — ESM + TypeScript project (Node 18+)
+```typescript
+// stryker.config.mjs — Vitest + TypeScript project (Node 18+)
 import { defineConfig } from '@stryker-mutator/core';
 
 export default defineConfig({
-  testRunner: 'jest',                    // or 'vitest'
+  testRunner: 'vitest',
+  vitest: { configFile: 'vitest.config.ts' },
   coverageAnalysis: 'perTest',           // incremental: only re-run mutants for changed files
   checkers: ['typescript'],              // compile-check mutants before running tests
   tsconfigFile: 'tsconfig.json',
@@ -453,19 +442,265 @@ export default defineConfig({
   concurrency: 4,
   incremental: true,
   incrementalFile: '.stryker-tmp/incremental.json',
-  // Vitest-specific: use @stryker-mutator/vitest-runner
-  // testRunner: 'vitest',
-  // vitest: { configFile: 'vitest.config.ts' },
 });
 ```
 
 ```bash
-# Install TypeScript checker plugin
-npm install --save-dev @stryker-mutator/typescript-checker
+# Install Vitest runner for Stryker
+npm install --save-dev @stryker-mutator/vitest-runner @stryker-mutator/typescript-checker
 
-# Run only on changed files (CI PR runs — avoids 30-minute full runs)
-npx stryker run --incremental --only-changed
+# Run with incremental mode for PRs — avoids 30-minute full runs
+npx stryker run --incremental
 ```
+
+### Pattern 9 — Collecting unified coverage across unit and integration tests  [community]
+
+Running unit and integration tests as separate processes normally produces separate
+coverage reports. Without merging, teams report high unit test coverage while integration
+paths remain unmeasured.
+
+```typescript
+// vitest.config.ts — workspace-based combined coverage for TypeScript monorepo
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    projects: [
+      {
+        test: {
+          name: 'unit',
+          include: ['src/**/*.unit.test.ts'],
+          environment: 'node',
+        },
+      },
+      {
+        test: {
+          name: 'integration',
+          include: ['src/**/*.integration.test.ts'],
+          environment: 'node',
+        },
+      },
+    ],
+    coverage: {
+      provider: 'istanbul',
+      reporter: ['text', 'lcov', 'html'],
+      reportsDirectory: './coverage',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts', 'src/**/*.spec.ts', 'src/**/*.d.ts'],
+      all: true,
+      // Combined coverage is collected across both projects in a single run:
+      // npx vitest run --coverage
+    },
+  },
+});
+```
+
+### Pattern 10 — Monorepo per-workspace thresholds with TypeScript  [community]
+
+In npm/pnpm workspaces, each package reports its own coverage independently. The root
+aggregate can mask individual package failures. Each workspace needs its own threshold
+configuration.
+
+```typescript
+// packages/payments/vitest.config.ts — high-risk package: stricter threshold
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/**/__mocks__/**'],
+      all: true,
+      thresholds: {
+        lines: 95,
+        branches: 90,
+        functions: 95,
+        statements: 95,
+        perFile: true,            // collapse of any single file is caught immediately
+      },
+    },
+  },
+});
+```
+
+```typescript
+// packages/ui-components/vitest.config.ts — UI package: lower threshold, visual regression preferred
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',             // speed matters more than branch accuracy for UI
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: ['src/**/*.stories.tsx', 'src/**/*.d.ts'],
+      thresholds: {
+        lines: 70,
+        branches: 60,
+        // Storybook + Chromatic handles visual correctness; line coverage is secondary
+      },
+    },
+  },
+});
+```
+
+### Pattern 11 — TypeScript discriminated unions: unreachable branch coverage  [community]
+
+TypeScript's exhaustive type narrowing creates branches that are statically unreachable
+at runtime. Istanbul reports the `never` default arm as uncovered, which can fail
+thresholds. The correct approach: use a type-safe exhaustiveness check and suppress
+coverage only with an explanation comment.
+
+```typescript
+// src/domain/shape-area.ts
+export type Shape =
+  | { kind: 'circle'; radius: number }
+  | { kind: 'square'; side: number }
+  | { kind: 'rectangle'; width: number; height: number };
+
+export function areaOf(shape: Shape): number {
+  switch (shape.kind) {
+    case 'circle':
+      return Math.PI * shape.radius ** 2;
+    case 'square':
+      return shape.side ** 2;
+    case 'rectangle':
+      return shape.width * shape.height;
+    default: {
+      // TypeScript narrows shape to `never` here — unreachable at runtime,
+      // but Istanbul still reports this as an uncovered branch.
+      /* istanbul ignore next — exhaustiveness guard: TypeScript enforces all cases */
+      const _exhaustive: never = shape;
+      throw new Error(`Unhandled shape kind: ${JSON.stringify(_exhaustive)}`);
+    }
+  }
+}
+```
+
+```typescript
+// src/domain/shape-area.test.ts
+import { areaOf } from './shape-area';
+
+describe('areaOf', () => {
+  it('computes circle area', () => {
+    expect(areaOf({ kind: 'circle', radius: 5 })).toBeCloseTo(78.54);
+  });
+
+  it('computes square area', () => {
+    expect(areaOf({ kind: 'square', side: 4 })).toBe(16);
+  });
+
+  it('computes rectangle area', () => {
+    expect(areaOf({ kind: 'rectangle', width: 3, height: 7 })).toBe(21);
+  });
+
+  // No test for the default branch — it is statically unreachable.
+  // The `/* istanbul ignore next */` comment is the documented policy for this pattern.
+});
+```
+
+### Pattern 12 — Property-based testing as a coverage complement (fast-check)  [community]
+
+Property-based testing with `fast-check` generates hundreds of inputs automatically,
+achieving high mutation scores at potentially lower line coverage numbers. The two
+approaches are complementary, not competing: coverage maps show which lines run;
+property testing probes whether those lines behave correctly across the full input space.
+
+```typescript
+// src/utils/clamp.test.ts — extending Pattern 6 with property tests
+import * as fc from 'fast-check';
+import { clamp } from './clamp';
+
+// Example-based tests (kill known boundary mutants from Pattern 6):
+it('returns min when value equals min', () => expect(clamp(1, 1, 5)).toBe(1));
+it('returns max when value equals max', () => expect(clamp(5, 1, 5)).toBe(5));
+
+// Property-based tests — generate inputs automatically:
+describe('clamp properties', () => {
+  it('always returns a value within [min, max]', () => {
+    fc.assert(
+      fc.property(
+        fc.integer(),
+        fc.integer(),
+        fc.integer(),
+        (a, b, c) => {
+          const [min, max] = [Math.min(b, c), Math.max(b, c)];
+          const result = clamp(a, min, max);
+          expect(result).toBeGreaterThanOrEqual(min);
+          expect(result).toBeLessThanOrEqual(max);
+        }
+      )
+    );
+  });
+
+  it('is idempotent: clamp(clamp(x)) === clamp(x)', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: -1000, max: 1000 }),
+        fc.integer({ min: 0, max: 100 }),
+        (value, range) => {
+          const min = 0;
+          const max = range;
+          const once = clamp(value, min, max);
+          const twice = clamp(once, min, max);
+          expect(twice).toBe(once);             // idempotency: second clamp changes nothing
+        }
+      )
+    );
+  });
+});
+```
+
+**When to use this pattern**: when a function has a large or unbounded input space
+(numeric arithmetic, string parsing, date manipulation) and example-based tests cannot
+reasonably cover edge cases. `fast-check` will find the minimal failing example
+(`shrink`) automatically, making it a powerful addition to mutation testing.
+
+### Pattern 13 — Minimal tsconfig.json for reliable TypeScript coverage  [community]
+
+Coverage accuracy depends on correct TypeScript compiler settings. Without source maps,
+the HTML report is unreadable. Without `strict` mode, unchecked nulls and unreachable
+code inflate coverage numbers artificially.
+
+```json
+// tsconfig.json — minimum required settings for reliable Istanbul/V8 coverage
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "lib": ["ES2020"],
+    "rootDir": "src",
+    "outDir": "dist",
+    "strict": true,
+    "sourceMap": true,
+    "inlineSourceMap": false,
+    "declaration": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "**/*.d.ts"]
+}
+```
+
+```json
+// tsconfig.test.json — extends base, adds test file includes for ts-jest/vitest
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["jest", "node"],
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "**/*.test.ts", "**/*.spec.ts"]
+}
+```
+
+**Key settings for coverage**:
+- `sourceMap: true` — required for Istanbul to map transpiled JS back to TypeScript lines
+- `strict: true` — catches type errors that create unreachable branches, reducing spurious coverage gaps
+- `inlineSourceMap: false` — prefer external source maps for Istanbul; inline maps can cause size issues in large codebases
+- `noEmit: true` in test tsconfig — prevents accidental emission during test runs
 
 ---
 
@@ -476,13 +711,18 @@ Tests written purely to increase coverage often avoid assertions entirely or ass
 trivially true conditions. They execute code paths but verify nothing. The result is
 high coverage + zero protection.
 
-```javascript
+**WHY it's dangerous**: High coverage with assertion-free tests creates false confidence.
+Teams present the metric to stakeholders as a quality signal while bugs ship freely.
+Mutation testing immediately surfaces this pattern — surviving mutants spike when
+assertions are missing.
+
+```typescript
 // ❌ Coverage-padding: increments a line-count, proves nothing
 it('runs the parser', () => {
   parseQuery('SELECT * FROM users');  // no assertion — mutants survive freely
 });
 
-// ✅ Asserts actual behaviour
+// ✅ Asserts actual behaviour with TypeScript types enforced
 it('parses a simple SELECT', () => {
   const ast = parseQuery('SELECT id, name FROM users');
   expect(ast.type).toBe('SELECT');
@@ -497,33 +737,87 @@ Tests for getters, setters, and trivial constructors inflate coverage with no me
 signal. The marginal cost of going from 90 % to 100 % typically outweighs the marginal
 safety benefit.
 
+**WHY it backfires**: 100 % coverage mandates destroy TDD discipline. Engineers write
+production code with mandatory test coverage by reflex — writing tests for trivial
+accessors and auto-generated code — rather than writing tests that reflect domain intent.
+
 ### AP3 — Single global threshold hiding critical gaps
 A global 80 % threshold can be satisfied while entire critical subsystems sit at 30 %.
 A payment module at 30 % branch coverage while a boilerplate CRUD module at 98 % averages
 to 80 % overall. The metric passes; the risk is invisible.
+
+**WHY it fails**: Averaging coverage across modules lets high-coverage boilerplate
+(DTOs, mappers, generated types) subsidise under-tested business logic. Per-directory
+thresholds on TypeScript workspace packages close this gap.
 
 ### AP4 — Running coverage locally as a development loop
 Coverage instrumentation adds significant overhead — typically 30–50 % slower test runs.
 Running it on every save breaks the fast-feedback loop TDD depends on. Coverage belongs
 in CI, not in `--watch` mode.
 
+**WHY it matters**: TypeScript projects using `ts-jest` or `@vitest/coverage-istanbul`
+see particularly high overhead since source-map resolution adds to instrumentation cost.
+Reserve coverage collection for CI pipelines.
+
 ### AP5 — Conflating coverage tools with test quality tools
 Coverage reports measure execution. Code review, mutation testing, and test design
 review measure quality. Using only coverage to assess test health is like using line
 count to assess code quality.
+
+**WHY it's insufficient**: A TypeScript interface with 20 implementations can have
+95 % line coverage if tests only invoke the happy path. Coverage says nothing about
+whether discriminated union branches, error cases, or type guard paths are exercised.
 
 ### AP6 — Excluding files silently to hit thresholds
 Exclude patterns in Jest/Vitest configs are legitimate for generated files and stories,
 but teams under coverage pressure use them to hide under-tested business logic. Treat
 aggressive `exclude` patterns in coverage config as a code review signal.
 
+**WHY it's a red flag**: In TypeScript projects, `*.d.ts` and `*.generated.ts` are
+legitimate excludes. Excluding `src/services/**` or `src/repositories/**` is not.
+
 ### AP7 — Using `/* istanbul ignore */` comments as a first-line defence
 `/* istanbul ignore next */` and `/* c8 ignore next */` directives exist for genuinely
 unreachable branches (generated code, defensive platform guards). They are often
 misused to silence coverage failures on recently added code paths that are simply not
-yet tested. A PR that introduces new logic alongside suppress comments is a red flag —
-it means the author opted out of writing test cases rather than fixing the coverage gap.
-Policy: suppress comments in src/ directories require a PR comment justifying the exemption.
+yet tested. A PR that introduces new logic alongside suppress comments is a red flag.
+
+**Policy**: Suppress comments in `src/` directories require a PR comment justifying
+the exemption. TypeScript's exhaustive type checking (`never`) can sometimes replace
+coverage suppress — prefer type-safe unreachability proofs over ignore directives.
+
+### AP8 — Including TypeScript declaration files and barrel re-exports in coverage  [community]
+Including `*.d.ts` files or barrel `index.ts` files (that contain only re-exports) in
+coverage collection adds noise: declaration files have zero executable lines, and barrel
+files merely forward exports. Istanbul reports them as 100 % covered (nothing to run)
+or incorrectly flags them as uncovered.
+
+**WHY it backfires**: Barrel `index.ts` files that import from sub-modules show as
+partially covered in Istanbul's branch analysis because optional re-exports create
+implicit `||` branches. Teams add `/* istanbul ignore file */` to barrel files as a
+workaround, but the correct fix is to exclude them in the coverage config:
+
+```typescript
+// vitest.config.ts — exclude generated files and barrel re-exports
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',
+      include: ['src/**/*.ts'],
+      exclude: [
+        'src/**/*.d.ts',           // declaration files: no executable lines
+        'src/**/index.ts',          // barrel re-exports: no business logic
+        'src/**/*.generated.ts',    // auto-generated files
+        'src/**/__mocks__/**',       // test mocks: tested indirectly
+        'src/**/*.stories.ts',       // Storybook stories: no unit test value
+      ],
+      all: true,
+    },
+  },
+});
+```
 
 ---
 
@@ -532,51 +826,56 @@ Policy: suppress comments in src/ directories require a PR comment justifying th
 ### G1 — Coverage theater is endemic when coverage is a sprint KPI  [community]
 When managers track coverage percentage on dashboards, engineers learn to satisfy the
 dashboard. Teams report writing dedicated "coverage tests" that call functions without
-asserting outputs — raising the number without improving confidence. The fix: track
-mutation score instead of or alongside line coverage, since mutation score cannot be
-gamed with assertion-free tests.
+asserting outputs — raising the number without improving confidence. **WHY it matters**:
+The fix is to track mutation score instead of or alongside line coverage, since mutation
+score cannot be gamed with assertion-free tests.
 
 ### G2 — 80 % global coverage hides 0 % on the scariest code  [community]
 Reported repeatedly in post-mortems: a production incident traced to a function that
 had 0 % branch coverage because it was averaged away by high coverage on boilerplate
-code. Per-file or per-directory thresholds on high-risk modules are essential; a global
-number alone is negligent for safety-critical or payment paths.
+code. **WHY it matters**: Per-file or per-directory thresholds on high-risk TypeScript
+modules are essential; a global number alone is negligent for safety-critical or payment paths.
 
 ### G3 — Stryker runs take 10–30 minutes and block CI if naively configured  [community]
-Mutation testing on a full JavaScript codebase with `coverageAnalysis: 'all'` can take
-30+ minutes. Production teams address this with: (1) `coverageAnalysis: 'perTest'` to
-enable incremental runs, (2) running Stryker only on changed files in PR pipelines,
+Mutation testing on a full TypeScript codebase with `coverageAnalysis: 'all'` can take
+30+ minutes. **WHY it matters**: Production teams address this with: (1) `coverageAnalysis: 'perTest'`
+to enable incremental runs, (2) running Stryker only on changed files in PR pipelines,
 (3) scheduling full mutation runs nightly, not on every commit. Running mutation testing
 like unit tests kills the feedback loop.
 
 ### G4 — Branch coverage gaps are invisible without the right provider config  [community]
 V8's default coverage instrumentation in Jest/Vitest does not split `||`/`&&` short-circuit
 branches the same way Istanbul does. Teams switching from Istanbul to V8 sometimes see
-coverage numbers rise while branch protection actually decreases. Use `provider: 'istanbul'`
-if branch coverage accuracy is a priority, even though V8 is faster.
+coverage numbers rise while branch protection actually decreases. **WHY it matters**:
+TypeScript optional chaining (`?.`) and nullish coalescing (`??`) are particularly
+affected — V8 often misses their branch split. Use `provider: 'istanbul'` for payment
+or security paths.
 
 ### G5 — Test suites at 95 % coverage with zero assertions fail silently  [community]
-A real pattern in JavaScript codebases: teams using relaxed Jest matchers end up with
-test cases that run green while never failing. `expect(result).not.toThrow()` counts as a
-passing test case with coverage even when result is completely wrong. A mutation testing pass
-immediately surfaces this pattern.
+A real pattern in TypeScript codebases: teams using relaxed Jest matchers end up with
+test cases that run green while never failing. `expect(result).not.toThrow()` counts as
+a passing test with coverage even when result is completely wrong. **WHY it matters**:
+A mutation testing pass immediately surfaces this pattern — mutation scores of <20 %
+on a codebase with 90 %+ line coverage is a strong signal of assertion-free tests.
 
 ### G6 — Deleted tests after the merge are not caught by CI  [community]
 Coverage thresholds are checked against the test suite that runs. If tests are silently
 removed or skipped (`xit`, `xdescribe`, `.skip`) while production code grows, the
-percentage can hold steady while coverage of new code is zero. Combine coverage gates
-with test count regression checks or mutation testing to catch this.
+percentage can hold steady while coverage of new code is zero. **WHY it matters**:
+Combine coverage gates with test count regression checks or mutation testing to catch
+this pattern. In TypeScript projects, a `test:count` CI step that asserts the number
+of `it(` calls is a cheap guard.
 
 ### G7 — Coverage does not measure what matters for integration points  [community]
 Integration tests between services often have low line coverage (they call a thin
-adapter layer) but catch the bugs that unit tests miss. Teams that optimise purely for
-line coverage defund integration tests in favour of unit tests that inflate numbers.
-The result: high coverage, frequent integration failures.
+adapter layer) but catch the bugs that unit tests miss. **WHY it matters**: Teams that
+optimise purely for line coverage defund integration tests in favour of unit tests that
+inflate numbers. For TypeScript projects with generated API clients, contract tests
+(Pact) catch the integration failures that 95 % unit coverage completely misses.
 
 ### G8 — Compliance teams conflate passing coverage with verified safety  [community]
 In regulated industries (automotive, medical device, avionics), branch coverage is often
-a compliance artefact submitted to auditors. The dangerous failure mode: teams learn to
-produce a PDF coverage report without understanding what it means. A coverage report that
+a compliance artefact submitted to auditors. **WHY it matters**: A coverage report that
 satisfies DO-178C's MC/DC requirements but was generated from tests that don't assert
 outputs is formally compliant and practically useless. Pair coverage artefacts with
 independent test reviews and mutation scores.
@@ -584,19 +883,46 @@ independent test reviews and mutation scores.
 ### G9 — Snapshot tests inflate branch coverage without testing behaviour  [community]
 Jest snapshot tests exercise many render branches but assert only serialised output.
 A snapshot change causes a diff, not a failure, so component logic mutants survive
-silently. Branch coverage shows healthy numbers while meaningful assertion coverage is
-missing. Combine snapshots with explicit behavioural assertions for critical paths.
+silently. **WHY it matters**: Branch coverage shows healthy numbers while meaningful
+assertion coverage is missing. For TypeScript React projects, combine snapshots with
+explicit behavioural assertions for critical paths using Testing Library queries.
 
-### G10 — Monorepo coverage drift: each workspace reports its own threshold independently  [community]
-In npm/pnpm/Yarn workspaces, each package runs its own test suite and reports its own
-coverage. The root-level aggregate command (`npm run test --workspaces`) may show
-an 85 % global line coverage — but three packages in the monorepo may sit at 40 %
-while the most-tested utility package pulls the average up. Workspace-level CI jobs
-that each set their own thresholds and report upward to a central dashboard are the
-only reliable guard. Without this, monorepo coverage reports are an averaging artefact
-that hides the riskiest packages. A practical setup: each `package.json` declares
-`coverageThreshold` in its Jest/Vitest config, and the root CI job fails if any
-workspace job fails.
+### G10 — Monorepo coverage drift: each workspace reports independently  [community]
+In npm/pnpm/Yarn workspaces, each TypeScript package runs its own test suite and reports
+its own coverage. The root-level aggregate may show 85 % global coverage — but three
+packages may sit at 40 % while the most-tested utility package pulls the average up.
+**WHY it matters**: Workspace-level CI jobs that each set their own thresholds and report
+upward to a central dashboard are the only reliable guard. Without this, monorepo
+coverage reports are an averaging artefact that hides the riskiest packages.
+
+### G11 — TypeScript path aliases break Stryker instrumentation silently  [community]
+TypeScript projects using path aliases (`@/components`, `@lib/utils`) in `tsconfig.json`
+often have those aliases resolved by jest with `moduleNameMapper` or by Vitest with
+`resolve.alias`. Stryker instruments the source before the test runner resolves aliases,
+which means it may fail to find source files or silently produce 0 % mutation scores on
+aliased imports. **WHY it matters**: Always add `paths` resolution to Stryker's config
+matching the test runner's alias resolution, or use the `@stryker-mutator/typescript-checker`
+which respects `tsconfig.json` paths natively. Verify Stryker is actually mutating files
+(not zero mutations) before trusting mutation scores in aliased TypeScript projects.
+
+### G12 — Source maps missing from tsconfig cause coverage reports to show compiled output  [community]
+When `sourceMap` or `inlineSourceMap` is not set in `tsconfig.json`, Istanbul-based
+coverage reports display the transpiled JavaScript rather than the original TypeScript
+source. Lines appear nonsensical (e.g., helper functions injected by the TypeScript
+compiler appear as uncovered lines). **WHY it matters**: Engineers trying to find coverage
+gaps see compiler artifacts instead of their code, making the coverage HTML report
+essentially useless for identifying what to test. Add `"sourceMap": true` to `compilerOptions`
+in `tsconfig.json` and verify by opening the HTML coverage report at `coverage/index.html`.
+
+### G13 — TypeScript `as` casts and type assertions create false coverage confidence  [community]
+TypeScript `as Type` assertions and non-null assertions (`value!`) force the type system
+to accept a value without runtime checks. When coverage reports show these lines as
+covered, they may hide paths where invalid data enters the system. **WHY it matters**:
+A line covered with `data as UserData` is not the same as a line that validates `data`
+is actually a `UserData`. Coverage counts the cast as exercised, but it validates nothing.
+Use type guards (`function isUser(x: unknown): x is User { ... }`) instead of assertions
+for paths where runtime validation matters. Type guard functions are real branches that
+Istanbul and V8 both track, making them both safer and more testable.
 
 ---
 
@@ -607,36 +933,43 @@ workspace job fails.
 - Safety-critical or regulated code: branch coverage is often a compliance requirement.
 - Large teams: coverage prevents the "someone else will write the test" problem.
 - Code review: per-PR coverage diff is a fast quality signal for reviewers.
+- TypeScript migration: coverage reports show which `.js` → `.ts` converted modules lack type-safe tests.
 
 ### When coverage metrics are insufficient or misleading
 - **After-the-fact testing of already-shipped code**: coverage climbs quickly on code
   you already understand; it tells you little about edge-case protection.
-- **UI-heavy codebases**: line coverage of render functions tells you nothing about
-  visual correctness. Use visual regression (Chromatic, Percy) instead.
+- **UI-heavy TypeScript codebases**: line coverage of React render functions tells you
+  nothing about visual correctness. Use visual regression (Chromatic, Percy) instead.
 - **When TDD is practiced**: coverage is a lagging indicator that follows TDD naturally.
   Spending time analysing it is overhead.
 - **Property-based testing in use**: tools like `fast-check` generate hundreds of
   inputs and can achieve high mutation scores at lower line coverage; conflating the
   two metrics is misleading.
+- **Type-narrowing heavy code**: TypeScript's type narrowing means some branches are
+  statically unreachable. Istanbul reports them as uncovered; they are genuinely untestable.
+  Use `/* istanbul ignore next */` with a comment explaining the type invariant.
 
 ### Alternatives and complements
 
 | Alternative | What it measures better than line/branch coverage |
 |-------------|---------------------------------------------------|
-| Mutation testing (Stryker JS) | Whether tests can detect real bugs — not just execute them |
+| Mutation testing (Stryker JS/TS) | Whether tests can detect real bugs — not just execute them |
 | Property-based testing (fast-check) | Edge cases across the full input space |
 | Contract testing (Pact) | Integration correctness at service boundaries |
 | Test review / pair review | Assertion quality and intent clarity |
 | Visual regression (Chromatic, Percy) | UI correctness that line coverage cannot measure |
+| TypeScript strict type checking | Eliminates whole classes of runtime bugs without any test |
 
 ### Known adoption costs
 - **Mutation testing**: 5–30x slower than unit test suite; requires incremental/selective
   configuration before CI integration is practical.
-- **Istanbul instrumentation**: 20–40 % test runtime overhead; significant on large suites.
-- **Per-file thresholds**: require ongoing maintenance as new files are added; can block
+- **Istanbul instrumentation**: 20–40 % test runtime overhead; significant on large TypeScript suites.
+  `ts-jest` with Istanbul adds source-map resolution on top.
+- **Per-file thresholds**: require ongoing maintenance as new TypeScript files are added; can block
   PRs until thresholds are explicitly configured for new modules.
-- **Stryker initial setup**: Jest preset and config alignment typically require
-  2–4 hours of initial configuration on a real-world codebase.
+- **Stryker initial setup for TypeScript**: `@stryker-mutator/typescript-checker` + Jest/Vitest
+  preset alignment typically requires 2–4 hours of initial configuration on a real-world codebase.
+  TypeScript path aliases (`@/...`) must be configured in both `tsconfig.json` and Stryker config.
 
 ---
 
@@ -645,13 +978,18 @@ workspace job fails.
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
 | Martin Fowler — Test Coverage | Official | https://martinfowler.com/bliki/TestCoverage.html | Defines the smell-detector framing; explains why 100 % is not the goal |
-| Stryker Mutator docs | Official | https://stryker-mutator.io/docs/ | Full configuration reference for Stryker JS and Stryker.NET |
-| Stryker — Getting started | Official | https://stryker-mutator.io/docs/stryker-js/getting-started/ | Step-by-step Jest/Vitest setup for JavaScript projects |
+| Stryker Mutator docs | Official | https://stryker-mutator.io/docs/ | Full configuration reference for Stryker JS/TS and Stryker.NET |
+| Stryker — Getting started (TypeScript) | Official | https://stryker-mutator.io/docs/stryker-js/getting-started/ | Step-by-step Jest/Vitest setup for TypeScript projects |
+| Stryker TypeScript checker | Official | https://stryker-mutator.io/docs/stryker-js/typescript-checker/ | TypeScript-specific mutant validation before test execution |
+| Stryker Vitest runner | Official | https://stryker-mutator.io/docs/stryker-js/vitest-runner/ | Vitest-specific Stryker runner for TypeScript/ESM projects |
 | Jest coverage configuration | Official | https://jestjs.io/docs/configuration#coveragethreshold-object | coverageThreshold schema with per-file and per-directory support |
-| Vitest coverage docs | Official | https://vitest.dev/guide/coverage.html | Threshold config, v8 vs istanbul, per-file thresholds |
-| NYC (Istanbul CLI) | Official | https://istanbul.js.org/ | Standalone Istanbul CLI for non-Jest runners; supports staggered multi-run accumulation |
-| c8 — V8 Native Coverage | Official | https://github.com/bcoe/c8 | Lightweight V8 coverage CLI; no instrumentation overhead; useful for Node.js built-in test runner |
+| Vitest coverage docs | Official | https://vitest.dev/guide/coverage.html | Threshold config, v8 vs istanbul, per-file thresholds, TypeScript support |
+| ts-jest coverage docs | Official | https://kulshekhar.github.io/ts-jest/docs/ | ts-jest with Istanbul coverage for Jest TypeScript projects |
+| c8 — V8 Native Coverage CLI | Official | https://github.com/bcoe/c8 | Lightweight V8 coverage CLI for Node.js test runner; no instrumentation overhead |
 | mutmut (Python) | Official | https://mutmut.readthedocs.io/ | Python mutation testing tool reference |
-| Pitest (Java) | Official | https://pitest.org/ | Java/JVM mutation testing |
-| fast-check (property-based) | Community | https://fast-check.io/ | Complement to coverage: explores input space without line counting |
+| Pitest (Java) | Official | https://pitest.org/ | Java/JVM mutation testing; Maven/Gradle integration |
+| fast-check (property-based, TypeScript) | Community | https://fast-check.io/ | Complement to coverage: explores full input space; TypeScript-native |
+| fast-check documentation | Official | https://fast-check.io/docs/introduction/getting-started/ | Getting started with property-based testing in TypeScript |
 | Google Testing Blog — Code Coverage Best Practices | Community | https://testing.googleblog.com/2020/08/code-coverage-best-practices.html | Production-grade guidance from Google's test engineering team |
+| ISTQB CTFL 4.0 Syllabus | Official | https://www.istqb.org/certifications/certified-tester-foundation-level | Defines white-box coverage criteria including MC/DC |
+| Kent C. Dodds — Write Fewer, Longer Tests | Community | https://kentcdodds.com/blog/write-fewer-longer-tests | Argues against coverage-driven test fragmentation |

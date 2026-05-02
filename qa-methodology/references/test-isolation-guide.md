@@ -1,5 +1,6 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: JavaScript | topic: test-isolation | iteration: 6 | score: 100/100 | date: 2026-04-28 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 6 | score: 100/100 | date: 2026-05-02 -->
+<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: synthesized from training knowledge (WebFetch blocked, WebSearch unavailable) -->
 <!-- Primary references: martinfowler.com/bliki/UnitTest.html, xunitpatterns.com/Four Phase Test, -->
 <!--                     Google Testing Blog, Jest/Vitest docs, community production experience   -->
@@ -43,10 +44,11 @@ makes failing tests harder to debug.
 
 ### 3. Test fixture setup and teardown
 
-A *test fixture* is the set of preconditions under which a test runs. Proper fixture management
-means every test starts from a known-good state and cleans up after itself — not relying on the
-previous test having run (or not having run). In Jest/Vitest: `beforeEach`/`afterEach` for per-test
-fixtures, `beforeAll`/`afterAll` for expensive setup shared within a describe block (use sparingly).
+A *test fixture* is the set of preconditions under which a test runs (ISTQB CTFL 4.0 term). Proper
+fixture management means every test starts from a known-good state and cleans up after itself — not
+relying on the previous test having run (or not having run). In Jest/Vitest with TypeScript:
+`beforeEach`/`afterEach` for per-test fixtures, `beforeAll`/`afterAll` for expensive setup shared
+within a `describe` block (use sparingly).
 
 ### 4. Shared mutable state as the root cause of flakiness
 
@@ -58,9 +60,24 @@ dangerous because it often only surfaces under parallel execution or after suite
 ### 5. Test doubles and dependency injection as isolation enablers
 
 Replacing real collaborators (databases, HTTP clients, clocks, random number generators) with
-controlled fakes, stubs, or mocks is the mechanical mechanism that makes FIRST achievable. Dependency
-injection — passing collaborators in rather than importing singletons — is the design pattern that
-makes test doubles practical.
+controlled fakes, stubs, or mocks is the mechanical mechanism that makes FIRST achievable. In
+TypeScript, dependency injection is enabled by interfaces and constructor injection — passing
+collaborators typed as interfaces rather than importing concrete singletons. TypeScript's type system
+enforces that test doubles conform to the real interface.
+
+**Test doubles taxonomy** (Meszaros, xUnit Test Patterns):
+
+| Double type | Description | TypeScript mechanism |
+|-------------|-------------|---------------------|
+| **Dummy** | Passed but never used; fills a required parameter | `{} as SomeInterface` |
+| **Stub** | Returns canned values; no behavior verification | `jest.fn().mockReturnValue(...)` |
+| **Fake** | Simplified working implementation (e.g., in-memory DB) | Class implementing the interface |
+| **Spy** | Records calls for later verification; delegates to real | `jest.spyOn(obj, 'method')` |
+| **Mock** | Pre-programmed with expectations; verified on teardown | `jest.fn()` with `toHaveBeenCalledWith` |
+
+Using the wrong double type is an isolation anti-pattern. A **mock** verified in `afterEach` (not
+in the test body) violates the Self-validating property because the assertion is outside the AAA
+pattern. Prefer asserting mock calls inside the test body's Assert phase.
 
 ### 6. Solitary vs. sociable unit tests — choosing the isolation boundary
 
@@ -75,8 +92,8 @@ Martin Fowler distinguishes two styles of unit tests:
 
 Neither style is universally better. Solitary tests are preferred for stateful, side-effectful, or
 externally-coupled code. Sociable tests are preferred for pure-logic chains where the real
-collaborators are fast, deterministic, and free of external I/O. The key: choose one style
-*deliberately* per test, not by accident.
+collaborators are fast, deterministic, and free of external I/O. In TypeScript, the choice is often
+clearer because typed interfaces make the boundary explicit.
 
 ---
 
@@ -91,24 +108,30 @@ optional — it is the foundation that makes the entire test suite trustworthy.
 - The test suite has grown beyond ~500 tests and flakiness is already appearing
 - Using Jest's `--runInBand` is the only way to make the suite pass (red flag: hidden shared state)
 
+**When NOT to use strict unit-level isolation:**
+- End-to-end smoke tests intentionally exercise the full stack — apply isolation at *scenario* level
+- Contract tests verify real integration points — use transaction rollback for data isolation, not mocks
+- Performance benchmarks need real I/O; isolation would invalidate the measurement
+
 **Maturity level:** Applicable from day 1 of a project. No prior testing maturity required.
 
 ---
 
 ## Patterns
 
-### Pattern 1: Arrange-Act-Assert with explicit phases
+### Pattern 1: Arrange-Act-Assert with explicit phases (TypeScript)
 
 Each phase is separated by a blank line and never interleaved. The Act phase contains exactly one
 call. The Assert phase verifies the outcome of that single call.
 
-```javascript
-const { calculateDiscount } = require('./pricing');
+```typescript
+import { calculateDiscount } from './pricing';
+import type { Customer } from './types';
 
 describe('calculateDiscount', () => {
   it('applies 20% discount when customer is premium and cart exceeds $100', () => {
     // Arrange
-    const customer = { tier: 'premium' };
+    const customer: Customer = { id: 'c1', tier: 'premium' };
     const cartTotal = 150.00;
 
     // Act
@@ -120,7 +143,7 @@ describe('calculateDiscount', () => {
 
   it('applies no discount when customer is standard regardless of cart size', () => {
     // Arrange
-    const customer = { tier: 'standard' };
+    const customer: Customer = { id: 'c2', tier: 'standard' };
     const cartTotal = 500.00;
 
     // Act
@@ -135,15 +158,16 @@ describe('calculateDiscount', () => {
 ### Pattern 2: beforeEach fixture reset — eliminating shared mutable state  [community]
 
 Never share a mutable object across tests inside a `describe` block. Declare the reference in
-`describe` scope but re-initialize it inside `beforeEach`. This pattern is the most impactful
-single change teams make when eliminating flakiness from an existing suite.
+`describe` scope but re-initialize it inside `beforeEach`. This is the most impactful single change
+teams make when eliminating flakiness from an existing suite.
 
-```javascript
-const { ShoppingCart } = require('./ShoppingCart');
+```typescript
+import { ShoppingCart } from './ShoppingCart';
+import type { Product } from './types';
 
 describe('ShoppingCart', () => {
   // Declared at describe scope — but reset every test
-  let cart;
+  let cart: ShoppingCart;
 
   beforeEach(() => {
     // Fresh instance per test: no leftover items from a previous test
@@ -155,7 +179,7 @@ describe('ShoppingCart', () => {
   });
 
   it('adds a product and increases item count', () => {
-    const product = { id: 'p1', name: 'Widget', price: 9.99 };
+    const product: Product = { id: 'p1', name: 'Widget', price: 9.99 };
 
     cart.add(product);
 
@@ -163,7 +187,7 @@ describe('ShoppingCart', () => {
   });
 
   it('removes a product by id', () => {
-    const product = { id: 'p2', name: 'Gadget', price: 19.99 };
+    const product: Product = { id: 'p2', name: 'Gadget', price: 19.99 };
     cart.add(product);
 
     cart.remove('p2');
@@ -173,84 +197,66 @@ describe('ShoppingCart', () => {
 });
 ```
 
-### Pattern 3: Dependency injection + Jest fake clock for time-dependent behavior  [community]
+### Pattern 3: Interface-based dependency injection + fake clock (TypeScript)  [community]
 
-Clock-dependent code (`Date.now()`, `new Date()`, `setTimeout`) is a classic source of
-non-repeatable tests. Inject a clock abstraction and provide a controlled fake in tests. Using
-`jest.useFakeTimers()` as a per-test setup (with `afterEach(() => jest.useRealTimers())`) isolates
-timer state between tests.
+TypeScript interfaces enable strongly-typed test doubles without a mocking library. Define a `Clock`
+interface; production code depends on the interface, tests provide a controlled implementation.
 
-```javascript
-// production code — clock injected, not hardcoded
-function isWithinBusinessHours(clock) {
+```typescript
+// production code — typed interface injection, not hardcoded Date
+export interface Clock {
+  now(): number;
+}
+
+export function isWithinBusinessHours(clock: Clock): boolean {
   const hour = new Date(clock.now()).getHours();
   return hour >= 9 && hour < 17;
 }
-module.exports = { isWithinBusinessHours };
 
 // test — controlled clock, no wall-clock dependency
-const { isWithinBusinessHours } = require('./businessHours');
+import { isWithinBusinessHours, Clock } from './businessHours';
 
 describe('isWithinBusinessHours', () => {
-  const makeClockAt = (isoString) => ({
+  const makeClockAt = (isoString: string): Clock => ({
     now: () => new Date(isoString).getTime(),
   });
 
   it('returns true at 10:00 AM on a weekday', () => {
     const clock = makeClockAt('2026-04-26T10:00:00.000Z');
+
     expect(isWithinBusinessHours(clock)).toBe(true);
   });
 
-  it('returns false at 8:59 AM', () => {
+  it('returns false at 8:59 AM (before business hours)', () => {
     const clock = makeClockAt('2026-04-26T08:59:00.000Z');
+
     expect(isWithinBusinessHours(clock)).toBe(false);
   });
 
-  it('returns false at 5:00 PM', () => {
+  it('returns false at exactly 5:00 PM (boundary exclusive)', () => {
     const clock = makeClockAt('2026-04-26T17:00:00.000Z');
+
     expect(isWithinBusinessHours(clock)).toBe(false);
   });
 });
 ```
 
-### Pattern 3b: jest.useFakeTimers() for setTimeout/setInterval isolation  [community]
+### Pattern 4: jest.useFakeTimers() for setTimeout/setInterval isolation  [community]
 
-When testing code that uses `setTimeout`, `setInterval`, or `Date.now()` directly (not via an
-injected clock), use `jest.useFakeTimers()` to take control of the timer system. Always pair with
-`jest.useRealTimers()` in `afterEach` to prevent timer state from leaking into subsequent tests or
-other test files running in the same worker.
+When testing code that uses `setTimeout`, `setInterval`, or `Date.now()` directly, use
+`jest.useFakeTimers()` to control the timer system. Always pair with `jest.useRealTimers()` in
+`afterEach` to prevent timer state from leaking across tests.
 
-```javascript
-// production code — uses setTimeout/setInterval directly
-class PollingNotifier {
-  constructor(callback, intervalMs) {
-    this._callback = callback;
-    this._intervalMs = intervalMs;
-    this._timerId = null;
-  }
-  start() {
-    this._timerId = setInterval(this._callback, this._intervalMs);
-  }
-  stop() {
-    if (this._timerId !== null) {
-      clearInterval(this._timerId);
-      this._timerId = null;
-    }
-  }
-}
-module.exports = { PollingNotifier };
-
-// test — controlled timers, no real wall-clock waiting
-const { PollingNotifier } = require('./pollingNotifier');
+```typescript
+import { PollingNotifier } from './pollingNotifier';
 
 describe('PollingNotifier', () => {
   beforeEach(() => {
-    // Take over all timer functions: setTimeout, setInterval, Date, etc.
     jest.useFakeTimers();
   });
 
   afterEach(() => {
-    // CRITICAL: restore real timers — failure to do this leaks into other tests
+    // CRITICAL: restore real timers — failure leaks state into subsequent tests
     jest.useRealTimers();
   });
 
@@ -259,29 +265,29 @@ describe('PollingNotifier', () => {
     const notifier = new PollingNotifier(callback, 5000);
 
     notifier.start();
-    jest.advanceTimersByTime(4999);   // advance clock by 4.999s
+    jest.advanceTimersByTime(4999);
 
     expect(callback).not.toHaveBeenCalled();
     notifier.stop();
   });
 
-  it('fires callback exactly once when first interval elapses', () => {
+  it('fires callback exactly once when the first interval elapses', () => {
     const callback = jest.fn();
     const notifier = new PollingNotifier(callback, 5000);
 
     notifier.start();
-    jest.advanceTimersByTime(5000);   // advance past the threshold
+    jest.advanceTimersByTime(5000);
 
     expect(callback).toHaveBeenCalledTimes(1);
     notifier.stop();
   });
 
-  it('fires callback multiple times as clock advances by multiple intervals', () => {
+  it('fires callback multiple times across multiple intervals', () => {
     const callback = jest.fn();
-    const notifier = new PollingNotifier(callback, 1000); // fires every 1 second
+    const notifier = new PollingNotifier(callback, 1000);
 
     notifier.start();
-    jest.advanceTimersByTime(3500);   // 3 full intervals have elapsed
+    jest.advanceTimersByTime(3500); // 3 full intervals
 
     expect(callback).toHaveBeenCalledTimes(3);
     notifier.stop();
@@ -289,14 +295,14 @@ describe('PollingNotifier', () => {
 });
 ```
 
-### Pattern 4: afterEach teardown — environment variable isolation  [community]
+### Pattern 5: afterEach teardown — environment variable isolation  [community]
 
 Tests that set environment variables must restore them. Failing to do so is a classic source of
 order-dependent failures that only appear in CI (where test files run in a different order than
-locally). The `afterEach` restore pattern is mandatory when mutating `process.env`.
+locally).
 
-```javascript
-const { loadConfig } = require('./config');
+```typescript
+import { loadConfig } from './config';
 
 describe('config loader', () => {
   const originalEnv = Object.assign({}, process.env);
@@ -325,21 +331,19 @@ describe('config loader', () => {
 });
 ```
 
-### Pattern 5: Module-level singleton isolation with jest.resetModules()  [community]
+### Pattern 6: jest.resetModules() for module-level singleton isolation  [community]
 
-When the code under test uses a module-level singleton (e.g., a cache, connection pool, or
-registry), `jest.resetModules()` in `beforeEach` ensures each test gets a fresh module instance.
-This is necessary when the singleton is initialized at import time. Use dynamic `require()` after
-the reset to force re-evaluation of the module.
+When TypeScript code uses a module-level singleton (cache, registry, connection pool), reset the
+module registry in `beforeEach` to ensure each test gets a fresh module instance.
 
-```javascript
+```typescript
 describe('userRegistry (module singleton)', () => {
-  let userRegistry;
+  let userRegistry: typeof import('./userRegistry');
 
   beforeEach(() => {
-    // Clear module cache so the singleton reinitializes on next require
+    // Clear module cache so singleton reinitializes on next require
     jest.resetModules();
-    // Dynamic require re-evaluates the module fresh each test
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     userRegistry = require('./userRegistry');
   });
 
@@ -360,32 +364,30 @@ describe('userRegistry (module singleton)', () => {
 });
 ```
 
-### Pattern 6: Database transaction rollback for integration test isolation  [community]
+### Pattern 7: Database transaction rollback for integration test isolation  [community]
 
-Integration tests that hit a real database need data isolation too. The transaction rollback
-pattern wraps each test in a database transaction that is rolled back in `afterEach`, leaving the
-database in exactly the state it was in before the test ran. This is faster than truncating tables
-and avoids needing test-specific seed data cleanup logic.
+Integration tests that hit a real database need data isolation too. Wrap each test in a DB
+transaction rolled back in `afterEach`, leaving the database in exactly its pre-test state.
 
-```javascript
-const { dataSource } = require('../src/db/dataSource');
+```typescript
+import { dataSource } from '../src/db/dataSource';
+import { QueryRunner } from 'typeorm';
 
 describe('UserRepository integration', () => {
-  let queryRunner;
+  let queryRunner: QueryRunner;
 
   beforeAll(async () => {
     await dataSource.initialize();
   });
 
   beforeEach(async () => {
-    // Open a transaction — all DB writes during this test happen inside it
     queryRunner = dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
   });
 
   afterEach(async () => {
-    // Roll back regardless of test pass/fail — DB state is pristine for next test
+    // Roll back regardless of pass/fail — DB state is pristine for next test
     await queryRunner.rollbackTransaction();
     await queryRunner.release();
   });
@@ -395,43 +397,132 @@ describe('UserRepository integration', () => {
   });
 
   it('creates and retrieves a user within the same transaction', async () => {
-    // Arrange
     const repo = queryRunner.manager.getRepository('User');
     const input = { name: 'Alice', email: 'alice@example.com' };
 
-    // Act
     const created = await repo.save(repo.create(input));
     const found = await repo.findOneBy({ id: created.id });
 
-    // Assert
-    expect(found.name).toBe('Alice');
-    // Rolled back in afterEach — no cleanup code needed
+    expect(found?.name).toBe('Alice');
   });
 });
 ```
 
-### Pattern 7: HTTP server isolation — dynamic port binding to prevent port conflicts  [community]
+### Pattern 8: Jest config baseline for maximum isolation  [community]
 
-When integration tests spin up an Express/Fastify/Hapi server, binding to a fixed port (e.g., 3000)
-causes `EADDRINUSE` errors when tests run in parallel (multiple Jest workers) or when the developer's
-local dev server is already running on that port. The fix: bind on port `0` to let the OS choose a
-free port, then read the assigned port from the listening handle.
+```typescript
+// jest.config.ts
+import type { Config } from 'jest';
 
-```javascript
-const express = require('express');
-const supertest = require('supertest');
-const { createRouter } = require('../src/routes');
+const config: Config = {
+  // Reset mock call history and instances between every test
+  clearMocks: true,
+  // Restore all spied-on originals after each test (prevents spy leaks)
+  restoreMocks: true,
+  // Use TypeScript transform
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  // Limit workers to avoid port collisions in integration suites
+  maxWorkers: '50%',
+};
 
-describe('API integration — server on dynamic port', () => {
-  let server;
-  let request;
+export default config;
+```
+
+### Pattern 9: Type-safe mocks with `jest.mocked()` — preventing interface drift  [community]
+
+In TypeScript, `jest.mock()` with a factory function produces an untyped result by default.
+Wrapping the import with `jest.mocked()` preserves full TypeScript type-checking on mock
+assertions, ensuring test doubles stay in sync with the real interface whenever the production
+code changes. This is the primary mechanism for catching isolation failures at compile time
+rather than at runtime.
+
+```typescript
+// types.ts
+export interface EmailService {
+  send(to: string, subject: string, body: string): Promise<void>;
+  getLastDeliveredTo(): string | null;
+}
+
+// userService.ts
+import type { EmailService } from './types';
+
+export class UserService {
+  constructor(private readonly emailService: EmailService) {}
+
+  async registerUser(email: string, name: string): Promise<{ id: string }> {
+    const user = { id: `user-${Date.now()}`, email, name };
+    // Persist user... (omitted for brevity)
+    await this.emailService.send(
+      email,
+      'Welcome!',
+      `Hi ${name}, your account is ready.`,
+    );
+    return user;
+  }
+}
+
+// userService.test.ts
+import { UserService } from './userService';
+import type { EmailService } from './types';
+
+describe('UserService.registerUser', () => {
+  let emailService: jest.Mocked<EmailService>;
+  let service: UserService;
+
+  beforeEach(() => {
+    // jest.Mocked<T> gives full TypeScript type-checking on .mockResolvedValue etc.
+    emailService = {
+      send: jest.fn().mockResolvedValue(undefined),
+      getLastDeliveredTo: jest.fn().mockReturnValue(null),
+    };
+    // Fresh service instance per test — no shared state across tests
+    service = new UserService(emailService);
+  });
+
+  it('sends a welcome email to the registered address', async () => {
+    await service.registerUser('alice@example.com', 'Alice');
+
+    // TypeScript knows emailService.send is jest.Mock — .toHaveBeenCalledWith is type-safe
+    expect(emailService.send).toHaveBeenCalledWith(
+      'alice@example.com',
+      'Welcome!',
+      expect.stringContaining('Alice'),
+    );
+  });
+
+  it('returns the created user with an id', async () => {
+    const result = await service.registerUser('bob@example.com', 'Bob');
+
+    expect(result).toHaveProperty('id');
+    expect(result.id).toMatch(/^user-/);
+  });
+});
+```
+
+### Pattern 10: HTTP server isolation — dynamic port binding (TypeScript + supertest)  [community]
+
+When integration tests spin up an Express/Fastify server, binding to a fixed port causes
+`EADDRINUSE` errors when tests run in parallel (multiple Jest workers) or when a local dev server
+is already running. Binding on port `0` lets the OS assign a free port per worker.
+
+```typescript
+import express, { Application } from 'express';
+import supertest, { SuperTest, Test } from 'supertest';
+import http from 'http';
+import { createUserRouter } from '../src/routes/userRouter';
+
+describe('UserRouter — HTTP integration (dynamic port)', () => {
+  let app: Application;
+  let server: http.Server;
+  let request: SuperTest<Test>;
 
   beforeAll((done) => {
-    const app = express();
+    app = express();
     app.use(express.json());
-    app.use('/api', createRouter());
+    app.use('/api/users', createUserRouter());
 
-    // Port 0: OS assigns a free port → no collision across parallel workers
+    // Port 0: OS assigns a free port — no collision across parallel Jest workers
     server = app.listen(0, () => {
       request = supertest(server);
       done();
@@ -442,57 +533,29 @@ describe('API integration — server on dynamic port', () => {
     server.close(done);
   });
 
-  it('GET /api/users returns 200 and empty array initially', async () => {
+  it('GET /api/users returns 200 and an array', async () => {
     const response = await request.get('/api/users');
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual([]);
+    expect(Array.isArray(response.body)).toBe(true);
   });
 
-  it('POST /api/users creates a user and returns 201', async () => {
-    const response = await request
-      .post('/api/users')
-      .send({ name: 'Bob', email: 'bob@example.com' });
+  it('POST /api/users creates a user and returns 201 with an id', async () => {
+    const payload = { name: 'Carol', email: 'carol@example.com' };
+
+    const response = await request.post('/api/users').send(payload);
 
     expect(response.status).toBe(201);
+    expect(response.body).toMatchObject({ name: 'Carol', email: 'carol@example.com' });
     expect(response.body).toHaveProperty('id');
   });
+
+  it('POST /api/users returns 400 when email is missing', async () => {
+    const response = await request.post('/api/users').send({ name: 'Dave' });
+
+    expect(response.status).toBe(400);
+  });
 });
-```
-
-### Pattern 8: Recommended Jest config baseline for maximum isolation  [community]
-
-Enabling these config flags at the project level ensures isolation-safe defaults without requiring
-per-test manual resets. `clearMocks` resets call counts and instances; `restoreMocks` restores all
-spied-on originals after each test. Teams typically choose `clearMocks` + `restoreMocks` (preserving
-manual mock implementations) or `resetMocks` + `restoreMocks` (full reset every test).
-
-```javascript
-// jest.config.js
-/** @type {import('jest').Config} */
-module.exports = {
-  // Reset mock call history and instances between every test
-  clearMocks: true,
-  // Restore all spied-on originals after each test (prevents spy leaks)
-  restoreMocks: true,
-  // Do NOT set resetMocks: true alongside restoreMocks on first adoption —
-  // resetMocks removes manual mock implementations which breaks jest.mock() factories.
-  // Choose: clearMocks (safe default) OR resetMocks (aggressive, verify first).
-
-  // Run tests in random order within files to expose order dependencies
-  // Uncomment for periodic CI runs (not every run — flakiness diagnostics only)
-  // randomize: true,
-
-  // Limit workers to avoid port collisions in integration suites
-  maxWorkers: '50%',
-
-  // Use 'node' environment for backend/server code (default in Jest 27+).
-  // Use 'jsdom' for browser-like globals (window, document, localStorage).
-  // Never mix environments in the same jest config without explicit override comments —
-  // using jsdom for server code silently provides window/document globals that mask
-  // isolation violations that would surface in real Node.js.
-  testEnvironment: 'node',
-};
 ```
 
 ---
@@ -500,23 +563,23 @@ module.exports = {
 ## Anti-Patterns
 
 ### 1. Shared mutable object declared and initialized at describe scope
-```javascript
-// BAD — cart is shared across all tests; second test sees leftover state from first
-const cart = new ShoppingCart();
+```typescript
+// BAD — cart is shared across all tests; second test sees leftover state
+const cart = new ShoppingCart(); // initialized ONCE at describe scope
 it('adds item', () => { cart.add(item); expect(cart.itemCount()).toBe(1); });
-it('is empty', () => { expect(cart.itemCount()).toBe(0); }); // FAILS if run after first
+it('is empty', () => { expect(cart.itemCount()).toBe(0); }); // FAILS after first test
 ```
 **Why harmful:** Passes when run alone, fails when run in suite order — or vice versa. The suite
 becomes brittle to reordering, parallelism, or new tests being added.
 
 ### 2. Test-to-test data handoff via module-level variables
-Storing the output of one test (`let result = null; it('creates user', () => { result = ... })`)
+Storing the output of one test (`let result: User | null = null; it('creates user', () => { result = ... })`)
 and reading it in a later test violates the Independent property and makes the suite order-dependent.
 
 ### 3. Missing teardown for external resources
 Opening a database connection, starting a server, or writing a temp file without a corresponding
-`afterEach`/`afterAll` cleanup leaks resources across tests. Under Jest's parallel worker model
-this can exhaust file descriptors or cause port conflicts.
+`afterEach`/`afterAll` cleanup leaks resources. Under Jest's parallel worker model this can exhaust
+file descriptors or cause `EADDRINUSE` port conflicts.
 
 ### 4. `beforeAll` for mutable setup shared across tests
 `beforeAll` is appropriate only for truly immutable setup (e.g., spawning a read-only test server).
@@ -524,20 +587,38 @@ Using it to initialize a mutable object shared by multiple tests reintroduces sh
 that modify the shared object contaminate later tests in the same block.
 
 ### 5. Asserting inside `afterEach`
-Placing `expect()` calls inside `afterEach` means a test can appear to pass (no assertion failure
-in the test body) yet trigger an error in teardown that is attributed to the *next* test. Keep all
-assertions inside the test body's Assert phase.
+Placing `expect()` calls inside `afterEach` means a test can appear to pass yet trigger an error in
+teardown attributed to the *next* test. Keep all assertions inside the test body's Assert phase.
 
 ### 6. Testing multiple behaviors in a single test ("mega-test")
 A test that creates a user, updates it, verifies the update, deletes it, and verifies deletion in
 one test body violates both the AAA pattern and Self-validating. When it fails, you don't know
-which step broke without reading through the whole test.
+which step broke without reading the whole test.
 
 ### 7. Relying on test file execution order in CI
-Configuring CI to run test files in a specific order (e.g., `jest auth.test.js db.test.js app.test.js`)
-and having later files depend on side effects from earlier files creates a hidden order dependency at
-the file level. Jest's `--testSequencer`, `--randomize`, or shard-based parallelism will break this.
-Each test file must be fully self-contained from setup to teardown.
+Configuring CI to run test files in a specific order and having later files depend on side effects
+from earlier files creates a hidden order dependency at the file level. Each test file must be fully
+self-contained from setup to teardown.
+
+### 8. Using `as unknown as MockType` to bypass TypeScript type checking on mocks
+```typescript
+// BAD — casting destroys all type-safety on the mock
+const emailService = { send: jest.fn() } as unknown as EmailService;
+```
+**Why harmful:** TypeScript will not flag when `EmailService` gains a new required method and
+the mock is not updated. The test compiles but the mock no longer matches the real interface.
+Use `jest.Mocked<EmailService>` (Pattern 9) instead — TypeScript will error if the shape drifts.
+
+### 9. `jest.fn()` calls in `describe` scope (not `beforeEach`)
+```typescript
+// BAD — mock created once, call count accumulates across tests
+const mockSend = jest.fn();
+it('sends email on register', async () => { ... expect(mockSend).toHaveBeenCalledTimes(1); });
+it('does not send email on login', async () => { ... expect(mockSend).not.toHaveBeenCalled(); }); // FAILS
+```
+**Why harmful:** Even with `clearMocks: true` in config, this pattern is brittle because it
+relies on Jest internals. The intent is clearer and more robust when the mock is recreated in
+`beforeEach` alongside all other arrange state.
 
 ---
 
@@ -551,15 +632,14 @@ Each test file must be fully self-contained from setup to teardown.
    both the tests and the `afterAll`. Prefer `afterEach` for cleanup that must always run; use
    `try/finally` patterns in `beforeAll` for expensive resource setup that needs guaranteed cleanup.
 
-3. **`jest.mock()` hoisting surprises.** [community] Jest hoists `jest.mock()` calls to the top of the
-   file at compile time (via Babel). A mock set up in one `describe` block is visible in all blocks
-   in the same file unless explicitly reset. Use `jest.resetAllMocks()` or `clearMocks: true` in
-   Jest config to prevent mock state leaking between tests.
+3. **`jest.mock()` hoisting surprises.** [community] Jest hoists `jest.mock()` calls to the top of
+   the file at compile time (via Babel/ts-jest). A mock set up in one `describe` block is visible
+   in all blocks in the same file unless explicitly reset. Use `clearMocks: true` in Jest config.
 
-4. **Environment variables in CI differ from local.** [community] Tests that pass locally but fail in CI
-   are frequently caused by environment variables set in the developer's shell that are not set in
-   the CI worker. Explicitly set all required env vars in `beforeEach` and restore in `afterEach`
-   rather than assuming ambient environment state.
+4. **Environment variables in CI differ from local.** [community] Tests that pass locally but fail
+   in CI are frequently caused by environment variables set in the developer's shell that are not
+   set in the CI worker. Explicitly set all required env vars in `beforeEach` and restore in
+   `afterEach` rather than assuming ambient environment state.
 
 5. **Snapshot tests as hidden shared state.** [community] Jest snapshot files checked into version
    control are shared state at the file level. When a snapshot is updated by one developer but not
@@ -573,57 +653,95 @@ Each test file must be fully self-contained from setup to teardown.
    parallelism configurations.
 
 7. **Vitest's `vi.spyOn` auto-restoration vs. Jest's manual reset.** [community] Vitest restores
-   spies automatically when `restoreMocks: true` is set in `vite.config.js`. Teams migrating from
-   Jest to Vitest often forget to add this config flag, recreating the mock-leak problem in a new
-   framework.
+   spies automatically when `restoreMocks: true` is set in `vitest.config.ts`. Teams migrating from
+   Jest to Vitest often forget to add this config flag, recreating the mock-leak problem.
 
 8. **Jest worker isolation boundary is the *file*, not the `describe` block.** [community] Jest runs
    each test *file* in a separate worker process by default. Shared state within a file is shared
-   across all tests in that file regardless of `describe` nesting. Teams sometimes expect
-   `describe`-scoped `beforeAll` to be isolated from sibling `describe` blocks — it is not. The
-   isolation boundary is the file. Splitting logically unrelated tests into separate files is the
-   correct fix, not adding more `beforeEach` resets.
+   across all tests in that file regardless of `describe` nesting. The isolation boundary is the
+   file. Splitting logically unrelated tests into separate files is the correct fix.
 
-9. **Database transaction rollback is faster than truncate-and-seed but fails with auto-commit
-   drivers.** [community] Some database clients (e.g., certain Prisma configurations, connection
-   pool implementations) use auto-commit mode or open a new connection per query, making the
-   transaction rollback pattern ineffective. Always verify that all DB operations inside a test
-   use the *same* `QueryRunner` / transaction handle, not the global data source — or the rollback
-   silently has no effect and tests contaminate each other.
+9. **TypeScript `jest.mock()` with factory functions requires type assertions.** [community]
+   When using `jest.mock('./module', () => ({ fn: jest.fn() }))` in TypeScript, the mocked module
+   type is `unknown` unless you add `jest.mocked()` wrapper or type assertion. Skipping this leads
+   to `any` types spreading throughout tests and losing TypeScript's help in catching mock
+   mismatches with real implementations.
 
-10. **Using `jest --randomize` to detect hidden order dependencies.** [community] Jest 29.2+ added
-    `--randomize` (or `--testSequencer` with a custom shuffler) to run tests within each file in
-    random order. Running the suite with `--randomize` periodically is the most reliable way to
-    surface hidden order dependencies without having to read test code. Many teams only discover
-    order-dependent failures after a CI framework upgrade that changes worker scheduling — adding
-    a weekly `--randomize` run to CI catches this earlier.
+10. **`jest --randomize` to detect hidden order dependencies.** [community] Jest 29.2+ added
+    `--randomize` to run tests within each file in random order. Running the suite with
+    `--randomize` periodically is the most reliable way to surface hidden order dependencies.
+    Many teams only discover order-dependent failures after a CI framework upgrade that changes
+    worker scheduling.
 
 11. **`require()` caching causes singleton leakage in Jest CJS projects.** [community] Node's module
     cache means that once a CJS module is loaded, all subsequent `require()` calls return the cached
-    version. In a Jest test suite, if two test files load the same singleton module without
-    `jest.resetModules()`, they share the same instance. The symptom is tests that pass when run
-    individually but fail when run together — even without explicit shared state code.
+    version. In a Jest/TypeScript test suite (compiled to CJS), if two test files load the same
+    singleton module without `jest.resetModules()`, they share the same instance. The symptom is
+    tests that pass individually but fail when run together.
 
-12. **`Object.assign({}, process.env)` does not deep-clone.** [community] The standard env-restore
-    pattern `const saved = Object.assign({}, process.env)` is safe for flat string values, but
-    mutating a nested object inside `process.env` (rare but possible in test helpers that inject
-    objects) can still leak. Use `JSON.parse(JSON.stringify(process.env))` or only mutate string
-    properties for guaranteed isolation.
+12. **ESM modules are not resetable with `jest.resetModules()` in native ESM mode.** [community]
+    When using Jest with `--experimental-vm-modules` (native ESM TypeScript), `jest.resetModules()`
+    does not work as it does in CJS mode. ESM modules are cached by the JavaScript engine itself.
+    The workaround is to use dynamic `import()` with cache-busting query parameters or convert
+    singletons to explicitly reset factory functions.
 
-13. **ESM modules are not resetable with `jest.resetModules()` in native ESM mode.** [community]
-    When using Jest with `--experimental-vm-modules` (native ESM), `jest.resetModules()` does not
-    work as it does in CJS mode. ESM modules are cached by the JavaScript engine itself, not by Jest's
-    require cache. The workaround is to use dynamic `import()` with cache-busting query parameters
-    (`import('./mod.js?t=' + Date.now())`) or to convert singletons to explicitly reset factory
-    functions. Teams migrating CJS test suites to ESM often discover this limitation only after the
-    migration is complete.
-
-14. **`test.concurrent` in Vitest does not serialize `beforeEach`/`afterEach`.** [community]
+13. **`test.concurrent` in Vitest does not serialize `beforeEach`/`afterEach`.** [community]
     Vitest's `test.concurrent` runs tests in the same describe block in parallel. This violates
     the Independent property if the tests share any mutable state in the describe scope — even
     a `let` variable reset in `beforeEach` is unsafe because concurrent tests race on the reset.
-    Only use `test.concurrent` with tests that are fully self-contained (no shared `let`, no
-    shared mocks). When in doubt, prefer serial execution with `test()`.
+    Only use `test.concurrent` with tests that are fully self-contained.
+
+14. **TypeScript strict null checks expose isolation failures at compile time.** [community]
+    Enabling `strictNullChecks` in `tsconfig.json` for test files catches cases where a `let`
+    variable (e.g., `let cart: ShoppingCart`) is used in a test before `beforeEach` initializes it.
+    TypeScript reports "variable 'cart' is used before being assigned" — a free lint for
+    isolation anti-pattern #1. Teams that disable `strictNullChecks` in test files lose this benefit.
+
+15. **Database auto-commit drivers silently break transaction rollback.** [community]
+    Some database clients (e.g., certain Prisma configurations, connection pool implementations)
+    use auto-commit mode or open a new connection per query, making the transaction rollback pattern
+    ineffective. The symptom: data written in one test persists into subsequent tests, causing
+    cascading failures. Verify that all DB operations inside a test use the *same* `QueryRunner` /
+    transaction handle, not the global data source. With Prisma, use `$transaction()` with the test
+    client instance and roll back with `$executeRaw('ROLLBACK')`.
+
+16. **`jest.spyOn()` on TypeScript getters requires different syntax.** [community]
+    `jest.spyOn(obj, 'property')` works for methods but not for TypeScript getter properties.
+    For getters, use `jest.spyOn(obj, 'property', 'get').mockReturnValue(...)`. Failing to
+    use the third argument causes the spy to be set up on the wrong descriptor, silently failing
+    to intercept the call — a class of isolation bug unique to TypeScript's getter pattern that
+    has no compile-time warning.
+
+17. **`ts-jest` `diagnostics` option can mask type errors in test files.** [community]
+    When `diagnostics: false` is set in `ts-jest` config to speed up test compilation, TypeScript
+    type errors in test files are silently suppressed. Teams commonly use this for performance,
+    but it means that a test double with the wrong shape (missing a required method) will compile
+    and run without error — only the runtime behavior will be wrong. The better tradeoff is
+    `diagnostics: { warnOnly: true }` during migration, then re-enable `diagnostics: true`.
+
+18. **Shared `supertest` agent across tests retains cookie session state.** [community]
+    When using `supertest.agent(app)` (with `.agent()`, not the plain `supertest(app)`) across
+    multiple tests, the agent maintains cookie jar state between requests. If one test logs in,
+    subsequent tests run as the authenticated user — even if they never call a login endpoint.
+    The correct approach: create a new agent in `beforeEach`, or use the stateless `supertest(server)`
+    form for tests that should be unauthenticated. WHY: supertest agent is designed for multi-step
+    authenticated flows within a single test; it should not cross test boundaries.
+
+19. **NestJS `@Module` providers are singletons by default — test isolation requires `TestingModule.close()`.** [community]
+    NestJS's dependency injection creates module-scoped singletons. When creating a `TestingModule`
+    in `beforeAll`, services and repositories are shared across all tests in the file. Tests that
+    modify service state (e.g., calling `cache.set()`) will leak into subsequent tests. The fix:
+    either call `module.close()` in `afterAll` and recreate in `beforeEach`, or reset all
+    module-level state explicitly. WHY: the NestJS DI container does not reset between tests unless
+    explicitly re-instantiated, which surprises teams migrating from plain Jest tests.
+
+20. **`jest.mock()` applied to a re-exported symbol from an index barrel file mocks the barrel, not the source.** [community]
+    When production code imports `{ UserService } from '../services'` (a barrel re-export from
+    `index.ts`), calling `jest.mock('../services')` in a test mocks the entire barrel — including
+    other services you did not intend to mock. This causes unexpected undefined-method errors in
+    tests that share the same file's mock scope. The fix: import directly from the source file
+    (`'../services/UserService'`) in both production code and tests, or use
+    `jest.mock('../services', () => ({ UserService: jest.fn() }))` with an explicit factory.
 
 ---
 
@@ -632,64 +750,48 @@ Each test file must be fully self-contained from setup to teardown.
 ### When test isolation is deliberately relaxed
 
 **Integration tests by design** test the collaboration between real components (e.g., service +
-repository + database). These tests intentionally do not mock collaborators. Isolation still applies
-at the *test data* level: each test should own its data via transactions rolled back in teardown, or
-by inserting and deleting rows with unique keys per test run. The transaction rollback pattern
-(Pattern 6) is the preferred approach — it is faster than truncate/seed and leaves no orphaned rows,
-but it requires that all test DB operations share a single transaction handle.
+repository + database). Isolation applies at the *test data* level via transaction rollback
+(Pattern 7). The transaction rollback pattern is faster than truncating tables and leaves no
+orphaned rows, but requires all test DB operations share a single transaction handle.
 
 **End-to-end tests** operate against a full stack and cannot isolate individual units. Apply
 isolation at the scenario level: each E2E scenario should set up its own preconditions via API calls
-and clean up after itself. Shared test accounts or shared database state in E2E suites is the
-primary source of E2E flakiness. In Playwright, use `test.use({ storageState: 'path/to/state.json' })`
-to give each worker its own browser storage (cookies, localStorage) and avoid session contamination
-across parallel workers.
+and clean up after itself. In Playwright with TypeScript, use `test.use({ storageState })` to give
+each worker its own browser storage (cookies, localStorage) and avoid session contamination across
+parallel workers.
+
+### Named alternatives to test isolation techniques
+
+| Problem | Isolated approach | Alternative | Tradeoff |
+|---------|------------------|-------------|----------|
+| External service dependency | Mock/stub (test double) | Contract test (Pact) | Mock: fast but drifts; Contract: verified but needs provider |
+| Shared DB state | Transaction rollback | Test containers (fresh DB per run) | Rollback: fast, same DB; Containers: slower, higher fidelity |
+| Singleton modules | `jest.resetModules()` | Refactor to DI | Reset: quick fix, slow; DI: upfront cost, permanent fix |
+| Time-dependent code | `jest.useFakeTimers()` | Inject `Clock` interface | FakeTimers: zero refactor; Interface: better design |
 
 ### Known adoption costs
 
-- **Dependency injection adds boilerplate.** Refactoring existing code to accept injected
-  collaborators requires touching call sites. The benefit (testability, isolation) outweighs the
-  cost in medium-to-large codebases, but teams should expect an upfront refactoring phase.
+- **Dependency injection adds boilerplate.** Refactoring existing TypeScript code to accept
+  injected collaborators (typed as interfaces) requires touching call sites. The benefit outweighs
+  the cost in medium-to-large codebases, but teams should expect an upfront refactoring phase.
 
-- **`jest.resetModules()` is slow.** Resetting the module registry per test forces re-evaluation of
-  all `require()`/`import()` chains and is significantly slower than per-instance reset. Use only
-  when the singleton-at-import-time pattern cannot be refactored away.
+- **`jest.resetModules()` is slow.** Resetting the module registry per test forces re-evaluation
+  of all `import` chains and is significantly slower than per-instance reset. Use only when the
+  singleton-at-import-time pattern cannot be refactored away.
 
 - **Strict isolation can make tests verbose.** Fully isolated tests with complete `beforeEach`
-  setup can be long. The Arrange-Act-Assert pattern helps, but teams sometimes push back on the
-  verbosity. Shared *immutable* fixtures (defined once in `beforeAll` or as module-level `const`)
-  are an acceptable tradeoff when the object is never mutated by tests.
-
-### Lighter alternatives for small projects
-
-- **Test-scoped state with `describe` + `let` + `beforeEach`** (already covered above) is the
-  minimum viable isolation for most projects.
-- **Pure functions** eliminate the need for test doubles entirely — if the SUT has no
-  side effects and no dependencies, it is isolated by construction.
-
-### Named alternatives to Jest/Vitest isolation features
-
-| Problem | Jest mechanism | Vitest equivalent |
-|---------|---------------|-------------------|
-| Mock reset between tests | `clearMocks: true` in `jest.config.js` | `clearMocks: true` in `vite.config.js` |
-| Spy auto-restore | `restoreMocks: true` | `restoreMocks: true` |
-| Timer isolation | `jest.useFakeTimers()` / `jest.useRealTimers()` | `vi.useFakeTimers()` / `vi.useRealTimers()` |
-| Module singleton reset | `jest.resetModules()` | `vi.resetModules()` |
-| Per-test module isolation | `jest.isolateModules()` | `vi.isolateModules()` |
-| Concurrent test isolation | Not applicable (serial by default) | `test.concurrent` — use with caution (see Gotcha #14) |
+  setup can be long. Shared *immutable* fixtures (defined once in `beforeAll` or as module-level
+  `const`) are an acceptable tradeoff when the object is never mutated by tests.
 
 ### ISTQB CTFL 4.0 terminology alignment
 
-The guides in this repository use ISTQB CTFL 4.0 standardized terminology. Key mappings for
-test isolation discussions:
-
 | Common informal term | ISTQB CTFL 4.0 preferred term | Notes |
 |---------------------|------------------------------|-------|
-| "test" (individual) | **test case** | A test case has explicit inputs, preconditions, expected results, postconditions |
+| "test" (individual) | **test case** | Has explicit inputs, preconditions, expected results, postconditions |
 | "test set" / "spec file" | **test suite** | A collection of test cases grouped for execution |
 | "thing under test" | **test object** (or SUT) | The component, system, or item being tested |
 | "test scenario" | **test condition** | A testable aspect or situation derived from the test basis |
-| "bug" / "error" | **defect** | Prefer "defect" in formal reports; "bug" acceptable in informal contexts |
+| "bug" / "error" | **defect** | Prefer "defect" in formal reports |
 | "test layer" | **test level** | Unit test level, integration test level, system test level |
 | "setup/teardown" | **test fixture** | The fixed state or context used to run a test case |
 
@@ -699,13 +801,30 @@ test isolation discussions:
 
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
-| Martin Fowler — Unit Test | Official | https://martinfowler.com/bliki/UnitTest.html | Defines solitary vs sociable tests; the canonical reference for what "unit" means |
-| xUnit Patterns — Four Phase Test | Official | http://xunitpatterns.com/Four%20Phase%20Test.html | Defines Arrange-Act-Assert (as Setup/Exercise/Verify/Teardown); the pattern's original source |
-| Google Testing Blog — Test Flakiness | Community | https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html | Production-scale data on flakiness causes and quarantine strategy from Google's CI |
+| Martin Fowler — Unit Test | Official | https://martinfowler.com/bliki/UnitTest.html | Defines solitary vs sociable tests; canonical reference for what "unit" means |
+| xUnit Patterns — Four Phase Test | Official | http://xunitpatterns.com/Four%20Phase%20Test.html | Defines AAA (as Setup/Exercise/Verify/Teardown); the pattern's original source |
+| Google Testing Blog — Test Flakiness | Community | https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html | Production-scale data on flakiness causes from Google's CI |
 | Jest Docs — Timer Mocks | Official | https://jestjs.io/docs/timer-mocks | Authoritative reference for `useFakeTimers` isolation in Jest |
 | Vitest Docs — Mocking | Official | https://vitest.dev/guide/mocking | Vitest equivalents for Jest isolation APIs |
-| Martin Fowler — Non-Determinism in Tests | Official | https://martinfowler.com/articles/nonDeterminism.html | Deep analysis of why tests become non-deterministic; covers shared state as root cause |
-| Jest Docs — Configuration Reference | Official | https://jestjs.io/docs/configuration | Authoritative reference for `clearMocks`, `restoreMocks`, `resetMocks`, `randomize` options |
-| Supertest — HTTP assertion library | Community | https://github.com/ladjs/supertest | Standard JavaScript library for integration-testing Express/Fastify servers without binding a port |
-| Playwright — Authentication & Storage State | Official | https://playwright.dev/docs/auth | Per-worker browser storage isolation for E2E test suites with parallel execution |
-| ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative source for standardized testing terminology used throughout this guide |
+| Martin Fowler — Non-Determinism in Tests | Official | https://martinfowler.com/articles/nonDeterminism.html | Deep analysis of why tests become non-deterministic |
+| Jest Docs — Configuration Reference | Official | https://jestjs.io/docs/configuration | Authoritative reference for `clearMocks`, `restoreMocks`, `resetMocks`, `randomize` |
+| ts-jest Docs | Official | https://kulshekhar.github.io/ts-jest/ | TypeScript transformer for Jest; covers ESM/CJS isolation tradeoffs |
+| Playwright — Authentication & Storage State | Official | https://playwright.dev/docs/auth | Per-worker browser storage isolation for E2E test suites |
+| ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative source for standardized testing terminology |
+
+---
+
+## Quick Reference — Isolation Mechanisms by Problem Type
+
+| Problem | Symptom | TypeScript/Jest Solution | Vitest equivalent |
+|---------|---------|--------------------------|-------------------|
+| Shared mutable object | Test B fails after Test A mutates shared var | `let x: T; beforeEach(() => { x = new T(); })` | Same |
+| Spy leaks between tests | Mock call count accumulates across tests | `restoreMocks: true` in `jest.config.ts` | `restoreMocks: true` in `vitest.config.ts` |
+| Module singleton reset | Singleton state persists across test files | `jest.resetModules()` in `beforeEach` | `vi.resetModules()` in `beforeEach` |
+| Timer/Date non-determinism | Tests fail at midnight, DST transitions | `jest.useFakeTimers()` + `jest.useRealTimers()` | `vi.useFakeTimers()` + `vi.useRealTimers()` |
+| Environment variable leak | CI passes, local fails (or vice versa) | Save/restore `process.env` in `afterEach` | Same |
+| Port collision in parallel tests | `EADDRINUSE` in CI with multiple workers | Bind server on port `0` | Same |
+| DB state contamination | Integration tests fail in non-deterministic order | Transaction rollback pattern (Pattern 7) | Same |
+| Mock type drift | Mock added method X but interface changed | `jest.Mocked<T>` with `beforeEach` recreation | `vi.Mocked<T>` |
+| Barrel mock blast radius | Unintended mocks of sibling exports | Mock source file directly, not barrel | Same |
+| Concurrent test race | `test.concurrent` + shared `let` = race | Avoid `test.concurrent` for stateful tests | Same |

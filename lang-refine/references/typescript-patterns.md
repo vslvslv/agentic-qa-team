@@ -1,5 +1,5 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 9 | score: 100/100 | date: 2026-04-28 -->
+<!-- sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
 
 ## Core Philosophy
 
@@ -12,6 +12,27 @@
 4. **Keep types DRY — derive don't duplicate.** Utility types (`Partial`, `Pick`, `Omit`, `Record`, `ReturnType`) and mapped types let you derive related types from a single source of truth. Maintaining two parallel type definitions is a recipe for drift.
 
 5. **Community experience over textbook defaults.** The official docs show you _what_ the language can do. Experienced teams add hard-won lessons: prefer interfaces over intersection types for composition (they're cached by the compiler), annotate return types explicitly on public APIs, and treat `unknown` rather than `any` as the safe escape hatch.
+
+---
+
+## TypeScript Version Feature Quick Reference
+
+| Version | Key Feature | Minimum tsconfig |
+|---|---|---|
+| 4.1 | Template literal types, key remapping in mapped types | `"target": "ES2015"` |
+| 4.3 | `override` keyword, separate write types for getters/setters | add `noImplicitOverride: true` |
+| 4.5 | `Awaited<T>` built-in, `import type { X }` inline, tail recursion elimination | — |
+| 4.7 | `infer` variance bounds (`infer X extends string`), ESM support in Node | `"module": "nodenext"` |
+| 4.9 | `satisfies` operator, auto-accessors | — |
+| 5.0 | `const` type parameters, decorator support (Stage 3), multiple extends | — |
+| 5.1 | Decoupled getter/setter types, unrelated types for JSX | — |
+| 5.2 | `using`/`await using` (explicit resource management) | `"target": "ES2022"`, `"lib": ["esnext.disposable"]` |
+| 5.4 | `NoInfer<T>` built-in utility type | — |
+| 5.5 | Inferred type predicates, `isolatedDeclarations`, RegExp `v` flag | `"isolatedDeclarations": true` |
+| 5.6 | Disallow NaN equality check, iterator helper types | — |
+| 5.7 | `--noCheck`, path rewriting, relative import completions | — |
+
+Keep `tsconfig.json` at `"strict": true` regardless of version; new strict sub-flags are only added to the umbrella flag after a deprecation period.
 
 ---
 
@@ -72,6 +93,48 @@ class Config {
 // Fix: apiUrl: string = ''; OR use definite assignment assertion (apiUrl!: string)
 //      OR initialize in every constructor branch.
 ```
+
+---
+
+### `interface` vs `type` — Decision Guide
+
+Both `interface` and `type` can describe object shapes, but they behave differently in two important ways: **declaration merging** and **compiler performance**.
+
+| Capability | `interface` | `type` |
+|---|---|---|
+| Object shapes | Yes | Yes |
+| Primitive / union / tuple aliases | No | Yes |
+| Declaration merging (augmentation) | Yes — multiple declarations merge | No — duplicate = error |
+| Extends other interfaces/types | `extends` keyword | `&` intersection |
+| Compiler cache | Relations cached between checks | Re-evaluated each use |
+| Error messages | Shows interface name | May show full expanded type |
+
+**Rule of thumb:**
+- Use `interface` for object shapes that describe a contract (classes, services, DI tokens, API shapes). This enables library consumers to extend via declaration merging and gives the compiler cache benefits.
+- Use `type` for everything else: union types, tuple aliases, mapped type transformations, conditional types, and primitive aliases.
+
+```typescript
+// interface: public contract — consumers can extend
+interface Logger {
+  log(level: 'info' | 'warn' | 'error', msg: string): void;
+}
+
+// Consumers can augment via declaration merging
+interface Logger {
+  child(name: string): Logger;
+}
+
+// type: union/conditional/primitive alias — cannot be merged
+type LogLevel = 'info' | 'warn' | 'error';
+type MaybeLogger = Logger | null;
+type LoggerKeys = keyof Logger;  // 'log' | 'child'
+
+// type: for complex computed shapes (cannot use interface here)
+type PickedLogger = Pick<Logger, 'log'>;
+type ReadonlyLogger = Readonly<Logger>;
+```
+
+[community] **Pitfall:** Using `type X = A & B` for all composition loses declaration-merging capability and slows the compiler. Use `interface X extends A, B {}` for object composition wherever merging might be needed.
 
 ---
 
@@ -229,6 +292,63 @@ Add a `never` exhaustiveness check to ensure all branches are handled:
 default:
   const _exhaustive: never = state; // compile error if case missed
   throw new Error('Unhandled state');
+```
+
+---
+
+### Type Narrowing Techniques — Full Toolkit
+
+TypeScript's narrowing system automatically tracks type constraints through control flow. Understanding all narrowing techniques lets you avoid unsafe `as` casts.
+
+```typescript
+type Payload =
+  | string
+  | number
+  | null
+  | { type: 'user'; id: string }
+  | { type: 'product'; sku: string };
+
+function processPayload(payload: Payload): string {
+  // typeof narrowing
+  if (typeof payload === 'string') return payload.toUpperCase();
+  if (typeof payload === 'number') return payload.toFixed(2);
+
+  // null check (equality narrowing)
+  if (payload === null) return '(null)';
+
+  // 'in' operator narrowing — checks property existence
+  if ('id' in payload) return `User: ${payload.id}`;
+
+  // Discriminant narrowing via literal property
+  switch (payload.type) {
+    case 'product': return `SKU: ${payload.sku}`;
+  }
+
+  // TypeScript knows this is unreachable
+  const _never: never = payload;
+  return _never;
+}
+
+// instanceof narrowing for class hierarchies
+class ApiError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+function handleError(err: unknown): string {
+  if (err instanceof ApiError) return `API ${err.status}: ${err.message}`;
+  if (err instanceof Error)    return `Error: ${err.message}`;
+  return `Unknown: ${String(err)}`;
+}
+
+// Truthiness narrowing + assignment narrowing
+function processName(name: string | null | undefined): string {
+  // Truthiness: eliminates null and undefined (but also '' and 0)
+  if (!name) return 'Anonymous';
+  // Here name is string (non-empty due to truthiness)
+  return name.trim();
+}
 ```
 
 ---
@@ -448,6 +568,11 @@ declare function accept(value: Record<string, unknown>): void;
 ```
 
 Boxed types (`String`, `Number`) are assignable to their primitive counterparts but NOT vice versa — using them as parameter types silently rejects primitive literals unless narrowed first.
+
+---
+
+### Assertion Functions — Encode Invariants in the Type System
+
 Assertion functions are a first-class TypeScript pattern for expressing runtime invariants in the type system. Unlike type predicates (`pet is Fish`), assertion functions use the `asserts` keyword and narrow the *calling scope* when they return normally — or throw if the assertion fails.
 
 ```typescript
@@ -560,9 +685,130 @@ Requires `"target": "ES2022"` or higher and `"lib": ["es2022", "esnext.disposabl
 
 ---
 
-## Language Idioms
+### Type-Safe Builder Pattern
 
-TypeScript provides several features that go beyond "just typed JavaScript." These idioms express ideas more clearly than equivalent workarounds.
+The classic builder pattern can be made fully type-safe in TypeScript by tracking which fields have been set using a phantom type parameter. The `build()` method is only available once all required fields are set — the compiler catches incomplete builds at compile time, not runtime.
+
+```typescript
+// Track set fields as a union in a phantom type parameter
+type BuilderState = { [K: string]: unknown };
+
+class QueryBuilder<TSet extends BuilderState = Record<never, never>> {
+  private params: Partial<{ table: string; limit: number; offset: number }> = {};
+
+  table<T extends string>(name: T): QueryBuilder<TSet & { table: T }> {
+    this.params.table = name;
+    return this as QueryBuilder<TSet & { table: T }>;
+  }
+
+  limit(n: number): QueryBuilder<TSet & { limit: number }> {
+    this.params.limit = n;
+    return this as QueryBuilder<TSet & { limit: number }>;
+  }
+
+  offset(n: number): QueryBuilder<TSet & { offset: number }> {
+    this.params.offset = n;
+    return this as QueryBuilder<TSet & { offset: number }>;
+  }
+
+  // build() only callable when 'table' has been set
+  build(this: QueryBuilder<TSet & { table: string }>): string {
+    const { table, limit, offset } = this.params;
+    let q = `SELECT * FROM ${table}`;
+    if (limit)  q += ` LIMIT ${limit}`;
+    if (offset) q += ` OFFSET ${offset}`;
+    return q;
+  }
+}
+
+const query = new QueryBuilder()
+  .table('users')
+  .limit(10)
+  .build(); // OK: table is set
+
+// const bad = new QueryBuilder().limit(5).build();
+// Error: 'this' parameter type QueryBuilder<{ limit: number }>
+//        is not assignable to QueryBuilder<{ table: string } & { limit: number }>
+```
+
+---
+
+### Abstract Constructors and Mixin Pattern
+
+TypeScript supports abstract constructor types for mixins — composable behavior units that work without full class inheritance chains.
+
+```typescript
+// Abstract constructor type
+type AbstractConstructor<T = object> = abstract new (...args: unknown[]) => T;
+type Constructor<T = object> = new (...args: unknown[]) => T;
+
+// Mixin factory: adds timestamp tracking to any class
+function Timestamped<TBase extends Constructor>(Base: TBase) {
+  return class extends Base {
+    readonly createdAt = new Date();
+    readonly updatedAt = new Date();
+  };
+}
+
+// Mixin factory: adds serialisation
+function Serializable<TBase extends Constructor>(Base: TBase) {
+  return class extends Base {
+    serialize(): string {
+      return JSON.stringify(this);
+    }
+  };
+}
+
+// Compose mixins — order matters (left-to-right application)
+class Entity {
+  constructor(public readonly id: string) {}
+}
+
+class TimestampedSerializableEntity extends Serializable(Timestamped(Entity)) {}
+
+const e = new TimestampedSerializableEntity('e_001');
+console.log(e.createdAt); // Date
+console.log(e.serialize()); // JSON string
+```
+
+---
+
+### Runtime Validation and Type Safety — Zod/Valibot Integration Pattern
+
+TypeScript types are erased at runtime — `JSON.parse()` returns `any`, and `fetch().json()` returns `any`. Use a runtime schema library to parse and validate data at system boundaries, deriving the TypeScript type from the schema (single source of truth).
+
+```typescript
+// Schema-first: define once, get both runtime validation AND TypeScript type
+// Using Zod (most popular runtime schema library for TypeScript)
+import { z } from 'zod';
+
+const UserSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  email: z.string().email(),
+  role: z.enum(['admin', 'viewer', 'editor']),
+  createdAt: z.coerce.date(),
+});
+
+// Derive TypeScript type from schema — no duplication
+type User = z.infer<typeof UserSchema>;
+
+async function getUser(id: string): Promise<User> {
+  const raw = await fetch(`/api/users/${id}`).then(r => r.json());
+  // parse() throws ZodError with detailed path-based error messages if invalid
+  return UserSchema.parse(raw);
+  // Or: UserSchema.safeParse(raw) → { success, data } | { success: false, error }
+}
+
+// Partial schemas for update payloads — derived automatically
+type UpdateUserInput = z.infer<typeof UserSchema.partial().omit({ id: true })>;
+```
+
+**Why this matters:** Without runtime validation, `as User` on an API response is a lie — the type is `any` under the hood and any missing/wrong field causes a runtime crash. With a schema library, the parse step is the only `as` cast needed, and it's guarded by real validation.
+
+---
+
+## Language Idioms
 
 **`satisfies` operator (TypeScript 4.9+).** Validates an expression against a type without widening the inferred type. Useful when you want the compiler to check shape but still keep literal types narrow.
 
@@ -598,6 +844,32 @@ type Resolved<T> = T extends Promise<infer U> ? U : T;
 
 type A = Resolved<Promise<string>>;   // string
 type B = Resolved<number>;            // number (not a Promise, returns T)
+
+// TypeScript 4.7: constrained infer — infer with extends bound
+// Infer U but only accept string subtypes (avoids an extra Exclude)
+type GetStringKeys<T> = {
+  [K in keyof T]: T[K] extends infer V extends string ? K : never;
+}[keyof T];
+
+interface Config {
+  host: string;
+  port: number;
+  env: 'prod' | 'dev';
+}
+type StringKeys = GetStringKeys<Config>; // 'host' | 'env'
+
+// Multiple infer positions: extract function argument and return types
+type FunctionShape<F> = F extends (...args: infer A) => infer R
+  ? { args: A; returnType: R }
+  : never;
+
+type Shape = FunctionShape<(id: string, count: number) => boolean>;
+// { args: [string, number]; returnType: boolean }
+
+// Recursive conditional: deeply unwrap nested Promises
+type DeepAwaited<T> = T extends Promise<infer U> ? DeepAwaited<U> : T;
+
+type Nested = DeepAwaited<Promise<Promise<string>>>; // string
 ```
 
 **`as const` for immutable literal inference.** Prevents TypeScript from widening literals to their base types.
@@ -643,7 +915,54 @@ type OptionalTimeout = PartialBy<Config, 'timeout'>;
 // { host: string; port: number; timeout?: number }
 ```
 
-**`import type` for zero-cost type imports.** Using `import type` tells TypeScript (and your bundler) that the import carries no runtime code. This is not just a stylistic preference — without it, circular imports can cause runtime `undefined` values in CommonJS modules, and bundlers may include unnecessary modules in the bundle.
+**`Extract<T, U>` and `Exclude<T, U>` for union filtering.** These built-in utility types let you extract or remove specific members from a union. Combined with `NonNullable<T>`, they are essential for working with union types without manual narrowing.
+
+```typescript
+type Status = 'idle' | 'loading' | 'success' | 'error';
+
+// Keep only the failure states
+type FailureStatus = Extract<Status, 'loading' | 'error'>;
+// 'loading' | 'error'
+
+// Remove null/undefined from a type
+type MaybeUser = User | null | undefined;
+type DefiniteUser = NonNullable<MaybeUser>;  // User
+
+// Exclude specific members
+type NonErrorStatus = Exclude<Status, 'error'>;
+// 'idle' | 'loading' | 'success'
+
+// Extract object types from a union by shape
+type UnionType = string | number | { id: string } | { name: string };
+type ObjectTypes = Extract<UnionType, object>;
+// { id: string } | { name: string }
+
+// Deep utility: make specific nested keys optional
+type DeepPartialBy<T, K extends PropertyKey> = {
+  [P in keyof T]: P extends K
+    ? T[P] | undefined
+    : T[P] extends object
+    ? DeepPartialBy<T[P], K>
+    : T[P];
+};
+```
+
+**`PropertyKey` type.** The built-in `PropertyKey = string | number | symbol` represents all valid object key types. Use it instead of `string` when writing generic utilities that work with any valid key.
+
+```typescript
+function hasKey<T extends object>(obj: T, key: PropertyKey): key is keyof T {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+// Type-safe object pick by array of keys
+function pick<T extends object, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
+  return Object.fromEntries(
+    keys.filter(k => k in obj).map(k => [k, obj[k]])
+  ) as Pick<T, K>;
+}
+```
+
+ Using `import type` tells TypeScript (and your bundler) that the import carries no runtime code. This is not just a stylistic preference — without it, circular imports can cause runtime `undefined` values in CommonJS modules, and bundlers may include unnecessary modules in the bundle.
 
 ```typescript
 // Without import type: bundler may include user module at runtime
@@ -960,7 +1279,10 @@ This pattern is especially valuable for IDs, currency amounts, validated email a
 
 ## Real-World Gotchas  [community]
 
-**Using `any` instead of `unknown` for unknown data.** [community]
+**`namespace` keyword in modern TypeScript code.** [community]
+The TypeScript `namespace` (and the legacy `module`) keyword was introduced before ES modules existed. It compiles to an IIFE-based pattern that bundlers and native ESM runtimes do not understand. Teams new to TypeScript sometimes use `namespace Foo {}` for code organisation, which produces confusing runtime behaviour when mixed with ESM. **Fix:** Use ES module `import`/`export` for all code organization. Reserve `declare namespace` (ambient declaration) only in `.d.ts` files for declaring global APIs that cannot use ES modules.
+
+
 When you receive data from external sources (API responses, `JSON.parse`, event payloads), reaching for `any` silences all type errors instead of requiring you to narrow safely. `unknown` forces a type guard or assertion before use. The root cause is that `any` is bidirectional — it's assignable to and from everything — so it silently poisons every downstream type inference. **Fix:** Replace `any` with `unknown` in catch blocks, JSON parse results, and external data boundaries, then use `instanceof` or type predicates before accessing fields.
 
 **Intersection types instead of interface extension.** [community]
@@ -1006,6 +1328,12 @@ TypeScript allows assigning numeric enum values across different enum types — 
 **Excess property checking only applies to object literals.** [community]
 TypeScript enforces extra-property checking only when you pass an object literal directly to a typed assignment target. As soon as the object is assigned to an intermediate variable first, excess property checking is bypassed — the variable's structural type is wider and passes validation. Teams sometimes exploit this inadvertently for mocks or test fixtures, then wonder why inline code errors but variable code does not. **Fix:** Be aware of the asymmetry. When you want shape validation without losing literal inference, use `satisfies` — it checks shape against a type without widening the value, and still catches excess properties on assignment.
 
+**Structural typing allows "accidental interface implementation".** [community]
+Because TypeScript is structurally typed, any object with the right shape satisfies an interface — even if it was created by a completely unrelated module. This means a `DatabaseConnection` object might accidentally satisfy a `Logger` interface if both happen to have matching method signatures. In tests this can mask missing implementations: `mockLogger = db as unknown as Logger` compiles but the mock methods do nothing useful. **Fix:** For critical interfaces (loggers, repositories, event buses), use the explicit `implements` keyword — TypeScript will verify the full contract and surface missing members at the class definition. For tests, use a real mock or stub that explicitly implements the interface.
+
+**`exactOptionalPropertyTypes` changes what `undefined` means.** [community]
+Without `exactOptionalPropertyTypes`, TypeScript treats `{ name?: string }` as equivalent to `{ name: string | undefined }` — you can explicitly set `name: undefined`. With the flag enabled, `name?: string` means "the key may be absent" but you cannot set it to `undefined` explicitly. This matters for JSON serialisation (`JSON.stringify` omits absent keys but includes `undefined`-valued keys as nothing) and for `Object.assign` / spread operations that treat absent vs `undefined` differently. **Fix:** Enable `exactOptionalPropertyTypes: true` in `tsconfig.json` and use `Partial<T>` explicitly only when you mean "might be absent"; use `T | undefined` only when you mean "present but undefined".
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -1036,3 +1364,5 @@ TypeScript enforces extra-property checking only when you pass an object literal
 | Missing `override` on subclass methods | Base method rename turns override into ghost new method silently | Add `override` + enable `noImplicitOverride: true` |
 | `readonly` used for runtime immutability | Only prevents property reassignment; nested mutation allowed | Use `Object.freeze()` or `as const` for runtime safety |
 | Passing object literal to bypass excess check | Use intermediate variable to widen type | Use `satisfies` to validate shape while preserving literal inference |
+| TypeScript `namespace` in new code | `namespace`/`module` keywords are legacy, pre-ESM TypeScript constructs — bundlers and runtimes do not understand them | Use ES module `import`/`export`; reserve `declare namespace` only for global augmentation in `.d.ts` files |
+| Inferring complex return types on hot paths | Large anonymous inferred types inflate `.d.ts` size and slow incremental compilation | Add explicit return type annotations to all exported functions; use `isolatedDeclarations` to enforce it |

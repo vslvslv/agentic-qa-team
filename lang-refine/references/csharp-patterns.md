@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 5 | score: 100/100 | date: 2026-04-28 -->
+<!-- sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
 
 ## Core Philosophy
 
@@ -57,6 +57,20 @@ var allTags = posts
 var names = new[] { "Alice", "Bob", "Carol" };
 var scores = new[] { 95, 87, 92 };
 var leaderboard = names.Zip(scores, (name, score) => $"{name}: {score}");
+```
+
+**LINQ Execution Model — Immediate vs Deferred:**
+- **Deferred streaming** (`Where`, `Select`, `Skip`, `Take`): yields one element at a time, starts on first `foreach`/`MoveNext`
+- **Deferred non-streaming** (`OrderBy`, `GroupBy`, `Reverse`): must read all source before yielding any output
+- **Immediate** (`Count`, `ToList`, `ToArray`, `First`, `Sum`): executes the query right away; use to materialize results
+
+```csharp
+// Deferred: no database call until enumerated
+IQueryable<Order> query = _db.Orders.Where(o => o.Total > 100);
+
+// Immediate: materializes now — prevents double enumeration
+List<Order> orders = query.OrderBy(o => o.CreatedAt).ToList();
+int count = orders.Count;  // in-memory property, not a second DB trip
 ```
 
 ### async/await + ConfigureAwait + CancellationToken
@@ -281,6 +295,14 @@ string Describe(object shape) => shape switch
     null                   => "null",
     _                      => shape.GetType().Name
 };
+
+// Extended property pattern — nested properties without extra braces
+public record Segment(Point Start, Point End);
+static bool IsAnyEndOnXAxis(Segment segment) =>
+    segment is { Start.Y: 0 } or { End.Y: 0 };  // C# 10+ extended property pattern
+
+// Parenthesized patterns — clarify precedence in logical combinations
+static bool IsNotLetter(char c) => c is not (>= 'a' and <= 'z') and not (>= 'A' and <= 'Z');
 ```
 
 ### Dependency Injection (IServiceCollection)
@@ -312,6 +334,39 @@ public sealed class ReportWorker(
             await service.GenerateDailyReportAsync(stoppingToken);
             await Task.Delay(TimeSpan.FromHours(24), stoppingToken);
         }
+    }
+}
+```
+
+**Options Pattern — Strongly-Typed Configuration (IOptions / IOptionsMonitor):**
+
+```csharp
+// Options class — POCO with public read-write properties, parameterless constructor
+public sealed class SmtpOptions
+{
+    public required string Host { get; set; }
+    public int Port { get; set; } = 587;
+    public required string From { get; set; }
+}
+
+// Registration with DataAnnotations validation + validate at startup
+builder.Services
+    .AddOptions<SmtpOptions>()
+    .Bind(builder.Configuration.GetSection("Smtp"))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();   // throws at startup if config is invalid
+
+// Consuming: inject IOptions<T> for read-once config (singleton)
+// inject IOptionsMonitor<T> for config that may change at runtime (singleton, live updates)
+// inject IOptionsSnapshot<T> for per-request snapshot (scoped)
+public class EmailService(IOptions<SmtpOptions> options)
+{
+    private readonly SmtpOptions _smtp = options.Value;
+
+    public async Task SendAsync(string to, string subject, string body, CancellationToken ct)
+    {
+        using var client = new SmtpClient(_smtp.Host, _smtp.Port);
+        await client.SendMailAsync(new MailMessage(_smtp.From, to, subject, body), ct);
     }
 }
 ```
@@ -487,6 +542,25 @@ lock (_syncRoot) { /* ... */ }
 // New in .NET 9: Lock type — semantically clear, supports using pattern
 private readonly Lock _lock = new();
 lock (_lock) { /* compiler generates Lock.EnterScope(), not Monitor.Enter() */ }
+
+// The Lock type also works with using for explicit scope management
+using (_lock.EnterScope())
+{
+    // exclusive critical section — exits on Dispose
+}
+```
+
+### `\e` Escape Sequence (C# 13)
+
+C# 13 adds `\e` as a character literal for the ANSI ESCAPE character (`U+001B`). Previously `\x1b` was used, but it was error-prone: if the next characters were valid hex digits they became part of the sequence.
+
+```csharp
+// C# 13 — unambiguous ANSI escape sequence
+string bold  = $"\e[1mBold text\e[0m";
+string green = $"\e[32mGreen text\e[0m";
+
+// Old (error-prone): \x1b followed by valid hex = bug
+// string wrong = "\x1b[32m";  // fine, but "\x1b[3" could be parsed as \x1b3[
 ```
 
 ### File-Scoped Namespaces
@@ -501,7 +575,24 @@ public class OrderService { }
 public class InvoiceService { }
 ```
 
-### `using` Declaration for Disposables
+### Global Usings (C# 10)
+
+Declare commonly needed namespaces once in a dedicated file so every source file in the project gets them automatically. This eliminates repetitive `using` lines at the top of each file without resorting to `#pragma` or custom tooling.
+
+```csharp
+// File: GlobalUsings.cs — applies to every .cs file in the project
+global using System;
+global using System.Collections.Generic;
+global using System.Linq;
+global using System.Threading;
+global using System.Threading.Tasks;
+global using Microsoft.Extensions.Logging;
+
+// Optional: alias for commonly used generics
+global using StringMap = System.Collections.Generic.Dictionary<string, string>;
+```
+
+Best practice: limit global usings to universally relevant namespaces. Domain-specific namespaces should remain local to the files that need them.
 
 The braceless `using` declaration disposes the resource at the end of the enclosing scope without extra indentation.
 
@@ -894,6 +985,33 @@ order.Items.Add(new OrderItem("SKU-2")); // mutates "immutable" record!
 public record Order(int Id, IReadOnlyList<OrderItem> Items);
 ```
 
+### **Record Computed Property Cached at Init — Stale After `with`**  [community]
+
+A record property whose value is computed in a field initializer (using `=` rather than `=>`) is cached at construction time. WHY it causes problems: when you create a copy with `with { ... }`, the cached value reflects the original instance's data, not the modified copy. The bug is invisible at first because the values appear correct for the initial object.
+
+```csharp
+// BAD: Distance cached at init; stale after 'with' mutation
+public record PointBad(double X, double Y)
+{
+    public double Distance { get; } = Math.Sqrt(X * X + Y * Y);  // cached once!
+}
+
+var p1 = new PointBad(3, 4);
+var p2 = p1 with { Y = 0 };
+Console.WriteLine(p1.Distance);  // 5.0 — correct
+Console.WriteLine(p2.Distance);  // 5.0 — WRONG! should be 3.0
+
+// GOOD: compute on access with expression-bodied property
+public record PointGood(double X, double Y)
+{
+    public double Distance => Math.Sqrt(X * X + Y * Y);  // recomputed on each access
+}
+
+var q1 = new PointGood(3, 4);
+var q2 = q1 with { Y = 0 };
+Console.WriteLine(q2.Distance);  // 3.0 — correct
+```
+
 ### **ValueTask Awaited Multiple Times**  [community]
 
 `ValueTask` is a struct that can wrap either a completed result or an `IValueTaskSource`. Awaiting it more than once gives undefined behavior. WHY it causes problems: the underlying `IValueTaskSource` implementation may reuse the object for a different operation by the time you await it a second time, leading to wrong results or exceptions. Fix: if you need to await the same operation's result multiple times, call `.AsTask()` once and store the `Task`.
@@ -1063,37 +1181,6 @@ public static int ParseInt(ReadOnlySpan<char> input)
     => int.Parse(input);  // no string allocation
 ```
 
-### **`Span<T>` Stored on the Heap — Compile Error or Runtime Corruption**  [community]
-
-`Span<T>` is a stack-only ref struct. Storing it in a field, a `class`, a `List<T>`, or using it across an `await` point causes a compile error or unsafe behavior. WHY it causes problems: `Span<T>` wraps a pointer to stack memory; if that memory escapes to the heap, the pointer becomes dangling. Fix: use `Memory<T>` when you need a heap-storable buffer reference across async boundaries. Use `Span<T>` only for synchronous hot paths.
-
-```csharp
-// BAD: Span<T> cannot be a field — compile error
-public class DataProcessor
-{
-    private Span<byte> _buffer;  // CS8345: Field cannot be of type Span<T>
-}
-
-// BAD: Span<T> cannot cross await boundary — compile error
-public async Task ProcessAsync(Span<byte> data)  // CS4012: Span<T> cannot be parameter
-{
-    await Task.Delay(1);
-    // use data — not allowed
-}
-
-// GOOD: use Memory<T> for heap/async scenarios
-public async Task ProcessAsync(Memory<byte> data, CancellationToken ct)
-{
-    await Task.Delay(1, ct);
-    var span = data.Span;  // get Span<T> only for synchronous processing
-    Process(span);
-}
-
-// GOOD: use Span<T> for synchronous, zero-allocation parsing
-public static int ParseInt(ReadOnlySpan<char> input)
-    => int.Parse(input);  // no string allocation
-```
-
 ### **`HttpClient` Instantiated per Request — Socket Exhaustion**  [community]
 
 Creating a new `HttpClient` instance per request or in a `using` block causes socket exhaustion under load. WHY it causes problems: `HttpClient.Dispose()` closes the TCP connection but doesn't immediately release the socket; the OS keeps the socket in TIME_WAIT state. With high request rates, new sockets can't be opened. Fix: inject `IHttpClientFactory` (registers a singleton `HttpMessageHandler` pool) or register typed clients via `AddHttpClient<T>`.
@@ -1183,3 +1270,6 @@ _cache.GetOrAdd(key, k => ComputeExpensiveValue(k));
 | Storing `Span<T>` in a field or across `await` | Compile error or dangling pointer to freed stack memory | Use `Memory<T>` for heap-storable and async-safe buffer references |
 | `new HttpClient()` per request | Socket exhaustion — OS keeps sockets in TIME_WAIT state | Use `IHttpClientFactory` or typed clients registered via `AddHttpClient<T>` |
 | `static` mutable fields in web apps | Race conditions — multiple threads corrupt shared state | Use `Interlocked`, `ConcurrentDictionary`, or scoped DI services |
+| Record computed property cached with `=` | Stale value after `with` expression mutation | Use expression-bodied `=>` to recompute on each access |
+| `IOptions<T>.Value` in singleton for live config | Config changes not reflected; snapshot at startup | Use `IOptionsMonitor<T>.CurrentValue` for live-reloadable config |
+| `lock(this)` or locking on `typeof(T)` | Deadlock — external code can acquire same monitor | Use `private readonly Lock _lock = new()` (.NET 9+) or `private readonly object _sync = new()` |

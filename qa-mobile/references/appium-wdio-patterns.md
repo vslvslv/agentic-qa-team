@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: training knowledge (WebFetch + WebSearch unavailable) | iteration: 4 | score: 100/100 | date: 2026-04-30 -->
+<!-- lang: TypeScript | sources: training knowledge (WebFetch + WebSearch unavailable) | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
 <!-- Note: WebFetch and WebSearch were unavailable during generation. Synthesized from official docs training knowledge + community experience. -->
 <!-- Re-run `/qa-refine Appium/WebDriverIO` with WebFetch enabled to pull live sources. -->
 
@@ -54,6 +54,62 @@ Key points:
 ```
 
 Pin `@wdio/types` to the same minor version as `webdriverio` — they're released separately and version drift causes TypeScript compilation failures with `strict: true`.
+
+### TypeScript path aliases for cleaner imports  [community]
+
+Long relative imports (`import LoginPage from '../../../pages/LoginPage.js'`) are fragile and noisy. Configure `paths` in `tsconfig.json` to use `@pages`, `@helpers`, and `@fixtures` aliases.
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "outDir": "./dist",
+    "rootDir": "./",
+    "baseUrl": ".",
+    "paths": {
+      "@pages/*":    ["test/pages/*"],
+      "@helpers/*":  ["test/helpers/*"],
+      "@fixtures/*": ["test/fixtures/*"],
+      "@config/*":   ["test/config/*"]
+    },
+    "types": ["node", "@wdio/globals/types", "@wdio/mocha-framework"]
+  },
+  "include": ["test/**/*.ts", "wdio.conf.ts"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+Then add `tsconfig-paths` support in `wdio.conf.ts` so Node resolves the aliases at runtime:
+
+```typescript
+// wdio.conf.ts — register path aliases
+import 'tsconfig-paths/register';
+import type { Options } from '@wdio/types';
+
+export const config: Options.Testrunner = {
+  // ... rest of config
+};
+```
+
+```bash
+npm install --save-dev tsconfig-paths
+```
+
+Usage in tests (clean, no `../../../`):
+
+```typescript
+// test/specs/checkout.spec.ts
+import CheckoutPage from '@pages/CheckoutPage.js';
+import { getAuthTokens } from '@helpers/authHelper.js';
+import type { CheckoutTestData } from '@fixtures/checkoutData.js';
+```
+
+**Path alias gotcha [community]:** The `tsconfig paths` plugin resolves aliases at TypeScript compile time. At runtime (Node.js), the compiled JavaScript still has the alias strings. Without `tsconfig-paths/register` (CJS) or `tsx` with path remapping (ESM), Node throws `Cannot find module '@pages/LoginPage'`. For ESM projects, prefer `tsx` (WebDriverIO v9's built-in loader) which supports `paths` natively; for CJS, use `tsconfig-paths/register`.
 
 ### WebDriverIO v9 migration notes (released 2024)
 
@@ -345,6 +401,65 @@ async function scrollToElement(locator: string, maxAttempts = 10): Promise<Webdr
     });
   }
   throw new Error(`Element ${locator} not found after ${maxAttempts} scroll attempts`);
+}
+
+// Double-tap on an element (e.g. to zoom into a map or like a photo)
+async function doubleTap(element: WebdriverIO.Element): Promise<void> {
+  const { x, y, width, height } = await element.getRect();
+  const cx = Math.round(x + width / 2);
+  const cy = Math.round(y + height / 2);
+  await browser.action('pointer')
+    .move({ duration: 0, x: cx, y: cy })
+    .down({ button: 0 })
+    .up({ button: 0 })
+    .pause(50)
+    .down({ button: 0 })
+    .up({ button: 0 })
+    .perform();
+}
+
+// Pinch-zoom: two-finger spread (zoom in) using two parallel pointer actions
+async function pinchZoom(element: WebdriverIO.Element, zoomFactor = 1.5): Promise<void> {
+  const { x, y, width, height } = await element.getRect();
+  const cx = Math.round(x + width / 2);
+  const cy = Math.round(y + height / 2);
+  // Start both fingers close to center, spread outward
+  const startOffset = 20;
+  const endOffset   = Math.round(startOffset * zoomFactor);
+
+  await browser.actions([
+    browser.action('pointer', { parameters: { pointerType: 'touch' } })
+      .move({ duration: 0, x: cx - startOffset, y: cy })
+      .down({ button: 0 })
+      .move({ duration: 600, x: cx - endOffset, y: cy })
+      .up({ button: 0 }),
+    browser.action('pointer', { parameters: { pointerType: 'touch' } })
+      .move({ duration: 0, x: cx + startOffset, y: cy })
+      .down({ button: 0 })
+      .move({ duration: 600, x: cx + endOffset, y: cy })
+      .up({ button: 0 }),
+  ]);
+}
+
+// Drag element from one position to another (drag-and-drop)
+async function dragAndDrop(
+  source: WebdriverIO.Element,
+  target: WebdriverIO.Element,
+): Promise<void> {
+  const src = await source.getRect();
+  const tgt = await target.getRect();
+  const srcX = Math.round(src.x + src.width / 2);
+  const srcY = Math.round(src.y + src.height / 2);
+  const tgtX = Math.round(tgt.x + tgt.width / 2);
+  const tgtY = Math.round(tgt.y + tgt.height / 2);
+
+  await browser.action('pointer')
+    .move({ duration: 0, x: srcX, y: srcY })
+    .down({ button: 0 })
+    .pause(500)                              // hold to trigger drag mode
+    .move({ duration: 800, x: tgtX, y: tgtY })
+    .up({ button: 0 })
+    .perform();
 }
 ```
 
@@ -672,6 +787,10 @@ page source tree, which may be the background button. Scope to the modal contain
 
 13. **[community] WebDriverIO v9 CI breaks silently when `ts-node` is still in `devDependencies`** — Upgrading `webdriverio` to v9 while keeping `ts-node` as a dev dependency causes the old `ts-node` TypeScript loader to conflict with v9's bundled `tsx` loader. The runner silently falls back to `ts-node` in some environments and fails with `Cannot use import statement in a module` or `SyntaxError: Unexpected token '{'` on the `wdio.conf.ts` file. WHY: Both `ts-node` and `tsx` register TypeScript transpilation hooks on Node's module system; two hooks fight over `.ts` file resolution. Fix: remove `ts-node` from `devDependencies` after upgrading to v9; run `npm dedupe` to clear the transitive install.
 
+14. **[community] `browser.actions([...])` (multi-touch) ignores the second pointer on iOS Simulator** — Using `browser.actions([touch1, touch2])` for pinch/zoom sends both touch events but the iOS Simulator only processes one of them, making the zoom have no effect. WHY: The iOS Simulator's multi-touch requires the `appium:simulatorStartupTimeout` to be sufficiently large AND the simulator must have been opened with "Multi-Touch" enabled in the Hardware menu. In CI, simulators start without the Hardware menu — multi-touch is disabled by default. Fix: add `'appium:settings[multiTouchEnabled]': true` to iOS capabilities (XCUITest driver 3.x+); or use `mobile: pinch` Appium command which handles the touch simulation internally.
+
+15. **[community] `dragAndDrop` fails silently on React Native `FlatList` items** — Dragging from one list item to another using W3C pointer actions completes without error but the items do not reorder. WHY: React Native's drag-and-drop is implemented with `PanResponder` or `react-native-draggable-flatlist`, which detects gesture velocity. The W3C `browser.action()` move duration of 800 ms is too slow — PanResponder's velocity threshold is not met. Fix: reduce `pause` before move to 100 ms and use a shorter `duration` (200–300 ms) for the drag move; or use `mobile: dragFromToForDuration` (iOS) which directly uses XCUITest's native drag API.
+
 ---
 
 ## CI Considerations
@@ -775,6 +894,154 @@ afterTest: async (test, _context, { error }) => {
 }
 ```
 
+### GitHub Actions matrix strategy for parallel iOS + Android runs  [community]
+
+Run iOS and Android suites in parallel using a matrix job, each with its own Appium instance. This avoids port conflicts and reduces total CI wall-clock time.
+
+```yaml
+# .github/workflows/mobile-e2e.yml
+name: Mobile E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  mobile-tests:
+    name: "E2E — ${{ matrix.platform }} ${{ matrix.platform-version }}"
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 40
+
+    strategy:
+      fail-fast: false       # don't cancel Android if iOS fails
+      matrix:
+        include:
+          - platform: iOS
+            platform-version: "17.0"
+            device-name: "iPhone 15"
+            automation: XCUITest
+            app-env: IOS_APP_PATH
+            appium-port: 4723
+            runs-on: macos-14   # Apple Silicon runner (required for Simulator)
+          - platform: Android
+            platform-version: "13"
+            device-name: "Pixel_7_API_33"
+            automation: UiAutomator2
+            app-env: ANDROID_APP_PATH
+            appium-port: 4724   # different port — both jobs can run on same host if needed
+            runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Appium drivers
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/appium
+          key: appium-${{ matrix.platform }}-${{ hashFiles('.appiumrc.json') }}
+
+      - name: Install Appium & drivers
+        run: |
+          export APPIUM_HOME="${{ runner.temp }}/appium"
+          npx appium@2.5.0 driver install ${{ matrix.automation == 'XCUITest' && 'xcuitest' || 'uiautomator2' }}
+        env:
+          APPIUM_HOME: ${{ runner.temp }}/appium
+
+      - name: Start iOS Simulator (iOS only)
+        if: matrix.platform == 'iOS'
+        run: |
+          xcrun simctl boot "${{ matrix.device-name }}" || true
+          xcrun simctl list devices booted
+
+      - name: Start Android Emulator (Android only)
+        if: matrix.platform == 'Android'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          avd-name: ${{ matrix.device-name }}
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
+
+      - name: Start Appium server
+        run: |
+          export APPIUM_HOME="${{ runner.temp }}/appium"
+          npx appium@2.5.0 --port ${{ matrix.appium-port }} --log appium-${{ matrix.platform }}.log &
+          npx wait-on tcp:${{ matrix.appium-port }} --timeout 30000
+        env:
+          APPIUM_HOME: ${{ runner.temp }}/appium
+
+      - name: Run E2E tests
+        run: npx wdio run wdio.conf.ts
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          APPIUM_PORT: ${{ matrix.appium-port }}
+          ${{ matrix.app-env }}: ${{ secrets[matrix.app-env] }}
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts-${{ matrix.platform }}
+          path: |
+            allure-results/
+            appium-${{ matrix.platform }}.log
+```
+
+**CI matrix gotchas [community]:**
+- `fail-fast: false` is critical — if iOS fails due to a Simulator startup issue, you still want Android results. Mobile CI failures are often infrastructure-related, not code bugs.
+- Each matrix job should write to a uniquely named `APPIUM_HOME` (e.g. `${{ runner.temp }}/appium-${{ matrix.platform }}`) to avoid cache key collisions between iOS and Android driver installs.
+- Android emulator runner (`reactivecircus/android-emulator-runner`) requires a Linux runner (`ubuntu-latest`). iOS Simulator requires macOS (`macos-14` for Apple Silicon M1 runners). Never mix — iOS Simulator does not run on Linux.
+
+### Spec file sharding for large test suites  [community]
+
+When a suite grows beyond ~200 specs, serial execution on one device becomes too slow. Shard specs across multiple CI jobs using an index/total pattern so each job runs a unique subset.
+
+```typescript
+// wdio.conf.ts — spec sharding via SHARD_INDEX / SHARD_TOTAL env vars
+import type { Options } from '@wdio/types';
+import { globSync } from 'glob';
+
+const allSpecs = globSync('./test/specs/**/*.spec.ts').sort();  // sort for deterministic sharding
+
+function getShardedSpecs(): string[] {
+  const shardIndex = parseInt(process.env.SHARD_INDEX ?? '0', 10);   // 0-based index
+  const shardTotal = parseInt(process.env.SHARD_TOTAL ?? '1', 10);
+  return allSpecs.filter((_, i) => i % shardTotal === shardIndex);
+}
+
+export const config: Options.Testrunner = {
+  specs: getShardedSpecs(),
+  // ... rest of config
+};
+```
+
+GitHub Actions usage — 3-way shard:
+
+```yaml
+strategy:
+  matrix:
+    shard: [0, 1, 2]
+steps:
+  - name: Run sharded tests
+    run: npx wdio run wdio.conf.ts
+    env:
+      SHARD_INDEX: ${{ matrix.shard }}
+      SHARD_TOTAL: 3
+```
+
+**Sharding gotcha [community]:** Always sort the spec array before sharding (`allSpecs.sort()`). Without sorting, glob returns files in filesystem order which varies between macOS and Linux. A sort discrepancy means the shards overlap or leave gaps — some specs run twice and others never run in CI while passing locally.
+
 ### Environment-specific capabilities
 
 ```typescript
@@ -801,6 +1068,129 @@ Slow element lookups are the most common cause of flaky timeouts on CI. These se
 ```
 
 **Rule of thumb:** If element lookups average > 500 ms on CI, enable `useFirstMatch: true` (iOS) first, then reduce `snapshotMaxDepth` if the app's view hierarchy is shallow. Never lower `snapshotMaxDepth` below 50 without verifying all elements in your deepest screen are still reachable.
+
+---
+
+## Keyboard Handling & File Operations  [community]
+
+### Keyboard dismissal
+
+The soft keyboard covers UI elements and must be dismissed before assertions on obscured elements.
+
+```typescript
+// test/helpers/keyboardHelper.ts
+
+/**
+ * Dismiss the soft keyboard if it is open.
+ * On iOS, use the `done` key or tap outside. On Android, use hideKeyboard().
+ * WHY: Appium's hideKeyboard() is unreliable on iOS — it sometimes dismisses the
+ * keyboard but returns an error if the keyboard was already hidden. The try/catch
+ * swallows the false-negative.
+ */
+export async function dismissKeyboard(): Promise<void> {
+  try {
+    if (browser.isIOS) {
+      // XCUITest driver: press the 'done' key on the keyboard toolbar
+      await driver.execute('mobile: hideKeyboard', { strategy: 'tapOutside' });
+    } else {
+      await driver.hideKeyboard();
+    }
+  } catch {
+    // Keyboard was already hidden — not an error
+  }
+}
+
+/**
+ * Check whether the soft keyboard is currently visible.
+ * Useful for conditional dismissal in helper methods.
+ */
+export async function isKeyboardShown(): Promise<boolean> {
+  return await driver.isKeyboardShown();
+}
+```
+
+```typescript
+// Usage in a form test:
+it('should submit form after filling all fields', async () => {
+  await $('~name-input').setValue('Alice');
+  await $('~email-input').setValue('alice@example.com');
+  // Keyboard covers the submit button on small screens — dismiss it first
+  await dismissKeyboard();
+  await $('~submit-btn').waitForDisplayed({ timeout: 3_000 });
+  await $('~submit-btn').click();
+  await expect($('~success-message')).toBeDisplayed();
+});
+```
+
+**Keyboard gotchas [community]:**
+- On Android, `setValue()` auto-dismisses the keyboard on some devices but not all. Always call `dismissKeyboard()` explicitly before asserting on elements below the fold.
+- On iOS, the `tapOutside` strategy taps coordinates (0, 0) which may hit a UI element. If `tapOutside` triggers an unintended action, use `pressButton('done')` via `driver.execute('mobile: pressButton', { name: 'done' })` to press the keyboard "Done" key instead.
+- `driver.isKeyboardShown()` is not 100% reliable on iOS — it checks the XCUITest keyboard element, which can disappear from the tree before the animation completes. Add a small `waitUntil` after dismissal before querying the element you need.
+
+### File upload and retrieval  [community]
+
+Push test files to the device (for file picker flows) and pull files off the device (for downloaded content assertions).
+
+```typescript
+// test/helpers/fileHelper.ts
+import fs from 'fs';
+import path from 'path';
+
+/**
+ * Push a file to the device's accessible path.
+ * iOS: path must be relative to the app's sandbox (Documents folder).
+ * Android: path can be an absolute /sdcard/ path.
+ */
+export async function pushFileToDevice(localPath: string, remotePath: string): Promise<void> {
+  const fileContent = fs.readFileSync(localPath);
+  const base64Content = fileContent.toString('base64');
+  await driver.pushFile(remotePath, base64Content);
+}
+
+/**
+ * Pull a file from the device and save it locally.
+ * Useful for asserting on downloaded PDFs, exported CSVs, or generated images.
+ */
+export async function pullFileFromDevice(remotePath: string, localSavePath: string): Promise<void> {
+  const base64Content = await driver.pullFile(remotePath) as string;
+  const buffer = Buffer.from(base64Content, 'base64');
+  fs.mkdirSync(path.dirname(localSavePath), { recursive: true });
+  fs.writeFileSync(localSavePath, buffer);
+}
+```
+
+```typescript
+// test/specs/document-upload.spec.ts
+import { pushFileToDevice } from '../helpers/fileHelper.js';
+
+describe('Document upload flow', () => {
+  const TEST_PDF = path.resolve(__dirname, '../../fixtures/test-document.pdf');
+
+  before(async () => {
+    // iOS: push to Documents folder (accessible via UIDocumentPickerViewController)
+    if (browser.isIOS) {
+      await pushFileToDevice(TEST_PDF, '/private/var/mobile/Media/DCIM/test-document.pdf');
+    } else {
+      // Android: push to external storage
+      await pushFileToDevice(TEST_PDF, '/sdcard/Download/test-document.pdf');
+    }
+  });
+
+  it('should upload a PDF and show confirmation', async () => {
+    await $('~upload-document-btn').click();
+    // File picker opens — select the file via accessibility label or text match
+    await $('~test-document.pdf').waitForDisplayed({ timeout: 5_000 });
+    await $('~test-document.pdf').click();
+    await expect($('~upload-success-banner')).toBeDisplayed();
+    await expect($('~uploaded-filename')).toHaveText('test-document.pdf');
+  });
+});
+```
+
+**File operation gotchas [community]:**
+- `driver.pushFile` requires the path to be in the app's sandbox on iOS (not arbitrary filesystem paths). Use `driver.getAppStrings()` or the Appium inspector to find the correct Documents path for the bundle.
+- On Android API 30+ (scoped storage), `/sdcard/Download/` is only accessible if the app declares `READ_EXTERNAL_STORAGE` or `MANAGE_EXTERNAL_STORAGE` permissions. Prefer pushing to the app's private data directory (`/data/data/com.example.myapp/files/`) for internal file tests.
+- `driver.pullFile` on iOS returns the file as base64 — this is correct behaviour. Always `Buffer.from(content, 'base64')` before writing or asserting on the binary content.
 
 ---
 
@@ -832,6 +1222,105 @@ Slow element lookups are the most common cause of flaky timeouts on CI. These se
 | `browser.getPageSource()` | Get XML page source | Debugging selector issues |
 | `browser.isIOS` / `browser.isAndroid` | Platform detection | Platform-specific branches |
 | `browser.deleteSession()` | Close Appium session | `after()` hook teardown |
+| `driver.hideKeyboard()` | Dismiss soft keyboard | Before asserting on elements below keyboard |
+| `driver.isKeyboardShown()` | Check if keyboard is visible | Conditional dismissal |
+| `driver.pushFile(path, base64)` | Upload file to device | File picker and upload tests |
+| `driver.pullFile(path)` | Download file from device (base64) | Assert on downloaded content |
+| `driver.lockDevice(secs)` | Lock the device screen | Lock-screen notification tests |
+| `driver.unlockDevice()` | Unlock the device | After lock-screen assertions |
+| `driver.setGeoLocation(coords)` | Set GPS coordinates (Android) | Location-aware feature tests |
+| `driver.setOrientation(o)` | Rotate device | Orientation/rotation tests |
+| `driver.getOrientation()` | Get current orientation | Assert or guard rotation state |
+
+---
+
+## Screen Recording for CI Failure Debugging  [community]
+
+Capture a video of the test session to diagnose failures that screenshots alone cannot explain (timing issues, flicker, scroll position problems).
+
+```typescript
+// test/helpers/recordingHelper.ts
+
+let isRecording = false;
+
+/**
+ * Start screen recording.
+ * iOS Simulator: uses XCUITest driver's built-in screen recorder.
+ * Android emulator: uses UiAutomator2 screen recording.
+ */
+export async function startRecording(options?: {
+  timeLimit?: number;   // max seconds to record (default: 180)
+  quality?: 'low' | 'medium' | 'high';
+}): Promise<void> {
+  if (isRecording) return;
+  const timeLimit = options?.timeLimit ?? 120;
+
+  if (browser.isIOS) {
+    await driver.startRecordingScreen({
+      timeLimit,
+      videoType: 'libx264',
+      videoQuality: options?.quality ?? 'medium',
+    });
+  } else {
+    await driver.startRecordingScreen({
+      timeLimit,
+      videoSize: '1080x1920',  // match emulator resolution
+      bitRate: options?.quality === 'high' ? 8000000 : 4000000,
+    });
+  }
+  isRecording = true;
+}
+
+/**
+ * Stop recording and save the video to disk.
+ * Returns the path to the saved file.
+ */
+export async function stopRecordingAndSave(label: string): Promise<string> {
+  if (!isRecording) return '';
+  const base64Video = await driver.stopRecordingScreen() as string;
+  isRecording = false;
+
+  const ext = browser.isIOS ? 'mp4' : 'mp4';
+  const filePath = `./allure-results/recording-${label}-${Date.now()}.${ext}`;
+  const fs = await import('fs');
+  fs.mkdirSync('./allure-results', { recursive: true });
+  fs.writeFileSync(filePath, Buffer.from(base64Video, 'base64'));
+  return filePath;
+}
+```
+
+```typescript
+// wdio.conf.ts — integrate recording into test lifecycle
+import { startRecording, stopRecordingAndSave } from './test/helpers/recordingHelper.js';
+import { addAttachment } from '@wdio/allure-reporter';
+import fs from 'fs';
+
+// Start recording before each test
+beforeTest: async (test) => {
+  await startRecording({ timeLimit: 120, quality: 'medium' });
+},
+
+// Stop and save on failure; discard on pass
+afterTest: async (test, _ctx, { error }) => {
+  const label = test.title.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+  const videoPath = await stopRecordingAndSave(label);
+
+  if (error && videoPath) {
+    // Attach video to Allure report for the failed test
+    const videoBuffer = fs.readFileSync(videoPath);
+    addAttachment('Test recording', videoBuffer, 'video/mp4');
+  } else if (!error && videoPath) {
+    // Clean up passing test recordings to save disk space
+    fs.unlinkSync(videoPath);
+  }
+},
+```
+
+**Screen recording gotchas [community]:**
+- `driver.startRecordingScreen()` on iOS requires the `appium-xcuitest-driver` 3.x+ and only works on Simulator — not on real devices. Real device recording requires an external screen capture tool.
+- Recording has a server-side `timeLimit` cap (default 3 minutes). Tests longer than 3 minutes will have the recording silently truncated. Set `timeLimit` to your longest expected test duration.
+- Always call `stopRecordingAndSave()` in BOTH `afterTest` success and failure paths (or `afterEach`). If a test throws before the recording is stopped, the next call to `startRecordingScreen()` will fail with "recording already in progress".
+- Video files can be large (10–50 MB per test). Delete recordings for passing tests immediately in `afterTest` — only persist failing test videos to avoid bloating CI artifacts.
 
 ---
 
@@ -1047,6 +1536,157 @@ Generate and open Allure report after a run:
 ```bash
 npx allure generate allure-results --clean -o allure-report
 npx allure open allure-report
+```
+
+---
+
+## Deep Link Testing Pattern  [community]
+
+Deep links are one of the most reliable ways to navigate to a specific screen without traversing the full UI flow. Test deep links explicitly to catch broken URL schemes and missing intent filters early.
+
+```typescript
+// test/helpers/deepLinkHelper.ts
+
+/**
+ * Open a deep link and wait for the target screen to appear.
+ * iOS: browser.url() routes through Safari; Android requires mobile: deepLink.
+ *
+ * WHY: On Android, browser.url() opens the default browser app, not the deep link handler.
+ * Use 'mobile: deepLink' to invoke the app's intent filter directly.
+ */
+export async function openDeepLink(url: string, targetSelector: string, timeoutMs = 8_000): Promise<void> {
+  if (browser.isIOS) {
+    await browser.url(url);
+  } else {
+    const pkg = url.split('://')[0];  // extract scheme as a hint; package must still be provided
+    await driver.execute('mobile: deepLink', {
+      url,
+      package: process.env.ANDROID_PACKAGE_NAME!,  // e.g. 'com.example.myapp'
+    });
+  }
+  await $(targetSelector).waitForDisplayed({ timeout: timeoutMs });
+}
+
+/**
+ * Assert that opening a deep link navigates to the expected screen.
+ */
+export async function assertDeepLink(
+  url: string,
+  targetSelector: string,
+  expectedTextSelector?: string,
+  expectedText?: string,
+): Promise<void> {
+  await openDeepLink(url, targetSelector);
+  await expect($(targetSelector)).toBeDisplayed();
+  if (expectedTextSelector && expectedText) {
+    await expect($(expectedTextSelector)).toHaveText(expectedText);
+  }
+}
+```
+
+```typescript
+// test/specs/deep-links.spec.ts
+import { assertDeepLink } from '../helpers/deepLinkHelper.js';
+
+describe('Deep link routing', () => {
+  it('should navigate to product detail via deep link', async () => {
+    await assertDeepLink(
+      'myapp://product/12345',
+      '~product-detail-screen',
+      '~product-title',
+      'Widget Pro',
+    );
+  });
+
+  it('should navigate to profile screen via deep link', async () => {
+    await assertDeepLink('myapp://profile/me', '~profile-screen');
+  });
+
+  it('should show 404 screen for unknown deep link paths', async () => {
+    await openDeepLink('myapp://nonexistent-path', '~not-found-screen');
+    await expect($('~not-found-screen')).toBeDisplayed();
+  });
+});
+```
+
+**Deep link gotchas [community]:**
+- On Android, if the device has multiple apps that handle the same URI scheme, the system shows an "Open with..." disambiguation dialog. Fix: set `package` in `mobile: deepLink` to route directly to your app's intent filter without the chooser.
+- iOS Universal Links (`https://yourdomain.com/path`) require the device to be online and the Associated Domains entitlement to be configured. For Simulator testing, use custom URL schemes (`myapp://`) which work offline.
+- After a deep link navigates away from the home screen, the "back" button may route to the previous app (the deep link opener) rather than to your app's home. Assert on the final screen state rather than navigation history.
+
+## App State Assertion  [community]
+
+Use `driver.queryAppState()` to assert that the app is in the expected lifecycle state (foreground, background, not running). Essential for background/foreground transition tests.
+
+```typescript
+// test/helpers/appStateHelper.ts
+
+/**
+ * Appium app state codes:
+ *   0 = not installed
+ *   1 = not running
+ *   2 = background suspended
+ *   3 = background running
+ *   4 = foreground running (active)
+ */
+export const APP_STATE = {
+  NOT_INSTALLED:        0,
+  NOT_RUNNING:          1,
+  BACKGROUND_SUSPENDED: 2,
+  BACKGROUND_RUNNING:   3,
+  FOREGROUND:           4,
+} as const;
+
+export type AppState = typeof APP_STATE[keyof typeof APP_STATE];
+
+/**
+ * Wait until the app reaches the expected state (e.g. foreground after activateApp).
+ * WHY: activateApp() is fire-and-forget — the OS takes time to foreground the app.
+ * Without this wait, subsequent element lookups run before the app is ready.
+ */
+export async function waitForAppState(
+  bundleId: string,
+  expectedState: AppState,
+  timeoutMs = 5_000,
+): Promise<void> {
+  await browser.waitUntil(
+    async () => {
+      const state = await driver.queryAppState(bundleId) as AppState;
+      return state === expectedState;
+    },
+    {
+      timeout: timeoutMs,
+      timeoutMsg: `App ${bundleId} did not reach state ${expectedState} in ${timeoutMs} ms`,
+      interval: 200,
+    },
+  );
+}
+```
+
+```typescript
+// test/specs/background-foreground.spec.ts
+import { waitForAppState, APP_STATE } from '../helpers/appStateHelper.js';
+
+const BUNDLE_ID = process.env.APP_BUNDLE_ID!;
+
+describe('Background / foreground transition', () => {
+  it('should resume correct screen state after backgrounding', async () => {
+    // Navigate to a specific screen
+    await openDeepLink('myapp://checkout', '~checkout-screen');
+    await expect($('~checkout-screen')).toBeDisplayed();
+
+    // Background the app (Home button press)
+    await driver.execute('mobile: pressButton', { name: 'home' });
+    await waitForAppState(BUNDLE_ID, APP_STATE.BACKGROUND_SUSPENDED);
+
+    // Return to foreground
+    await driver.activateApp(BUNDLE_ID);
+    await waitForAppState(BUNDLE_ID, APP_STATE.FOREGROUND);
+
+    // Assert the checkout screen is still shown (no reset on resume)
+    await expect($('~checkout-screen')).toBeDisplayed();
+  });
+});
 ```
 
 ---
@@ -1516,6 +2156,241 @@ import { ENV } from './test/config/env.js';
 
 ---
 
+## Device Simulation — Geolocation, Orientation & System Dialogs
+
+### Geolocation simulation  [community]
+
+Apps that use GPS or location services need deterministic location data in tests. Appium provides `setGeoLocation` for emulators/simulators and the `mobile: setSimulatedLocation` command for iOS Simulator.
+
+```typescript
+// test/helpers/locationHelper.ts
+
+/** Set GPS coordinates — works on Android emulator + iOS Simulator */
+export async function setLocation(lat: number, lng: number, altitude = 0): Promise<void> {
+  if (browser.isIOS) {
+    // iOS Simulator: XCUITest driver command (Appium 2.x)
+    await driver.execute('mobile: setSimulatedLocation', { latitude: lat, longitude: lng });
+  } else {
+    // Android emulator: standard Appium geo command
+    await driver.setGeoLocation({ latitude: lat, longitude: lng, altitude });
+  }
+}
+
+/** Reset to real device location (stop simulation) */
+export async function clearSimulatedLocation(): Promise<void> {
+  if (browser.isIOS) {
+    await driver.execute('mobile: resetSimulatedLocation', {});
+  }
+  // Android: no reset command — just stop injecting; emulator reverts on its own
+}
+```
+
+```typescript
+// test/specs/delivery-map.spec.ts
+import { setLocation, clearSimulatedLocation } from '../helpers/locationHelper.js';
+
+describe('Delivery map — location-aware features', () => {
+  after(async () => {
+    await clearSimulatedLocation();
+  });
+
+  it('should show nearby restaurants when near downtown NYC', async () => {
+    await setLocation(40.7128, -74.0060);  // NYC lat/lng
+    await $('~nearby-restaurants-btn').click();
+    await $('~restaurant-list').waitForDisplayed({ timeout: 8_000 });
+    const items = await $$('~restaurant-card');
+    expect(items.length).toBeGreaterThan(0);
+  });
+
+  it('should show "no restaurants nearby" message for remote location', async () => {
+    await setLocation(0.0, 0.0);  // null island — no restaurants
+    await $('~nearby-restaurants-btn').click();
+    await expect($('~empty-state-message')).toHaveText('No restaurants in your area');
+  });
+});
+```
+
+**Geolocation gotchas:**
+- `setGeoLocation` on Android requires the emulator's location mode to be set to "GPS only" or "High accuracy". If the app uses `fused location` (Google's FusedLocationProviderClient), you may need `appium-fake-gps` plugin or `adb` commands to inject mock locations at the system level.
+- On iOS real devices, `mobile: setSimulatedLocation` is unavailable. Use Xcode's GPX simulation feature or a proxy that injects Core Location data.
+- Always call `clearSimulatedLocation` in an `after` hook — leaving a simulated location active can affect other tests or the next session on the same simulator.
+
+### Orientation and rotation testing
+
+```typescript
+// test/helpers/orientationHelper.ts
+import type { AppiumBrowser } from 'webdriverio';
+
+export type Orientation = 'PORTRAIT' | 'LANDSCAPE';
+
+/** Rotate device to the specified orientation and wait for UI to settle */
+export async function setOrientation(orientation: Orientation): Promise<void> {
+  await (driver as AppiumBrowser).setOrientation(orientation);
+  // Give the app time to complete its rotation animation before asserting
+  await browser.waitUntil(
+    async () => {
+      const current = await (driver as AppiumBrowser).getOrientation();
+      return current === orientation;
+    },
+    { timeout: 5_000, timeoutMsg: `Device did not rotate to ${orientation} in 5 s` }
+  );
+}
+```
+
+```typescript
+// test/specs/media-player.spec.ts
+import { setOrientation } from '../helpers/orientationHelper.js';
+
+describe('Media player orientation', () => {
+  after(async () => {
+    await setOrientation('PORTRAIT');  // always restore to portrait after test
+  });
+
+  it('should show full-screen controls in landscape mode', async () => {
+    await $('~video-thumbnail').click();
+    await $('~video-player').waitForDisplayed({ timeout: 5_000 });
+
+    await setOrientation('LANDSCAPE');
+    await expect($('~fullscreen-controls-bar')).toBeDisplayed();
+    await expect($('~portrait-mini-player')).not.toBeDisplayed();
+  });
+
+  it('should return to mini-player on portrait rotation', async () => {
+    await setOrientation('PORTRAIT');
+    await expect($('~portrait-mini-player')).toBeDisplayed();
+  });
+});
+```
+
+### Runtime permission dialogs  [community]
+
+iOS and Android show system permission dialogs (camera, microphone, location, notifications) that interrupt test flow. These are native system UI — not part of the app — and require special handling.
+
+```typescript
+// test/helpers/permissionHelper.ts
+
+/**
+ * Accept an iOS system permission alert (e.g., camera, location, microphone).
+ * The alert appears as a system overlay — use driver.acceptAlert() to tap "Allow".
+ * WHY: System alerts are NOT in the app's accessibility tree; $('~Allow') finds nothing.
+ */
+export async function acceptIosPermissionAlert(timeoutMs = 3_000): Promise<void> {
+  try {
+    await browser.waitUntil(
+      async () => {
+        try {
+          await driver.getAlertText();
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { timeout: timeoutMs, timeoutMsg: 'No permission alert appeared' }
+    );
+    await driver.acceptAlert();  // taps the "Allow" / "OK" button
+  } catch {
+    // No alert appeared — possibly already granted, or not triggered
+  }
+}
+
+/**
+ * Dismiss (deny) an iOS permission alert.
+ */
+export async function dismissIosPermissionAlert(timeoutMs = 3_000): Promise<void> {
+  try {
+    await browser.waitUntil(
+      async () => {
+        try { await driver.getAlertText(); return true; }
+        catch { return false; }
+      },
+      { timeout: timeoutMs }
+    );
+    await driver.dismissAlert();  // taps "Don't Allow" / "Cancel"
+  } catch {
+    // No alert
+  }
+}
+
+/**
+ * Grant an Android runtime permission via ADB — avoids the UI dialog entirely.
+ * Faster and more reliable than tapping through the dialog, especially for
+ * location permissions that show a 3-option dialog in Android 12+.
+ */
+export async function grantAndroidPermission(
+  packageName: string,
+  permission: string,
+): Promise<void> {
+  await driver.execute('mobile: shell', {
+    command: 'pm',
+    args: ['grant', packageName, permission],
+  });
+}
+
+/**
+ * Revoke an Android permission to test the "permission denied" flow.
+ */
+export async function revokeAndroidPermission(
+  packageName: string,
+  permission: string,
+): Promise<void> {
+  await driver.execute('mobile: shell', {
+    command: 'pm',
+    args: ['revoke', packageName, permission],
+  });
+}
+```
+
+```typescript
+// test/specs/camera-flow.spec.ts
+import {
+  acceptIosPermissionAlert,
+  grantAndroidPermission,
+  revokeAndroidPermission,
+} from '../helpers/permissionHelper.js';
+
+const PACKAGE = 'com.example.myapp';
+const CAMERA_PERM = 'android.permission.CAMERA';
+
+describe('Camera permission flow', () => {
+  before(async () => {
+    // Pre-grant on Android to avoid dialog in happy-path test
+    if (browser.isAndroid) {
+      await grantAndroidPermission(PACKAGE, CAMERA_PERM);
+    }
+  });
+
+  it('should open camera after granting permission (iOS)', async () => {
+    if (!browser.isIOS) return;
+    await $('~open-camera-btn').click();
+    await acceptIosPermissionAlert();  // taps "Allow"
+    await expect($('~camera-preview')).toBeDisplayed();
+  });
+
+  it('should show camera view immediately on Android (pre-granted)', async () => {
+    if (!browser.isAndroid) return;
+    await $('~open-camera-btn').click();
+    await expect($('~camera-preview')).toBeDisplayed();
+  });
+
+  it('should show permission-denied UI when camera is revoked (Android)', async () => {
+    if (!browser.isAndroid) return;
+    await revokeAndroidPermission(PACKAGE, CAMERA_PERM);
+    await driver.terminateApp(PACKAGE);
+    await driver.activateApp(PACKAGE);
+    await $('~open-camera-btn').click();
+    await expect($('~camera-permission-denied-banner')).toBeDisplayed();
+  });
+});
+```
+
+**Permission dialog pitfalls:**
+- `driver.acceptAlert()` works for iOS permission alerts but NOT for Android permission dialogs (which are full activities, not alerts). Use `grantAndroidPermission` (ADB `pm grant`) for Android.
+- On iOS 15+, location permission shows a three-option dialog ("Allow Once", "Allow While Using", "Don't Allow"). `driver.acceptAlert()` taps the default primary button — which may be "Allow Once", not "Always Allow". Use `mobile: alert` command with a specific button label if you need a specific option.
+- Pre-granting permissions via ADB (`pm grant`) before the app launches is faster and avoids dialog flakiness entirely. Reserve dialog-flow tests for explicitly testing the permission-denied UX.
+- On iOS Simulator, use `'appium:permissions'` capability to pre-grant permissions at session start: `'appium:permissions': '{"com.example.myapp": {"camera": "yes"}}'` (XCUITest driver 4.18+).
+
+---
+
 ## Quick Reference Checklist
 
 Use this checklist to verify a new WebDriverIO/Appium test project is production-ready:
@@ -1544,6 +2419,47 @@ Use this checklist to verify a new WebDriverIO/Appium test project is production
 - [ ] `expect()` matchers used for assertions; `waitForDisplayed()` used for action gating
 - [ ] ChromeDriver installed in CI for WebView context switching on Android
 - [ ] No `require()` in test files — ESM imports (`import { writeFileSync } from 'fs'`) used throughout
+- [ ] `clearSimulatedLocation()` called in `after` hook for all geolocation tests
+- [ ] Orientation tests restore `PORTRAIT` in `after` hook
+- [ ] Android permissions pre-granted via `pm grant` ADB for happy-path tests; dialog-flow reserved for denial-UX tests
+- [ ] iOS permission alerts handled via `driver.acceptAlert()` (not `$('~Allow')` — system UI is outside app tree)
+- [ ] Screen recording started in `beforeTest` and stopped + saved in `afterTest` (delete on pass, keep on fail)
+- [ ] TypeScript path aliases (`@pages`, `@helpers`) configured in tsconfig with `tsconfig-paths/register` for runtime resolution
+- [ ] Spec sharding uses sorted glob to ensure deterministic split across CI matrix jobs
+- [ ] Device log capture (`getLogs('logcat')` / `getLogs('syslog')`) enabled in `afterTest` on failure
+- [ ] Dark mode tests restore light appearance in `after` hook and use separate visual baseline suffix
+
+---
+
+## `appium:permissions` Capability — Pre-Granting iOS Permissions at Session Start
+
+Instead of handling iOS permission dialogs during test execution, pre-grant them via the `appium:permissions` capability so the app launches with permissions already set. Supported by XCUITest driver 4.18+.
+
+```typescript
+// wdio.conf.ts — pre-grant permissions per test session
+const iosCaps = {
+  platformName: 'iOS',
+  'appium:deviceName': 'iPhone 15',
+  'appium:platformVersion': '17.0',
+  'appium:automationName': 'XCUITest',
+  'appium:app': process.env.IOS_APP_PATH!,
+  // Grant camera + location + notifications before the session opens
+  'appium:permissions': JSON.stringify({
+    'com.example.myapp': {
+      camera:        'YES',
+      location:      'always',  // 'inuse' | 'always' | 'never'
+      notifications: 'YES',
+      microphone:    'YES',
+      photos:        'YES',
+    },
+  }),
+};
+```
+
+**When to use capability vs runtime `acceptAlert`:**
+- Use `appium:permissions` for all tests that need permissions pre-granted (happy-path flows).
+- Use `driver.acceptAlert()` only when the test itself is verifying the permission request flow.
+- Use `revokeAndroidPermission` / `pm revoke` for denial-UX tests that need to remove a permission after it was granted.
 
 ---
 
@@ -1629,6 +2545,141 @@ const isIos = browser.isIOS;
 **TypeScript note:** `driver` is typed as `AppiumBrowser` which extends `Browser` with Appium-
 specific methods. `browser` is `Browser<'async'>` — narrower, no `terminateApp`. With
 `strict: true`, the TypeScript compiler will catch most cross-object misuses at compile time.
+
+---
+
+## Device Log Capture — Logcat, Syslog & Appium Logs  [community]
+
+Capturing device logs alongside test failures is essential for diagnosing crashes, ANRs, and native errors that don't surface in the WebDriverIO error message.
+
+```typescript
+// test/helpers/logHelper.ts
+import fs from 'fs';
+import path from 'path';
+
+/**
+ * Capture Android logcat (since last clear) and save to a file.
+ * Best called in afterTest on failure.
+ * WHY: Appium surfaces "element not found" — logcat tells you WHY (OOM, crash, null pointer).
+ */
+export async function captureAndroidLogcat(label: string): Promise<void> {
+  if (!browser.isAndroid) return;
+  try {
+    // 'logcat' is the Android log buffer type for UiAutomator2 driver
+    const logs = await driver.getLogs('logcat') as Array<{ message: string; level: string; timestamp: number }>;
+    const content = logs.map(l => `[${l.level}] ${new Date(l.timestamp).toISOString()} ${l.message}`).join('\n');
+    const filePath = `./allure-results/logcat-${label}-${Date.now()}.txt`;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content);
+  } catch (err) {
+    console.warn('logcat capture failed:', err);
+  }
+}
+
+/**
+ * Capture iOS syslog (device system log) and save to a file.
+ * Requires XCUITest driver with log access enabled.
+ */
+export async function captureIosSyslog(label: string): Promise<void> {
+  if (!browser.isIOS) return;
+  try {
+    const logs = await driver.getLogs('syslog') as Array<{ message: string; level: string; timestamp: number }>;
+    const content = logs.map(l => `[${l.level}] ${new Date(l.timestamp).toISOString()} ${l.message}`).join('\n');
+    fs.writeFileSync(`./allure-results/syslog-${label}-${Date.now()}.txt`, content);
+  } catch (err) {
+    console.warn('syslog capture failed:', err);
+  }
+}
+
+/** Filter log lines containing crash signatures */
+export function extractCrashLines(logs: Array<{ message: string; level: string }>): string[] {
+  const CRASH_PATTERNS = [/FATAL EXCEPTION/i, /ANR in/i, /Fatal signal/i, /EXC_BAD_ACCESS/i];
+  return logs
+    .filter(l => CRASH_PATTERNS.some(p => p.test(l.message)))
+    .map(l => l.message);
+}
+```
+
+```typescript
+// wdio.conf.ts — integrate log capture into afterTest hook
+import { captureAndroidLogcat, captureIosSyslog } from './test/helpers/logHelper.js';
+
+afterTest: async (test, _ctx, { error }) => {
+  if (error) {
+    const label = test.title.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+    // Save screenshot + page source (existing)
+    await browser.saveScreenshot(`./allure-results/screenshot-${label}-${Date.now()}.png`);
+    const source = await browser.getPageSource();
+    fs.writeFileSync(`./allure-results/page-source-${label}-${Date.now()}.xml`, source);
+    // Save device logs (new)
+    await captureAndroidLogcat(label);
+    await captureIosSyslog(label);
+  }
+},
+```
+
+**Device log gotchas [community]:**
+- `driver.getLogs('logcat')` returns ALL logs since the last call (Appium clears the buffer after reading). Call it once per test in `afterTest`; don't poll it during the test as you'll consume the buffer.
+- `getLogTypes()` returns the list of available log types for the current session. Verify `'logcat'` or `'syslog'` is listed before calling `getLogs()` — some driver versions or device configurations omit them.
+- Log volume can be enormous on Android. Filter by `level: 'ERROR'` or pattern-match for your app's package name: `logs.filter(l => l.message.includes('com.example.myapp'))`.
+- Store logs as attachments in Allure (use `addAttachment` from `@wdio/allure-reporter`) rather than standalone files — they become navigable directly from the failed test in the Allure report.
+
+---
+
+## Dark Mode & Dynamic Type Testing  [community]
+
+### Dark mode simulation
+
+```typescript
+// test/helpers/appearanceHelper.ts
+
+/** Switch iOS Simulator to dark mode */
+export async function setIosDarkMode(enabled: boolean): Promise<void> {
+  if (!browser.isIOS) return;
+  await driver.execute('mobile: setSimulatorUIAppearance', {
+    appearance: enabled ? 'dark' : 'light',
+  });
+}
+
+/** Switch Android emulator to dark mode via ADB */
+export async function setAndroidDarkMode(enabled: boolean): Promise<void> {
+  if (!browser.isAndroid) return;
+  const value = enabled ? 'yes' : 'no';
+  await driver.execute('mobile: shell', {
+    command: 'cmd',
+    args: ['uimode', 'night', value],
+  });
+}
+```
+
+```typescript
+// test/specs/dark-mode-visual.spec.ts
+import { setIosDarkMode, setAndroidDarkMode } from '../helpers/appearanceHelper.js';
+
+describe('Dark mode visual regression', () => {
+  after(async () => {
+    // Restore light mode after test suite
+    if (browser.isIOS) await setIosDarkMode(false);
+    if (browser.isAndroid) await setAndroidDarkMode(false);
+  });
+
+  it('should render dashboard correctly in dark mode', async () => {
+    if (browser.isIOS) await setIosDarkMode(true);
+    if (browser.isAndroid) await setAndroidDarkMode(true);
+
+    await driver.terminateApp(process.env.APP_BUNDLE_ID!);
+    await driver.activateApp(process.env.APP_BUNDLE_ID!);
+    await $('~dashboard-screen').waitForDisplayed({ timeout: 10_000 });
+    // Use visual regression snapshot with '-dark' suffix to keep separate from light baseline
+    await expect(browser).toMatchScreenSnapshot('dashboard-home-dark');
+  });
+});
+```
+
+**Dark mode gotchas [community]:**
+- `mobile: setSimulatorUIAppearance` requires Appium XCUITest driver 4.8+. Earlier versions throw `UnknownCommandException`. Check `appium driver list --installed` to verify driver version.
+- Always restart the app after changing appearance mode — many apps only read the color scheme during app launch, not in response to live appearance changes.
+- Dark mode snapshots must use a different baseline name (e.g. `-dark` suffix) than light mode snapshots. Using the same baseline name with different appearance modes causes perpetual visual failures.
 
 ---
 

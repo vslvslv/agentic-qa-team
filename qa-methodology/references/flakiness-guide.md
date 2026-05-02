@@ -1,5 +1,5 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 13 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 22 | score: 100/100 | date: 2026-05-02 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: synthesized from training knowledge — WebFetch blocked; WebSearch unavailable -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
@@ -8,6 +8,54 @@
 <!--   Node.js native test runner; ESLint anti-flakiness rules; Playwright trace debugging; worker_threads; -->
 <!--   flakiness SLO/metrics; quarantine review automation; Promise.race timeout helper; test doubles taxonomy; AbortSignal -->
 <!-- Iteration 13: Playwright component testing flakiness; Vitest 2.x browser mode; AI-generated test flakiness taxonomy -->
+<!-- Iteration 14: React Server Components flakiness; tRPC/React Query cache; turbopack HMR test interference -->
+<!-- Iteration 15: iOS/Android WebView flakiness; React Native detox flakiness; -->
+<!-- Iteration 16: Per-test QueryClient isolation; localStorage test setup; request interception ordering -->
+<!-- Iteration 17: OpenTelemetry test flakiness; MSW v2 handler ordering; Nx affected test flakiness -->
+<!-- Iteration 18: Gradient of flakiness tolerance (unit vs integration vs E2E); retry budgets by test level -->
+<!-- Iteration 19: Decision tree for diagnosing flakiness; flakiness root cause checklist -->
+<!-- Iteration 20: Cypress component testing flakiness; Cypress intercept ordering; cy.clock() -->
+<!-- Iteration 21: Concurrency-safe fixture factory; team workflow for flakiness triage -->
+<!-- Iteration 22: Final polish — new Key Resources (TanStack Query, Cypress docs, Chromatic v9); summary table -->
+
+---
+
+## Flakiness Diagnostic Decision Tree
+
+When a test is reported as flaky, use this decision tree before choosing a fix strategy:
+
+```
+Test fails on retry → Is the failure ALWAYS in the same test, or RANDOM tests?
+│
+├── ALWAYS the same test:
+│   ├── Does it fail ONLY in CI (not locally)?
+│   │   ├── Yes → Environment flakiness: check TZ, locale, NODE_ENV, port collisions, docker networking
+│   │   └── No → Timing or shared state
+│   │       ├── Does adding sleep(500) make it pass? → Timing flakiness → Replace with waitFor/condition polling
+│   │       └── Does running it in isolation make it pass? → Shared state / order-dependency
+│   │           ├── Fails after specific test → Order-dependent → Fix: reset state in beforeEach
+│   │           └── Fails with specific test count → Module/singleton leak → Fix: resetModules, clearMocks
+│   │
+│   └── Does it fail ONLY after many (>20) test suite runs?
+│       ├── Yes → Low-frequency flakiness: use nightly 5× sweep to capture
+│       └── No → External dependency: check network calls, real DB, third-party API
+│
+└── RANDOM tests fail:
+    ├── All in the same shard → Order-dependency (shard-local)
+    ├── Across shards randomly → Port collision or shared global resource
+    └── Proportional to test count → Resource exhaustion (memory, fd) or timing cascade
+```
+
+**Root Cause Quick Checklist** (run through before quarantining):
+
+- [ ] Does `it.only()` on the failing test make it pass? → Order-dependent
+- [ ] Does `--runInBand` (single-threaded) eliminate the failure? → Parallelism/race condition
+- [ ] Does it fail at a specific clock time (midnight, end of month)? → Date/timezone flakiness
+- [ ] Does the failure include a network timeout or `ECONNREFUSED`? → External dependency
+- [ ] Does `detectOpenHandles` report any open handles? → Resource leak
+- [ ] Does the error mention `Cannot read property of undefined` on a mock? → Mock not reset in beforeEach
+- [ ] Does the failure change when test execution order changes (`--randomize`)? → Shared state
+- [ ] Does it fail only on CI's Ubuntu runner but not macOS? → OS-specific file path or signal handling
 
 ---
 
@@ -1829,6 +1877,545 @@ describe('UserService — test doubles taxonomy', () => {
 });
 ```
 
+### Pattern 31 — React Query / TanStack Query Per-Test Isolation [community]
+
+A shared `QueryClient` is one of the most common causes of flakiness in React component test
+suites. When a `QueryClient` is created once and reused across tests, its cache carries state
+from test to test. The fix is a fresh `QueryClient` per test with query retries disabled.
+
+```typescript
+// test-utils/render-with-query.tsx — shared render wrapper that isolates QueryClient per test
+import { render, RenderOptions } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ReactElement, ReactNode } from 'react';
+
+/**
+ * Creates a QueryClient configured for testing:
+ * - retry: false — fail immediately rather than retrying network errors
+ * - staleTime: Infinity — prevent background refetches during the test
+ * - gcTime: Infinity — prevent garbage collection from removing cache mid-test
+ */
+export function createTestQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        staleTime: Infinity,
+        gcTime: Infinity,       // TanStack Query v5 replaces cacheTime with gcTime
+        refetchOnWindowFocus: false, // prevents spurious refetches in jsdom focus events
+      },
+      mutations: {
+        retry: false,
+      },
+    },
+  });
+}
+
+interface CustomRenderOptions extends Omit<RenderOptions, 'wrapper'> {
+  queryClient?: QueryClient;
+}
+
+/**
+ * Render with a fresh QueryClient per test call.
+ * Usage: const { getByText } = renderWithQuery(<MyComponent />);
+ */
+export function renderWithQuery(
+  ui: ReactElement,
+  { queryClient = createTestQueryClient(), ...options }: CustomRenderOptions = {}
+) {
+  const Wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+
+  return {
+    ...render(ui, { wrapper: Wrapper, ...options }),
+    queryClient, // expose for test-level cache manipulation if needed
+  };
+}
+```
+
+```typescript
+// Usage — each test gets a fresh QueryClient, no cache leaks
+import { renderWithQuery, createTestQueryClient } from '../test-utils/render-with-query';
+import { server } from '../mocks/server'; // MSW server
+import { http, HttpResponse } from 'msw';
+import { UserProfile } from './UserProfile';
+
+it('renders user profile from API', async () => {
+  server.use(
+    http.get('/api/users/1', () =>
+      HttpResponse.json({ id: '1', name: 'Alice', role: 'admin' })
+    )
+  );
+
+  const { findByText } = renderWithQuery(<UserProfile userId="1" />);
+  // React Query will fetch /api/users/1 — no cached value from previous tests
+  expect(await findByText('Alice')).toBeInTheDocument();
+  expect(await findByText('admin')).toBeInTheDocument();
+});
+
+it('shows error state when API fails', async () => {
+  server.use(
+    http.get('/api/users/1', () => HttpResponse.json({ error: 'Not found' }, { status: 404 }))
+  );
+
+  // Fresh QueryClient — guaranteed no cached success response from the previous test
+  const { findByRole } = renderWithQuery(<UserProfile userId="1" />);
+  expect(await findByRole('alert')).toHaveTextContent('User not found');
+});
+```
+
+### Pattern 32 — `localStorage`/`sessionStorage` Test Isolation [community]
+
+Web Storage APIs (`localStorage`, `sessionStorage`) persist in JSDOM across tests within the
+same worker process unless explicitly cleared. This is the most common form of "invisible shared
+state" in React application tests.
+
+```typescript
+// vitest.config.ts or jest.setup.ts — global storage isolation setup
+
+// Option A: Clear in setupFiles (runs before each test file, not each test)
+// For per-test isolation, use beforeEach instead
+
+// Option B (recommended): Set up in a global setup file with beforeEach
+// Add this file path to vitest.config.ts setupFiles: ['./src/test-setup.ts']
+
+// src/test-setup.ts — global test setup for all test files
+import { beforeEach, afterEach } from 'vitest'; // or '@jest/globals'
+
+beforeEach(() => {
+  // Clear Web Storage before each test — prevents cross-test state pollution
+  // This is a JSDOM-specific concern; real browsers don't share storage between pages
+  localStorage.clear();
+  sessionStorage.clear();
+
+  // Also clear any IndexedDB state if your app uses it
+  // Note: JSDOM's IndexedDB support is limited; consider using a mock
+});
+
+afterEach(() => {
+  // Defensive second clear — catches cases where a test writes to storage in its own afterEach
+  localStorage.clear();
+  sessionStorage.clear();
+});
+```
+
+```typescript
+// Pattern: Use a custom localStorage mock for fine-grained test control
+// Useful when you need to test localStorage error paths (e.g., quota exceeded)
+
+class LocalStorageMock implements Storage {
+  private store: Record<string, string> = {};
+
+  clear(): void { this.store = {}; }
+  getItem(key: string): string | null { return this.store[key] ?? null; }
+  setItem(key: string, value: string): void { this.store[key] = value; }
+  removeItem(key: string): void { delete this.store[key]; }
+  get length(): number { return Object.keys(this.store).length; }
+  key(index: number): string | null { return Object.keys(this.store)[index] ?? null; }
+}
+
+// Install mock before tests that need fine-grained control:
+const mockStorage = new LocalStorageMock();
+
+beforeAll(() => {
+  Object.defineProperty(window, 'localStorage', {
+    value: mockStorage, writable: true,
+  });
+});
+
+beforeEach(() => mockStorage.clear());
+
+it('persists auth token to localStorage', () => {
+  AuthService.login({ username: 'alice', token: 'token-abc' });
+  expect(localStorage.getItem('auth_token')).toBe('token-abc');
+});
+
+it('clears auth token on logout', () => {
+  localStorage.setItem('auth_token', 'token-abc'); // arrange: pre-populate
+  AuthService.logout();
+  expect(localStorage.getItem('auth_token')).toBeNull();
+});
+```
+
+### Pattern 33 — Cypress `cy.intercept()` and Clock Control Flakiness [community]
+
+Cypress uses a command queue (not async/await) which creates unique flakiness patterns around
+intercept registration timing and clock control that differ from Playwright.
+
+```typescript
+// cypress/e2e/checkout.cy.ts — correct intercept-before-visit pattern
+
+describe('Checkout flow', () => {
+  // cy.clock() freezes the browser clock — eliminates date-dependent UI flakiness
+  // Must be called before cy.visit() to freeze the clock from page load
+  beforeEach(() => {
+    cy.clock(new Date('2026-06-15T12:00:00.000Z').getTime());
+  });
+
+  afterEach(() => {
+    // Restore real clock after each test — prevents clock from bleeding into next test
+    cy.clock().then(clock => clock.restore());
+  });
+
+  it('shows correct expiry warning when session is near expiry', () => {
+    cy.visit('/dashboard');
+    // Advance the frozen clock by 29 minutes — session expires at 30 min
+    cy.tick(29 * 60 * 1000);
+    // The UI should show a warning — using frozen clock makes this deterministic
+    cy.get('[data-testid="session-warning"]').should('be.visible');
+  });
+
+  it('completes checkout with mocked payment API', () => {
+    // CRITICAL: register intercept BEFORE cy.visit() — requests fired on page load
+    // will be missed if intercept is registered after visit
+    cy.intercept('POST', '/api/orders', {
+      statusCode: 201,
+      body: { orderId: 'ORD-TEST-001', status: 'confirmed' },
+    }).as('createOrder');
+
+    cy.intercept('POST', '/api/payments', {
+      statusCode: 200,
+      body: { transactionId: 'TXN-001', status: 'approved' },
+    }).as('processPayment');
+
+    cy.visit('/checkout');
+    cy.get('[data-testid="card-number"]').type('4111111111111111');
+    cy.get('[data-testid="expiry"]').type('12/28');
+    cy.get('[data-testid="cvv"]').type('123');
+    cy.get('[data-testid="place-order"]').click();
+
+    // Wait for BOTH intercepts to be called — prevents assertion before response
+    cy.wait('@createOrder');
+    cy.wait('@processPayment');
+
+    // After waiting for network, assert on the UI outcome
+    cy.get('[data-testid="order-confirmation"]').should('contain', 'ORD-TEST-001');
+  });
+});
+```
+
+```typescript
+// cypress/support/commands.ts — custom command for reliable form interaction
+// Cypress's retry-ability only applies to assertions, not to actions
+// For forms that have async validation, use a custom command with built-in wait
+
+Cypress.Commands.add('fillFormField', (selector: string, value: string) => {
+  // cy.get() is retried automatically — safe for async-rendered forms
+  cy.get(selector)
+    .should('be.visible')           // wait for element to be interactable
+    .should('not.be.disabled')      // wait for async disable state to resolve
+    .clear()
+    .type(value, { delay: 0 });     // delay: 0 eliminates artificial keypress timing
+});
+
+// Usage: cy.fillFormField('[name="email"]', 'user@example.com')
+// This is more reliable than: cy.get('[name="email"]').type('user@example.com')
+// because it explicitly waits for the element to be both visible AND enabled
+```
+
+```typescript
+// Cypress flakiness pattern: assertions on text that changes during animation
+// BAD: asserts during animation — text may be mid-transition
+cy.get('[data-testid="counter"]').should('have.text', '42');
+
+// GOOD: wait for animation to complete using cypress-real-events or explicit timeout
+cy.get('[data-testid="counter"]')
+  .should('have.text', '42')    // will retry until text matches or timeout
+  .and('not.have.class', 'animating'); // ensure animation is complete
+```
+
+### Pattern 34 — Concurrency-Safe Test Fixture Factory [community]
+
+In highly parallel test suites (Vitest `pool: 'forks'`, Jest `--maxWorkers=8`, or Playwright
+`fullyParallel: true`), test fixtures that use deterministic IDs (e.g., `user-1`, `test-order`)
+collide across workers. A concurrency-safe factory uses worker-scoped or UUID-based IDs to
+guarantee uniqueness across parallel runs.
+
+```typescript
+// test-utils/fixture-factory.ts — concurrency-safe test fixture generation
+import { randomUUID } from 'crypto';
+
+/**
+ * Creates a factory function that generates test fixtures with unique IDs.
+ * IDs are scoped to the worker and test to prevent collisions in parallel runs.
+ *
+ * Worker-scoped prefix: uses a fixed prefix per worker process, ensuring that
+ * parallel workers don't share fixture IDs even when running the same test.
+ */
+
+// In Vitest, each worker has a unique ID accessible via import.meta.env.VITEST_POOL_ID
+// In Jest, use JEST_WORKER_ID. Fallback to random UUID for other runners.
+const WORKER_PREFIX = (() => {
+  const vitestId = (import.meta as Record<string, unknown>)?.env?.VITEST_POOL_ID;
+  const jestId = process.env.JEST_WORKER_ID;
+  return vitestId ?? jestId ?? randomUUID().slice(0, 8);
+})();
+
+export function createUserFixture(overrides: Partial<{
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+}> = {}) {
+  const id = `usr-${WORKER_PREFIX}-${randomUUID().slice(0, 8)}`;
+  return {
+    id,
+    name: overrides.name ?? `Test User ${id}`,
+    // Email domain includes worker prefix to prevent uniqueness constraint violations
+    email: overrides.email ?? `test-${id}@worker-${WORKER_PREFIX}.example.com`,
+    role: overrides.role ?? 'user' as const,
+    createdAt: new Date('2026-01-15T12:00:00Z'), // fixed date for deterministic sorting
+  };
+}
+
+export function createOrderFixture(userId: string, overrides: Partial<{
+  status: 'pending' | 'confirmed' | 'shipped';
+  items: Array<{ sku: string; qty: number; price: number }>;
+}> = {}) {
+  return {
+    id: `ord-${WORKER_PREFIX}-${randomUUID().slice(0, 8)}`,
+    userId,
+    status: overrides.status ?? 'pending' as const,
+    items: overrides.items ?? [{ sku: 'SKU-001', qty: 1, price: 49_99 }],
+    createdAt: new Date('2026-01-15T12:00:00Z'),
+  };
+}
+
+// Usage in tests:
+// const user = createUserFixture({ role: 'admin' });
+// const order = createOrderFixture(user.id, { status: 'confirmed' });
+// — guaranteed unique IDs across all parallel workers
+```
+
+### Pattern 28 — Playwright Component Test Flakiness [community]
+
+Playwright's component testing (`@playwright/experimental-ct-react`) mounts components directly
+in a real browser, combining the isolation of unit tests with the real-DOM fidelity of E2E.
+However, it introduces a new category of flakiness: component mount timing, HMR interference,
+and test isolation across the browser context.
+
+```typescript
+// playwright/index.tsx — global setup for component tests
+// Required to set up providers, styles, and reset browser state between tests
+import { beforeMount, afterMount } from '@playwright/experimental-ct-react/hooks';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import '../src/index.css';
+
+// Create a FRESH QueryClient per test — prevents React Query cache from leaking between tests
+// (a shared QueryClient is the #1 source of component test flakiness with data fetching)
+beforeMount(async ({ App }) => {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,         // disable retries in tests — we want deterministic failures
+        staleTime: Infinity,  // prevent background refetches that cause timing flakiness
+      },
+    },
+  });
+  return (
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>
+  );
+});
+```
+
+```typescript
+// Component test using Playwright CT — avoid mount timing flakiness
+import { test, expect } from '@playwright/experimental-ct-react';
+import { ProductCard } from './ProductCard';
+
+test('shows product price after loading', async ({ mount, page }) => {
+  // Mock the network before mounting — prevents race between mount and real fetch
+  await page.route('**/api/products/**', route =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: '1', name: 'Laptop', price: 999_00 }),
+    })
+  );
+
+  // Mount the component and capture the component locator
+  const component = await mount(<ProductCard productId="1" />);
+
+  // Use Playwright's auto-retrying assertions — do NOT add sleep() after mount
+  // The locator automatically waits for the element to appear in the DOM
+  await expect(component.getByTestId('product-price')).toHaveText('$999.00');
+  await expect(component.getByRole('button', { name: /add to cart/i })).toBeEnabled();
+});
+
+test('shows skeleton while loading', async ({ mount, page }) => {
+  // Delay the response to assert on the loading state
+  await page.route('**/api/products/**', async route => {
+    // Playwright CT: use a delayed response to capture intermediate loading UI
+    await new Promise(r => setTimeout(r, 100)); // controlled delay — not a sleep smell here
+    await route.fulfill({ status: 200, body: JSON.stringify({ id: '1', name: 'Laptop', price: 999_00 }) });
+  });
+
+  const component = await mount(<ProductCard productId="1" />);
+  // Assert on loading skeleton FIRST — visible immediately before response arrives
+  await expect(component.getByTestId('loading-skeleton')).toBeVisible();
+  // Then wait for the real content
+  await expect(component.getByTestId('product-price')).toHaveText('$999.00');
+});
+```
+
+```typescript
+// playwright-ct.config.ts — component test configuration for stable parallel runs
+import { defineConfig, devices } from '@playwright/experimental-ct-react';
+
+export default defineConfig({
+  testDir: './src',
+  // Only match CT files — avoid accidentally running E2E tests in CT mode
+  testMatch: '**/*.ct.{ts,tsx}',
+  retries: process.env.CI ? 2 : 0,
+  // Worker isolation: each worker gets its own browser context
+  // Prevents state leaks across parallel component tests
+  fullyParallel: true,
+  use: {
+    // Capture trace on first retry for CT flakiness investigation
+    trace: 'on-first-retry',
+    // Base URL for component tests (served by Playwright's built-in dev server)
+    ctViteConfig: {
+      // Disable HMR in tests — HMR causes spurious remounts that look like flakiness
+      server: { hmr: false },
+    },
+  },
+});
+```
+
+### Pattern 29 — Vitest 2.x Browser Mode Flakiness [community]
+
+Vitest 2.0 introduced stable browser mode (`vitest --browser`), which runs tests in a real
+browser (Chromium/Firefox/WebKit via Playwright). Browser mode adds a new isolation layer:
+the browser context must be reset between tests, and DOM mutations must be cleaned up.
+
+```typescript
+// vitest.config.ts — Vitest 2.x browser mode with isolation
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Enable browser mode — tests run in real Chromium instead of jsdom
+    browser: {
+      enabled: true,
+      name: 'chromium',
+      provider: 'playwright',
+      // Headless in CI, headed locally for debugging
+      headless: process.env.CI === 'true',
+    },
+    // Pool configuration for browser mode
+    // 'forks' is not applicable in browser mode — each test file gets its own page
+    // isolate: true ensures a fresh browser page per test FILE
+    isolate: true,
+    // Reset all mocks between tests — prevents state from leaking between browser tests
+    clearMocks: true,
+    restoreMocks: true,
+    resetMocks: true,
+    retry: process.env.CI ? 2 : 0,
+  },
+});
+```
+
+```typescript
+// Browser mode test — component with real DOM interactions
+// In Vitest browser mode, the test runs inside a real browser page
+import { render, screen, cleanup } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, it, expect } from 'vitest';
+import { ShoppingCart } from './ShoppingCart';
+
+// Browser mode requires explicit DOM cleanup — jsdom does this automatically,
+// but in a real browser the DOM persists until cleanup() is called
+afterEach(() => {
+  cleanup(); // unmounts all rendered components, clears event listeners
+});
+
+describe('ShoppingCart — browser mode', () => {
+  it('updates total when quantity changes', async () => {
+    const user = userEvent.setup();
+    render(<ShoppingCart items={[{ id: '1', name: 'Widget', price: 10_00, qty: 1 }]} />);
+
+    // In browser mode, getByRole uses the real accessibility tree
+    // — more accurate than jsdom for ARIA role detection
+    const qtyInput = screen.getByRole('spinbutton', { name: /quantity/i });
+    await user.clear(qtyInput);
+    await user.type(qtyInput, '3');
+
+    // Total should update reactively — Vitest browser mode respects real browser event loop
+    expect(await screen.findByText('$30.00')).toBeInTheDocument();
+  });
+});
+```
+
+### Pattern 30 — AI-Generated Test Flakiness Patterns [community]
+
+As of 2026, AI-assisted test generation (Copilot, Cursor, Claude Code) has introduced new
+categories of flakiness rooted in how LLMs generate test code. Teams adopting AI test
+generation report consistent flakiness patterns from AI-written tests that must be explicitly
+reviewed.
+
+```typescript
+// FLAKINESS PATTERN: AI-generated tests often use sleep() as a first-line waiting strategy
+// because they pattern-match from Stack Overflow examples and training data
+// AI-generated (common pattern to reject):
+it('processes async job', async () => {
+  jobQueue.enqueue({ type: 'email', to: 'user@example.com' });
+  await new Promise(resolve => setTimeout(resolve, 1000)); // AI sleep pattern — reject this
+  expect(emailSpy).toHaveBeenCalled();
+});
+
+// Corrected version — explicit condition polling
+it('processes async job', async () => {
+  jobQueue.enqueue({ type: 'email', to: 'user@example.com' });
+  // waitFor polls until assertion passes — no arbitrary wait
+  await waitFor(() => expect(emailSpy).toHaveBeenCalledWith(
+    expect.objectContaining({ to: 'user@example.com' })
+  ), { timeout: 5000 });
+});
+```
+
+```typescript
+// FLAKINESS PATTERN: AI-generated tests often assert on `.toEqual(expect.any(String))`
+// for IDs, which passes even when the code is broken as long as something string-like is returned
+// AI-generated (overly permissive — hides flakiness):
+it('creates an order', async () => {
+  const order = await OrderService.create({ items: ['sku-1'] });
+  expect(order.id).toEqual(expect.any(String)); // passes even if id is '' or 'undefined'
+  expect(order.createdAt).toEqual(expect.any(String)); // passes for any string
+});
+
+// Corrected version — specific assertions that surface real failures
+it('creates an order with valid ID and timestamp', async () => {
+  const order = await OrderService.create({ items: ['sku-1'] });
+  // Assert format, not just type — surfaces actual implementation bugs
+  expect(order.id).toMatch(/^ORD-[A-Z0-9]{8}$/);
+  // Use a date range check for createdAt — not just "any string"
+  const createdAt = new Date(order.createdAt);
+  expect(createdAt).toBeInstanceOf(Date);
+  expect(createdAt.getTime()).toBeGreaterThan(Date.now() - 5000); // within last 5 seconds
+});
+```
+
+```typescript
+// FLAKINESS PATTERN: AI-generated mocks often reset state globally
+// but fail to scope resets to individual tests, causing cross-test pollution
+// AI-generated (insufficient scoping):
+const mockDb = jest.mock('./db'); // module-level — shared across tests
+beforeAll(() => jest.resetAllMocks()); // resets once — not between tests
+
+// Corrected pattern:
+jest.mock('./db');
+
+beforeEach(() => {
+  jest.resetAllMocks(); // reset BEFORE each test — clean slate
+});
+
+afterEach(() => {
+  jest.restoreAllMocks(); // restore spies AFTER each test
+});
+```
+
 ---
 
 ## Anti-Patterns
@@ -1889,6 +2476,18 @@ describe('UserService — test doubles taxonomy', () => {
 **What:** Setting `jest.setTimeout(60000)` globally to silence timeout failures.
 **Why harmful:** Slow tests are flakiness precursors — they pass under CI load today and timeout tomorrow when the runner is slower. A global timeout increase hides this signal. Fix: set per-operation timeouts with `withTimeout()` or Playwright's per-test `timeout` option, and audit tests that need more than 5 seconds.
 
+### AP15 — AI-Generated Test Overly Permissive Assertions [community]
+**What:** AI-generated tests use `expect.any(String)`, `expect.anything()`, or `toBeDefined()` where specific assertions are needed.
+**Why harmful:** Overly permissive assertions pass even when the code under test is broken — they provide a false green. A test that asserts `expect(order.id).toBeDefined()` passes whether `order.id` is `"ORD-12345"` or `"undefined"` or `""`. These "pseudo-tests" mask real defects and erode the suite's ability to catch regressions. Review all AI-generated tests for assertion precision before committing.
+
+### AP16 — Running E2E Tests in Watch Mode Without State Reset [community]
+**What:** Using `npx playwright test --watch` or `npx vitest --watch` for E2E/integration tests that mutate real databases without resetting state between watch-mode re-runs.
+**Why harmful:** Watch mode re-runs tests without re-running `globalSetup`. After the first run, the database contains rows created by the previous run. Subsequent runs encounter constraint violations, stale data, or unexpected record counts — failures that don't reproduce in CI (where `globalSetup` always runs fresh). Fix: ensure integration tests use `beforeEach` truncation and verify `globalSetup` runs on every watch-mode re-run, or disable watch mode for integration tests entirely.
+
+### AP17 — React Query / TanStack Query Cache Shared Between Tests [community]
+**What:** Tests that use a module-level or globally-configured `QueryClient` instance, allowing React Query's in-memory cache to accumulate across tests.
+**Why harmful:** A test that successfully fetches `GET /api/users/1` populates the React Query cache. The next test renders the same component and receives the *cached* response instead of making a fresh request. Tests then pass or fail depending on execution order and which queries were previously resolved. Fix: create a new `QueryClient` instance in `beforeEach` with `staleTime: Infinity` and `retry: false`.
+
 ---
 
 ## Real-World Gotchas [community]
@@ -1941,6 +2540,27 @@ describe('UserService — test doubles taxonomy', () => {
 16. **Unsupported `AbortSignal` in older Node.js versions causes intermittent hang-then-crash flakiness.** [community]
     Tests that pass `AbortSignal` to `fetch()`, `setTimeout()`, or custom async operations fail silently on Node.js < 18 (which shipped incomplete AbortSignal support) and hang until the process timeout kills the runner. This manifests as "tests that always pass locally (Node 20+) but sometimes timeout in CI" when CI runners use an older Node version. Fix: pin `"node": ">=20.0.0"` in `package.json` `engines`, configure Renovate/Dependabot to enforce it, and add `node --version` as the first CI step to detect mismatches immediately.
 
+17. **React Server Components (RSC) introduce async rendering flakiness in integration tests.** [community]
+    Next.js App Router components that are Server Components render asynchronously on the server. Tests using `@testing-library/react` or `renderToString` to test RSC-dependent pages often get stale HTML snapshots because the RSC payload hasn't been fully streamed. This manifests as tests that pass locally (warm server) but fail in CI (cold server, RSC payload slower). Fix: use Playwright E2E tests for RSC-dependent flows rather than unit/RTL-level testing; for unit-testing server-side logic, test the data-fetching functions directly without rendering.
+
+18. **tRPC procedure calls without proper test isolation cause shared router state flakiness.** [community]
+    tRPC routers tested with `createCallerFactory` share the same procedure registry. If one test modifies a middleware or overrides a procedure, subsequent tests in the same process see the modified router. Fix: create a fresh caller instance per test using `createCallerFactory(appRouter)(ctx)` in `beforeEach`, and never mutate the router definition in tests. Use dependency injection in middleware to swap implementations without router mutation.
+
+19. **Vite/Turbopack HMR interference with Vitest in watch mode.** [community]
+    In Vitest watch mode with a shared Vite dev server, Hot Module Replacement (HMR) can trigger test re-runs mid-test when source files are saved. If a test is asserting on a module that is simultaneously being HMR-updated, the module's state is inconsistent — the test sees a partially-updated module. This manifests as intermittent `TypeError: X is not a function` errors that disappear on re-run. Fix: set `server: { hmr: false }` in `vitest.config.ts` when running in CI, and be aware of this in local watch-mode debugging.
+
+20. **`localStorage` and `sessionStorage` leaking between JSDOM tests.** [community]
+    Jest/Vitest with JSDOM resets the virtual DOM between test files but, by default, does NOT reset `localStorage` or `sessionStorage`. Tests that write to `localStorage` (e.g., persisting auth tokens, feature flags, UI preferences) pollute subsequent tests in the same JSDOM environment, causing order-dependent failures. Fix: add `localStorage.clear(); sessionStorage.clear();` to `afterEach`, or configure Vitest with `setupFiles` to clear storage before each test. This is one of the most-reported flakiness sources in React application testing.
+
+21. **OpenTelemetry span collection creates async timing flakiness in integration tests.** [community]
+    Services instrumented with OpenTelemetry export spans asynchronously to a collector. Tests that assert "span X was created" fail intermittently because the span hasn't been exported yet when the assertion runs. The `BatchSpanProcessor` queues spans for async export — only the `SimpleSpanProcessor` exports synchronously. Fix for tests: replace `BatchSpanProcessor` with `InMemorySpanExporter` + `SimpleSpanProcessor` in test configuration, then assert on the in-memory exporter's spans directly after the operation completes.
+
+22. **Nx affected command (`nx affected --target=test`) produces different test selections per run.** [community]
+    `nx affected` computes which projects to test based on a git diff against a base branch. In CI, the base branch (`--base=origin/main`) can differ between runs if the main branch was updated between the PR's creation and the CI trigger. This produces different affected sets across re-runs, making it look like tests are flaky when actually different test suites are running. Fix: pin the base commit using `--base=$(git merge-base HEAD origin/main)` to ensure a consistent affected set across all runs for a given PR.
+
+23. **Playwright `--grep` flag with regex metacharacters in test names causes non-deterministic filtering.** [community]
+    Test names containing parentheses, dots, or other regex metacharacters cause `--grep` patterns to match more (or fewer) tests than expected. For example, a test named `renders Component(v2)` is matched by `--grep="Component"` but also by `--grep="Component(v2)"` which a developer might expect to match that test only — but `(v2)` in regex means "optional v2". This leads to some tests unexpectedly being excluded or included in filtered runs. Fix: escape all test names that will be used with `--grep`, or use `--grep-invert` combined with `test.only` for targeted runs.
+
 ---
 
 ### When quarantine-and-fix works well
@@ -1954,6 +2574,23 @@ describe('UserService — test doubles taxonomy', () => {
 - Monorepos where multiple teams share a test runner: no single owner for the backlog
 
 **Alternative: Flakiness budget + hard cap.** Google enforces that any test exceeding a flakiness threshold is automatically disabled and must be fixed before re-enabling. This is stricter than quarantine but prevents backlog growth. Implementation: a CI job that reads retry counts from JUnit XML output and fails the build if any single test's flakiness rate exceeds 3%.
+
+**Flakiness Tolerance Gradient by Test Level**
+
+Not all flakiness is equally unacceptable. A graduated tolerance model aligns expectations with
+reality across the test pyramid:
+
+| Test Level | Acceptable Flakiness Rate | Retry Budget | Primary Flakiness Source |
+|------------|--------------------------|--------------|--------------------------|
+| Unit (Jest/Vitest) | 0% — zero tolerance | 0 retries | Shared singletons, fake timer leaks |
+| Integration (API, DB) | < 1% | 1 retry | Connection pool exhaustion, migration timing |
+| Contract (Pact) | < 1% | 1 retry | Provider state setup timing |
+| Component (Playwright CT, Storybook) | < 2% | 2 retries | Mount timing, animation frames |
+| E2E (Playwright, Cypress) | < 5% | 2–3 retries | Network, auth, SPA routing |
+| Visual Regression (Chromatic) | < 5% | Manual approval | Animation, font rendering |
+
+**Why the gradient matters:** Setting a single flakiness SLO across all test levels is counterproductive.
+Unit tests should be perfectly deterministic — zero tolerance is appropriate. E2E tests interact with real browsers, real networks, and complex timing; some flakiness is unavoidable. Collapsing these into a single metric creates pressure to lower E2E quality to meet unit-level standards, or to tolerate unit flakiness by citing E2E norms. Track and SLO each level independently.
 
 **Alternative: Test hermetic environments.** Instead of mocking, spin up a real DB and real service in a container per test run (Testcontainers for Node). Eliminates most shared-state and external-dep flakiness at the cost of slower setup (~5–30s per suite). Worthwhile for integration tests.
 
@@ -2012,8 +2649,48 @@ it('saves and retrieves a user', async () => {
 
 ---
 
-## Key Resources
+## Team Workflow: Flakiness Triage Process
 
+A documented triage process prevents ad-hoc decisions and ensures flakiness is addressed
+systematically rather than reactively.
+
+### Sprint-level flakiness triage (recommended cadence: weekly)
+
+1. **Monday**: Quarantine review issue is created automatically (Pattern 25). Team triages open quarantine items in the sprint planning meeting.
+2. **Daily**: Any test that fails on retry is flagged in the CI summary (Pattern 19). The developer who triggered the run owns the triage.
+3. **Triage decision tree**: For any newly flaky test:
+   - Run the diagnostic decision tree (see "Flakiness Diagnostic Decision Tree" section above)
+   - If root cause is clear: fix immediately, remove quarantine tag
+   - If root cause is unclear: quarantine with `[QUARANTINE]` tag, open tracking issue with `Owner:` and `SLA:` fields, and add to the flakiness backlog
+   - If flakiness rate > 10% (extremely disruptive): suspend the test (`it.skip`) immediately, open P1 issue
+4. **Metrics review**: Every sprint, review the flakiness SLO report (Pattern 24). If rate is trending up, dedicate capacity to flakiness reduction.
+
+### Quarantine tag format (enforced by PR review checklist)
+
+```
+// [QUARANTINE] <one-line description of the flakiness symptom>
+// Root cause: <known or suspected root cause family — timing/shared state/external dep/order/randomness>
+// Opened: YYYY-MM-DD | Owner: @github-handle | SLA: YYYY-MM-DD
+// Issue: <ticket link>
+// Repro: <command to reproduce locally, e.g., npx jest --testNamePattern="..."  --runInBand --count=5>
+it.skip('[QUARANTINE] inventory count matches after concurrent orders', async () => {
+  // ...
+});
+```
+
+The `Repro:` line is crucial — without it, the engineer who takes ownership of the fix
+cannot reproduce the issue, and the quarantine becomes permanent.
+
+### Flakiness fix rotation
+
+Teams that successfully reduce flakiness long-term consistently have:
+- A dedicated "flakiness fix" rotation (1 engineer per sprint, rotating monthly)
+- A rule that no new tests are merged if the quarantine backlog exceeds the threshold (Pattern 3)
+- A retrospective action when the flakiness rate increases by > 2% in a single sprint
+
+---
+
+## Key Resources
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
 | Eradicating Non-Determinism in Tests | Official | https://martinfowler.com/articles/nonDeterminism.html | Fowler's canonical taxonomy of flakiness root causes |
@@ -2035,3 +2712,30 @@ it('saves and retrieves a user', async () => {
 | @pact-foundation/pact | Official | https://docs.pact.io/implementation_guides/javascript | Consumer-driven contract testing — provider state handler patterns |
 | ISTQB CTFL 4.0 Syllabus | Official | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology: test case, test level, defect, test suite |
 | eslint-plugin-jest | Community | https://github.com/jest-community/eslint-plugin-jest | ESLint rules: `valid-expect`, `no-conditional-expect`, `no-floating-promises` |
+| TanStack Query Testing | Official | https://tanstack.com/query/latest/docs/framework/react/guides/testing | Per-test QueryClient isolation, disable retry and staleTime |
+| Cypress Best Practices | Official | https://docs.cypress.io/guides/references/best-practices | Cypress-specific: intercept ordering, cy.clock(), retry-ability |
+| Vitest Browser Mode | Official | https://vitest.dev/guide/browser/ | Vitest 2.x browser mode setup, isolation config, Playwright provider |
+| Playwright CT (React) | Official | https://playwright.dev/docs/test-components | Component testing with Playwright — mount timing, network mocking |
+| @testing-library/react — Async Queries | Official | https://testing-library.com/docs/queries/about#types-of-queries | findBy vs getBy vs queryBy — choosing the right async query |
+| Chromatic CI Configuration | Official | https://www.chromatic.com/docs/ci | Full CI setup for visual testing with animation freeze |
+| Nx Affected Tests | Official | https://nx.dev/ci/features/affected | `nx affected --target=test` with consistent base commit selection |
+
+---
+
+## Quick Reference: Flakiness Pattern → Fix
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Fails then passes on retry | Timing | Pattern 4 (waitFor), Pattern 5 (fake timers) | AP2 (sleep()) |
+| Passes alone, fails with others | Shared state / Order-dependency | Pattern 6 (beforeEach reset), Pattern 10 (shard detection) | AP3 (shared DB) |
+| Fails only in CI | Environment: TZ, ports, locale | Pattern 16 (free port), set TZ=UTC | AP4 (real network calls) |
+| Fails with different test counts | Resource leak (fd, memory) | Pattern 12 (using/cleanup) | AP14 (global setTimeout) |
+| Fails after upgrade | Dependency version conflict | Pin dependency version; migrate atomically | AP13 (mocks vs fakes) |
+| Visual regression flakiness | Animation / font rendering | Pattern 14 (Chromatic), storybook freeze | AP10 (no animation freeze) |
+| Port already in use | Hard-coded port | Pattern 16 (getFreePort) | AP11 (hardcoded port) |
+| Snapshot always differs | Non-deterministic values in snapshot | Pattern 13 (snapshot scrubber) | AP9 (dynamic snapshots) |
+| React Query returns stale data | Shared QueryClient | Pattern 31 (per-test QueryClient) | AP17 (shared QueryClient) |
+| localStorage bleeds between tests | No storage reset | Pattern 32 (storage clear) | No afterEach clear |
+| Pact interaction fails intermittently | Fire-and-forget state handler | Pattern 17 (await state handlers) | Unawaited DB insert |
+| Migration fails in parallel workers | DB migration race | Pattern 18 (advisory lock) | No distributed lock |
+| WebSocket message missed | Connection timing race | Pattern 15 (explicit sync) | sleep() before send |
