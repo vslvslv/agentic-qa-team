@@ -118,6 +118,20 @@ if [ "$INSTALL_SKILLS" = "1" ]; then
   echo "Skill symlinks: Installed: $INSTALLED  Updated: $UPDATED  Skipped: $SKIPPED"
 fi
 
+# Install QA agents to ~/.claude/agents/
+echo ""
+echo "Installing QA agents..."
+mkdir -p "$HOME/.claude/agents"
+_AGENTS_INSTALLED=0
+for _agent_file in "$REPO_DIR/.claude/agents"/*.md; do
+  [ -f "$_agent_file" ] || continue
+  _agent_name=$(basename "$_agent_file")
+  ln -sf "$_agent_file" "$HOME/.claude/agents/$_agent_name"
+  echo "  Linked agent: $_agent_name"
+  _AGENTS_INSTALLED=$((_AGENTS_INSTALLED + 1))
+done
+echo "Agents installed: $_AGENTS_INSTALLED"
+
 # ---- Stop hook (re-run nudge) ---------------------------------------------------
 HOOK_SCRIPT="$REPO_DIR/bin/qa-team-suggest-rerun"
 HOOK_MATCHER="main-agent"

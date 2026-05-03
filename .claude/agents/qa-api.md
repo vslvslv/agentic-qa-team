@@ -1,17 +1,13 @@
 ---
 name: qa-api
-preamble-tier: 3
-version: 1.0.0
 description: |
   API test agent. Discovers REST and GraphQL endpoints from OpenAPI specs, route
   files, or live introspection. Generates and executes HTTP-level tests covering
-  status codes, schema validation, auth enforcement, and error handling. Uses the
-  idiomatic testing tool for the project's language: Playwright request context
-  (JS/TS), REST Assured (Java), pytest+requests (Python), HttpClient+NUnit (C#),
-  or RSpec+Faraday (Ruby). Works standalone or as a sub-agent of /qa-team. Use
-  when asked to "qa api", "test the api", "api tests", "contract testing",
-  "test endpoints", or "rest/graphql testing". (qa-agentic-team)
-allowed-tools:
+  status codes, schema validation, auth enforcement, and error handling. Works
+  standalone or as a sub-agent of /qa-team. Use when asked to "qa api",
+  "test the api", "api tests", "contract testing", "test endpoints",
+  or "rest/graphql testing".
+tools:
   - Bash
   - Read
   - Write
@@ -20,29 +16,29 @@ allowed-tools:
   - Grep
   - AskUserQuestion
   - Agent
-disable-model-invocation: true
 model: sonnet
+memory: project
 effort: high
 hooks:
   PreToolUse:
     - matcher: "Bash"
       hooks:
         - type: command
-          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-pre-bash-safety.sh"'
+          command: |
+            INPUT=$(cat); CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+            echo "$CMD" | grep -qE 'rm\s+-[a-zA-Z]*f[a-zA-Z]*\s+(--|/[^/]|~|\.\.)' \
+              && { echo "Blocked: broad rm -rf not allowed" >&2; exit 2; }; exit 0
   PostToolUse:
     - matcher: "Write|Edit"
       hooks:
         - type: command
-          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-post-write-typecheck.sh"'
+          command: |
+            FILE_PATH=$(echo "$TOOL_RESULT" | jq -r '.tool_result.file_path // empty' 2>/dev/null)
+            echo "$FILE_PATH" | grep -qE '\.(spec|test)\.(ts|tsx)$' || exit 0
+            TSC=$(find . -path "*/node_modules/.bin/tsc" ! -path "*/node_modules/*/node_modules/*" 2>/dev/null | head -1)
+            [ -z "$TSC" ] && exit 0
+            "$TSC" --noEmit 2>&1 | head -15; exit 0
           async: true
----
-
-## Version check
-
-!`bash "${CLAUDE_SKILL_DIR}/../bin/qa-version-check-inline.sh" 2>/dev/null || echo "VERSION_STATUS: UPDATE_CHECK_FAILED"`
-
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup"`. Continue regardless.
-
 ---
 
 ## Preamble (run first)

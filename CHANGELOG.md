@@ -5,6 +5,71 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.6.0.0 — 2026-05-03 — Architecture upgrade: subagents, hooks, DRY version check, memory
+
+### Subagent definitions (`.claude/agents/`)
+- Created `.claude/agents/qa-web.md`, `qa-api.md`, `qa-mobile.md`, `qa-perf.md`, `qa-visual.md`, `qa-audit.md`
+- Each agent: `model: sonnet`, `memory: project`, `effort: high` (medium for `qa-visual`), inline safety hooks
+- `bin/setup` updated to symlink agents to `~/.claude/agents/`
+
+### Skill frontmatter additions (6 runner skills)
+- `disable-model-invocation: true` — prevents accidental auto-triggering
+- `model: sonnet` — makes model selection explicit
+- `effort: high` (`medium` for `qa-visual`) — controls reasoning depth
+- `hooks.PreToolUse` — blocks broad `rm -rf` commands via `bin/hooks/qa-pre-bash-safety.sh`
+- `hooks.PostToolUse` — async `tsc --noEmit` after spec writes via `bin/hooks/qa-post-write-typecheck.sh`
+- Added `disable-model-invocation: true` to `qa-team` frontmatter
+
+### DRY version check
+- Created `bin/qa-version-check-inline.sh`
+- Replaced 45-line version check block in all 9 `.tmpl` files with 4-line `!bash` injection
+- Saves ~405 lines of duplicate code across the repo
+
+### Agent memory instructions
+- All 6 runner skills now include `## Agent Memory` section
+- Instructions to maintain `.claude/agent-memory/<domain>/MEMORY.md` across runs
+- Accumulates: framework version, auth patterns, known flaky scenarios, base URL, infrastructure quirks
+
+### New files
+- `bin/hooks/qa-pre-bash-safety.sh` — blocks destructive `rm -rf` in QA agent context
+- `bin/hooks/qa-post-write-typecheck.sh` — async TypeScript type-check after spec writes
+- `bin/qa-version-check-inline.sh` — DRY version check helper for `!bash` injection
+- `.claude/agents/qa-{web,api,mobile,perf,visual,audit}.md` — isolated subagent definitions
+- `CLAUDE.md` — project contributor guide (architecture, build, version bumping, adding skills)
+
+---
+
+## v1.5.11.0 — 2026-05-03 — BL-001 CI grounding · BL-002 anti-sycophancy gate · BL-003 diagnose-then-fix (qa-web, qa-api, qa-mobile, qa-perf)
+
+### BL-001 — CI Grounding (`qa-web`, `qa-api`)
+
+Before generating new tests, run the existing test suite and capture its output. The generation phase uses this baseline to:
+- Skip endpoints/pages that already have passing coverage
+- Target failing tests with understanding of why they fail
+- Tag pre-existing failures so Phase 5 diagnosis can distinguish regressions from known issues
+
+- **`qa-web` Phase 1.5**: new `CI Grounding` phase — runs `playwright test`, `dotnet test`, or `cypress run` (branched on `_WEB_TOOL`); saves output to `$_TMP/qa-web-ci-ground.txt`; emits filtered pass/fail lines for generation context
+- **`qa-api` Phase 2.5**: new `CI Grounding` phase — runs appropriate runner for `_API_TOOL` (playwright/java/python/csharp/ruby); saves output to `$_TMP/qa-api-ci-ground.txt`; skips gracefully when no existing specs found
+
+### BL-002 — Anti-Sycophancy Quality Gate (`qa-web`, `qa-api`, `qa-mobile`)
+
+After generating tests and before executing them, all generated test blocks must pass a 3-criteria quality gate. Tests that fail are rewritten (not skipped). The gate prevents hollow tests that assert nothing meaningful, duplicate passing tests, or copy-paste templates with wrong URLs.
+
+- **`qa-web` Phase 2.5**: gate criteria: non-trivial assertion · real interaction coverage · failure sensitivity; bad/good TypeScript examples included
+- **`qa-api` Phase 3.5**: gate criteria: non-trivial body assertion · correct method+path · auth coverage (authenticated + 401 unauthenticated variant)
+- **`qa-mobile` Phase 3.5**: gate criteria: non-trivial assertion · real interaction (tap/input/swipe) · failure sensitivity; Detox/Maestro examples
+
+### BL-003 — Diagnose-Then-Fix (`qa-web`, `qa-api`, `qa-mobile`, `qa-perf`)
+
+When tests fail, the report requires a structured **Diagnosis** table before listing individual failures. The table forces the agent to articulate: what broke, what was expected, what happened, likely root cause, and whether the failure is pre-existing (cross-referenced against the CI grounding output) or a new regression.
+
+- **`qa-web` Phase 4 report**: mandatory `## Diagnosis` table when `EXIT_CODE != 0`; cross-references `$_TMP/qa-web-ci-ground.txt`
+- **`qa-api` Phase 5 report**: mandatory `## Diagnosis` table when `EXIT_CODE != 0`; cross-references `$_TMP/qa-api-ci-ground.txt`
+- **`qa-mobile` Phase 5 report**: mandatory `## Diagnosis` table when `EXIT_CODE != 0`
+- **`qa-perf` Phase 4 report**: mandatory `## Diagnosis` table when any threshold is violated; placed before `## Threshold Violations`
+
+---
+
 ## v1.5.10.1 — 2026-04-28 — qa-api: add RestSharp as C# HTTP client option
 
 - **`qa-api` preamble**: added `_CS_RESTSHARP` detection — greps `.csproj` files for RestSharp package reference; emits `CS_RESTSHARP: 1` when found, `CS_RESTSHARP: 0` otherwise

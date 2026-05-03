@@ -19,32 +19,28 @@ allowed-tools:
   - Grep
   - AskUserQuestion
   - Agent
+disable-model-invocation: true
+model: sonnet
+effort: high
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-pre-bash-safety.sh"'
+  PostToolUse:
+    - matcher: "Write|Edit"
+      hooks:
+        - type: command
+          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-post-write-typecheck.sh"'
+          async: true
 ---
 
 ## Version check
 
-```bash
-_TMP="${TEMP:-${TMP:-/tmp}}"
-_QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-mobile 2>/dev/null)" 2>/dev/null) || true
-[ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
-  _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
-  || echo "UPDATE_CHECK_FAILED: not found" )
-echo "VERSION_STATUS: $_QA_VER"
-_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
-_QA_SKIP_ASK=0
-if [ -f "$_QA_ASK_COOLDOWN" ]; then
-  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
-  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
-fi
-```
+!`bash "${CLAUDE_SKILL_DIR}/../bin/qa-version-check-inline.sh" 2>/dev/null || echo "VERSION_STATUS: UPDATE_CHECK_FAILED"`
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
-- Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
-- Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
-- If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
-- Continue regardless of choice.
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup"`. Continue regardless.
 
 ---
 
@@ -351,6 +347,23 @@ flows:
 - Blacklist analytics URLs with `device.setURLBlacklist([...])` to prevent idle-detection hangs
 - Narrow `disableSynchronization()` to smallest scope; always pair with `try/finally { enableSynchronization() }`
 
+## Phase 3.5 — Mobile Test Quality Gate
+
+Review every generated `it()` / `test()` / Maestro flow block before proceeding to execution. For each test, verify all three criteria:
+
+1. **Non-trivial assertion** — asserts more than just "element exists"; checks a visible state, label text, or navigation outcome
+2. **Real interaction coverage** — exercises at least one tap, text input, or swipe action (not just screen launch)
+3. **Failure sensitivity** — a deliberate breakage (wrong testID, removed element) would cause this test to fail
+
+If any test fails a criterion, rewrite it before proceeding:
+- Missing assertion → add `expect(element(by.id("..."))).toBeVisible()` / `assertVisible:` in Maestro
+- No interaction → add a tap or typeText that exercises the screen's primary action
+- Brittle selector → switch to `by.id(testID)` and coordinate with devs to add the testID if missing
+
+Log: `QUALITY GATE: rewrote "<test title>" — <reason>`
+
+**Do not proceed to Phase 4 until all generated tests pass the quality gate.**
+
 ## Phase 4 — Execute Tests
 
 **Detox:**
@@ -427,6 +440,16 @@ Write report to `$_TMP/qa-mobile-report.md`:
 | Login  | 3     | ✅ |
 | Home   | 2     | ❌ 1 fail |
 
+## Diagnosis
+*(Complete this section when EXIT_CODE != 0, before listing individual failures.)*
+| Field | Detail |
+|-------|--------|
+| What broke | <test name(s) and the assertion / step that failed> |
+| Expected | <what the test asserted — e.g., element visible, navigation completed, text present> |
+| Got | <what was actually rendered or returned — timeout, wrong screen, crash> |
+| Likely root cause | <testID missing / animation not disabled / API mock mismatch / device state> |
+| Pre-existing? | yes — already failing before this session / no — regression introduced this session |
+
 ## Failures
 <list each failure with screen name + error snippet>
 
@@ -448,3 +471,14 @@ Write report to `$_TMP/qa-mobile-report.md`:
 - **Clean state** — use `device.launchApp({ newInstance: true })` or `launchApp` (Maestro) for fresh state
 - **Report even if build fails** — document what was blocked and why
 - **Never run `adb root` or modify system settings** on physical devices without explicit confirmation
+
+## Agent Memory
+
+After each run, update the memory file at `.claude/agent-memory/qa-mobile/MEMORY.md` (create if absent). Record:
+- Detected framework, version, and config file paths
+- Auth endpoint and credential format used
+- Recurring failures or known flaky scenarios
+- Base URL confirmed working
+- Any test infrastructure quirks discovered
+
+Read this file at the start of each run to skip re-detection of already-known facts.

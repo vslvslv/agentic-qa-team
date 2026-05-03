@@ -20,32 +20,28 @@ allowed-tools:
   - Grep
   - AskUserQuestion
   - Agent
+disable-model-invocation: true
+model: sonnet
+effort: high
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-pre-bash-safety.sh"'
+  PostToolUse:
+    - matcher: "Write|Edit"
+      hooks:
+        - type: command
+          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-post-write-typecheck.sh"'
+          async: true
 ---
 
 ## Version check
 
-```bash
-_TMP="${TEMP:-${TMP:-/tmp}}"
-_QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-api 2>/dev/null)" 2>/dev/null) || true
-[ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
-  _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
-  || echo "UPDATE_CHECK_FAILED: not found" )
-echo "VERSION_STATUS: $_QA_VER"
-_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
-_QA_SKIP_ASK=0
-if [ -f "$_QA_ASK_COOLDOWN" ]; then
-  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
-  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
-fi
-```
+!`bash "${CLAUDE_SKILL_DIR}/../bin/qa-version-check-inline.sh" 2>/dev/null || echo "VERSION_STATUS: UPDATE_CHECK_FAILED"`
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
-- Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
-- Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
-- If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
-- Continue regardless of choice.
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup"`. Continue regardless.
 
 ---
 
@@ -239,6 +235,42 @@ _TOKEN=$(echo "$_AUTH_RESP" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
 [ -n "$_TOKEN" ] && echo "AUTH: ok" || echo "AUTH: failed — proceeding with unauthenticated tests only"
 ```
 
+## Phase 2.5 — CI Grounding
+
+Run existing API tests before generating new ones. Capture the current baseline so Phase 3 targets only untested endpoints and actual failures — not duplication.
+
+```bash
+_CI_GROUND_FILE="$_TMP/qa-api-ci-ground.txt"
+_EXISTING_API_SPECS=$(find . \( \
+  -path "*/api-tests/*.spec.ts" -o -path "*/tests/api*.spec.ts" \
+  -o -path "*/spec/api/*.rb" -o -name "*ApiTest.java" -o -name "*ApiTest.cs" \
+  \) ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | wc -l | tr -d ' ')
+if [ "$_EXISTING_API_SPECS" -gt 0 ]; then
+  echo "CI_GROUND: running $_EXISTING_API_SPECS existing API spec file(s)"
+  case "$_API_TOOL" in
+    playwright) timeout 120 npx playwright test --reporter=list 2>&1 | tail -60 > "$_CI_GROUND_FILE" || true ;;
+    java)
+      if command -v mvn &>/dev/null && [ -f pom.xml ]; then
+        timeout 180 mvn test -Dtest="*ApiTest" -q 2>&1 | tail -60 > "$_CI_GROUND_FILE" || true
+      elif command -v gradle &>/dev/null; then
+        timeout 180 gradle test --tests "*ApiTest" 2>&1 | tail -60 > "$_CI_GROUND_FILE" || true
+      fi ;;
+    python)  timeout 120 pytest tests/ -v -k "api" --tb=short 2>&1 | tail -60 > "$_CI_GROUND_FILE" || true ;;
+    csharp)  timeout 120 dotnet test --filter "Category=Api" --logger "console;verbosity=minimal" 2>&1 | tail -60 > "$_CI_GROUND_FILE" || true ;;
+    ruby)    timeout 120 bundle exec rspec spec/api/ --format progress 2>&1 | tail -60 > "$_CI_GROUND_FILE" || true ;;
+    *)       echo "CI_GROUND_STATUS: skipped (no runner matched)" | tee "$_CI_GROUND_FILE" ;;
+  esac
+  grep -E "failed|passed|error|FAIL|PASS|✓|✗|×|ERROR|PENDING" "$_CI_GROUND_FILE" 2>/dev/null | head -30
+else
+  echo "CI_GROUND_STATUS: no existing API specs found — full generation"
+fi
+```
+
+Use this output in Phase 3 to:
+- Skip generating tests for endpoints that already have passing coverage
+- Target endpoints with failing tests: understand why they fail and write tests that capture the correct contract
+- Tag pre-existing failures as `CI_GROUND_FAIL` so Phase 5 diagnosis can distinguish regressions from known failures
+
 ## Phase 3 — Generate API Tests
 
 ### DELETE endpoint policy (read before writing any test)
@@ -316,6 +348,23 @@ _TSC=$(find . -path "*/node_modules/.bin/tsc" ! -path "*/node_modules/*/node_mod
 [ -n "$_TSC" ] && "$_TSC" --noEmit 2>&1 | grep -E "\.(spec|test)\." | head -20 || echo "tsc not found"
 ```
 
+## Phase 3.5 — API Test Quality Gate
+
+Review every generated `it()` / `test()` / `[Test]` / `[Fact]` block before execution. For each test, verify all three criteria:
+
+1. **Non-trivial assertion** — asserts more than just HTTP status code; checks at minimum one response body field, header, or schema shape
+2. **Correct method + path** — uses the exact endpoint from the Phase 1 inventory; not a copy-pasted template URL
+3. **Auth coverage** — protected endpoints have both an authenticated (happy path) test and an unauthenticated `401` test
+
+If any test fails a criterion, rewrite it before proceeding:
+- Missing body assertion → add `expect(body).toHaveProperty('id')` / `assert response.json()['id']`
+- Wrong URL → fix to match the Phase 1 inventory
+- Missing `401` test → add an unauthenticated variant using the `anonymous()` client from the patterns guide
+
+Log: `QUALITY GATE: rewrote "<test title>" — <reason>`
+
+**Do not proceed to Phase 4 until all generated tests pass the quality gate.**
+
 ## Phase 4 — Execute Tests
 
 Dispatch to the correct runner based on `_API_TOOL`:
@@ -385,6 +434,18 @@ Write report to `$_TMP/qa-api-report.md`:
 | GET /api/users | 2 | ✅ | ✅ |
 | POST /api/users | 3 | ✅ | ❌ |
 
+## Diagnosis
+*(Complete this section when EXIT_CODE != 0, before listing individual failures.)*
+| Field | Detail |
+|-------|--------|
+| What broke | <endpoint(s) and assertion type that failed — e.g., POST /api/users expected 201, got 400> |
+| Expected | <status code, response shape, or header the test asserted> |
+| Got | <actual response — status, body excerpt, or error message> |
+| Likely root cause | <validation rule changed / auth middleware drift / DB constraint / schema mismatch> |
+| Pre-existing? | yes — also failed in CI grounding run (`$_TMP/qa-api-ci-ground.txt`) / no — regression introduced this session |
+
+When `EXIT_CODE != 0`, the **Diagnosis** section is mandatory — complete it before listing individual failures. Cross-reference `$_TMP/qa-api-ci-ground.txt` to determine if each failure is pre-existing or a new regression.
+
 ## Failures
 <list each failure with endpoint + error snippet>
 
@@ -405,3 +466,14 @@ Write report to `$_TMP/qa-api-report.md`:
 - **Cleanup everything you create** — track IDs of all created resources and delete them in suite teardown; lifecycle tests that exercise DELETE must remove their ID from the tracking list immediately after asserting the delete, so teardown does not double-delete
 - **Idempotent test data** — use unique, timestamped values (e.g. `test-{timestamp}@example.com`) so parallel runs do not collide
 - **Report even if execution fails** — always write the report regardless of exit code
+
+## Agent Memory
+
+After each run, update the memory file at `.claude/agent-memory/qa-api/MEMORY.md` (create if absent). Record:
+- Detected framework, version, and config file paths
+- Auth endpoint and credential format used
+- Recurring failures or known flaky scenarios
+- Base URL confirmed working
+- Any test infrastructure quirks discovered
+
+Read this file at the start of each run to skip re-detection of already-known facts.

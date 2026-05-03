@@ -38,7 +38,9 @@ Thumbs.db
 .idea/
 *.swp
 
-# Claude Code internal / eval workspace
-.claude/
+# Claude Code internal / eval workspace — ignore contents but track agents/
+.claude/*
+!.claude/agents/
+!.claude/agents/*.md
 qa-refine-workspace/
 

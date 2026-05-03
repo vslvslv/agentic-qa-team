@@ -17,32 +17,28 @@ allowed-tools:
   - Grep
   - AskUserQuestion
   - Agent
+disable-model-invocation: true
+model: sonnet
+effort: high
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-pre-bash-safety.sh"'
+  PostToolUse:
+    - matcher: "Write|Edit"
+      hooks:
+        - type: command
+          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-post-write-typecheck.sh"'
+          async: true
 ---
 
 ## Version check
 
-```bash
-_TMP="${TEMP:-${TMP:-/tmp}}"
-_QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-web 2>/dev/null)" 2>/dev/null) || true
-[ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
-  _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
-  || echo "UPDATE_CHECK_FAILED: not found" )
-echo "VERSION_STATUS: $_QA_VER"
-_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
-_QA_SKIP_ASK=0
-if [ -f "$_QA_ASK_COOLDOWN" ]; then
-  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
-  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
-fi
-```
+!`bash "${CLAUDE_SKILL_DIR}/../bin/qa-version-check-inline.sh" 2>/dev/null || echo "VERSION_STATUS: UPDATE_CHECK_FAILED"`
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
-- Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
-- Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
-- If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
-- Continue regardless of choice.
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup"`. Continue regardless.
 
 ---
 
@@ -209,6 +205,50 @@ From analysis, build a **page inventory**:
 - Auth required (yes/no)
 - Priority: `critical` | `important` | `nice-to-have`
 
+## Phase 1.5 — CI Grounding
+
+Before generating new tests, capture the current state of the existing suite so generation targets real gaps and failing paths — not scenarios that already pass.
+
+```bash
+_CI_GROUND_FILE="$_TMP/qa-web-ci-ground.txt"
+echo "--- CI GROUNDING ---"
+
+_EXISTING_SPECS=$(find . \( \
+  -path "*/e2e/*.spec.ts" -o -path "*/tests/*.spec.ts" \
+  -o -path "*/cypress/**/*.cy.ts" -o -path "*/cypress/**/*.cy.js" \
+  -o -name "*Tests.cs" -o -name "*Test.cs" -o -name "*Spec.cs" \
+  \) ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | wc -l | tr -d ' ')
+echo "EXISTING_SPECS: $_EXISTING_SPECS"
+
+if [ "$_EXISTING_SPECS" -gt 0 ] && [ "$_STATUS" = "200" ]; then
+  case "$_WEB_TOOL" in
+    playwright)
+      timeout 120 npx playwright test --reporter=list 2>&1 | tail -60 > "$_CI_GROUND_FILE" || true
+      ;;
+    playwright-dotnet|selenium-dotnet)
+      timeout 120 dotnet test --logger "console;verbosity=minimal" 2>&1 | tail -60 > "$_CI_GROUND_FILE" || true
+      ;;
+    cypress)
+      timeout 120 npx cypress run --headless --reporter list 2>&1 | tail -60 > "$_CI_GROUND_FILE" || true
+      ;;
+    *)
+      echo "CI_GROUND_STATUS: skipped (no runner matched)" | tee "$_CI_GROUND_FILE"
+      ;;
+  esac
+  echo "CI_GROUND_STATUS: captured"
+  grep -E "failed|passed|error|FAIL|PASS|✓|✗|×" "$_CI_GROUND_FILE" | head -30
+else
+  echo "CI_GROUND_STATUS: skipped (no existing specs or app not running)" | tee "$_CI_GROUND_FILE"
+fi
+```
+
+Use the CI grounding output when generating tests in Phase 2:
+- **Failures found** → generate tests that reproduce or specifically cover the failing paths first
+- **All passing** → focus generation on uncovered pages/flows from the Phase 1 inventory
+- **No existing specs** → generate a full baseline test suite
+
+---
+
 ## Phase 2 — Load Tool Patterns & Generate Tests
 
 Read the tool-specific patterns file for the selected `_WEB_TOOL`:
@@ -251,6 +291,39 @@ Read existing spec files first — append new test blocks, never delete existing
 _TSC=$(find . -path "*/node_modules/.bin/tsc" ! -path "*/node_modules/*/node_modules/*" | head -1)
 [ -n "$_TSC" ] && "$_TSC" --noEmit 2>&1 | grep -E "\.(spec|test|cy)\." | head -20 || echo "tsc not found"
 ```
+
+## Phase 2.5 — Spec Quality Gate
+
+Review every generated `it()` / `test()` / `[Test]` / `[Fact]` block before proceeding to execution. For each test, verify all three criteria:
+
+1. **Non-trivial assertion** — the test asserts something meaningful (a specific value, a visible element, a text match). Reject tests that only assert `expect(true).toBe(true)` or assert page loaded without verifying any content.
+2. **Real interaction coverage** — the test exercises an actual user action (form submit, button click, navigation, input). Reject tests that navigate to a URL but never interact with or assert on its content.
+3. **Failure sensitivity** — ask: "If this feature broke, would this test catch it?" If no, rewrite.
+
+For each test block that **fails the gate**:
+- Identify which criterion it fails
+- Rewrite to add a meaningful assertion or interaction step
+- Log: `QUALITY GATE: rewrote "<test title>" — <reason>`
+
+**Do not proceed to Phase 3 until all generated tests pass the quality gate.**
+
+Bad (fails gate — no assertion on content):
+```typescript
+it("renders the dashboard", async () => {
+  await page.goto("/dashboard"); // would pass even if page returns 500
+});
+```
+
+Good (passes gate):
+```typescript
+it("renders the dashboard", async () => {
+  await page.goto("/dashboard");
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  await expect(page.getByTestId("stats-panel")).toBeVisible();
+});
+```
+
+---
 
 ## Phase 3 — Execute Tests
 
@@ -341,6 +414,16 @@ Write report to `$_TMP/qa-web-report.md`:
 - Framework: Playwright / Cypress / Selenium
 - Base URL: <url>
 
+## Diagnosis
+*(Complete this section when EXIT_CODE != 0, before listing individual failures.)*
+| Field | Detail |
+|-------|--------|
+| What broke | <test name(s) and assertion type that failed> |
+| Expected | <what the test asserted — e.g., element visible, status 200, text present> |
+| Got | <what was actually returned or rendered> |
+| Likely root cause | <selector changed / API contract drift / timing / env config mismatch> |
+| Pre-existing? | yes — also failed in CI grounding run / no — regression introduced this session |
+
 ## Test Results
 | Test | Status | Duration |
 |------|--------|----------|
@@ -353,6 +436,8 @@ Write report to `$_TMP/qa-web-report.md`:
 |-----------|-------|--------|
 ```
 
+When `EXIT_CODE != 0`, the **Diagnosis** section is mandatory — complete it before listing individual failures. Cross-reference `$_TMP/qa-web-ci-ground.txt` to determine if each failure is pre-existing or a new regression. Never skip straight to listing failures.
+
 Print report path. If failures exist: "Found N failing web tests. Run /investigate to diagnose?"
 
 ## Important Rules
@@ -361,3 +446,14 @@ Print report path. If failures exist: "Found N failing web tests. Run /investiga
 - **Stable selectors only** — role, label, testid, data-cy — never raw CSS classes
 - **Report even if execution fails** — always write the report file regardless of outcome
 - **Auth setup is a prerequisite** — create it before running protected tests
+
+## Agent Memory
+
+After each run, update the memory file at `.claude/agent-memory/qa-web/MEMORY.md` (create if absent). Record:
+- Detected framework, version, and config file paths
+- Auth endpoint and credential format used
+- Recurring failures or known flaky scenarios
+- Base URL confirmed working
+- Any test infrastructure quirks discovered
+
+Read this file at the start of each run to skip re-detection of already-known facts.

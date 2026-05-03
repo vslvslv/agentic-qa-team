@@ -18,32 +18,28 @@ allowed-tools:
   - Grep
   - AskUserQuestion
   - Agent
+disable-model-invocation: true
+model: sonnet
+effort: medium
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-pre-bash-safety.sh"'
+  PostToolUse:
+    - matcher: "Write|Edit"
+      hooks:
+        - type: command
+          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-post-write-typecheck.sh"'
+          async: true
 ---
 
 ## Version check
 
-```bash
-_TMP="${TEMP:-${TMP:-/tmp}}"
-_QA_ROOT=$(dirname "$(readlink ~/.claude/skills/qa-visual 2>/dev/null)" 2>/dev/null) || true
-[ ! -f "${_QA_ROOT:-x}/VERSION" ] && \
-  _QA_ROOT="$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null)" || true
-_QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
-  || echo "UPDATE_CHECK_FAILED: not found" )
-echo "VERSION_STATUS: $_QA_VER"
-_QA_ASK_COOLDOWN="$_TMP/.qa-update-asked"
-_QA_SKIP_ASK=0
-if [ -f "$_QA_ASK_COOLDOWN" ]; then
-  _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
-  [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
-fi
-```
+!`bash "${CLAUDE_SKILL_DIR}/../bin/qa-version-check-inline.sh" 2>/dev/null || echo "VERSION_STATUS: UPDATE_CHECK_FAILED"`
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
-- Question: "qa-agentic-team update available (read vCURRENT → vNEW from VERSION_STATUS output). Update before running?"
-- Options: "Yes — update now (recommended)" | "No — run with current version"
-- Run `echo "$(date +%s)" > "$_QA_ASK_COOLDOWN"` to set a 10-minute cooldown (prevents repeated prompts in parallel sub-agents).
-- If user selects "Yes": `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup" && echo "Updated successfully."`
-- Continue regardless of choice.
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup"`. Continue regardless.
 
 ---
 
@@ -373,3 +369,14 @@ Write report to `$_TMP/qa-visual-report.md`:
 - **Pixel threshold is project-specific** — default `maxDiffPixels: 100` is conservative; adjust if too noisy
 - **Report even without comparison** — if baseline missing, document that baselines were created
 - **No full-page on infinite scroll** — use `clip` option for pages with endless scroll
+
+## Agent Memory
+
+After each run, update the memory file at `.claude/agent-memory/qa-visual/MEMORY.md` (create if absent). Record:
+- Detected framework, version, and config file paths
+- Auth endpoint and credential format used
+- Recurring failures or known flaky scenarios
+- Base URL confirmed working
+- Any test infrastructure quirks discovered
+
+Read this file at the start of each run to skip re-detection of already-known facts.
