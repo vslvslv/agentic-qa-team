@@ -123,6 +123,18 @@ find . \( -name "schema.graphql" -o -name "*.graphql" \) \
 grep -r "graphql\|ApolloServer\|type Query" --include="*.ts" -l \
   ! -path "*/node_modules/*" 2>/dev/null | head -5
 
+# gRPC detection
+echo "--- GRPC ---"
+_GRPC_HOST=""
+_GRPC_PORT=""
+for port in 50051 9090 8081; do
+  nc -z localhost $port 2>/dev/null && _GRPC_HOST="localhost" && _GRPC_PORT=$port && break
+done
+echo "GRPC: ${_GRPC_HOST:+$_GRPC_HOST:$_GRPC_PORT}"
+_PROTO_FILES=$(find . -name "*.proto" ! -path "*/node_modules/*" 2>/dev/null | head -5)
+echo "PROTO_FILES: $(echo "$_PROTO_FILES" | wc -l | tr -d ' ')"
+echo "$_PROTO_FILES"
+
 # --- MULTI-REPO SUPPORT ---
 # Set QA_EXTRA_PATHS (space-separated absolute paths) to scan tests in other repos
 # e.g.: export QA_EXTRA_PATHS="/path/to/api-tests-repo /path/to/integration-tests"
@@ -137,6 +149,12 @@ if [ -n "$QA_EXTRA_PATHS" ]; then
     echo "EXTRA_REPO $(basename "$_qr"): $_extra test files — $_qr"
   done
 fi
+
+# Chaos seed mode detection (BL-023)
+_SEED_MODE="${QA_SEED_MODE:-clean}"
+echo "SEED_MODE: $_SEED_MODE"
+[ "$_SEED_MODE" = "chaos" ] && \
+  echo "CHAOS_MODE: active — tests running against chaos-seeded data; new failures may indicate data-handling regressions"
 ```
 
 If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
@@ -144,6 +162,28 @@ If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent ph
 If `API_HEALTH` is `000`: warn the user. Ask whether to:
 1. Start the API first (provide the start command)
 2. Proceed in write-only mode (generate tests without executing them)
+
+## Phase 0.5 — Spectral OpenAPI Lint
+
+Run Spectral lint before executing any tests. Skip if no OpenAPI/Swagger spec found.
+
+```bash
+_SPEC_FILE=$(ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | head -1)
+if [ -n "$_SPEC_FILE" ]; then
+  echo "SPEC_FILE: $_SPEC_FILE"
+  if ! command -v spectral >/dev/null 2>&1; then
+    npx --yes @stoplight/spectral-cli lint "$_SPEC_FILE" 2>&1 | tail -30
+  else
+    spectral lint "$_SPEC_FILE" 2>&1 | tail -30
+  fi
+fi
+```
+
+Parse output:
+- `error` severity lines → **BLOCKING**: halt execution and report; do not run tests against a broken spec
+- `warning` severity lines → collect into `$_TMP/qa-api-spectral-warnings.txt`; surface in Phase 5 report
+
+If Spectral exits non-zero due to errors: abort with message "Spectral found spec errors — fix before running API tests."
 
 ## Phase 1 — Discover Endpoints
 
@@ -208,6 +248,33 @@ Build an **endpoint inventory**:
 - Request body schema (if POST/PUT/PATCH)
 - Priority: `critical` | `important` | `nice-to-have`
 
+## Phase 1.5 — GraphQL Schema Diff
+
+Skip if no GraphQL schema files found.
+
+```bash
+_GQL_SCHEMA=$(find . \( -name "schema.graphql" -o -name "*.graphql" \) \
+  ! -path "*/node_modules/*" 2>/dev/null | head -1)
+if [ -n "$_GQL_SCHEMA" ]; then
+  echo "GQL_SCHEMA: $_GQL_SCHEMA"
+  git show origin/main:"$_GQL_SCHEMA" > /tmp/qa-gql-baseline.graphql 2>/dev/null || \
+    git show HEAD~1:"$_GQL_SCHEMA" > /tmp/qa-gql-baseline.graphql 2>/dev/null || \
+    echo "NO_BASELINE"
+fi
+```
+
+If baseline obtained:
+```bash
+npx --yes @graphql-inspector/cli diff /tmp/qa-gql-baseline.graphql "$_GQL_SCHEMA" 2>&1
+```
+
+Classify changes:
+- `BREAKING` → flag in Phase 5 report as `[BREAKING CHANGE]`; add to critical failures
+- `DANGEROUS` → flag as `[WARNING]`
+- `NON_BREAKING` → informational; log to report
+
+Skip silently if GraphQL Inspector not available and no schema found.
+
 ## Phase 2 — Auth Detection
 
 ```bash
@@ -234,6 +301,31 @@ _AUTH_RESP=$(curl -s -X POST "$_API_URL/api/auth/login" \
 _TOKEN=$(echo "$_AUTH_RESP" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
 [ -n "$_TOKEN" ] && echo "AUTH: ok" || echo "AUTH: failed — proceeding with unauthenticated tests only"
 ```
+
+## Phase 2b — gRPC Smoke Tests
+
+Skip if `_GRPC_HOST` is not set (no gRPC port detected in Preamble).
+
+```bash
+if command -v grpcurl >/dev/null 2>&1 && [ -n "$_GRPC_HOST" ]; then
+  grpcurl -plaintext "$_GRPC_HOST:$_GRPC_PORT" list 2>&1
+fi
+```
+
+For each discovered service:
+```bash
+# List methods on each service
+grpcurl -plaintext "$_GRPC_HOST:$_GRPC_PORT" list "<ServiceName>" 2>&1
+# Smoke test each method with empty request
+grpcurl -plaintext -d '{}' "$_GRPC_HOST:$_GRPC_PORT" "<ServiceName>/<MethodName>" 2>&1
+```
+
+Classify response:
+- Valid response body → **PASS**
+- `UNIMPLEMENTED` / `NOT_FOUND` → **SKIP** (method not applicable for empty request)
+- `INTERNAL` / connection error → **FAIL**
+
+Add gRPC results to Phase 5 report under `### gRPC Coverage` section.
 
 ## Phase 2.5 — CI Grounding
 
@@ -414,9 +506,113 @@ command -v rspec &>/dev/null && \
   echo "RSPEC_EXIT_CODE: $?"
 ```
 
+## Phase 4b — Schemathesis Property-Based Fuzzing
+
+Skip if: no OpenAPI spec found (`_SPEC_FILE` is empty), or `QA_SKIP_SCHEMATHESIS=1` env var set.
+
+```bash
+if [ -n "$_SPEC_FILE" ] && [ "${QA_SKIP_SCHEMATHESIS:-0}" != "1" ]; then
+  if ! command -v schemathesis >/dev/null 2>&1 && ! command -v st >/dev/null 2>&1; then
+    pip install schemathesis --quiet 2>/dev/null || echo "SCHEMATHESIS_UNAVAILABLE"
+  fi
+  if command -v st >/dev/null 2>&1 || command -v schemathesis >/dev/null 2>&1; then
+    _ST_CMD=$(command -v st 2>/dev/null || echo schemathesis)
+    "$_ST_CMD" run "$_SPEC_FILE" \
+      --checks all \
+      --stateful=links \
+      --max-examples 25 \
+      --output-truncate-responses \
+      --base-url "$_API_URL" \
+      2>&1 | tee "$_TMP/qa-api-schemathesis.txt" | tail -50
+  fi
+fi
+```
+
+Parse `$_TMP/qa-api-schemathesis.txt`:
+- `PASSED` → include in Phase 5 summary
+- `FAILED` → extract reproduction command + request/response; add to critical failures
+- `ERROR` (schema issue) → log as warning, don't block
+
+In Phase 5 report, add `### Fuzz Testing (Schemathesis)` section:
+- Total hypotheses tested
+- Properties verified (status_code_conformance, content_type_conformance, response_schema_conformance)
+- Any failures with reproduction `st run ... --hypothesis-seed=<N>`
+
+## Phase 4c — OWASP OFFAT OpenAPI Security Fuzzing (BL-033)
+
+Skip if `QA_SECURITY!=1` OR no OpenAPI spec detected in preamble.
+
+OFFAT performs OWASP API Top 10 attack-class fuzzing from the OpenAPI spec: BOLA, mass
+assignment, SQL injection, XSS, restricted HTTP method bypass. Complements Schemathesis'
+structural fuzzing with security-specific attack vectors.
+
+**Tool detection:**
+
+```bash
+_OFFAT=0
+command -v offat >/dev/null 2>&1 && _OFFAT=1
+echo "OFFAT_AVAILABLE: $_OFFAT"
+```
+
+**Run (opt-in: `QA_SECURITY=1` AND `_OFFAT=1` AND OpenAPI spec present):**
+
+```bash
+if [ "${QA_SECURITY:-0}" = "1" ] && [ "$_OFFAT" = "1" ] && \
+   ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | grep -q '.'; then
+  _SPEC_FILE=$(ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | head -1)
+  echo "=== OFFAT SECURITY FUZZING ==="
+  echo "SPEC: $_SPEC_FILE  TARGET: $_API_URL"
+  _AUTH_HEADER=""
+  [ -n "$API_TOKEN" ] && _AUTH_HEADER="--headers Authorization:Bearer $API_TOKEN"
+  offat \
+    -f "$_SPEC_FILE" \
+    -u "$_API_URL" \
+    $_AUTH_HEADER \
+    -o "$_TMP/offat-results.json" \
+    --format json \
+    2>&1 | tail -30 | tee "$_TMP/offat-output.txt"
+  echo "OFFAT_EXIT: $?"
+fi
+```
+
+**Fallback when OFFAT not installed** (if `QA_SECURITY=1` but `_OFFAT=0`):
+
+```bash
+if [ "${QA_SECURITY:-0}" = "1" ] && [ "$_OFFAT" = "0" ]; then
+  echo "OFFAT_NOT_INSTALLED: install with 'pip install offat' for API security fuzzing"
+  echo "OFFAT_INSTALL_HINT: pip install offat"
+fi
+```
+
+**Parse results** (if `$_TMP/offat-results.json` exists):
+
+Read the JSON output. For each finding:
+- `severity: high` → **blocking failure** — add to CRITICAL findings in Phase 5 report
+- `severity: medium` → IMPORTANT finding
+- `severity: low` / `info` → informational
+
+Map findings to OWASP API Top 10 category:
+- BOLA findings → API1:2023 BOLA
+- Mass assignment → API6:2023 Unrestricted Access to Sensitive Business Flows
+- SQLi/XSS → API8:2023 Security Misconfiguration
+- Method bypass → API8:2023
+
+Add **OFFAT** section to Phase 5 report:
+```
+## OWASP OFFAT Security Fuzzing (Phase 4c)
+- Spec: <file>  Target: <url>  Findings: N (high: N, medium: N, low: N)
+- High-severity findings: BLOCK / PASS
+
+| Endpoint | Method | OWASP Category | Severity | Description |
+|----------|--------|---------------|----------|-------------|
+```
+
 ## Phase 5 — Report
 
 Write report to `$_TMP/qa-api-report.md`:
+
+If `_SEED_MODE=chaos` is active, prepend this warning block to the report (before the Summary table):
+> ⚠️ **Chaos mode active** (`QA_SEED_MODE=chaos`): any new test failures compared to clean-seed runs may indicate data-handling regressions. Compare with baseline clean-seed results to isolate chaos-induced failures.
 
 ```markdown
 # QA API Report — <date>
@@ -446,6 +642,8 @@ Write report to `$_TMP/qa-api-report.md`:
 
 When `EXIT_CODE != 0`, the **Diagnosis** section is mandatory — complete it before listing individual failures. Cross-reference `$_TMP/qa-api-ci-ground.txt` to determine if each failure is pre-existing or a new regression.
 
+For each failing test, check `./qa-flaky-registry.json` if present. If `flakeRate > 0.2`, annotate `[FLAKY N%]` instead of `[FAILED]`.
+
 ## Failures
 <list each failure with endpoint + error snippet>
 
@@ -466,6 +664,66 @@ When `EXIT_CODE != 0`, the **Diagnosis** section is mandatory — complete it be
 - **Cleanup everything you create** — track IDs of all created resources and delete them in suite teardown; lifecycle tests that exercise DELETE must remove their ID from the tracking list immediately after asserting the delete, so teardown does not double-delete
 - **Idempotent test data** — use unique, timestamped values (e.g. `test-{timestamp}@example.com`) so parallel runs do not collide
 - **Report even if execution fails** — always write the report regardless of exit code
+
+## CTRF Output
+
+After writing `$_TMP/qa-api-report.md`, write `$_TMP/qa-api-ctrf.json`:
+
+```python
+python3 - << 'PYEOF'
+import json, os, time, re
+
+tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+output_file = os.path.join(tmp, 'qa-api-runner-output.txt')
+output = open(output_file, encoding='utf-8', errors='replace').read() \
+         if os.path.exists(output_file) else ''
+
+tests = []
+# Parse common patterns from test output
+for line in output.splitlines():
+    m_pass = re.match(r'\s+[✓✅PASS]\s+(.+)', line)
+    m_fail = re.match(r'\s+[✕×FAIL]\s+(.+)', line)
+    if m_pass:
+        tests.append({'name': m_pass.group(1).strip(), 'status': 'passed', 'duration': 0, 'suite': 'api'})
+    elif m_fail:
+        tests.append({'name': m_fail.group(1).strip(), 'status': 'failed', 'duration': 0, 'suite': 'api',
+                      'message': 'See qa-api-report.md for details'})
+
+# Fallback: emit summary buckets
+if not tests:
+    p = len(re.findall(r'passed|PASS|\d+ passing', output))
+    f = len(re.findall(r'failed|FAIL|\d+ failing', output))
+    if p: tests.append({'name': f'{p} tests passed', 'status': 'passed', 'duration': 0, 'suite': 'api'})
+    if f: tests.append({'name': f'{f} tests failed', 'status': 'failed', 'duration': 0, 'suite': 'api',
+                        'message': 'See qa-api-report.md for details'})
+
+p = sum(1 for t in tests if t['status'] == 'passed')
+f = sum(1 for t in tests if t['status'] == 'failed')
+s = sum(1 for t in tests if t['status'] == 'skipped')
+now_ms = int(time.time() * 1000)
+
+ctrf = {
+    'results': {
+        'tool': {'name': os.environ.get('_API_TOOL', 'unknown')},
+        'summary': {
+            'tests': len(tests), 'passed': p, 'failed': f,
+            'pending': 0, 'skipped': s, 'other': 0,
+            'start': now_ms - 5000, 'stop': now_ms,
+        },
+        'tests': tests,
+        'environment': {
+            'reportName': 'qa-api',
+            'baseUrl': os.environ.get('_BASE_URL', 'unknown'),
+        },
+    }
+}
+
+out = os.path.join(tmp, 'qa-api-ctrf.json')
+json.dump(ctrf, open(out, 'w', encoding='utf-8'), indent=2)
+print(f'CTRF_WRITTEN: {out}')
+print(f'  tests={len(tests)} passed={p} failed={f} skipped={s}')
+PYEOF
+```
 
 ## Agent Memory
 

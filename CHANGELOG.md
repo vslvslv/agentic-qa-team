@@ -5,6 +5,123 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.11.0.0 — 2026-05-03 — BurpMCP authenticated testing, OFFAT security fuzzing, chaos mode wiring
+
+### qa-security
+- Phase 3.5: BurpMCP Authenticated Session Security Testing — retrieve captured Burp traffic, Claude identifies BOLA/IDOR/mass-assignment/SQLi/XSS/SSRF injection points, replays payloads with session tokens; Burp Collaborator support for out-of-band blind probes; `ATTACK_SUCCEEDED` = security finding (BL-021)
+- Preamble: added `_BURP_AVAILABLE` detection (burp.jar scan + port 1337 health check)
+
+### qa-api
+- Phase 4c: OWASP OFFAT OpenAPI Security Fuzzing — opt-in (`QA_SECURITY=1`); OWASP API Top 10 attack classes (BOLA, mass assignment, SQLi, XSS, method bypass); high-severity findings block; OFFAT install hint when not found (BL-033)
+- Preamble: added `_SEED_MODE` detection; chaos-mode warning in Phase 5 report when `QA_SEED_MODE=chaos` (BL-023)
+
+### qa-web
+- Preamble: added `_SEED_MODE` detection; chaos-mode warning in report when `QA_SEED_MODE=chaos` (BL-023)
+
+---
+
+## v1.10.0.0 — 2026-05-03 — Hardness routing, risk-weighted gaps, two-tier mutation, MutaHunter
+
+### qa-team
+- Phase 0.8: Hardness-Aware Routing — 0–7 complexity score (routes, auth, domains, LOC); simple (<3) → single qa-web smoke-only fast-path; complex (3–5) → full parallel fleet; very-complex (≥6) → full fleet + mandatory qa-audit + qa-explore (BL-012)
+- Preamble: added `_ROUTE_COUNT`, `_HAS_AUTH`, `_DOMAIN_COUNT`, `_LOC` detection variables
+- Phase 4 report: new "Routing" block — complexity tier, score breakdown, agent fleet used
+
+### qa-audit
+- Preamble: added `_STRYKER_AVAILABLE`, `_PITEST_AVAILABLE`, `_MUTMUT_AVAILABLE`, `_MUTAHUNTER_AVAILABLE`, `_DIFF_FILES`, `_DIFF_COUNT`, `_TEST_CMD`
+- Phase 2.7: Risk-Weighted Coverage Gap Scoring — git log surfaces recently changed (+3) and fix-commit (+2) files; auth/payment path heuristic (+3); complexity heuristic (+2); covered discount (−5); Top 5 risk-ranked table drives Phase 3.5 fill order (BL-013)
+- Phase 3.8: Two-Tier Mutation Testing — Tier 1 tool-based incremental (Stryker/Pitest/mutmut) scoped to diff files; Tier 2 Claude classifies survived mutants EQUIVALENT vs. GENUINE-GAP + generates killing assertions; warn <60%, BLOCK <40% adjusted score; skip via `QA_SKIP_MUTATION=1` (BL-034)
+- Phase 3.9: MutaHunter LLM-native mutant generation — opt-in (`QA_MUTAHUNTER=1`); Haiku model; 50-mutant cap; scientific 3-turn debugging loop; few-shot from real bug commits (BL-035)
+
+---
+
+## v1.9.0.0 — 2026-05-03 — Five new skills: explore, security, seed, simulate, component
+
+### qa-explore (new)
+- Swarm exploratory testing: N parallel browser agents autonomously find 404s, JS errors, broken links (BL-008)
+- Configurable via `QA_EXPLORE_AGENTS` (default: 3), `QA_EXPLORE_MAX_PAGES` (default: 20)
+- Auto-detects seed routes from `pages/` and `app/` directories; sitemap.xml fallback
+
+### qa-security (new)
+- Mode A: OWASP ZAP DAST — spider + active scan + Claude OWASP/CWE triage (BL-020)
+- Mode B: Lightweight curl probes — security headers, exposed files, CORS, JWT checks (always available)
+- Nuclei template-based scanning as second pass when installed; stack-aware tag selection
+
+### qa-seed (new)
+- Schema-aware synthetic data: Prisma, SQL migrations, TypeORM, Django ORM, Drizzle (BL-022)
+- FK-constraint-aware topological seeding; realistic distributions per column type
+- Chaos mode (`QA_SEED_MODE=chaos`): null injection, boundary values, unicode edge cases, duplicate rows
+
+### qa-simulate (new)
+- UserSimulator generates multi-turn user journeys from feature descriptions (BL-026)
+- RedTeam mode (`QA_REDTEAM=1`): adversarial inputs — SQL injection, XSS, auth bypass, race conditions
+- Judge agent evaluates scenario correctness 0–1; scenarios cached as JSON for deterministic CI replay
+
+### qa-component (new)
+- Storybook test execution: interaction tests + a11y checks + Chromatic visual snapshots (BL-052)
+- Prop boundary testing via fast-check: ts-morph extracts interfaces → Claude generates `fc.record()` arbitraries, 200 iterations (BL-053)
+- Stryker mutation quality gate on changed components: surviving mutants classified EQUIVALENT/GENUINE-GAP; killing assertions generated for GENUINE-GAP (BL-054)
+
+### qa-team
+- Added qa-explore, qa-security, qa-seed, qa-component, qa-simulate to dispatch table
+- Updated auto-detection rules for 5 new domains
+- Updated aggregate loop: `for domain in web api mobile perf visual audit a11y heal explore security seed component simulate`
+
+---
+
+## v1.8.0.0 — 2026-05-03 — Multi-browser, API fuzzing, visual AI diff, perf Artillery, snapshot healing
+
+### qa-web
+- Multi-browser default: chromium + firefox + webkit in generated playwright.config.ts (BL-059)
+- `QA_BROWSERS` env var to opt out of specific browsers (BL-062)
+- Phase 2.6: Cross-browser locator audit — detect fragile CSS/XPath selectors, suggest getByRole/getByLabel/getByTestId rewrites (BL-060)
+- Browser Matrix table in Phase 4 report
+- Removed hardcoded `--project=chromium` from Phase 3 execution; config drives browser selection
+
+### qa-api
+- Phase 0.5: Spectral OpenAPI lint pre-flight — blocks on errors, surfaces warnings (BL-028)
+- Phase 1.5: GraphQL schema diff via `@graphql-inspector/cli` — BREAKING/DANGEROUS/NON_BREAKING classification (BL-029)
+- gRPC detection in Preamble + Phase 2b gRPC smoke tests via `grpcurl` (BL-030)
+- Phase 4b: Schemathesis property-based fuzzing — 25 examples, all checks, stateful links (BL-027)
+
+### qa-perf
+- Artillery detection added to Preamble tool selection (BL-036)
+- Phase 2.5: Artillery adaptive phase sequencing — smoke → baseline → soak with threshold gates (BL-036, BL-037)
+- Phase 4.5: Pyroscope flamegraph diff → 3-bullet CPU hotspot insight when `PYROSCOPE_URL` set (BL-037)
+- SLO Compliance table in Phase 4 report: parse k6 thresholds → Sloth YAML + error budget burn rate (BL-038)
+
+### qa-visual
+- Phase 1.5: BackstopJS config generation from Tailwind breakpoints + route discovery (BL-044)
+- Phase 5.5: Three-layer AI diff pipeline — pixelmatch auto-pass (<0.1%) / auto-fail (>20%) + Claude Vision COSMETIC/FUNCTIONAL/CONTENT classification for 0.1–20% range (BL-042)
+
+### qa-heal
+- 7th failure classification: `snapshot-drift` — `pytest --inline-snapshot=fix` / `jest --updateSnapshot` repair (BL-065)
+- Confidence score: +0.10 for snapshot-drift with ≤3 spec files changed (low-risk mechanical fix)
+
+---
+
+## v1.7.0.0 — 2026-05-03 — New skills: qa-heal + qa-a11y; CTRF output; coverage gap loop; flaky classifier
+
+### New Skills
+- `qa-heal` — Self-healing test repair: 6-type failure classification (broken-selector,
+  stale-element, moved-element, assertion-drift, navigation-change, timing-issue),
+  confidence-gated auto-commit/PR/issue routing (BL-004)
+- `qa-a11y` — Accessibility audit: axe-core scan + POUR grouping + AI alt text generation (BL-018/019)
+- Both skills added to `qa-team` auto-dispatch and `.claude/agents/`
+
+### CI/CD Integration
+- CTRF universal JSON output added to all 6 runner skills + qa-heal + qa-a11y + qa-team aggregation (BL-014)
+- GitHub PR comment via `npx github-test-reporter` in qa-team (optional, requires gh CLI) (BL-015)
+- `.github/workflows/qa-report.yml` for CI-native CTRF artifact reporting (BL-015)
+- Persistent `qa-flaky-registry.json` updated after every qa-team run; flaky tests annotated (BL-016)
+- Test impact analysis in qa-team Phase 0.5: diff-scoped fast-path when ≤5 test files affected (BL-017)
+
+### qa-audit Enhancements
+- Phase 2.5: Flaky test OD/ID classification via isolation run + registry lookup (BL-007)
+- Phase 3.5: Coverage gap fill loop — run coverage, generate targeted tests, repeat ×3 (BL-006)
+
+---
+
 ## v1.6.0.0 — 2026-05-03 — Architecture upgrade: subagents, hooks, DRY version check, memory
 
 ### Subagent definitions (`.claude/agents/`)

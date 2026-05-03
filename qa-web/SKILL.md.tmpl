@@ -147,6 +147,12 @@ if [ -n "$QA_EXTRA_PATHS" ]; then
     echo "EXTRA_REPO $(basename "$_qr"): $_extra test files — $_qr"
   done
 fi
+
+# Chaos seed mode detection (BL-023)
+_SEED_MODE="${QA_SEED_MODE:-clean}"
+echo "SEED_MODE: $_SEED_MODE"
+[ "$_SEED_MODE" = "chaos" ] && \
+  echo "CHAOS_MODE: active — E2E tests running against chaos-seeded data; new failures may indicate data-handling regressions"
 ```
 
 If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
@@ -257,6 +263,34 @@ Read the tool-specific patterns file for the selected `_WEB_TOOL`:
 Read qa-web/tools/<_WEB_TOOL>.md
 ```
 
+### Multi-Browser Configuration
+
+Default to 3-browser matrix unless `QA_BROWSERS` env var overrides:
+
+```bash
+_QA_BROWSERS="${QA_BROWSERS:-chromium,firefox,webkit}"
+echo "QA_BROWSERS: $_QA_BROWSERS"
+```
+
+When generating `playwright.config.ts` (if it does not already have a `projects` array), include:
+
+```typescript
+projects: [
+  // Conditionally include each browser based on QA_BROWSERS env var
+  ...(!(process.env.QA_BROWSERS) || process.env.QA_BROWSERS.includes('chromium') ? [{
+    name: 'chromium', use: { ...devices['Desktop Chrome'] }
+  }] : []),
+  ...(!(process.env.QA_BROWSERS) || process.env.QA_BROWSERS.includes('firefox') ? [{
+    name: 'firefox', use: { ...devices['Desktop Firefox'] }
+  }] : []),
+  ...(!(process.env.QA_BROWSERS) || process.env.QA_BROWSERS.includes('webkit') ? [{
+    name: 'webkit', use: { ...devices['Desktop Safari'] }
+  }] : []),
+],
+```
+
+If existing config already has a `projects` array: do NOT override it — just note which browsers are configured.
+
 Then select and read the language-appropriate reference guide based on `_WEB_TOOL` and `_TARGET_LANG`:
 
 **Playwright — TypeScript** (when `_TARGET_LANG` is not `csharp`):
@@ -323,6 +357,28 @@ it("renders the dashboard", async () => {
 });
 ```
 
+## Phase 2.6 — Cross-Browser Locator Audit
+
+Runs only when multi-browser projects are configured (`_QA_BROWSERS` contains more than one browser, or config has multiple projects).
+
+Collect potentially fragile locators from spec files:
+
+```bash
+grep -rE '\.(locator|getBy[A-Z])\(' e2e/ tests/ --include="*.spec.ts" --include="*.spec.js" \
+  ! -path "*/node_modules/*" 2>/dev/null | grep -oE '"[^"]+"' | sort -u | head -50
+```
+
+Flag locators containing CSS classes (`.class-name`) or XPath patterns (`//div/span`) — these are cross-browser fragile.
+
+For each flagged locator pattern:
+- Suggest rewrite to stable selector: `getByRole` > `getByLabel` > `getByTestId`
+- Apply fix via Edit tool if fix confidence is high (unambiguous role or label available)
+- Flag for review if ambiguous
+
+Add `### Cross-Browser Locator Audit` section to Phase 4 report:
+| Locator | Issue | Suggested Fix | Applied |
+|---------|-------|---------------|---------|
+
 ---
 
 ## Phase 3 — Execute Tests
@@ -337,7 +393,7 @@ export E2E_USER_PASSWORD="${E2E_USER_PASSWORD:-password123}"
   npx playwright test e2e/auth.setup.ts --project=setup 2>/dev/null || true
 _SPEC_FILES=$(find . \( -path "*/e2e/specs/*.spec.ts" -o -path "*/e2e/*.spec.ts" \) \
   ! -path "*/node_modules/*" 2>/dev/null | tr '\n' ' ')
-npx playwright test $_SPEC_FILES --project=chromium --reporter=json \
+npx playwright test $_SPEC_FILES --reporter=json \
   2>&1 > "$_TMP/qa-web-output.txt"
 echo "EXIT_CODE: $?"
 ```
@@ -405,6 +461,9 @@ PYEOF
 
 Write report to `$_TMP/qa-web-report.md`:
 
+If `_SEED_MODE=chaos` is active, prepend this warning block to the report (before the Summary table):
+> ⚠️ **Chaos mode active** (`QA_SEED_MODE=chaos`): any new test failures compared to clean-seed runs may indicate data-handling regressions. Compare with baseline clean-seed results to isolate chaos-induced failures.
+
 ```markdown
 # QA Web Report — <date>
 
@@ -434,11 +493,89 @@ Write report to `$_TMP/qa-web-report.md`:
 ## Coverage Map
 | Page/Flow | Tests | Status |
 |-----------|-------|--------|
+
+## Browser Matrix
+| Browser | Tests Run | Passed | Failed | Skipped |
+|---------|-----------|--------|--------|---------|
+| Chromium | N | N | N | N |
+| Firefox | N | N | N | N |
+| WebKit | N | N | N | N |
+
+Note: Opt out of a browser with `QA_BROWSERS=chromium,firefox` (omit webkit).
 ```
 
 When `EXIT_CODE != 0`, the **Diagnosis** section is mandatory — complete it before listing individual failures. Cross-reference `$_TMP/qa-web-ci-ground.txt` to determine if each failure is pre-existing or a new regression. Never skip straight to listing failures.
 
+For each failing test, check `./qa-flaky-registry.json` if present. If `flakeRate > 0.2`, annotate `[FLAKY N%]` instead of `[FAILED]` in the report.
+
 Print report path. If failures exist: "Found N failing web tests. Run /investigate to diagnose?"
+
+## CTRF Output
+
+After writing `$_TMP/qa-web-report.md`, write `$_TMP/qa-web-ctrf.json`:
+
+```python
+python3 - << 'PYEOF'
+import json, os, time, re
+
+tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+pw_output = open(os.path.join(tmp, 'qa-web-pw-output.txt'), encoding='utf-8', errors='replace').read() \
+            if os.path.exists(os.path.join(tmp, 'qa-web-pw-output.txt')) else ''
+
+tests = []
+# Try to parse test names and results from Playwright JSON output or text output
+passed_count = len(re.findall(r'✓|passed', pw_output))
+failed_count = len(re.findall(r'✕|failed', pw_output))
+skipped_count = len(re.findall(r'skipped|pending', pw_output))
+
+# Build synthetic test entries from output lines if no JSON reporter
+lines = pw_output.splitlines()
+for line in lines:
+    m_pass = re.match(r'\s+✓\s+(.+)', line)
+    m_fail = re.match(r'\s+[✕×]\s+(.+)', line)
+    if m_pass:
+        tests.append({'name': m_pass.group(1).strip(), 'status': 'passed', 'duration': 0, 'suite': 'e2e'})
+    elif m_fail:
+        tests.append({'name': m_fail.group(1).strip(), 'status': 'failed', 'duration': 0, 'suite': 'e2e',
+                      'message': 'See qa-web-report.md for details'})
+
+# If no granular tests parsed, emit summary buckets
+if not tests:
+    if passed_count:
+        tests.append({'name': f'{passed_count} tests passed', 'status': 'passed', 'duration': 0, 'suite': 'e2e'})
+    if failed_count:
+        tests.append({'name': f'{failed_count} tests failed', 'status': 'failed', 'duration': 0, 'suite': 'e2e',
+                      'message': 'See qa-web-report.md for details'})
+    if skipped_count:
+        tests.append({'name': f'{skipped_count} tests skipped', 'status': 'skipped', 'duration': 0, 'suite': 'e2e'})
+
+p = sum(1 for t in tests if t['status'] == 'passed')
+f = sum(1 for t in tests if t['status'] == 'failed')
+s = sum(1 for t in tests if t['status'] == 'skipped')
+now_ms = int(time.time() * 1000)
+
+ctrf = {
+    'results': {
+        'tool': {'name': os.environ.get('_WEB_TOOL', 'playwright')},
+        'summary': {
+            'tests': len(tests), 'passed': p, 'failed': f,
+            'pending': 0, 'skipped': s, 'other': 0,
+            'start': now_ms - 5000, 'stop': now_ms,
+        },
+        'tests': tests,
+        'environment': {
+            'reportName': 'qa-web',
+            'baseUrl': os.environ.get('_BASE_URL', 'unknown'),
+        },
+    }
+}
+
+out = os.path.join(tmp, 'qa-web-ctrf.json')
+json.dump(ctrf, open(out, 'w', encoding='utf-8'), indent=2)
+print(f'CTRF_WRITTEN: {out}')
+print(f'  tests={len(tests)} passed={p} failed={f} skipped={s}')
+PYEOF
+```
 
 ## Important Rules
 
