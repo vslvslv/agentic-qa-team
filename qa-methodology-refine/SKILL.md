@@ -113,7 +113,24 @@ Target: **score ≥ 80** or **3 iterations** or **delta < 5** → stop.
 
 ---
 
+## Catalog Detection (run before Phase 1a)
+
+```bash
+# Learning sources catalog (catalog-first strategy)
+echo "--- LEARNING SOURCES ---"
+_LS_DIR="${CLAUDE_SKILL_DIR}/../learning-sources"
+[ ! -d "$_LS_DIR" ] && _LS_DIR="./learning-sources"
+_LS_AVAILABLE=0
+[ -d "$_LS_DIR" ] && ls "$_LS_DIR"/*.md 2>/dev/null | grep -q '.' && _LS_AVAILABLE=1
+echo "LEARNING_SOURCES_AVAILABLE: $_LS_AVAILABLE"
+```
+
 ## Phase 1a — Official sources (fetch in parallel)
+
+If `LEARNING_SOURCES_AVAILABLE=1`, read `$_LS_DIR/qa-methodology.md` first. Filter to
+entries matching `TARGET_TOPIC` (the current methodology topic). Use those URLs as the
+primary source list. Supplement with the hardcoded fallbacks below for topics not in the
+catalog.
 
 Prompt for every WebFetch:
 > "Extract: (1) core principles and WHY they matter, (2) methodology patterns with code

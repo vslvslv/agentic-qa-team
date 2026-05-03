@@ -55,6 +55,14 @@ if [ -f "$_QA_ASK_COOLDOWN" ]; then
   _qa_age=$(( $(date +%s) - $(cat "$_QA_ASK_COOLDOWN" | tr -d ' ') ))
   [ "$_qa_age" -lt 600 ] && _QA_SKIP_ASK=1
 fi
+
+# Learning sources catalog (catalog-first strategy)
+echo "--- LEARNING SOURCES ---"
+_LS_DIR="${_QA_ROOT}/learning-sources"
+[ ! -d "$_LS_DIR" ] && _LS_DIR="./learning-sources"
+_LS_AVAILABLE=0
+[ -d "$_LS_DIR" ] && ls "$_LS_DIR"/*.md 2>/dev/null | grep -q '.' && _LS_AVAILABLE=1
+echo "LEARNING_SOURCES_AVAILABLE: $_LS_AVAILABLE"
 ```
 
 If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `_QA_SKIP_ASK` is `0`, use `AskUserQuestion`:
@@ -97,6 +105,11 @@ Target: **score ≥ 80** or **3 iterations** or **delta < 5** → stop.
 ---
 
 ## Phase 1a — Official sources
+
+If `LEARNING_SOURCES_AVAILABLE=1`, read `$_LS_DIR/languages.md` first. Use its Official
+Documentation and GitHub Repositories entries as the primary source list for the current
+language. Supplement with the hardcoded fallback URLs below for any language not covered
+in the catalog.
 
 Determine which language/category to research from the user's message. If ambiguous, ask.
 

@@ -5,6 +5,29 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.12.0.0 — 2026-05-03 — learning-sources-refinement skill + catalog-first integration
+
+### learning-sources-refinement (new skill)
+- Maintains shared knowledge base in `learning-sources/` across 4 domains:
+  QA tools, QA methodology, programming languages, security/a11y/AI testing
+- Phase 1: catalog review — stale detection (>6 months), gap analysis (<5 entries per section)
+- Phase 2: domain search — WebSearch + WebFetch for new official docs, GitHub repos, blogs
+- Phase 3: catalog update — appends new entries, flags stale inline, updates INDEX.md
+- Phase 4: discovery report with per-skill source recommendations
+
+### learning-sources/ (new catalog — 5 files, pre-seeded)
+- `INDEX.md` — master index with domain pointers and usage mapping
+- `qa-tools.md` — 30 entries: Playwright, Cypress, Selenium, k6, Detox, Appium + community repos
+- `qa-methodology.md` — 22 entries: BDD/contract testing/accessibility/flakiness/ISTQB standards
+- `languages.md` — 28 entries: TypeScript, Python, Java, C#, Kotlin, Ruby, Bash + GoF patterns
+- `security-a11y-ai.md` — 20 entries: OWASP, ZAP, Nuclei, WCAG, axe-core, AI agent testing
+
+### lang-refine / qa-refine / qa-methodology-refine
+- Added catalog detection step — `_LS_AVAILABLE` detection runs before Phase 1a
+- Phase 1a: catalog-first instruction — reads `learning-sources/*.md` before hardcoded fallbacks
+
+---
+
 ## v1.11.0.0 — 2026-05-03 — BurpMCP authenticated testing, OFFAT security fuzzing, chaos mode wiring
 
 ### qa-security

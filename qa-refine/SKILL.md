@@ -99,7 +99,24 @@ Target: **score ≥ 80** or **3 iterations** or **delta < 5** → stop.
 
 ---
 
+## Catalog Detection (run before Phase 1a)
+
+```bash
+# Learning sources catalog (catalog-first strategy)
+echo "--- LEARNING SOURCES ---"
+_LS_DIR="${CLAUDE_SKILL_DIR}/../learning-sources"
+[ ! -d "$_LS_DIR" ] && _LS_DIR="./learning-sources"
+_LS_AVAILABLE=0
+[ -d "$_LS_DIR" ] && ls "$_LS_DIR"/*.md 2>/dev/null | grep -q '.' && _LS_AVAILABLE=1
+echo "LEARNING_SOURCES_AVAILABLE: $_LS_AVAILABLE"
+```
+
 ## Phase 1a — Official documentation
+
+If `LEARNING_SOURCES_AVAILABLE=1`, read `$_LS_DIR/qa-tools.md` first. Filter to entries
+matching `_TOPIC` (the current tool, e.g., `Playwright`, `k6`, `Cypress`). Use those URLs
+as the primary source list. Supplement with the hardcoded fallback URLs below for any
+tool version or language variant not covered in the catalog.
 
 Fetch all official pages for the target tool **in parallel**. Prompt for every WebFetch:
 > "Extract: (1) best practices as bullet points, (2) design patterns with code examples
