@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 10 | score: 100/100 | date: 2026-05-03 -->
 
 ## Core Principles
 
@@ -1006,6 +1006,10 @@ const userId = session.user!.id;
 | SAST (CodeQL) | Deep data-flow taint analysis; TypeScript-aware | High false-positive rate; 5–20 min scan; complex for monorepos | Essential for security-sensitive code; tune rules first |
 | SAST (Semgrep) | Fast (< 2 min); highly configurable; `p/typescript` ruleset | Community rules vary in quality | Better default SAST choice for speed |
 | DAST (OWASP ZAP) | Finds runtime security issues invisible to SAST + TypeScript types | Requires running app; 15–45 min; corrupts test data if misconfigured | Nightly/schedule only; never on every PR |
+| Biome (lint + format) | 50–100ms pre-commit checks; replaces ESLint + Prettier | No type-aware rules; cannot replace `@typescript-eslint/recommendedTypeChecked` | Pre-commit speed optimization for large TypeScript projects |
+| Oxlint | 50–100× faster than ESLint; 200+ rules | Incomplete rule coverage vs ESLint; no type-aware rules | Use as a fast first-pass CI gate; complement with full ESLint |
+| tRPC (end-to-end types) | Compile-time API contract enforcement; no separate schema needed | TypeScript-only client; not suitable for public/polyglot APIs | Internal TypeScript fullstack apps; eliminates API contract defects |
+| SBOM generation (CycloneDX) | Retroactive CVE matching; customer compliance requirement; CISA guidance | ~30s build time; requires tooling per language | Required for US federal vendors; recommended for all production software |
 | Snyk vs npm audit | Snyk: richer data, fix PRs, license scan; audit: zero config | Snyk: requires account + token + cost at scale | Both: `npm audit` in CI, Snyk for deeper analysis |
 
 **When not to shift left**: Exploratory testing, usability research, load testing, and chaos/resilience testing are inherently shift-right activities. Do not attempt to automate or pre-production-gate tests that require real user behavior, real traffic patterns, or stochastic failure modes.
@@ -1217,6 +1221,7 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 - [ ] Conventional commits enforced via commit-msg hook
 - [ ] `.env` files in `.gitignore` + pre-commit `.env` file guard
 - [ ] Secret scanning pre-commit check (Gitleaks or custom script)
+- [ ] **Alternative (2025+):** Biome for lint + format (50–100ms vs 2–5s) if type-aware rules are not needed pre-commit
 
 **PR Gate Layer (CI — must pass before merge)**
 - [ ] `tsc --noEmit` (full, non-incremental) as required status check
@@ -1228,10 +1233,12 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 - [ ] Gitleaks secret scanning (PR-level)
 - [ ] Zod (or equivalent) runtime validation at all external API boundaries
 - [ ] Branch protection configured with `enforce_admins: true` + required status checks
+- [ ] **AI code review:** All AI-generated code passes the same shift-left gates as human-written code (not a separate workflow)
 
 **Pipeline / Nightly Layer**
 - [ ] Snyk dependency scan (nightly, on `package-lock.json` changes)
 - [ ] Dependabot or Renovate for automated dependency updates
+- [ ] **SBOM:** CycloneDX SBOM generated and stored per build artifact
 - [ ] OWASP ZAP baseline scan (nightly against staging)
 - [ ] License compliance check (`license-checker`)
 - [ ] OpenSSF Scorecard (weekly)
@@ -1245,7 +1252,1266 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 
 ---
 
-## Key Resources
+---
+
+## Next-Generation TypeScript Tooling (2025–2026)
+
+The TypeScript toolchain has evolved significantly. Rust-based tools now offer 10–100× speed improvements over traditional Node.js-based alternatives, lowering the cost of pre-commit shift-left checks.
+
+### Biome — Unified Linter + Formatter for TypeScript
+
+Biome (formerly Rome) replaces ESLint + Prettier with a single Rust-native binary that produces results in milliseconds. As of 2025, it covers ~95% of the most-used ESLint rules and all Prettier formatting.
+
+```typescript
+// biome.json — unified linter + formatter config for TypeScript
+// Install: npm install --save-dev --save-exact @biomejs/biome
+{
+  "$schema": "https://biomejs.dev/schemas/1.8.0/schema.json",
+  "organizeImports": {
+    "enabled": true
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error",
+        "useExhaustiveDependencies": "error"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "error",
+        "noDangerouslySetInnerHtmlWithChildren": "error",
+        "noGlobalEval": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "warn",
+        "noConfusingVoidType": "error",
+        "noUnsafeDeclarationMerging": "error",
+        "useAwait": "error"
+      },
+      "style": {
+        "noNonNullAssertion": "warn",
+        "useConst": "error"
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "trailingCommas": "all",
+      "semicolons": "always"
+    }
+  },
+  "files": {
+    "include": ["src/**/*.ts", "src/**/*.tsx"],
+    "ignore": ["node_modules", "dist", "*.spec.ts", "*.test.ts"]
+  }
+}
+```
+
+```sh
+# .husky/pre-commit with Biome — runs in ~50ms vs 2–5s for ESLint + Prettier
+#!/bin/sh
+# Biome check: lint + format + import organization on staged files
+npx @biomejs/biome check --apply --staged .
+# Fast incremental type check (Biome does NOT do type-checking — tsc still required)
+npx tsc --noEmit --incremental
+```
+
+**WHY Biome vs ESLint + Prettier**: Biome runs in < 100ms on most TypeScript projects vs 2–5s for ESLint + Prettier combined. On a pre-commit hook where every second matters, this difference determines whether developers keep the hook enabled or bypass it with `--no-verify`. **The fastest feedback is the feedback that gets read.** Biome's limitation: it does NOT support type-aware rules (`parserOptions.project`) — for type-safety rules like `@typescript-eslint/no-unsafe-assignment`, you still need `@typescript-eslint` or must rely entirely on `tsc --noEmit`.
+
+> [community] **Lesson (Biomejs adopters, 2024–2025)**: Teams migrating from ESLint + Prettier to Biome report 60–80% reduction in pre-commit hook duration. The primary trade-off is losing type-aware ESLint rules (`@typescript-eslint/recommendedTypeChecked`). Teams that need both use a hybrid: Biome for formatting + basic linting pre-commit, `@typescript-eslint` type-checked rules as CI-only gates where the speed cost is acceptable.
+
+### Oxc — Rust-Native TypeScript Parser and Linter
+
+Oxc (Oxidation Compiler) is a Rust-native JavaScript/TypeScript parser, linter, and transformer. As of 2025, `oxlint` processes TypeScript files 50–100× faster than ESLint.
+
+```yaml
+# .github/workflows/oxlint.yml — fast SAST on every PR (runs in < 3s)
+name: Oxlint Fast Scan
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  oxlint:
+    name: Oxlint TypeScript Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      # oxlint: security + correctness + TypeScript rules — completes in < 3s on 100k LOC
+      - run: npx oxlint --deny=all --allow=no-undef src/
+        # --deny=all: treat all findings as errors (zero-warning enforcement)
+        # Catches: no-eval, no-new-func, prototype-builtins, and 200+ rules
+```
+
+**WHY Oxc matters for shift-left**: Speed is shift-left's multiplier. When checks run in 3s vs 60s, teams run them more frequently and the feedback loop tightens. Oxc positions linting as near-instantaneous — a check you can run on every file save, not just on commit.
+
+### tRPC — End-to-End Type Safety as Shift-Left
+
+tRPC eliminates the API contract layer entirely: the TypeScript types of your server procedures ARE the client contract, checked at compile time on both sides. This is shift-left applied at the API boundary.
+
+```typescript
+// server/routers/user.router.ts — tRPC router with Zod input validation
+import { z } from 'zod';
+import { router, publicProcedure, protectedProcedure } from '../trpc.js';
+import type { User } from '../db/schema.js';
+
+export const userRouter = router({
+  // GET /trpc/user.getById — type-safe input + output
+  getById: publicProcedure
+    .input(z.object({ id: z.string().cuid2() }))
+    .output(z.object({
+      id: z.string(),
+      email: z.string().email(),
+      name: z.string(),
+      role: z.enum(['admin', 'viewer', 'editor']),
+    }))
+    .query(async ({ input, ctx }) => {
+      const user = await ctx.db.user.findUniqueOrThrow({ where: { id: input.id } });
+      // TypeScript: return type is inferred from .output() — compiler enforces shape
+      return user satisfies User;
+    }),
+
+  // POST /trpc/user.create — validated input, typed output, no separate API schema
+  create: protectedProcedure
+    .input(z.object({
+      email: z.string().email(),
+      name: z.string().min(1).max(100),
+      role: z.enum(['viewer', 'editor']).default('viewer'),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      // input is fully typed: { email: string; name: string; role: 'viewer'|'editor' }
+      return ctx.db.user.create({ data: input });
+    }),
+});
+
+// client/lib/trpc.ts — client: TypeScript error if procedure signature changes
+// import type { AppRouter } from '../../server/routers/index.js';
+// const trpc = createTRPCReact<AppRouter>();
+// trpc.user.getById.useQuery({ id: 'cuid_123' })
+// TypeScript error: if server changes .input() shape, the client compile fails immediately
+```
+
+**WHY tRPC is the ultimate shift-left API pattern**: With REST or GraphQL, a breaking API change is discovered in integration tests or production. With tRPC, changing a procedure's input or output schema causes a TypeScript compile error on every file that calls it — before any code runs. The compiler enforces the API contract, not the test runner. This eliminates an entire class of integration defects at author time.
+
+> [community] **Lesson (tRPC community, 2024)**: Teams adopting tRPC report eliminating the "who broke the API contract" class of defects entirely in their TypeScript monorepos. The trade-off: tRPC is not suitable for public APIs (requires TypeScript client), and migrating from REST to tRPC requires rewriting client code. Use tRPC for internal service-to-service or fullstack TypeScript apps; REST + OpenAPI for public or polyglot APIs.
+
+### SBOM Generation as Shift-Left Supply Chain Security
+
+A Software Bill of Materials (SBOM) enumerates all dependencies and their licenses — enabling automated vulnerability matching and compliance verification before production.
+
+```yaml
+# .github/workflows/sbom.yml — generate CycloneDX SBOM on every main build
+name: SBOM Generation
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths: ['package.json', 'package-lock.json']
+
+jobs:
+  sbom:
+    name: Generate CycloneDX SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+
+      # Generate SBOM in CycloneDX JSON format (CISA-recommended standard)
+      - run: npx @cyclonedx/cyclonedx-npm --output-format JSON --output-file sbom.json
+        # Output: complete dependency graph with versions, licenses, hashes, and purl identifiers
+
+      # Validate the SBOM schema
+      - run: npx @cyclonedx/cyclonedx-cli validate --input-file sbom.json --input-format JSON
+
+      # Upload as build artifact for audit trail
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.json
+          retention-days: 90
+
+      # Optional: upload to Dependency Track for continuous vulnerability monitoring
+      - name: Upload to Dependency Track
+        if: github.ref == 'refs/heads/main'
+        run: |
+          curl -X POST "${{ vars.DEPENDENCY_TRACK_URL }}/api/v1/bom" \
+            -H "X-Api-Key: ${{ secrets.DEPENDENCY_TRACK_API_KEY }}" \
+            -H "Content-Type: multipart/form-data" \
+            -F "autoCreate=true" \
+            -F "projectName=my-typescript-app" \
+            -F "projectVersion=${{ github.sha }}" \
+            -F "bom=@sbom.json"
+```
+
+**WHY SBOMs are shift-left**: Traditional vulnerability scanning checks dependencies at build time. SBOMs persist the exact dependency snapshot alongside each artifact, enabling retroactive matching when new CVEs are published. When Log4Shell-class vulnerabilities are disclosed, teams with SBOMs can determine exposure in minutes instead of days.
+
+> [community] **Lesson (US Executive Order 14028, 2021 — enforcement from 2024)**: US federal software vendors are required to provide SBOMs for all software delivered to government agencies. Even non-government teams are adopting SBOMs proactively because customers and enterprise buyers are starting to require them in vendor questionnaires. Adding SBOM generation to your CI pipeline now costs < 5 minutes of setup; retrofitting it during a procurement audit costs days.
+
+---
+
+## AI-Generated Code and Shift-Left Challenges (2025–2026)
+
+The widespread adoption of AI coding assistants (GitHub Copilot, Cursor, Claude) has created new shift-left challenges: AI-generated code may pass type checks and lint rules while containing subtle logical defects, security vulnerabilities, or licensing issues.
+
+### Problem: AI Code Bypasses Behavioral Tests
+
+AI assistants generate syntactically correct, type-safe TypeScript that satisfies `tsc --noEmit` and `@typescript-eslint`. But behavioral correctness — "does this authorization check actually prevent privilege escalation?" — requires test coverage that AI assistants frequently do not generate alongside the implementation.
+
+```typescript
+// ANTI-PATTERN: AI-generated authorization middleware that passes all static checks
+// but has a subtle logical defect (missing await)
+export function requireRole(role: string) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const user = getUserFromSession(req);
+    // BUG: hasPermission returns Promise<boolean>, but no await here
+    // TypeScript with @typescript-eslint/no-misused-promises catches this IF
+    // the rule is enabled AND the function signature is typed correctly
+    if (!user || !user.hasPermission(role)) {  // Always evaluates to truthy (Promise object)
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    next();
+  };
+}
+```
+
+```typescript
+// CORRECT: Test that would catch the missing-await defect above
+// This test SHOULD be generated alongside the middleware
+import { describe, it, expect, vi } from 'vitest';
+import { requireRole } from './auth.middleware.js';
+import type { Request, Response, NextFunction } from 'express';
+
+describe('requireRole middleware', () => {
+  it('denies access when user lacks the required role', async () => {
+    const mockUser = { hasPermission: vi.fn().mockResolvedValue(false) };
+    const mockReq = { session: { user: mockUser } } as unknown as Request;
+    const mockRes = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    } as unknown as Response;
+    const mockNext = vi.fn();
+
+    await requireRole('admin')(mockReq, mockRes, mockNext);
+
+    // If hasPermission is not awaited, this test will fail:
+    // mockNext will be called even though the user lacks the role
+    expect(mockNext).not.toHaveBeenCalled();
+    expect(mockRes.status).toHaveBeenCalledWith(403);
+  });
+
+  it('allows access when user has the required role', async () => {
+    const mockUser = { hasPermission: vi.fn().mockResolvedValue(true) };
+    const mockReq = { session: { user: mockUser } } as unknown as Request;
+    const mockRes = {} as Response;
+    const mockNext = vi.fn();
+
+    await requireRole('admin')(mockReq, mockRes, mockNext);
+
+    expect(mockNext).toHaveBeenCalledOnce();
+  });
+});
+```
+
+**WHY this matters**: The `@typescript-eslint/no-misused-promises` rule catches this specific pattern when `hasPermission` is properly typed as returning `Promise<boolean>`. This is exactly the class of defect that AI assistants introduce — syntactically correct, type-consistent with loose typing, behaviorally wrong. Enabling `@typescript-eslint/recommendedTypeChecked` makes the TypeScript type system a defect detector for AI-generated code.
+
+> [community] **Lesson (GitHub Copilot research, 2025)**: Stanford research found that developers using AI code assistants without shift-left guards introduced 2× more security vulnerabilities than unassisted developers. The primary reason: AI assistants optimize for "code that runs" not "code that is secure." SAST and type-checked ESLint rules are the counter-measure — they apply the same static analysis to AI-generated code as human-written code. The developer's job shifts from "write the code" to "verify the AI's code passes the shift-left gates."
+
+> [community] **Gotcha (AI-generated test cases)**: AI assistants frequently generate tests that assert against mock return values without testing real behavior — tests that always pass regardless of whether the implementation is correct. Review AI-generated tests specifically for: (1) tests that mock the function under test itself, (2) assertions that match mock setup values exactly without testing the path through real logic, and (3) missing negative test cases (unauthorized access, invalid input, edge cases). These patterns produce 100% "passing" test suites over non-functional code.
+
+> [community] **Lesson (Cursor/Claude Code adoption, 2025)**: Teams that pair AI coding assistants with strict TypeScript (`strict: true`, `exactOptionalPropertyTypes: true`) and `@typescript-eslint/recommendedTypeChecked` in their pre-commit and CI gates report that the AI assistant "gets better" — the feedback from the type checker and linter trains the assistant's suggestions toward type-safe patterns in subsequent prompts. The shift-left toolchain becomes a quality feedback mechanism for the AI, not just the developer.
+
+---
+
+## Property-Based Testing — TypeScript with fast-check
+
+Property-based testing generates hundreds of random inputs to find edge cases that hand-written example-based tests miss. It is a shift-left technique that finds entire categories of defects (off-by-one errors, encoding edge cases, boundary violations) without requiring the developer to enumerate every case.
+
+```typescript
+// src/lib/pagination.ts — simple pagination utility
+export interface PaginationParams {
+  page: number;    // 1-based page number
+  pageSize: number; // items per page
+  total: number;   // total number of items
+}
+
+export interface PaginationResult {
+  offset: number;   // SQL OFFSET equivalent
+  limit: number;    // SQL LIMIT equivalent
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+  totalPages: number;
+}
+
+export function paginate(params: PaginationParams): PaginationResult {
+  const { page, pageSize, total } = params;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const clampedPage = Math.min(Math.max(1, page), totalPages);
+  return {
+    offset: (clampedPage - 1) * pageSize,
+    limit: pageSize,
+    hasNextPage: clampedPage < totalPages,
+    hasPrevPage: clampedPage > 1,
+    totalPages,
+  };
+}
+```
+
+```typescript
+// src/lib/pagination.spec.ts — property-based tests with fast-check
+import { describe, it, expect } from 'vitest';
+import * as fc from 'fast-check';
+import { paginate } from './pagination.js';
+
+// Arbitraries: define the valid input domain
+const paginationArb = fc.record({
+  page: fc.integer({ min: 1, max: 10_000 }),
+  pageSize: fc.integer({ min: 1, max: 1_000 }),
+  total: fc.integer({ min: 0, max: 1_000_000 }),
+});
+
+describe('paginate — property-based tests', () => {
+  it('offset is always non-negative', () => {
+    fc.assert(
+      fc.property(paginationArb, ({ page, pageSize, total }) => {
+        const result = paginate({ page, pageSize, total });
+        expect(result.offset).toBeGreaterThanOrEqual(0);
+      }),
+      { numRuns: 1000 },
+    );
+  });
+
+  it('offset + limit never exceeds total (no over-fetching)', () => {
+    fc.assert(
+      fc.property(paginationArb, ({ page, pageSize, total }) => {
+        const result = paginate({ page, pageSize, total });
+        // On the last page, offset + limit may exceed total — that is correct
+        // But offset alone must never exceed total
+        expect(result.offset).toBeLessThanOrEqual(Math.max(0, total));
+      }),
+    );
+  });
+
+  it('totalPages is always at least 1', () => {
+    fc.assert(
+      fc.property(paginationArb, ({ page, pageSize, total }) => {
+        const result = paginate({ page, pageSize, total });
+        expect(result.totalPages).toBeGreaterThanOrEqual(1);
+      }),
+    );
+  });
+
+  it('hasNextPage and hasPrevPage are consistent with page position', () => {
+    fc.assert(
+      fc.property(paginationArb, ({ page, pageSize, total }) => {
+        const result = paginate({ page, pageSize, total });
+        if (result.totalPages === 1) {
+          expect(result.hasNextPage).toBe(false);
+          expect(result.hasPrevPage).toBe(false);
+        }
+      }),
+    );
+  });
+});
+
+// Example-based test: verify specific known cases
+describe('paginate — example-based tests', () => {
+  it('page 1 of 3 with 10 items per page and 25 total', () => {
+    const result = paginate({ page: 1, pageSize: 10, total: 25 });
+    expect(result).toMatchObject({ offset: 0, limit: 10, hasNextPage: true, hasPrevPage: false, totalPages: 3 });
+  });
+
+  it('page 3 (last) of 3', () => {
+    const result = paginate({ page: 3, pageSize: 10, total: 25 });
+    expect(result).toMatchObject({ offset: 20, limit: 10, hasNextPage: false, hasPrevPage: true });
+  });
+});
+```
+
+**WHY property-based testing is shift-left**: Example-based tests verify specific inputs. Property-based tests verify invariants across the entire input space — they find the edge cases you didn't think to write. Fast-check integrates natively with Vitest and can be added to the same pre-commit or CI workflow. When a property test finds a failing input, it automatically shrinks to the minimal reproducing case.
+
+> [community] **Lesson (Jane Street, Hypothesis/fast-check community)**: Property-based testing is most valuable for pure functions (parsers, formatters, validators, math utilities, pagination logic, data transformations). These are exactly the TypeScript functions that developers write dozens of example-based tests for — and still miss boundary cases. Adding `fc.assert(fc.property(...))` alongside each example-based `describe` block is a low-cost way to dramatically expand test coverage. WHY the adoption rate is low: most developers learn property-based testing from academic examples (list reversal, sorting) that feel contrived. The shift-left payoff is in production utilities where real bugs live.
+
+---
+
+## Consumer-Driven Contract Testing — TypeScript with Pact
+
+Contract testing validates that services agree on an API contract without requiring both to be deployed simultaneously. It is a mid-pipeline shift-left technique that catches integration defects at the PR level.
+
+```typescript
+// tests/contracts/user-api.consumer.pact.spec.ts — Pact consumer test (TypeScript)
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { resolve } from 'node:path';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { UserApiClient } from '../../src/clients/user-api.client.js';
+
+const { like, string, integer, eachLike } = MatchersV3;
+
+// Define the consumer's expectations of the provider
+const provider = new PactV3({
+  consumer: 'FrontendApp',
+  provider: 'UserService',
+  dir: resolve(process.cwd(), 'pacts'),      // Pacts written here, published to Pact Broker
+  logLevel: 'warn',
+});
+
+describe('UserService Contract — Consumer Side', () => {
+  let client: UserApiClient;
+
+  beforeAll(() => {
+    client = new UserApiClient({ baseUrl: 'http://localhost:8080' });
+  });
+
+  it('returns a user by ID with expected shape', () => {
+    return provider
+      .given('user with ID 1 exists')
+      .uponReceiving('a request to get user by ID')
+      .withRequest({
+        method: 'GET',
+        path: '/users/1',
+        headers: { Accept: 'application/json' },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          id: integer(1),
+          email: string('alice@example.com'),    // like(): any string is OK
+          name: string('Alice'),
+          role: string('viewer'),
+          // Consumer only declares fields it uses — provider can add fields freely
+        },
+      })
+      .executeTest(async (mockServer) => {
+        const user = await new UserApiClient({ baseUrl: mockServer.url }).getById(1);
+        // TypeScript: user is typed by the client's return type — shape must match
+        expect(user.id).toBe(1);
+        expect(user.email).toBeTruthy();
+        expect(user.role).toMatch(/^(admin|viewer|editor)$/);
+      });
+  });
+
+  it('returns 404 for unknown user', () => {
+    return provider
+      .given('user with ID 9999 does not exist')
+      .uponReceiving('a request for a non-existent user')
+      .withRequest({ method: 'GET', path: '/users/9999' })
+      .willRespondWith({
+        status: 404,
+        body: like({ error: 'User not found' }),
+      })
+      .executeTest(async (mockServer) => {
+        const apiClient = new UserApiClient({ baseUrl: mockServer.url });
+        await expect(apiClient.getById(9999)).rejects.toThrow(/404|not found/i);
+      });
+  });
+});
+```
+
+```yaml
+# .github/workflows/contract-tests.yml — publish pacts and verify provider on PRs
+name: Contract Tests
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  consumer-tests:
+    name: Consumer Pact Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npx vitest run tests/contracts/
+        # Generates pact files in ./pacts/
+
+      - name: Publish pacts to Pact Broker
+        run: |
+          npx pact-broker publish ./pacts \
+            --broker-base-url="${{ vars.PACT_BROKER_URL }}" \
+            --broker-token="${{ secrets.PACT_BROKER_TOKEN }}" \
+            --consumer-app-version="${{ github.sha }}" \
+            --tag="${{ github.head_ref }}"
+
+  provider-verification:
+    name: Provider Pact Verification
+    needs: consumer-tests
+    runs-on: ubuntu-latest
+    services:
+      user-service:
+        image: myorg/user-service:latest
+        ports: ['8080:8080']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: |
+          npx pact-provider-verifier \
+            --provider-base-url=http://localhost:8080 \
+            --pact-broker-base-url="${{ vars.PACT_BROKER_URL }}" \
+            --pact-broker-token="${{ secrets.PACT_BROKER_TOKEN }}" \
+            --provider="UserService" \
+            --publish-verification-results \
+            --provider-app-version="${{ github.sha }}"
+```
+
+**WHY contract tests are the right mid-pipeline check**: Unit tests verify individual services in isolation. E2E tests verify the whole stack but run slowly and break for unrelated reasons. Contract tests verify the API contract between two specific services — they run in seconds, run in parallel per service, and catch breaking changes at the exact PR that introduced them. For TypeScript microservices, they complement tRPC (which provides compile-time API safety within a TypeScript monorepo) by validating cross-language or cross-repository service contracts.
+
+> [community] **Lesson (Pact community, production)**: The two most common contract testing failures are: (1) the provider returns a field with a different type than the consumer expects (e.g., `id` as `string` vs `number`) — caught immediately by Pact; (2) the provider removes a field the consumer depends on — also caught. Both of these would previously only surface in integration or staging environments. Teams running Pact as a PR gate report that the majority of "staging environment is broken" incidents in their history were API contract violations that Pact now catches in < 5 minutes.
+
+---
+
+## OpenAPI Schema Validation as Shift-Left (REST APIs)
+
+For REST APIs with non-TypeScript consumers, OpenAPI schema validation provides contract-level shift-left without requiring Pact or tRPC.
+
+```typescript
+// src/middleware/openapi-validator.ts — validate requests AND responses against OpenAPI spec
+// Uses express-openapi-validator: validates at runtime, not just in tests
+import OpenApiValidator from 'express-openapi-validator';
+import type { Express } from 'express';
+import { resolve } from 'node:path';
+
+export function installOpenApiValidation(app: Express): void {
+  app.use(
+    OpenApiValidator.middleware({
+      apiSpec: resolve(process.cwd(), 'openapi.yaml'),
+      validateRequests: {
+        allowUnknownQueryParameters: false,   // Rejects unknown query params
+        coerceTypes: false,                   // No silent type coercion (string "1" != number 1)
+      },
+      validateResponses: {
+        onError: (error, body, req) => {
+          // Response validation: log but don't break production
+          // In test/staging, set this to throw
+          console.error('[OpenAPI] Response validation error:', {
+            path: req.path,
+            error: error.message,
+            body: JSON.stringify(body).slice(0, 200),
+          });
+        },
+      },
+    }),
+  );
+}
+```
+
+```yaml
+# .github/workflows/openapi-lint.yml — lint OpenAPI spec and validate examples on every PR
+name: OpenAPI Schema Validation
+on:
+  pull_request:
+    paths: ['openapi.yaml', 'openapi/**/*.yaml', 'src/**/*.ts']
+
+jobs:
+  lint-spec:
+    name: Lint OpenAPI Spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      # Redocly: lint the OpenAPI spec itself (structure, examples, required fields)
+      - run: npx @redocly/cli lint openapi.yaml --format=stylish
+      # spectral: enforce API design rules (no-empty-descriptions, path-params-defined, etc.)
+      - run: npx @stoplight/spectral-cli lint openapi.yaml --ruleset .spectral.yaml
+      # Validate that TypeScript types match OpenAPI schema (type generation check)
+      - run: npx openapi-typescript openapi.yaml --output src/types/api.generated.ts
+      - run: npx tsc --noEmit   # Fail if generated types create type errors
+
+  validate-examples:
+    name: Validate OpenAPI Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npx @redocly/cli lint openapi.yaml --skip-rule no-unused-components
+```
+
+> [community] **Lesson (Stripe, Twilio API design teams)**: The OpenAPI spec and the implementation drift unless you treat the spec as the source of truth AND generate TypeScript types from it. `openapi-typescript` generates TypeScript types from an OpenAPI spec — when the spec changes, the generated types change, and `tsc --noEmit` catches all call sites that are now type-incorrect. This is the OpenAPI equivalent of what Zod does for request bodies: the schema IS the type. The anti-pattern is writing both the spec and the TypeScript interface by hand — they will drift within weeks.
+
+> [community] **Gotcha (express-openapi-validator + TypeScript)**: Response validation in production is expensive — it serializes and re-validates every response body. The correct pattern: enable `validateResponses: true` in tests and staging, and disable or log-only in production. The tests catch response shape issues at development time; production avoids the overhead.
+
+---
+
+## Renovate — Automated Dependency Update Configuration
+
+Unpatched dependencies are a shift-left failure: known CVEs are available in static databases, but they reach production because nobody updated the package. Renovate automates this with configurable merge policies.
+
+```json
+// renovate.json — TypeScript project configuration for automated dependency updates
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+
+  "timezone": "America/New_York",
+  "schedule": ["before 9am on Monday"],
+
+  // TypeScript-specific grouping: update all @types/* together with their implementation
+  "packageRules": [
+    {
+      "groupName": "TypeScript compiler + types",
+      "matchPackageNames": ["typescript"],
+      "matchPackagePatterns": ["^@types/"],
+      "automerge": false,
+      "reviewers": ["@typescript-owners"]
+    },
+    {
+      "groupName": "Test tooling (Vitest, testing-library)",
+      "matchPackageNames": ["vitest", "@vitest/coverage-v8"],
+      "matchPackagePatterns": ["^@testing-library/", "^@vitest/"],
+      "automerge": true,           // Auto-merge patch + minor test tool updates
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
+      "matchUpdateTypes": ["patch", "minor"]
+    },
+    {
+      "groupName": "Linting + formatting",
+      "matchPackageNames": ["eslint", "prettier", "@biomejs/biome"],
+      "matchPackagePatterns": ["^@typescript-eslint/", "^eslint-plugin-"],
+      "automerge": true,
+      "matchUpdateTypes": ["patch", "minor"]
+    },
+    {
+      "groupName": "Security patches — auto-merge critical",
+      "matchUpdateTypes": ["patch"],
+      "matchCategories": ["security"],
+      "automerge": true,           // Auto-merge security patches immediately
+      "automergeType": "pr",
+      "labels": ["security", "dependencies"]
+    },
+    {
+      "groupName": "Production dependencies (major)",
+      "matchDepTypes": ["dependencies"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false,          // Major updates require human review
+      "reviewers": ["@platform-team"],
+      "labels": ["dependencies", "review-required"]
+    }
+  ],
+
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "automerge": true,             // Auto-merge vulnerability fix PRs
+    "labels": ["security"]
+  },
+
+  "prConcurrentLimit": 5,          // Max 5 Renovate PRs open at once
+  "prHourlyLimit": 2               // Max 2 new PRs per hour (avoids CI queue saturation)
+}
+```
+
+**WHY Renovate over Dependabot for TypeScript projects**: Dependabot creates one PR per package update. A TypeScript project with 200 dependencies generates 20–40 Dependabot PRs per week, each requiring CI runs. Renovate groups related updates (`@types/*` with their implementation package, all ESLint plugins together), drastically reducing PR volume. The `automerge: true` for patch-level and security updates means these never require human review — they pass CI and merge automatically.
+
+> [community] **Lesson (production teams using Renovate, 2024)**: The `prConcurrentLimit` and `prHourlyLimit` settings are critical for large TypeScript monorepos. Without them, Renovate can open 30+ PRs simultaneously, saturating the CI queue and making the dashboard unworkable. Start with `prConcurrentLimit: 3` and increase after tuning.
+
+> [community] **Gotcha (Renovate + TypeScript strict mode)**: Renovate sometimes updates `@types/node` to a version incompatible with the current Node.js runtime used in CI. Add `"matchPackageNames": ["@types/node"], "allowedVersions": "^20"` to pin `@types/node` major version to match the Node.js version in your CI pipeline.
+
+---
+
+## Infrastructure-as-Code Scanning — AWS CDK (TypeScript)
+
+When infrastructure is written as TypeScript CDK code, the same shift-left principles apply: type checking, SAST, and policy-as-code checks run before infrastructure is deployed.
+
+```typescript
+// infrastructure/stacks/api-stack.ts — TypeScript CDK stack with security-first config
+import * as cdk from 'aws-cdk-lib';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import { Construct } from 'constructs';
+
+interface ApiStackProps extends cdk.StackProps {
+  readonly environment: 'development' | 'staging' | 'production';
+  readonly containerImage: ecs.ContainerImage;
+}
+
+export class ApiStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: ApiStackProps) {
+    super(scope, id, props);
+
+    // VPC: no public subnets for ECS tasks — TypeScript enum enforces subnet type
+    const vpc = new ec2.Vpc(this, 'ApiVpc', {
+      maxAzs: props.environment === 'production' ? 3 : 2,
+      subnetConfiguration: [
+        { cidrMask: 24, name: 'Public', subnetType: ec2.SubnetType.PUBLIC },
+        { cidrMask: 24, name: 'Private', subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        { cidrMask: 28, name: 'Isolated', subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      ],
+      // No NAT gateways in non-prod: TypeScript ternary enforces cost/security trade-off
+      natGateways: props.environment === 'production' ? 2 : 1,
+    });
+
+    // CloudWatch log group with defined retention — cdk-nag warns if missing
+    const logGroup = new logs.LogGroup(this, 'ApiLogGroup', {
+      retention: props.environment === 'production'
+        ? logs.RetentionDays.ONE_YEAR
+        : logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const cluster = new ecs.Cluster(this, 'ApiCluster', { vpc, containerInsights: true });
+
+    // Task definition: readonly root filesystem (security hardening)
+    const taskDef = new ecs.FargateTaskDefinition(this, 'ApiTask', {
+      memoryLimitMiB: 512,
+      cpu: 256,
+    });
+
+    taskDef.addContainer('Api', {
+      image: props.containerImage,
+      logging: ecs.LogDrivers.awsLogs({ logGroup, streamPrefix: 'api' }),
+      readonlyRootFilesystem: true,  // TypeScript: boolean flag, CDK enforces at synth
+      environment: { NODE_ENV: props.environment },
+    });
+  }
+}
+```
+
+```yaml
+# .github/workflows/cdk-security.yml — CDK diff + cdk-nag security checks on PRs
+name: CDK Security Check
+on:
+  pull_request:
+    paths: ['infrastructure/**', 'cdk.json']
+
+jobs:
+  cdk-nag:
+    name: CDK Nag Security Rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.CDK_SYNTH_ROLE_ARN }}
+          aws-region: us-east-1
+      # tsc check: CDK code is TypeScript — type errors = invalid infrastructure
+      - run: npx tsc --noEmit --project infrastructure/tsconfig.json
+      # CDK synth: generates CloudFormation — fails on CDK-level errors
+      - run: npx cdk synth --app "npx ts-node infrastructure/bin/app.ts"
+      # checkov: policy-as-code scan of synthesized CloudFormation
+      - run: |
+          pip install checkov
+          checkov --directory cdk.out/ --framework cloudformation \
+            --check CKV_AWS_2,CKV_AWS_18,CKV_AWS_66,CKV_AWS_92 \
+            --output sarif > checkov.sarif || true
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov.sarif
+```
+
+> [community] **Lesson (AWS CDK adoption, 2023–2025)**: TypeScript CDK is itself a shift-left tool for infrastructure: the type system prevents invalid infrastructure configurations at `cdk synth` time (e.g., referencing a VPC subnet that doesn't exist, passing the wrong ARN type). Teams that previously wrote CloudFormation YAML report finding 30–50% fewer deployment failures after switching to TypeScript CDK, because the compiler catches configuration errors before CloudFormation sees them.
+
+> [community] **Gotcha (cdk-nag false positives)**: cdk-nag enforces AWS Well-Architected security rules on CDK constructs. It produces false positives for intentional configurations (e.g., S3 bucket without replication in a development environment). Use `NagSuppressions.addResourceSuppressions()` with a justification string, not `// cdk-nag-ignore` comments — the justification is preserved in the CloudFormation metadata and is auditable.
+
+---
+
+## Database Migration Testing as Shift-Left
+
+Database migrations are a class of change where production defects are catastrophically expensive: a broken migration can corrupt data, cause downtime, or require manual recovery that takes hours. Testing migrations before they reach production is one of the highest-leverage shift-left investments.
+
+```typescript
+// tests/migrations/migration.spec.ts — test database migrations in CI against real schema
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { Client } from 'pg';
+import { execSync } from 'node:child_process';
+
+const DATABASE_URL = process.env.TEST_DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/test_db';
+let client: Client;
+
+beforeAll(async () => {
+  client = new Client({ connectionString: DATABASE_URL });
+  await client.connect();
+  // Run all pending migrations against the test database
+  execSync('npx db-migrate up --config=database.json --env=test', {
+    env: { ...process.env, DATABASE_URL },
+    stdio: 'inherit',
+  });
+});
+
+afterAll(async () => {
+  // Roll back all migrations — verifies down() migrations work correctly
+  execSync('npx db-migrate reset --config=database.json --env=test', {
+    env: { ...process.env, DATABASE_URL },
+  });
+  await client.end();
+});
+
+describe('User table migration', () => {
+  it('creates the users table with required columns', async () => {
+    const result = await client.query(`
+      SELECT column_name, data_type, is_nullable
+      FROM information_schema.columns
+      WHERE table_name = 'users'
+      ORDER BY ordinal_position
+    `);
+    const columns = result.rows.map((r: { column_name: string }) => r.column_name);
+    expect(columns).toContain('id');
+    expect(columns).toContain('email');
+    expect(columns).toContain('created_at');
+  });
+
+  it('email column has a unique constraint', async () => {
+    const result = await client.query(`
+      SELECT constraint_name, constraint_type
+      FROM information_schema.table_constraints
+      WHERE table_name = 'users' AND constraint_type = 'UNIQUE'
+    `);
+    expect(result.rows.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('prevents duplicate emails at the DB level', async () => {
+    await client.query("DELETE FROM users WHERE email = 'test@example.com'");
+    await client.query("INSERT INTO users (email, name) VALUES ('test@example.com', 'Test')");
+    await expect(
+      client.query("INSERT INTO users (email, name) VALUES ('test@example.com', 'Test2')"),
+    ).rejects.toThrow(/duplicate key/i);
+    await client.query("DELETE FROM users WHERE email = 'test@example.com'");
+  });
+});
+```
+
+```yaml
+# .github/workflows/migration-test.yml — test migrations on PRs that change DB code
+name: Database Migration Tests
+on:
+  pull_request:
+    paths: ['migrations/**', 'src/db/**', 'tests/migrations/**']
+
+jobs:
+  test-migrations:
+    name: Test DB Migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run tests/migrations/ --reporter=verbose
+```
+
+**WHY migration testing is shift-left**: A broken migration discovered in production means downtime, potential data corruption, and manual rollback. A broken migration found in CI means a 3-minute fix. Testing migrations at PR time against real Postgres verifies both the `up()` and `down()` paths, including constraint enforcement and data integrity rules.
+
+> [community] **Lesson (production databases)**: The most expensive migration defects are: (1) a column that cannot be NOT NULL because the table has existing data — the migration succeeds on an empty test DB but fails on production; (2) a long-running `ALTER TABLE` that causes a lock timeout. Run migration tests against a DB seeded with representative data volume, not just empty schema.
+
+> [community] **Gotcha (Prisma migrations)**: Prisma's `prisma migrate deploy` is safe in production (applies explicit migration files). But `prisma migrate dev` creates AND applies new migrations automatically — it must never run in CI against a real database. Always use `prisma migrate deploy` in CI environments.
+
+---
+
+## TypeScript 5.x Advanced Shift-Left Patterns
+
+TypeScript 5.x introduces compiler features that encode correctness constraints at authoring time.
+
+### `const` Type Parameters — Prevent Accidental Widening
+
+```typescript
+// TypeScript 5.0+: const type parameters preserve literal types
+// WITHOUT const: TypeScript widens to string[]
+function createRoute<T extends string>(paths: T[]): T[] {
+  return paths;
+}
+const routes1 = createRoute(['GET /users', 'POST /users']); // type: string[]
+
+// WITH const: TypeScript preserves exact literal union
+function createTypedRoute<const T extends string>(paths: T[]): T[] {
+  return paths;
+}
+const routes2 = createTypedRoute(['GET /users', 'POST /users']);
+// type: readonly ['GET /users', 'POST /users'] — precise, exhaustiveness-checkable
+
+type ValidRoutes = typeof routes2[number]; // 'GET /users' | 'POST /users'
+
+function handleRequest(route: ValidRoutes): string {
+  switch (route) {
+    case 'GET /users': return 'list-users';
+    case 'POST /users': return 'create-user';
+    // Adding 'DELETE /users' to createTypedRoute would cause a compile error here
+    // if exhaustive switch + noImplicitReturns is enabled — shift-left for route registration
+    default: {
+      const _never: never = route; // Exhaustiveness guard
+      throw new Error(`Unhandled route: ${String(_never)}`);
+    }
+  }
+}
+```
+
+### Template Literal Types — Compile-Time String Pattern Validation
+
+```typescript
+// TypeScript 4.1+: template literal types validate string patterns at compile time
+// Shift-left: catches malformed domain IDs and event names at authoring time
+
+type UserId = `user_${string}`;
+type OrderId = `order_${string}`;
+
+async function getUser(id: UserId): Promise<{ id: UserId; email: string }> {
+  return fetch(`/api/users/${id}`).then((r) => r.json() as Promise<{ id: UserId; email: string }>);
+}
+
+// These are type errors — caught at compile time, not runtime:
+// getUser('12345');           // Error: not a UserId
+// getUser('order_12345');     // Error: not a UserId (wrong prefix)
+getUser('user_12345');        // OK
+
+// Domain event naming: template literal type enforces naming convention
+type DomainEvent =
+  | `user.${'created' | 'updated' | 'deleted'}`
+  | `order.${'placed' | 'fulfilled' | 'cancelled'}`;
+
+declare function emit(event: DomainEvent, payload: unknown): void;
+emit('user.created', {});     // OK
+// emit('user.activated', {}); // Error: 'user.activated' is not a DomainEvent
+```
+
+### `using` Declarations — Automatic Resource Cleanup
+
+```typescript
+// TypeScript 5.2+: Explicit Resource Management prevents resource leaks at compile time
+// Requires: tsconfig "lib": ["ES2022", "ESNext"] and "target": "ES2022"
+
+// Without using: easy to forget close() if an exception is thrown
+async function processFile_UNSAFE(path: string): Promise<string> {
+  const handle = await openFile(path);
+  const content = await handle.read(); // If this throws, handle.close() is never called
+  await handle.close();
+  return content;
+}
+
+// With using: TypeScript compiler enforces Symbol.asyncDispose is called on scope exit
+async function processFile_SAFE(path: string): Promise<string> {
+  await using handle = await openFile(path);
+  // handle[Symbol.asyncDispose]() is called automatically — even if read() throws
+  return handle.read();
+}
+
+// Practical: DB transaction with guaranteed rollback on unhandled errors
+class DbTransaction implements AsyncDisposable {
+  #committed = false;
+  async commit(): Promise<void> { this.#committed = true; }
+  async [Symbol.asyncDispose](): Promise<void> {
+    if (!this.#committed) await this.rollback();
+  }
+  private async rollback(): Promise<void> { /* rollback logic */ }
+}
+
+declare function openFile(path: string): Promise<{ read(): Promise<string> } & AsyncDisposable>;
+```
+
+**WHY TypeScript 5.x features are shift-left**: `const` type parameters make route registries and event buses exhaustiveness-checkable at compile time. Template literal types reject malformed domain IDs before they reach a database query. `using` declarations prevent resource leaks from reaching production — the compiler enforces cleanup, not the developer's memory.
+
+> [community] **Lesson (TypeScript team blog, 2024)**: Template literal types are the TypeScript feature most underused for shift-left. Teams use them for Tailwind CSS class names but rarely apply them to domain IDs, event names, and route patterns — exactly where malformed strings cause production errors. Adding `UserId = 'user_${string}'` is zero-runtime-cost and immediately surfaces incorrect ID construction throughout the codebase.
+
+---
+
+## Property-Based Testing — TypeScript with fast-check
+
+Property-based testing generates hundreds of random inputs to find edge cases that hand-written example tests miss. It is a shift-left technique for discovering boundary defects systematically.
+
+```typescript
+// src/lib/pagination.ts — simple pagination utility
+export interface PaginationParams {
+  page: number;     // 1-based
+  pageSize: number; // items per page
+  total: number;    // total items
+}
+
+export interface PaginationResult {
+  offset: number;
+  limit: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+  totalPages: number;
+}
+
+export function paginate({ page, pageSize, total }: PaginationParams): PaginationResult {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const clampedPage = Math.min(Math.max(1, page), totalPages);
+  return {
+    offset: (clampedPage - 1) * pageSize,
+    limit: pageSize,
+    hasNextPage: clampedPage < totalPages,
+    hasPrevPage: clampedPage > 1,
+    totalPages,
+  };
+}
+```
+
+```typescript
+// src/lib/pagination.spec.ts — property-based tests with fast-check
+import { describe, it, expect } from 'vitest';
+import * as fc from 'fast-check';
+import { paginate } from './pagination.js';
+
+const paginationArb = fc.record({
+  page: fc.integer({ min: 1, max: 10_000 }),
+  pageSize: fc.integer({ min: 1, max: 1_000 }),
+  total: fc.integer({ min: 0, max: 1_000_000 }),
+});
+
+describe('paginate — properties', () => {
+  it('offset is always non-negative', () => {
+    fc.assert(
+      fc.property(paginationArb, (params) => {
+        expect(paginate(params).offset).toBeGreaterThanOrEqual(0);
+      }),
+      { numRuns: 1000 },
+    );
+  });
+
+  it('offset never exceeds total', () => {
+    fc.assert(
+      fc.property(paginationArb, ({ page, pageSize, total }) => {
+        const { offset } = paginate({ page, pageSize, total });
+        expect(offset).toBeLessThanOrEqual(Math.max(0, total));
+      }),
+    );
+  });
+
+  it('totalPages is always at least 1', () => {
+    fc.assert(
+      fc.property(paginationArb, (params) => {
+        expect(paginate(params).totalPages).toBeGreaterThanOrEqual(1);
+      }),
+    );
+  });
+
+  it('on the only page: no next, no prev', () => {
+    fc.assert(
+      fc.property(paginationArb, (params) => {
+        const result = paginate(params);
+        if (result.totalPages === 1) {
+          expect(result.hasNextPage).toBe(false);
+          expect(result.hasPrevPage).toBe(false);
+        }
+      }),
+    );
+  });
+});
+```
+
+**WHY property-based testing is shift-left**: Example-based tests verify specific inputs. Property-based tests verify invariants across the entire input space — they find the edge cases you didn't think to write. fast-check integrates natively with Vitest and can be added to the same pre-commit or CI workflow. When a property test finds a failing input, it automatically shrinks to the minimal reproducing case.
+
+> [community] **Lesson (fast-check community)**: Property-based testing is most valuable for pure functions (parsers, validators, math utilities, pagination logic, data transformations). Adding `fc.assert(fc.property(...))` alongside each example-based `describe` block dramatically expands test coverage with minimal authoring effort. WHY adoption is low: most developers learn property-based testing from contrived examples (list reversal). The shift-left payoff is in production utilities where real boundary defects live.
+
+---
+
+## Playwright Component Testing as Shift-Left
+
+Playwright's component testing mode (`@playwright/experimental-ct-react`) runs React/Vue/Svelte component tests in a real browser without a full application server. It is a shift-left alternative to E2E tests for UI-layer logic.
+
+```typescript
+// src/components/UserCard.spec.tsx — Playwright component test (React + TypeScript)
+// No server needed: Playwright mounts the component in a real browser via Vite
+import { test, expect } from '@playwright/experimental-ct-react';
+import { UserCard } from './UserCard.js';
+import type { User } from '../../shared/types.js';
+
+const mockUser: User = {
+  id: 'user_1',
+  name: 'Alice',
+  email: 'alice@example.com',
+  role: 'admin',
+  avatarUrl: null,
+};
+
+test.describe('UserCard component', () => {
+  test('renders user name and email', async ({ mount }) => {
+    const component = await mount(<UserCard user={mockUser} />);
+    await expect(component.getByText('Alice')).toBeVisible();
+    await expect(component.getByText('alice@example.com')).toBeVisible();
+  });
+
+  test('shows admin badge for admin role', async ({ mount }) => {
+    const component = await mount(<UserCard user={mockUser} />);
+    await expect(component.getByRole('img', { name: /admin badge/i })).toBeVisible();
+  });
+
+  test('fires onEdit callback with correct user ID', async ({ mount }) => {
+    let editedUserId: string | undefined;
+    const component = await mount(
+      <UserCard user={mockUser} onEdit={(id) => { editedUserId = id; }} />,
+    );
+    await component.getByRole('button', { name: /edit/i }).click();
+    expect(editedUserId).toBe('user_1');
+  });
+
+  test('shows placeholder when avatarUrl is null', async ({ mount }) => {
+    const component = await mount(<UserCard user={{ ...mockUser, avatarUrl: null }} />);
+    // TypeScript: '...mockUser' spread is type-safe because User is typed
+    await expect(component.getByRole('img', { name: /avatar/i })).toHaveAttribute(
+      'src',
+      expect.stringContaining('placeholder'),
+    );
+  });
+
+  test('meets accessibility requirements (axe)', async ({ mount, page }) => {
+    await mount(<UserCard user={mockUser} />);
+    // Inject axe-core for accessibility checking in the browser context
+    await page.evaluate(() => {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.9.1/axe.min.js';
+      document.head.appendChild(script);
+    });
+    const violations = await page.evaluate(async () => {
+      const results = await (window as unknown as { axe: { run(): Promise<{ violations: unknown[] }> } }).axe.run();
+      return results.violations;
+    });
+    expect(violations).toHaveLength(0);
+  });
+});
+```
+
+```typescript
+// playwright-ct.config.ts — component test configuration for TypeScript + React
+import { defineConfig, devices } from '@playwright/experimental-ct-react';
+
+export default defineConfig({
+  testDir: './src',
+  testMatch: ['**/*.spec.tsx', '**/*.ct.spec.ts'],
+  timeout: 10_000,
+  retries: process.env.CI ? 2 : 0,
+  reporter: [
+    process.env.CI ? ['junit', { outputFile: 'ct-results.xml' }] : ['list'],
+    ['html', { open: 'never' }],
+  ],
+
+  use: {
+    ctPort: 3100,
+    ctViteConfig: {
+      resolve: { alias: { '@': new URL('./src', import.meta.url).pathname } },
+    },
+    // TypeScript: capture screenshots on failure for visual debugging
+    screenshot: 'only-on-failure',
+    video: 'off',
+  },
+
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+  ],
+});
+```
+
+**WHY Playwright component tests are shift-left**: Full E2E tests require a running server, database, and auth setup. Component tests require only the component and its props — they run in 1–5 seconds per test. They catch rendering logic, interaction handlers, accessibility violations, and cross-browser CSS regressions without infrastructure cost. They run in CI on every PR.
+
+> [community] **Lesson (Playwright CT adopters, 2024)**: The most common mistake with Playwright component tests is replicating E2E patterns (testing whole user flows) rather than component-level logic (testing one component in isolation). Component tests should answer: "does this button fire the right callback?" and "does this component render correctly for edge-case props?" The E2E test answers "does the whole checkout flow work?" Both are valuable at different levels.
+
+> [community] **Gotcha (Playwright CT + TypeScript strict mode)**: Playwright CT requires JSX/TSX files processed by Vite. If `tsconfig.json` has `"moduleResolution": "NodeNext"`, add a separate `tsconfig.playwright.json` with `"moduleResolution": "Bundler"` for Vite compatibility. Without this, Playwright CT fails to start with cryptic import resolution errors.
+
+---
+
+## SLO-Based Shift-Left Measurement
+
+Error budgets and SLOs (Service Level Objectives) provide a quantitative framework for deciding how much shift-left investment is warranted for a given service. They bridge the gap between "shift-left is good" and "how much shift-left do we need?"
+
+```typescript
+// src/monitoring/slo-calculator.ts — TypeScript SLO budget calculator
+// Connects shift-left investment to measurable production outcomes
+
+export interface SloConfig {
+  readonly targetReliability: number;    // e.g., 0.999 = 99.9%
+  readonly windowDays: number;           // measurement window
+  readonly serviceNameLabel: string;
+}
+
+export interface SloStatus {
+  readonly remainingBudgetMinutes: number;
+  readonly consumedFraction: number;     // 0..1 — 0 = untouched, 1 = fully consumed
+  readonly isAtRisk: boolean;            // true if > 50% consumed in first half of window
+  readonly recommendedAction: SloRecommendation;
+}
+
+export type SloRecommendation =
+  | 'accelerate-delivery'   // Budget healthy: increase deployment frequency
+  | 'normal-operations'     // Budget nominal
+  | 'reduce-risk'           // Budget at risk: slow down, focus on stability
+  | 'freeze-deployments';   // Budget exhausted: no changes until window resets
+
+export function calculateSloStatus(
+  config: SloConfig,
+  actualReliability: number,
+  daysElapsed: number,
+): SloStatus {
+  const totalBudgetMinutes =
+    config.windowDays * 24 * 60 * (1 - config.targetReliability);
+
+  const consumedMinutes =
+    config.windowDays * 24 * 60 * Math.max(0, config.targetReliability - actualReliability);
+
+  const consumedFraction = totalBudgetMinutes > 0
+    ? Math.min(1, consumedMinutes / totalBudgetMinutes)
+    : 1;
+
+  const expectedFractionConsumed = daysElapsed / config.windowDays;
+  const isAtRisk = consumedFraction > expectedFractionConsumed * 1.5;
+
+  let recommendedAction: SloRecommendation;
+  if (consumedFraction >= 1) {
+    recommendedAction = 'freeze-deployments';
+  } else if (consumedFraction > 0.5) {
+    recommendedAction = 'reduce-risk';
+  } else if (isAtRisk) {
+    recommendedAction = 'normal-operations';
+  } else {
+    recommendedAction = 'accelerate-delivery';
+  }
+
+  return {
+    remainingBudgetMinutes: Math.max(0, totalBudgetMinutes - consumedMinutes),
+    consumedFraction,
+    isAtRisk,
+    recommendedAction,
+  };
+}
+```
+
+**WHY SLOs connect to shift-left**: The SLO framework answers the question "how much testing is enough?" If the error budget is consistently healthy (< 25% consumed), the team can invest less in pre-commit checks and more in feature velocity. If the budget is consistently exhausted, it signals that shift-left gates are not catching defects before production — invest in more coverage or tighter gates. SLOs make the cost-of-defects curve concrete and measurable for the specific team.
+
+> [community] **Lesson (Google SRE Book, SLO practice)**: Teams that define SLOs before implementing shift-left tooling make better tooling decisions. The SLO tells you what reliability matters for your users. The shift-left investment is sized to that reliability target — a 99.9% SLO requires different shift-left depth than a 99.99% SLO. Without the SLO anchor, teams over-invest in tooling that doesn't correspond to actual user impact.
+
+> [community] **Lesson (DORA 2024)**: The "elite" DORA performance cluster (highest deployment frequency, lowest change failure rate) consistently shows that teams use both shift-left (pre-production defect detection) and error budgets/SLOs (production risk tolerance) as complementary instruments. The error budget is the production signal that validates whether the shift-left investment is correctly calibrated. Teams using only one instrument optimize for the wrong metric.
+
+---
 
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
@@ -1275,4 +2541,19 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 | CISA: Framing Software Component Transparency | Official | https://www.cisa.gov/resources-tools/resources/framing-software-component-transparency | SBOM guidance for supply chain security |
 | GitHub Copilot Autofix | Tool | https://github.blog/2024-03-20-found-means-fixed-introducing-autofix-for-github-advanced-security/ | AI-assisted SAST remediation with TypeScript awareness |
 | Semgrep Assistant | Tool | https://semgrep.dev/docs/semgrep-assistant/overview/ | AI-powered triage and remediation for Semgrep findings |
+| Biome | Tool | https://biomejs.dev/ | Rust-native unified linter + formatter for TypeScript (replaces ESLint + Prettier) |
+| Oxlint | Tool | https://oxc.rs/docs/guide/usage/linter.html | Rust-native TypeScript linter: 50–100× faster than ESLint |
+| tRPC | Tool | https://trpc.io/ | End-to-end TypeScript type-safety at API boundaries — no separate API schema needed |
+| CycloneDX SBOM for npm | Tool | https://github.com/CycloneDX/cyclonedx-node-npm | Generate CycloneDX SBOMs from npm lock files |
+| Dependency Track | Tool | https://dependencytrack.org/ | Continuous SBOM vulnerability monitoring platform |
 | ISTQB CTFL 4.0 Syllabus | Official | https://www.istqb.org/certifications/certified-tester-foundation-level | Standardized shift-left terminology and test levels |
+| fast-check | Tool | https://fast-check.dev/ | Property-based testing library for TypeScript/JavaScript |
+| openapi-typescript | Tool | https://openapi-ts.dev/ | Generate TypeScript types from OpenAPI specs — single source of truth |
+| express-openapi-validator | Tool | https://github.com/cdimascio/express-openapi-validator | Runtime request/response validation against OpenAPI spec |
+| Redocly CLI | Tool | https://redocly.com/docs/cli/ | OpenAPI linting and bundling |
+| Playwright Component Testing | Tool | https://playwright.dev/docs/test-components | Browser-native component tests without a full server |
+| AWS CDK Documentation | Official | https://docs.aws.amazon.com/cdk/v2/guide/ | TypeScript infrastructure-as-code |
+| cdk-nag | Tool | https://github.com/cdklabs/cdk-nag | AWS CDK security policy-as-code checks |
+| Checkov | Tool | https://www.checkov.io/ | Policy-as-code scanner for CloudFormation, Terraform, CDK |
+| TypeScript 5.x Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html | const type parameters, decorators, using declarations |
+| Prisma ORM | Tool | https://www.prisma.io/docs/ | TypeScript-first ORM with type-safe migrations |

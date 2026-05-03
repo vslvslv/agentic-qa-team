@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
+<!-- sources: official | community | mixed | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
 
 ## Core Philosophy
 
@@ -71,6 +71,31 @@ IQueryable<Order> query = _db.Orders.Where(o => o.Total > 100);
 // Immediate: materializes now — prevents double enumeration
 List<Order> orders = query.OrderBy(o => o.CreatedAt).ToList();
 int count = orders.Count;  // in-memory property, not a second DB trip
+```
+
+**New LINQ Methods — .NET 9:**
+
+```csharp
+// CountBy — count occurrences by key without intermediate GroupBy allocation
+var wordCounts = words.CountBy(w => w.ToLowerInvariant());
+// Returns IEnumerable<KeyValuePair<string,int>> — no intermediate groupings
+
+// AggregateBy — aggregate by key without allocating group collections
+var totalByRegion = orders.AggregateBy(
+    keySelector: o => o.Region,
+    seed: 0m,
+    func: (total, o) => total + o.Amount);
+// Returns IEnumerable<KeyValuePair<string,decimal>>
+
+// Index — attach a zero-based index to each element (like Python's enumerate)
+foreach (var (index, item) in shoppingCart.Items.Index())
+{
+    Console.WriteLine($"{index + 1}. {item.Name} — {item.Price:C}");
+}
+
+// Order/OrderDescending — sort without a key selector (uses natural order)
+var sorted = numbers.Order().ToList();           // ascending
+var reversed = names.OrderDescending().ToList(); // descending
 ```
 
 ### async/await + ConfigureAwait + CancellationToken
@@ -371,6 +396,67 @@ public class EmailService(IOptions<SmtpOptions> options)
 }
 ```
 
+### Minimal APIs — ASP.NET Core .NET 8+ with TypedResults
+
+ASP.NET Core Minimal APIs use `IEndpointRouteBuilder` to declare routes as lambdas or method groups. Prefer `TypedResults` over `Results` for strongly-typed return types that are captured in OpenAPI metadata. Group related endpoints with `RouteGroupBuilder` and extract to extension methods for maintainability.
+
+```csharp
+// Program.cs — use WebApplication.MapGroup + extension method for route organization
+var app = builder.Build();
+
+app.MapOrderEndpoints();
+app.MapCustomerEndpoints();
+
+// OrderEndpoints.cs — IEndpointRouteBuilder extension for cohesion
+public static class OrderEndpoints
+{
+    public static IEndpointRouteBuilder MapOrderEndpoints(
+        this IEndpointRouteBuilder routes)
+    {
+        var group = routes.MapGroup("/orders")
+            .WithTags("Orders")
+            .RequireAuthorization();
+
+        group.MapGet("{id:int}", GetOrder)
+            .WithName("GetOrder")
+            .Produces<OrderDto>()
+            .ProducesProblem(StatusCodes.Status404NotFound);
+
+        group.MapPost("", CreateOrder)
+            .WithName("CreateOrder")
+            .Accepts<CreateOrderRequest>("application/json");
+
+        return routes;
+    }
+
+    // Handler as static method — testable, no DI required in delegate
+    static async Task<Results<Ok<OrderDto>, NotFound>> GetOrder(
+        int id,
+        IOrderService orders,
+        CancellationToken ct)
+    {
+        var order = await orders.GetByIdAsync(id, ct);
+        return order is null
+            ? TypedResults.NotFound()
+            : TypedResults.Ok(order.ToDto());
+    }
+
+    static async Task<Results<Created<OrderDto>, ValidationProblem>> CreateOrder(
+        CreateOrderRequest request,
+        IOrderService orders,
+        IValidator<CreateOrderRequest> validator,
+        CancellationToken ct)
+    {
+        var validation = await validator.ValidateAsync(request, ct);
+        if (!validation.IsValid)
+            return TypedResults.ValidationProblem(validation.ToDictionary());
+
+        var order = await orders.CreateAsync(request, ct);
+        return TypedResults.Created($"/orders/{order.Id}", order.ToDto());
+    }
+}
+```
+
 ### Delegates — `Func<T>` and `Action<T>` over Custom Delegate Types
 
 Use the built-in `Func<>` and `Action<>` delegate types rather than declaring custom delegate types. They communicate intent (action vs. function), are composable, and avoid polluting the type namespace. Declare custom delegate types only when the signature is highly domain-specific and used in many places — even then, consider `Func<>` with a type alias.
@@ -396,6 +482,58 @@ Func<string, string> normalize = s => toLower(trim(s));
 
 // Event handler shorthand with lambda — no need for a named method unless reuse needed
 button.Click += (sender, e) => HandleClick((Button)sender);
+```
+
+### Result Pattern — Error Handling Without Exceptions
+
+Exceptions are for exceptional situations, not expected failures. Using a `Result<T>` type (or discriminated union via OneOf / pattern matching) lets callers handle failure paths without try/catch and without silently swallowing errors. In C#, you can implement a minimal Result type using records and switch expressions without external libraries.
+
+```csharp
+// Lightweight Result type using records and pattern matching
+public abstract record Result<T>
+{
+    public record Success(T Value) : Result<T>;
+    public record Failure(string Error, Exception? Exception = null) : Result<T>;
+
+    public bool IsSuccess => this is Success;
+    public T? ValueOrDefault => this is Success s ? s.Value : default;
+}
+
+// Helper factories for cleaner call sites
+public static class Result
+{
+    public static Result<T> Ok<T>(T value) => new Result<T>.Success(value);
+    public static Result<T> Fail<T>(string error, Exception? ex = null)
+        => new Result<T>.Failure(error, ex);
+}
+
+// Service method returns Result instead of throwing
+public async Task<Result<Order>> PlaceOrderAsync(
+    PlaceOrderRequest request,
+    CancellationToken ct)
+{
+    if (!await _inventory.HasStockAsync(request.Items, ct))
+        return Result.Fail<Order>("One or more items are out of stock.");
+
+    try
+    {
+        var order = await _orderRepo.CreateAsync(request, ct);
+        return Result.Ok(order);
+    }
+    catch (DbException ex)
+    {
+        _logger.LogError(ex, "DB error placing order");
+        return Result.Fail<Order>("Database error — please try again.", ex);
+    }
+}
+
+// Caller uses switch expression — no try/catch needed
+var result = await _orderService.PlaceOrderAsync(request, ct);
+return result switch
+{
+    Result<Order>.Success s  => TypedResults.Created($"/orders/{s.Value.Id}", s.Value),
+    Result<Order>.Failure f  => TypedResults.Problem(f.Error),
+};
 ```
 
 ### CPU-Bound Async — Task.Run
@@ -471,6 +609,89 @@ public sealed class AsyncDataService : IAsyncDisposable
 // Caller: use 'await using' for IAsyncDisposable
 await using var service = new AsyncDataService();
 var results = await service.QueryAsync(ct);
+```
+
+### `Channel<T>` — Async Producer-Consumer Pipelines
+
+`System.Threading.Channels.Channel<T>` is the idiomatic .NET pattern for decoupled producer-consumer pipelines. Unlike `BlockingCollection<T>`, channels are fully async and backpressure-aware. A bounded channel limits queue depth (backpressure); an unbounded channel accepts unlimited items. Use `ChannelReader<T>` in consumers and `ChannelWriter<T>` in producers.
+
+```csharp
+// Create a bounded channel — producer blocks when queue is full (backpressure)
+var channel = Channel.CreateBounded<WorkItem>(
+    new BoundedChannelOptions(capacity: 100)
+    {
+        FullMode = BoundedChannelFullMode.Wait,      // await instead of drop
+        SingleReader = false,
+        SingleWriter = false
+    });
+
+// Producer: write items until done, then mark complete
+public async Task ProduceAsync(ChannelWriter<WorkItem> writer, CancellationToken ct)
+{
+    try
+    {
+        await foreach (var item in _source.StreamAsync(ct))
+        {
+            await writer.WriteAsync(item, ct);  // waits if channel is full
+        }
+    }
+    finally
+    {
+        writer.Complete();  // signal: no more items coming
+    }
+}
+
+// Consumer: read items until channel is complete
+public async Task ConsumeAsync(ChannelReader<WorkItem> reader, CancellationToken ct)
+{
+    // ReadAllAsync yields items as they arrive; stops when writer.Complete() is called
+    await foreach (var item in reader.ReadAllAsync(ct))
+    {
+        await ProcessItemAsync(item, ct);
+    }
+}
+
+// Wire up producer and multiple consumers concurrently
+var producerTask = ProduceAsync(channel.Writer, cts.Token);
+var consumerTasks = Enumerable.Range(0, 4)
+    .Select(_ => ConsumeAsync(channel.Reader, cts.Token))
+    .ToArray();
+await Task.WhenAll([producerTask, ..consumerTasks]);
+```
+
+### `PeriodicTimer` — Tick-Accurate Background Loops (.NET 6+)
+
+`PeriodicTimer` replaces `Task.Delay(interval)` loops for background services. Unlike `Task.Delay`, it does not drift over time — each tick fires at a fixed interval from the previous, compensating for processing time. It is properly cancellable, and skips missed ticks if the callback falls behind instead of stacking them up.
+
+```csharp
+public sealed class MetricsFlushService(
+    IMetricsCollector metrics,
+    ILogger<MetricsFlushService> logger)
+    : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+
+        // WaitForNextTickAsync returns false when stoppingToken is cancelled
+        while (await timer.WaitForNextTickAsync(stoppingToken))
+        {
+            try
+            {
+                await metrics.FlushAsync(stoppingToken);
+                logger.LogDebug("Metrics flushed at {Time}", DateTimeOffset.UtcNow);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Log but don't crash the service — next tick will retry
+                logger.LogError(ex, "Metrics flush failed");
+            }
+        }
+    }
+}
+
+// Registration in Program.cs
+builder.Services.AddHostedService<MetricsFlushService>();
 ```
 
 ---
@@ -833,6 +1054,215 @@ public static unsafe int SizeOf<T>() where T : unmanaged => sizeof(T);
 // enum constraint: type-safe enum operations
 public static string GetName<T>(T value) where T : struct, Enum
     => Enum.GetName(value) ?? value.ToString();
+```
+
+### Guard Clauses — `ArgumentException.ThrowIf*` Helpers (.NET 8+)
+
+.NET 8 added a family of `ArgumentException.ThrowIf*` static methods and `ObjectDisposedException.ThrowIf` to replace manual `if (x == null) throw new ArgumentNullException(nameof(x))` boilerplate. Use these at public API entry points to validate inputs without ceremony. The `[CallerArgumentExpression]` attribute is used internally to automatically capture the parameter name in the exception message.
+
+```csharp
+// .NET 8+ guard helpers — replace manual if/throw patterns
+public void ProcessOrder(Order? order, string customerId, IList<OrderItem> items)
+{
+    ArgumentNullException.ThrowIfNull(order);                        // order != null
+    ArgumentException.ThrowIfNullOrEmpty(customerId);               // not null, not ""
+    ArgumentException.ThrowIfNullOrWhiteSpace(customerId);          // not null, not whitespace
+    ArgumentOutOfRangeException.ThrowIfNegative(items.Count);       // not < 0
+    ArgumentOutOfRangeException.ThrowIfZero(items.Count);           // not == 0
+    ArgumentOutOfRangeException.ThrowIfGreaterThan(items.Count, 100); // not > 100
+
+    // safe to use all parameters below
+}
+
+// ObjectDisposedException.ThrowIf — idiomatic disposed-check
+public class DataReader : IDisposable
+{
+    private bool _disposed;
+
+    public string Read()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        // ... read logic
+        return string.Empty;
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        GC.SuppressFinalize(this);
+    }
+}
+
+// [CallerArgumentExpression] — capture expression text in custom guard methods
+public static T RequireNotNull<T>(
+    [NotNull] T? value,
+    [CallerArgumentExpression(nameof(value))] string? expression = null)
+    where T : class
+{
+    if (value is null)
+        throw new ArgumentNullException(expression, $"Expected non-null: {expression}");
+    return value;
+}
+
+// Usage: exception message automatically says "order.Customer" not just "value"
+var customer = RequireNotNull(order.Customer);
+```
+
+### C# 14 / .NET 10 — Extension Members
+
+C# 14 (shipping with .NET 10) introduces a richer extension member syntax. Rather than writing isolated static methods in a separate class, you can now declare an `extension` block that groups both instance and static extension members, including properties and operators. This is a significant upgrade over the C# 3 extension method model.
+
+```csharp
+// C# 14: extension block groups instance and static extension members
+public static class OrderExtensions
+{
+    // Instance extension block — members act like instance members
+    extension(IReadOnlyList<OrderItem> items)
+    {
+        // Extension property
+        public decimal TotalPrice => items.Sum(i => i.Price * i.Quantity);
+
+        // Extension method
+        public IReadOnlyList<OrderItem> InStock()
+            => items.Where(i => i.IsInStock).ToList();
+    }
+
+    // Static extension block — members act like static members
+    extension(IReadOnlyList<OrderItem>)
+    {
+        public static IReadOnlyList<OrderItem> Empty => [];
+    }
+}
+
+// Usage — reads like built-in members
+decimal total = cart.Items.TotalPrice;
+var available = cart.Items.InStock();
+var blank = IReadOnlyList<OrderItem>.Empty;
+```
+
+**Why it matters:** extension properties let you augment read-only domain types with computed projections without subclassing or wrappers. Static extension members eliminate the need for factory-method classes like `Enumerable.Empty<T>()`.
+
+### C# 14 — `field` Keyword for Backing Fields in Properties
+
+The `field` keyword replaces the explicit backing field declaration for simple property customization. The compiler synthesizes the backing field; `field` is the token to reference it inside property accessors. This eliminates the boilerplate of declaring `private T _foo;` just to add validation in a setter.
+
+```csharp
+// C# 14: use 'field' instead of a private backing field
+public class EmailAddress
+{
+    // Compiler synthesizes the backing field; 'field' accesses it
+    public string Value
+    {
+        get;
+        set => field = value?.Trim().ToLowerInvariant()
+            ?? throw new ArgumentNullException(nameof(value));
+    }
+
+    // Combined with init for immutable types
+    public string Domain
+    {
+        get;
+        init => field = value ?? throw new ArgumentNullException(nameof(value));
+    }
+}
+
+// Before C# 14: required an explicit backing field
+// private string _value = string.Empty;
+// public string Value { get => _value; set => _value = value?.Trim() ?? throw ...; }
+```
+
+### C# 14 — Null-Conditional Assignment
+
+The null-conditional operators (`?.` and `?[]`) can now appear on the **left-hand side** of an assignment. The right-hand side is only evaluated when the left side is not null. This eliminates the common `if (x != null) x.Prop = value;` pattern.
+
+```csharp
+// C# 14: null-conditional assignment — only assigns if customer is non-null
+customer?.PendingOrder = GetCurrentOrder();
+customer?.Tags?.Add("new-customer");
+
+// Equivalent pre-C# 14 pattern
+if (customer is not null)
+{
+    customer.PendingOrder = GetCurrentOrder();
+}
+
+// Works with compound assignment operators too
+customer?.LoyaltyPoints += reward;
+settings?.RetryCount -= 1;
+```
+
+### C# 14 — Lambda Parameters with Modifiers (No Type Required)
+
+Lambda expression parameters can now carry `ref`, `out`, `in`, `scoped`, or `ref readonly` modifiers without explicitly typing each parameter. Previously, any modifier required all parameters to be explicitly typed.
+
+```csharp
+// C# 14: parameter modifiers without full type annotations
+delegate bool TryParse<T>(string text, out T result);
+
+// Before C# 14: had to type every parameter
+TryParse<int> parse1 = (string text, out int result) => int.TryParse(text, out result);
+
+// C# 14: modifier only — compiler infers types
+TryParse<int> parse2 = (text, out result) => int.TryParse(text, out result);
+
+// 'scoped' modifier prevents ref from escaping the lambda's scope
+ProcessItems((scoped ref item) => item.Price *= 0.9m);
+```
+
+### `[GeneratedRegex]` — Compile-Time Regex (C# 11+)
+
+The `[GeneratedRegex]` attribute instructs the Roslyn source generator to generate an optimized, compiled regex implementation at build time rather than at runtime. Benefits: no runtime compilation cost, no heap allocation for the `Regex` object, and better startup performance. Use this instead of `new Regex(...)` or `Regex.IsMatch(...)` for any regex used more than once.
+
+```csharp
+using System.Text.RegularExpressions;
+
+public partial class InputValidator
+{
+    // Source generator produces the implementation at compile time
+    [GeneratedRegex(@"^\+?[1-9]\d{1,14}$", RegexOptions.Compiled)]
+    private static partial Regex E164PhoneRegex();
+
+    [GeneratedRegex(@"^[\w\.-]+@[\w\.-]+\.\w{2,}$", RegexOptions.IgnoreCase)]
+    private static partial Regex EmailRegex();
+
+    public bool IsValidPhone(string input) => E164PhoneRegex().IsMatch(input);
+    public bool IsValidEmail(string input) => EmailRegex().IsMatch(input);
+}
+
+// Idiomatic: static class for string extension with generated regex
+public static partial class StringValidators
+{
+    [GeneratedRegex(@"\b\d{4}-\d{2}-\d{2}\b")]
+    private static partial Regex DatePatternRegex();
+
+    public static bool ContainsDate(this string input) =>
+        DatePatternRegex().IsMatch(input);
+}
+```
+
+### `System.Text.Json` Source Generation
+
+`System.Text.Json` source generation produces optimized serialization code at build time, eliminating reflection-based overhead, reducing app size with AOT/trimming, and improving startup time. Add `[JsonSerializable(typeof(T))]` to a partial `JsonSerializerContext` class. Use the generated context in `JsonSerializer` calls.
+
+```csharp
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+// 1. Define the context — source generator produces serialization code
+[JsonSerializable(typeof(Order))]
+[JsonSerializable(typeof(List<Order>))]
+[JsonSourceGenerationOptions(
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    WriteIndented = false)]
+internal partial class AppJsonContext : JsonSerializerContext { }
+
+// 2. Use context for AOT-safe, reflection-free serialization
+string json = JsonSerializer.Serialize(order, AppJsonContext.Default.Order);
+Order? parsed = JsonSerializer.Deserialize(json, AppJsonContext.Default.Order);
+
+// 3. In ASP.NET Core: register context for the whole app
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default));
 ```
 
 ---
@@ -1215,7 +1645,7 @@ public class ForecastController(WeatherClient weather) : ControllerBase
 }
 ```
 
-### **Static Mutable State — Thread-Safety and Data Corruption**  [community]
+### **`static` mutable fields in web apps**  [community]
 
 `static` mutable fields are shared across all threads in the process. WHY it causes problems: in web applications, multiple request threads read and write static state concurrently without synchronization, leading to torn reads, lost writes, and non-deterministic failures that are nearly impossible to reproduce in isolation. Fix: avoid `static` mutable state; use `Interlocked` for counters, `ConcurrentDictionary<>` for caches, and per-request scoped services via DI.
 
@@ -1238,6 +1668,105 @@ public static class RequestMetrics
 // GOOD: ConcurrentDictionary for shared cache — all operations are atomic
 private static readonly ConcurrentDictionary<string, string> _cache = new();
 _cache.GetOrAdd(key, k => ComputeExpensiveValue(k));
+```
+
+### **Entity Framework N+1 Query — Lazy Navigation in a Loop**  [community]
+
+Accessing a navigation property inside a loop without including it in the original query fires one additional SELECT per entity. WHY it causes problems: an operation that appears to load 100 orders actually fires 101 SQL queries — one for the list and one per order to fetch the related customer. This is invisible until you monitor the SQL output and is a leading cause of "it works in dev, dies in prod" performance bugs. Fix: use `.Include()` for eager loading or `.Select()` projections to load only needed data in a single query.
+
+```csharp
+// BAD: N+1 — loads 100 orders, then 100 separate SQL calls for Customer
+var orders = await _db.Orders.ToListAsync(ct);
+foreach (var order in orders)
+{
+    Console.WriteLine(order.Customer.Name);  // triggers SELECT per order!
+}
+
+// GOOD: single query with eager loading
+var orders = await _db.Orders
+    .Include(o => o.Customer)
+    .ToListAsync(ct);
+
+// ALSO GOOD: projection — only load the columns you need
+var summaries = await _db.Orders
+    .Select(o => new { o.Id, CustomerName = o.Customer.Name, o.Total })
+    .ToListAsync(ct);
+```
+
+### **`DateTime.Now` vs `DateTime.UtcNow` — Timezone Bugs in Services**  [community]
+
+Using `DateTime.Now` in a server-side service stores the server's local time, which varies per machine and timezone. WHY it causes problems: comparisons, sorting, and duration calculations break when services are deployed across regions or when daylight-saving time rolls over. Records stored with local time become inconsistent across a distributed system. Fix: always store and compare with `DateTime.UtcNow` or `DateTimeOffset.UtcNow`. Use `DateTimeOffset` when you also need to preserve the original offset for display.
+
+```csharp
+// BAD: local time — breaks in distributed or multi-region deployments
+public class Event
+{
+    public DateTime CreatedAt { get; init; } = DateTime.Now;  // local time!
+}
+
+// GOOD: UTC time — timezone-independent comparisons
+public class Event
+{
+    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
+}
+
+// BEST: DateTimeOffset preserves both UTC instant and original offset
+public class Event
+{
+    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
+}
+
+// Comparison: always in UTC
+bool isExpired = entity.ExpiresAt < DateTime.UtcNow;
+```
+
+### **Case-Insensitive String Comparison with `.ToLower()`**  [community]
+
+Calling `.ToLower()` or `.ToUpper()` before comparing strings is culture-sensitive and fails in locales like Turkish, where `'I'.ToLower()` produces `'ı'` (dotless i), not `'i'`. WHY it causes problems: an authentication system that normalizes usernames with `.ToLower()` will allow `"ADMIN"` to log in but reject it after a Turkish locale deploy. Fix: use `string.Equals` with `StringComparison.OrdinalIgnoreCase` for invariant comparisons, or `StringComparison.CurrentCultureIgnoreCase` when locale-aware comparison is correct.
+
+```csharp
+// BAD: culture-sensitive — breaks in Turkish locale
+if (username.ToLower() == "admin") { }
+
+// GOOD: ordinal case-insensitive — invariant, works in all locales
+if (string.Equals(username, "admin", StringComparison.OrdinalIgnoreCase)) { }
+
+// In LINQ: use the overload with StringComparison
+var match = users.FirstOrDefault(u =>
+    string.Equals(u.Username, input, StringComparison.OrdinalIgnoreCase));
+
+// String.Contains / StartsWith / EndsWith also accept StringComparison
+if (path.Contains("users", StringComparison.OrdinalIgnoreCase)) { }
+```
+
+### **EF Core `AsNoTracking` Omission — Unnecessary Change Tracking Overhead**  [community]
+
+Entity Framework Core tracks all entities it loads by default, maintaining a snapshot for change detection. For read-only queries this is pure overhead — it consumes memory for each snapshot and adds CPU time during `SaveChanges` for a diffing operation that is never needed. WHY it causes problems: a report that loads 10,000 rows allocates 10,000 change-tracking snapshots, significantly increasing GC pressure and response time. Fix: add `.AsNoTracking()` to any query whose results won't be updated and saved back through the same `DbContext`.
+
+```csharp
+// BAD: tracking enabled — EF keeps snapshots for entities never modified
+var orders = await _db.Orders
+    .Include(o => o.Items)
+    .Where(o => o.CreatedAt > cutoff)
+    .ToListAsync(ct);
+// Every Order and OrderItem is tracked — wasted memory for a read-only report
+
+// GOOD: AsNoTracking — no snapshots, no diffing overhead
+var orders = await _db.Orders
+    .AsNoTracking()
+    .Include(o => o.Items)
+    .Where(o => o.CreatedAt > cutoff)
+    .ToListAsync(ct);
+
+// GOOD GLOBALLY: set default for read-only contexts
+_db.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
+
+// BEST PRACTICE: project to DTO directly — avoids loading unused columns too
+var summaries = await _db.Orders
+    .AsNoTracking()
+    .Where(o => o.CreatedAt > cutoff)
+    .Select(o => new OrderSummaryDto(o.Id, o.Total, o.Status))
+    .ToListAsync(ct);
 ```
 
 ---
@@ -1273,3 +1802,11 @@ _cache.GetOrAdd(key, k => ComputeExpensiveValue(k));
 | Record computed property cached with `=` | Stale value after `with` expression mutation | Use expression-bodied `=>` to recompute on each access |
 | `IOptions<T>.Value` in singleton for live config | Config changes not reflected; snapshot at startup | Use `IOptionsMonitor<T>.CurrentValue` for live-reloadable config |
 | `lock(this)` or locking on `typeof(T)` | Deadlock — external code can acquire same monitor | Use `private readonly Lock _lock = new()` (.NET 9+) or `private readonly object _sync = new()` |
+| `Task.Delay(0)` as a yield shortcut in tight loops | Does not actually yield the thread; scheduler may immediately resume on same thread | Use `await Task.Yield()` to force rescheduling, or throttle with a real delay |
+| Entity Framework N+1 query — lazy navigation in a loop | Each loop iteration fires a new SELECT; 100 items = 101 queries | Use `.Include()` eager loading or explicit `.Select()` projections |
+| String `.ToLower()` for case-insensitive comparison | Culture-sensitive; breaks in Turkish locale where 'I'.ToLower() ≠ 'i' | Use `string.Equals(a, b, StringComparison.OrdinalIgnoreCase)` |
+| `DateTime.Now` vs `DateTime.UtcNow` in services | `Now` is local time, varies per server timezone; comparisons break across servers | Always use `DateTime.UtcNow` or `DateTimeOffset.UtcNow` in services and DB columns |
+| EF Core read queries without `.AsNoTracking()` | Allocates change-tracking snapshots for all loaded entities; pure overhead for read-only queries | Add `.AsNoTracking()` to every query that won't call `SaveChanges` |
+| Case-insensitive compare with `.ToLower()` | Culture-sensitive; produces wrong result in Turkish and other locales | Use `string.Equals(a, b, StringComparison.OrdinalIgnoreCase)` |
+| Manual null guard `if (x == null) throw` | Verbose and error-prone; forgetting `nameof` gives unhelpful exception messages | Use `ArgumentNullException.ThrowIfNull(x)` (.NET 8+) |
+| Regex compiled at runtime inside a method | New `Regex` object allocated on every call; parsing overhead per invocation | Use `[GeneratedRegex]` attribute with partial method for compile-time regex |

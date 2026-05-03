@@ -1,5 +1,5 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 11 | score: 100/100 | date: 2026-05-03 -->
 
 > Generated from official k6 documentation and community sources on 2026-04-30. Verified against k6 v1.7.1 (stable); k6 v2.0.0-rc1 breaking changes documented below. Re-run `/qa-refine k6` to refresh.
 
@@ -1683,7 +1683,42 @@ function api(method, path, body, params = {}) {
 
 ---
 
-### 29. `__VU` is per-instance in cloud runs — data distribution logic breaks  [community]
+### 30. Unsafe response body access crashes checks silently  [community]
+**What:** `check(res, { "has id": (r) => r.json("data.user.id") !== null })` throws when the
+server is overloaded and returns an empty body, a plaintext error string, or a non-JSON
+content type. The check registers as failed but the VU continues running — masking the real
+problem (server crash / 502 gateway error).
+**WHY:** k6's `r.json()` will throw if the body is not parseable JSON. Under load, servers
+may return HTML error pages or empty bodies with 502/503 status codes. If the check callback
+throws, k6 counts it as a failed check but the exception is swallowed — the VU doesn't abort.
+**Fix:** Always guard body parsing with optional chaining or a try/catch:
+```javascript
+check(res, {
+  "status 200":  (r) => r.status === 200,
+  // Safe: only access json if status is 200 (and body exists)
+  "has id":      (r) => r.status === 200 && r.json()?.data?.user?.id !== undefined,
+});
+// Or for complex assertions:
+if (res.status === 200) {
+  try {
+    const body = res.json();
+    check(body, { "has user id": (b) => b?.data?.user?.id !== undefined });
+  } catch (e) {
+    console.error(`Unexpected non-JSON response body [VU ${__VU}]:`, res.body?.substring(0, 200));
+  }
+}
+```
+
+### 31. `setup()` cannot access `exec` module — avoid `exec` calls there  [community]
+**What:** `exec.scenario.iterationInTest`, `exec.vu.idInTest`, and other `exec` properties
+return `undefined` or throw when called inside `setup()` or `teardown()`. These functions
+run outside the VU execution context.
+**WHY:** The `k6/execution` module provides data about the current VU and scenario — concepts
+that don't exist during setup/teardown, which run once in a synthetic execution context.
+**Fix:** Use `exec` APIs only inside `default()` or exported scenario functions. For setup
+logic that needs unique IDs, use `Date.now()` or pass parameters from the script's module scope.
+
+---
 **What:** In Grafana Cloud k6 with geographic distribution, `__VU` resets per load-generator
 instance. If you use `testUsers[__VU % testUsers.length]` to distribute test users across VUs,
 multiple instances generate overlapping `__VU` values — VUs on different instances use the SAME
@@ -2130,6 +2165,109 @@ export default function () {
 > `k6/net/grpc` module — only server-side and client-side streaming. For bidirectional use
 > the `k6/experimental/grpc` module (which graduates to stable in future versions). Always
 > verify the streaming mode supported before planning a load test against a streaming endpoint.
+
+### gRPC Authentication — Metadata Bearer Token  [community]
+
+gRPC auth passes credentials via metadata (the gRPC equivalent of HTTP headers). The key pattern is passing a `metadata` object as the third argument to `client.invoke()`.
+
+```javascript
+// k6/scripts/grpc-authed.js — gRPC with Bearer token auth
+import grpc from "k6/net/grpc";
+import { check, sleep } from "k6";
+import http from "k6/http";
+
+const client = new grpc.Client();
+client.load(["./proto"], "items.proto");
+
+export const options = {
+  scenarios: {
+    grpc_authed: {
+      executor: "constant-vus",
+      vus: 20,
+      duration: "2m",
+    },
+  },
+  thresholds: {
+    "grpc_req_duration": ["p(95)<300"],
+    checks:               ["rate>0.99"],
+  },
+};
+
+const BASE_HTTP = __ENV.API_URL    || "http://localhost:3001";
+const GRPC_TARGET = __ENV.GRPC_TARGET || "localhost:50051";
+
+export function setup() {
+  // Get JWT token via HTTP REST auth
+  const res = http.post(
+    `${BASE_HTTP}/api/auth/token`,
+    JSON.stringify({ client_id: __ENV.GRPC_CLIENT_ID, client_secret: __ENV.GRPC_CLIENT_SECRET }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+  check(res, { "token ok": (r) => r.status === 200 });
+  return { token: res.json("access_token") };
+}
+
+export default function (data) {
+  // Connect with TLS (plaintext: false = TLS enabled)
+  client.connect(GRPC_TARGET, {
+    plaintext: false,         // use TLS — set true for dev/internal plaintext
+    timeout: "10s",           // connection timeout
+    // tls_auth: { cert, key } for mTLS (mutual TLS)
+  });
+
+  // Pass Bearer token via metadata
+  const metadata = {
+    authorization: `Bearer ${data.token}`,
+    "x-request-id": `k6-${__VU}-${__ITER}`,
+  };
+
+  const response = client.invoke(
+    "items.ItemService/ListItems",
+    { page: 1, pageSize: 10 },
+    { metadata }
+  );
+
+  check(response, {
+    "grpc status OK":  (r) => r && r.status === grpc.StatusOK,
+    "has items":       (r) => r.message && Array.isArray(r.message.items),
+  });
+
+  client.close();
+  sleep(0.2);
+}
+```
+
+**gRPC connection reuse pattern** — open once per VU in init, close in teardown:
+
+```javascript
+// INIT CONTEXT — connection opened once per VU (more efficient for high-VU tests)
+const client = new grpc.Client();
+client.load(["./proto"], "items.proto");
+
+// Setup runs once — connect here for persistent connection
+export function setup() {
+  // Cannot use client.connect() in setup() — it runs once, not per VU
+  // Connect in default() function after client.load() in init
+  return {};
+}
+
+export default function (data) {
+  // Connect once per VU execution (lazy connect — only if not already connected)
+  if (!client.connected) {
+    client.connect(GRPC_TARGET, { plaintext: true });
+  }
+  const response = client.invoke("items.ItemService/GetItem", { id: __ITER });
+  check(response, { "ok": (r) => r.status === grpc.StatusOK });
+  // DO NOT call client.close() here — reuse the connection across iterations
+  sleep(0.1);
+}
+
+export function teardown() {
+  client.close();  // Close once when the VU lifecycle ends
+}
+```
+
+> **[community]:** Opening and closing a gRPC connection per iteration (`connect()` + `invoke()` + `close()` in `default()`) adds ~5-15ms of TLS handshake overhead per request. For high-throughput gRPC tests, connect once per VU (in the first iteration check) and reuse. This matches how real gRPC clients operate (persistent multiplexed connections).
 
 ---
 
@@ -3218,11 +3356,109 @@ export default function () {
 | `secrets.source(id).get(name)` | Retrieve from named secret source | Multi-environment credential routing |
 | `page.frameLocator(selector)` | Locate elements inside an iframe | Testing embedded widgets / third-party frames |
 | `page.waitForRequest(urlPattern)` | Wait for a specific HTTP request to fire | Asserting API calls are made on UI interactions |
+| `page.waitForEvent(eventName)` | Wait for a browser event (popup, download, request) | Capturing popups, file downloads, navigation events |
+| `locator.filter({ hasText })` | Filter locator results to only elements containing text | Scoping within lists to a specific item |
 | `locator.pressSequentially(text)` | Type character-by-character with key events | Realistic input for auto-complete / event-driven fields |
 | `page.evaluate(fn)` | Execute JavaScript in page context | Reading DOM state, counting elements, querying hidden data |
 | `page.goBack()` / `page.goForward()` | Navigate browser history | Testing back-navigation flows |
 
-### k6/execution Module — Test Introspection
+---
+
+## Network Error Codes & Diagnostics  [community]
+
+k6 uses numeric error codes on `res.error_code` for non-HTTP errors (network failures, timeouts). Understanding these is essential for distinguishing load-generator problems from target-system problems.
+
+| Range | Category | Key Codes |
+|-------|----------|-----------|
+| 1000–1099 | General | 1000=generic, 1010=non-TCP net error, 1020=invalid URL, 1050=HTTP timeout |
+| 1100–1199 | DNS | 1100=generic DNS, 1101=no IP found, 1110=blacklisted IP |
+| 1200–1299 | TCP | 1200=generic TCP, 1210=dial error, 1211=dial timeout, 1212=connection refused, 1220=connection reset |
+| 1300–1399 | TLS | 1300=generic TLS, 1310=unknown CA, 1311=hostname mismatch |
+| 1400–1499 | HTTP 4xx | Client-side errors |
+| 1500–1599 | HTTP 5xx | Server-side errors |
+| 1600–1699 | HTTP/2 | 1600=generic H2, 1610=GoAway, 1630=stream error, 1650=connection error |
+
+```javascript
+// k6/scripts/error-aware-load.js — differentiate network vs. server errors
+import http from "k6/http";
+import { check } from "k6";
+import { Counter, Rate } from "k6/metrics";
+
+const networkErrors  = new Counter("network_errors");    // non-HTTP errors (timeout, reset)
+const serverErrors   = new Rate("server_error_rate");    // 5xx HTTP errors
+const clientErrors   = new Rate("client_error_rate");    // 4xx HTTP errors
+
+export const options = {
+  scenarios: {
+    load: { executor: "constant-vus", vus: 20, duration: "2m" },
+  },
+  thresholds: {
+    network_errors:    ["count<10"],      // hard fail if any network errors accumulate
+    server_error_rate: ["rate<0.01"],
+    client_error_rate: ["rate<0.005"],    // 4xx are usually bugs in the test script
+    http_req_failed:   ["rate<0.02"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  const res = http.get(`${BASE}/api/items`, { timeout: "15s" });
+
+  // Categorize by error type for better diagnostics
+  if (res.error_code !== 0) {
+    // Non-HTTP error: timeout (1050), connection reset (1220), DNS failure (1101)
+    networkErrors.add(1, { error_code: String(res.error_code) });
+    // error_code 1211 = dial timeout → load generator can't reach target
+    // error_code 1220 = connection reset → target closed connection under load
+    // error_code 1050 = HTTP timeout → target too slow to respond within timeout
+  }
+
+  serverErrors.add(res.status >= 500 && res.status < 600 ? 1 : 0);
+  clientErrors.add(res.status >= 400 && res.status < 500 ? 1 : 0);
+
+  check(res, {
+    "status 200":      (r) => r.status === 200,
+    "no error":        (r) => r.error_code === 0,
+  });
+}
+```
+
+> **[community]:** `error_code 1220` (connection reset by peer) and `error_code 1212` (connection refused) are almost always the **target system** failing under load — not the load generator. `error_code 1211` (dial timeout) or `error_code 1101` (DNS failure) usually indicate a **network or infrastructure problem** between the load generator and target. Tag error counts by `error_code` to diagnose root cause without manual log inspection.
+
+> **[community]:** `http_req_failed` by default is `true` when `error_code !== 0` OR `status >= 400`. Override this with `http.setResponseCallback(http.expectedStatuses(...))` if your API returns 4xx codes that should be considered "success" in your test (e.g., a 404 rate test or a 400-for-validation endpoint).
+
+```javascript
+// k6/scripts/custom-failure-def.js — redefine what "failed" means per-script
+import http from "k6/http";
+import { check } from "k6";
+
+// Global override: only treat these as non-failures
+// 200–204 range, 406, and 500 will NOT increment http_req_failed
+http.setResponseCallback(
+  http.expectedStatuses({ min: 200, max: 204 }, 406, 429)
+  // 429 = rate limit: expected, not a bug → don't count it as a failure
+);
+
+export const options = {
+  thresholds: {
+    // Now http_req_failed only counts true unexpected errors
+    http_req_failed: ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  // Per-request override — only for this specific request
+  const res = http.get(`${BASE}/api/resource/missing`, {
+    responseCallback: http.expectedStatuses(200, 404),  // 404 = OK here
+  });
+  check(res, { "200 or 404": (r) => r.status === 200 || r.status === 404 });
+}
+```
+
+
 
 The `k6/execution` module (k6 v0.34+) provides real-time execution context. Prefer it
 over `__VU` and `__ITER` for distributed-safe unique IDs.
@@ -3281,7 +3517,9 @@ export default function () {
 
 **`exec.test.abort(message)`** — programmatically stops the test from within VU code.
 Use for pre-flight failures (wrong environment, missing fixtures) where continuing would
-produce meaningless results. The test exits with a non-zero code.
+produce meaningless results. The test exits with **exit code 108** (Usage error) and the
+`teardown()` function still runs after the abort. In k6 v2.0.0+, cloud tests aborted this
+way return exit code **97** instead of `0`.
 
 | exec property | Type | What it provides |
 |---------------|------|-----------------|
@@ -3296,6 +3534,124 @@ produce meaningless results. The test exits with a non-zero code.
 | `exec.instance.iterationsCompleted` | number | Total iterations done by this instance |
 | `exec.instance.currentTestRunDuration` | number | Milliseconds elapsed |
 | `exec.test.abort(msg)` | function | Gracefully abort the entire test |
+
+### Dynamic VU Tagging with `exec.vu.metrics.tags`
+
+Tags set via `exec.vu.metrics.tags` persist across all iterations of a VU and are added to every metric emitted by that VU. Use this to stamp metrics with user-specific or role-specific context without repeating tags on every request.
+
+```javascript
+// k6/scripts/vu-tagged-load.js
+import http from "k6/http";
+import { check, sleep } from "k6";
+import exec from "k6/execution";
+import { SharedArray } from "k6/data";
+
+const roles = new SharedArray("roles", function () {
+  return ["reader", "writer", "admin", "viewer"];
+});
+
+export const options = {
+  // Global tags — stamped on ALL metrics from ALL VUs
+  tags: {
+    environment: __ENV.TEST_ENV   || "qa",
+    version:     __ENV.APP_VERSION || "unknown",
+    test_run_id: __ENV.CI_RUN_ID  || `local-${Date.now()}`,
+  },
+  scenarios: {
+    mixed_roles: { executor: "constant-vus", vus: 20, duration: "2m" },
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  // Set per-VU role tag — persists for all iterations of this VU
+  const role = roles[exec.vu.idInTest % roles.length];
+  exec.vu.metrics.tags["role"] = role;
+
+  // Now every metric from this VU is tagged with the role
+  const res = http.get(`${BASE}/api/resources`, {
+    headers: { "X-Role": role },
+  });
+  check(res, { "status 200": (r) => r.status === 200 });
+  sleep(1);
+}
+```
+
+**Per-scenario role differentiation in thresholds:**
+```javascript
+thresholds: {
+  "http_req_duration{role:admin}":  ["p(95)<500"],
+  "http_req_duration{role:reader}": ["p(95)<200"],
+  "http_req_duration{role:writer}": ["p(95)<400"],
+}
+```
+
+> **[community]:** `exec.vu.metrics.tags` supports strings, numbers, and booleans only. Setting an object or array throws an error (or a warning if the `throw` option is false). Do NOT overwrite system tags like `url`, `method`, or `scenario` — those are managed by k6 and the overwrite has no effect on the actual metric values.
+
+### Multiple Concurrent WebSocket Connections per VU  [community]
+
+The `k6/websockets` stable module uses a **global event loop** — unlike the legacy `k6/ws` which used a local event loop. This means a single VU can maintain multiple simultaneous WebSocket connections, enabling fan-out patterns (subscribe to multiple channels) without multiplying VU count.
+
+```javascript
+// k6/scripts/ws-fanout.js — one VU, multiple WebSocket connections
+import { WebSocket } from "k6/websockets";
+import { check } from "k6";
+import { Counter } from "k6/metrics";
+
+const totalMessages = new Counter("total_messages_received");
+
+export const options = {
+  scenarios: {
+    ws_fanout: {
+      executor: "constant-vus",
+      vus: 5,        // 5 VUs × 3 connections each = 15 concurrent WebSocket connections
+      duration: "1m",
+    },
+  },
+  thresholds: {
+    total_messages_received: ["count>0"],
+    checks:                   ["rate>0.99"],
+  },
+};
+
+const WS_URL = (__ENV.API_URL || "http://localhost:3001")
+  .replace(/^http/, "ws") + "/ws";
+
+export default function () {
+  const channels = ["prices", "trades", "orderbook"];
+  const sockets  = [];
+
+  // Open 3 connections per VU — all share the global event loop
+  for (const channel of channels) {
+    const ws = new WebSocket(`${WS_URL}/${channel}`);
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ subscribe: channel }));
+      setTimeout(() => ws.close(), 30_000);  // close after 30s
+    };
+
+    ws.onmessage = (e) => {
+      totalMessages.add(1, { channel });
+      const msg = JSON.parse(e.data);
+      check(msg, { "has data": (m) => m.data !== undefined });
+    };
+
+    ws.onerror = (e) => {
+      if (e.error() !== "websocket: close sent") {
+        console.error(`WS error on ${channel}:`, e.error());
+      }
+    };
+
+    sockets.push(ws);
+  }
+
+  // The global event loop blocks until all sockets close
+  // No explicit "wait" needed — the VU is held until all ws.close() calls complete
+}
+```
+
+> **[community]:** The legacy `k6/ws` module blocks on `ws.connect(url, null, callback)` — you cannot have two `ws.connect()` calls in the same `default()` function because the first one blocks until it closes. The `k6/websockets` module with its global event loop does not have this limitation. This is the primary reason to migrate from `k6/ws` to `k6/websockets` for fan-out patterns.
 
 
 
@@ -3382,6 +3738,103 @@ jobs:
           name: k6-results
           path: results/
 ```
+
+### GitLab CI Example
+
+```yaml
+# .gitlab-ci.yml
+stages:
+  - performance
+
+k6-smoke:
+  stage: performance
+  image: grafana/k6:latest
+  script:
+    - mkdir -p results
+    - k6 run --no-color -e API_URL="$STAGING_API_URL" -e E2E_USER_EMAIL="$E2E_USER_EMAIL"
+        -e E2E_USER_PASSWORD="$E2E_USER_PASSWORD"
+        --out json=results/k6-raw.json k6/scripts/load.js
+  artifacts:
+    when: always
+    paths:
+      - results/
+    expire_in: 7 days
+  variables:
+    K6_NO_SUMMARY: "false"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+
+# Nightly load test — runs on a schedule, not on every push
+k6-load-nightly:
+  stage: performance
+  image: grafana/k6:latest
+  script:
+    - ulimit -n 65536
+    - mkdir -p results
+    - k6 run --no-color -e API_URL="$STAGING_API_URL" -e TEST_ENV=staging k6/scripts/load.js
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  variables:
+    API_URL: $STAGING_API_URL
+```
+
+> **[community]:** In GitLab CI, use `image: grafana/k6:latest` for simple scripts with no npm dependencies. For scripts that need bundled npm packages, use `image: grafana/k6:latest-with-browser` for browser tests, or build a custom image with `xk6` for extension-based scripts. Always pin the image version in production (`grafana/k6:1.7.1`) — `latest` can break on major version upgrades.
+
+### Docker k6 Usage  [community]
+
+```bash
+# Basic run — pipe script via stdin (avoids volume mount issues)
+docker run --rm -i grafana/k6 run --vus 10 --duration 30s - <k6/scripts/load.js
+
+# With environment variables and mounted results directory
+docker run --rm -i \
+  -e API_URL="$API_URL" \
+  -e E2E_USER_EMAIL="$E2E_USER_EMAIL" \
+  -e E2E_USER_PASSWORD="$E2E_USER_PASSWORD" \
+  -v "$PWD/results:/results" \
+  grafana/k6 run --no-color - <k6/scripts/load.js
+
+# With script files mounted (necessary for scripts that use open() or local imports)
+docker run --rm \
+  -v "$PWD/k6:/k6" \
+  -v "$PWD/results:/results" \
+  -e API_URL="$API_URL" \
+  grafana/k6 run --no-color /k6/scripts/load.js
+
+# k6 browser module — requires --cap-add and shared memory
+docker run --rm -i \
+  --cap-add=SYS_ADMIN \
+  --shm-size=2gb \
+  -e API_URL="$API_URL" \
+  -v "$PWD/results:/results" \
+  grafana/k6:latest-with-browser run --no-color - <k6/scripts/browser-smoke.js
+```
+
+> **[community]:** The browser module requires `--cap-add=SYS_ADMIN` and `--shm-size` ≥ 1 GB when running in Docker. Without shared memory expansion, Chromium crashes immediately with "error while loading shared libraries." Use `grafana/k6:latest-with-browser` — the base `grafana/k6` image does not include Chromium.
+
+### `k6 cloud run --local-execution` — Stream Results to Grafana Cloud  [community]
+
+Stream metrics from a locally-executed test to Grafana Cloud k6 for real-time dashboarding without running on cloud infrastructure. Useful when you need Grafana Cloud's visualization and alerting but want the load to originate from your own machines (e.g., inside a VPC).
+
+```bash
+# Authenticate once (stores credentials in ~/.config/k6)
+k6 cloud login --token "$K6_CLOUD_API_TOKEN" --stack "$K6_CLOUD_STACK"
+
+# Run locally, stream results to Grafana Cloud
+k6 cloud run --local-execution --no-color k6/scripts/load.js
+
+# Fully headless — no stored credentials needed (CI use)
+K6_CLOUD_TOKEN="$K6_CLOUD_API_TOKEN" \
+K6_CLOUD_STACK_ID="$K6_CLOUD_STACK" \
+  k6 cloud run --local-execution --no-color k6/scripts/load.js
+
+# Disable archive upload (speeds up startup — useful if script uses open() files)
+K6_CLOUD_TOKEN="$K6_CLOUD_API_TOKEN" \
+K6_CLOUD_STACK_ID="$K6_CLOUD_STACK" \
+  k6 cloud run --local-execution --no-archive-upload --no-color k6/scripts/load.js
+```
+
+> **[community]:** `--local-execution` and `k6 cloud run` (pure cloud) both consume VUH from your Grafana Cloud subscription. The difference: with `--local-execution` your machine generates the load; without it, Grafana Cloud's infrastructure does. Use `--local-execution` when your target API is inside a private network not accessible from Grafana Cloud load zones.
 
 > **Note:** The `ulimit -n 65536` step is a community-discovered requirement. Without it,
 > tests with more than ~1,000 concurrent VUs fail with "socket: too many open files" and
@@ -3500,6 +3953,24 @@ export function handleSummary(data) {
 ### Real-Time Metrics Output
 
 Stream metrics to external systems during the run:
+
+```bash
+# k6 Web Dashboard — built-in real-time browser UI (no external tools required)
+# Default: http://localhost:5665 — open in browser while test runs
+K6_WEB_DASHBOARD=true k6 run k6/scripts/load.js
+
+# Web dashboard with automatic HTML report export at test end
+K6_WEB_DASHBOARD=true \
+K6_WEB_DASHBOARD_EXPORT=results/web-dashboard-report.html \
+  k6 run k6/scripts/load.js
+
+# Custom host/port (for CI machines where 5665 is occupied)
+K6_WEB_DASHBOARD=true \
+K6_WEB_DASHBOARD_HOST=0.0.0.0 \
+K6_WEB_DASHBOARD_PORT=8888 \
+K6_WEB_DASHBOARD_OPEN=false \
+  k6 run k6/scripts/load.js
+```
 
 ```bash
 # InfluxDB + Grafana (local dashboard) — most common local stack
@@ -3808,5 +4279,293 @@ export default async function () {
     await page.close();
   }
 }
+```
+
+---
+
+## Secrets Management — Extended Patterns
+
+### `K6_SECRET_SOURCE` Environment Variable (k6 v1.7.0+)  [community]
+
+The `K6_SECRET_SOURCE` env var is an alternative to the `--secret-source` CLI flag and uses identical syntax. This is valuable for CI systems where injecting environment variables is cleaner than modifying command-line arguments (e.g., when the k6 invocation is inside a Docker entrypoint or a CI template you cannot easily change).
+
+```bash
+# Equivalent: use env var instead of --secret-source flag
+export K6_SECRET_SOURCE="mock=default,api_key=s3cr3t,db_password=hunter2"
+k6 run k6/scripts/load.js
+
+# URL source via env var (HashiCorp Vault or AWS Secrets Manager)
+export K6_SECRET_SOURCE="url=https://vault.internal/v1/secret/k6"
+k6 run k6/scripts/load.js
+
+# Multiple named sources via env var (comma-separated)
+export K6_SECRET_SOURCE="mock=primary,api_key=staging-key,url=https://vault.internal=secondary"
+k6 run k6/scripts/load.js
+```
+
+**GitHub Actions pattern (env var approach):**
+```yaml
+- name: Run k6 with secrets from Vault
+  env:
+    K6_SECRET_SOURCE: "url=https://vault.internal/v1/secret/k6"
+    VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+  run: k6 run --no-color k6/scripts/load.js
+```
+
+> **[community]:** `K6_SECRET_SOURCE` and `--secret-source` cannot be used simultaneously — pick one per invocation. The env var form is preferable when deploying k6 inside Docker containers or Kubernetes pods where the command-line is baked into the image definition.
+
+### Prometheus Remote-Write — Authentication Patterns  [community]
+
+The Prometheus remote-write output (`--out experimental-prometheus-rw`) supports three authentication methods. Teams running k6 against Grafana Cloud's Prometheus-compatible endpoint or a secured Cortex/Thanos cluster need these configurations.
+
+```bash
+# Basic auth (Grafana Cloud Prometheus)
+K6_PROMETHEUS_RW_SERVER_URL=https://prometheus-blocks-prod-us-central1.grafana.net/api/prom/push \
+K6_PROMETHEUS_RW_USERNAME=12345 \
+K6_PROMETHEUS_RW_PASSWORD="glc_token..." \
+  k6 run --out experimental-prometheus-rw k6/scripts/load.js
+
+# Bearer token (custom Prometheus with OAuth2 proxy)
+K6_PROMETHEUS_RW_SERVER_URL=https://prometheus.internal/api/v1/write \
+K6_PROMETHEUS_RW_BEARER_TOKEN="eyJhbGci..." \
+  k6 run --out experimental-prometheus-rw k6/scripts/load.js
+
+# mTLS (internal Prometheus with mutual TLS)
+K6_PROMETHEUS_RW_SERVER_URL=https://prometheus.internal/api/v1/write \
+K6_PROMETHEUS_RW_CLIENT_CERTIFICATE=/certs/client.pem \
+K6_PROMETHEUS_RW_CLIENT_CERTIFICATE_KEY=/certs/client.key \
+  k6 run --out experimental-prometheus-rw k6/scripts/load.js
+
+# Full production configuration — native histograms + stale markers + TLS version enforcement
+K6_PROMETHEUS_RW_SERVER_URL=https://prometheus.internal/api/v1/write \
+K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true \
+K6_PROMETHEUS_RW_TREND_STATS="p(50),p(90),p(95),p(99),min,max" \
+K6_PROMETHEUS_RW_STALE_MARKERS=true \
+K6_PROMETHEUS_RW_TLS_MIN_VERSION="1.3" \
+K6_PROMETHEUS_RW_PUSH_INTERVAL=10s \
+  k6 run --out experimental-prometheus-rw k6/scripts/load.js
+```
+
+> **[community]:** Without `K6_PROMETHEUS_RW_STALE_MARKERS=true`, time-series from a k6 run continue to exist in Prometheus after the test ends. Grafana dashboards show a flat line (last value) rather than going blank. Enable stale markers in long-running dashboard setups so panels correctly show "no data" between test runs.
+
+### Browser Module — `waitForEvent` and Locator Filtering (k6 v1.5+)  [community]
+
+`page.waitForEvent()` waits for a browser event (e.g., `"popup"`, `"download"`, `"request"`) before continuing. Locators now support `hasText` and `hasNotText` filter options for scoping within multi-element matches.
+
+```javascript
+// k6/scripts/browser-events.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    ui: {
+      executor: "shared-iterations",
+      vus: 1,
+      iterations: 2,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+  thresholds: {
+    checks: ["rate==1.0"],
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/`);
+
+    // waitForEvent: capture a popup window before it disappears
+    const popupPromise = page.waitForEvent("popup");
+    await page.getByRole("button", { name: "Open preview" }).click();
+    const popup = await popupPromise;
+    await popup.waitForLoadState("domcontentloaded");
+    check(popup.url(), { "popup opened": (u) => u.includes("/preview") });
+    await popup.close();
+
+    // Locator with hasText filter — scope within a list to one specific item
+    const todoList = page.locator(".todo-item");
+    const specificItem = todoList.filter({ hasText: "Complete documentation" });
+    await specificItem.getByRole("checkbox").check();
+    check(await specificItem.locator(".status").textContent(), {
+      "item marked done": (t) => t?.includes("done"),
+    });
+
+    // hasNotText filter — find items that are NOT completed
+    const pendingItems = todoList.filter({ hasNotText: "[done]" });
+    const pendingCount = await pendingItems.count();
+    check(pendingCount, { "pending items exist": (n) => n >= 0 });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+### k6 Cloud — Stack is Mandatory in v2.0.0  [community]
+
+In k6 v2.0.0-rc1 and later, the `--stack` option is **mandatory** for all `k6 cloud` commands. The previous behavior of falling back to a default stack is removed. CI pipelines that relied on the default will fail with an error on upgrade.
+
+```bash
+# v1.x — stack optional, falls back to default
+k6 cloud run k6/scripts/load.js
+
+# v2.0+ — stack REQUIRED (fails without it)
+k6 cloud run --stack my-stack k6/scripts/load.js
+
+# Set via environment variable to avoid repeating in every command
+export K6_CLOUD_STACK=my-stack
+k6 cloud run k6/scripts/load.js
+k6 cloud run k6/scripts/soak.js
+
+# GitHub Actions example — pass stack from a repo variable
+- name: Run cloud test
+  env:
+    K6_CLOUD_API_TOKEN: ${{ secrets.K6_CLOUD_API_TOKEN }}
+    K6_CLOUD_STACK: ${{ vars.K6_CLOUD_STACK }}
+  run: k6 cloud run --no-color k6/scripts/load.js
+```
+
+> **[community]:** The `K6_CLOUD_STACK` environment variable is the cleanest migration path. Set it once in your CI environment (GitHub Actions vars, GitLab CI variables, or Jenkins credentials) and all `k6 cloud` commands in all pipelines pick it up automatically — no Jenkinsfile / workflow file changes needed per script.
+
+### k6 Subcommand Extensions — Auto-Resolution (k6 v1.7.0+)  [community]
+
+k6 v1.7.0 introduced automatic resolution for subcommand extensions. Extensions like `k6 x httpbin` no longer require a manual `xk6 build` step if the extension supports the auto-resolution protocol. This simplifies CI setups where teams previously needed custom Docker images.
+
+```bash
+# Old workflow: build custom binary, run, clean up
+xk6 build --with github.com/szkiba/xk6-httpbin
+./k6 run script.js
+
+# New workflow (v1.7.0+): k6 resolves the extension automatically
+k6 x httpbin  # discovers and runs the httpbin extension tool directly
+```
+
+> **[community]:** Subcommand auto-resolution only works for extensions that register themselves as k6 subcommands (not all xk6 extensions do). Check the extension's documentation for a `k6 x ...` entry point. For load-testing extensions (`k6/x/redis`, `k6/x/kafka`), you still need `xk6 build` to bake them into the binary. Auto-resolution is targeted at utility/tooling extensions, not runtime modules.
+
+---
+
+## OS Tuning for High-VU Tests
+
+### Linux Tuning (CI and bare-metal)
+
+```bash
+# Minimum for most load tests (1,000–10,000 VUs)
+ulimit -n 65536
+
+# Recommended for high-VU tests (>10,000 VUs)
+ulimit -n 250000
+
+# Kernel network tuning — run before k6, persist via /etc/sysctl.conf
+sysctl -w net.ipv4.ip_local_port_range="16384 65000"  # expands ephemeral port pool
+sysctl -w net.ipv4.tcp_tw_reuse=1                      # reuse TIME_WAIT sockets
+
+# RAM estimate: 1–5 MB per VU depending on script complexity
+# 1000 VU test = 1–5 GB RAM needed on the load generator
+```
+
+> **[community]:** If k6 itself is CPU-bound (>80% CPU on the load generator), latency metrics are artificially inflated — you are measuring k6 scheduling overhead, not server performance. Monitor load-generator CPU during the test. If it exceeds 80%, either reduce VU count or use `--execution-segment` to split load across multiple machines.
+
+### macOS Tuning (developer machines)  [community]
+
+macOS defaults to 16,384 ephemeral ports and a soft file-descriptor limit of ~256 per process — far too low for high-VU tests. The permanent fix requires creating LaunchDaemon plist files.
+
+```bash
+# Temporary session fix (resets on restart)
+sudo launchctl limit maxfiles 65536 200000
+ulimit -n 65536
+
+# Expand ephemeral port range (adds ~16,384 more ports)
+sudo sysctl -w net.inet.ip.portrange.first=32768
+```
+
+For a permanent macOS configuration, create `/Library/LaunchDaemons/limit.maxfiles.plist`:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key><string>limit.maxfiles</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>launchctl</string>
+      <string>limit</string>
+      <string>maxfiles</string>
+      <string>64000</string>
+      <string>524288</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+  </dict>
+</plist>
+```
+
+Then reboot. Verification: `launchctl limit maxfiles` should show `64000 524288`.
+
+> **[community]:** On Apple Silicon (M-series) Macs, the SIP disable step may not be required for `launchctl limit` changes. Test first without disabling SIP — many teams run k6 smoke tests on macOS laptops without needing SIP changes.
+
+### `summaryTrendStats` — Custom Percentiles in Summary Output
+
+The default end-of-test summary shows `avg, min, med, max, p(90), p(95)`. Add `p(99)` and `count` for production SLO dashboards:
+
+```javascript
+export const options = {
+  summaryTrendStats: ["avg", "min", "med", "max", "p(90)", "p(95)", "p(99)", "p(99.9)", "count"],
+
+  // summaryTimeUnit overrides the time unit for trend stats in the summary
+  // Default: "ms" — use "s" for long-duration soak metrics
+  summaryTimeUnit: "ms",
+};
+```
+
+Environment variable alternative (for CI overrides without modifying the script):
+```bash
+K6_SUMMARY_TREND_STATS="avg,p(95),p(99),max,count" k6 run k6/scripts/load.js
+```
+
+> **[community]:** `p(99.9)` and `p(99.99)` are valid percentile expressions in k6 — useful for services with extreme tail latency requirements (financial APIs, real-time trading). These are rarely surfaced in tutorials but fully supported by k6's histogram implementation.
+
+### `--compatibility-mode=base` for Memory Reduction  [community]
+
+k6 defaults to `--compatibility-mode=extended` which includes Babel transform support for broader ES6+ syntax. For high-VU tests (>5,000 VUs), switching to `--compatibility-mode=base` reduces JavaScript VM memory footprint by ~20-30%.
+
+```bash
+# Base mode: skips Babel transform — script must be vanilla ES6
+k6 run --compatibility-mode=base k6/scripts/load.js
+
+# Or set via env var
+K6_COMPATIBILITY_MODE=base k6 run k6/scripts/load.js
+```
+
+**Requirements for base mode:**
+- No CommonJS (`require()`) imports
+- No transpiled TypeScript (use `k6 run script.ts` directly in v0.57+)
+- All imports use native ESM `import` syntax
+- Arrow functions, const/let, template literals are all fine
+
+> **[community]:** For scripts using only k6 built-ins and standard ES6 syntax (which most production k6 scripts already do), base mode is safe and recommended for high-VU environments. The memory saving can mean the difference between fitting a 10,000 VU test on one 32 GB machine vs. needing two.
+
+---
+
+## v2.0.0 Migration — Additional Details
+
+### k6 v2.0.0-rc1 Additional Breaking Changes
+
+| Change | Details |
+|--------|---------|
+| `--stack` required for `k6 cloud` | No default stack fallback — must specify explicitly |
+| Go module path change | Extensions must update imports: `go.k6.io/k6` → `go.k6.io/k6/v2` |
+| `k6 cloud script.js` syntax | Use `k6 cloud run script.js` (the positional syntax is removed) |
+| `k6 login` removed | Use `k6 cloud login --token "$TOKEN" --stack "$STACK"` |
+
+```bash
+# Migration checklist — cloud commands
+grep -r "k6 cloud [^r]" .github/ .gitlab-ci.yml Jenkinsfile  # Find non-"run" cloud commands
+grep -r "k6 login" .github/ .gitlab-ci.yml Jenkinsfile       # Find old login commands
+
+# After: correct v2.0 cloud commands
+k6 cloud login --token "$K6_CLOUD_API_TOKEN" --stack "$K6_CLOUD_STACK"
+k6 cloud run --stack "$K6_CLOUD_STACK" k6/scripts/load.js
+k6 cloud upload --stack "$K6_CLOUD_STACK" k6/scripts/load.js
 ```
 

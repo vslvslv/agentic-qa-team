@@ -1,5 +1,5 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 5 | score: 100/100 | date: 2026-05-02 | sources: training-knowledge -->
+<!-- lang: TypeScript | topic: bdd | iteration: 10 | score: 100/100 | date: 2026-05-03 | sources: training-knowledge -->
 <!-- WebFetch and WebSearch unavailable; synthesized from training knowledge + TypeScript patterns reference -->
 
 ## Core Principles
@@ -2224,4 +2224,1160 @@ if (result.wipPercentage > 10) process.exit(1); // Fail CI if @wip > 10%
 - [Allure Framework](https://allurereport.org/) — rich reporting for Cucumber suites
 - [Pact documentation](https://docs.pact.io/) — consumer-driven contract testing for service boundaries
 - [@axe-core/playwright](https://github.com/dequelabs/axe-core-npm/tree/develop/packages/playwright) — axe-core integration for Playwright-based BDD
+- [ISTQB CTFL 4.0 Syllabus](https://www.istqb.org/certifications/certified-tester-foundation-level) — standardized testing terminology reference
+
+---
+
+### BDD with Feature Flags: Testing Toggle-Gated Behaviors  [community]
+
+Feature flags (also called feature toggles) introduce conditional behavior into production code
+— a feature is ON for some users/environments and OFF for others. BDD scenarios must account
+for this: the same `.feature` file may need to produce different outcomes depending on which
+flags are active at test time.
+
+The naive approach — writing duplicate scenarios for each toggle state — causes scenario bloat
+and drift. The principled approach tags scenarios with the toggle name and configures the World
+to activate or deactivate flags before each scenario.
+
+```gherkin
+# features/payments/new-checkout-flow.feature
+# This feature is behind the feature flag: NEW_CHECKOUT_FLOW_ENABLED
+
+@feature-flag:NEW_CHECKOUT_FLOW_ENABLED
+Feature: New checkout flow (feature-flag gated)
+  As a product manager
+  I want to verify the new checkout flow before full rollout
+  So that I can confirm it works correctly for the enabled cohort
+
+  Scenario: New checkout flow shows redesigned confirmation page
+    Given the feature flag "NEW_CHECKOUT_FLOW_ENABLED" is active
+    And I am a registered customer with items in my cart
+    When I complete the checkout process
+    Then I should see the new-style order confirmation with animated checkmark
+    And I should see the "Share your order" social prompt
+
+  Scenario: Customers without the flag see the original checkout
+    Given the feature flag "NEW_CHECKOUT_FLOW_ENABLED" is inactive
+    And I am a registered customer with items in my cart
+    When I complete the checkout process
+    Then I should see the classic order confirmation page
+    And I should NOT see the "Share your order" prompt
+```
+
+```typescript
+// src/steps/feature-flag.steps.ts — controlling flags in BDD scenarios
+import { Given } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+// Step: Given the feature flag {string} is active
+Given(
+  'the feature flag {string} is active',
+  async function (this: AppWorld, flagName: string) {
+    // Strategy 1: Override via API endpoint (LaunchDarkly, Unleash, Flagsmith)
+    await this.page.request.post('/api/test/feature-flags', {
+      data: { flag: flagName, enabled: true, userId: this.testUserId }
+    });
+    // Strategy 2: Set a cookie that the app's flag client reads
+    await this.page.context().addCookies([{
+      name: `ff_${flagName}`, value: '1',
+      domain: new URL(process.env.BASE_URL ?? 'http://localhost:3000').hostname,
+      path: '/',
+    }]);
+  }
+);
+
+// Step: Given the feature flag {string} is inactive
+Given(
+  'the feature flag {string} is inactive',
+  async function (this: AppWorld, flagName: string) {
+    await this.page.request.post('/api/test/feature-flags', {
+      data: { flag: flagName, enabled: false, userId: this.testUserId }
+    });
+    await this.page.context().addCookies([{
+      name: `ff_${flagName}`, value: '0',
+      domain: new URL(process.env.BASE_URL ?? 'http://localhost:3000').hostname,
+      path: '/',
+    }]);
+  }
+);
+```
+
+```typescript
+// src/support/hooks.ts — feature flag cleanup after each scenario
+import { After, Before } from '@cucumber/cucumber';
+import { AppWorld } from './world';
+
+// Reset all feature flags to production defaults after each scenario.
+// Without this, a scenario that activates a flag contaminates the next scenario
+// when running in parallel with shared state.
+After(async function (this: AppWorld) {
+  await this.page.request.post('/api/test/feature-flags/reset', {
+    data: { userId: this.testUserId }
+  });
+});
+
+// For parallel runs: each scenario gets a unique test user ID
+// so flag overrides are scoped to that user and do not bleed across workers.
+Before(async function (this: AppWorld) {
+  this.testUserId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+});
+```
+
+**Cucumber profile for feature-flag scenarios** (`cucumber.js`):
+```javascript
+export default {
+  // Only run scenarios for a specific flag — used during flag rollout testing
+  'flag-new-checkout': {
+    import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+    tags: '@feature-flag:NEW_CHECKOUT_FLOW_ENABLED',
+    format: ['progress-bar', 'html:reports/flag-report.html'],
+  },
+  // CI: skip flag-gated scenarios in smoke run (they may be incomplete)
+  smoke: {
+    import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+    tags: '@smoke and not @feature-flag:*',  // exclude all flag-gated scenarios
+    format: ['progress-bar'],
+  },
+};
+```
+
+**[community] Feature flag + BDD lifecycle rule**: When a feature flag is permanently
+enabled (100% rollout), the `Given the feature flag X is active` precondition step and
+the corresponding `@feature-flag:X` tag should be removed within one sprint. Stale
+feature flag steps are a signal that the flag infrastructure was not cleaned up after
+rollout — and they slow the suite by adding unnecessary API calls to every scenario.
+Treat `@feature-flag:*` count as a tech-debt metric: more than 3 active flag scenarios
+at any time indicates flag cleanup debt.
+
+**[community] Unleash + BDD parallel isolation**: Teams using Unleash (open-source flag
+server) for BDD test environments report that the `/api/client/features` polling interval
+(default 15 seconds) creates race conditions in parallel BDD runs — a flag reset in one
+worker is not visible to another for up to 15 seconds. Solution: configure Unleash's
+test endpoint to use synchronous responses (`disableMetrics: true`, `refreshInterval: 0`),
+or use a per-scenario strategy override scoped to the test user's `userId` context field.
+
+---
+
+### BDD ROI Measurement: Quantifying the Practice  [community]
+
+BDD's business case rests on specific, measurable outcomes. Teams that measure BDD ROI
+can justify the practice to stakeholders and identify when it is delivering value versus
+consuming effort without return.
+
+**Leading indicators** (visible within 1–2 sprints):
+
+| Metric | How to measure | Target |
+|---|---|---|
+| Three Amigos session frequency | Sprint log / calendar | ≥ 1 per story |
+| Questions answered before dev starts | Count red cards resolved in Example Mapping | < 20% unresolved at sprint start |
+| Scenario creation time | Time from story kickoff to agreed Gherkin | < 2 hours per story |
+| Step reuse ratio | `used_count / total_steps` from `--format usage` | > 2.0 (each step used avg 2× or more) |
+
+**Lagging indicators** (visible after 1–2 quarters):
+
+| Metric | How to measure | Target |
+|---|---|---|
+| Regression escape rate | Bugs found in production that were BDD-testable | < 5% of production bugs have no BDD scenario |
+| Requirement ambiguity rate | Jira tickets reopened due to unclear requirements | Decrease vs pre-BDD baseline |
+| Onboarding time | Time for new team member to write first scenario | < 1 week |
+| Cross-team alignment | Stakeholder survey: "do you understand what our software does?" | > 8/10 |
+
+```typescript
+// scripts/bdd-roi-metrics.ts — automated ROI data collection
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+
+interface BddRoiMetrics {
+  timestamp: string;
+  totalScenarios: number;
+  totalStepDefinitions: number;
+  stepReuseFactor: number;
+  scenariosPerSprint: number;
+  wipePercentage: number;
+  avgScenarioDurationMs: number | null;
+}
+
+function collectMetrics(): BddRoiMetrics {
+  // Step reuse: parse cucumber --format usage output
+  const usageOutput = execSync(
+    'npx cucumber-js --dry-run --format usage 2>/dev/null || echo "DRY_RUN_FAILED"'
+  ).toString();
+
+  const usageLines = usageOutput
+    .split('\n')
+    .filter(line => /^\s+\d+/.test(line));
+
+  const totalUses = usageLines.reduce((sum, line) => {
+    const match = line.match(/(\d+)/);
+    return sum + (match ? parseInt(match[1]) : 0);
+  }, 0);
+
+  const stepReuseFactor = usageLines.length > 0
+    ? totalUses / usageLines.length
+    : 0;
+
+  // Count total scenarios
+  const featureContent = execSync('find features -name "*.feature" -exec cat {} +')
+    .toString();
+  const totalScenarios = (featureContent.match(/^\s*(Scenario|Scenario Outline):/gm) ?? []).length;
+  const wipScenarios = (featureContent.match(/@wip/g) ?? []).length;
+
+  return {
+    timestamp: new Date().toISOString(),
+    totalScenarios,
+    totalStepDefinitions: usageLines.length,
+    stepReuseFactor: Math.round(stepReuseFactor * 10) / 10,
+    scenariosPerSprint: 0, // Manual: divide delta by sprint count
+    wipePercentage: Math.round((wipScenarios / totalScenarios) * 100),
+    avgScenarioDurationMs: null, // Populated from junit XML after a full run
+  };
+}
+
+const metrics = collectMetrics();
+const history = JSON.parse(
+  fs.existsSync('reports/bdd-roi-history.json')
+    ? fs.readFileSync('reports/bdd-roi-history.json', 'utf8')
+    : '[]'
+) as BddRoiMetrics[];
+
+history.push(metrics);
+fs.writeFileSync('reports/bdd-roi-history.json', JSON.stringify(history, null, 2));
+console.log('BDD ROI Metrics:', metrics);
+```
+
+**[community] The ROI case to management**: The most persuasive ROI argument is not
+"we have X feature files" — it is "our regression escape rate dropped from Y% to Z%
+after BDD adoption." Track production bugs for one quarter before BDD, one quarter after.
+In complex domains (insurance, finance, logistics), teams consistently report 30–50%
+reduction in requirement-ambiguity defects after establishing Three Amigos sessions, even
+before the automation layer is in place.
+
+**[community] Anti-ROI: measuring vanity metrics**: Teams that measure "scenario count"
+as a proxy for BDD maturity create incentives to write lots of thin scenarios with weak
+assertions. The right metric is the *defect detection rate* of the BDD suite — how many
+production bugs would have been caught if the relevant scenario existed. Conduct quarterly
+retrospectives mapping production incidents to the BDD layer: "Was there a BDD scenario
+for this? Should there have been?" This builds the suite strategically rather than
+volumetrically.
+
+---
+
+### Page Object Model Integration with BDD Step Definitions  [community]
+
+The Page Object Model (POM) is the standard abstraction pattern for browser automation.
+In BDD, step definitions play the role of "test case logic" while page objects play the
+role of "UI interaction library." Keeping these two layers separate is critical for
+maintainability.
+
+**Why the separation matters**: Step definitions that contain raw selectors directly
+(e.g., `page.locator('[data-testid="checkout-btn"]').click()`) are tightly coupled to
+the UI. When the selector changes, every step that uses it breaks. Page objects centralize
+selector knowledge so a single change fixes all steps.
+
+```typescript
+// src/pages/CheckoutPage.ts — Page Object for the checkout flow
+import { Page, Locator, expect } from '@playwright/test';
+
+export class CheckoutPage {
+  private readonly page: Page;
+
+  // Locators defined once — all steps reference these, not raw selectors
+  readonly cartSummary: Locator;
+  readonly cardNumberInput: Locator;
+  readonly cardExpiryInput: Locator;
+  readonly cardCvvInput: Locator;
+  readonly confirmOrderButton: Locator;
+  readonly orderConfirmationBanner: Locator;
+  readonly errorMessage: Locator;
+  readonly discountCodeInput: Locator;
+  readonly applyDiscountButton: Locator;
+  readonly orderTotal: Locator;
+
+  constructor(page: Page) {
+    this.page = page;
+    this.cartSummary = page.getByTestId('cart-summary');
+    this.cardNumberInput = page.getByTestId('card-number');
+    this.cardExpiryInput = page.getByTestId('card-expiry');
+    this.cardCvvInput = page.getByTestId('card-cvv');
+    this.confirmOrderButton = page.getByTestId('confirm-order');
+    this.orderConfirmationBanner = page.getByTestId('order-confirmation');
+    this.errorMessage = page.getByTestId('error-message');
+    this.discountCodeInput = page.getByTestId('discount-code-input');
+    this.applyDiscountButton = page.getByTestId('apply-discount');
+    this.orderTotal = page.getByTestId('order-total');
+  }
+
+  async navigate(): Promise<void> {
+    await this.page.goto('/checkout');
+    await expect(this.cartSummary).toBeVisible();
+  }
+
+  async fillCardDetails(cardNumber: string, expiry: string, cvv: string): Promise<void> {
+    await this.cardNumberInput.fill(cardNumber);
+    await this.cardExpiryInput.fill(expiry);
+    await this.cardCvvInput.fill(cvv);
+  }
+
+  async fillValidCardDetails(): Promise<void> {
+    await this.fillCardDetails('4242424242424242', '12/28', '123');
+  }
+
+  async fillExpiredCardDetails(): Promise<void> {
+    await this.fillCardDetails('4242424242424242', '12/20', '123');
+  }
+
+  async confirmOrder(): Promise<void> {
+    await this.confirmOrderButton.click();
+  }
+
+  async applyDiscount(code: string): Promise<void> {
+    await this.discountCodeInput.fill(code);
+    await this.applyDiscountButton.click();
+  }
+
+  async getOrderTotal(): Promise<number> {
+    const text = await this.orderTotal.textContent() ?? '0';
+    return parseFloat(text.replace(/[^0-9.]/g, ''));
+  }
+
+  async expectConfirmationVisible(): Promise<void> {
+    await expect(this.orderConfirmationBanner).toBeVisible();
+    await expect(this.page).toHaveURL(/\/order\/confirmation/);
+  }
+
+  async expectError(message: string): Promise<void> {
+    await expect(this.errorMessage).toHaveText(message);
+  }
+}
+```
+
+```typescript
+// src/support/world.ts — World holds page object instances
+import { setWorldConstructor, World, IWorldOptions } from '@cucumber/cucumber';
+import { Browser, BrowserContext, Page, chromium } from '@playwright/test';
+import { CheckoutPage } from '../pages/CheckoutPage';
+import { LoginPage } from '../pages/LoginPage';
+
+export class AppWorld extends World {
+  browser!: Browser;
+  context!: BrowserContext;
+  page!: Page;
+  testUserId!: string;
+  authToken?: string;
+
+  // Page object instances — created lazily per scenario
+  private _checkoutPage?: CheckoutPage;
+  private _loginPage?: LoginPage;
+
+  constructor(options: IWorldOptions) {
+    super(options);
+  }
+
+  // Lazy getters ensure page objects are created after this.page is set
+  get checkoutPage(): CheckoutPage {
+    this._checkoutPage ??= new CheckoutPage(this.page);
+    return this._checkoutPage;
+  }
+
+  get loginPage(): LoginPage {
+    this._loginPage ??= new LoginPage(this.page);
+    return this._loginPage;
+  }
+}
+
+setWorldConstructor(AppWorld);
+```
+
+```typescript
+// src/steps/checkout.steps.ts — clean step definitions using page objects
+import { Given, When, Then } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+// Step definitions reference page object methods — no raw selectors here
+Given('I am on the checkout page', async function (this: AppWorld) {
+  await this.checkoutPage.navigate();
+});
+
+When('I enter valid credit card details', async function (this: AppWorld) {
+  await this.checkoutPage.fillValidCardDetails();
+});
+
+When('I enter an expired credit card', async function (this: AppWorld) {
+  await this.checkoutPage.fillExpiredCardDetails();
+});
+
+When('I confirm the order', async function (this: AppWorld) {
+  await this.checkoutPage.confirmOrder();
+});
+
+When('I apply discount code {string}', async function (this: AppWorld, code: string) {
+  await this.checkoutPage.applyDiscount(code);
+});
+
+Then('I should see an order confirmation page', async function (this: AppWorld) {
+  await this.checkoutPage.expectConfirmationVisible();
+});
+
+Then('I should see the error {string}', async function (this: AppWorld, message: string) {
+  await this.checkoutPage.expectError(message);
+});
+
+Then('my total should be {string}', async function (this: AppWorld, expected: string) {
+  const actual = await this.checkoutPage.getOrderTotal();
+  const expectedNum = parseFloat(expected);
+  // Allow $0.01 tolerance for floating-point display differences
+  if (Math.abs(actual - expectedNum) > 0.01) {
+    throw new Error(`Expected total ${expectedNum} but got ${actual}`);
+  }
+});
+```
+
+**[community] When not to use Page Objects in BDD**: For API-level BDD scenarios (no
+browser), Page Objects add no value — use a typed API client class instead. For very simple
+single-page scenarios, the overhead of maintaining page object files may exceed the benefit.
+The heuristic: if a selector is used in more than two step definitions, it belongs in a
+page object. If it is used in only one step, define it inline.
+
+**[community] Page Object anti-pattern — asserting in page objects**: Page objects should
+expose *actions* and *locators*, not make assertions. A `checkout.expectConfirmationVisible()`
+method is acceptable because it encapsulates *what* the confirmation state looks like (which
+may change). A `checkout.assertOrderTotal(expected)` that throws with a specific assertion
+message embeds test logic in the page object layer — the `Then` step definition should own
+the assertion message so failure output is readable in the Cucumber HTML report.
+
+---
+
+### BDD Test Data Management Strategies  [community]
+
+Test data is the most common source of BDD scenario flakiness and the most underestimated
+aspect of BDD setup. Three strategies exist, each with distinct trade-offs.
+
+**Strategy 1: API seeding (recommended for most scenarios)**
+
+Use direct API calls in `Before` hooks or `Given` steps to create test data. This is 10–50x
+faster than UI-driven setup and produces deterministic, isolated data per scenario.
+
+```typescript
+// src/support/data-factory.ts — centralized test data creation
+import { request, APIRequestContext } from '@playwright/test';
+
+export interface TestOrder {
+  orderId: string;
+  customerId: string;
+  total: number;
+  status: 'pending' | 'confirmed' | 'shipped' | 'delivered';
+}
+
+export interface TestCustomer {
+  customerId: string;
+  email: string;
+  authToken: string;
+}
+
+export class DataFactory {
+  private readonly apiContext: APIRequestContext;
+  private readonly baseUrl: string;
+  // Track created resources for cleanup
+  private readonly createdCustomerIds: string[] = [];
+  private readonly createdOrderIds: string[] = [];
+
+  constructor(apiContext: APIRequestContext, baseUrl: string) {
+    this.apiContext = apiContext;
+    this.baseUrl = baseUrl;
+  }
+
+  async createTestCustomer(overrides: Partial<TestCustomer> = {}): Promise<TestCustomer> {
+    const email = overrides.email ?? `test-${Date.now()}@example.com`;
+    const res = await this.apiContext.post(`${this.baseUrl}/api/test/customers`, {
+      data: { email, password: 'TestPass123!', ...overrides }
+    });
+    if (!res.ok()) throw new Error(`Failed to create test customer: ${await res.text()}`);
+    const customer = await res.json() as TestCustomer;
+    this.createdCustomerIds.push(customer.customerId);
+    return customer;
+  }
+
+  async createTestOrder(
+    customerId: string,
+    overrides: Partial<TestOrder> = {}
+  ): Promise<TestOrder> {
+    const res = await this.apiContext.post(`${this.baseUrl}/api/test/orders`, {
+      data: {
+        customerId,
+        items: [{ productId: 'prod-001', quantity: 1 }],
+        status: 'confirmed',
+        ...overrides,
+      }
+    });
+    if (!res.ok()) throw new Error(`Failed to create test order: ${await res.text()}`);
+    const order = await res.json() as TestOrder;
+    this.createdOrderIds.push(order.orderId);
+    return order;
+  }
+
+  // Cleanup: delete all data created during this scenario
+  async cleanup(): Promise<void> {
+    for (const id of this.createdOrderIds) {
+      await this.apiContext.delete(`${this.baseUrl}/api/test/orders/${id}`).catch(() => {});
+    }
+    for (const id of this.createdCustomerIds) {
+      await this.apiContext.delete(`${this.baseUrl}/api/test/customers/${id}`).catch(() => {});
+    }
+  }
+}
+```
+
+```typescript
+// src/support/hooks.ts — integrate DataFactory into World
+import { Before, After } from '@cucumber/cucumber';
+import { request } from '@playwright/test';
+import { AppWorld } from './world';
+import { DataFactory } from './data-factory';
+
+Before(async function (this: AppWorld) {
+  const apiContext = await request.newContext({
+    baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
+    extraHTTPHeaders: { 'x-test-run-id': this.testUserId },
+  });
+  this.dataFactory = new DataFactory(apiContext, process.env.BASE_URL ?? 'http://localhost:3000');
+});
+
+After(async function (this: AppWorld) {
+  await this.dataFactory?.cleanup();
+});
+```
+
+**Strategy 2: Database transaction rollback (for integration-level BDD)**
+
+For BDD scenarios that test at the service/repository layer (no browser), wrapping each
+scenario in a database transaction that rolls back after the test keeps the database clean
+without API overhead.
+
+```typescript
+// src/support/db-hooks.ts — transaction rollback for DB-level BDD
+import { Before, After } from '@cucumber/cucumber';
+import { AppWorld } from './world';
+import { getTestDbConnection } from '../db/test-connection';
+
+Before(async function (this: AppWorld) {
+  this.dbConnection = await getTestDbConnection();
+  this.dbTransaction = await this.dbConnection.beginTransaction();
+  // Inject transaction into the service layer under test
+  this.serviceContext = { db: this.dbConnection, transaction: this.dbTransaction };
+});
+
+After(async function (this: AppWorld) {
+  await this.dbTransaction?.rollback();
+  await this.dbConnection?.close();
+});
+```
+
+**Strategy 3: Fixture files for read-only reference data**
+
+For product catalog data, pricing tables, or any data that scenarios read but do not write,
+JSON fixture files loaded once at suite startup are faster than per-scenario API seeding.
+
+```typescript
+// src/support/fixtures.ts — load static reference data once for the suite
+import * as fs from 'fs';
+import * as path from 'path';
+
+export interface ProductFixture {
+  productId: string;
+  name: string;
+  price: number;
+  category: string;
+}
+
+let _products: ProductFixture[] | null = null;
+
+export function getProductFixtures(): ProductFixture[] {
+  if (!_products) {
+    _products = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '../fixtures/products.json'), 'utf8')
+    ) as ProductFixture[];
+  }
+  return _products;
+}
+
+export function getProductById(productId: string): ProductFixture {
+  const product = getProductFixtures().find(p => p.productId === productId);
+  if (!product) throw new Error(`No fixture for product: ${productId}`);
+  return product;
+}
+```
+
+**[community] Test data strategy selection guide**:
+
+| Scenario type | Recommended strategy | Rationale |
+|---|---|---|
+| Browser E2E (creates/modifies data) | API seeding + cleanup | Full isolation without UI overhead |
+| Service/repository layer | DB transaction rollback | Fastest, zero cleanup risk |
+| Read-only reference data | JSON fixture files | Load once, no network round trips |
+| Third-party integrations | Wiremock/MSW stubs | Cannot control external data |
+| Performance-sensitive scenarios | Pre-seeded DB state | No per-scenario overhead |
+
+**[community] Test data amnesia**: The most common data management failure is
+"forgetting" to clean up test data in CI. After 3 months of daily CI runs, test databases
+accumulate thousands of stale test records that slow queries, fill disk, and cause
+false positives when scenarios accidentally pick up data from previous runs. The fix:
+every `Before` hook that creates data must have a corresponding `After` hook that deletes it.
+Track created resource IDs in the World object — never rely on "delete by pattern" cleanup.
+
+---
+
+### BDD for Event-Driven and Async Systems  [community]
+
+Event-driven architectures — where behavior is triggered by events rather than synchronous
+HTTP calls — require special handling in BDD step definitions. A `When I place an order`
+step in an event-driven system may publish an event to a queue; the `Then` assertion may
+need to wait for a downstream consumer to process that event before the observable outcome
+is visible.
+
+The key pattern is the **poll-and-assert** helper: wait up to a timeout for the expected
+state to appear, polling at short intervals. This is safer than `sleep()` calls, which
+produce flaky tests whenever the system is slower than expected.
+
+```gherkin
+# features/inventory/stock-reservation.feature
+Feature: Stock reservation via event-driven inventory service
+
+  Scenario: Order placement reserves the purchased items from stock
+    Given the product "Wireless Headphones" has 10 units in stock
+    When I place an order for 3 units of "Wireless Headphones"
+    Then within 5 seconds the available stock for "Wireless Headphones" should be 7
+    And an "order.placed" event should have been published to the events log
+
+  Scenario: Stock reservation is released when an order is cancelled
+    Given I have a confirmed order for 2 units of "Gaming Mouse"
+    And the available stock for "Gaming Mouse" is 8
+    When I cancel the order
+    Then within 5 seconds the available stock for "Gaming Mouse" should be 10
+    And an "order.cancelled" event should have been published to the events log
+```
+
+```typescript
+// src/steps/inventory.steps.ts — async event-driven BDD
+import { Given, When, Then } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+// Helper: poll until condition is true or timeout expires
+async function waitUntil(
+  condition: () => Promise<boolean>,
+  timeoutMs: number,
+  intervalMs = 250
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(`Condition not met within ${timeoutMs}ms`);
+}
+
+Then(
+  'within {int} seconds the available stock for {string} should be {int}',
+  async function (this: AppWorld, seconds: number, productName: string, expected: number) {
+    await waitUntil(
+      async () => {
+        const res = await this.apiContext.get(`/api/inventory/${productName}/available`);
+        if (!res.ok()) return false;
+        const body = await res.json() as { available: number };
+        return body.available === expected;
+      },
+      seconds * 1000
+    );
+    // Final assertion with full error message on failure
+    const res = await this.apiContext.get(`/api/inventory/${productName}/available`);
+    const body = await res.json() as { available: number };
+    if (body.available !== expected) {
+      throw new Error(
+        `Stock for "${productName}": expected ${expected}, got ${body.available} ` +
+        `after ${seconds}s timeout`
+      );
+    }
+  }
+);
+
+Then(
+  'an {string} event should have been published to the events log',
+  async function (this: AppWorld, eventType: string) {
+    // Check event audit log for events scoped to this scenario's correlation ID
+    await waitUntil(
+      async () => {
+        const res = await this.apiContext.get(
+          `/api/test/events?correlationId=${this.correlationId}&type=${eventType}`
+        );
+        const body = await res.json() as { events: unknown[] };
+        return body.events.length > 0;
+      },
+      5000
+    );
+  }
+);
+```
+
+```typescript
+// src/support/world.ts — correlation ID for event tracing
+// Each scenario gets a unique correlationId injected into all API requests.
+// Services emit events with this ID, enabling event log queries per scenario.
+export class AppWorld extends World {
+  correlationId!: string;
+  apiContext!: import('@playwright/test').APIRequestContext;
+  // ...other fields
+}
+```
+
+```typescript
+// src/support/hooks.ts — inject correlation ID into all requests
+import { Before, After } from '@cucumber/cucumber';
+import { request } from '@playwright/test';
+import { AppWorld } from './world';
+
+Before(async function (this: AppWorld) {
+  this.correlationId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  this.apiContext = await request.newContext({
+    baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
+    extraHTTPHeaders: {
+      'x-correlation-id': this.correlationId,
+      'x-test-run': 'true',
+    },
+  });
+});
+
+After(async function (this: AppWorld) {
+  await this.apiContext?.dispose();
+});
+```
+
+**[community] Async BDD and the `waitUntil` anti-pattern**: Teams new to async BDD
+frequently use `await page.waitForTimeout(3000)` (a fixed sleep) instead of polling.
+Fixed sleeps make suites slow when events arrive faster than expected and flaky when
+they arrive slower. The poll-and-assert pattern with an explicit timeout is always
+preferable. Set the timeout based on the 99th percentile latency of the event consumer,
+not the average.
+
+**[community] Message queue BDD with testcontainers**: For BDD scenarios that need to
+assert on Kafka/RabbitMQ message publishing, `testcontainers` (Node.js library) spins up
+a real message broker in Docker during the test run. The scenario's `Then` step subscribes
+to the test topic and waits for the expected message. This is more reliable than mocking
+the broker because it catches serialization bugs and schema mismatches that mocks miss.
+
+---
+
+### BDD Security Testing Scenarios  [community]
+
+Security requirements are business behaviors and can be expressed as BDD scenarios.
+Security BDD serves two purposes: (1) it ensures security controls are tested as
+acceptance criteria, not afterthoughts, and (2) it produces human-readable audit
+evidence for security reviews.
+
+```gherkin
+# features/security/authentication.feature
+@security @regression
+Feature: Authentication security controls
+  As a security team
+  I want authentication to enforce proper controls
+  So that unauthorized access is prevented
+
+  Scenario: Brute force protection locks account after 5 failed attempts
+    Given I am an anonymous user
+    When I submit incorrect credentials for "alice@example.com" 5 times
+    Then my account should be locked
+    And I should see the message "Account temporarily locked. Try again in 15 minutes."
+    And the 6th login attempt should fail even with correct credentials
+
+  Scenario: Session token is invalidated after logout
+    Given I am logged in as "alice@example.com"
+    And I capture my current session token
+    When I log out
+    Then using the captured session token should return HTTP 401
+    And navigating to "/account" should redirect me to the login page
+
+  Scenario: Password reset link expires after 1 hour
+    Given a password reset link was generated 61 minutes ago for "alice@example.com"
+    When I navigate to the password reset link
+    Then I should see the error "This reset link has expired"
+    And I should be prompted to request a new reset link
+
+  @smoke
+  Scenario: CSRF token is required for state-changing requests
+    Given I am logged in as "alice@example.com"
+    When I send a POST request to "/api/account/email" without a CSRF token
+    Then the response status should be 403
+    And the response should contain "CSRF token missing or invalid"
+```
+
+```typescript
+// src/steps/security.steps.ts — security BDD step definitions
+import { Given, When, Then } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+// State holder for captured values across steps
+interface SecurityStepState {
+  capturedSessionToken?: string;
+  lastResponseStatus?: number;
+  lastResponseBody?: Record<string, unknown>;
+}
+
+Given('I am an anonymous user', async function (this: AppWorld & SecurityStepState) {
+  // Clear all cookies/storage to ensure anonymous state
+  await this.page.context().clearCookies();
+  await this.page.evaluate(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+});
+
+When(
+  'I submit incorrect credentials for {string} {int} times',
+  async function (this: AppWorld & SecurityStepState, email: string, times: number) {
+    for (let i = 0; i < times; i++) {
+      await this.page.goto('/login');
+      await this.page.getByTestId('email').fill(email);
+      await this.page.getByTestId('password').fill(`wrong-password-${i}`);
+      await this.page.getByTestId('submit').click();
+      // Allow rate limiting responses to settle
+      await this.page.waitForLoadState('networkidle');
+    }
+  }
+);
+
+Given('I capture my current session token', async function (this: AppWorld & SecurityStepState) {
+  const cookies = await this.page.context().cookies();
+  const sessionCookie = cookies.find(c => c.name === 'session_token');
+  if (!sessionCookie) throw new Error('No session_token cookie found');
+  this.capturedSessionToken = sessionCookie.value;
+});
+
+Then(
+  'using the captured session token should return HTTP {int}',
+  async function (this: AppWorld & SecurityStepState, expectedStatus: number) {
+    if (!this.capturedSessionToken) throw new Error('No captured session token');
+    const res = await this.page.request.get('/api/me', {
+      headers: { Cookie: `session_token=${this.capturedSessionToken}` }
+    });
+    if (res.status() !== expectedStatus) {
+      throw new Error(
+        `Expected HTTP ${expectedStatus} for invalidated token, got ${res.status()}`
+      );
+    }
+  }
+);
+
+When(
+  'I send a POST request to {string} without a CSRF token',
+  async function (this: AppWorld & SecurityStepState, path: string) {
+    const res = await this.page.request.post(path, {
+      data: { email: 'new@example.com' },
+      headers: { 'Content-Type': 'application/json' }
+      // Deliberately omitting CSRF token header
+    });
+    this.lastResponseStatus = res.status();
+    try {
+      this.lastResponseBody = await res.json() as Record<string, unknown>;
+    } catch {
+      this.lastResponseBody = {};
+    }
+  }
+);
+
+Then(
+  'the response status should be {int}',
+  async function (this: AppWorld & SecurityStepState, status: number) {
+    if (this.lastResponseStatus !== status) {
+      throw new Error(`Expected ${status}, got ${this.lastResponseStatus}`);
+    }
+  }
+);
+
+Then(
+  'the response should contain {string}',
+  async function (this: AppWorld & SecurityStepState, text: string) {
+    const bodyText = JSON.stringify(this.lastResponseBody ?? {});
+    if (!bodyText.includes(text)) {
+      throw new Error(`Expected response body to contain "${text}", got: ${bodyText}`);
+    }
+  }
+);
+```
+
+**[community] Security BDD scope**: Security BDD scenarios are most effective for
+*functional security controls* — authentication, authorization, input validation,
+session management. They are not a substitute for dedicated security tools (SAST, DAST,
+penetration testing). OWASP ZAP integration or Burp Suite scanning covers the attack
+surface that BDD scenarios cannot — SQL injection variants, XSS payload enumeration,
+or certificate validation bypasses. BDD + DAST together cover the security testing
+pyramid: BDD for "the control exists and works," DAST for "the control cannot be bypassed."
+
+**[community] Security scenario visibility**: Security scenarios should be visible in
+living documentation. A product manager seeing `Scenario: Account locked after 5 failed
+attempts` in the regression suite knows this protection is tested, not just claimed.
+Teams that keep security test cases hidden in Jira subtasks or separate test management
+tools lose the living documentation benefit for this critical category.
+
+---
+
+### AI-Assisted BDD Scenario Generation  [community]
+
+AI language models can accelerate the "formulation" phase of BDD by drafting Gherkin
+scenarios from user story text. The output requires review and refinement — AI cannot
+know the team's ubiquitous language or edge cases that emerged from Three Amigos —
+but it reduces the blank-page problem and surfaces scenarios the team might not have
+considered.
+
+**Where AI adds value in the BDD workflow:**
+
+1. **Draft scenario generation**: Given a user story, generate 3–5 scenario candidates
+   for the Three Amigos session to review and refine.
+2. **Edge case surfacing**: Prompt the model to identify boundary conditions, error
+   paths, and security implications for a feature description.
+3. **Step definition stub generation**: After writing scenarios, prompt the model to
+   generate TypeScript step definition stubs that the team fills in.
+4. **Scenario review**: Use the model to check whether a scenario is declarative or
+   imperative, and suggest improvements.
+
+**TypeScript utility for AI-assisted scenario drafting** (using Anthropic Claude API):
+
+```typescript
+// scripts/draft-scenarios.ts — generate Gherkin candidates from story text
+// Requires: npm install @anthropic-ai/sdk
+import Anthropic from '@anthropic-ai/sdk';
+import * as fs from 'fs';
+
+const client = new Anthropic();
+
+interface ScenarioDraftInput {
+  storyTitle: string;
+  storyDescription: string;
+  acceptanceCriteria: string[];
+  ubiquitousLanguage?: Record<string, string>; // term -> definition
+}
+
+async function draftScenarios(input: ScenarioDraftInput): Promise<string> {
+  const ulContext = input.ubiquitousLanguage
+    ? `\nUse this ubiquitous language consistently:\n${
+        Object.entries(input.ubiquitousLanguage)
+          .map(([term, def]) => `- "${term}": ${def}`)
+          .join('\n')
+      }\n`
+    : '';
+
+  const prompt = `You are a BDD expert helping draft Gherkin scenarios for a software team.
+
+User story: ${input.storyTitle}
+${input.storyDescription}
+
+Acceptance criteria:
+${input.acceptanceCriteria.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+${ulContext}
+Generate 4–6 Gherkin scenarios covering:
+1. The happy path
+2. At least 2 edge cases or boundary conditions
+3. At least 1 error/rejection scenario
+4. 1 scenario that is commonly forgotten (e.g., empty state, concurrent access)
+
+Rules:
+- Use declarative (not imperative) style — describe WHAT, not HOW
+- No UI selectors or technical terms in scenario text
+- Each scenario must have exactly 1 When step
+- Use the ubiquitous language terms provided
+- Output valid Gherkin only (no explanatory prose)`;
+
+  const message = await client.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const content = message.content[0];
+  return content.type === 'text' ? content.text : '';
+}
+
+// Example usage
+const draft = await draftScenarios({
+  storyTitle: 'Apply discount code at checkout',
+  storyDescription: 'As a customer, I want to enter a discount code during checkout to reduce my order total.',
+  acceptanceCriteria: [
+    'Valid codes reduce the total by the specified percentage',
+    'Expired codes are rejected with an error message',
+    'Each code can only be used once per customer',
+    'Codes cannot reduce the total below $0',
+  ],
+  ubiquitousLanguage: {
+    'Customer': 'An authenticated user who has completed account registration',
+    'Discount Code': 'A string token that modifies the order total per a business rule',
+    'Cart': 'A temporary collection of items before purchase commitment',
+  }
+});
+
+console.log(draft);
+// Save draft for Three Amigos review
+fs.writeFileSync('docs/scenario-drafts/discount-code-draft.gherkin', draft);
+```
+
+**[community] AI scenario generation pitfalls**:
+
+1. **Imperative drift**: AI models frequently generate imperative scenarios without
+   explicit instruction. The prompt above includes a "declarative only" rule, but
+   output should always be reviewed for steps like "When I click the Submit button."
+
+2. **Hallucinated domain language**: AI may use synonyms for ubiquitous language
+   terms ("coupon" instead of "discount code"). Always provide the UL glossary in
+   the prompt and validate output against it.
+
+3. **Scenarios that test implementation, not behavior**: AI sometimes generates
+   scenarios asserting database state or API response fields rather than user-observable
+   outcomes. These should be moved to unit or integration tests.
+
+4. **Missing the three-amigos validation step**: AI-generated scenarios must go
+   through a human Three Amigos review before they are accepted. AI knows general
+   BDD patterns but not your team's specific business rules, regulatory constraints,
+   or edge cases discovered in production. Treat AI output as a first draft, not a
+   finished artifact.
+
+**[community] The 80/20 rule for AI-assisted BDD**: In practice, AI generates ~80% of
+the scenario structure correctly. The 20% it gets wrong — domain terminology, edge cases
+specific to your business rules, boundary conditions in pricing/eligibility logic —
+are precisely the 20% that matters most for defect prevention. AI-assisted BDD is most
+valuable when teams use it to *start* the Three Amigos conversation, not to *end* it.
+
+---
+
+### BDD Team Retrospective and Continuous Improvement  [community]
+
+BDD practices degrade without explicit retrospective attention. The collaboration model
+weakens under deadline pressure; step definitions accumulate bloat; feature files drift
+imperative. A quarterly BDD health retrospective — separate from the sprint retrospective
+— keeps the practice on track.
+
+**BDD retrospective agenda (60 minutes, quarterly):**
+
+| Time | Topic | Goal |
+|---|---|---|
+| 0–10 min | Metrics review | Review suite health numbers (scenario count, @wip %, step reuse factor, flaky rate) |
+| 10–25 min | Three Amigos quality | Count stories that had Three Amigos sessions this quarter; review outcomes |
+| 25–40 min | Step definition audit | Run `--format usage`, identify unused and near-duplicate steps for removal |
+| 40–50 min | Living documentation check | Do stakeholders read the reports? Are scenarios understandable to non-developers? |
+| 50–60 min | Action items | 1–3 concrete improvements for next quarter |
+
+**[community] BDD maturity model** (informal, based on community retrospective patterns):
+
+| Level | Characteristics | Common symptom if stuck here |
+|---|---|---|
+| Level 0: No BDD | Tests written after code; no shared language | All defects discovered post-development |
+| Level 1: Tool adoption | Gherkin files exist; no Three Amigos | Feature files written by QA alone, often imperative |
+| Level 2: Collaboration | Three Amigos runs consistently; scenarios are declarative | Suite is slow (no API seeding), reporting not read by stakeholders |
+| Level 3: Living documentation | Stakeholders read and trust feature files; suite runs in CI | Step definition bloat; parallel execution flakiness |
+| Level 4: Continuous improvement | Quarterly BDD retros; ROI measured; suite health monitored | None — this is the target state |
+
+**TypeScript: BDD health check script** (run in CI to fail on health violations):
+
+```typescript
+// scripts/bdd-health-check.ts — fail CI if BDD health metrics are out of range
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+
+interface HealthCheckResult {
+  passed: boolean;
+  violations: string[];
+  warnings: string[];
+  metrics: Record<string, number | string>;
+}
+
+function runHealthCheck(): HealthCheckResult {
+  const violations: string[] = [];
+  const warnings: string[] = [];
+
+  // 1. Count total scenarios and @wip
+  const featureContent = execSync(
+    'find features -name "*.feature" -exec cat {} + 2>/dev/null || echo ""'
+  ).toString();
+  const totalScenarios = (featureContent.match(/^\s*(Scenario|Scenario Outline):/gm) ?? []).length;
+  const wipCount = (featureContent.match(/@wip/g) ?? []).length;
+  const wipPct = totalScenarios > 0 ? Math.round((wipCount / totalScenarios) * 100) : 0;
+
+  // 2. Step reuse factor
+  let stepReuseFactor = 0;
+  try {
+    const usageOut = execSync('npx cucumber-js --dry-run --format usage 2>/dev/null').toString();
+    const lines = usageOut.split('\n').filter(l => /^\s+\d+/.test(l));
+    const totalUses = lines.reduce((s, l) => s + parseInt(l.match(/(\d+)/)?.[1] ?? '0'), 0);
+    stepReuseFactor = lines.length > 0 ? totalUses / lines.length : 0;
+  } catch { /* dry-run may fail on missing steps */ }
+
+  // 3. Evaluate against thresholds
+  if (wipPct > 10) {
+    violations.push(`@wip scenarios: ${wipPct}% (threshold: 10%)`);
+  }
+  if (totalScenarios > 1000) {
+    violations.push(`Total scenarios: ${totalScenarios} (threshold: 1000)`);
+  }
+  if (stepReuseFactor < 1.5 && stepReuseFactor > 0) {
+    warnings.push(`Step reuse factor: ${stepReuseFactor.toFixed(1)} (target: > 2.0)`);
+  }
+  if (totalScenarios < 5 && totalScenarios > 0) {
+    warnings.push(`Low scenario count: ${totalScenarios} — BDD suite may not be actively maintained`);
+  }
+
+  return {
+    passed: violations.length === 0,
+    violations,
+    warnings,
+    metrics: {
+      totalScenarios,
+      wipCount,
+      wipPercentage: `${wipPct}%`,
+      stepReuseFactor: stepReuseFactor.toFixed(1),
+    },
+  };
+}
+
+const result = runHealthCheck();
+console.log('\nBDD Health Check');
+console.log('================');
+console.log('Metrics:', result.metrics);
+
+if (result.warnings.length > 0) {
+  console.warn('\nWarnings:');
+  result.warnings.forEach(w => console.warn(`  ⚠ ${w}`));
+}
+
+if (result.violations.length > 0) {
+  console.error('\nViolations (CI FAIL):');
+  result.violations.forEach(v => console.error(`  ✗ ${v}`));
+  process.exit(1);
+}
+
+console.log('\nAll health checks passed.');
+```
+
+**[community] BDD retro finding: the "hero QA" failure pattern**: In teams where one
+QA engineer writes all the Gherkin, the Three Amigos model breaks. That QA becomes the
+sole owner of living documentation — when they leave, the practice collapses. The fix
+is to rotate Gherkin authorship through the team, with QA in a facilitation role rather
+than sole author. Every developer should have written at least one `.feature` file and
+corresponding step definitions by the end of the first quarter.
+
+**[community] BDD and OKRs**: Sustainable BDD adoption requires organizational alignment.
+Teams that are measured on story points per sprint — with no quality OKR — will deprioritize
+Three Amigos sessions under pressure. The quality OKR that most directly incentivizes BDD:
+"Reduce regression escape rate to < 5% of stories shipped." This makes the Three Amigos
+session a velocity investment, not a tax.
+
+---
+
+## Additional Resources (Iteration 10 Additions)
+
+- [Unleash feature flag server](https://getunleash.io/) — open-source feature flag management compatible with BDD test environments
+- [LaunchDarkly testing best practices](https://docs.launchdarkly.com/guides/flags/testing-with-flags) — feature flag isolation for automated tests
+- [testcontainers-node](https://github.com/testcontainers/testcontainers-node) — spin up real message brokers and databases in Docker for BDD scenarios
+- [Anthropic Claude API](https://docs.anthropic.com/en/api/) — AI-assisted scenario generation via the Messages API
+- [Stryker mutation testing for JavaScript/TypeScript](https://stryker-mutator.io/docs/stryker-js/introduction/) — validate BDD scenario assertion quality
+- [OWASP Testing Guide v4.2](https://owasp.org/www-project-web-security-testing-guide/) — functional security controls suitable for BDD scenarios
+- [gherkin-lint](https://github.com/vsiakka/gherkin-lint) — Gherkin feature file linting rules
+- [Wiremock for Node](https://github.com/webpagepublishing/wiremock-npm) — HTTP stub server for third-party dependency isolation in BDD
+- [MSW (Mock Service Worker)](https://mswjs.io/) — API mocking at the network layer for BDD browser scenarios
+- [BDD Books — Gaspar Nagy & Seb Rose](https://bddbooks.com/) — comprehensive practitioner reference for BDD at scale
+- [Example Mapping whitepaper (Matt Wynne)](https://cucumber.io/blog/bdd/example-mapping-introduction/) — structured Three Amigos workshop technique
 - [ISTQB CTFL 4.0 Syllabus](https://www.istqb.org/certifications/certified-tester-foundation-level) — standardized testing terminology reference

@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
 <!-- sources: training-knowledge (WebFetch blocked, WebSearch API unavailable; synthesized from training knowledge per skill fallback rule) -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html -->
 
@@ -1671,6 +1671,335 @@ export function assertTestEnvironment(): void {
 
 ---
 
+### Drizzle ORM Factory Pattern  [community]
+
+Drizzle ORM (a strong alternative to Prisma in 2026 TypeScript stacks) uses a
+schema-as-code approach: tables are defined as TypeScript objects, and Drizzle's
+`InferInsertModel<T>` / `InferSelectModel<T>` utility types give you the same
+zero-drift factory type safety as `Prisma.UserCreateInput` — without a separate
+`prisma generate` step.
+
+**Why it matters:** Drizzle's generated types are inferred directly from the schema
+constant defined in your TypeScript source. When you add a `required` column to the
+schema, the factory immediately fails at compile time because `InferInsertModel<typeof users>`
+now includes the new field. No ORM CLI step needed.
+
+```typescript
+// db/schema.ts — Drizzle table definition (single source of truth)
+import { pgTable, uuid, text, timestamp, pgEnum } from 'drizzle-orm/pg-core';
+
+export const statusEnum = pgEnum('status', ['active', 'suspended', 'pending']);
+export const tierEnum = pgEnum('subscription_tier', ['free', 'premium', 'enterprise']);
+
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: text('email').notNull().unique(),
+  name: text('name').notNull(),
+  status: statusEnum('status').notNull().default('active'),
+  subscriptionTier: tierEnum('subscription_tier').notNull().default('free'),
+  paymentMethodId: text('payment_method_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+```
+
+```typescript
+// factories/user.factory.ts (Drizzle-native)
+import { InferInsertModel, InferSelectModel } from 'drizzle-orm';
+import { faker } from '@faker-js/faker';
+import { db } from '../db';
+import { users } from '../db/schema';
+import { eq } from 'drizzle-orm';
+
+// Insert type derived from schema — zero manual maintenance
+type NewUser = InferInsertModel<typeof users>;
+// Select type — what DB returns (includes generated defaults)
+type User = InferSelectModel<typeof users>;
+
+// Build in-memory only (no DB write) — type-safe via InferInsertModel
+export function buildUserInput(overrides: Partial<NewUser> = {}): NewUser {
+  return {
+    email: faker.internet.email(),
+    name: faker.person.fullName(),
+    status: 'active',
+    subscriptionTier: 'free',
+    paymentMethodId: null,
+    ...overrides,
+  };
+}
+
+// Persist to DB and return the full row (including DB-generated id, createdAt)
+export async function createUser(overrides: Partial<NewUser> = {}): Promise<User> {
+  const [created] = await db
+    .insert(users)
+    .values(buildUserInput(overrides))
+    .returning();  // Drizzle's .returning() gives the full inserted row
+  return created;
+}
+
+// Clean up by ID (for afterEach teardown)
+export async function deleteUser(id: string): Promise<void> {
+  await db.delete(users).where(eq(users.id, id));
+}
+```
+
+```typescript
+// Integration test — Drizzle factory with explicit cleanup
+import { test, expect } from 'vitest';
+import { createUser, deleteUser } from '../factories/user.factory';
+import { checkoutService } from '../services/checkout.service';
+
+test('suspended user cannot initiate checkout', async () => {
+  const user = await createUser({ status: 'suspended' });
+
+  try {
+    const result = await checkoutService.initiate(user.id, { items: [] });
+    expect(result.status).toBe('blocked');
+    expect(result.reason).toBe('account_suspended');
+  } finally {
+    // Guaranteed cleanup — even if assertion fails
+    await deleteUser(user.id);
+  }
+});
+```
+
+**Drizzle vs Prisma factory comparison:**
+
+| Dimension | Drizzle | Prisma |
+|---|---|---|
+| Type derivation | `InferInsertModel<typeof table>` | `Prisma.UserCreateInput` |
+| Schema change → factory error | Immediate (same TS compile) | After `prisma generate` |
+| `.returning()` support | Native (PostgreSQL/SQLite) | Via `prisma.user.create()` |
+| Transaction for test isolation | `db.transaction(async (tx) => {...})` | `prisma.$transaction(async (tx) => {...})` |
+| Enum type safety | `pgEnum` → string literal union | Prisma enum → string literal union |
+
+---
+
+### `@snaplet/seed` — AI-Powered Relational Seed Generation  [community]
+
+`@snaplet/seed` (by Snaplet, 2024–2026) is a newer approach to test data generation
+that uses your database schema (via introspection) to generate realistic, relationally
+consistent data across all tables simultaneously. Unlike per-entity factories, it
+understands foreign key relationships and generates graph-connected data in the right
+insertion order.
+
+**Why it matters:** In relational schemas with 15+ tables and complex FK chains, manually
+managing factory insertion order (users before profiles before orders before order_items) is
+error-prone and brittle. `@snaplet/seed` introspects the schema and generates the full
+relational graph automatically — you only specify the subset you care about for the test.
+
+```typescript
+// seed.config.ts — configuration for @snaplet/seed
+import { SeedClient, defineConfig } from '@snaplet/seed';
+
+// @snaplet/seed introspects your DATABASE_URL and generates typed clients
+// Run: npx @snaplet/seed sync  (generates seed.client.ts from your DB schema)
+export default defineConfig({
+  // Alias for cleaner API: seed.user({}) instead of seed.public_users({})
+  alias: {
+    inflection: true,
+    override: {
+      public_users: { name: 'user', fields: { subscription_tier: 'subscriptionTier' } },
+    },
+  },
+});
+```
+
+```typescript
+// factories/relational.seed.ts — generate a user with orders and order items
+import { createSeedClient } from '@snaplet/seed';
+
+export async function seedUserWithOrders(options?: {
+  userCount?: number;
+  ordersPerUser?: number;
+}): Promise<{ cleanup: () => Promise<void> }> {
+  const seed = await createSeedClient({ dryRun: false });
+
+  // Reset only the tables we touch (FK-ordered truncation is automatic)
+  await seed.$resetDatabase(['users', 'orders', 'order_items']);
+
+  // Generate 3 users, each with 2 orders, each order with 3–5 items
+  // @snaplet/seed handles the FK relationships and insertion order automatically
+  await seed.user((x) =>
+    x(options?.userCount ?? 3, () => ({
+      status: 'active',
+      subscriptionTier: 'premium',
+      orders: (y) =>
+        y(options?.ordersPerUser ?? 2, () => ({
+          status: 'pending',
+          orderItems: (z) => z({ min: 3, max: 5 }),
+        })),
+    }))
+  );
+
+  return {
+    cleanup: async () => {
+      await seed.$resetDatabase(['users', 'orders', 'order_items']);
+      await seed.$disconnect();
+    },
+  };
+}
+```
+
+**Tradeoff:** `@snaplet/seed` requires a database connection at setup time for schema
+introspection, and generated types change with each `npx @snaplet/seed sync` run.
+It is best suited to integration and E2E tests where a real DB is already available;
+it is overkill for unit tests. Teams with simple schemas (< 10 tables) get more
+predictable behaviour from per-entity factories.
+
+---
+
+### TypeScript 5.4+ `const` Type Parameters in Factory Generics  [community]
+
+TypeScript 5.0 introduced `const` type parameters (`<const T extends ...>`), which
+preserve the literal type of the argument rather than widening it to a base type.
+This enables factory APIs where the returned object's type is inferred as a precise
+literal type — not just the base interface — improving IDE autocompletion in tests.
+
+**Why it matters:** Without `const T`, a factory override like `{ status: 'suspended' }`
+is inferred as `{ status: string }`. The resulting object's `.status` field has type
+`string`, not `'suspended'`. With `const T`, the factory returns an object whose
+`.status` type is the literal `'suspended'` — enabling exhaustive switch checks and
+discriminated union narrowing in test assertions.
+
+```typescript
+// factories/typed-factory.ts — const type parameters for literal-preserving overrides
+import { faker } from '@faker-js/faker';
+
+type UserStatus = 'active' | 'suspended' | 'pending';
+type SubscriptionTier = 'free' | 'premium' | 'enterprise';
+
+type User = {
+  id: string;
+  email: string;
+  name: string;
+  status: UserStatus;
+  subscriptionTier: SubscriptionTier;
+  createdAt: Date;
+};
+
+// Without `const T`: buildUser({ status: 'suspended' }).status has type UserStatus (widened)
+// With `const T`:    buildUser({ status: 'suspended' }).status has type 'suspended' (literal)
+export function buildUser<const T extends Partial<User>>(overrides?: T): User & T {
+  const defaults: User = {
+    id: faker.string.uuid(),
+    email: faker.internet.email(),
+    name: faker.person.fullName(),
+    status: 'active',
+    subscriptionTier: 'free',
+    createdAt: new Date(),
+  };
+  return { ...defaults, ...overrides } as User & T;
+}
+
+// Type-narrowed usage in tests:
+const suspended = buildUser({ status: 'suspended' });
+// suspended.status: 'suspended'  (literal type — not widened to UserStatus)
+
+// Enables compile-time exhaustiveness checking in discriminated unions:
+function handleStatus(user: ReturnType<typeof buildUser<{ status: 'suspended' }>>) {
+  // TypeScript knows user.status === 'suspended' without a runtime check
+  console.log('User is suspended:', user.status);
+}
+
+// Works with multiple literal overrides simultaneously:
+const premiumSuspended = buildUser({ status: 'suspended', subscriptionTier: 'premium' });
+// premiumSuspended.status: 'suspended'
+// premiumSuspended.subscriptionTier: 'premium'
+```
+
+**Practical limit:** `const T` inference only works for the fields in the override object.
+Fields not in `overrides` retain their base type (`UserStatus`, `SubscriptionTier`).
+For full literal inference on all fields, use `satisfies` narrowing after `build()`.
+
+---
+
+### Vitest `test.extend()` for Factory Injection (Unit Test Layer)  [community]
+
+Vitest's `test.extend()` (equivalent to Playwright's fixture system, but for unit/integration
+tests) enables composable factory fixtures without the `beforeEach`/`afterEach` boilerplate.
+Fixtures are lazily evaluated, automatically scoped, and compose cleanly across spec files —
+the same benefits Playwright fixtures provide, now available in the Vitest unit/integration layer.
+
+**Why it matters:** When 20 test files all need a `userFactory` fixture that sets up and
+tears down a DB user, duplicating `beforeEach`/`afterEach` in each file is fragile.
+A shared `test.extend()` fixture centralises the lifecycle in one place, and any test that
+receives the fixture in its arguments automatically gets setup and teardown.
+
+```typescript
+// test/fixtures/vitest-fixtures.ts — shared Vitest fixture definitions
+import { test as base } from 'vitest';
+import { faker } from '@faker-js/faker';
+import { db } from '../../db';
+import { users } from '../../db/schema';
+import { eq } from 'drizzle-orm';
+import { InferSelectModel } from 'drizzle-orm';
+
+type User = InferSelectModel<typeof users>;
+
+// Declare fixture types
+interface TestFixtures {
+  activeUser: User;
+  suspendedUser: User;
+  adminUser: User;
+}
+
+// Extend the base test with reusable, lifecycle-managed fixtures
+export const test = base.extend<TestFixtures>({
+  // activeUser: creates a DB user, yields to test, deletes after
+  activeUser: async ({}, use) => {
+    const [user] = await db.insert(users).values({
+      email: `active-${faker.string.uuid()}@test.com`,
+      name: faker.person.fullName(),
+      status: 'active',
+      subscriptionTier: 'free',
+    }).returning();
+
+    await use(user);                         // test body runs here
+
+    await db.delete(users).where(eq(users.id, user.id));  // teardown
+  },
+
+  suspendedUser: async ({}, use) => {
+    const [user] = await db.insert(users).values({
+      email: `suspended-${faker.string.uuid()}@test.com`,
+      name: faker.person.fullName(),
+      status: 'suspended',
+      subscriptionTier: 'free',
+    }).returning();
+
+    await use(user);
+
+    await db.delete(users).where(eq(users.id, user.id));
+  },
+});
+
+export { expect } from 'vitest';
+```
+
+```typescript
+// specs/checkout.test.ts — uses the extended test with fixtures
+import { test, expect } from '../test/fixtures/vitest-fixtures';
+import { checkoutService } from '../services/checkout.service';
+
+// 'suspendedUser' fixture is created/destroyed automatically
+test('suspended user cannot checkout', async ({ suspendedUser }) => {
+  const result = await checkoutService.initiate(suspendedUser.id, { items: [] });
+  expect(result.status).toBe('blocked');
+});
+
+// Compose multiple fixtures in one test — both are set up independently
+test('suspended user cannot access active user orders', async ({ suspendedUser, activeUser }) => {
+  const result = await checkoutService.getOrdersFor(suspendedUser.id, { asUserId: activeUser.id });
+  expect(result.error).toBe('forbidden');
+});
+```
+
+**Key advantage over `beforeEach`:** Only fixtures actually requested by a test are
+instantiated. A test that only requests `suspendedUser` does not incur the cost of
+creating `activeUser` or `adminUser`. `beforeEach` would run all setup regardless.
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -1693,3 +2022,1650 @@ export function assertTestEnvironment(): void {
 | factory_bot (Ruby gem) | Official | https://github.com/thoughtbot/factory_bot | Ruby reference implementation; maps to fishery in TypeScript |
 | FactoryBoy (Python) | Official | https://factoryboy.readthedocs.io/ | Python factory library; LazyAttribute → each(), SubFactory → nested factory |
 | AutoFixture (C#) | Official | https://github.com/AutoFixture/AutoFixture | C# reflection-based fixtures; maps to zod-fixture in TypeScript |
+| Drizzle ORM — TypeScript ORM | Official | https://orm.drizzle.team/docs | InferInsertModel pattern for zero-drift Drizzle factories |
+| @snaplet/seed | Library | https://docs.snaplet.dev/seed | AI-powered relational seed generation; handles FK graph insertion order automatically |
+| Vitest test.extend() docs | Official | https://vitest.dev/guide/test-context | Composable Vitest fixture lifecycle (unit/integration layer) |
+| TypeScript 5.0 const type parameters | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html | `const T` generic inference for literal-preserving factory overrides |
+
+---
+
+## Production Data in Tests: Masking and Anonymization  [community]
+
+Using production data in tests (copying a DB dump, importing CSV exports) is tempting
+because it represents real-world complexity. However, it violates privacy regulations
+(GDPR, CCPA, HIPAA), creates PII exposure risk, and makes test data non-reproducible
+(production data changes). The correct approach is *anonymization* or *synthesis*.
+
+**When production data is genuinely needed (regression tests for data-specific bugs):**
+
+1. Anonymize first — replace PII fields with `@faker-js/faker` equivalents
+2. Subset — take the minimum rows needed to reproduce the bug (not a full DB dump)
+3. Commit the anonymized subset as a versioned fixture, not a live DB copy
+
+```typescript
+// scripts/anonymize-export.ts — anonymize a production data export for test use
+// Run OFFLINE on a dev machine with production data access — never in CI
+import { faker } from '@faker-js/faker';
+import { readFileSync, writeFileSync } from 'fs';
+
+faker.seed(42); // Fixed seed for deterministic anonymization output
+
+interface ProductionUser {
+  id: string;
+  email: string;
+  name: string;
+  phone: string;
+  ssn?: string;
+  creditCard?: string;
+  status: string;
+  subscriptionTier: string;
+  createdAt: string;
+}
+
+function anonymizeUser(user: ProductionUser): ProductionUser {
+  return {
+    // Preserve structural fields (id, status, tier) — they're needed for test logic
+    id: user.id,
+    status: user.status,
+    subscriptionTier: user.subscriptionTier,
+    createdAt: user.createdAt,
+    // Replace PII with realistic-but-fake values — deterministic via seeded faker
+    email: faker.internet.email(),
+    name: faker.person.fullName(),
+    phone: faker.phone.number(),
+    // Hard-delete sensitive fields — never include in anonymized export
+    ssn: undefined,
+    creditCard: undefined,
+  };
+}
+
+const raw: ProductionUser[] = JSON.parse(
+  readFileSync('./exports/production-users.json', 'utf8')
+);
+
+const anonymized = raw.map(anonymizeUser);
+
+// Write as fixture — commit this, never the raw production data
+writeFileSync(
+  './fixtures/anonymized-users.fixture.json',
+  JSON.stringify(anonymized, null, 2)
+);
+
+console.log(`Anonymized ${anonymized.length} users. PII removed.`);
+```
+
+**GDPR compliance checklist for test data:**
+
+| PII Category | Action |
+|---|---|
+| Names, email addresses | Replace with faker equivalents |
+| Phone numbers | Replace with faker equivalents |
+| Government IDs (SSN, passport) | Remove entirely — never include in test data |
+| Payment card data | Remove entirely — never include in test data |
+| IP addresses | Anonymize to `192.0.2.x` (TEST-NET range, RFC 5737) |
+| Dates of birth | Anonymize to birth year only, or replace with faker |
+| Geolocation coordinates | Round to city/region level; or replace entirely |
+
+**Anti-pattern: using `node --inspect` DB connections in CI to "just grab some real data".**
+This creates an audit trail of PII leaving production infrastructure. All test data must
+be synthesized or explicitly anonymized before entering any test environment.
+
+---
+
+## Boundary Value Analysis (BVA) Integration with Factories  [community]
+
+ISTQB's Boundary Value Analysis (BVA) technique identifies defects at the *boundary* of
+equivalence classes — the exact minimum, maximum, and adjacent-to-boundary values where
+off-by-one errors concentrate. Factories should expose explicit BVA factory variants so
+boundary test cases are centralized and named, not scattered as magic literals.
+
+**Why it matters:** When a business rule changes (e.g., "premium users get 5 GB storage,
+changing to 10 GB"), BVA boundary factories centralise the change. Without named BVA
+factories, each boundary test contains a magic number that becomes stale after the rule
+changes — the test still passes (because the magic number was within the now-larger range)
+but no longer exercises the boundary.
+
+```typescript
+// factories/bva.factory.ts — Boundary Value Analysis factory variants
+import { faker } from '@faker-js/faker';
+
+// Domain invariant: order total must be between 1 and 999_999 cents (inclusive)
+const ORDER_MIN_CENTS = 1;
+const ORDER_MAX_CENTS = 999_999;
+
+// Domain invariant: user name length 1–100 characters
+const USER_NAME_MIN_LENGTH = 1;
+const USER_NAME_MAX_LENGTH = 100;
+
+// Domain invariant: subscription allows maximum 5 seats per account
+const MAX_SEATS = 5;
+
+// BVA factory for order totals — named boundary variants
+export const OrderBVA = {
+  // Below minimum (invalid — should be rejected)
+  belowMinimum: () => ({ totalCents: 0 }),
+  // At minimum (valid — minimum acceptance boundary)
+  atMinimum: () => ({ totalCents: ORDER_MIN_CENTS }),
+  // Just above minimum (valid — boundary + 1)
+  justAboveMinimum: () => ({ totalCents: ORDER_MIN_CENTS + 1 }),
+  // Typical mid-range value (valid)
+  typical: () => ({ totalCents: faker.number.int({ min: 100, max: 10_000 }) }),
+  // Just below maximum (valid — boundary - 1)
+  justBelowMaximum: () => ({ totalCents: ORDER_MAX_CENTS - 1 }),
+  // At maximum (valid — maximum acceptance boundary)
+  atMaximum: () => ({ totalCents: ORDER_MAX_CENTS }),
+  // Above maximum (invalid — should be rejected)
+  aboveMaximum: () => ({ totalCents: ORDER_MAX_CENTS + 1 }),
+};
+
+// BVA factory for user name lengths
+export const UserNameBVA = {
+  empty: () => ({ name: '' }),                                      // below minimum (invalid)
+  atMinimum: () => ({ name: 'A' }),                                // 1 char (valid boundary)
+  typical: () => ({ name: faker.person.fullName() }),               // typical (valid)
+  atMaximum: () => ({ name: 'A'.repeat(USER_NAME_MAX_LENGTH) }),    // 100 chars (valid boundary)
+  aboveMaximum: () => ({ name: 'A'.repeat(USER_NAME_MAX_LENGTH + 1) }), // 101 chars (invalid)
+};
+
+// BVA factory for seat allocations
+export const SeatBVA = {
+  zero: () => ({ seats: 0 }),
+  one: () => ({ seats: 1 }),
+  atMaximum: () => ({ seats: MAX_SEATS }),
+  aboveMaximum: () => ({ seats: MAX_SEATS + 1 }),
+};
+```
+
+```typescript
+// specs/order-validation.test.ts — BVA test cases using named factory variants
+import { test, expect } from 'vitest';
+import { buildOrder } from '../factories/order.factory';
+import { OrderBVA } from '../factories/bva.factory';
+import { orderValidator } from '../services/order-validator';
+
+// Named BVA test suite — each variant maps to a named equivalence class
+describe('order total BVA', () => {
+  test.each([
+    ['below minimum', OrderBVA.belowMinimum(), false],
+    ['at minimum', OrderBVA.atMinimum(), true],
+    ['just above minimum', OrderBVA.justAboveMinimum(), true],
+    ['just below maximum', OrderBVA.justBelowMaximum(), true],
+    ['at maximum', OrderBVA.atMaximum(), true],
+    ['above maximum', OrderBVA.aboveMaximum(), false],
+  ])('%s: valid=%s', (_, overrides, expectedValid) => {
+    const order = buildOrder(overrides);
+    const result = orderValidator.validate(order);
+    expect(result.valid).toBe(expectedValid);
+  });
+});
+```
+
+**Integration with ISTQB test documentation:** BVA factory variants map directly to
+ISTQB test conditions and test cases. The factory variant name (`OrderBVA.atMaximum`)
+is the test condition; the test using it (`'at maximum: valid=true'`) is the test case.
+When the domain invariant changes, update the constant in the BVA factory and the test
+condition name — all test cases that reference it update automatically.
+
+---
+
+## State Machine Factories for Complex Entity Lifecycles  [community]
+
+Many domain entities have finite state machines: orders go through `draft → pending →
+paid → shipped → delivered → cancelled`; subscriptions go through `trial → active →
+past_due → cancelled`. Factories that jump to a mid-lifecycle state without executing
+the transitions may produce objects that are structurally valid but *semantically
+impossible* — a `shipped` order with no `shippedAt` timestamp, or a `paid` order with
+no associated payment record.
+
+**Why it matters:** A factory that directly sets `status: 'shipped'` bypasses all the
+business logic that sets `shippedAt`, `trackingNumber`, and creates an `OrderEvent`
+record. Tests that use such a factory are testing against an invalid state that could
+never occur in production — they pass while hiding real bugs in the transition logic.
+
+```typescript
+// factories/order-state-machine.factory.ts — lifecycle-aware order factory
+import { faker } from '@faker-js/faker';
+import { db } from '../db';
+
+// Represents the legal state machine: draft → pending → paid → shipped → delivered
+type OrderStatus = 'draft' | 'pending' | 'paid' | 'shipped' | 'delivered' | 'cancelled';
+
+// Each factory function builds the accumulated state for that lifecycle stage
+// by executing all prior transitions — no state is skipped
+
+interface Order {
+  id: string;
+  userId: string;
+  status: OrderStatus;
+  totalCents: number;
+  paidAt?: Date;
+  paymentIntentId?: string;
+  shippedAt?: Date;
+  trackingNumber?: string;
+  deliveredAt?: Date;
+  cancelledAt?: Date;
+  cancelReason?: string;
+  createdAt: Date;
+}
+
+// Base factory — creates a draft order (starting state only)
+export function buildDraftOrder(overrides: Partial<Order> = {}): Order {
+  return {
+    id: faker.string.uuid(),
+    userId: faker.string.uuid(),
+    status: 'draft',
+    totalCents: faker.number.int({ min: 100, max: 10_000 }),
+    createdAt: new Date(),
+    ...overrides,
+  };
+}
+
+// Factory for a paid order — sets all fields that the 'pay' transition would set
+export function buildPaidOrder(overrides: Partial<Order> = {}): Order {
+  return {
+    ...buildDraftOrder(),
+    status: 'paid',
+    paidAt: new Date(),                     // always set when paid
+    paymentIntentId: `pi_${faker.string.alphanumeric(24)}`, // always set when paid
+    ...overrides,
+  };
+}
+
+// Factory for a shipped order — builds on paid state + shipping fields
+export function buildShippedOrder(overrides: Partial<Order> = {}): Order {
+  return {
+    ...buildPaidOrder(),
+    status: 'shipped',
+    shippedAt: new Date(),                  // always set when shipped
+    trackingNumber: faker.string.alphanumeric(12).toUpperCase(), // always set
+    ...overrides,
+  };
+}
+
+// Factory for a delivered order — builds on shipped state + delivery timestamp
+export function buildDeliveredOrder(overrides: Partial<Order> = {}): Order {
+  return {
+    ...buildShippedOrder(),
+    status: 'delivered',
+    deliveredAt: new Date(),                // always set when delivered
+    ...overrides,
+  };
+}
+
+// Factory for a cancelled order — can cancel from draft or pending (not paid/shipped)
+export function buildCancelledOrder(
+  fromStatus: 'draft' | 'pending' = 'pending',
+  overrides: Partial<Order> = {}
+): Order {
+  const base = fromStatus === 'pending' ? buildDraftOrder({ status: 'pending' }) : buildDraftOrder();
+  return {
+    ...base,
+    status: 'cancelled',
+    cancelledAt: new Date(),
+    cancelReason: overrides.cancelReason ?? 'customer_request',
+    ...overrides,
+  };
+}
+```
+
+```typescript
+// specs/order-fulfillment.test.ts — state machine factories ensure semantic validity
+import { test, expect } from 'vitest';
+import { buildShippedOrder, buildPaidOrder } from '../factories/order-state-machine.factory';
+import { fulfillmentService } from '../services/fulfillment.service';
+
+// Test uses semantically valid 'paid' order — has paymentIntentId and paidAt
+test('paid order can be marked as shipped', async () => {
+  const order = buildPaidOrder({ userId: 'usr-001' });
+
+  // This test exercises the ACTUAL paid→shipped transition
+  // (not a shortcut from a `buildShippedOrder()` that skips it)
+  const result = await fulfillmentService.ship(order.id, {
+    trackingNumber: 'TRK-001',
+  });
+
+  expect(result.status).toBe('shipped');
+  expect(result.shippedAt).toBeInstanceOf(Date);
+});
+
+// Using buildShippedOrder for tests that need the shipped state as a *precondition*
+test('shipped order cannot be paid again', async () => {
+  const order = buildShippedOrder();  // already has shippedAt, trackingNumber, paidAt
+  const result = await fulfillmentService.attemptPayment(order.id, 'pm-new');
+  expect(result.error).toBe('order_already_shipped');
+});
+```
+
+**Anti-pattern this addresses:** The `buildShippedOrder` that sets only
+`{ status: 'shipped' }` without `shippedAt`, `trackingNumber`, or `paidAt` is
+semantically invalid. Tests using it pass against the factory's impossible state,
+hiding bugs in any code path that reads `order.shippedAt` (it's `undefined`, not
+a `Date`) — bugs that surface only in production, where the real `ship()` transition
+always sets `shippedAt`.
+
+---
+
+## OpenAPI / Contract-Driven Factories  [community]
+
+In API-first or contract-first TypeScript projects, the OpenAPI specification is the
+authoritative source of truth for request/response shapes. Factories derived from
+the OpenAPI spec (via `openapi-typescript` code generation) are guaranteed to stay
+in sync with the published API contract — eliminating the "factory drifted from the
+actual API" failure class.
+
+**Why it matters:** A common failure mode in microservice tests: the TypeScript types
+in `order-service` were updated to `{ userId: string }` but the factory in `api-gateway`
+still builds `{ user_id: string }` (snake_case from the old spec). The factory-built
+requests fail contract validation in staging — but only after the PR merges. Generating
+factories from the OpenAPI spec catches this at compile time.
+
+```typescript
+// codegen: openapi-typescript generates TypeScript types from the OpenAPI spec
+// Run: npx openapi-typescript ./api/openapi.yaml -o ./src/generated/api-types.ts
+
+// factories/api-request.factory.ts — derived from OpenAPI-generated types
+import { faker } from '@faker-js/faker';
+// Generated types from openapi-typescript — single source of truth
+import type {
+  components,
+  paths,
+} from '../generated/api-types';
+
+// Use the generated request body type for the POST /orders endpoint
+type CreateOrderRequest = paths['/orders']['post']['requestBody']['content']['application/json'];
+type CreateOrderResponse = paths['/orders']['post']['responses']['201']['content']['application/json'];
+
+// Factory built from OpenAPI-generated types — drift-proof
+export function buildCreateOrderRequest(
+  overrides: Partial<CreateOrderRequest> = {}
+): CreateOrderRequest {
+  return {
+    userId: faker.string.uuid(),
+    items: [
+      {
+        productId: faker.string.uuid(),
+        quantity: faker.number.int({ min: 1, max: 10 }),
+        unitPriceCents: faker.number.int({ min: 100, max: 50_000 }),
+      },
+    ],
+    currency: 'USD',
+    shippingAddress: {
+      street: faker.location.streetAddress(),
+      city: faker.location.city(),
+      postalCode: faker.location.zipCode(),
+      countryCode: 'US',
+    },
+    ...overrides,
+  };
+}
+
+// Factory for the expected 201 response shape
+export function buildCreateOrderResponse(
+  overrides: Partial<CreateOrderResponse> = {}
+): CreateOrderResponse {
+  return {
+    orderId: faker.string.uuid(),
+    status: 'pending',
+    totalCents: faker.number.int({ min: 100, max: 100_000 }),
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+```
+
+```typescript
+// In a contract test (Pact consumer side):
+import { Pact } from '@pact-foundation/pact';
+import { buildCreateOrderRequest, buildCreateOrderResponse } from '../factories/api-request.factory';
+
+const provider = new Pact({ consumer: 'api-gateway', provider: 'order-service', ... });
+
+describe('POST /orders contract', () => {
+  test('creates order with valid request', async () => {
+    const request = buildCreateOrderRequest();
+    const response = buildCreateOrderResponse({ totalCents: 4999 });
+
+    await provider.addInteraction({
+      state: 'order service is available',
+      uponReceiving: 'a create order request',
+      withRequest: { method: 'POST', path: '/orders', body: request },
+      willRespondWith: { status: 201, body: response },
+    });
+
+    // ... execute and verify
+  });
+});
+```
+
+**Toolchain:** `openapi-typescript` generates TypeScript types from OpenAPI 3.x specs.
+`@pact-foundation/pact` provides consumer-driven contract testing. Together they form
+a pipeline where API spec → TypeScript types → factory types → contract test, with
+each step enforced at compile time.
+
+---
+
+## Factory Registry Pattern — Managing Large Factory Suites  [community]
+
+As a codebase grows beyond ~30 entities, importing individual factory files becomes
+cumbersome and fragile. A **factory registry** provides a single entry point for all
+factories, enables global configuration (faker seed, DB connection), and makes factory
+discovery consistent across the team.
+
+**Why it matters:** Without a registry, teams scatter `import { buildUser } from '../../factories/user.factory'`
+paths throughout test files. When the factory moves (refactoring, monorepo restructuring),
+every import must be updated. The registry decouples test files from factory locations.
+
+```typescript
+// factories/registry.ts — central factory registry
+import { faker } from '@faker-js/faker';
+import { userFactory } from './user.factory';
+import { orderFactory } from './order.factory';
+import { productFactory } from './product.factory';
+import { addressFactory } from './address.factory';
+import { subscriptionFactory } from './subscription.factory';
+
+// Seed faker globally once — all factories share the same deterministic seed
+const SEED = process.env.TEST_SEED ? parseInt(process.env.TEST_SEED, 10) : Date.now();
+faker.seed(SEED);
+if (process.env.CI) {
+  // In CI: output seed as GitHub Actions annotation for replay on failure
+  process.stdout.write(`::notice title=Faker Seed::${SEED}\n`);
+} else {
+  console.log(`[test-data] faker seed: ${SEED}`);
+}
+
+// The registry — single import for all factories
+export const factories = {
+  user: userFactory,
+  order: orderFactory,
+  product: productFactory,
+  address: addressFactory,
+  subscription: subscriptionFactory,
+} as const;
+
+// Type-safe access: factories.user.build({ status: 'suspended' })
+// TypeScript validates 'status' against the User type — unknown fields are errors
+export type FactoryRegistry = typeof factories;
+export type FactoryName = keyof FactoryRegistry;
+```
+
+```typescript
+// In any test file — one import, all factories available
+import { factories } from '../factories/registry';
+
+test('premium user can access enterprise features', async () => {
+  const user = await factories.user.create({ subscriptionTier: 'premium' });
+  const product = factories.product.build({ tier: 'enterprise' });
+  // ...
+});
+```
+
+**Factory deprecation workflow:** When a factory function is replaced, use the TypeScript
+`@deprecated` JSDoc tag to alert consumers at IDE level before removing it:
+
+```typescript
+// factories/user.factory.ts — deprecation pattern
+/**
+ * @deprecated Use `userFactory.build()` from fishery instead.
+ * Will be removed in the next major version.
+ * Migration: replace `buildUser(overrides)` with `userFactory.build(overrides)`
+ */
+export function buildUser(overrides: Partial<User> = {}): User {
+  return userFactory.build(overrides);  // thin wrapper — IDE shows deprecation warning
+}
+```
+
+**ESLint rule to enforce registry imports:**
+```json
+{
+  "rules": {
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "../factories/user.factory",
+            "message": "Import from '../factories/registry' instead of directly from factory files."
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Test Data Documentation — Living Factory Catalog  [community]
+
+Large teams benefit from a **living factory catalog**: a generated or maintained
+document that lists every factory, its available variants, its default values, and
+known test scenarios that use it. This replaces tribal knowledge about "which factory
+to use for scenario X".
+
+**Approach 1 — JSDoc-driven (zero tooling):** Annotate factory files with JSDoc
+comments that include `@example` blocks. IDE tooltips show examples on hover.
+
+```typescript
+/**
+ * Build a User domain object with sensible defaults.
+ *
+ * @param overrides - Fields to override from the defaults. Unknown fields cause TS errors.
+ * @returns A User object ready for use in tests.
+ *
+ * @example Basic active user:
+ * ```typescript
+ * const user = buildUser();
+ * // { id: 'uuid...', email: 'name@domain.com', status: 'active', ... }
+ * ```
+ *
+ * @example Suspended user for checkout blocking tests:
+ * ```typescript
+ * const user = buildUser({ status: 'suspended' });
+ * ```
+ *
+ * @example Premium user with payment method (for payment flow tests):
+ * ```typescript
+ * const user = buildUser({ subscriptionTier: 'premium', paymentMethodId: 'pm-xxx' });
+ * ```
+ *
+ * @see UserMother.suspended() — named variant for the most common suspended scenario
+ * @see fishery userFactory.create() — use when DB persistence is needed
+ */
+export function buildUser(overrides: Partial<User> = {}): User {
+  // ...
+}
+```
+
+**Approach 2 — `typedoc` generated API docs:** Run `npx typedoc --entryPoints src/factories`
+to generate HTML documentation from JSDoc annotations. Host it as an internal dev portal.
+Every `@example` block in the factory becomes a live code snippet in the docs.
+
+**Approach 3 — Storybook for data factories (React projects):** In React projects,
+Storybook stories serve as both UI component documentation and factory showcase.
+A Story for the `UserCard` component uses `UserMother.suspended()`, `UserMother.premium()`,
+etc. as story args — the component documentation *is* the factory documentation.
+
+```typescript
+// stories/UserCard.stories.ts — factory docs embedded in Storybook
+import type { Meta, StoryObj } from '@storybook/react';
+import { UserCard } from '../components/UserCard';
+import { UserMother } from '../factories/user.mother';
+
+const meta: Meta<typeof UserCard> = { component: UserCard };
+export default meta;
+
+export const ActiveUser: StoryObj<typeof UserCard> = {
+  args: { user: UserMother.default() },
+};
+
+export const SuspendedUser: StoryObj<typeof UserCard> = {
+  args: { user: UserMother.suspended().build() },
+};
+
+export const PremiumUser: StoryObj<typeof UserCard> = {
+  args: { user: UserMother.premiumWithPayment().build() },
+};
+```
+
+---
+
+## tRPC Type-Safe Factory Patterns  [community]
+
+tRPC is widely adopted in 2026 TypeScript monorepos for end-to-end type-safe APIs.
+Since tRPC procedures are defined with Zod input schemas on the server and TypeScript
+inference on the client, factories for tRPC input/output types can be derived from the
+router definition — giving zero-drift type safety without a separate schema file.
+
+**Why it matters:** In tRPC projects, the API input type lives in the server router
+definition. A factory that imports and uses this type (via `inferRouterInputs`) stays
+synchronized with the router at compile time — if the input schema changes, the factory
+fails to build until updated. This is the tRPC-native equivalent of the Prisma
+`UserCreateInput` pattern.
+
+```typescript
+// server/routers/order.router.ts — tRPC router with Zod inputs
+import { z } from 'zod';
+import { router, publicProcedure } from '../trpc';
+
+export const orderRouter = router({
+  create: publicProcedure
+    .input(
+      z.object({
+        userId: z.string().uuid(),
+        items: z.array(
+          z.object({
+            productId: z.string().uuid(),
+            quantity: z.number().int().min(1).max(100),
+            unitPriceCents: z.number().int().min(1),
+          })
+        ).min(1),
+        currency: z.enum(['USD', 'EUR', 'GBP']),
+        couponCode: z.string().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      // ...
+    }),
+});
+
+export type OrderRouter = typeof orderRouter;
+```
+
+```typescript
+// factories/trpc-order.factory.ts — derived from tRPC router input type
+import { faker } from '@faker-js/faker';
+import type { inferRouterInputs } from '@trpc/server';
+import type { OrderRouter } from '../server/routers/order.router';
+
+// inferRouterInputs gives exact TypeScript types for each procedure's input
+type RouterInputs = inferRouterInputs<OrderRouter>;
+type CreateOrderInput = RouterInputs['create'];
+
+// Factory produces valid CreateOrderInput — type is derived from the router, not duplicated
+export function buildCreateOrderInput(
+  overrides: Partial<CreateOrderInput> = {}
+): CreateOrderInput {
+  return {
+    userId: faker.string.uuid(),
+    items: [
+      {
+        productId: faker.string.uuid(),
+        quantity: faker.number.int({ min: 1, max: 10 }),
+        unitPriceCents: faker.number.int({ min: 100, max: 50_000 }),
+      },
+    ],
+    currency: 'USD',
+    ...overrides,
+  };
+}
+
+// Factory for a multi-item order with coupon
+export function buildCreateOrderInputWithCoupon(
+  couponCode: string = 'SAVE10',
+  overrides: Partial<CreateOrderInput> = {}
+): CreateOrderInput {
+  return buildCreateOrderInput({
+    items: Array.from({ length: 3 }, () => ({
+      productId: faker.string.uuid(),
+      quantity: faker.number.int({ min: 1, max: 5 }),
+      unitPriceCents: faker.number.int({ min: 500, max: 20_000 }),
+    })),
+    couponCode,
+    ...overrides,
+  });
+}
+```
+
+```typescript
+// specs/order-creation.test.ts — using tRPC caller for integration tests
+import { test, expect } from 'vitest';
+import { createCaller } from '../server/trpc';
+import { buildCreateOrderInput } from '../factories/trpc-order.factory';
+import { db } from '../db';
+
+test('creates order with valid input', async () => {
+  const caller = createCaller({ db, userId: 'usr-001' });
+  const input = buildCreateOrderInput({ userId: 'usr-001' });
+
+  const result = await caller.order.create(input);
+
+  expect(result.orderId).toBeTruthy();
+  expect(result.status).toBe('pending');
+  expect(result.totalCents).toBeGreaterThan(0);
+});
+
+test('rejects order with empty items array', async () => {
+  const caller = createCaller({ db, userId: 'usr-001' });
+  // TypeScript error if items: [] — Zod z.array().min(1) rejects at compile time
+  // But we can test the runtime rejection via Zod parse error:
+  const input = buildCreateOrderInput({ items: [] as any });
+
+  await expect(caller.order.create(input)).rejects.toThrow('Array must contain at least 1 element');
+});
+```
+
+---
+
+## Monorepo Factory Sharing Strategies  [community]
+
+In TypeScript monorepos (Turborepo, Nx, pnpm workspaces), factory code can be shared
+across multiple packages. The strategy depends on whether the factories need DB access
+and whether the domain types are shared.
+
+**Approach 1 — Shared `@company/test-factories` package:**
+A dedicated `packages/test-factories` workspace package exports all factories.
+Each app/service installs it as a dev dependency. Domain types are re-exported
+from the shared factories package.
+
+```
+packages/
+  test-factories/          # shared workspace package
+    src/
+      user.factory.ts      # exports buildUser, userFactory (fishery)
+      order.factory.ts
+      index.ts             # barrel export
+    package.json           # name: "@company/test-factories"
+apps/
+  api/
+    src/__tests__/         # imports from @company/test-factories
+  web/
+    src/__tests__/
+```
+
+```typescript
+// packages/test-factories/src/user.factory.ts
+// No DB imports here — pure in-memory factories only
+// DB-persistence factories live in each app's own test/factories/ folder
+import { faker } from '@faker-js/faker';
+
+export type { User } from './types';  // shared domain types
+
+export function buildUser(overrides: Partial<User> = {}): User {
+  return {
+    id: faker.string.uuid(),
+    email: faker.internet.email(),
+    name: faker.person.fullName(),
+    status: 'active',
+    subscriptionTier: 'free',
+    createdAt: new Date(),
+    paymentMethodId: null,
+    ...overrides,
+  };
+}
+```
+
+**Approach 2 — Factory co-location with domain packages:**
+Each domain package owns its own factories in a `src/__tests__/factories/` folder.
+Apps import the domain package's factories via the package's `exports` field.
+Useful when domain types are strongly owned by each package.
+
+**Tradeoff matrix for monorepo factory sharing:**
+
+| Approach | Type drift risk | Setup complexity | Cross-package reuse |
+|---|---|---|---|
+| Shared `test-factories` package | Low (single source) | Medium (package setup) | Excellent |
+| Co-located per domain package | Medium (types can diverge) | Low (no extra setup) | Good (via package exports) |
+| Copy-paste per app (anti-pattern) | High | None | None — defeats the purpose |
+
+---
+
+## Database Migration Testing with Factory Data  [community]
+
+When a database schema migration adds, removes, or renames columns, test suites that
+use factories can silently pass or fail depending on whether the factory was updated
+to match. The migration testing pattern ensures that factories are explicitly validated
+against the migrated schema before any application tests run.
+
+**Why it matters:** A Prisma migration that renames `user.subscriptionTier` to
+`user.plan` will cause `prisma generate` to update `Prisma.UserCreateInput`. If the
+factory uses `Prisma.UserCreateInput`, the factory fails to compile — catching the
+migration gap immediately. If the factory uses a hand-written type, it silently uses
+the old field name until a runtime error surfaces.
+
+```typescript
+// test/migration-smoke.test.ts — validates factory compatibility after migrations
+// Run this test BEFORE the full test suite in CI: "test:migration-smoke"
+import { test, expect, describe } from 'vitest';
+import { db } from '../db';
+import { users, orders } from '../db/schema';
+import { buildUserInput, buildOrderInput } from '../factories';
+import { sql } from 'drizzle-orm';
+
+describe('factory-schema compatibility smoke tests', () => {
+  // Test that the factory produces data insertable into the current schema
+  test('user factory matches current schema', async () => {
+    const input = buildUserInput();
+
+    // insert().values() fails with a TypeScript error if factory type mismatches schema
+    const [inserted] = await db.insert(users).values(input).returning();
+
+    expect(inserted.id).toBeTruthy();
+    expect(inserted.email).toBeTruthy();
+
+    // Cleanup
+    await db.delete(users).where(sql`id = ${inserted.id}`);
+  });
+
+  test('order factory matches current schema', async () => {
+    // First create a user to satisfy FK constraint
+    const [user] = await db.insert(users).values(buildUserInput()).returning();
+    const [order] = await db
+      .insert(orders)
+      .values(buildOrderInput({ userId: user.id }))
+      .returning();
+
+    expect(order.id).toBeTruthy();
+
+    // Cleanup in FK order
+    await db.delete(orders).where(sql`id = ${order.id}`);
+    await db.delete(users).where(sql`id = ${user.id}`);
+  });
+});
+```
+
+**CI integration:** Add a dedicated `test:migration-smoke` script that runs only the
+migration smoke tests after `prisma migrate deploy` (or equivalent) but before the
+full test suite. A failed migration smoke test fails the CI pipeline before any
+application tests run — giving a clear signal that a factory needs updating.
+
+```json
+{
+  "scripts": {
+    "test:migration-smoke": "vitest run --reporter=verbose test/migration-smoke.test.ts",
+    "test:ci": "npm run db:migrate && npm run test:migration-smoke && npm run test:all"
+  }
+}
+```
+
+---
+
+## Golden Dataset Pattern for Regression Tests  [community]
+
+The **golden dataset** is a curated, versioned set of test data records that represent
+known-good reference cases for critical business scenarios. Unlike static fixtures
+(which grow unmaintained) or per-test factories (which don't persist identity), golden
+datasets give named, stable test identities that regression tests can reference by name.
+
+**Why it matters:** Regression tests for bugs often need specific data shapes that
+triggered the original bug. Without a golden dataset, reproducing a specific bug
+requires recreating the exact data conditions — which is impossible if the original
+data was generated with an un-seeded faker call. Golden datasets commit the minimal
+data needed to reproduce each known regression case.
+
+```typescript
+// fixtures/golden/users.golden.ts — named, versioned golden dataset records
+// Each record corresponds to a known regression case or production-representative scenario
+import { User } from '../../domain/user';
+
+// Golden records use semantic IDs starting with 'golden-' to distinguish from dynamic data
+export const goldenUsers = {
+  // Production bug 2024-03-15: unicode name caused display truncation bug
+  // Keep until display rendering is covered by visual regression tests
+  unicodeName: {
+    id: 'golden-usr-unicode-001',
+    email: 'unicode-test@golden.fixture',
+    name: '日本語ユーザー名テスト',
+    status: 'active',
+    subscriptionTier: 'free',
+    createdAt: new Date('2024-01-01T00:00:00Z'),
+    paymentMethodId: null,
+  } satisfies User,
+
+  // Production bug 2024-07-22: zero-cent order bypass payment check
+  premiumWithNullPayment: {
+    id: 'golden-usr-null-pm-002',
+    email: 'null-payment@golden.fixture',
+    name: 'Payment Bug Regression User',
+    status: 'active',
+    subscriptionTier: 'premium',
+    createdAt: new Date('2024-01-01T00:00:00Z'),
+    paymentMethodId: null,  // the bug: premium without payment method
+  } satisfies User,
+
+  // Reference case: maximum-length name (100 chars) for boundary regression
+  maxLengthName: {
+    id: 'golden-usr-max-name-003',
+    email: 'max-name@golden.fixture',
+    name: 'A'.repeat(100),
+    status: 'active',
+    subscriptionTier: 'free',
+    createdAt: new Date('2024-01-01T00:00:00Z'),
+    paymentMethodId: null,
+  } satisfies User,
+} as const;
+
+export type GoldenUserKey = keyof typeof goldenUsers;
+```
+
+```typescript
+// test/regression/payment-bypass.regression.test.ts
+// This test will NEVER pass with a dynamic factory — it needs the exact golden record
+import { test, expect } from 'vitest';
+import { goldenUsers } from '../../fixtures/golden/users.golden';
+import { checkoutService } from '../../services/checkout.service';
+
+test('premium user with null payment method triggers payment required error (regression: 2024-07-22)', () => {
+  const user = goldenUsers.premiumWithNullPayment;
+  const result = checkoutService.initiate(user, { items: [{ productId: 'p-001', quantity: 1 }] });
+
+  // This exact bug: the service was calling user.paymentMethodId without null check
+  expect(result.status).toBe('payment_required');
+  expect(result.error).not.toBeUndefined();
+});
+```
+
+**Golden dataset maintenance rules:**
+1. Never modify an existing golden record — it will break the regression test it was created for
+2. Add a comment with the bug ID and date when creating a new golden record
+3. Remove golden records only when the regression test is replaced by a broader test suite
+4. Use `satisfies User` (not type assertion) so TypeScript catches golden records that have drifted from the domain type
+
+---
+
+## Test Data for Accessibility (a11y) Testing  [community]
+
+Accessibility tests require specific data patterns that trigger different rendering
+states: empty states, maximum-length strings (which stress-test truncation and overflow),
+lists with varying item counts (for `aria-label` count assertions), and data with
+special characters (for screen reader pronunciation testing). Without named a11y
+factory variants, these scenarios are silently omitted from accessibility test suites.
+
+```typescript
+// factories/a11y.factory.ts — accessibility-specific test data variants
+import { faker } from '@faker-js/faker';
+import { User } from '../domain/user';
+import { buildUser } from './user.factory';
+
+// A11y variants for UserCard component tests (screen reader, keyboard nav, contrast)
+export const UserCardA11y = {
+  // Empty state — no orders, no payment, minimal data
+  emptyState: (): User => buildUser({
+    name: 'New User',
+    subscriptionTier: 'free',
+    paymentMethodId: null,
+  }),
+
+  // Long name — tests text truncation does not break aria-label
+  longName: (): User => buildUser({
+    name: 'A Very Long User Name That Exceeds Normal Display Width And Tests Truncation Behavior',
+  }),
+
+  // Name with special chars — screen readers must pronounce correctly
+  specialCharsName: (): User => buildUser({
+    name: "O'Brien & Associates, LLC Test User",
+  }),
+
+  // RTL name — tests bidirectional text rendering (Arabic, Hebrew)
+  rtlName: (): User => buildUser({
+    name: 'Test User Arabic Name',   // represents RTL scenario
+  }),
+
+  // Screen reader numeric context: user with large order count
+  highOrderCount: () => ({
+    user: buildUser(),
+    orderCount: 9999,       // tests "9,999 orders" aria-label formatting
+  }),
+};
+
+// A11y variants for form validation tests
+export const FormValidationA11y = {
+  // Valid form data — no validation errors shown
+  valid: () => ({
+    email: faker.internet.email(),
+    name: faker.person.fullName(),
+    phone: faker.phone.number(),
+  }),
+
+  // All fields empty — all required field error messages visible simultaneously
+  allEmpty: () => ({ email: '', name: '', phone: '' }),
+
+  // Invalid email — only email error shown (tests individual error association)
+  invalidEmail: () => ({
+    email: 'not-an-email',
+    name: faker.person.fullName(),
+    phone: faker.phone.number(),
+  }),
+};
+```
+
+```typescript
+// specs/a11y/user-card.a11y.test.ts — accessibility tests using named variants
+import { test, expect } from 'vitest';
+import { render } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import { UserCard } from '../../components/UserCard';
+import { UserCardA11y } from '../../factories/a11y.factory';
+
+expect.extend(toHaveNoViolations);
+
+const a11yVariants = [
+  ['empty state', UserCardA11y.emptyState()],
+  ['long name', UserCardA11y.longName()],
+  ['special chars name', UserCardA11y.specialCharsName()],
+  ['RTL name', UserCardA11y.rtlName()],
+] as const;
+
+test.each(a11yVariants)(
+  'UserCard passes axe accessibility checks for: %s',
+  async (_, user) => {
+    const { container } = render(<UserCard user={user} />);
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  }
+);
+```
+
+---
+
+## Test Data for i18n and Locale Testing  [community]
+
+Internationalisation (i18n) test data must cover: right-to-left (RTL) text, multibyte
+characters, locale-specific number and date formats, and pluralisation rules. Factories
+that only generate English ASCII data miss an entire class of internationalisation bugs.
+The locale-specific faker instances introduced earlier in this guide complement the
+structural i18n testing patterns below.
+
+```typescript
+// factories/i18n.factory.ts — comprehensive i18n test data factory
+import { fakerDE, fakerJA, faker as fakerEN } from '@faker-js/faker';
+import { Product } from '../domain/product';
+
+// Product with locale-specific strings for i18n rendering tests
+export function buildLocalizedProduct(
+  locale: 'en' | 'de' | 'ja',
+  overrides: Partial<Product> = {}
+): Product {
+  const fakers = { 'en': fakerEN, 'de': fakerDE, 'ja': fakerJA } as const;
+  const f = fakers[locale];
+
+  return {
+    id: f.string.uuid(),
+    name: f.commerce.productName(),
+    description: f.commerce.productDescription(),
+    price: f.number.float({ min: 0.01, max: 9999.99, fractionDigits: 2 }),
+    currency: locale === 'de' ? 'EUR' : locale === 'ja' ? 'JPY' : 'USD',
+    locale,
+    createdAt: new Date(),
+    ...overrides,
+  };
+}
+
+// Pluralisation test data — different counts to trigger different plural forms
+// English: 0 items / 1 item / 2 items
+// Russian: 1 / 2-4 / 5+ have different plural forms (3-way split)
+// Arabic: 6 distinct plural forms (dual, trial, etc.)
+export const PluralTestCounts = {
+  zero: 0,
+  one: 1,
+  two: 2,         // Arabic dual form
+  few: 3,         // Slavic 'few' form (2-4)
+  many: 5,        // Slavic 'many' form (5+)
+  large: 100,
+  edge: 11,       // English exception: "11 items" (not "11 item")
+} as const;
+
+// Date/number formatting test data
+export const LocaleFormatTestData = {
+  // Dates that stress-test locale-aware date formatting
+  dates: {
+    usFormat: new Date('2024-07-04'),     // US: 7/4/2024; DE: 4.7.2024; ISO: 2024-07-04
+    ambiguous: new Date('2024-03-04'),    // 03/04 ambiguous: US=Apr 3; EU=Mar 4
+    endOfMonth: new Date('2024-01-31'),   // month-end edge case
+    leapDay: new Date('2024-02-29'),      // leap year
+  },
+  // Numbers that stress-test locale decimal/thousand separators
+  numbers: {
+    large: 1234567.89,     // EN: 1,234,567.89 | DE: 1.234.567,89
+    small: 0.001,
+    negative: -1234.56,
+    zero: 0,
+  },
+};
+```
+
+---
+
+## Time-Dependent Test Data and Time-Travel Testing  [community]
+
+Many business rules are time-dependent: subscriptions expire, trials end, promotions
+have validity windows, and sessions time out. Factories that use `new Date()` for
+timestamps produce data relative to the current wall clock — tests that pass today
+may fail tomorrow if a date crosses a threshold overnight.
+
+**Why it matters:** A factory that builds a trial subscription expiring "30 days from now"
+produces data that is always valid. A test asserting "trial is expired" built with that
+factory will never pass. Factories must accept explicit dates (or use controlled fake
+clocks) to make time-dependent test assertions deterministic.
+
+```typescript
+// factories/subscription.factory.ts — time-aware subscription factory
+import { faker } from '@faker-js/faker';
+
+type SubscriptionStatus = 'trial' | 'active' | 'past_due' | 'expired' | 'cancelled';
+
+interface Subscription {
+  id: string;
+  userId: string;
+  status: SubscriptionStatus;
+  trialStartedAt: Date;
+  trialEndsAt: Date;
+  currentPeriodStart: Date;
+  currentPeriodEnd: Date;
+  cancelledAt?: Date;
+}
+
+// Reference point: a fixed "now" for time-dependent test data
+// Using 2024-06-15 as the reference avoids drift from real wall clock
+const REFERENCE_NOW = new Date('2024-06-15T12:00:00Z');
+const days = (n: number): number => n * 24 * 60 * 60 * 1000;
+
+export const SubscriptionFactory = {
+  // Active trial: started 10 days ago, ends 20 days from now
+  activeTrial: (referenceNow: Date = REFERENCE_NOW): Subscription => ({
+    id: faker.string.uuid(),
+    userId: faker.string.uuid(),
+    status: 'trial',
+    trialStartedAt: new Date(referenceNow.getTime() - days(10)),
+    trialEndsAt: new Date(referenceNow.getTime() + days(20)),
+    currentPeriodStart: new Date(referenceNow.getTime() - days(10)),
+    currentPeriodEnd: new Date(referenceNow.getTime() + days(20)),
+  }),
+
+  // Expired trial: trial period ended 5 days ago
+  expiredTrial: (referenceNow: Date = REFERENCE_NOW): Subscription => ({
+    id: faker.string.uuid(),
+    userId: faker.string.uuid(),
+    status: 'expired',
+    trialStartedAt: new Date(referenceNow.getTime() - days(35)),
+    trialEndsAt: new Date(referenceNow.getTime() - days(5)),   // ended 5 days ago
+    currentPeriodStart: new Date(referenceNow.getTime() - days(35)),
+    currentPeriodEnd: new Date(referenceNow.getTime() - days(5)),
+  }),
+
+  // Expiring soon: trial ends in 1 day (triggers "expiring soon" notification)
+  expiringSoon: (referenceNow: Date = REFERENCE_NOW): Subscription => ({
+    id: faker.string.uuid(),
+    userId: faker.string.uuid(),
+    status: 'trial',
+    trialStartedAt: new Date(referenceNow.getTime() - days(29)),
+    trialEndsAt: new Date(referenceNow.getTime() + days(1)),   // ends tomorrow
+    currentPeriodStart: new Date(referenceNow.getTime() - days(29)),
+    currentPeriodEnd: new Date(referenceNow.getTime() + days(1)),
+  }),
+
+  // Past due: payment failed, period ended 3 days ago
+  pastDue: (referenceNow: Date = REFERENCE_NOW): Subscription => ({
+    id: faker.string.uuid(),
+    userId: faker.string.uuid(),
+    status: 'past_due',
+    trialStartedAt: new Date(referenceNow.getTime() - days(60)),
+    trialEndsAt: new Date(referenceNow.getTime() - days(30)),
+    currentPeriodStart: new Date(referenceNow.getTime() - days(33)),
+    currentPeriodEnd: new Date(referenceNow.getTime() - days(3)),  // period ended 3 days ago
+  }),
+};
+```
+
+```typescript
+// Using fake clocks with @sinonjs/fake-timers (or vitest's builtin fake timers)
+// to freeze time for the test body
+import { test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { SubscriptionFactory } from '../factories/subscription.factory';
+import { subscriptionService } from '../services/subscription.service';
+
+test('expired trial subscription cannot access premium features', () => {
+  // Freeze time at the reference date used by the factory
+  vi.useFakeTimers({ now: new Date('2024-06-15T12:00:00Z') });
+
+  const subscription = SubscriptionFactory.expiredTrial();
+  const result = subscriptionService.canAccessPremium(subscription);
+
+  expect(result).toBe(false);
+  expect(result.reason).toBe('trial_expired');
+
+  vi.useRealTimers();
+});
+
+test('trial expiring within 24 hours triggers renewal reminder', () => {
+  vi.useFakeTimers({ now: new Date('2024-06-15T12:00:00Z') });
+
+  const subscription = SubscriptionFactory.expiringSoon();
+  const notification = subscriptionService.getRenewalNotification(subscription);
+
+  expect(notification.type).toBe('trial_expiring_soon');
+  expect(notification.hoursRemaining).toBeLessThanOrEqual(24);
+
+  vi.useRealTimers();
+});
+```
+
+**Pattern: `afterEach` timer reset guard.** When using `vi.useFakeTimers()` in tests,
+always reset with `vi.useRealTimers()` in `afterEach` or within the test body.
+Leaked fake timers cause `setTimeout`/`setInterval` in subsequent tests to behave
+with the frozen clock, producing extremely difficult-to-diagnose failures.
+
+```typescript
+// vitest.setup.ts — global guard against leaked fake timers
+afterEach(() => {
+  // Always restore real timers after each test, even if the test forgot
+  vi.useRealTimers();
+});
+```
+
+---
+
+## Test Data Versioning and Schema Evolution  [community]
+
+As domain models evolve over months, factories must evolve with them. The key challenge:
+when a new required field is added, ALL existing factory calls must be updated. The
+pattern below uses TypeScript's `Exact<T>` (or `satisfies` with a strictness check) to
+catch missing required fields at compile time rather than at runtime.
+
+```typescript
+// factories/versioned.factory.ts — explicit version tagging for auditable factory evolution
+// Each factory export includes a VERSION comment indicating the schema version it targets
+// Update the version when the domain type changes
+
+import { faker } from '@faker-js/faker';
+
+// v1: original User type (2024 schema)
+interface UserV1 {
+  id: string;
+  email: string;
+  name: string;
+  status: 'active' | 'suspended';
+  createdAt: Date;
+}
+
+// v2: added subscriptionTier and paymentMethodId (2024-Q3 schema)
+interface UserV2 extends UserV1 {
+  subscriptionTier: 'free' | 'premium' | 'enterprise';
+  paymentMethodId: string | null;
+}
+
+// v3: added tenantId for multi-tenancy (2025 schema)
+interface UserV3 extends UserV2 {
+  tenantId: string;
+  displayName: string;  // separate from name for i18n
+}
+
+// Current factory targets UserV3 — 'satisfies' ensures all required fields are present
+// If UserV3 adds a new required field, this factory fails at COMPILE TIME
+export function buildUserV3(overrides: Partial<UserV3> = {}): UserV3 {
+  return {
+    id: faker.string.uuid(),
+    email: faker.internet.email(),
+    name: faker.person.fullName(),
+    displayName: faker.person.fullName(),
+    status: 'active',
+    subscriptionTier: 'free',
+    paymentMethodId: null,
+    tenantId: faker.string.uuid(),
+    createdAt: new Date(),
+    ...overrides,
+  } satisfies UserV3;  // 'satisfies' catches missing fields without widening the return type
+}
+
+// Legacy compatibility shim — returns UserV2 shape from a UserV3 factory
+// Use for services that haven't migrated to UserV3 yet (during migration window)
+export function buildUserV2Compat(overrides: Partial<UserV2> = {}): UserV2 {
+  const v3 = buildUserV3(overrides);
+  // Omit v3-only fields to produce a UserV2-shaped object
+  const { tenantId, displayName, ...v2 } = v3;
+  return v2;
+}
+```
+
+**Schema evolution checklist for factory maintainers:**
+1. When adding a required field to a domain type: update the factory default values and bump the factory version comment
+2. When removing a field: use `Omit<T, 'fieldName'>` in the factory return type during the deprecation window
+3. When renaming a field: update factory and search for all usages with `import { buildUser }` to find affected test files
+4. When changing a field type: add `satisfies` check to catch type mismatches in factory defaults
+
+---
+
+## Exhaustive Enum Factory Variants with TypeScript  [community]
+
+When a TypeScript union type (`'active' | 'suspended' | 'pending'`) gains a new member,
+test coverage for the new value is often missed. An exhaustive enum factory uses
+TypeScript's discriminated union exhaustiveness to guarantee that every status value has
+at least one named factory variant and one test — catching new enum values at compile
+time, not at code review.
+
+```typescript
+// factories/exhaustive-enum.factory.ts — compile-time exhaustiveness for enum variants
+import { buildUser } from './user.factory';
+import { User } from '../domain/user';
+
+type UserStatus = User['status'];  // 'active' | 'suspended' | 'pending'
+
+// Record<UserStatus, () => User> forces ALL status values to have a factory variant.
+// TypeScript error if a new status is added to the union but not to this record.
+export const UserByStatus: Record<UserStatus, () => User> = {
+  active: () => buildUser({ status: 'active' }),
+  suspended: () => buildUser({ status: 'suspended' }),
+  pending: () => buildUser({ status: 'pending' }),
+  // TypeScript ERROR if 'cancelled' is added to UserStatus but omitted here:
+  // "Property 'cancelled' is missing in type '{ active: ...; suspended: ...; pending: ...; }'"
+};
+
+// Helper: get all factory variants for parametric testing
+export function allUserStatusVariants(): Array<[UserStatus, User]> {
+  return (Object.entries(UserByStatus) as [UserStatus, () => User][])
+    .map(([status, factory]) => [status, factory()]);
+}
+```
+
+```typescript
+// specs/user-status.test.ts — exhaustive status coverage using the factory record
+import { test, expect, describe } from 'vitest';
+import { allUserStatusVariants, UserByStatus } from '../factories/exhaustive-enum.factory';
+import { userService } from '../services/user.service';
+
+// This test automatically covers ALL status values, including newly added ones
+describe('userService.getDisplayStatus covers all status values', () => {
+  test.each(allUserStatusVariants())(
+    'status "%s" returns a non-empty display label',
+    (status, user) => {
+      const label = userService.getDisplayStatus(user);
+      expect(label).toBeTruthy();
+      expect(typeof label).toBe('string');
+    }
+  );
+});
+
+// Individual status test — named access via the record
+test('suspended user status returns "Account Suspended" label', () => {
+  const user = UserByStatus.suspended();
+  expect(userService.getDisplayStatus(user)).toBe('Account Suspended');
+});
+```
+
+**When a new `'cancelled'` status is added to the `User['status']` union:**
+- The `Record<UserStatus, () => User>` declaration immediately fails at compile time
+- The developer is forced to add `cancelled: () => buildUser({ status: 'cancelled' })` before the code compiles
+- The `test.each(allUserStatusVariants())` test suite automatically includes the new case
+- No test coverage gap for the new status value
+
+---
+
+## Snapshot Testing with Stable Factory Data  [community]
+
+Snapshot tests (`toMatchSnapshot()` / `toMatchInlineSnapshot()`) require completely
+stable test data — any randomness causes the snapshot to change every run. The pattern
+is to use **snapshot-specific factories** that use fixed, deterministic values rather
+than faker randomness.
+
+**Why it matters:** Using `buildUser()` (with faker randomness) in a snapshot test produces
+a snapshot with a random UUID and email on every run. The snapshot "fails" on every
+subsequent run because the data changed — the snapshot tests become permanently broken
+and teams disable them rather than fixing the data source.
+
+```typescript
+// factories/snapshot.factory.ts — deterministic, snapshot-safe factory variants
+// These factories NEVER use faker — all values are hardcoded and stable
+import { User } from '../domain/user';
+import { Order } from '../domain/order';
+
+// All snapshot factories use predictable, human-readable IDs (not UUIDs)
+// This makes snapshot diffs readable when a domain field changes
+export const SnapshotUsers = {
+  alice: (): User => ({
+    id: 'snapshot-usr-alice',
+    email: 'alice@snapshot.example',
+    name: 'Alice Snapshot',
+    status: 'active',
+    subscriptionTier: 'premium',
+    paymentMethodId: 'pm-snapshot-alice',
+    createdAt: new Date('2024-01-01T00:00:00.000Z'),  // fixed timestamp
+  }),
+
+  bob: (): User => ({
+    id: 'snapshot-usr-bob',
+    email: 'bob@snapshot.example',
+    name: 'Bob Snapshot',
+    status: 'suspended',
+    subscriptionTier: 'free',
+    paymentMethodId: null,
+    createdAt: new Date('2024-02-15T00:00:00.000Z'),
+  }),
+};
+
+export const SnapshotOrders = {
+  alicePendingOrder: (): Order => ({
+    id: 'snapshot-ord-alice-001',
+    userId: 'snapshot-usr-alice',
+    status: 'pending',
+    totalCents: 4999,
+    currency: 'USD',
+    items: [
+      { productId: 'snapshot-prod-001', quantity: 2, unitPriceCents: 2499 },
+    ],
+    createdAt: new Date('2024-03-01T10:00:00.000Z'),
+  }),
+};
+```
+
+```typescript
+// specs/snapshots/user-card.snapshot.test.tsx
+import { test, expect } from 'vitest';
+import { render } from '@testing-library/react';
+import { UserCard } from '../../components/UserCard';
+import { SnapshotUsers } from '../../factories/snapshot.factory';
+
+// Snapshot test with stable data — will NEVER fail due to random data
+test('UserCard renders active premium user correctly', () => {
+  const { container } = render(<UserCard user={SnapshotUsers.alice()} />);
+  expect(container).toMatchSnapshot();
+  // Snapshot is stable: same IDs, same email, same date on every run
+});
+
+test('UserCard renders suspended free user correctly', () => {
+  const { container } = render(<UserCard user={SnapshotUsers.bob()} />);
+  expect(container).toMatchSnapshot();
+});
+```
+
+**Anti-pattern avoided:** Never use `buildUser()` (faker-based) in snapshot tests.
+The snapshot will have a different UUID and email on every run — the test becomes a
+flake detector for randomness rather than a regression detector for UI changes.
+
+**When to update snapshots:** Run `vitest --update-snapshots` (or `jest --updateSnapshot`)
+only when you intentionally changed the component's rendered output. Every snapshot
+update should be reviewed in code review to confirm the change is expected — not just
+accepted automatically.
+
+---
+
+## Anti-Pattern: Test Data in Production Code  [community]
+
+A subtle but dangerous anti-pattern is when factory code or test-specific data leaks
+into production modules. This most often happens via three mechanisms:
+
+1. **`process.env.NODE_ENV` guards in factories:** A factory file imported in production
+   code "just for the type" that contains a runtime `if (env !== 'test') throw` guard
+   still loads the faker import — adding ~200KB to the production bundle.
+
+2. **Test seeds in migration files:** Database migration scripts that insert "example data"
+   rows as part of the migration. These rows appear in every environment, including
+   production, and accumulate over time.
+
+3. **Hardcoded test user accounts in production code:** An `isTestUser(userId)` helper
+   with hardcoded test UUIDs in production code paths — used to bypass billing, skip
+   rate limits, or enable debug features. These become security vulnerabilities if the
+   UUIDs are ever exposed.
+
+```typescript
+// WRONG — factory import in production module (loads faker in production bundle)
+import { buildUser } from '../test/factories/user.factory';  // 200KB faker included
+
+// WRONG — test data in migration file
+export async function up(db) {
+  await db.schema.createTable('users', ...);
+  // Don't do this: test data in a migration pollutes all environments
+  await db.insert('users').values({ id: 'usr-admin', email: 'admin@example.com' });
+}
+
+// WRONG — hardcoded test user bypass in production code
+function isTestUser(userId: string): boolean {
+  return ['usr-test-001', 'usr-e2e-alice'].includes(userId);
+}
+
+// CORRECT — strict separation of concerns
+// Production code: zero imports from test/ or factories/ directories
+// Test data: stays in test/ directory, never imported by production modules
+// Migrations: create schema only; seed data lives in separate seed scripts
+
+// Lint rule to enforce: add to eslint.config.mjs
+// import/no-restricted-paths: enforce no imports from 'src/test/**' in 'src/**'
+```
+
+**ESLint enforcement (flat config format):**
+```typescript
+// eslint.config.mjs
+import noRestrictedPathsPlugin from 'eslint-plugin-import';
+
+export default [
+  {
+    plugins: { import: noRestrictedPathsPlugin },
+    rules: {
+      'import/no-restricted-paths': [
+        'error',
+        {
+          zones: [
+            {
+              // Production source files must not import from test directories
+              target: './src',
+              from: ['./src/test', './test', './factories'],
+              message: 'Production code must not import from test factories or test utilities.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+];
+```
+
+---
+
+## Factory Observability — Test Data Metrics in CI  [community]
+
+At scale (100+ integration tests with DB factories), understanding *how much* test data
+is created, *how long* factory creation takes, and *which factories* are the source of
+slowness helps teams optimize their test suite's setup cost. Factory observability wraps
+factory calls with timing and counting logic and reports metrics in CI.
+
+**Why it matters:** A test suite that takes 45 seconds to set up DB fixtures before any
+test assertion runs has a hidden cost that engineers attribute to "slow tests" — when the
+real problem is factory inefficiency (N+1 DB inserts, redundant factory calls, no
+batch inserts). Factory metrics make the cost visible and actionable.
+
+```typescript
+// test/instrumented-factory.ts — factory wrapper that records timing and call counts
+import { Factory } from 'fishery';
+import { faker } from '@faker-js/faker';
+
+interface FactoryMetric {
+  factoryName: string;
+  operation: 'build' | 'create' | 'buildList' | 'createList';
+  count: number;
+  durationMs: number;
+  timestamp: Date;
+}
+
+// Global metrics collector (in-memory; summarized at end of test suite)
+const metrics: FactoryMetric[] = [];
+
+// Wraps a fishery Factory to record metrics on every call
+export function instrumentedFactory<T>(
+  name: string,
+  factory: Factory<T>
+): Factory<T> {
+  return new Proxy(factory, {
+    get(target, prop) {
+      const original = (target as any)[prop];
+      if (typeof original !== 'function') return original;
+
+      if (['build', 'create', 'buildList', 'createList'].includes(String(prop))) {
+        return async (...args: unknown[]) => {
+          const start = performance.now();
+          const result = await (original as Function).apply(target, args);
+          const durationMs = performance.now() - start;
+
+          const count = Array.isArray(result) ? result.length : 1;
+          metrics.push({
+            factoryName: name,
+            operation: String(prop) as FactoryMetric['operation'],
+            count,
+            durationMs,
+            timestamp: new Date(),
+          });
+
+          return result;
+        };
+      }
+      return original;
+    },
+  });
+}
+
+// Summary reporter — call in globalTeardown to emit CI annotations
+export function reportFactoryMetrics(): void {
+  if (metrics.length === 0) return;
+
+  const totalObjects = metrics.reduce((sum, m) => sum + m.count, 0);
+  const totalTimeMs = metrics.reduce((sum, m) => sum + m.durationMs, 0);
+
+  // Aggregate by factory name
+  const byFactory = metrics.reduce((acc, m) => {
+    acc[m.factoryName] = acc[m.factoryName] ?? { totalObjects: 0, totalTimeMs: 0, calls: 0 };
+    acc[m.factoryName].totalObjects += m.count;
+    acc[m.factoryName].totalTimeMs += m.durationMs;
+    acc[m.factoryName].calls++;
+    return acc;
+  }, {} as Record<string, { totalObjects: number; totalTimeMs: number; calls: number }>);
+
+  console.log('\n=== Factory Metrics Summary ===');
+  console.log(`Total objects created: ${totalObjects} in ${totalTimeMs.toFixed(0)}ms`);
+
+  // Sort by slowest factory (highest totalTimeMs)
+  const sorted = Object.entries(byFactory).sort(([, a], [, b]) => b.totalTimeMs - a.totalTimeMs);
+  for (const [name, stats] of sorted) {
+    const avgMs = (stats.totalTimeMs / stats.calls).toFixed(1);
+    console.log(`  ${name}: ${stats.totalObjects} objects, ${stats.calls} calls, avg ${avgMs}ms/call`);
+  }
+
+  // In CI: emit as GitHub Actions notice
+  if (process.env.GITHUB_ACTIONS) {
+    process.stdout.write(`::notice title=Factory Metrics::${totalObjects} objects in ${totalTimeMs.toFixed(0)}ms\n`);
+  }
+}
+```
+
+```typescript
+// global-teardown.ts — report metrics at end of test suite
+import { reportFactoryMetrics } from './test/instrumented-factory';
+
+export default async function globalTeardown() {
+  reportFactoryMetrics();
+  // Output example:
+  // === Factory Metrics Summary ===
+  // Total objects created: 847 in 12340ms
+  //   userFactory: 312 objects, 89 calls, avg 42.1ms/call
+  //   orderFactory: 535 objects, 45 calls, avg 95.3ms/call  ← investigate this one
+}
+```
+
+**Optimization signals from factory metrics:**
+- Average > 100ms per `create` call: likely N+1 inserts — use `createList` with bulk insert
+- Same factory called > 50 times: consider worker-scoped fixture with shared data
+- High `buildList` count with zero `createList`: unit test suite creating too much in-memory data — profile heap usage
+
+---
+
+## Test Data Checklist — Pre-Ship Review  [community]
+
+Before merging a PR that adds new tests or factories, verify these items to prevent
+test data technical debt from accumulating.
+
+**Factory quality checklist:**
+- [ ] Factory uses `Partial<T>` overrides (not `any`) — TypeScript validates override field names
+- [ ] Dynamic fields use `faker.*` or `sequence` — no hardcoded strings for fields that should be unique
+- [ ] `createdAt` and timestamp fields use fixed dates in snapshot tests; faker dates in unit/integration tests
+- [ ] Factory file has JSDoc `@example` blocks for the most common use cases
+- [ ] Factory is registered in the shared registry (`factories/registry.ts`) if it's a core domain entity
+- [ ] Any DB-persisting `create()` calls have a corresponding cleanup (`afterEach`, `await using`, or Playwright fixture teardown)
+
+**Test isolation checklist:**
+- [ ] No test reads rows created by a *different* test (no cross-test DB state dependency)
+- [ ] No test depends on insertion order or auto-increment IDs
+- [ ] Parallel test run (`vitest --pool=forks`) passes without failures
+- [ ] `TEST_SEED` is logged in CI output (faker seed for reproducibility)
+
+**Security checklist:**
+- [ ] No PII, production emails, real names, or real IDs in committed fixture files
+- [ ] No hardcoded test user IDs in production code (`isTestUser()` guards)
+- [ ] `assertTestEnvironment()` guard in any factory that persists to a DB
+- [ ] Multi-tenant entities use unique `tenantId` per test (not a shared constant)

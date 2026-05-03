@@ -1,6 +1,6 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
-<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 11 | score: 100/100 | date: 2026-05-03 -->
+<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots -->
 <!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis -->
 
 ---
@@ -688,6 +688,25 @@ FROM mcr.microsoft.com/playwright:v1.59.0-noble
 # FROM mcr.microsoft.com/playwright:latest
 ```
 
+### 19. Service Worker fetch requests not captured by `page.waitForRequest()` in v1.55+ [community]
+**What:** After upgrading past v1.55, tests that wait for fetch requests made by a service worker (`background sync`, push handlers) stop capturing those requests in `waitForRequest()`.
+**WHY:** Before v1.55, service worker requests were invisible to Playwright routing. From v1.55, service worker network requests now DO flow through `BrowserContext.route()` and `BrowserContext.on('request')` — but only when the service worker runs under the same origin as the page. Tests that previously blocked ALL requests via `page.route('**/*', ...)` may now unexpectedly intercept background service worker fetches too.
+**Fix:** If your app uses service workers for background sync or caching, use `context.route()` instead of `page.route()` and add origin-specific filters to avoid catching SW-internal requests:
+
+```typescript
+// Filter out service worker internal requests (same-origin, sw.js initiated)
+await context.route('**/api/**', async route => {
+  // Only intercept requests from main frame, not service workers
+  const initiator = route.request().serviceWorker();
+  if (initiator) {
+    return route.continue();  // let SW requests pass through unmodified
+  }
+  await route.fulfill({ ... });
+});
+```
+
+Alternatively, if you don't need SW network interception, keep `serviceWorkers: 'block'` in your config — this preserves the pre-v1.55 behavior.
+
 ---
 
 ## Breaking Changes Reference (v1.45–v1.59)
@@ -696,11 +715,13 @@ A summary of removals and behavioral changes that require action when upgrading.
 
 | Version | Change | Migration |
 |---------|--------|-----------|
+| v1.59 | macOS 14 WebKit support **dropped** | Use macOS 15+ or Playwright Docker image for WebKit tests |
+| v1.59 | `@playwright/experimental-ct-svelte` **removed** | Migrate to SvelteKit e2e tests with standard Playwright config |
 | v1.57 | `page.accessibility` API **removed** | Use `toMatchAriaSnapshot()` for structure, `@axe-core/playwright` for WCAG |
 | v1.57 | Browser switch: headed→`chrome`, headless→`chrome-headless-shell` | Rebuild Docker images; pin `mcr.microsoft.com/playwright:vX.Y.Z-noble` |
 | v1.57 | React 16/17 component testing **removed** | Upgrade to React 18+ or test via e2e |
 | v1.57 | `_react`/`_vue` component selectors **removed** | Use `getByTestId`, `getByRole`, `getByText` |
-| v1.55 | macOS 13 & 14 WebKit support **dropped** | Use macOS 15+ or run WebKit tests in the Playwright Docker image |
+| v1.55 | macOS 13 WebKit support **dropped** | Use macOS 14+ or run WebKit tests in the Playwright Docker image |
 | v1.52 | `toHaveClass('active disabled')` asserts the full class list | Use `toContainClass('active')` for partial class presence (v1.52+) |
 | v1.50 | `updateSnapshots` default changed to `'missing'` | Set `updateSnapshots: 'changed'` in config to prevent overwriting stable baselines |
 | v1.46 | `maxRetries` added to `APIRequestContext` options | Use `{ maxRetries: 3 }` instead of wrapping in try/catch |
@@ -836,6 +857,26 @@ npx playwright test --only-changed
 # Run only tests in files changed relative to a branch (v1.46+)
 npx playwright test --only-changed=origin/main
 ```
+
+**Scaling beyond CI matrix sharding — Kubernetes (Moon) and cloud orchestrators:**
+
+For suites with 1000+ tests, GitHub Actions matrix sharding may not be enough. Cloud-native options:
+- **Currents** (`currents-dev`): Cloud dashboard + smart test ordering that runs the slowest tests first (reduces wall-clock time). Drop-in replacement for `npx playwright test` via `npx currents`.
+- **Moon** (`moonrepo/moon`): Runs Playwright tests in parallel across Kubernetes pods. Defines Playwright as a task in `moon.yml`, distributes shards across nodes via a job scheduler.
+- **Playwright Remote Server**: Use `npx playwright run-server` in Docker + connect from multiple workers via `PW_TEST_CONNECT_WS_ENDPOINT` for a self-hosted grid.
+
+```bash
+# Currents cloud orchestration (drop-in for npx playwright test)
+npx currents run --project chromium --ci-build-id "$GITHUB_RUN_ID" --shard "$CI_NODE_INDEX/$CI_NODE_TOTAL"
+
+# Self-hosted grid: start server in one container, run tests from another
+# Container 1:
+docker run -p 3000:3000 mcr.microsoft.com/playwright:v1.59.0-noble npx playwright run-server --port 3000
+# Container 2 (run tests):
+PW_TEST_CONNECT_WS_ENDPOINT=ws://playwright-server:3000 npx playwright test --shard=1/4
+```
+
+> At 500+ tests, the bottleneck shifts from parallelism within a machine to provisioning enough machines. Cloud orchestrators like Currents eliminate the CI matrix YAML boilerplate and provide cross-run analytics to identify slow tests. [community]
 
 ### Trace Modes Reference
 
@@ -1015,6 +1056,7 @@ npx playwright test --grep-invert @flaky --retries=2
 | `page.waitForResponse(url)` | Wait for incoming response | Verify API responses are handled |
 | `request.existingResponse()` | Get response without blocking — returns null if not yet received (v1.59+) | Non-blocking response inspection |
 | `request.maxRetries` option | Retry request on `ECONNRESET` errors (v1.46+) | Unstable staging environments |
+| `request.maxRedirects` option | Max HTTP redirects to follow; `0` disables (v1.52+) | Assert on redirect responses |
 | `response.httpVersion()` | Returns HTTP protocol version (v1.59+) | Verify HTTP/2 or HTTP/3 usage |
 | `page.routeWebSocket(url, handler)` | Intercept WebSocket connections (v1.48+) | Mock WebSocket messages |
 
@@ -1033,6 +1075,7 @@ npx playwright test --grep-invert @flaky --retries=2
 | `{ auto: true }` | Run fixture for every test automatically | Universal setup like global logging |
 | `{ box: true }` | Hide fixture steps from test report | Reduce report noise for helper fixtures |
 | `locator.describe(label)` | Annotate locator with human-readable name (v1.52+) | Trace/report readability |
+| `testInfo.snapshotPath(name, { kind })` | Route snapshot to kind-specific directory (v1.53+) | Separate visual/aria/text baselines |
 
 ---
 
@@ -1126,6 +1169,13 @@ test('full data export', async ({ page }) => {
 test('JIRA-1234: checkout total mismatch', async ({ page }) => {
   test.info().annotations.push({ type: 'issue', description: 'https://jira.example.com/browse/JIRA-1234' });
   // ...
+});
+
+// annotation.location — shows WHERE in source test.skip/test.fixme was declared (v1.54+)
+// This appears in HTML report and traces, making it easy to find the call site
+test('skipped with location context', async ({ page }) => {
+  test.skip(true, 'Awaiting backend fix for JIRA-5678');
+  // HTML report shows: "skipped at e2e/specs/checkout.spec.ts:123" — no grep needed
 });
 ```
 
@@ -1259,6 +1309,22 @@ reporter: [
 npx playwright merge-reports --reporter html ./all-blob-reports
 # Open playwright-report/index.html → Timeline tab
 ```
+
+**HTML reporter custom title (v1.53+):** Label individual HTML reports for different environments or run types:
+
+```typescript
+// playwright.config.ts — identify this run's HTML report
+export default defineConfig({
+  reporter: [
+    ['html', {
+      title: `Playwright — ${process.env.TEST_ENV ?? 'local'} — ${new Date().toISOString().slice(0, 10)}`,
+      open: 'on-failure',
+    }],
+  ],
+});
+```
+
+> A custom `title` in the HTML reporter makes merged multi-shard reports instantly distinguishable in shared team dashboards. Include the environment name and date. [community]
 
 ---
 
@@ -1659,6 +1725,41 @@ test('dashboard visual regression at fixed time', async ({ page }) => {
 > `page.clock` (introduced in Playwright 1.45) replaces the old `page.addInitScript` hack
 > for mocking dates. It controls `Date`, `setTimeout`, `setInterval`, and `performance.now()`
 > in a unified API. [community]
+
+---
+
+### `launchPersistentContext` and `--user-data-dir` — Session Reuse (v1.54+)
+
+Use `launchPersistentContext` (or the `--user-data-dir` CLI flag) when you need to reuse a real browser session across multiple script runs — for example, to avoid re-authenticating manually during development, or to replay a real user's session state.
+
+```typescript
+// scripts/explore-with-auth.ts — reuse an existing logged-in profile
+import { chromium } from 'playwright';
+
+// Profile dir persists cookies, localStorage, extension state across launches
+const context = await chromium.launchPersistentContext('./browser-profile', {
+  headless: false,
+  viewport:  null,              // use real screen size
+});
+
+const page = await context.newPage();
+await page.goto('https://your-app.com/dashboard');
+// Already logged in from previous session — no login step needed
+
+// Save current state for use in Playwright tests
+await context.storageState({ path: 'e2e/.auth/dev-session.json' });
+await context.close();
+```
+
+```bash
+# CLI: open a persistent browser session for manual exploration + auth capture
+npx playwright open --user-data-dir ./browser-profile https://your-app.com/login
+
+# After logging in manually, export the session for use in tests:
+# (save storageState via page.context().storageState(...) in a script)
+```
+
+> `launchPersistentContext` is a **developer workflow tool**, not a test pattern. Never use it in CI — it couples tests to a local user profile that may expire or accumulate state. Use `storageState` files captured via `auth.setup.ts` for test auth. [community]
 
 ---
 
@@ -2257,6 +2358,20 @@ test('inspect aria tree of navigation', async ({ page }) => {
 
   // mode option: 'normalizeWhitespace' (default) | 'raw' for exact whitespace
   const rawTree = await page.getByRole('navigation').ariaSnapshot({ mode: 'raw' });
+
+  // mode: 'ai' — produces a compact, AI-optimized representation (v1.59+)
+  // Best for feeding to LLMs for diagnostics or auto-healing workflows
+  const aiTree = await page.getByRole('navigation').ariaSnapshot({ mode: 'ai' });
+  console.log(aiTree); // JSON-ish compact format optimized for LLM prompts
+});
+
+// page.ariaSnapshot() — capture the full page accessibility tree (v1.59+)
+test('full page aria snapshot for AI debugging', async ({ page }) => {
+  await page.goto('/dashboard');
+  // Captures the entire page ARIA tree — useful for LLM-assisted test healing
+  const fullTree = await page.ariaSnapshot({ mode: 'ai' });
+  // Use in an AI prompt: "Given this page structure, what locator should I use?"
+  console.log(fullTree);
 });
 ```
 
@@ -3677,6 +3792,105 @@ test('connects to shared browser session', async () => {
 
 ---
 
+---
+
+### Playwright Test Agents — AI-Assisted Test Lifecycle (v1.56+)
+
+Playwright v1.56 shipped three official AI agent definitions that work with LLMs via the `@playwright/mcp` MCP server or the `--agents` CLI flag. Understanding these agents helps teams integrate AI-assisted test generation and healing into CI workflows.
+
+| Agent | Role | Typical input | Typical output |
+|-------|------|--------------|----------------|
+| Planner | Explores the app, plans test cases | App URL | Markdown test plan (scenarios, steps) |
+| Generator | Writes spec files from plans | Test plan file | `.spec.ts` files |
+| Healer | Executes tests, repairs locator failures | Failing spec files + app URL | Patched `.spec.ts` files |
+
+**Healer workflow in CI (auto-repair failing locators):**
+
+```typescript
+// playwright.config.ts — enable healer on retry
+// Run: npx playwright test --agent healer --retries=1
+// The healer agent fires on first retry, re-examines the page, and patches the locator
+
+// Manual healer invocation (outside of test runner):
+// npx playwright agent healer --spec e2e/specs/checkout.spec.ts --url https://staging.example.com
+```
+
+```bash
+# Generate a test plan from a live URL
+npx playwright agent planner --url https://staging.example.com --output test-plan.md
+
+# Generate spec files from the plan
+npx playwright agent generator --plan test-plan.md --output e2e/specs/
+
+# Auto-heal a failing spec
+npx playwright agent healer --spec e2e/specs/checkout.spec.ts --url https://staging.example.com
+```
+
+**Integration with `browser.bind()` for agent scenarios:**
+
+```typescript
+// Launch a shared browser that agents can connect to
+import { chromium } from 'playwright';
+
+const browser = await chromium.launch({ headless: false });
+const { endpoint } = await browser.bind('agent-session');
+
+// The @playwright/mcp server can now connect to this endpoint
+// npx @playwright/mcp connect --endpoint <endpoint>
+console.log(`Agent endpoint: ${endpoint}`);
+```
+
+> Playwright Test Agents are most useful for brownfield apps with many locator regressions after a design-system upgrade. Run the Healer in CI as a post-failure step — it patches selectors and commits the fix automatically. [community]
+
+> The Planner agent produces test plans as markdown — review them like you would a PR. AI hallucinations in test plans are common for dynamic/authenticated flows; always review before Generator writes specs. [community]
+
+---
+
+### `testInfo.snapshotPath({ kind })` — Snapshot Kind Routing (v1.53+)
+
+Control which snapshot template applies when a test produces multiple snapshot types (visual, aria, text). Useful when you want different baselines for the same test across environments or snapshot types.
+
+```typescript
+test('dashboard visual and aria snapshots', async ({ page }, testInfo) => {
+  await page.goto('/dashboard');
+
+  // Use the default visual snapshot path
+  await expect(page).toHaveScreenshot('dashboard.png');
+
+  // Route to an aria-specific snapshot directory
+  const ariaPath = testInfo.snapshotPath('dashboard.aria.yml', { kind: 'aria' });
+  await expect(page.getByRole('main')).toMatchAriaSnapshot({ path: ariaPath });
+});
+```
+
+---
+
+### `maxRedirects` for API Request Context (v1.52+)
+
+Control how many HTTP redirects `APIRequestContext` follows automatically. Useful when testing redirect chains or when you need to assert on intermediate redirect responses.
+
+```typescript
+test('API respects redirect chain', async ({ request }) => {
+  // Default: follows up to 20 redirects. Set to 0 to disable redirect following.
+  const request0 = await request.newContext({ maxRedirects: 0 });
+
+  const res = await request0.get('/old-url');
+  expect(res.status()).toBe(301);
+  expect(res.headers()['location']).toContain('/new-url');
+  await request0.dispose();
+});
+
+test('follow exactly 2 redirects', async ({ playwright }) => {
+  const ctx = await playwright.request.newContext({ maxRedirects: 2 });
+  const res  = await ctx.get('https://example.com/deep-redirect');
+  // Stops after 2 hops — throws if more redirects are encountered
+  expect(res.ok()).toBeTruthy();
+  await ctx.dispose();
+});
+```
+
+---
+
 ## Project Structure Reference
 
 ```
@@ -3898,4 +4112,8 @@ await page.addLocatorHandler(
 
 // Upgrade a brittle locator to best-practice (refactoring tool, v1.59+)
 const better = page.locator('.submit-button').normalize();  // → getByRole('button', { name: 'Submit' })
+
+// ARIA snapshot — AI mode for LLM-assisted diagnostics (v1.59+)
+const aiTree = await page.ariaSnapshot({ mode: 'ai' });   // full-page, compact for LLMs
+const aiNav  = await page.getByRole('navigation').ariaSnapshot({ mode: 'ai' });
 ```

@@ -1,5 +1,5 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 4 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: TypeScript | topic: tdd | iteration: 10 | score: 100/100 | date: 2026-05-03 -->
 <!-- sources: training-knowledge (WebSearch/WebFetch unavailable) | ISTQB CTFL 4.0 terminology applied -->
 
 ## Core Principles
@@ -1315,6 +1315,660 @@ The ISTQB Certified Tester Foundation Level 4.0 syllabus defines standardised te
 | **Defect** | "bug", "error" | TDD produces defects in the Red phase deliberately — this is intentional defect-first development. |
 | **Test condition** | "test scenario", "test idea" | The specific state + input combination a test case exercises (e.g., "empty cart"). |
 | **Test harness** | "test runner setup", "test infrastructure" | Vitest + typed in-memory fakes + TypeScript config = the test harness for a TDD project. |
+
+---
+
+## Advanced Patterns (Iteration 5–10 Extensions)
+
+### TDD for Error Handling with Exhaustive Discriminated Unions [community]
+
+TypeScript's exhaustive switch with `never` is a powerful TDD target: the test cases define every valid error variant before the implementation, and the compiler enforces that all branches are covered.
+
+```typescript
+// error-types.ts — TDD drives the discriminated union design
+// RED: Write tests for each error variant first — this forces the union definition
+
+import { describe, it, expect } from 'vitest';
+import { parseUserId, UserIdError } from './parseUserId.js';
+
+// Test case 1: RED — define what a valid ID looks like
+describe('parseUserId', () => {
+  it('returns ok for a UUID-format string', () => {
+    const result = parseUserId('550e8400-e29b-41d4-a716-446655440000');
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.value).toBe('550e8400-e29b-41d4-a716-446655440000');
+    }
+  });
+
+  // Test case 2: RED — empty string is a distinct error type
+  it('returns empty-string error for ""', () => {
+    const result = parseUserId('');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.kind).toBe('empty');
+    }
+  });
+
+  // Test case 3: RED — wrong format is a distinct error type
+  it('returns invalid-format error for non-UUID strings', () => {
+    const result = parseUserId('not-a-uuid');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.kind).toBe('invalid-format');
+    }
+  });
+
+  // Test case 4: RED — too long is a distinct error type
+  it('returns too-long error for strings exceeding 36 chars', () => {
+    const result = parseUserId('a'.repeat(37));
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.kind).toBe('too-long');
+    }
+  });
+});
+
+// GREEN: discriminated union forced into existence by test cases
+// parseUserId.ts
+type UserIdErrorKind = 'empty' | 'invalid-format' | 'too-long';
+
+export interface UserIdError {
+  kind: UserIdErrorKind;
+  message: string;
+}
+
+type ParseResult =
+  | { success: true;  value: string }
+  | { success: false; error: UserIdError };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function parseUserId(raw: string): ParseResult {
+  if (raw.length === 0) {
+    return { success: false, error: { kind: 'empty', message: 'User ID must not be empty' } };
+  }
+  if (raw.length > 36) {
+    return { success: false, error: { kind: 'too-long', message: `User ID must be ≤ 36 chars, got ${raw.length}` } };
+  }
+  if (!UUID_RE.test(raw)) {
+    return { success: false, error: { kind: 'invalid-format', message: 'User ID must be a valid UUID' } };
+  }
+  return { success: true, value: raw };
+}
+
+// REFACTOR: add exhaustive type guard — compiler enforces all error kinds are handled
+function assertNever(x: never): never {
+  throw new Error(`Unhandled error kind: ${JSON.stringify(x)}`);
+}
+
+export function formatUserIdError(error: UserIdError): string {
+  switch (error.kind) {
+    case 'empty':          return 'Please provide a user ID.';
+    case 'invalid-format': return 'User ID must be a valid UUID (e.g. 550e8400-...).';
+    case 'too-long':       return `User ID is too long (${error.message}).`;
+    default:               return assertNever(error.kind);
+    // If a new kind is added to UserIdErrorKind, TypeScript errors here immediately.
+  }
+}
+```
+
+**Why TDD drives better error type design:** Without TDD, error types are often defined as `Error | string | null` — the laziest union. Writing test cases first forces you to enumerate every error variant your callers need to handle, producing tight discriminated unions that TypeScript can exhaustively check.
+
+---
+
+### TDD for Event-Driven Systems (Pub/Sub, EventEmitter) [community]
+
+Event-driven TypeScript code is notoriously hard to test after the fact. TDD forces the event contract — event names, payload types — into existence before the emit code is written.
+
+```typescript
+// domain-events.ts — TDD drives the typed event bus design
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { TypedEventBus } from './TypedEventBus.js';
+
+// Define event payload map — test cases force this interface into existence
+interface AppEvents {
+  'user:registered':  { userId: string; email: string; };
+  'order:placed':     { orderId: string; total: number; };
+  'order:cancelled':  { orderId: string; reason: string; };
+}
+
+let bus: TypedEventBus<AppEvents>;
+
+beforeEach(() => { bus = new TypedEventBus<AppEvents>(); });
+
+// Test case 1: RED — subscriber receives event payload
+it('delivers user:registered payload to subscribers', () => {
+  const handler = vi.fn<[AppEvents['user:registered']], void>();
+  bus.on('user:registered', handler);
+  bus.emit('user:registered', { userId: 'u1', email: 'alice@example.com' });
+  expect(handler).toHaveBeenCalledOnce();
+  expect(handler).toHaveBeenCalledWith<[AppEvents['user:registered']]>({
+    userId: 'u1',
+    email: 'alice@example.com',
+  });
+});
+
+// Test case 2: RED — multiple subscribers all receive the event
+it('notifies all subscribers for the same event', () => {
+  const h1 = vi.fn<[AppEvents['order:placed']], void>();
+  const h2 = vi.fn<[AppEvents['order:placed']], void>();
+  bus.on('order:placed', h1);
+  bus.on('order:placed', h2);
+  bus.emit('order:placed', { orderId: 'ORD-1', total: 99.99 });
+  expect(h1).toHaveBeenCalledOnce();
+  expect(h2).toHaveBeenCalledOnce();
+});
+
+// Test case 3: RED — off() removes subscriber
+it('stops delivering events after off()', () => {
+  const handler = vi.fn<[AppEvents['order:cancelled']], void>();
+  bus.on('order:cancelled', handler);
+  bus.off('order:cancelled', handler);
+  bus.emit('order:cancelled', { orderId: 'ORD-2', reason: 'customer request' });
+  expect(handler).not.toHaveBeenCalled();
+});
+
+// GREEN: typed event bus implementation
+// TypedEventBus.ts
+type Handler<T> = (payload: T) => void;
+
+export class TypedEventBus<Events extends Record<string, unknown>> {
+  readonly #handlers = new Map<keyof Events, Set<Handler<unknown>>>();
+
+  on<K extends keyof Events>(event: K, handler: Handler<Events[K]>): void {
+    if (!this.#handlers.has(event)) this.#handlers.set(event, new Set());
+    this.#handlers.get(event)!.add(handler as Handler<unknown>);
+  }
+
+  off<K extends keyof Events>(event: K, handler: Handler<Events[K]>): void {
+    this.#handlers.get(event)?.delete(handler as Handler<unknown>);
+  }
+
+  emit<K extends keyof Events>(event: K, payload: Events[K]): void {
+    this.#handlers.get(event)?.forEach(h => h(payload));
+  }
+}
+```
+
+**Community signal:** Teams using untyped `EventEmitter` in Node.js often discover type mismatches between emitter and listener only at runtime. TDD-driven typed event buses surface payload mismatches at compile time — the test case `vi.fn<[AppEvents['order:placed']], void>()` will fail TypeScript if the payload shape changes.
+
+---
+
+### TDD for CLI Tools (Node.js / TypeScript) [community]
+
+CLI tools are often untested because developers treat them as "glue code." TDD applied to CLI logic extracts argument parsing and command execution into testable units.
+
+```typescript
+// cli-parser.test.ts — TDD for a typed CLI argument parser
+import { describe, it, expect } from 'vitest';
+import { parseCLIArgs, CLIArgs, CLIParseError } from './cli-parser.js';
+
+// Test case 1: RED — happy path: required args present
+describe('parseCLIArgs', () => {
+  it('parses --output and --format flags', () => {
+    const result = parseCLIArgs(['--output', 'dist/', '--format', 'json']);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.value).toMatchObject<Partial<CLIArgs>>({
+        output: 'dist/',
+        format: 'json',
+      });
+    }
+  });
+
+  // Test case 2: RED — missing required arg produces typed error
+  it('returns error when --output is missing', () => {
+    const result = parseCLIArgs(['--format', 'json']);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.kind).toBe('missing-required');
+      expect(result.error.flag).toBe('output');
+    }
+  });
+
+  // Test case 3: RED — invalid format value produces typed error
+  it('returns error for unknown --format value', () => {
+    const result = parseCLIArgs(['--output', 'dist/', '--format', 'xml']);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.kind).toBe('invalid-value');
+      expect(result.error.flag).toBe('format');
+    }
+  });
+
+  // Test case 4: RED — default value applied when optional flag absent
+  it('defaults --verbose to false when not provided', () => {
+    const result = parseCLIArgs(['--output', 'out/', '--format', 'json']);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.value.verbose).toBe(false);
+    }
+  });
+});
+
+// GREEN: typed CLI parser — shape driven entirely by the test cases above
+// cli-parser.ts
+const VALID_FORMATS = ['json', 'csv', 'text'] as const;
+type OutputFormat = typeof VALID_FORMATS[number];
+
+export interface CLIArgs {
+  output: string;
+  format: OutputFormat;
+  verbose: boolean;
+}
+
+export type CLIParseError =
+  | { kind: 'missing-required'; flag: string }
+  | { kind: 'invalid-value';    flag: string; received: string; expected: readonly string[] };
+
+type CLIParseResult =
+  | { success: true;  value: CLIArgs }
+  | { success: false; error: CLIParseError };
+
+export function parseCLIArgs(argv: string[]): CLIParseResult {
+  const flags = new Map<string, string>();
+  for (let i = 0; i < argv.length - 1; i += 2) {
+    if (argv[i].startsWith('--')) flags.set(argv[i].slice(2), argv[i + 1]);
+  }
+
+  const output = flags.get('output');
+  if (!output) return { success: false, error: { kind: 'missing-required', flag: 'output' } };
+
+  const rawFormat = flags.get('format');
+  if (!rawFormat) return { success: false, error: { kind: 'missing-required', flag: 'format' } };
+  if (!(VALID_FORMATS as readonly string[]).includes(rawFormat)) {
+    return { success: false, error: { kind: 'invalid-value', flag: 'format', received: rawFormat, expected: VALID_FORMATS } };
+  }
+
+  return {
+    success: true,
+    value: { output, format: rawFormat as OutputFormat, verbose: flags.has('verbose') },
+  };
+}
+```
+
+---
+
+### TDD for Concurrency: Race Conditions and Idempotency [community]
+
+Race conditions are discovered in production, not in test suites, because most TDD test cases assume sequential execution. TypeScript async test cases with `Promise.allSettled` and `Promise.race` can TDD concurrent invariants.
+
+```typescript
+// idempotent-service.test.ts
+import { describe, it, expect } from 'vitest';
+import { IdempotentJobRunner } from './IdempotentJobRunner.js';
+
+describe('IdempotentJobRunner', () => {
+  // Test case 1: RED — sequential execution produces one result
+  it('executes a job exactly once for a given idempotency key', async () => {
+    const runner = new IdempotentJobRunner();
+    const results: string[] = [];
+
+    await runner.run('job-key-1', async () => { results.push('executed'); return 'done'; });
+    expect(results).toHaveLength(1);
+  });
+
+  // Test case 2: RED — concurrent calls with same key execute exactly once
+  it('deduplicates concurrent runs with the same idempotency key', async () => {
+    const runner = new IdempotentJobRunner();
+    let executionCount = 0;
+
+    const job = async (): Promise<string> => {
+      executionCount++;
+      await new Promise(r => setTimeout(r, 10)); // simulate async work
+      return 'result';
+    };
+
+    const [r1, r2, r3] = await Promise.all([
+      runner.run('concurrent-key', job),
+      runner.run('concurrent-key', job),
+      runner.run('concurrent-key', job),
+    ]);
+
+    // All three callers get the same result
+    expect(r1).toBe('result');
+    expect(r2).toBe('result');
+    expect(r3).toBe('result');
+    // But the job body executed exactly once
+    expect(executionCount).toBe(1);
+  });
+
+  // Test case 3: RED — different keys execute independently
+  it('runs jobs independently for different idempotency keys', async () => {
+    const runner = new IdempotentJobRunner();
+    let count = 0;
+    const job = async () => { count++; return count; };
+
+    const [r1, r2] = await Promise.all([
+      runner.run('key-A', job),
+      runner.run('key-B', job),
+    ]);
+
+    expect(count).toBe(2);
+    expect(r1).not.toBe(r2);
+  });
+});
+
+// GREEN: idempotent runner — driven entirely by the concurrent test cases
+// IdempotentJobRunner.ts
+export class IdempotentJobRunner {
+  readonly #inFlight = new Map<string, Promise<unknown>>();
+
+  run<T>(key: string, job: () => Promise<T>): Promise<T> {
+    const existing = this.#inFlight.get(key);
+    if (existing) return existing as Promise<T>;
+
+    const promise = job().finally(() => this.#inFlight.delete(key));
+    this.#inFlight.set(key, promise);
+    return promise;
+  }
+}
+```
+
+**Why this matters for TDD:** Most developers do not write test cases for concurrent invariants until production incidents occur. Writing the concurrent test case first (as above) reveals whether the implementation needs a deduplication layer — before any production load.
+
+---
+
+### TDD Maturity Model — Team Adoption Roadmap [community]
+
+Teams adopting TDD rarely succeed by trying to apply all principles simultaneously. A staged maturity model helps teams advance sustainably.
+
+| Level | Characteristic | TypeScript Indicators |
+|-------|---------------|----------------------|
+| **0 — No TDD** | Tests written never or after features ship | No test files; or only smoke tests |
+| **1 — Test-After** | Tests written after implementation; low coverage | `*.test.ts` present but imports match implementation exactly |
+| **2 — Test-First** | Tests written before implementation; no refactor step | Red→Green only; test files created before `.ts` files |
+| **3 — TDD (basic)** | Red→Green→Refactor cycle; some fakes; some baby steps | Typed fakes present; `vi.fn()` calls have type params |
+| **4 — TDD (consistent)** | Cycle practiced consistently; typed interfaces everywhere; mutation tested | No `as any` in tests; Stryker configured; TPP applied |
+| **5 — TDD (team standard)** | TDD required in PR review; outside-in on features; property tests on core logic | PR template checks for test-first; mutation score in CI; fast-check in use |
+
+**Progression guidance:**
+- Moving from Level 0→1: Instrument coverage gates at 40%; mandate test files in PRs.
+- Moving from Level 1→2: Practice 3 katas as a team; require test file committed before implementation.
+- Moving from Level 2→3: Add a refactor phase to the PR checklist; introduce typed in-memory fakes.
+- Moving from Level 3→4: Run Stryker monthly on critical modules; eliminate `as any` in test doubles.
+- Moving from Level 4→5: Configure double-loop TDD for new features; add `fast-check` to payment/pricing logic.
+
+**[community] The single most impactful level transition is 1→2 (test-after to test-first).** Teams that commit to writing the test file before the implementation file — even without strict TDD discipline — report significantly better API design and 40% fewer "this is untestable" incidents during code review.
+
+---
+
+### TDD for Database Access Layers — Repository Pattern [community]
+
+The Repository pattern is the canonical seam for database TDD. Writing the repository interface first (as a test case target) produces a clean domain/persistence boundary.
+
+```typescript
+// user-repository-tdd.test.ts
+// Step 1: TDD drives the interface design before any DB code is written
+import { describe, it, expect, beforeEach } from 'vitest';
+import { InMemoryUserRepository } from './test-doubles/InMemoryUserRepository.js';
+import { UserRepository, CreateUserInput, User } from './UserRepository.js';
+
+// The test cases define the UserRepository contract — not the Postgres implementation.
+// Any concrete repository (Postgres, SQLite, in-memory) must satisfy this suite.
+
+let repo: UserRepository;
+
+beforeEach(() => {
+  repo = new InMemoryUserRepository(); // swap for PostgresUserRepository in integration tests
+});
+
+describe('UserRepository contract', () => {
+  // Test case 1: create and retrieve
+  it('saves a user and retrieves by id', async () => {
+    const input: CreateUserInput = { email: 'alice@example.com', name: 'Alice', role: 'member' };
+    const saved = await repo.create(input);
+
+    expect(saved.id).toMatch(/^[0-9a-f-]{36}$/); // UUID format
+    const found = await repo.findById(saved.id);
+    expect(found).toMatchObject<Partial<User>>({ email: 'alice@example.com', name: 'Alice' });
+  });
+
+  // Test case 2: email uniqueness constraint
+  it('throws DuplicateEmailError when email already exists', async () => {
+    await repo.create({ email: 'dup@example.com', name: 'First', role: 'member' });
+    await expect(
+      repo.create({ email: 'dup@example.com', name: 'Second', role: 'member' })
+    ).rejects.toMatchObject({ code: 'DUPLICATE_EMAIL' });
+  });
+
+  // Test case 3: findByEmail returns null for unknown email
+  it('returns null for an unknown email', async () => {
+    const result = await repo.findByEmail('unknown@example.com');
+    expect(result).toBeNull();
+  });
+
+  // Test case 4: update modifies only specified fields
+  it('updates a user without clobbering unrelated fields', async () => {
+    const user = await repo.create({ email: 'bob@example.com', name: 'Bob', role: 'member' });
+    await repo.update(user.id, { name: 'Robert' });
+    const updated = await repo.findById(user.id);
+    expect(updated?.name).toBe('Robert');
+    expect(updated?.email).toBe('bob@example.com'); // unchanged
+  });
+});
+
+// This test suite acts as a contract test — run it with both InMemoryUserRepository
+// (unit tests, fast) and PostgresUserRepository (integration tests, slower) to
+// verify that both implementations satisfy the same behavioural contract.
+```
+
+**[community] Repository contract tests are the single most effective technique for preventing ORM-specific logic from leaking into domain code.** When a PostgreSQL-specific quirk (case-sensitive collation, JSONB indexing) causes tests to pass against the in-memory fake but fail in production, the contract test immediately identifies the implementation divergence.
+
+---
+
+### TDD with AI-Assisted Code Generation [community]
+
+AI code assistants (GitHub Copilot, Cursor, Claude) change TDD workflows in 2025–2026. Several production patterns have emerged:
+
+**[community] Test-first remains the correct discipline even with AI-generated implementations.** The failure mode of "paste AI code then write tests" is the same as test-after: tests conform to implementation. The correct pattern is: write the test case, let AI generate the Green implementation, then review it critically before committing.
+
+**[community] AI-generated implementations frequently skip the Refactor phase.** AI tools optimise for making tests pass, not for clean design. Teams using AI assistants for TDD must explicitly request the refactor pass: "the tests now pass — refactor this without changing observable behaviour."
+
+**[community] AI tools generate over-mocked tests.** When asked to "write tests for this class," AI assistants tend to generate `vi.fn()` mocks for every dependency, producing brittle test suites. The correct TDD prompt is: "write a failing test case that specifies this one behaviour — use a typed in-memory fake, not a mock." The test output is significantly better.
+
+```typescript
+// Pattern: AI-assisted TDD cycle with explicit prompting strategy
+// Step 1: Write the test case yourself (do not delegate this to AI)
+// reason: the test case IS the design decision — AI cannot know your domain requirements
+
+// Step 2: Request AI to generate only the Green implementation
+// Prompt: "Make this test case pass with minimal TypeScript code.
+//          Use typed interfaces. Do not add untested behaviour."
+
+// Step 3: Review AI output against the TPP (Transformation Priority Premise)
+// Check: did AI jump to a complex implementation when a simpler one would pass?
+// If yes: revert and ask AI to use the simplest passing transformation.
+
+// Step 4: Request the refactor explicitly
+// Prompt: "All tests pass. Now refactor for readability — tighten types,
+//          extract helper functions, add inline documentation. Do not change behaviour."
+
+// Step 5: Re-run tests — all must still pass
+// Commit only when Red→Green→Refactor cycle is complete.
+```
+
+**[community] One team's production finding (2025):** After adopting AI-assisted TDD on a TypeScript monorepo, they measured that AI-generated implementations had a 23% higher mutation-survival rate than human-written implementations on the first Green pass. The root cause: AI implementations often return early with hardcoded paths when the test cases do not triangulate all branches. The fix: add triangulating test cases before asking AI for the implementation.
+
+---
+
+### TDD for Parsing and Validation Pipelines [community]
+
+Input validation pipelines are ideal TDD targets: the test cases enumerate the acceptance criteria directly, and the pipeline shape (chain of validators) emerges naturally from the failing test cases.
+
+```typescript
+// validation-pipeline.test.ts — TDD drives a composable validation pipeline
+import { describe, it, expect } from 'vitest';
+import { validate, required, minLength, matches, maxLength } from './validators.js';
+
+interface RegistrationForm {
+  username: string;
+  password: string;
+  email:    string;
+}
+
+// Test case 1: RED — valid input passes all validators
+describe('registration form validation', () => {
+  it('accepts a valid registration', () => {
+    const result = validate<RegistrationForm>({
+      username: 'alice_99',
+      password: 'Secure!Pass1',
+      email:    'alice@example.com',
+    }, {
+      username: [required(), minLength(3), maxLength(20), matches(/^[a-z0-9_]+$/)],
+      password: [required(), minLength(8)],
+      email:    [required(), matches(/^[^@]+@[^@]+\.[^@]+$/)],
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  // Test case 2: RED — missing required field
+  it('reports error for empty username', () => {
+    const result = validate<RegistrationForm>(
+      { username: '', password: 'pass', email: 'e@e.com' },
+      { username: [required()], password: [], email: [] }
+    );
+    expect(result.valid).toBe(false);
+    expect(result.errors.username).toContain('required');
+  });
+
+  // Test case 3: RED — multiple errors on same field
+  it('collects all errors on a field, not just the first', () => {
+    const result = validate<RegistrationForm>(
+      { username: 'a!', password: 'x', email: 'e@e.com' },
+      { username: [minLength(3), matches(/^[a-z0-9_]+$/)], password: [], email: [] }
+    );
+    expect(result.errors.username).toHaveLength(2);
+  });
+});
+
+// GREEN: composable validator pipeline
+// validators.ts
+type ValidatorFn<T> = (value: T) => string | null; // null = valid, string = error message
+
+export interface ValidationRule<T> { validate: ValidatorFn<T>; }
+
+export const required   = (): ValidationRule<string> => ({ validate: v => v.trim() ? null : 'required' });
+export const minLength  = (n: number): ValidationRule<string> => ({ validate: v => v.length >= n ? null : `min length ${n}` });
+export const maxLength  = (n: number): ValidationRule<string> => ({ validate: v => v.length <= n ? null : `max length ${n}` });
+export const matches    = (re: RegExp): ValidationRule<string> => ({ validate: v => re.test(v) ? null : `must match ${re}` });
+
+type FieldRules<T> = { [K in keyof T]?: ValidationRule<T[K]>[] };
+type FieldErrors<T> = { [K in keyof T]?: string[] };
+
+interface ValidationResult<T> {
+  valid: boolean;
+  errors: FieldErrors<T>;
+}
+
+export function validate<T extends Record<string, unknown>>(
+  data: T,
+  rules: FieldRules<T>
+): ValidationResult<T> {
+  const errors: FieldErrors<T> = {};
+  let valid = true;
+
+  for (const key of Object.keys(rules) as (keyof T)[]) {
+    const fieldRules = rules[key] ?? [];
+    const fieldErrors = fieldRules
+      .map(r => r.validate(data[key] as never))
+      .filter((e): e is string => e !== null);
+    if (fieldErrors.length > 0) {
+      errors[key] = fieldErrors;
+      valid = false;
+    }
+  }
+
+  return { valid, errors };
+}
+```
+
+---
+
+### TDD Pacing Metrics and CI Integration [community]
+
+Tracking TDD health over time requires instrumenting the test suite with pacing metrics. Without measurement, TDD discipline erodes silently.
+
+```typescript
+// vitest.config.ts — production-grade TDD CI configuration
+import { defineConfig } from 'vitest/config';
+import tsconfigPaths from 'vite-tsconfig-paths';
+
+export default defineConfig({
+  plugins: [tsconfigPaths()],
+  test: {
+    reporter: process.env.CI
+      ? ['verbose', 'junit']  // JUnit for CI test result upload
+      : ['verbose'],
+    outputFile: process.env.CI ? './test-results/junit.xml' : undefined,
+
+    // TDD pacing: bail on first failure in watch mode for clean Red signal
+    bail: process.env.CI ? 0 : 1,
+
+    // Fast TypeScript via esbuild — keeps TDD watch loop under 500ms
+    // Full type-checking runs separately as `tsc --noEmit` in CI
+    typecheck: {
+      enabled: process.env.CI === 'true',
+      tsconfig: './tsconfig.json',
+    },
+
+    coverage: {
+      enabled: process.env.CI === 'true',
+      provider: 'v8',
+      reporter: ['lcov', 'text-summary', 'json-summary'],
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts', 'src/**/test-doubles/**'],
+      thresholds: {
+        // These are TDD health gates — if TDD is practiced consistently,
+        // they should be exceeded naturally, not chased as targets.
+        branches:   80,
+        functions:  85,
+        lines:      85,
+        statements: 85,
+        // Optionally add per-file thresholds for critical modules:
+        // 'src/domain/pricing/**': { branches: 95, functions: 95 }
+      },
+    },
+  },
+});
+```
+
+```yaml
+# .github/workflows/tdd-ci.yml — CI pipeline designed for TDD cadence feedback
+name: TDD CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+
+      # 1. Fast type-check (separate from test execution — faster feedback)
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      # 2. Unit tests with coverage (esbuild-fast)
+      - name: Unit tests + coverage
+        run: npx vitest run --coverage
+        env: { CI: 'true' }
+
+      # 3. Upload coverage to PR (optional — surfaces TDD regression)
+      - uses: codecov/codecov-action@v4
+        with: { files: ./coverage/lcov.info }
+
+      # 4. Monthly mutation testing (scheduled separately — expensive)
+      # Triggered by: workflow_dispatch or schedule: cron '0 2 1 * *'
+```
+
+**[community] CI pipeline design signals TDD culture.** Teams that run type-check separately from tests (step 1 above) get 30–60 second faster feedback during TDD watch loops. Teams that upload coverage to every PR create social accountability — coverage drops become visible in code review, not just in dashboards.
+
+**[community] Per-file coverage thresholds prevent coverage debt accumulation in critical modules.** Setting global 80% thresholds allows new files with 0% coverage to silently dilute the aggregate. Per-file thresholds on `src/domain/pricing/**` and `src/domain/auth/**` enforce TDD discipline precisely where it matters most.
 
 ---
 

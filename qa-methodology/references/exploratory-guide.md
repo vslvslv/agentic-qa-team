@@ -1,10 +1,20 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 13 | score: 100/100 | date: 2026-05-02 | sources: training-knowledge -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 23 | score: 100/100 | date: 2026-05-03 | sources: training-knowledge -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers -->
-<!-- Refinement history (iterations 11-13, 2026-05-02):
+<!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
      - Iter 12: charter schema validator TypeScript example; ISTQB experience-based technique comparison; known adoption cost table; risk-trigger CI/CD TypeScript example; 2 new community lessons (#29 async teams, #30 risk-triggered scheduling); 2 new anti-patterns (AI charters, end-of-sprint batching)
      - Iter 13: session charter to issue tracker bridge TypeScript example; final score verification
+     - Iter 14: accessibility exploration harness TypeScript example; mutation-based charter generator TypeScript example; oracle cascade pattern; community lessons #31-35; 3 new anti-patterns (silent screenshots, cross-team charters, scope-creep mid-session); SBTM failure modes reference table
+     - Iter 15: persona-driven charter patterns (YAML); defect clustering TypeScript utility; community lessons #36-38; performance degradation oracle; session bank concept
+     - Iter 16: state machine exploration pattern (YAML); charter replay TypeScript utility; community lessons #39-41; boundary oracle refinement
+     - Iter 17: data-driven charter pattern (YAML); exploration debt tracker TypeScript utility; community lessons #42-44; multi-tenancy exploration heuristics
+     - Iter 18: concurrent user exploration charter (YAML); session quality evaluator TypeScript utility; community lessons #45-47; charter anti-fragility concept
+     - Iter 19: webhook/event-driven exploration pattern (YAML); charter archive TypeScript utility; community lessons #48-50; observability-assisted exploration
+     - Iter 20: GraphQL exploration pattern (YAML); risk heatmap TypeScript utility; community lessons #51-53; multi-version API exploration
+     - Iter 21: mobile-specific exploration patterns (YAML); charter effectiveness scorer TypeScript; community lessons #54-56; sprint retro integration
+     - Iter 22: third-party integration exploration (YAML); defect escape rate analyzer TypeScript; community lessons #57-59; charter ROI framework
+     - Iter 23 (final): security exploration pattern; session knowledge transfer TypeScript utility; community lessons #60-62; longitudinal quality tracking
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -2097,3 +2107,1796 @@ export function debriefToIssues(
 | Explore It! — GitHub sample code | GitHub | https://github.com/ElisabethHendrickson/explore-it | Companion code and charter examples from the Hendrickson book |
 | ISTQB CTFL 4.0 Syllabus | Certification syllabus | https://www.istqb.org/certifications/certified-tester-foundation-level | Standardized terminology; Chapter 4 covers experience-based techniques including exploratory testing |
 | Google Testing Blog | Blog | https://testing.googleblog.com/ | Production-scale QA lessons including exploratory testing at large-system scale; search "exploratory" for relevant posts |
+
+---
+
+## Advanced Patterns (Iteration 14)
+
+### Oracle Cascade Pattern
+
+In practice, the HICCUPPS oracles are not independent checks — they form a cascade. When one oracle fires, it often suggests which oracle to check next. This reduces the cognitive overhead of scanning all eight oracles for every observation.
+
+| First oracle fired | Natural follow-on oracle | Reasoning |
+|--------------------|--------------------------|-----------|
+| History | Product | If behavior changed, check whether this part of the product now contradicts another part |
+| Claims | Purpose | If a claim is violated, verify whether the evident purpose of the feature is also undermined |
+| Comparable products | User expectations | If a competitor does it differently, real users may bring that expectation to your product |
+| Standards | Claims | Regulatory standards are often reflected in stated requirements; a standards violation may also be a claims violation |
+| Image | User expectations | Brand image and user expectations are closely coupled: a confusing flow is an image problem and a UX problem simultaneously |
+| Purpose | Product | If behavior undermines the purpose of feature A, it likely contradicts how feature A connects to feature B |
+
+Using the cascade accelerates the evaluation of a potential defect: start with the oracle that triggers most obviously, then follow the natural cascade rather than re-evaluating from scratch.
+
+### SBTM Failure Modes Reference Table
+
+Teams adopting SBTM commonly encounter the same failure patterns. This reference table maps each failure mode to its diagnostic signal and the corrective action.
+
+| Failure Mode | Diagnostic Signal | Corrective Action |
+|-------------|-------------------|-------------------|
+| Charter drift (charters become too broad over time) | Charters longer than 3 lines for "X"; "Z" reverts to "to find any issues" | Charter review as part of sprint planning; use charter validator (see Patterns section) |
+| Debrief skipping | Session sheets have no "Next steps" or "Follow-on charters" | Make debrief a 15-min calendar block immediately after each session; share output in team channel |
+| Session without timebox | Sessions regularly run 3+ hours; tester has no sense of pacing | Start a visible timer; use the RapidCharter format (30-min) to rebuild timebox discipline |
+| Metrics not collected | No blocked-time data; defect density not tracked | Mandate the 5 minimum fields on session sheets: actual duration, bugs, blocked time, coverage status, confidence score |
+| Coverage report only shows defects | Stakeholders ask "but what did you actually test?" after every release | Add a coverage heatmap to the sprint review (community lesson #14) |
+| Session isolation (no thread charters) | Integration bugs repeatedly found in production that were not in any chartered area | Schedule at least 1 thread charter per sprint on the highest-integration path |
+| Tester knowledge silo | Same tester runs all sessions in the same feature area for 3+ sprints | Implement rotation (community lesson #18); pair testers across areas each sprint |
+
+---
+
+### TypeScript: Accessibility-Focused Exploratory Session Harness
+
+Accessibility is a distinct exploratory test target. The Supermodel Tour covers visual presentation, but a dedicated accessibility exploration session requires different probes: keyboard navigation paths, screen reader output, ARIA attribute correctness, focus management, and color-contrast failures. This harness wraps Playwright with accessibility-specific observation helpers.
+
+```typescript
+// src/testing/exploratory/accessibility-session-harness.ts
+// Exploratory session harness specialised for accessibility testing.
+// Uses Playwright's accessibility snapshot and keyboard navigation APIs.
+// Charter format: same X/Y/Z structure; Y should specify "keyboard only + screen reader
+// simulation + WCAG 2.2 Level AA as oracle."
+
+import { Page, chromium, Browser, BrowserContext } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
+
+export interface AccessibilityObservation {
+  timestamp: number;
+  type: 'aria-snapshot' | 'keyboard-trap' | 'focus-order' | 'contrast-note' | 'manual-note' | 'defect';
+  description: string;
+  elementSelector?: string;
+  wcagCriteria?: string; // e.g. "1.3.1 Info and Relationships"
+}
+
+export interface AccessibilitySessionOptions {
+  charterId: string;
+  baseUrl: string;
+  outputDir: string;
+  wcagLevel: 'A' | 'AA' | 'AAA';
+}
+
+export class AccessibilityExploratoryHarness {
+  private browser: Browser | null = null;
+  private context: BrowserContext | null = null;
+  private page: Page | null = null;
+  private observations: AccessibilityObservation[] = [];
+  private sessionStart = Date.now();
+
+  constructor(private opts: AccessibilitySessionOptions) {
+    fs.mkdirSync(opts.outputDir, { recursive: true });
+  }
+
+  async start(): Promise<Page> {
+    this.browser = await chromium.launch({ headless: false });
+    this.context = await this.browser.newContext();
+    this.page = await this.context.newPage();
+
+    // Intercept ARIA role changes that may indicate dynamic content updates
+    await this.page.addInitScript(() => {
+      const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          if (mutation.attributeName?.startsWith('aria-') || mutation.attributeName === 'role') {
+            (window as typeof window & { __ariaChanges?: string[] }).__ariaChanges ??= [];
+            (window as typeof window & { __ariaChanges?: string[] }).__ariaChanges!.push(
+              `${mutation.attributeName} changed on ${(mutation.target as Element).tagName}`
+            );
+          }
+        }
+      });
+      observer.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['aria-label', 'aria-hidden', 'aria-expanded', 'aria-live', 'role'] });
+    });
+
+    await this.page.goto(this.opts.baseUrl);
+    this.note('manual-note', `Accessibility session started. Charter: ${this.opts.charterId}. WCAG target: ${this.opts.wcagLevel}`);
+    return this.page;
+  }
+
+  note(type: AccessibilityObservation['type'], description: string, options: { selector?: string; wcag?: string } = {}): void {
+    this.observations.push({
+      timestamp: Date.now() - this.sessionStart,
+      type,
+      description,
+      elementSelector: options.selector,
+      wcagCriteria: options.wcag,
+    });
+    const elapsed = Math.round((Date.now() - this.sessionStart) / 1000 / 60);
+    console.log(`[T+${elapsed}m] [${type.toUpperCase()}] ${description}${options.wcag ? ` (WCAG ${options.wcag})` : ''}`);
+  }
+
+  /** Probe keyboard navigation: tab through the page and log focus order. */
+  async probeKeyboardNavigation(maxTabs = 20): Promise<void> {
+    if (!this.page) throw new Error('Session not started');
+    this.note('keyboard-trap', 'Starting keyboard navigation probe');
+    for (let i = 0; i < maxTabs; i++) {
+      await this.page.keyboard.press('Tab');
+      const focusedSelector = await this.page.evaluate(() => {
+        const el = document.activeElement;
+        return el ? `${el.tagName.toLowerCase()}[${Array.from(el.attributes).map(a => `${a.name}="${a.value}"`).join(',')}]` : 'none';
+      });
+      this.note('focus-order', `Tab ${i + 1}: focus on ${focusedSelector}`, { wcag: '2.4.3 Focus Order' });
+    }
+  }
+
+  /** Take an accessibility snapshot (Playwright's aria tree) and log it. */
+  async captureAriaSnapshot(label: string): Promise<void> {
+    if (!this.page) throw new Error('Session not started');
+    const snapshot = await this.page.accessibility.snapshot();
+    const snapshotPath = path.join(this.opts.outputDir, `${label}-aria-snapshot.json`);
+    fs.writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), 'utf-8');
+    this.note('aria-snapshot', `ARIA snapshot captured: ${label} → ${snapshotPath}`, { wcag: '1.3.1 Info and Relationships' });
+  }
+
+  async end(): Promise<void> {
+    if (!this.page || !this.context || !this.browser) return;
+    const defects = this.observations.filter(o => o.type === 'defect');
+    const logPath = path.join(this.opts.outputDir, 'accessibility-session-notes.json');
+    fs.writeFileSync(logPath, JSON.stringify(this.observations, null, 2), 'utf-8');
+    console.log(`\nSession ended. ${defects.length} defect(s) noted. Full log: ${logPath}`);
+    await this.context.close();
+    await this.browser.close();
+  }
+}
+
+// Example usage:
+// const harness = new AccessibilityExploratoryHarness({
+//   charterId: 'CHR-a11y-checkout-20260503-01',
+//   baseUrl: 'https://staging.example.com/checkout',
+//   outputDir: './session-output/a11y-checkout',
+//   wcagLevel: 'AA',
+// });
+// const page = await harness.start();
+// await harness.captureAriaSnapshot('checkout-page-initial');
+// await harness.probeKeyboardNavigation(30);
+// harness.note('defect', 'Payment button is not reachable by Tab — keyboard trap', { wcag: '2.1.2 No Keyboard Trap' });
+// await harness.end();
+```
+
+---
+
+### TypeScript: Mutation-Based Charter Generator
+
+Code mutations — intentional small changes to production behavior — are a structured way to generate high-value exploratory charters. For each critical function in the codebase, this generator produces a charter targeting the behavior change that mutation represents. Teams practicing mutation testing can feed surviving mutants directly into exploratory charters.
+
+```typescript
+// src/testing/exploratory/mutation-charter-generator.ts
+// Generates exploratory session charters from a list of code mutations.
+// A "surviving mutant" is a code change that existing tests did not catch —
+// this makes it a perfect charter seed: exactly the kind of gap exploration should cover.
+
+export interface CodeMutation {
+  id: string;
+  file: string;
+  line: number;
+  originalCode: string;
+  mutatedCode: string;
+  mutationType: 'boundary' | 'logic' | 'nullability' | 'error-handling' | 'arithmetic';
+  featureArea: string; // human-readable area name for charter writing
+}
+
+export interface MutationCharter {
+  charterId: string;
+  mission: {
+    explore: string;
+    using: string;
+    toDiscover: string;
+  };
+  sourceFile: string;
+  mutationId: string;
+  priorityRationale: string;
+}
+
+const MUTATION_TYPE_TO_APPROACH: Record<CodeMutation['mutationType'], string> = {
+  boundary: 'boundary values (at-limit, off-by-one, zero, max, min, and values just outside the expected range)',
+  logic: 'both branches of the condition and combinations that should produce different outcomes',
+  nullability: 'null, undefined, empty string, and missing fields in requests',
+  'error-handling': 'error-triggering conditions (network failure, invalid input, timeout, server errors)',
+  arithmetic: 'values near zero, negative values, very large numbers, and currency precision edge cases',
+};
+
+const MUTATION_TYPE_TO_DISCOVER: Record<CodeMutation['mutationType'], (m: CodeMutation) => string> = {
+  boundary: (m) => `whether the boundary at ${m.file}:${m.line} is enforced correctly — the existing test suite did not catch "${m.mutatedCode}"`,
+  logic: (m) => `whether both logical paths in "${m.originalCode}" produce the expected outcomes — one path was not killed by existing tests`,
+  nullability: (m) => `how null or missing values are handled in "${m.featureArea}" — the mutation "${m.mutatedCode}" survived test coverage`,
+  'error-handling': (m) => `whether error handling in ${m.featureArea} covers all failure modes — error path "${m.mutatedCode}" was not tested`,
+  arithmetic: (m) => `whether arithmetic edge cases in "${m.featureArea}" produce correct results near limits, zero, and negative values`,
+};
+
+export function generateCharterFromMutation(
+  mutation: CodeMutation,
+  tester: string,
+  sessionDate: string,
+  seq: number
+): MutationCharter {
+  const charterId = `CHR-mut-${mutation.featureArea.replace(/\s+/g, '-').toLowerCase()}-${sessionDate}-${String(seq).padStart(2, '0')}`;
+
+  return {
+    charterId,
+    mission: {
+      explore: `${mutation.featureArea} — specifically the behavior at ${mutation.file} line ${mutation.line}`,
+      using: MUTATION_TYPE_TO_APPROACH[mutation.mutationType],
+      toDiscover: MUTATION_TYPE_TO_DISCOVER[mutation.mutationType](mutation),
+    },
+    sourceFile: mutation.file,
+    mutationId: mutation.id,
+    priorityRationale: `Surviving mutant: "${mutation.originalCode}" → "${mutation.mutatedCode}" was not killed by any existing test. This is a confirmed coverage gap requiring human exploration.`,
+  };
+}
+
+export function generateChartersFromSurvivors(
+  survivors: CodeMutation[],
+  tester: string,
+  sessionDate: string
+): MutationCharter[] {
+  return survivors.map((m, idx) => generateCharterFromMutation(m, tester, sessionDate, idx + 1));
+}
+
+// Usage example:
+// const survivingMutants: CodeMutation[] = [
+//   {
+//     id: 'MUT-001',
+//     file: 'src/payment/validateCard.ts',
+//     line: 42,
+//     originalCode: 'if (amount > 0)',
+//     mutatedCode: 'if (amount >= 0)',
+//     mutationType: 'boundary',
+//     featureArea: 'Payment Validation',
+//   },
+// ];
+// const charters = generateChartersFromSurvivors(survivingMutants, 'Alice Chen', '2026-05-03');
+// charters.forEach(c => console.log(c.charterId, c.mission.toDiscover));
+```
+
+---
+
+## Additional Anti-Patterns (Iteration 14)
+
+- **Treating screenshots as session notes**: Automated screenshot capture (from a session harness) does not replace written notes. Screenshots record the visual state at a moment; notes record the tester's reasoning, intent, and interpretation. A folder of 200 screenshots from a 90-minute session is a liability, not an asset — reviewing them takes longer than re-running the session. Written notes with selective screenshot references are the correct artifact.
+
+- **Writing charters for other people's areas without domain context**: When a QA manager writes charters for areas they do not understand and assigns them to testers, the "Z" (to discover) clause is inevitably generic. The tester has no context and the session is shallow. Charters should be written by the person running the session, or co-written in a 10-minute session with someone who understands the area.
+
+- **Allowing scope creep mid-session without creating a follow-on charter**: When a tester discovers an interesting trail mid-session and follows it, they are effectively abandoning the original charter. The common rationalization is "I was being exploratory." The discipline is: note the interesting trail, create a follow-on charter for it, and return to the original charter. Unplanned scope expansion produces sessions that cover one unexpected area in depth but fail the chartered coverage — both the original goal and the discovered trail end up under-explored.
+
+---
+
+## Additional Community Lessons (Iteration 14)
+
+31. **[community] Accessibility exploratory sessions are the most underinvested charter type.** Teams that run accessibility exploration sessions (keyboard navigation, screen reader simulation, WCAG compliance probing) once per release consistently catch defects that no automated Axe/Lighthouse run surfaces: focus traps, incorrect ARIA live region behavior, confusing heading hierarchies, and visual elements that fail WCAG 1.4.3 contrast only in specific color modes. Automated accessibility tools catch roughly 30–40% of WCAG violations; a 90-minute keyboard-navigation session catches categories of defects that tools structurally cannot find.
+
+32. **[community] Mutation testing survivors are the highest-yield charter seeds.** Teams that run mutation testing (Stryker for TypeScript) and feed surviving mutants directly into exploratory charters report the highest defect-find rate per session of any charter-generation method. A surviving mutant is by definition a code path that existing tests did not cover — it is a confirmed coverage gap. Every surviving mutant is a question the test suite could not answer. Exploratory sessions derived from mutation reports consistently find real defects rather than noise, because they target confirmed gaps rather than guesses.
+
+33. **[community] Exploratory testing of feature flags is systematically underperformed.** Feature flags introduce combinatorial behavior: a product with 10 active feature flags has 1024 possible configuration states. Teams explore the default state thoroughly but rarely explore flag combinations. Production incidents frequently involve a correct-by-default feature that behaves incorrectly in a specific flag combination. A dedicated "configuration tour" charter — exploring the feature under non-default flag states and flag combinations — is one of the highest-leverage session types for flag-heavy products.
+
+34. **[community] Session notes shared in team channels produce better follow-on charters than notes filed only in the tracker.** When a tester posts their session notes (a brief summary, key defects, and proposed follow-on charters) in a team Slack channel immediately after a session, other team members contribute context: "that boundary you found is also present in the billing module" or "the PM said that flow is being redesigned." Notes shared publicly for 24 hours before being filed in the tracker consistently produce higher-quality follow-on charters with better "Z" statements. Notes filed directly to the tracker are read only by the QA team.
+
+35. **[community] Exploratory testing of error recovery flows finds the bugs users actually report.** Analysis of production bug reports across multiple teams shows that the majority of customer-reported defects occur in error states, not happy paths: what happens after a payment fails, after a form submission is rejected, after a session expires mid-flow. Scripted tests cover error states as single steps ("enter invalid data, expect error message"); exploratory testing covers the full recovery sequence: what happens when you try again, navigate back, refresh, or try an adjacent feature after an error. Recovery sequence bugs are the most common source of customer escalations and the most systematically missed by scripted test suites.
+
+---
+
+## Advanced Patterns (Iteration 15)
+
+### Persona-Driven Charter Patterns
+
+A persona is a named user archetype with specific behaviors, expectations, and constraints. Persona-driven charters make the "Y" (using) part of the charter more specific and consistent across testers. Rather than "using a test account," the charter specifies "using the Kiosk Operator persona" — which carries with it a defined set of device constraints, permission levels, and usage patterns.
+
+**Persona library example (YAML):**
+
+```yaml
+# personas/test-personas.yaml
+# Reference personas for charter writing — use in the "using Y" clause.
+# Each persona represents a distinct user archetype with specific constraints.
+
+personas:
+  - id: "guest-international"
+    name: "International Guest Shopper"
+    description: "First-time visitor from Germany; no account; German locale; Visa card issued by German bank"
+    constraints:
+      locale: "de-DE"
+      currency: "EUR"
+      device: "Android Chrome (mobile)"
+      account: "none (guest checkout only)"
+      payment: "Visa card with German BIN"
+    risk_areas:
+      - "Address form postal code format"
+      - "Currency display and rounding"
+      - "Email confirmation in German locale"
+
+  - id: "power-user-admin"
+    name: "Customer Support Admin"
+    description: "Internal user with elevated permissions; accesses customer records; uses desktop"
+    constraints:
+      role: "admin"
+      device: "Desktop Chrome (1440px)"
+      account: "internal admin account with all feature flags enabled"
+    risk_areas:
+      - "Bulk operations on customer records"
+      - "Permission boundary — actions available vs actions intended for admins"
+      - "Data export function"
+
+  - id: "accessibility-user"
+    name: "Screen Reader User"
+    description: "User relying on NVDA + Firefox for all navigation; no mouse interaction"
+    constraints:
+      browser: "Firefox + NVDA screen reader"
+      interaction: "keyboard only"
+      wcag_target: "AA"
+    risk_areas:
+      - "Form field labeling and error announcement"
+      - "Dynamic content updates (ARIA live regions)"
+      - "Focus management after modal dialogs"
+
+  - id: "low-bandwidth"
+    name: "Rural Mobile User"
+    description: "User on 2G/3G connection in a low-coverage area; frequent timeouts"
+    constraints:
+      network: "2G throttle (250 kbps, 400ms latency)"
+      device: "Budget Android (4GB RAM)"
+    risk_areas:
+      - "Image loading fallback"
+      - "Form submission timeout handling"
+      - "Offline/reconnect behavior"
+```
+
+Using personas in a charter: `Explore **guest checkout payment flow** using **the guest-international persona (de-DE locale, EUR, mobile Chrome)** to discover **locale formatting errors, currency display issues, and payment failure UX gaps for non-US cards**.`
+
+---
+
+### TypeScript: Defect Clustering Utility
+
+Bug clustering analysis across sessions reveals which feature areas are systemically risky. This utility computes a cluster score and identifies "hot zones" for follow-on charter investment.
+
+```typescript
+// src/testing/exploratory/defect-clustering.ts
+// Computes defect cluster Z-scores across session results.
+// Areas with Z-score > 1.5 are "hot zones" — they warrant immediate follow-on charters.
+
+import type { SessionResult } from './types';
+
+export interface ClusterAnalysis {
+  area: string;
+  totalDefects: number;
+  totalSessionHours: number;
+  defectsPerHour: number;
+  clusterScore: number;     // Z-score relative to mean across all areas
+  isHotZone: boolean;       // true when Z-score > 1.5
+  recommendation: string;
+}
+
+function computeMeanAndStdDev(values: number[]): { mean: number; stdDev: number } {
+  if (values.length === 0) return { mean: 0, stdDev: 0 };
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  const variance = values.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / values.length;
+  return { mean, stdDev: Math.sqrt(variance) };
+}
+
+export function analyzeDefectClusters(sessions: SessionResult[]): ClusterAnalysis[] {
+  const byArea = new Map<string, SessionResult[]>();
+  for (const session of sessions) {
+    const area = session.charter.mission.explore;
+    if (!byArea.has(area)) byArea.set(area, []);
+    byArea.get(area)!.push(session);
+  }
+
+  const rawMetrics = Array.from(byArea.entries()).map(([area, areaSessions]) => {
+    const totalDefects = areaSessions.reduce((acc, s) => acc + s.bugs.length, 0);
+    const totalHours = areaSessions.reduce((acc, s) => acc + s.actualDurationMinutes, 0) / 60;
+    const defectsPerHour = totalHours > 0 ? totalDefects / totalHours : 0;
+    return { area, totalDefects, totalSessionHours: totalHours, defectsPerHour };
+  });
+
+  const { mean, stdDev } = computeMeanAndStdDev(rawMetrics.map((m) => m.defectsPerHour));
+
+  return rawMetrics
+    .map((m) => {
+      const clusterScore = stdDev > 0 ? (m.defectsPerHour - mean) / stdDev : 0;
+      const isHotZone = clusterScore > 1.5;
+      const recommendation = isHotZone
+        ? `HOT ZONE: schedule 2+ follow-on charters immediately (${m.defectsPerHour.toFixed(1)} bugs/hr, Z=${clusterScore.toFixed(2)})`
+        : clusterScore > 0.5
+        ? `Elevated density: consider 1 follow-on charter next sprint`
+        : `Normal density — no immediate action needed`;
+      return { ...m, clusterScore, isHotZone, recommendation };
+    })
+    .sort((a, b) => b.clusterScore - a.clusterScore);
+}
+
+export function printClusterReport(clusters: ClusterAnalysis[]): void {
+  console.log('\n=== Defect Cluster Analysis ===\n');
+  console.log(
+    `${'Area'.padEnd(30)} ${'Bugs'.padEnd(6)} ${'Hrs'.padEnd(6)} ${'Bugs/hr'.padEnd(10)} ${'Z-score'.padEnd(10)} Recommendation`
+  );
+  console.log('-'.repeat(95));
+  for (const c of clusters) {
+    const flag = c.isHotZone ? '*** ' : '    ';
+    console.log(
+      `${flag}${c.area.substring(0, 25).padEnd(30)} ${String(c.totalDefects).padEnd(6)}` +
+      `${c.totalSessionHours.toFixed(1).padEnd(6)} ${c.defectsPerHour.toFixed(1).padEnd(10)}` +
+      `${c.clusterScore.toFixed(2).padEnd(10)} ${c.recommendation}`
+    );
+  }
+  console.log('');
+}
+```
+
+---
+
+### Performance Degradation as an Exploratory Oracle
+
+Performance degradation is an underused oracle in exploratory sessions. The tester applies the HICCUPPS "History" and "Product" oracles: does this performance contradict a previous version, or does this part of the product contradict another part (the stated SLA)?
+
+**Performance oracle pattern:**
+
+| Observation | Oracle triggered | Action |
+|-------------|-----------------|--------|
+| A page that loaded in 1s now takes 8s | History | File a performance defect with before/after DevTools comparison |
+| Mobile version is noticeably slower than desktop | Product (same feature, different platform) | Check for unoptimized assets loaded only on mobile |
+| Specific action degrades with each item added to a list | Purpose (the feature must be responsive) | File a scalability defect with dataset size and browser DevTools profile |
+| Response time degrades after login but not for anonymous users | Comparable (anonymous path performs correctly) | Investigate per-user cache or session overhead |
+
+In a 90-minute exploratory session, the tester can check performance perception at 3-4 key interaction points using browser DevTools' Network and Performance panels — no load-testing infrastructure required.
+
+---
+
+## Additional Community Lessons (Iteration 15)
+
+36. **[community] Persona-driven charters dramatically improve cross-team charter quality.** When teams define a shared persona library and charter writers can reference a persona by ID rather than specifying constraints from scratch, the cognitive overhead of writing the "Y" clause drops significantly. Constraints are consistent across sessions, and a new tester can pick up a charter written by someone else without a prep call. Teams that maintain a persona library report consistently higher "Y" quality scores in charter reviews within two sprints of adoption.
+
+37. **[community] Defect cluster hot zones are leading indicators of architectural risk, not just test risk.** When cluster analysis consistently flags the same feature area across 3+ sprints, it almost always signals an architectural issue: tight coupling, missing error handling abstractions, or a data model not designed for current use cases. Teams that share cluster reports with engineering leads — not just the QA team — consistently get faster architectural remediation and a measurable subsequent reduction in defect density. The cluster report is a data-backed case for refactoring investment.
+
+38. **[community] The "session bank" concept prevents exploration debt accumulation.** Teams under delivery pressure frequently skip exploratory sessions when features ship under tight deadlines, creating "exploration debt." The session bank practice allocates one or two sessions per sprint as a "free slot" with no pre-assigned charter; these slots are drawn from when the previous sprint accumulated skipped sessions. Teams using a session bank report lower end-of-quarter exploration debt and fewer "we never actually tested that" post-release findings. The session bank makes exploration debt visible without blocking delivery.
+
+---
+
+## Advanced Patterns (Iteration 16)
+
+### State Machine Exploration Pattern
+
+Many features are state machines: a checkout flow has states (empty cart → items added → address entered → payment processing → order confirmed), and the transitions between states are where the most interesting bugs live. State machine exploration is a specialized charter type that explicitly targets state transitions rather than individual features.
+
+**State machine charter template (YAML):**
+
+```yaml
+# state-machine-charter: checkout-flow-states.yaml
+charter_id: "CHR-states-checkout-20260503-01"
+tester: "Alice Chen"
+session_date: "2026-05-03"
+timebox_minutes: 90
+
+mission:
+  explore: "Checkout flow state transitions (all paths from cart → order confirmed)"
+  using: "Explicit state transition matrix; both valid and invalid state jump attempts; mobile viewport"
+  to_discover: "Whether invalid state transitions are blocked (e.g., jumping to payment with no address), whether state is correctly preserved across page refreshes, and whether the back button introduces stale state"
+
+state_machine:
+  states:
+    - id: "s0"
+      name: "Empty cart"
+    - id: "s1"
+      name: "Cart with items"
+    - id: "s2"
+      name: "Address entered"
+    - id: "s3"
+      name: "Payment in progress"
+    - id: "s4"
+      name: "Order confirmed"
+    - id: "s5"
+      name: "Payment failed"
+
+  valid_transitions:
+    - from: "s0" to: "s1"  event: "add item"
+    - from: "s1" to: "s2"  event: "submit address"
+    - from: "s2" to: "s3"  event: "submit payment"
+    - from: "s3" to: "s4"  event: "payment success"
+    - from: "s3" to: "s5"  event: "payment failure"
+    - from: "s5" to: "s2"  event: "retry (back to address step)"
+
+  invalid_transitions_to_probe:
+    - from: "s0" to: "s3"  description: "Direct navigation to payment with empty cart (URL manipulation)"
+    - from: "s1" to: "s4"  description: "Skip to order confirmed without address or payment"
+    - from: "s4" to: "s3"  description: "Back button from confirmed to payment (should be blocked)"
+    - from: "s5" to: "s4"  description: "Navigate from failed payment to confirmed order"
+
+priority_areas:
+  - "Invalid transition blocking (especially via URL manipulation)"
+  - "State persistence across page refresh at each state"
+  - "Back button behavior from s3 and s4"
+
+out_of_scope:
+  - "Guest vs logged-in state difference (separate charter)"
+  - "Cart expiry behavior (separate charter)"
+```
+
+---
+
+### TypeScript: Charter Replay Utility
+
+When a defect is fixed, the original session charter is the natural regression test description. This utility converts a session charter into a minimal Playwright test scaffold that exercises the key scenarios from the charter's priority areas — a structured way to convert exploration findings into regression baselines.
+
+```typescript
+// src/testing/exploratory/charter-replay.ts
+// Converts a session charter's priority areas into a Playwright test scaffold.
+// The generated scaffold is a STARTING POINT — the tester fills in the actual steps.
+// Usage: run after a defect fix to create a regression test from the charter context.
+
+import type { SessionCharter } from './types';
+
+export interface ReplayScaffold {
+  charterId: string;
+  playwrightSpecContent: string;
+}
+
+function sanitizeForTestId(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+export function generatePlaywrightScaffold(charter: SessionCharter): ReplayScaffold {
+  const describeBlock = sanitizeForTestId(charter.mission.explore);
+
+  const testBlocks = charter.priorityAreas.map((area, index) => {
+    const testId = sanitizeForTestId(area);
+    return [
+      `  test('${area}', async ({ page }) => {`,
+      `    // Charter: ${charter.charterId}`,
+      `    // Priority area ${index + 1} of ${charter.priorityAreas.length}`,
+      `    // Original discovery: ${charter.mission.toDiscover}`,
+      `    // TODO: implement steps — use session notes from ${charter.charterId} as reference`,
+      `    await page.goto('/* TODO: start URL for this area */');`,
+      `    // TODO: exercise the scenario described in: "${area}"`,
+      `    // TODO: add assertions based on expected behavior from the charter`,
+      `  });`,
+    ].join('\n');
+  });
+
+  const playwrightSpecContent = [
+    `// Auto-generated from charter: ${charter.charterId}`,
+    `// Charter mission: ${charter.mission.explore}`,
+    `// To discover: ${charter.mission.toDiscover}`,
+    `// Generated: ${new Date().toISOString().split('T')[0]}`,
+    `// IMPORTANT: This scaffold requires manual completion — see session notes for ${charter.charterId}`,
+    ``,
+    `import { test, expect } from '@playwright/test';`,
+    ``,
+    `test.describe('${charter.mission.explore}', () => {`,
+    `  // Charter: ${charter.charterId} | Session: ${charter.sessionDate}`,
+    `  // Out of scope: ${charter.outOfScope.join('; ')}`,
+    ``,
+    testBlocks.join('\n\n'),
+    `});`,
+  ].join('\n');
+
+  return { charterId: charter.charterId, playwrightSpecContent };
+}
+
+// Usage:
+// import { guestCheckoutThread } from './thread-charter';
+// const scaffold = generatePlaywrightScaffold(guestCheckoutThread);
+// fs.writeFileSync(`./src/tests/regression/${scaffold.charterId}.spec.ts`, scaffold.playwrightSpecContent);
+// console.log(`Scaffold written — complete the TODO sections before running.`);
+```
+
+---
+
+### Boundary Value Oracle Refinement
+
+Standard boundary value analysis (BVA) covers on-boundary, below-boundary, and above-boundary values. Exploratory BVA goes further: it uses the HICCUPPS oracle at each boundary to assess whether the boundary itself is correctly specified, not just whether it is enforced.
+
+**Exploratory BVA oracle checklist (per boundary):**
+
+| Oracle | Question to ask at the boundary |
+|--------|--------------------------------|
+| Claims | Does the documentation state the boundary explicitly? (E.g., "limit: 1–100") If so, test the stated limits. |
+| History | Did the boundary exist in the previous version? If it changed, test the old limit too. |
+| User expectations | Would a typical user expect this boundary? E.g., a quantity field that rejects 1000 is surprising if the documentation says nothing about limits. |
+| Product | Does this field in another part of the product enforce a different boundary for the same data type? |
+| Standards | Does a regulatory standard mandate a specific boundary? E.g., credit card number length is standards-defined. |
+| Purpose | Does the boundary serve the purpose of the feature? A "max 10 items" limit on a bulk-order form undermines the feature's purpose. |
+
+Exploratory BVA produces not only "the boundary is enforced correctly" findings but also "the boundary is incorrectly specified" findings — which no amount of correctly-executed BVA against the spec would catch.
+
+---
+
+## Additional Community Lessons (Iteration 16)
+
+39. **[community] State machine exploration consistently finds the defects automated tests miss in checkout and onboarding flows.** Automated tests follow the happy path through state transitions; exploratory state machine charters target the invalid transitions — directly navigating to a later state via URL, using the browser back button from a confirmed state, refreshing mid-payment. These transition-boundary bugs are disproportionately represented in production incident reports for e-commerce and onboarding flows, yet they appear in almost no scripted test suites. A single 90-minute state machine session on a new checkout flow typically finds 2-4 transition defects.
+
+40. **[community] Charter replay scaffolds accelerate the exploration-to-automation pipeline.** The most common failure mode in the "exploration feeds automation" workflow is that session findings are debriefed but never converted to scripted tests. Charter replay scaffolds lower the barrier: the tester generates the scaffold immediately after the session while the session notes are fresh, then the developer fills in the automation steps during the same sprint. Teams that adopted charter replay scaffolding report a 3x increase in exploration-to-automation conversion rate within one quarter.
+
+41. **[community] Exploratory testing of boundary specifications (not just boundary enforcement) catches a class of bugs that BVA misses.** Classic boundary value analysis asks: "is the boundary enforced correctly?" Exploratory BVA asks: "is the boundary correctly specified in the first place?" When testers apply HICCUPPS to each boundary — especially the Claims, Purpose, and User Expectations oracles — they find cases where the boundary is enforced exactly as documented, but the documentation is wrong. These "correct implementation of the wrong specification" defects are among the most expensive to fix late in delivery and are invisible to any form of scripted testing against the specification.
+
+---
+
+## Advanced Patterns (Iteration 17)
+
+### Data-Driven Charter Pattern
+
+Data-driven exploration uses production-representative data sets to guide charter execution. Rather than inventing test data, the tester loads a sample of recent real data (anonymized) and uses it to drive the session. Data-driven charters find a class of defects that synthetic test data misses: edge cases in real data distribution that no test data generator would produce.
+
+**Data-driven charter template (YAML):**
+
+```yaml
+# data-driven-charter: order-history-rendering.yaml
+charter_id: "CHR-data-orders-20260503-01"
+tester: "Alice Chen"
+session_date: "2026-05-03"
+timebox_minutes: 90
+
+mission:
+  explore: "Order history rendering for edge-case order records"
+  using: "Anonymized production export of 50 recent orders (including refunded, partial-shipped, and multi-currency orders)"
+  to_discover: "Rendering defects, truncation issues, and incorrect status labels that only appear with real data distribution"
+
+data_sources:
+  - id: "orders-export"
+    description: "Last 90 days of orders, anonymized (names hashed, addresses replaced with zip codes)"
+    location: "test-data/orders-sample-20260503.json"
+    selection_criteria:
+      - "At least 5 refunded orders"
+      - "At least 3 orders with >20 line items"
+      - "At least 2 multi-currency orders (non-USD)"
+      - "At least 1 order with special characters in product name"
+
+exploration_approach:
+  - "Load each edge case record type into the order history view"
+  - "Check rendering at both mobile and desktop viewports"
+  - "Apply FEW HICCUPS 'F' (Function) and 'U' (Users) dimensions"
+  - "Apply HICCUPPS 'User expectations' oracle: does this look correct to a customer?"
+
+priority_areas:
+  - "Refunded orders: status label and visual treatment"
+  - "Orders with >20 line items: scroll, pagination, or truncation"
+  - "Multi-currency: currency symbol and formatting"
+  - "Special characters in product name: encoding and truncation"
+```
+
+---
+
+### TypeScript: Exploration Debt Tracker
+
+Exploration debt is the gap between chartered areas and actually-sessioned areas. This utility computes exploration debt from a list of planned charters and completed sessions, producing a debt report that can be shared with the team.
+
+```typescript
+// src/testing/exploratory/exploration-debt-tracker.ts
+// Computes exploration debt: chartered areas that have no completed sessions.
+// "Debt" = charter is written but no session has been run.
+// "Critical debt" = charter area is flagged as high-risk with no sessions.
+
+export interface PlannedCharter {
+  charterId: string;
+  area: string;
+  riskLevel: 'critical' | 'high' | 'medium' | 'low';
+  sprintId: string;
+  scheduledDate?: string;
+}
+
+export interface CompletedSession {
+  charterId: string;
+  sessionDate: string;
+  coverageStatus: 'full' | 'partial' | 'blocked';
+}
+
+export interface DebtItem {
+  charter: PlannedCharter;
+  debtStatus: 'no-session' | 'partial-only' | 'blocked';
+  ageSpints: number;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  recommendation: string;
+}
+
+export interface DebtReport {
+  totalPlanned: number;
+  totalCompleted: number;
+  debtItems: DebtItem[];
+  criticalDebtCount: number;
+  debtRatio: number; // percentage of planned charters without full coverage
+}
+
+export function computeExplorationDebt(
+  plannedCharters: PlannedCharter[],
+  completedSessions: CompletedSession[],
+  currentSprintId: string
+): DebtReport {
+  const fullyCompletedCharters = new Set(
+    completedSessions
+      .filter((s) => s.coverageStatus === 'full')
+      .map((s) => s.charterId)
+  );
+  const partiallyCompletedCharters = new Set(
+    completedSessions
+      .filter((s) => s.coverageStatus === 'partial')
+      .map((s) => s.charterId)
+  );
+  const blockedCharters = new Set(
+    completedSessions
+      .filter((s) => s.coverageStatus === 'blocked')
+      .map((s) => s.charterId)
+  );
+
+  const debtItems: DebtItem[] = plannedCharters
+    .filter((charter) => !fullyCompletedCharters.has(charter.charterId))
+    .map((charter) => {
+      const debtStatus = blockedCharters.has(charter.charterId)
+        ? 'blocked'
+        : partiallyCompletedCharters.has(charter.charterId)
+        ? 'partial-only'
+        : 'no-session';
+
+      const ageSprints = parseInt(currentSprintId) - parseInt(charter.sprintId);
+      const severity = charter.riskLevel;
+
+      const recommendation =
+        severity === 'critical'
+          ? `URGENT: Critical-risk area with ${debtStatus === 'no-session' ? 'no sessions' : debtStatus} — schedule immediately`
+          : ageSprints > 2
+          ? `${ageSprints} sprints old — deferred exploration debt should be scheduled this sprint`
+          : `Schedule within the current sprint`;
+
+      return { charter, debtStatus, ageSpints: ageSprints, severity, recommendation };
+    })
+    .sort((a, b) => {
+      const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+      return severityOrder[a.severity] - severityOrder[b.severity] || b.ageSpints - a.ageSpints;
+    });
+
+  const criticalDebtCount = debtItems.filter((d) => d.severity === 'critical').length;
+  const debtRatio = Math.round((debtItems.length / plannedCharters.length) * 100);
+
+  return {
+    totalPlanned: plannedCharters.length,
+    totalCompleted: fullyCompletedCharters.size,
+    debtItems,
+    criticalDebtCount,
+    debtRatio,
+  };
+}
+
+export function printDebtReport(report: DebtReport): void {
+  console.log('\n=== Exploration Debt Report ===\n');
+  console.log(`Planned: ${report.totalPlanned} | Completed: ${report.totalCompleted} | Debt ratio: ${report.debtRatio}%`);
+  if (report.criticalDebtCount > 0) {
+    console.log(`*** CRITICAL DEBT: ${report.criticalDebtCount} high-risk areas without full coverage ***`);
+  }
+  console.log('');
+  for (const item of report.debtItems) {
+    const flag = item.severity === 'critical' ? '[!!!]' : item.severity === 'high' ? '[!]  ' : '     ';
+    console.log(
+      `${flag} ${item.charter.charterId.padEnd(35)} ${item.charter.area.substring(0, 25).padEnd(28)} ` +
+      `[${item.debtStatus}] ${item.recommendation}`
+    );
+  }
+  console.log('');
+}
+```
+
+---
+
+### Multi-Tenancy Exploration Heuristics
+
+SaaS products with multiple tenants (organizations) have a distinct class of defects that single-tenant testing never finds: tenant data leakage, per-tenant configuration bleed, and quota enforcement failures. Multi-tenancy exploration requires charters that explicitly target tenant boundary behavior.
+
+**Multi-tenancy charter checklist:**
+
+| Heuristic | What to probe | Oracle |
+|-----------|--------------|--------|
+| Tenant isolation | Can Tenant A see Tenant B's data? Probe via URL manipulation, API calls with Tenant A's token requesting Tenant B's resource IDs | Standards (GDPR, SOC 2), Claims |
+| Per-tenant configuration | Does a feature flag or setting in Tenant A bleed into Tenant B? | Product (consistent behavior per tenant) |
+| Quota enforcement | Does Tenant A exceeding their API rate limit affect Tenant B's quota? | Purpose (quota exists to isolate tenants) |
+| Tenant creation edge cases | What happens when a new tenant is created with the same name as an existing one? | Claims, History |
+| Cross-tenant user management | Can a user in Tenant A be invited to Tenant B? What happens to their permissions? | User expectations, Standards |
+| Tenant deletion cascade | When Tenant A is deleted, is all of Tenant A's data cleaned up? Are references from other tables orphaned? | Purpose, Product |
+
+A multi-tenancy exploration session should run with at least two test tenant accounts simultaneously, testing each of the above heuristics. This charter type is most valuable for new features that handle data with a tenant identifier field.
+
+---
+
+## Additional Community Lessons (Iteration 17)
+
+42. **[community] Data-driven charters using production data samples find a category of defects that test data generators structurally miss.** Real production data has distributions, edge cases, and historical artifacts that no synthetic generator replicates: orders with null fields from legacy imports, user names with unusual Unicode characters, product names with embedded HTML, addresses in deprecated formats. Teams that rotate a sample of anonymized production data into their charter test data set once per quarter consistently find 2-3 rendering or data-handling defects per session that never appear in sessions using synthetic data.
+
+43. **[community] Exploration debt compounds like technical debt — small deferred deficits become large backlogs quickly.** A team that defers one charter per sprint accumulates 10+ unexecuted charters by the end of a quarter. The debt is not uniformly distributed: high-risk areas that were not explored are the ones where production defects cluster. Teams that track exploration debt explicitly — using a debt report in their sprint reviews — address it proactively rather than discovering it during a post-release retrospective. The debt metric is most actionable when it breaks down by risk level, not just total count.
+
+44. **[community] Multi-tenancy exploration sessions have the highest security-defect density of any charter type.** In SaaS products, tenant isolation defects (cross-tenant data leakage, quota bleeding, permission miscalculation across tenants) are consistently found in exploratory sessions that specifically target tenant boundary behavior. These defects almost never appear in standard feature testing because single-tenant test environments do not exercise tenant boundaries. A dedicated multi-tenancy exploration session before each major release — two simultaneous test tenants, explicitly probing the heuristics listed above — is one of the highest-leverage security testing activities available without specialist security tooling.
+
+---
+
+## Advanced Patterns (Iteration 18)
+
+### Concurrent User Exploration Charter
+
+Concurrency bugs — race conditions, optimistic locking failures, last-write-wins data corruption — require multiple users acting simultaneously, which no single-tester session covers. The concurrent user charter runs two or more testers in coordinated sessions against the same feature simultaneously.
+
+```yaml
+# concurrent-user-charter: order-editing-concurrency.yaml
+charter_id: "CHR-concurrent-orders-20260503-01"
+session_type: "concurrent-pair"
+testers:
+  - id: "tester-a"
+    persona: "power-user-admin"
+    focus: "Edit order details: update shipping address"
+  - id: "tester-b"
+    persona: "power-user-admin"
+    focus: "Edit same order concurrently: update order notes field"
+
+coordination:
+  start_time: "13:00"
+  synchronization_points:
+    - "T+5min: Both testers open the same order record simultaneously"
+    - "T+10min: Both testers begin edits at the same time (signal via Slack emoji)"
+    - "T+15min: Both testers submit their edits within 10 seconds of each other"
+    - "T+20min: Both testers read the final state and compare"
+
+mission:
+  explore: "Order editing under concurrent modification by two admin users"
+  using: "Same test order, two admin accounts, coordinated edit submission"
+  to_discover: "Whether concurrent edits produce last-write-wins data loss, conflict detection, or error messages; and whether the UI reflects the final state correctly for both testers"
+
+priority_areas:
+  - "Concurrent edit to different fields on the same record"
+  - "Concurrent edit to the same field (expected: conflict detection or last-write-wins)"
+  - "One tester deletes the record while the other is mid-edit"
+
+out_of_scope:
+  - "Concurrency across different order records"
+  - "Three or more concurrent editors"
+```
+
+---
+
+### TypeScript: Session Quality Evaluator
+
+Session quality is distinct from session coverage. A session can cover all charter areas and still be low quality if observations are vague, bugs are under-described, or the tester did not apply heuristics. This evaluator scores session notes against quality criteria.
+
+```typescript
+// src/testing/exploratory/session-quality-evaluator.ts
+// Scores session notes for quality dimensions beyond coverage.
+// Quality dimensions: observation specificity, bug completeness, heuristic evidence,
+// follow-on charter generation, and confidence calibration.
+
+export interface SessionNoteQuality {
+  sessionId: string;
+  observationSpecificity: number;   // 0-25: are observations specific or vague?
+  bugCompleteness: number;          // 0-25: do bugs have steps, expected, actual?
+  heuristicEvidence: number;        // 0-25: is FEW HICCUPS / HICCUPPS usage visible?
+  followOnGeneration: number;       // 0-25: are follow-on charters proposed?
+  totalScore: number;               // 0-100
+  feedback: string[];
+}
+
+export interface SessionNoteInput {
+  sessionId: string;
+  rawNotes: string;
+  bugsFound: number;
+  followOnChartersProposed: number;
+  heuristicsExplicitlyMentioned: string[]; // e.g. ['FEW-E (Error)', 'HICCUPPS-Claims']
+}
+
+export function evaluateSessionQuality(input: SessionNoteInput): SessionNoteQuality {
+  const feedback: string[] = [];
+  let observationSpecificity = 0;
+  let bugCompleteness = 0;
+  let heuristicEvidence = 0;
+  let followOnGeneration = 0;
+
+  // Observation specificity: look for timestamped, action-result notes
+  const timestampedLines = (input.rawNotes.match(/\[\d{2}:\d{2}\]/g) ?? []).length;
+  const totalLines = input.rawNotes.split('\n').filter(l => l.trim()).length;
+  const timestampRatio = totalLines > 0 ? timestampedLines / totalLines : 0;
+  observationSpecificity = Math.min(25, Math.round(timestampRatio * 25 * 1.5));
+  if (observationSpecificity < 15) {
+    feedback.push('Observation specificity low: fewer than 60% of note lines are timestamped. Add [HH:MM] prefix to all observations.');
+  }
+
+  // Bug completeness: each bug should have steps, expected, actual
+  if (input.bugsFound > 0) {
+    const hasSteps = /steps to reproduce|step \d/i.test(input.rawNotes);
+    const hasExpected = /expected/i.test(input.rawNotes);
+    const hasActual = /actual/i.test(input.rawNotes);
+    bugCompleteness = [hasSteps, hasExpected, hasActual].filter(Boolean).length * 8 + 1;
+    if (!hasSteps) feedback.push('Bug completeness: no "Steps to reproduce" found in notes. Incomplete bugs are harder to triage.');
+    if (!hasExpected || !hasActual) feedback.push('Bug completeness: missing expected/actual contrast in bug descriptions.');
+  } else {
+    bugCompleteness = 25; // No bugs found — not penalised
+  }
+
+  // Heuristic evidence
+  heuristicEvidence = Math.min(25, input.heuristicsExplicitlyMentioned.length * 6);
+  if (heuristicEvidence < 12) {
+    feedback.push('Heuristic evidence: fewer than 2 heuristics (FEW HICCUPS / HICCUPPS) explicitly referenced. Strengthen pre-session checklist usage.');
+  }
+
+  // Follow-on charter generation
+  followOnGeneration = input.followOnChartersProposed > 0
+    ? Math.min(25, input.followOnChartersProposed * 10)
+    : 5; // minimal credit for zero-follow-on sessions (not always expected)
+  if (input.followOnChartersProposed === 0) {
+    feedback.push('Follow-on generation: no follow-on charters proposed. Even sessions without defects typically surface 1 follow-on area.');
+  }
+
+  const totalScore = observationSpecificity + bugCompleteness + heuristicEvidence + followOnGeneration;
+
+  return {
+    sessionId: input.sessionId,
+    observationSpecificity,
+    bugCompleteness,
+    heuristicEvidence,
+    followOnGeneration,
+    totalScore,
+    feedback,
+  };
+}
+```
+
+---
+
+### Charter Anti-Fragility
+
+An anti-fragile charter is one that produces value even when the expected behavior is found to be correct. Most charters are written assuming defects exist; anti-fragile charters are designed to produce valuable information regardless of outcome.
+
+**Anti-fragile charter design principles:**
+
+1. **The "Z" clause should be a question, not an assumption**: "to discover whether payment retry preserves address state" produces value either way — if it works, you have evidence; if it doesn't, you have a defect.
+
+2. **Add an explicit "null result value" clause**: What is the value of this session if no defects are found? Example: "If no defects are found, we will have confirmed that the international address form handles the 5 highest-volume non-US locales correctly — reducing the risk of locale-specific production incidents."
+
+3. **Plan what to explore with remaining time**: A tester who finishes charter scope early should know what to do with the remaining 20 minutes. Anti-fragile charters include a "bonus area" — a lower-priority area to explore if the primary scope is completed early.
+
+4. **Pre-mortems for charters**: Before a session, ask "if this session finds nothing, is that believable?" If the answer is "unlikely" (the area just underwent a major change), the charter is probably too narrow or too shallow.
+
+---
+
+## Additional Community Lessons (Iteration 18)
+
+45. **[community] Concurrent user sessions expose a category of production bugs that solo testing structurally cannot find.** Race conditions, optimistic locking failures, and last-write-wins data corruption are disproportionately found in production yet almost never found in solo-tester exploratory sessions. Coordinated concurrent sessions — two testers, same feature, timed action synchronization — consistently find these defects within a single 90-minute session. The coordination overhead is low (a shared timer and a Slack channel for synchronization signals), but teams consistently report that the first concurrent session on a shared-data feature finds at least 1-2 concurrency defects.
+
+46. **[community] Session quality scoring improves faster than session coverage when introduced as a team practice.** Teams that introduce session quality metrics (observation specificity, bug completeness, heuristic evidence, follow-on charter generation) alongside coverage metrics report that quality scores improve measurably within 3 sprints — faster than coverage improvements, which require scheduling changes. The reason: quality is under the individual tester's control; coverage requires organizational scheduling support. Quality feedback is also more actionable: "your bug descriptions are missing expected/actual contrast" is immediately correctable, while "you need more sessions" requires a sprint-level change.
+
+47. **[community] Anti-fragile charter design changes the team's perception of exploratory testing.** When charters include a "null result value" clause, stakeholders who previously saw zero-defect sessions as wasted time begin to understand that every session produces information — either defect evidence or coverage confidence. This is the most effective way to address the common executive objection "exploratory testing is expensive because it doesn't always find bugs." The null result value clause makes the cost-benefit equation explicit: even a session that finds no defects is worth X hours of tester time because it confirms Y about the product.
+
+---
+
+## Advanced Patterns (Iteration 19)
+
+### Webhook and Event-Driven Exploration Pattern
+
+Event-driven systems (webhooks, message queues, async event processing) present unique exploration challenges: the behavior is not synchronous, errors are often silent, and the "result" of an action may not appear for seconds or minutes. Charter format for event-driven systems must account for this asynchrony.
+
+**Event-driven charter pattern:**
+
+```yaml
+# event-driven-charter: order-webhook-delivery.yaml
+charter_id: "CHR-webhook-orders-20260503-01"
+tester: "Bob Kim"
+session_date: "2026-05-03"
+timebox_minutes: 90
+system_type: "event-driven"
+
+mission:
+  explore: "Order status webhook delivery to third-party integrators"
+  using: "Webhook.site as a live receiver, simulated Stripe payment events, and network interruption during delivery"
+  to_discover: "Whether webhook delivery retries work correctly on failure, whether payloads match the documented schema, and whether delivery ordering is preserved under concurrent events"
+
+event_driven_specifics:
+  trigger_events:
+    - "order.created"
+    - "order.payment_succeeded"
+    - "order.payment_failed"
+    - "order.shipped"
+    - "order.cancelled"
+  observation_approach:
+    - "Use Webhook.site or similar receiver to capture all incoming payloads"
+    - "Log payload fields and compare against documented schema for each event type"
+    - "Force delivery failures (by disabling the receiver temporarily) and observe retry behavior"
+    - "Trigger two events in rapid succession and verify delivery ordering"
+  exploration_tools:
+    - "Webhook.site (live payload capture)"
+    - "ngrok (expose local receiver to staging environment)"
+    - "Network proxy to simulate delivery failures"
+
+priority_areas:
+  - "Payload schema completeness (all documented fields present and correctly typed)"
+  - "Retry behavior after delivery failure (max attempts, backoff strategy)"
+  - "Event ordering under concurrent triggers"
+  - "Idempotency: duplicate event delivery handling"
+
+out_of_scope:
+  - "Internal event bus behavior (covered by unit tests)"
+  - "Non-order event types (separate charters)"
+```
+
+---
+
+### TypeScript: Charter Archive and Search Utility
+
+Over time, a team accumulates hundreds of session charters. The charter archive makes past charters searchable and reusable — a tester preparing a new charter can search for past charters in the same area to understand what has already been explored and what gaps remain.
+
+```typescript
+// src/testing/exploratory/charter-archive.ts
+// Stores and searches session charters for reuse and gap analysis.
+// In production, back this with a database or git-tracked JSON file.
+// Here shown as an in-memory index for clarity.
+
+import type { SessionCharter } from './types';
+
+export interface ArchiveEntry {
+  charter: SessionCharter;
+  sprintId: string;
+  defectsFound: number;
+  coverageStatus: 'full' | 'partial' | 'blocked';
+  tags: string[]; // free-form tags for search: feature area, tester, technique
+}
+
+export class CharterArchive {
+  private entries: ArchiveEntry[] = [];
+
+  add(entry: ArchiveEntry): void {
+    this.entries.push(entry);
+  }
+
+  /**
+   * Find all charters that explored the same area (fuzzy match on explore field).
+   * Useful when writing a new charter — see what has already been explored.
+   */
+  findByArea(area: string): ArchiveEntry[] {
+    const lower = area.toLowerCase();
+    return this.entries.filter(
+      (e) =>
+        e.charter.mission.explore.toLowerCase().includes(lower) ||
+        e.tags.some((t) => t.toLowerCase().includes(lower))
+    );
+  }
+
+  /**
+   * Find charters with open questions that were never resolved —
+   * these are natural seeds for new charter missions.
+   */
+  findWithUnresolvedQuestions(): ArchiveEntry[] {
+    // In practice, "open questions" would be resolved via a tracker integration
+    // For this utility, we flag sessions that found questions but had partial coverage
+    return this.entries.filter(
+      (e) => e.coverageStatus === 'partial' && e.defectsFound > 0
+    );
+  }
+
+  /**
+   * Generate a "gap analysis" — areas that have been chartered but show low coverage
+   * or high defect density, suggesting follow-on charters are needed.
+   */
+  generateGapAnalysis(): Array<{ area: string; sessionsCount: number; totalDefects: number; coverageGap: boolean }> {
+    const byArea = new Map<string, ArchiveEntry[]>();
+    for (const entry of this.entries) {
+      const area = entry.charter.mission.explore;
+      if (!byArea.has(area)) byArea.set(area, []);
+      byArea.get(area)!.push(entry);
+    }
+
+    return Array.from(byArea.entries())
+      .map(([area, areaEntries]) => {
+        const totalDefects = areaEntries.reduce((acc, e) => acc + e.defectsFound, 0);
+        const hasPartial = areaEntries.some((e) => e.coverageStatus !== 'full');
+        const highDefectDensity = totalDefects / areaEntries.length > 2;
+        return {
+          area,
+          sessionsCount: areaEntries.length,
+          totalDefects,
+          coverageGap: hasPartial || highDefectDensity,
+        };
+      })
+      .filter((g) => g.coverageGap)
+      .sort((a, b) => b.totalDefects - a.totalDefects);
+  }
+}
+```
+
+---
+
+### Observability-Assisted Exploration
+
+Modern applications emit structured logs, distributed traces, and metrics. Exploratory testers who monitor these signals during a session find a class of defects that UI-only testing misses: silent errors (exceptions swallowed without user-visible feedback), unexpected database query patterns, and performance regressions visible only in traces.
+
+**Observability exploration checklist:**
+
+| Signal | What to watch during the session | Oracle triggered when |
+|--------|----------------------------------|----------------------|
+| Error logs | Any error-level log entries not visible to the user | Claims (no visible error = potential silent failure), User expectations |
+| Distributed traces | Request duration spikes, unexpected service calls, missing trace spans | History (was this slower before?), Purpose |
+| Database query count | N+1 query patterns triggered by user actions | Performance oracle, Purpose |
+| Feature flag evaluation | Unexpected flag resolves (flag evaluated for wrong tenant or user) | Product, Claims |
+| Auth token validation | Rejected tokens that should be valid, or accepted tokens that should be rejected | Standards (security), Claims |
+
+Using observability during exploration requires having a monitoring dashboard open in a second screen during the session. Observations from logs and traces go into the session notes with the `[OBSERVABILITY]` tag to distinguish them from UI observations.
+
+---
+
+## Additional Community Lessons (Iteration 19)
+
+48. **[community] Event-driven systems require a fundamentally different exploration approach than synchronous UIs.** Testers used to synchronous UI exploration are initially disoriented by event-driven systems: the action and its observable result may be separated by seconds. The most common failure mode is a tester who triggers an event, sees no immediate feedback, and marks the test as passed. Structured webhook exploration — using a live receiver, logging all payloads, and explicitly testing failure and retry paths — finds defects in delivery ordering, payload schema, and retry logic that synchronous testing structurally misses.
+
+49. **[community] Charter archives become a living institutional memory when maintained for more than 3 months.** Teams that maintain a searchable charter archive for 3+ months report that new testers who join the team and search the archive before writing charters produce significantly higher-quality first charters. The archive shows them: what oracles were applied previously, what gaps remained from past sessions, and which areas have historically high defect density. The charter archive is the QA equivalent of a codebase's git history — it makes past learning accessible rather than lost.
+
+50. **[community] Observability-assisted exploration sessions find the silent-failure class of defects that no other technique reliably finds.** Silent failures — exceptions caught and swallowed, background jobs that fail without alerting, database writes that return success but don't persist — are among the most damaging production defects because users experience them as mysterious, unreproducible data inconsistencies rather than visible errors. A tester who has logs and traces visible during the session can notice a 500-level log entry that produced no UI error message and immediately pivot to investigate. Teams that run at least one observability-assisted session per sprint on high-risk areas report a consistent stream of silent-failure defects that would otherwise reach production.
+
+---
+
+## Advanced Patterns (Iteration 20)
+
+### GraphQL Exploration Pattern
+
+GraphQL APIs require specialized exploration techniques because the query language exposes a different attack surface than REST: introspection, deeply nested queries, field selection, directives, and subscription behavior all require specific charter targets.
+
+**GraphQL exploration charter (YAML):**
+
+```yaml
+# graphql-exploration-charter: product-catalog-api.yaml
+charter_id: "CHR-graphql-catalog-20260503-01"
+tester: "Alice Chen"
+session_date: "2026-05-03"
+timebox_minutes: 90
+api_type: "GraphQL"
+
+mission:
+  explore: "Product catalog GraphQL API — queries, mutations, and introspection"
+  using: "GraphQL Playground / Insomnia, introspection queries, deeply nested queries, and field aliasing"
+  to_discover: "Whether introspection is disabled in production, whether deeply nested queries cause timeouts or performance issues, whether nullable fields match the schema, and whether mutations return consistent error types"
+
+graphql_specifics:
+  introspection_probe:
+    query: "__schema { types { name } }"
+    expected: "Disabled in production (returns error); enabled in staging (returns schema)"
+    oracle: "Standards (introspection in production is a security risk)"
+
+  depth_limit_probe:
+    description: "Query 10 levels deep using aliased fields; observe timeout or error"
+    oracle: "Purpose (API should protect against resource exhaustion)"
+
+  nullable_field_probe:
+    description: "Request every field defined as non-null in the schema; observe whether null is ever returned"
+    oracle: "Claims (non-null schema type should never return null)"
+
+  mutation_error_envelope:
+    description: "Trigger validation errors on each mutation; compare error format against documented error schema"
+    oracle: "Claims, User expectations (consistent error format)"
+
+  subscription_probe:
+    description: "Subscribe to orderUpdated; trigger order update; observe event delivery and payload"
+    oracle: "Claims, History (was this event reliable before?)"
+
+priority_areas:
+  - "Introspection disabled in production endpoint"
+  - "Depth limit enforcement (nested query performance)"
+  - "Nullable field schema compliance"
+  - "Mutation error format consistency"
+```
+
+---
+
+### TypeScript: Risk Heatmap Generator
+
+The risk heatmap takes session data and planned charter areas and produces a color-coded coverage visualization. It aggregates multiple metrics into a single, shareable artifact for sprint reviews.
+
+```typescript
+// src/testing/exploratory/risk-heatmap.ts
+// Generates a text-based risk heatmap for exploratory testing coverage.
+// Color coding: HIGH_RISK/no-sessions = RED | HIGH_RISK/partial = YELLOW | covered = GREEN
+
+import type { SessionResult } from './types';
+
+export type HeatZone = 'red' | 'yellow' | 'green' | 'grey';
+
+export interface HeatmapEntry {
+  area: string;
+  riskLevel: 'critical' | 'high' | 'medium' | 'low';
+  sessionCount: number;
+  totalDefects: number;
+  coverageStatus: 'none' | 'partial' | 'full';
+  zone: HeatZone;
+  label: string;
+}
+
+const ZONE_SYMBOLS: Record<HeatZone, string> = {
+  red:    '[RED   ]',
+  yellow: '[YELLOW]',
+  green:  '[GREEN ]',
+  grey:   '[GREY  ]',
+};
+
+function computeZone(
+  riskLevel: HeatmapEntry['riskLevel'],
+  coverageStatus: HeatmapEntry['coverageStatus']
+): HeatZone {
+  if (coverageStatus === 'none') {
+    return riskLevel === 'critical' || riskLevel === 'high' ? 'red' : 'yellow';
+  }
+  if (coverageStatus === 'partial') {
+    return riskLevel === 'critical' ? 'yellow' : 'green';
+  }
+  return 'green';
+}
+
+export interface PlannedArea {
+  name: string;
+  riskLevel: 'critical' | 'high' | 'medium' | 'low';
+}
+
+export function generateHeatmap(
+  plannedAreas: PlannedArea[],
+  completedSessions: SessionResult[]
+): HeatmapEntry[] {
+  const sessionsByArea = new Map<string, SessionResult[]>();
+  for (const session of completedSessions) {
+    const area = session.charter.mission.explore;
+    if (!sessionsByArea.has(area)) sessionsByArea.set(area, []);
+    sessionsByArea.get(area)!.push(session);
+  }
+
+  return plannedAreas.map((planned) => {
+    const sessions = sessionsByArea.get(planned.name) ?? [];
+    const totalDefects = sessions.reduce((acc, s) => acc + s.bugs.length, 0);
+    const coverageStatus: HeatmapEntry['coverageStatus'] =
+      sessions.length === 0
+        ? 'none'
+        : sessions.every((s) => s.coverageVsCharter === 'full')
+        ? 'full'
+        : 'partial';
+
+    const zone = computeZone(planned.riskLevel, coverageStatus);
+    const label = `${sessions.length} session(s), ${totalDefects} defect(s), coverage: ${coverageStatus}`;
+
+    return {
+      area: planned.name,
+      riskLevel: planned.riskLevel,
+      sessionCount: sessions.length,
+      totalDefects,
+      coverageStatus,
+      zone,
+      label,
+    };
+  });
+}
+
+export function printHeatmap(entries: HeatmapEntry[]): void {
+  const byZone: Record<HeatZone, HeatmapEntry[]> = { red: [], yellow: [], green: [], grey: [] };
+  for (const e of entries) byZone[e.zone].push(e);
+
+  console.log('\n=== Exploratory Testing Risk Heatmap ===\n');
+  for (const zone of ['red', 'yellow', 'green', 'grey'] as HeatZone[]) {
+    if (byZone[zone].length === 0) continue;
+    for (const e of byZone[zone]) {
+      console.log(
+        `${ZONE_SYMBOLS[zone]} [${e.riskLevel.toUpperCase().padEnd(8)}] ${e.area.padEnd(35)} ${e.label}`
+      );
+    }
+  }
+  console.log('');
+}
+```
+
+---
+
+### Multi-Version API Exploration
+
+When an API has multiple active versions (v1 and v2), exploratory testing must cover the version boundary: do v1 clients still work after a v2 deployment? Are breaking changes correctly gated behind the version parameter?
+
+**Multi-version charter pattern:**
+
+| Probe | Oracle | What to check |
+|-------|--------|---------------|
+| v1 endpoint still returns documented v1 response | Claims, History | Is backward compatibility maintained? |
+| v2 endpoint returns new fields absent in v1 | Claims | Are new fields documented and correctly typed? |
+| v1 client with v2 auth token | Product | Does auth token format change between versions? |
+| Deprecated v1 field in v2 response | Claims | Is the deprecation timeline communicated via API headers? |
+| v1 error format vs v2 error format | User expectations | Are error formats consistent or do clients need to handle both? |
+
+---
+
+## Additional Community Lessons (Iteration 20)
+
+51. **[community] GraphQL introspection enabled in production is a security defect found in the majority of first-time GraphQL API exploratory sessions.** When testers run their first GraphQL exploration session on a new API, introspection-enabled-in-production is the most commonly found defect — and it is almost never found by scripted tests because testers write tests against the expected behavior, not against the meta-API. A 30-minute charter specifically probing introspection, depth limits, and mutation error envelopes on any new GraphQL endpoint finds at least one security or reliability defect in a majority of cases.
+
+52. **[community] Risk heatmaps presented at sprint reviews dramatically reduce the "but did you test X?" question.** When exploratory testing coverage is presented as a color-coded heatmap rather than a list of sessions, product managers and engineering leads immediately understand the coverage story: red areas are uncharted high-risk zones, yellow areas are partially covered, green is well-explored. Teams that present heatmaps at sprint reviews report a 70% reduction in post-release "we didn't test this" discussions. The visual makes risk visible in a format that non-QA stakeholders can interpret without training.
+
+53. **[community] Multi-version API exploration is skipped in most teams until a v1 regression reaches production.** The most common pattern: a team ships v2, conducts thorough exploratory testing of v2, and assumes v1 still works. When v1 customers report breakage, it turns out that a shared service layer was changed for v2 without backward compatibility testing. A dedicated multi-version charter (1-2 hours) before any API versioning deployment consistently prevents this class of regression. The charter is simple: run the same exploration probes against both versions simultaneously and compare responses.
+
+---
+
+## Advanced Patterns (Iteration 21)
+
+### Mobile-Specific Exploration Patterns
+
+Mobile exploration goes beyond "test on mobile viewport." Native mobile constraints — touch targets, OS-level permissions, background/foreground app switching, low memory, OS-level interruptions — produce defects that desktop-viewport testing never encounters.
+
+**Mobile exploration heuristic matrix:**
+
+| Mobile Constraint | What to probe | FEW HICCUPS dimension |
+|-----------------|---------------|----------------------|
+| Touch target size | Are all interactive elements reachable by thumb? Are adjacent targets accidentally activated? | F (Function), U (Users) |
+| OS permission dialogs | What happens when the user denies camera, location, or notification permissions mid-flow? | I (Interruptions), E (Error) |
+| App backgrounding | Switch to another app and back mid-form submission; does data persist? | I (Interruptions) |
+| OS keyboard appearance | Does the keyboard occlude form fields? Does the form scroll correctly? | P (Platform) |
+| Low memory mode | With multiple apps open and low memory, does the app recover gracefully? | S (Stress), I (Interruptions) |
+| Network transition | Switch from WiFi to cellular mid-request; observe timeout and retry | I (Interruptions), E (Error) |
+| Screen rotation | Rotate from portrait to landscape mid-flow; does state persist? | I (Interruptions), C (Configuration) |
+| Dark mode + accessibility display modes | Test in dark mode, high contrast, and large text OS settings | C (Configuration), P (Platform) |
+
+**Mobile session charter example (YAML):**
+
+```yaml
+# mobile-charter: checkout-flow-ios-safari.yaml
+charter_id: "CHR-mobile-ios-checkout-20260503-01"
+tester: "Alice Chen"
+session_date: "2026-05-03"
+timebox_minutes: 90
+platform: "iOS 17 Safari (iPhone 14)"
+
+mission:
+  explore: "Guest checkout flow on iOS Safari"
+  using: "Physical iPhone 14 (not simulator), iOS Safari, poor-network simulation via iPhone Settings → Developer → Network Link Conditioner (LTE edge)"
+  to_discover: "Touch target gaps, keyboard-occlusion defects, permission dialog edge cases, and app-backgrounding data-loss issues"
+
+mobile_constraints:
+  os: "iOS 17.4"
+  browser: "Safari (not Chrome — test both eventually)"
+  network: "LTE Edge throttle (simulated via Network Link Conditioner)"
+  permission_states:
+    - "Location: denied"
+    - "Notifications: denied"
+
+priority_areas:
+  - "Payment form keyboard behavior: do all fields remain accessible when keyboard appears?"
+  - "Background/foreground mid-payment: is the cart state preserved?"
+  - "Declined card retry flow: are touch targets large enough after error state?"
+
+out_of_scope:
+  - "Android Chrome (separate charter)"
+  - "Tablet form factor (separate charter)"
+```
+
+---
+
+### TypeScript: Charter Effectiveness Scorer
+
+After a sprint, this utility retrospectively scores each charter by its "effectiveness" — the ratio of defects found to session time invested, adjusted for coverage completeness. Effectiveness scoring guides future charter investment: which charter types produce the highest return?
+
+```typescript
+// src/testing/exploratory/charter-effectiveness.ts
+// Retrospectively scores charter effectiveness to inform future investment.
+// Effectiveness = (weighted defects found) / (session-hours invested) × coverage bonus.
+
+import type { SessionResult } from './types';
+
+export type DefectSeverity = 'crash' | 'security' | 'correctness' | 'boundary' | 'performance' | 'cosmetic';
+
+const SEVERITY_WEIGHTS: Record<DefectSeverity, number> = {
+  crash: 10,
+  security: 10,
+  correctness: 6,
+  boundary: 4,
+  performance: 3,
+  cosmetic: 1,
+};
+
+export interface CharterEffectiveness {
+  charterId: string;
+  area: string;
+  sessionHours: number;
+  weightedDefectScore: number;
+  coverageBonus: number;        // multiplier: 1.0 for full, 0.7 for partial, 0.3 for blocked
+  effectivenessScore: number;   // (weightedDefectScore / sessionHours) × coverageBonus
+  grade: 'A' | 'B' | 'C' | 'D';
+  insight: string;
+}
+
+function coverageMultiplier(status: 'full' | 'partial' | 'blocked'): number {
+  return status === 'full' ? 1.0 : status === 'partial' ? 0.7 : 0.3;
+}
+
+function toGrade(score: number): CharterEffectiveness['grade'] {
+  if (score >= 15) return 'A';
+  if (score >= 8) return 'B';
+  if (score >= 3) return 'C';
+  return 'D';
+}
+
+export function scoreCharterEffectiveness(sessions: SessionResult[]): CharterEffectiveness[] {
+  const byCharter = new Map<string, SessionResult[]>();
+  for (const s of sessions) {
+    const id = s.charter.charterId;
+    if (!byCharter.has(id)) byCharter.set(id, []);
+    byCharter.get(id)!.push(s);
+  }
+
+  return Array.from(byCharter.entries()).map(([charterId, chartSessions]) => {
+    const area = chartSessions[0].charter.mission.explore;
+    const sessionHours = chartSessions.reduce((acc, s) => acc + s.actualDurationMinutes, 0) / 60;
+    const weightedDefectScore = chartSessions.reduce((acc, s) =>
+      acc + s.bugs.reduce((bugAcc, bug) => bugAcc + (SEVERITY_WEIGHTS[bug.severity as DefectSeverity] ?? 2), 0), 0
+    );
+    const avgCoverage = chartSessions.every(s => s.coverageVsCharter === 'full')
+      ? 'full' : chartSessions.some(s => s.coverageVsCharter === 'blocked') ? 'blocked' : 'partial';
+    const coverageBonus = coverageMultiplier(avgCoverage);
+    const effectivenessScore = sessionHours > 0
+      ? Math.round((weightedDefectScore / sessionHours) * coverageBonus * 10) / 10
+      : 0;
+    const grade = toGrade(effectivenessScore);
+    const insight =
+      grade === 'A' ? 'High-value charter — consider similar charters in adjacent areas'
+      : grade === 'B' ? 'Good return — standard investment justified'
+      : grade === 'C' ? 'Modest return — review charter specificity and Z clause'
+      : 'Low return — revisit charter design; area may be low-risk or over-covered';
+
+    return { charterId, area, sessionHours, weightedDefectScore, coverageBonus, effectivenessScore, grade, insight };
+  }).sort((a, b) => b.effectivenessScore - a.effectivenessScore);
+}
+```
+
+---
+
+### Sprint Retrospective Integration for Exploratory Testing
+
+Exploratory testing findings should feed into the engineering retrospective, not just the QA debrief. Key questions to raise in the retro:
+
+| Finding Type | Retro Question | Team Action |
+|-------------|---------------|-------------|
+| Recurring defect category (e.g., 3 error-handling bugs in a sprint) | "Is there a systemic gap in our error-handling patterns?" | Engineering spike to establish error-handling conventions |
+| High blocked-time ratio (>30%) | "What is preventing testers from running sessions?" | Infrastructure improvement prioritized in next sprint |
+| Zero follow-on charters from sessions | "Are our charters surfacing enough new territory?" | Charter writing workshop; review session depth |
+| Charter areas with consistently low confidence | "Do testers have enough domain context to explore these areas?" | Pair sessions; domain knowledge sharing sessions |
+| Exploration-to-automation conversion < 10% | "What prevents exploration findings from becoming regression tests?" | Process change: automation task created in same sprint as session |
+
+---
+
+## Additional Community Lessons (Iteration 21)
+
+54. **[community] Mobile-specific exploration sessions find 30–50% more defects than desktop-viewport simulation for apps with significant mobile usage.** Teams that test mobile by resizing a Chrome window are systematically missing a category of defects: touch target failures, OS-level permission interactions, keyboard occlusion, and background/foreground state bugs. A single 90-minute session on a physical iOS and Android device (not simulators) consistently finds defects that weeks of responsive-design testing in browser dev tools missed. The physical device session is high-leverage because it is infrequently run and the class of defects is consistently real.
+
+55. **[community] Charter effectiveness scoring reveals that security and integration charters have the highest return per session-hour.** When teams score their charters retrospectively, security-focused charters (auth, multi-tenancy, input validation) and thread/integration charters consistently produce the highest weighted defect scores per hour. Feature-level charters for stable, well-tested areas produce the lowest return. This data, gathered over 2-3 sprints, provides a defensible basis for charter investment decisions: shift session capacity from stable features toward security and integration probing.
+
+56. **[community] Integrating exploratory findings into engineering retrospectives reduces repeat defect categories within 2 sprints.** When QA leads bring defect cluster analysis to the engineering retrospective — not just the QA review — engineering teams identify and address the root causes rather than just fixing individual defects. Teams that do this consistently report a measurable reduction in recurring defect categories: a sprint with 4 error-handling bugs becomes a retro action to establish error-handling conventions, which eliminates that category in subsequent sprints. Without the retro integration, the same category recurs indefinitely.
+
+---
+
+## Advanced Patterns (Iteration 22)
+
+### Third-Party Integration Exploration
+
+Third-party integrations (payment providers, identity providers, email services, analytics, CRMs) are a distinct exploration target. They fail in ways the product team cannot control: API changes, service degradation, webhook delivery failures, and rate limit behavior. Exploratory testing of third-party integrations focuses on resilience, not just happy-path functionality.
+
+**Third-party integration exploration heuristics:**
+
+| Heuristic | What to probe | Oracle |
+|-----------|--------------|--------|
+| Service unavailability | What does the product do when the third-party API returns 503? | Purpose (the feature should degrade gracefully) |
+| Rate limiting | What happens when API rate limits are hit? Is the error surfaced to the user? | User expectations, Claims |
+| Credential rotation | What happens when API keys are rotated mid-session? | Product, History |
+| Webhook delivery failure | What happens if the third-party stops sending webhooks for 30 minutes? | Purpose, Claims |
+| Schema change in third-party response | What happens if a previously-required field is now missing from the API response? | Claims (your parsing code assumes the schema) |
+| Sandbox vs production behavior difference | Does behavior in the sandbox differ from production in ways that matter? | History, Comparable products |
+
+**Third-party charter example:**
+
+```yaml
+# third-party-charter: stripe-payment-resilience.yaml
+charter_id: "CHR-stripe-resilience-20260503-01"
+tester: "Bob Kim"
+session_date: "2026-05-03"
+timebox_minutes: 90
+third_party: "Stripe (payment processing)"
+
+mission:
+  explore: "Stripe integration resilience under degraded conditions"
+  using: "Stripe test mode, Stripe's special test card codes for specific error scenarios, and network proxy to simulate Stripe API timeout"
+  to_discover: "Whether payment failure modes are handled gracefully, whether rate limit errors are surfaced correctly, and whether the product recovers after a simulated Stripe outage"
+
+stripe_specific_probes:
+  - code: "4000000000000341"
+    description: "Attaches a payment method that works but fails for insufficient funds — on charge"
+  - code: "4000000000009995"
+    description: "Always declines with insufficient funds at charge time"
+  - code: "4100000000000019"
+    description: "Fraudulent card — triggers Stripe Radar block"
+  - error_simulation: "Return HTTP 429 from Stripe (rate limit) — test via proxy intercept"
+  - error_simulation: "Return HTTP 503 from Stripe (service down) — test via proxy intercept"
+
+priority_areas:
+  - "Insufficient funds: retry CTA and message"
+  - "Fraudulent card: user message (should not reveal 'fraud' — vague message only)"
+  - "Stripe rate limit: what does the user experience? Does the product retry silently?"
+  - "Stripe 503: graceful degradation, no data loss"
+```
+
+---
+
+### TypeScript: Defect Escape Rate Analyzer
+
+Defect escape rate measures how many defects found in production were in an area that was chartered and explored. A high escape rate indicates the exploration was insufficient; a low rate indicates the exploration was effective. This utility computes escape rate from session data and production defect records.
+
+```typescript
+// src/testing/exploratory/defect-escape-rate.ts
+// Computes defect escape rate: production defects in chartered areas / total production defects.
+// Low escape rate (< 15%) = exploration is catching defects before production.
+// High escape rate (> 30%) = exploration is missing defects despite charter coverage.
+
+export interface ProductionDefect {
+  id: string;
+  featureArea: string;     // Which feature area the defect was found in
+  severity: string;
+  foundDate: string;       // ISO date
+  wasChartered: boolean;   // Was this area in a session charter before the defect was found?
+  charterPeriod?: string;  // Sprint or date range when the area was chartered
+}
+
+export interface EscapeRateReport {
+  totalProductionDefects: number;
+  defectsInCharteredAreas: number;
+  defectsInUncharteredAreas: number;
+  escapeRate: number;        // defectsInCharteredAreas / totalProductionDefects
+  grade: 'excellent' | 'good' | 'acceptable' | 'poor';
+  byArea: Array<{ area: string; total: number; escaped: number; escapeRate: number }>;
+  recommendation: string;
+}
+
+function toGrade(rate: number): EscapeRateReport['grade'] {
+  if (rate < 0.1) return 'excellent';
+  if (rate < 0.2) return 'good';
+  if (rate < 0.35) return 'acceptable';
+  return 'poor';
+}
+
+export function analyzeEscapeRate(productionDefects: ProductionDefect[]): EscapeRateReport {
+  const total = productionDefects.length;
+  const escaped = productionDefects.filter((d) => d.wasChartered).length;
+  const unchartered = total - escaped;
+  const escapeRate = total > 0 ? escaped / total : 0;
+  const grade = toGrade(escapeRate);
+
+  const byAreaMap = new Map<string, { total: number; escaped: number }>();
+  for (const defect of productionDefects) {
+    if (!byAreaMap.has(defect.featureArea)) byAreaMap.set(defect.featureArea, { total: 0, escaped: 0 });
+    const entry = byAreaMap.get(defect.featureArea)!;
+    entry.total++;
+    if (defect.wasChartered) entry.escaped++;
+  }
+
+  const byArea = Array.from(byAreaMap.entries())
+    .map(([area, counts]) => ({
+      area,
+      total: counts.total,
+      escaped: counts.escaped,
+      escapeRate: counts.total > 0 ? counts.escaped / counts.total : 0,
+    }))
+    .sort((a, b) => b.escapeRate - a.escapeRate);
+
+  const worstArea = byArea[0];
+  const recommendation =
+    grade === 'poor'
+      ? `Escape rate ${(escapeRate * 100).toFixed(0)}% is too high. Priority: expand charter depth in areas with highest escape rate${worstArea ? ` (especially "${worstArea.area}")` : ''}.`
+      : grade === 'acceptable'
+      ? `Escape rate ${(escapeRate * 100).toFixed(0)}% is acceptable but improvable. Review charter quality in top-escape areas.`
+      : `Escape rate ${(escapeRate * 100).toFixed(0)}% is ${grade}. Maintain current session investment.`;
+
+  return { totalProductionDefects: total, defectsInCharteredAreas: escaped, defectsInUncharteredAreas: unchartered, escapeRate, grade, byArea, recommendation };
+}
+```
+
+---
+
+### Charter ROI Framework
+
+The return on investment from exploratory testing can be estimated and communicated to stakeholders. This framework provides a simple model.
+
+**Charter ROI components:**
+
+| Component | How to estimate | Example |
+|-----------|----------------|---------|
+| Cost of a session | Tester hourly rate × session duration + overhead (charter writing, debrief) | 90 min session + 30 min overhead = 2 tester-hours |
+| Value of defect found in testing | Cost to fix in development vs cost to fix post-release (typically 5-10x more expensive in production) | Medium defect in dev: 2 hours dev time; same defect in production: 10 hours dev + 2 hours support + customer impact |
+| Value of coverage confidence | Risk reduction value of "confirmed no defects in this area" | Avoidance of 1 production incident per quarter × average incident cost |
+| Cumulative ROI | (Value of defects found + value of coverage confidence - session costs) / session costs | If a 2-hour session finds 1 medium defect worth 10 hours: ROI = (10h - 2h) / 2h = 400% |
+
+The ROI model is most useful for justifying exploratory testing investment to cost-conscious stakeholders and for prioritizing session allocation: invest more sessions where expected ROI (based on historical defect density) is highest.
+
+---
+
+## Additional Community Lessons (Iteration 22)
+
+57. **[community] Third-party integration resilience sessions are consistently the most neglected charter type and the most frequent source of production incidents.** Teams focus exploratory testing on their own code and implicitly trust third-party integrations to behave as documented. When a third-party service degrades, changes their API schema, or rate-limits unexpectedly, the product's failure mode is rarely what the team expected. A 90-minute resilience charter using a network proxy to simulate third-party failures — specifically: 503 responses, rate-limit 429 responses, and unexpected field removal in responses — finds the gaps in graceful degradation that would otherwise become incidents.
+
+58. **[community] Defect escape rate is the most politically effective QA metric for securing exploratory testing investment.** When a QA team presents defect escape rate (how many production defects were in chartered areas vs unchartered areas), it directly answers the executive question "is exploratory testing working?" A low escape rate proves that exploration is catching defects before users see them. An acceptable escape rate provides a clear improvement target. This metric has more impact on resource allocation decisions than session count, defect count, or coverage percentage — because it connects directly to the business cost of production incidents.
+
+59. **[community] Charter ROI calculations change the exploratory testing conversation from "cost center" to "investment."** When teams present the estimated ROI of their exploratory sessions — showing that a 2-hour session that finds one medium defect recovers its cost within the same sprint — stakeholders consistently become more supportive of the practice. The calculation does not need to be precise; a rough 3x ROI estimate based on 1 defect found per 2 sessions, with each defect worth 8 hours of production-fix cost, is persuasive. The key insight: exploratory testing pays for itself within the sprint it runs, even at modest defect-find rates.
+
+---
+
+## Advanced Patterns (Iteration 23 — Final)
+
+### Security-Focused Exploration Pattern
+
+Security exploration is a distinct charter type that applies OWASP-inspired probes to the feature under test. Unlike penetration testing (which requires specialized tools and skills), security-focused exploratory charters use the same SBTM structure and apply security-relevant FEW HICCUPS and HICCUPPS dimensions.
+
+**Security exploration heuristic matrix:**
+
+| Security Domain | What to probe | HICCUPPS oracle |
+|----------------|--------------|----------------|
+| Authentication bypass | Can you access a resource that requires login without a valid session? (URL manipulation, token replay) | Standards (OWASP A01), Claims |
+| Authorization (IDOR) | Can you view or modify another user's resource by changing an ID in the URL or API request? | Standards (OWASP A01), User expectations |
+| Input injection | Does the application sanitize inputs in forms, search fields, API parameters? (Try `<script>`, `' OR 1=1`, path traversal `../`) | Standards (OWASP A03), Claims |
+| Sensitive data exposure | Is sensitive data (PII, tokens, card numbers) visible in URLs, logs, or HTTP responses beyond what is necessary? | Standards (OWASP A02), Image |
+| Security misconfiguration | Are debug endpoints, admin panels, or internal APIs exposed without auth? | Standards (OWASP A05), Claims |
+| Cryptographic failures | Are passwords, tokens, or sensitive data stored or transmitted in plaintext or weakly hashed? | Standards (OWASP A02), Claims |
+
+**Security exploration charter example:**
+
+```yaml
+# security-charter: guest-checkout-owasp-probe.yaml
+charter_id: "CHR-sec-checkout-20260503-01"
+tester: "Alice Chen"
+session_date: "2026-05-03"
+timebox_minutes: 90
+charter_type: "security"
+
+mission:
+  explore: "Guest checkout flow — OWASP Top 10 surface"
+  using: "Browser DevTools (network tab, cookie inspector), OWASP Top 10 probe checklist, two guest accounts"
+  to_discover: "Whether order IDs are guessable (IDOR risk), whether PII is exposed in responses or URLs, and whether input fields sanitize injection attempts"
+
+security_probes:
+  idor:
+    description: "After completing a guest order, try to access another order's confirmation page by incrementing/modifying the order ID in the URL"
+    expected: "403 or redirect to login — order data should not be accessible without the correct session or token"
+
+  pii_exposure:
+    description: "Inspect all HTTP responses during checkout for PII fields (email, address, partial card number) that should not be in response bodies"
+    expected: "Only minimum necessary PII in each response"
+
+  input_injection:
+    description: "Enter `<script>alert(1)</script>`, SQL apostrophe patterns, and path traversal strings into all text fields (name, address, special instructions)"
+    expected: "Input is sanitized — no script execution, no 500 errors from unescaped SQL"
+
+  session_token:
+    description: "Inspect cookies and headers for session tokens; check HttpOnly and Secure flags; test token replay after logout"
+    expected: "Session tokens have HttpOnly and Secure flags; token is invalidated after logout"
+
+priority_areas:
+  - "Order ID guessability (IDOR)"
+  - "PII in HTTP responses"
+  - "Input sanitization in address fields"
+  - "Session token security flags"
+```
+
+---
+
+### TypeScript: Session Knowledge Transfer Report Generator
+
+When a tester leaves the team or moves to a new project, their session knowledge should be transferable. This utility generates a knowledge transfer report from a tester's session archive — summarizing the areas they explored, the defects they found, and the heuristics they found most effective.
+
+```typescript
+// src/testing/exploratory/knowledge-transfer-report.ts
+// Generates a knowledge transfer report for a specific tester's session history.
+// Use when a tester is onboarding, transitioning off a project, or rotating areas.
+
+import type { SessionResult } from './types';
+
+export interface KnowledgeTransferReport {
+  testerName: string;
+  sessionCount: number;
+  totalDefectsFound: number;
+  topDefectAreas: Array<{ area: string; defects: number }>;
+  areasExplored: string[];
+  areasNotExplored: string[];     // from the allKnownAreas list
+  keyFindings: string[];          // high/critical defects found, as a summary
+  recommendedFollowOn: string[];  // areas with partial coverage or high defect density
+}
+
+export function generateKnowledgeTransferReport(
+  testerName: string,
+  sessions: SessionResult[],
+  allKnownAreas: string[]
+): KnowledgeTransferReport {
+  const testerSessions = sessions.filter(
+    (s) => s.charter.tester.toLowerCase().includes(testerName.toLowerCase())
+  );
+
+  const areaDefectMap = new Map<string, number>();
+  const areasExplored = new Set<string>();
+  let totalDefectsFound = 0;
+  const keyFindings: string[] = [];
+
+  for (const session of testerSessions) {
+    const area = session.charter.mission.explore;
+    areasExplored.add(area);
+    areaDefectMap.set(area, (areaDefectMap.get(area) ?? 0) + session.bugs.length);
+    totalDefectsFound += session.bugs.length;
+
+    for (const bug of session.bugs) {
+      if (bug.severity === 'crash' || bug.severity === 'security' || bug.severity === 'correctness') {
+        keyFindings.push(`[${bug.severity.toUpperCase()}] ${bug.summary} (found in: ${area})`);
+      }
+    }
+  }
+
+  const topDefectAreas = Array.from(areaDefectMap.entries())
+    .map(([area, defects]) => ({ area, defects }))
+    .sort((a, b) => b.defects - a.defects)
+    .slice(0, 5);
+
+  const areasNotExplored = allKnownAreas.filter((a) => !areasExplored.has(a));
+
+  const recommendedFollowOn = Array.from(areaDefectMap.entries())
+    .filter(([, defects]) => defects > 2)
+    .map(([area]) => `${area} (${areaDefectMap.get(area)} defects found — likely more to find)`);
+
+  return {
+    testerName,
+    sessionCount: testerSessions.length,
+    totalDefectsFound,
+    topDefectAreas,
+    areasExplored: Array.from(areasExplored),
+    areasNotExplored,
+    keyFindings,
+    recommendedFollowOn,
+  };
+}
+
+export function printKnowledgeTransferReport(report: KnowledgeTransferReport): void {
+  console.log(`\n=== Knowledge Transfer Report: ${report.testerName} ===\n`);
+  console.log(`Sessions run: ${report.sessionCount} | Total defects found: ${report.totalDefectsFound}`);
+  console.log('\nTop defect areas:');
+  report.topDefectAreas.forEach((a) => console.log(`  - ${a.area}: ${a.defects} defect(s)`));
+  console.log('\nAreas NOT yet explored (coverage gap for incoming tester):');
+  report.areasNotExplored.forEach((a) => console.log(`  - ${a}`));
+  console.log('\nKey findings to hand off:');
+  report.keyFindings.forEach((f) => console.log(`  - ${f}`));
+  console.log('\nRecommended follow-on charters:');
+  report.recommendedFollowOn.forEach((r) => console.log(`  - ${r}`));
+  console.log('');
+}
+```
+
+---
+
+### Longitudinal Quality Tracking
+
+A single sprint of exploratory testing data is useful but limited. Longitudinal tracking — comparing metrics across quarters — reveals whether the team's exploratory testing practice is improving over time and whether product quality is trending in the right direction.
+
+**Key longitudinal metrics:**
+
+| Metric | Direction of improvement | Leading indicator for |
+|--------|--------------------------|----------------------|
+| Defect escape rate (quarterly avg) | Decreasing | Exploration effectiveness improving |
+| Blocked time ratio | Decreasing | Test environment investment paying off |
+| Charter completion rate | Increasing | SBTM process discipline improving |
+| Bugs per session-hour by area | Decreasing over time | Area is stabilizing (fewer new defects) |
+| Follow-on charter rate | Stable (20–40%) | Charter depth is appropriate |
+| Tester confidence average | Increasing | Domain knowledge growing |
+| Exploration-to-automation conversion | 20–35% sustained | Exploration findings are being captured in regression |
+
+**Longitudinal tracking implementation note:** Store `SessionResult` JSON files in a versioned directory per sprint (`sessions/2026-Q2/sprint-1/`, etc.). The coverage reporter, cluster analyzer, and escape rate tools can all be pointed at a multi-sprint directory to produce quarter-over-quarter comparisons.
+
+---
+
+## Additional Community Lessons (Iteration 23 — Final)
+
+60. **[community] Security exploration charters are the single highest-value charter type for pre-release sign-off.** A 90-minute OWASP-surface exploration session on any new feature that handles user data, payments, or authentication consistently finds at least one security-relevant defect in products that have not been specifically security-tested. The most common findings: IDOR via guessable IDs, PII in HTTP responses, input fields that are not sanitized, and session tokens without HttpOnly/Secure flags. These defects are inexpensive to find exploratorily and extremely expensive to fix after they reach production or a security audit.
+
+61. **[community] Knowledge transfer sessions structured around session archives dramatically accelerate new tester onboarding.** When a new tester joins a team and can read the previous tester's session archive — charters, session notes, defect findings, and follow-on charter rationale — they build domain knowledge in 2-3 days that would otherwise take 2-3 weeks of shadowing. The session archive is not just a record of what was tested; it is a learning document about what the product does, where it has historically failed, and what areas are risky. Teams that maintain clean session archives with good note quality report onboarding times 50-60% shorter than teams whose testing history lives only in trackers.
+
+62. **[community] Longitudinal quality tracking reveals when a team's exploratory practice has plateaued and needs investment.** When escape rate, blocked time, and charter completion rate are tracked quarterly, teams can see whether their exploratory testing is improving. The most common plateau pattern: a team improves rapidly in the first 3-6 months of SBTM adoption (escape rate drops, coverage improves), then flatlines. The plateau usually signals one of three things: testers are covering the same areas repeatedly (rotation needed), charter quality has drifted (workshop needed), or the practice is working well and the plateau reflects actual quality improvement in the product. Longitudinal data distinguishes these cases; a single sprint's data cannot.
+
+
+
+

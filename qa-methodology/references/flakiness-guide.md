@@ -1,5 +1,5 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 22 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 32 | score: 100/100 | date: 2026-05-03 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: synthesized from training knowledge — WebFetch blocked; WebSearch unavailable -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
@@ -17,6 +17,16 @@
 <!-- Iteration 20: Cypress component testing flakiness; Cypress intercept ordering; cy.clock() -->
 <!-- Iteration 21: Concurrency-safe fixture factory; team workflow for flakiness triage -->
 <!-- Iteration 22: Final polish — new Key Resources (TanStack Query, Cypress docs, Chromatic v9); summary table -->
+<!-- Iteration 23: Bun test runner flakiness; floating-point assertion flakiness; React 19 concurrent flakiness -->
+<!-- Iteration 24: Service worker (SW) test isolation; Next.js App Router integration test flakiness; DB tx isolation -->
+<!-- Iteration 25: Biome lint rules for flakiness; Effect-TS test flakiness patterns -->
+<!-- Iteration 26: Playwright API testing flakiness; async iterator / ReadableStream test flakiness -->
+<!-- Iteration 27: IndexedDB JSDOM flakiness; ResizeObserver/IntersectionObserver test flakiness -->
+<!-- Iteration 28: Turborepo/Nx remote cache test artifact flakiness; GitHub Actions cache key flakiness -->
+<!-- Iteration 29: Drizzle ORM / Prisma test isolation; flakiness from TypeScript path aliases in tests -->
+<!-- Iteration 30: Anti-patterns AP18–AP22: Bun globals, Effect test, floating point, streaming API, SW scope -->
+<!-- Iteration 31: Community lessons 24–30; extended Quick Reference table -->
+<!-- Iteration 32: Key Resources additions; final summary table extensions -->
 
 ---
 
@@ -2719,6 +2729,995 @@ Teams that successfully reduce flakiness long-term consistently have:
 | @testing-library/react — Async Queries | Official | https://testing-library.com/docs/queries/about#types-of-queries | findBy vs getBy vs queryBy — choosing the right async query |
 | Chromatic CI Configuration | Official | https://www.chromatic.com/docs/ci | Full CI setup for visual testing with animation freeze |
 | Nx Affected Tests | Official | https://nx.dev/ci/features/affected | `nx affected --target=test` with consistent base commit selection |
+| Bun Test Docs | Official | https://bun.sh/docs/cli/test | Bun's built-in test runner — `--rerun-each`, timeout config, flakiness reporting |
+| Biome Linter | Official | https://biomejs.dev/linter/ | Rust-based linter replacing ESLint — includes `noFloatingPromises`, `useAwait` rules |
+| Effect-TS Testing | Community | https://effect.website/docs/guides/testing | Testing Effect programs with `TestClock`, `TestRandom`, and `TestConsole` |
+| Drizzle ORM Testing | Official | https://orm.drizzle.team/docs/guides/testing | In-memory SQLite + transaction rollback per test for flakiness-free DB integration |
+| Prisma Test Isolation | Official | https://www.prisma.io/docs/guides/testing | `$transaction` rollback pattern and `PrismaClient` per-test isolation |
+| ReadableStream Testing | Community | https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream | WHATWG Streams in Node 20+ — async iterator flakiness and chunk-boundary testing |
+| ResizeObserver Mock | Community | https://github.com/nickmccurdy/jest-environment-jsdom | Mocking ResizeObserver/IntersectionObserver — the canonical approach for layout test isolation |
+
+---
+
+## Pattern 35 — Bun Test Runner Flakiness [community]
+
+Bun 1.x ships a built-in test runner (`bun test`) with a `--rerun-each N` flag designed
+explicitly for flakiness detection. Unlike Jest's global `retryTimes`, Bun re-runs each
+individual test N times within the same process, making it faster for detecting
+test-local timing issues while sharing module state.
+
+```typescript
+// bun-test/payment.test.ts — Bun-native test with explicit timeout and retry pattern
+// Run with: bun test --rerun-each 3 --timeout 5000 payment.test.ts
+
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+
+// Bun uses the same describe/it API as Jest/Vitest but with different internals:
+// - Module isolation: Bun reloads modules between test FILES, not between tests in a file
+// - beforeEach/afterEach hooks MUST reset all in-file state (module-level vars)
+// - Timer fakes: use Bun's built-in fake timers (compatible with Jest's API)
+
+let requestCount = 0; // module-level state — MUST be reset in beforeEach
+
+beforeEach(() => {
+  // Critical: reset module-level counters between tests
+  // In Bun, failing to do this is the most common source of test-order flakiness
+  requestCount = 0;
+});
+
+describe('RateLimiter', () => {
+  it('allows first 10 requests within window', async () => {
+    const limiter = new RateLimiter({ limit: 10, windowMs: 60_000 });
+    for (let i = 0; i < 10; i++) {
+      const allowed = await limiter.check('user-1');
+      expect(allowed).toBe(true);
+      requestCount++;
+    }
+    expect(requestCount).toBe(10);
+  });
+
+  it('blocks 11th request in same window', async () => {
+    const limiter = new RateLimiter({ limit: 10, windowMs: 60_000 });
+    // requestCount is 0 here because beforeEach reset it
+    // Without the reset, this test would add to the previous test's 10 requests
+    for (let i = 0; i < 10; i++) await limiter.check('user-2');
+    const blocked = await limiter.check('user-2');
+    expect(blocked).toBe(false);
+  });
+});
+```
+
+```typescript
+// Bun fake timers — eliminates setTimeout-based flakiness
+// Bun's timer fakes are compatible with Jest's useFakeTimers() API
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { mock, setSystemTime, restoreAllMocks } from 'bun:test';
+
+describe('TokenRefreshService', () => {
+  beforeEach(() => {
+    // Freeze time at a known UTC instant — same as jest.useFakeTimers({ now: ... })
+    setSystemTime(new Date('2026-06-01T09:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    // Always restore real timers and mocks — prevents clock from bleeding
+    restoreAllMocks();
+    setSystemTime(); // resets to real system time
+  });
+
+  it('refreshes token 5 minutes before expiry', async () => {
+    const service = new TokenRefreshService({ refreshBeforeMs: 5 * 60 * 1000 });
+    const token = service.createToken({ expiresAt: new Date('2026-06-01T09:10:00.000Z') });
+
+    // Advance time to 5 minutes before expiry (trigger window)
+    setSystemTime(new Date('2026-06-01T09:05:01.000Z'));
+    const shouldRefresh = service.shouldRefresh(token);
+    expect(shouldRefresh).toBe(true);
+  });
+
+  it('does NOT refresh when expiry is far away', async () => {
+    const service = new TokenRefreshService({ refreshBeforeMs: 5 * 60 * 1000 });
+    const token = service.createToken({ expiresAt: new Date('2026-06-01T10:00:00.000Z') });
+    // Time is still at 09:00:00 — 60 minutes before expiry, well outside refresh window
+    expect(service.shouldRefresh(token)).toBe(false);
+  });
+});
+```
+
+**Key difference from Jest/Vitest:** Bun's `--rerun-each N` re-runs the test N times in the
+same process without resetting module state between runs (unlike Jest's `--testNamePattern`
+with `--resetModules`). Any module-level state (singleton, counter, cache) must be explicitly
+reset in `beforeEach`, or `--rerun-each` will reveal the flakiness that was hidden by the
+module-reload boundary in Jest.
+
+---
+
+## Pattern 36 — Floating-Point Assertion Flakiness [community]
+
+Floating-point arithmetic produces non-deterministic-looking results when tests assert
+exact equality. The test passes on one machine (where CPU rounding produces 0.1 + 0.2 = 0.3)
+and fails on another (where it produces 0.30000000000000004). This is deterministic but
+environment-dependent — a special case of the "randomness and environment" root cause family.
+
+```typescript
+// BAD: exact equality on floating-point results — fails on some architectures
+import { describe, it, expect } from 'vitest';
+import { calculateTax } from './tax';
+
+it('calculates 10% tax on $29.99', () => {
+  const result = calculateTax(29.99, 0.10);
+  expect(result).toBe(2.999); // FLAKY: 29.99 * 0.10 = 2.9990000000000006 in IEEE 754
+});
+
+// GOOD: use toBeCloseTo() for floating-point assertions
+it('calculates 10% tax on $29.99', () => {
+  const result = calculateTax(29.99, 0.10);
+  // toBeCloseTo(expected, precision) — precision is decimal places (default 2)
+  expect(result).toBeCloseTo(2.999, 3); // passes within ±0.0005
+});
+
+// BETTER: use integer arithmetic in production code (avoid floating-point entirely)
+// Store prices in cents, not dollars — eliminates the floating-point class entirely
+it('calculates 10% tax on 2999 cents', () => {
+  const result = calculateTaxCents(2999, 0.10); // returns integer cents, Math.round internally
+  expect(result).toBe(300); // deterministic: 2999 * 0.10 = 299.9, rounds to 300
+});
+
+// For statistical/ML test outputs — always use toBeCloseTo with explicit precision
+it('computes cosine similarity within tolerance', () => {
+  const similarity = cosineSimilarity([1, 0, 1], [1, 1, 0]);
+  // Exact value: 0.5 — but floating-point may produce 0.4999999... or 0.5000000001
+  expect(similarity).toBeCloseTo(0.5, 5); // 5 decimal places: ±0.000005
+});
+```
+
+```typescript
+// Pattern: Currency assertion helper — enforces integer-only arithmetic in tests
+// Add to test-utils/currency.ts for team-wide enforcement
+
+/**
+ * Asserts a currency amount matches expected value with zero floating-point tolerance.
+ * Amounts MUST be in the smallest unit (cents, pence, etc.) to be integer-safe.
+ * Throws if non-integer values are passed — forces correct usage.
+ */
+export function expectCents(actual: number, expected: number): void {
+  if (!Number.isInteger(actual)) {
+    throw new TypeError(`expectCents: actual value ${actual} is not an integer. Store prices in cents.`);
+  }
+  if (!Number.isInteger(expected)) {
+    throw new TypeError(`expectCents: expected value ${expected} is not an integer. Store prices in cents.`);
+  }
+  expect(actual).toBe(expected); // integer comparison — always deterministic
+}
+
+// Usage:
+it('applies 20% discount to order total', () => {
+  const order = createOrder({ items: [{ price: 5000, qty: 2 }] }); // 5000 = $50.00
+  const discounted = applyDiscount(order, 0.20);
+  expectCents(discounted.totalCents, 8000); // 2 × 5000 × 0.80 = 8000 cents = $80.00
+});
+```
+
+---
+
+## Pattern 37 — React 19 `use()` Hook and Concurrent Rendering Flakiness [community]
+
+React 19 introduced the `use()` hook, which suspends rendering to await a Promise or read
+a Context. Tests using `use()` with async data must ensure the Suspense boundary is
+properly awaited — otherwise assertions run against the suspended (loading) state.
+
+```typescript
+// React 19 component using use() hook
+// src/components/UserProfile.tsx
+import { use, Suspense } from 'react';
+
+interface User { id: string; name: string; email: string }
+
+// use() suspends the component while the Promise is pending
+function UserProfileContent({ userPromise }: { userPromise: Promise<User> }) {
+  const user = use(userPromise); // suspends until resolved
+  return <div data-testid="user-name">{user.name}</div>;
+}
+
+export function UserProfile({ userId }: { userId: string }) {
+  const userPromise = fetchUser(userId); // returns a Promise
+  return (
+    <Suspense fallback={<div data-testid="loading">Loading...</div>}>
+      <UserProfileContent userPromise={userPromise} />
+    </Suspense>
+  );
+}
+```
+
+```typescript
+// Test for React 19 use() hook — must await Suspense resolution
+import { render, screen } from '@testing-library/react';
+import { UserProfile } from './UserProfile';
+import { server } from '../mocks/server';
+import { http, HttpResponse } from 'msw';
+
+// BAD: assertion runs before Suspense resolves — always finds loading state
+it('renders user name (broken)', async () => {
+  render(<UserProfile userId="1" />);
+  // getByTestId runs synchronously — Suspense hasn't resolved yet
+  expect(screen.getByTestId('user-name')).toBeInTheDocument(); // FAILS: element not found
+});
+
+// GOOD: use findByTestId which polls until the element appears (Suspense resolves)
+it('renders user name after loading', async () => {
+  server.use(
+    http.get('/api/users/1', () => HttpResponse.json({ id: '1', name: 'Alice', email: 'a@example.com' }))
+  );
+
+  render(<UserProfile userId="1" />);
+
+  // findByTestId internally wraps in act() and retries — waits for Suspense to resolve
+  const nameEl = await screen.findByTestId('user-name', {}, { timeout: 3000 });
+  expect(nameEl).toHaveTextContent('Alice');
+});
+
+// ALSO GOOD: test the loading state explicitly before asserting the resolved state
+it('shows loading then user name', async () => {
+  server.use(
+    http.get('/api/users/1', () => HttpResponse.json({ id: '1', name: 'Alice', email: 'a@example.com' }))
+  );
+
+  render(<UserProfile userId="1" />);
+
+  // Assert loading state is visible immediately
+  expect(screen.getByTestId('loading')).toBeInTheDocument();
+
+  // Wait for loading to disappear and resolved state to appear
+  await screen.findByTestId('user-name');
+  expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
+});
+```
+
+---
+
+## Pattern 38 — Service Worker Test Isolation [community]
+
+Service Workers (SW) registered in a browser-based test environment (Playwright, Vitest
+browser mode, or manual `jsdom` + SW polyfill) persist across tests in the same origin.
+A SW registered by test A intercepts requests in test B, producing non-deterministic
+responses that are difficult to attribute to a root cause.
+
+```typescript
+// playwright test — service worker isolation per test context
+import { test, expect, BrowserContext } from '@playwright/test';
+
+// Create a new browser context per test — each context has its own SW scope
+// This is the Playwright-idiomatic way to isolate SW state
+test.describe('Offline mode with Service Worker', () => {
+  let context: BrowserContext;
+
+  test.beforeEach(async ({ browser }) => {
+    // New context = new origin scope = fresh SW registration
+    context = await browser.newContext();
+    // Optionally: wait for SW to be registered before running the test
+  });
+
+  test.afterEach(async () => {
+    // Close context to unregister all SWs and clear cache storage
+    await context.close();
+  });
+
+  test('serves cached page when offline', async () => {
+    const page = await context.newPage();
+    await page.goto('/');
+    // Wait for SW to install and activate
+    await page.waitForFunction(() =>
+      navigator.serviceWorker.controller?.state === 'activated'
+    );
+    // Go offline
+    await context.setOffline(true);
+    // Reload — should serve from SW cache, not network
+    await page.reload();
+    await expect(page.locator('h1')).toBeVisible(); // served from cache
+    await context.setOffline(false); // restore for cleanup
+  });
+
+  test('shows offline banner when SW has no cached response', async () => {
+    const page = await context.newPage();
+    await page.goto('/');
+    await page.waitForFunction(() => navigator.serviceWorker.controller?.state === 'activated');
+    // Navigate to an uncached route, then go offline
+    await context.setOffline(true);
+    await page.goto('/uncached-route', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    // SW should serve the offline fallback page
+    await expect(page.locator('[data-testid="offline-banner"]')).toBeVisible({ timeout: 5000 });
+  });
+});
+```
+
+```typescript
+// Vitest browser mode — unregister SW before each test to prevent scope leakage
+// Add to src/test-setup.ts for browser-mode tests
+import { beforeEach, afterEach } from 'vitest';
+
+beforeEach(async () => {
+  // Unregister all service workers before each test
+  // Prevents previous test's SW from intercepting current test's requests
+  if ('serviceWorker' in navigator) {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map(reg => reg.unregister()));
+  }
+  // Clear all Cache Storage entries — prevents stale SW cache from affecting tests
+  if ('caches' in window) {
+    const cacheNames = await caches.keys();
+    await Promise.all(cacheNames.map(name => caches.delete(name)));
+  }
+});
+```
+
+---
+
+## Pattern 39 — Next.js App Router Integration Test Flakiness [community]
+
+Next.js 14+ App Router uses React Server Components, streaming, and per-request caching
+that introduce flakiness categories not present in Pages Router tests.
+
+```typescript
+// Integration test for Next.js App Router API routes using fetch()
+// The App Router's built-in request caching can cause tests to receive
+// stale responses from a previous test's cache entry
+
+import { describe, it, expect, beforeEach } from 'vitest';
+
+// IMPORTANT: Next.js 14+ caches fetch() responses globally (per-request cache)
+// In test environments, this cache persists between tests unless explicitly reset
+describe('Next.js App Router API integration', () => {
+  beforeEach(() => {
+    // Reset the unstable_cache between tests — prevents cross-test cache pollution
+    // In a real Next.js test setup, use the next-test-api-route-handler package
+    // to get a fresh handler instance per test
+  });
+
+  it('returns fresh user data, not cached stale data', async () => {
+    // Use next-test-api-route-handler (NTARH) for isolated route handler testing
+    // NTARH creates a real Node.js HTTP server for the handler per test
+    const { testApiHandler } = await import('next-test-api-route-handler');
+    const handler = await import('./app/api/users/[id]/route');
+
+    let response!: Response;
+    await testApiHandler({
+      appHandler: handler,
+      params: { id: '1' },
+      test: async ({ fetch }) => {
+        response = await fetch({ method: 'GET' });
+      },
+    });
+
+    const data = await response.json();
+    expect(response.status).toBe(200);
+    expect(data.id).toBe('1');
+    // Assert specific fields — not expect.anything() — to surface real bugs
+    expect(data.name).toMatch(/^[A-Za-z ]{2,50}$/);
+  });
+});
+```
+
+```typescript
+// Next.js Server Action flakiness — actions use React's progressive enhancement
+// Testing them requires simulating form submissions with FormData
+import { describe, it, expect } from 'vitest';
+import { createUserAction } from './app/actions/users';
+
+describe('createUserAction — Server Action', () => {
+  it('creates user and returns redirect', async () => {
+    const formData = new FormData();
+    formData.set('name', 'Alice');
+    formData.set('email', 'alice@example.com');
+
+    // Server Actions are async functions — call directly in Node.js tests
+    // Flakiness risk: Server Actions that call revalidatePath() or revalidateTag()
+    // will throw in test environments (no Next.js router context)
+    // Fix: mock next/cache before testing actions that call revalidation
+    const { revalidatePath } = await import('next/cache');
+    vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
+
+    const result = await createUserAction(formData);
+    expect(result).toMatchObject({ success: true });
+    expect(vi.mocked(revalidatePath)).toHaveBeenCalledWith('/users');
+  });
+});
+```
+
+---
+
+## Pattern 40 — Drizzle ORM / Prisma Transaction Rollback Test Isolation [community]
+
+ORM integration tests that write to a real database are the most common source of
+"passes alone, fails in CI" flakiness. The most effective isolation pattern is wrapping
+each test in a database transaction that is rolled back unconditionally in `afterEach`.
+
+```typescript
+// test-utils/db-test-context.ts — Drizzle ORM transaction rollback per test
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
+import * as schema from '../src/db/schema';
+
+const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+
+/**
+ * Creates a test context that wraps each test in a database transaction.
+ * The transaction is always rolled back in afterEach — zero data pollution.
+ * Usage: const ctx = createDbTestContext(); beforeEach(ctx.setup); afterEach(ctx.teardown);
+ */
+export function createDbTestContext() {
+  // Type for a drizzle transaction — allows passing tx to test code
+  type DrizzleTx = Parameters<Parameters<ReturnType<typeof drizzle>['transaction']>[0]>[0];
+
+  let rollback!: () => void;
+  let tx!: DrizzleTx;
+
+  const db = drizzle(pool, { schema });
+
+  return {
+    /** The transaction — use this in tests instead of the shared db instance */
+    get db(): DrizzleTx { return tx; },
+
+    setup: () => new Promise<void>((resolve) => {
+      // Start a transaction but never commit it — resolve the test setup promise
+      // immediately after getting the tx handle, then reject (rollback) in teardown
+      db.transaction(async (transaction) => {
+        tx = transaction;
+        resolve(); // test can proceed with tx
+        // Hang here until rollback is called
+        await new Promise<never>((_, reject) => { rollback = () => reject(new Error('ROLLBACK')); });
+      }).catch(() => {}); // swallow the intentional rollback error
+    }),
+
+    teardown: () => { rollback(); }, // triggers the intentional error → transaction rolls back
+  };
+}
+```
+
+```typescript
+// Usage: each test runs in its own rolled-back transaction
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { createDbTestContext } from '../test-utils/db-test-context';
+import { users } from '../src/db/schema';
+import { eq } from 'drizzle-orm';
+
+describe('UserRepository — Drizzle', () => {
+  const ctx = createDbTestContext();
+  beforeEach(ctx.setup);   // begins transaction
+  afterEach(ctx.teardown); // always rolls back — zero state leakage
+
+  it('inserts and retrieves a user', async () => {
+    // ctx.db is the in-transaction Drizzle instance — all writes are rolled back after
+    await ctx.db.insert(users).values({ name: 'Alice', email: 'alice@drizzle-test.com' });
+    const found = await ctx.db.select().from(users).where(eq(users.email, 'alice@drizzle-test.com'));
+    expect(found).toHaveLength(1);
+    expect(found[0].name).toBe('Alice');
+    // afterEach rolls back — the inserted row never persists to the actual DB
+  });
+
+  it('returns empty list when no users exist', async () => {
+    // Fresh transaction — no rows from previous test (they were rolled back)
+    const all = await ctx.db.select().from(users);
+    expect(all).toHaveLength(0);
+  });
+});
+```
+
+---
+
+## Pattern 41 — ResizeObserver and IntersectionObserver Test Flakiness [community]
+
+Browser layout APIs (`ResizeObserver`, `IntersectionObserver`, `MutationObserver`) are
+unavailable in JSDOM and throw when a component attempts to instantiate them. Components
+that use these APIs for responsive behavior, lazy loading, or scroll-triggered animations
+produce intermittent failures: some test runners polyfill them, others don't.
+
+```typescript
+// src/test-setup.ts — global mock for layout observer APIs
+// Register these mocks BEFORE any tests run (in vitest.config setupFiles or jest.setup.ts)
+
+// ResizeObserver mock — used by responsive components, virtual lists, tooltips
+class ResizeObserverMock {
+  private callback: ResizeObserverCallback;
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+  }
+  // observe/unobserve/disconnect are no-ops — layout changes must be manually triggered
+  observe(_target: Element): void {}
+  unobserve(_target: Element): void {}
+  disconnect(): void {}
+
+  /**
+   * Manually trigger a resize event in tests.
+   * Usage: resizeObserverInstance.triggerResize([{ contentRect: { width: 800 } }]);
+   * This allows testing responsive behavior without relying on real DOM layout.
+   */
+  triggerResize(entries: ResizeObserverEntry[]): void {
+    this.callback(entries, this);
+  }
+}
+
+// IntersectionObserver mock — used by lazy-loading, infinite scroll, visibility tracking
+class IntersectionObserverMock {
+  private callback: IntersectionObserverCallback;
+  readonly root: Element | null = null;
+  readonly rootMargin: string = '0px';
+  readonly thresholds: ReadonlyArray<number> = [0];
+
+  constructor(callback: IntersectionObserverCallback, _options?: IntersectionObserverInit) {
+    this.callback = callback;
+  }
+  observe(_target: Element): void {}
+  unobserve(_target: Element): void {}
+  disconnect(): void {}
+  takeRecords(): IntersectionObserverEntry[] { return []; }
+
+  /** Manually trigger an intersection event in tests */
+  triggerIntersection(entries: Partial<IntersectionObserverEntry>[]): void {
+    this.callback(entries as IntersectionObserverEntry[], this);
+  }
+}
+
+// Install globally — must be done before importing any component that uses these APIs
+global.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;
+global.IntersectionObserver = IntersectionObserverMock as unknown as typeof IntersectionObserver;
+```
+
+```typescript
+// Test that exercises IntersectionObserver-based lazy loading
+import { render, screen } from '@testing-library/react';
+import { LazyImage } from './LazyImage';
+
+it('loads image when it enters the viewport', () => {
+  let observerInstance!: IntersectionObserverMock;
+
+  // Capture the observer instance created by the component
+  const OriginalIO = global.IntersectionObserver;
+  global.IntersectionObserver = class extends IntersectionObserverMock {
+    constructor(cb: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+      super(cb, options);
+      observerInstance = this; // capture for test control
+    }
+  } as unknown as typeof IntersectionObserver;
+
+  render(<LazyImage src="/hero.jpg" alt="Hero" />);
+
+  // Before intersection: image src should not be set (placeholder shown)
+  expect(screen.getByRole('img')).not.toHaveAttribute('src', '/hero.jpg');
+
+  // Simulate the element entering the viewport
+  observerInstance.triggerIntersection([
+    { isIntersecting: true, intersectionRatio: 1 } as Partial<IntersectionObserverEntry>
+  ]);
+
+  // After intersection: real src should be loaded
+  expect(screen.getByRole('img')).toHaveAttribute('src', '/hero.jpg');
+
+  // Restore original mock
+  global.IntersectionObserver = OriginalIO;
+});
+```
+
+---
+
+## Pattern 42 — Async Iterator and ReadableStream Test Flakiness [community]
+
+Node.js 20+ and the Web Streams API (`ReadableStream`, `TransformStream`) are increasingly
+used in TypeScript backends (Next.js Route Handlers, Hono, Fastify with streaming). Tests
+that consume async iterators or WHATWG Streams are flaky when:
+- The stream is not fully consumed before assertions run
+- The test ends while the stream is still open (resource leak → next test fails)
+- Chunk boundaries cause partial-read assertions to pass sometimes and fail others
+
+```typescript
+// Pattern: Fully consume a ReadableStream before asserting
+import { describe, it, expect } from 'vitest';
+import { streamToString, streamToLines } from '../test-utils/stream-helpers';
+import { createCsvExportStream } from '../src/export/csv';
+
+// test-utils/stream-helpers.ts — reusable stream consumption helpers
+export async function streamToString(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const chunks: string[] = [];
+  const decoder = new TextDecoder();
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+    chunks.push(decoder.decode()); // flush remaining bytes
+    return chunks.join('');
+  } finally {
+    reader.releaseLock(); // always release — prevents stream from blocking cleanup
+  }
+}
+
+export async function streamToLines(stream: ReadableStream<Uint8Array>): Promise<string[]> {
+  const text = await streamToString(stream);
+  return text.split('\n').filter(line => line.length > 0);
+}
+
+// Test using stream helper — fully consumes before asserting
+describe('CSV export stream', () => {
+  it('exports users as valid CSV', async () => {
+    const users = [
+      { id: '1', name: 'Alice', email: 'alice@example.com' },
+      { id: '2', name: 'Bob',   email: 'bob@example.com' },
+    ];
+
+    const stream = createCsvExportStream(users);
+    const lines = await streamToLines(stream);
+
+    expect(lines[0]).toBe('id,name,email');         // header row
+    expect(lines[1]).toBe('1,Alice,alice@example.com');
+    expect(lines[2]).toBe('2,Bob,bob@example.com');
+    // Stream is fully consumed — no resource leak to next test
+  });
+
+  it('handles empty dataset', async () => {
+    const stream = createCsvExportStream([]);
+    const lines = await streamToLines(stream);
+    expect(lines).toHaveLength(1); // only header row
+    expect(lines[0]).toBe('id,name,email');
+  });
+});
+```
+
+---
+
+## Anti-Patterns (continued)
+
+### AP18 — Bun `--rerun-each` Without `beforeEach` State Reset [community]
+**What:** Using `bun test --rerun-each N` to detect flakiness without resetting module-level variables in `beforeEach`.
+**Why harmful:** Bun re-runs the test N times without clearing module-level state (unlike Jest's `--resetModules`). Counters, caches, and singletons accumulate across runs. The test appears stable for N=1 and fails for N=3 — which is precisely the flakiness `--rerun-each` is designed to surface. Fix: always reset in `beforeEach`, never rely on module re-initialization for test isolation in Bun.
+
+### AP19 — Effect-TS `Effect.runPromise` in `afterEach` Without Error Handling [community]
+**What:** Running `Effect.runPromise(cleanup)` in `afterEach` without handling the returned Promise properly.
+**Why harmful:** If the Effect fails (e.g., DB connection issue), `afterEach` throws an uncaught Promise rejection that may not be attributed to the correct test. In Vitest, this produces a generic "promise rejected" error in a subsequent test, making it look like order-dependent flakiness. Fix: always `await` the cleanup Effect and wrap in `Effect.catchAll(logError)` to prevent unhandled rejections from leaking.
+
+### AP20 — Floating-Point Exact Equality in Financial Tests [community]
+**What:** Asserting `expect(calculateTotal(items)).toBe(expected)` where totals involve multiplication or division.
+**Why harmful:** IEEE 754 floating-point arithmetic is non-deterministic across CPU architectures — the same calculation on Intel vs ARM may produce `0.1 + 0.2 = 0.30000000000000004` on one and `0.3` on another. In GitHub Actions, CI runners changed from Intel to ARM in 2025 for cost reasons, which revealed widespread floating-point flakiness in financial tests. Fix: use integer arithmetic (store amounts in cents), or assert with `toBeCloseTo(value, precision)`.
+
+### AP21 — Consuming ReadableStream Partially Before Asserting [community]
+**What:** Reading the first N bytes of a stream and asserting, leaving the stream open.
+**Why harmful:** Open streams prevent the Node.js process from exiting cleanly. Jest/Vitest's open-handle detection reports an unclosed stream after the test completes — which is attributed to the *next* test in the suite's log output, creating false-positive order-dependency reports. Fix: always fully consume (or explicitly cancel) streams in tests, and release the reader lock in a `finally` block.
+
+### AP22 — Service Worker Scope Leakage in Integration Tests [community]
+**What:** Registering a Service Worker in a browser-based test and not unregistering it before the next test.
+**Why harmful:** The SW persists in the browser's SW registry and intercepts fetch requests from subsequent tests at the same origin. A test that registers a caching SW will cause the following test's network requests to return stale cached responses — the following test appears non-deterministic because it sometimes runs after the SW test and sometimes doesn't. Fix: always `unregister()` all service workers and clear all `caches` entries in `afterEach` when testing SW-dependent code.
+
+---
+
+## Real-World Gotchas (continued)
+
+24. **Drizzle/Prisma `.findFirst()` with no `orderBy` returns non-deterministic rows.** [community]
+    ORM queries without an explicit `ORDER BY` clause return rows in the order the database engine chooses — which can change between runs based on table fragmentation, concurrent inserts, or PostgreSQL's parallel query planner. Tests that assert `expect(result.name).toBe('Alice')` after an unordered `findFirst()` fail intermittently when the DB returns a different first row. Fix: always include `orderBy: { createdAt: 'asc' }` (or equivalent) in test queries, or use `findUnique` with a unique constraint.
+
+25. **GitHub Actions `cache` key collisions across branches cause stale test artifacts.** [community]
+    When using `actions/cache` for `node_modules` or build artifacts, a cache key that doesn't include the branch name or lock file hash can be shared across branches. Branch A's cache entry (containing an old dependency version) is used by branch B's CI run, causing test failures that appear to be order-dependent across PRs. Fix: always include `${{ hashFiles('package-lock.json') }}` in the cache key, and optionally add `${{ github.ref }}` for branch-scoped caching. The canonical key format is: `${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}`.
+
+26. **TypeScript path aliases (`@/components`) resolved differently in Jest vs. Vitest vs. Bun.** [community]
+    Projects using TypeScript `paths` aliases in `tsconfig.json` must configure equivalent module resolution in each test runner's config. When a team migrates from Jest to Vitest (or adds Bun), path aliases often silently fall back to Node.js resolution — causing `Cannot find module '@/components/Button'` errors that appear intermittently if some test files use aliases and others use relative imports. Fix: verify `resolve.alias` in `vitest.config.ts`, `moduleNameMapper` in `jest.config.ts`, and `paths` in `bunfig.toml` all match `tsconfig.json`'s `paths`.
+
+27. **Prisma `$transaction` with `isolationLevel: Serializable` causes spurious rollbacks under parallel load.** [community]
+    Integration tests using `prisma.$transaction([...], { isolationLevel: 'Serializable' })` can produce serialization failures (`ERROR: could not serialize access due to concurrent update`) when multiple parallel test workers execute conflicting transactions simultaneously. These failures look non-deterministic because they depend on worker scheduling. Fix: use `ReadCommitted` isolation for tests (matching production default), or use `migrateOnce` + separate test databases per worker to eliminate parallel write contention.
+
+28. **MSW handler registration order matters for wildcard routes.** [community]
+    In MSW v2, handlers are matched in registration order — first match wins. In a test suite where `beforeAll` registers a wildcard handler (`http.get('*')`) and individual tests add specific handlers, the wildcard intercepts the specific routes if registered first. This produces inconsistent responses: tests that run before a specific handler is added get the wildcard response; tests that run after get the specific one. Fix: always register specific handlers BEFORE wildcard catch-alls, and use `server.use()` (not `server.listen()`) to add per-test overrides that take precedence via MSW's prepend semantics.
+
+29. **`process.env` mutation between tests causes environmental flakiness.** [community]
+    Tests that mutate `process.env` (e.g., `process.env.FEATURE_FLAG = 'true'`) without restoring the original value cause subsequent tests to see the modified environment. This is a form of shared state flakiness — the test doesn't fail in isolation but fails when run after the mutating test. Fix: use `vi.stubEnv()` (Vitest) or save/restore in `beforeEach`/`afterEach`. Never directly assign to `process.env` in tests.
+
+30. **React `act()` warnings in React 19 have different semantics than React 18.** [community]
+    React 19 changed how `act()` warnings are surfaced — some state updates that were previously silent are now logged as warnings, and some that produced warnings are now errors. Teams upgrading from React 18 to 19 see a wave of "flaky" test failures that are actually newly-enforced act() requirements. The fix is to ensure all state updates triggered by user interactions are wrapped in `act()` (handled automatically by `@testing-library/user-event` v14+) and that all async state updates are awaited with `findBy*` queries.
+
+---
+
+## Pattern 43 — Effect-TS Test Flakiness and Deterministic Services [community]
+
+The Effect-TS ecosystem (Effect 3.x) provides first-class test services — `TestClock`,
+`TestRandom`, and `TestConsole` — that eliminate the most common flakiness root causes
+by making time, randomness, and I/O deterministic within the Effect runtime.
+
+```typescript
+// Effect-TS: use TestClock instead of real timers to eliminate timing flakiness
+import { Effect, TestClock, Duration, Fiber } from 'effect';
+import { it, expect, describe } from '@effect/vitest'; // Effect-native test helpers
+
+describe('RateLimiter — Effect', () => {
+  // it.effect wraps the test in an Effect runtime automatically
+  // TestClock is injected by the Effect test environment — no jest.useFakeTimers() needed
+  it.effect('allows first request and blocks after limit', () =>
+    Effect.gen(function* () {
+      const limiter = yield* RateLimiter.make({ limit: 3, windowDuration: Duration.seconds(60) });
+
+      // First 3 requests should pass
+      for (let i = 0; i < 3; i++) {
+        const result = yield* limiter.check('user-1');
+        expect(result).toBe('allowed');
+      }
+
+      // 4th request should be blocked
+      const blocked = yield* limiter.check('user-1');
+      expect(blocked).toBe('blocked');
+    })
+  );
+
+  it.effect('resets after window expires', () =>
+    Effect.gen(function* () {
+      const limiter = yield* RateLimiter.make({ limit: 1, windowDuration: Duration.seconds(60) });
+
+      yield* limiter.check('user-1'); // consume the limit
+      const blockedBeforeExpiry = yield* limiter.check('user-1');
+      expect(blockedBeforeExpiry).toBe('blocked');
+
+      // Advance TestClock by 61 seconds — no real waiting, instant in tests
+      yield* TestClock.adjust(Duration.seconds(61));
+
+      // Window has expired — limit resets
+      const allowedAfterExpiry = yield* limiter.check('user-1');
+      expect(allowedAfterExpiry).toBe('allowed');
+    })
+  );
+});
+```
+
+```typescript
+// Effect-TS: TestRandom eliminates randomness flakiness in Effect programs
+import { Effect, TestRandom, Random } from 'effect';
+import { it, expect, describe } from '@effect/vitest';
+
+describe('OrderIdGenerator — Effect', () => {
+  it.effect('generates deterministic IDs with seeded TestRandom', () =>
+    Effect.gen(function* () {
+      // Seed TestRandom for reproducible output — equivalent to faker.seed(42)
+      yield* TestRandom.seed(42);
+
+      const generator = yield* OrderIdGenerator.make();
+      const id1 = yield* generator.next();
+      const id2 = yield* generator.next();
+
+      // Same seed always produces the same sequence — no floating IDs across runs
+      expect(id1).toMatch(/^ORD-[A-F0-9]{8}$/);
+      expect(id2).not.toBe(id1); // different IDs in sequence
+      expect(id1).toBe('ORD-A1B2C3D4'); // deterministic with seed 42
+    })
+  );
+});
+```
+
+```typescript
+// Effect-TS: safe cleanup pattern — always await Effects in afterEach
+// This prevents the AP19 anti-pattern (unhandled rejection from cleanup Effect)
+import { Effect, Scope, ManagedRuntime } from 'effect';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+
+let runtime!: ManagedRuntime.ManagedRuntime<never, never>;
+let scope!: Scope.CloseableScope;
+
+beforeEach(async () => {
+  // Create a fresh runtime scope per test — ensures all fibers are cleaned up
+  scope = await Effect.runPromise(Scope.make());
+  runtime = ManagedRuntime.make([], scope);
+});
+
+afterEach(async () => {
+  // Close the scope — this interrupts all running fibers and releases resources
+  // ALWAYS await this — an unhandled rejection here appears as the NEXT test's failure
+  await Effect.runPromise(Scope.close(scope, new Error('test cleanup')).pipe(
+    Effect.catchAll(() => Effect.void) // swallow close errors — never let them leak
+  ));
+});
+
+describe('UserService — Effect runtime', () => {
+  it('creates a user', async () => {
+    const result = await runtime.runPromise(
+      Effect.gen(function* () {
+        const service = yield* UserService;
+        return yield* service.create({ name: 'Alice', email: 'alice@example.com' });
+      })
+    );
+    expect(result.id).toBeDefined();
+  });
+});
+```
+
+---
+
+## Pattern 44 — Biome Lint Rules for TypeScript Test Flakiness Prevention [community]
+
+Biome (formerly Rome) is a Rust-based TypeScript linter and formatter that is replacing
+ESLint in many TypeScript-first projects. Its `nursery` and `correctness` rule categories
+include several rules that prevent flakiness-prone patterns without needing plugin setup.
+
+```jsonc
+// biome.json — Biome configuration with anti-flakiness rules for test files
+{
+  "$schema": "https://biomejs.dev/schemas/1.9.0/schema.json",
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "correctness": {
+        // Prevents unawaited async calls — primary source of afterEach flakiness
+        "noFloatingPromises": "error",
+        // Prevents using void to discard Promise return values silently
+        "noVoidTypeReturn": "error"
+      },
+      "suspicious": {
+        // Prevents accidental assignment in test conditions (= instead of ==)
+        "noAssignInExpressions": "error",
+        // Prevents debugger statements from landing in CI tests
+        "noDebugger": "error",
+        // Prevents console.log from being committed (often left in test debugging)
+        "noConsoleLog": "warn"
+      },
+      "nursery": {
+        // Detects Promise-returning functions called without await
+        "useAwait": "error"
+      }
+    }
+  },
+  "overrides": [
+    {
+      // Apply stricter rules to test files only
+      "include": ["**/*.test.ts", "**/*.spec.ts", "**/*.test.tsx"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            // In test files, console.log is an error (not warning) — remove before merge
+            "noConsoleLog": "error",
+            // Catch: expect() without an assertion method — silent false-positive
+            "noEmptyBlockStatements": "warn"
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+```typescript
+// Custom Biome plugin (planned for Biome 2.0) — detect sleep() in test files
+// Until Biome supports custom rules, use the following workaround:
+// Add to biome.json under "nursery.noRestrictedSyntax" (Biome 1.9+)
+
+// biome.json additions:
+// "noRestrictedSyntax": {
+//   "level": "error",
+//   "options": {
+//     "expressions": [
+//       {
+//         "selector": "AwaitExpression > NewExpression[callee.name='Promise'] CallExpression[callee.name='setTimeout']",
+//         "message": "Use waitFor() or condition polling instead of sleep() in tests (flakiness smell)"
+//       }
+//     ]
+//   }
+// }
+
+// TypeScript utility: enforce no-sleep at the type level using a branded type
+// Prevents sleep() from being called — compile-time flakiness prevention
+
+/** @internal — do NOT export. Used only to enforce no-sleep at compile time in tests. */
+type NeverSleep = 'USE_WAIT_FOR_INSTEAD_OF_SLEEP';
+
+/**
+ * This function should never be called in tests.
+ * Import it and TypeScript will error if you call it (return type is `never`).
+ * Purpose: make the "sleep smell" a compile error, not a runtime or lint warning.
+ */
+export function sleepForbidden(_ms: number): NeverSleep {
+  throw new Error('sleepForbidden: Use waitFor() or condition polling instead. See flakiness guide.');
+}
+```
+
+---
+
+## Pattern 45 — `process.env` Isolation Between Tests [community]
+
+`process.env` mutations in tests are one of the easiest-to-miss shared state issues because
+the Node.js `process.env` object is global and mutable. Tests that assign to it (e.g.,
+`process.env.FEATURE_FLAG = 'enabled'`) without restoring the original value pollute
+subsequent tests in the same worker process.
+
+```typescript
+// BAD: directly assigning to process.env — leaks into subsequent tests
+it('enables beta feature when flag is set', () => {
+  process.env.BETA_FEATURE = 'true'; // DANGER: never restored
+  const service = new FeatureService();
+  expect(service.isBetaEnabled()).toBe(true);
+  // afterEach never runs — BETA_FEATURE = 'true' for all subsequent tests
+});
+
+// GOOD (Vitest): use vi.stubEnv() — automatically restored after each test
+import { vi } from 'vitest';
+
+it('enables beta feature when flag is set', () => {
+  vi.stubEnv('BETA_FEATURE', 'true'); // scoped to this test — restored automatically
+  const service = new FeatureService();
+  expect(service.isBetaEnabled()).toBe(true);
+  // vi.unstubAllEnvs() runs automatically after the test (Vitest 1.x+)
+});
+
+// GOOD (Jest): save and restore manually
+it('enables beta feature when flag is set', () => {
+  const original = process.env.BETA_FEATURE;
+  process.env.BETA_FEATURE = 'true';
+  try {
+    const service = new FeatureService();
+    expect(service.isBetaEnabled()).toBe(true);
+  } finally {
+    // Restore in finally — runs even if the assertion throws
+    process.env.BETA_FEATURE = original;
+  }
+});
+
+// BEST: inject environment as a dependency — testable without mutating process.env at all
+class FeatureServiceV2 {
+  constructor(private env: { BETA_FEATURE?: string } = process.env) {}
+  isBetaEnabled(): boolean { return this.env.BETA_FEATURE === 'true'; }
+}
+
+it('enables beta feature when flag is set (injection)', () => {
+  // No process.env mutation — test-local env object
+  const service = new FeatureServiceV2({ BETA_FEATURE: 'true' });
+  expect(service.isBetaEnabled()).toBe(true);
+});
+
+it('disables beta feature when flag is absent (injection)', () => {
+  // Different test, independent env — zero cross-test pollution
+  const service = new FeatureServiceV2({}); // no BETA_FEATURE key
+  expect(service.isBetaEnabled()).toBe(false);
+});
+```
+
+```typescript
+// Global process.env isolation setup — add to vitest.config.ts setupFiles
+// Ensures all tests start with a clean env snapshot and any mutations are rolled back
+import { beforeEach, afterEach } from 'vitest';
+
+// Snapshot process.env before each test
+let envSnapshot: NodeJS.ProcessEnv;
+
+beforeEach(() => {
+  // Shallow copy — sufficient for flat string env vars
+  envSnapshot = { ...process.env };
+});
+
+afterEach(() => {
+  // Restore all env vars to their pre-test state
+  // This covers cases where vi.stubEnv is not used (e.g., third-party code mutates env)
+  for (const key of Object.keys(process.env)) {
+    if (!(key in envSnapshot)) {
+      delete process.env[key]; // remove keys added during test
+    } else {
+      process.env[key] = envSnapshot[key]; // restore modified keys
+    }
+  }
+  // Restore deleted keys
+  for (const key of Object.keys(envSnapshot)) {
+    if (!(key in process.env)) {
+      process.env[key] = envSnapshot[key];
+    }
+  }
+});
+```
+
+---
+
+## Anti-Patterns (additional)
+
+### AP23 — `vi.stubEnv` Without `unstubAllEnvs` in Vitest [community]
+**What:** Using `vi.stubEnv('KEY', 'value')` without relying on Vitest's automatic cleanup, or manually calling `vi.unstubAllEnvs()` in the wrong lifecycle hook.
+**Why harmful:** Vitest calls `vi.unstubAllEnvs()` automatically after each test only when `unstubEnvs` is enabled (which it is by default in Vitest 1.x+). However, if tests use `beforeAll` instead of `beforeEach` for env setup, the stub persists for all tests in the describe block and is not rolled back until after the entire describe block completes. Pattern: use `vi.stubEnv` only in `beforeEach` or within the test body, never in `beforeAll`.
+
+### AP24 — Effect-TS Fibers Left Running After Test Completes [community]
+**What:** Tests that start Effect fibers (via `Effect.fork`) without tracking and interrupting them in cleanup.
+**Why harmful:** Forked fibers run independently of the test lifecycle. A fiber started in test A that writes to shared state may complete during test B, causing state pollution that looks like order-dependent flakiness. In Effect-TS, always use `Scope` to manage fiber lifetimes — fibers are automatically interrupted when the scope closes. Never use `Effect.fork` in tests without an associated cleanup scope.
+
+### AP25 — Biome's `noFloatingPromises` Rule Disabled for Test Files [community]
+**What:** Disabling `noFloatingPromises` for test files to suppress lint warnings on unawaited expectations.
+**Why harmful:** `noFloatingPromises` in test files is not a false positive — it catches exactly the same class of bug as in production code: an async operation (like `afterEach(async () => cleanup())`) where the `await` is forgotten. Teams that disable the rule for test files lose the only static analysis protection against one of the most common `afterEach` flakiness patterns. Fix: correct the unawaited call rather than disabling the rule.
 
 ---
 
@@ -2739,3 +3738,16 @@ Teams that successfully reduce flakiness long-term consistently have:
 | Pact interaction fails intermittently | Fire-and-forget state handler | Pattern 17 (await state handlers) | Unawaited DB insert |
 | Migration fails in parallel workers | DB migration race | Pattern 18 (advisory lock) | No distributed lock |
 | WebSocket message missed | Connection timing race | Pattern 15 (explicit sync) | sleep() before send |
+| Floating-point mismatch | IEEE 754 arch differences | Pattern 36 (toBeCloseTo, integer cents) | AP20 (exact float equality) |
+| Service worker intercepts wrong test | SW scope leakage | Pattern 38 (unregister in afterEach) | AP22 (no SW cleanup) |
+| ORM returns different first row | Unordered DB query | Pattern 40 (Drizzle tx rollback + orderBy) | No ORDER BY in test queries |
+| Bun --rerun-each exposes new failures | Module-level state not reset | Pattern 35 (Bun beforeEach reset) | AP18 (no Bun state reset) |
+| Async iterator leaves stream open | Stream not fully consumed | Pattern 42 (streamToString helper) | AP21 (partial stream read) |
+| Layout observer TypeError in JSDOM | ResizeObserver/IO unavailable | Pattern 41 (observer mocks in setup) | No observer polyfill |
+| Next.js route handler uses stale cache | App Router request cache | Pattern 39 (NTARH per-test handler) | Shared route handler instance |
+| React 19 act() warnings as errors | RSC / concurrent state update | Pattern 37 (findBy* for async) | AP (getBy* on async state) |
+| CI node_modules cache stale | Cache key missing lock file hash | Gotcha 25 (hashFiles in cache key) | AP (branch-only cache key) |
+| process.env leaks between tests | Global env mutation | Pattern 45 (vi.stubEnv / env injection) | AP23 (vi.stubEnv in beforeAll) |
+| Effect fiber state bleeds between tests | Uninterrupted fork | Pattern 43 (Scope-scoped fibers) | AP24 (Effect.fork without cleanup) |
+| Floating-point total wrong on ARM CI | IEEE 754 platform variance | Pattern 36 (integer arithmetic) | AP20 (direct toBe on floats) |
+| Biome noFloatingPromises disabled | Test unawaited async | Pattern 44 (Biome config, useAwait) | AP25 (disable rule for tests) |

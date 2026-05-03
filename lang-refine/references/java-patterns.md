@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
+<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
 
 ## Core Philosophy
 
@@ -359,7 +359,7 @@ public final class Invoice {
 }
 ```
 
-
+### Generics Bounds — PECS and Type-Safe Containers
 Use bounded wildcards to write flexible, reusable APIs. The PECS mnemonic — **Producer Extends, Consumer Super** — tells you when to use `? extends T` (you're reading from the collection) vs. `? super T` (you're writing to it).
 
 ```java
@@ -395,6 +395,22 @@ public class TypeSafeContainer {
 
     public <T> T get(Class<T> type) {
         return type.cast(map.get(type));
+    }
+}
+
+// Wildcard capture helper — enables mutation of wildcarded collections
+// through a private helper method that "captures" the wildcard into a named T
+public class WildcardCapture {
+    // Public method with wildcard — caller doesn't need to name the type
+    public static void swap(List<?> list, int i, int j) {
+        swapHelper(list, i, j);  // delegate to helper for type safety
+    }
+
+    // Private helper captures the wildcard into T — enables set()
+    private static <T> void swapHelper(List<T> list, int i, int j) {
+        T tmp = list.get(i);
+        list.set(i, list.get(j));
+        list.set(j, tmp);
     }
 }
 ```
@@ -465,6 +481,96 @@ public class VirtualThreadDemo {
         return client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString()).body();
     }
 }
+```
+
+### Decorator Pattern — Composing Behaviours Without Subclassing
+The Decorator wraps a target interface with additional behaviour while delegating core work to the wrapped instance. Java's functional interfaces make one-line decorators trivial, but explicit decorator classes remain appropriate for stateful or complex cross-cutting concerns.
+
+```java
+// Core interface
+public interface DataProcessor {
+    String process(String input);
+}
+
+// Concrete implementation
+public class TrimProcessor implements DataProcessor {
+    @Override
+    public String process(String input) { return input.trim(); }
+}
+
+// Decorator — adds logging without modifying TrimProcessor
+public class LoggingProcessor implements DataProcessor {
+    private final DataProcessor delegate;
+    private static final System.Logger LOG = System.getLogger(LoggingProcessor.class.getName());
+
+    public LoggingProcessor(DataProcessor delegate) {
+        this.delegate = Objects.requireNonNull(delegate);
+    }
+
+    @Override
+    public String process(String input) {
+        LOG.log(System.Logger.Level.DEBUG, "Processing: {0}", input);
+        String result = delegate.process(input);
+        LOG.log(System.Logger.Level.DEBUG, "Result: {0}", result);
+        return result;
+    }
+}
+
+// Functional decorator — one-liner using lambdas (Java 8+)
+DataProcessor timed = input -> {
+    long start = System.nanoTime();
+    String result = new TrimProcessor().process(input);
+    System.out.printf("Took %d ns%n", System.nanoTime() - start);
+    return result;
+};
+
+// Stack decorators fluently for the full pipeline
+DataProcessor pipeline = new LoggingProcessor(new TrimProcessor());
+String result = pipeline.process("  hello world  ");
+```
+
+### Strategy Pattern — Interchangeable Algorithms via Functional Interfaces
+The Strategy pattern encapsulates a family of algorithms behind a common interface so the algorithm can be selected and swapped at runtime. In modern Java, a `@FunctionalInterface` replaces a full strategy class hierarchy — the lambda IS the strategy.
+
+```java
+// Strategy interface — a single abstract method makes it a lambda target
+@FunctionalInterface
+public interface PricingStrategy {
+    double applyDiscount(double basePrice, int quantityOrdered);
+
+    // Built-in named strategies as static factories on the interface
+    static PricingStrategy standard() {
+        return (price, qty) -> price;  // no discount
+    }
+
+    static PricingStrategy volumeDiscount(double threshold, double rate) {
+        return (price, qty) -> qty >= threshold ? price * (1 - rate) : price;
+    }
+
+    static PricingStrategy seasonal(double rate) {
+        return (price, qty) -> price * (1 - rate);
+    }
+}
+
+// Context class — holds the strategy
+public class OrderPricer {
+    private final PricingStrategy strategy;
+
+    public OrderPricer(PricingStrategy strategy) {
+        this.strategy = strategy;
+    }
+
+    public double calculateTotal(List<OrderLine> lines) {
+        return lines.stream()
+            .mapToDouble(line -> strategy.applyDiscount(line.basePrice(), line.quantity()))
+            .sum();
+    }
+}
+
+// Usage — swap strategies at call site without modifying OrderPricer
+var standardPricer  = new OrderPricer(PricingStrategy.standard());
+var bulkPricer      = new OrderPricer(PricingStrategy.volumeDiscount(10, 0.15));
+var salePricer      = new OrderPricer(PricingStrategy.seasonal(0.20));
 ```
 
 ### CompletableFuture — Async Composition
@@ -611,6 +717,45 @@ public double area(Shape shape) {
 }
 ```
 
+### Record Patterns — Destructuring in Pattern Matching (Java 21)
+Record patterns allow you to deconstruct a record's components directly inside a `switch` arm or `instanceof` check, eliminating intermediate accessor calls and making structural decomposition more declarative. They compose naturally with sealed classes and nested pattern matching.
+
+```java
+// Domain model
+public sealed interface Shape permits Circle, Rectangle, Triangle {}
+public record Circle(double radius)                   implements Shape {}
+public record Rectangle(double width, double height)  implements Shape {}
+public record Triangle(double base, double height)    implements Shape {}
+
+// Record pattern in switch — destructure components directly in the arm
+public double perimeter(Shape shape) {
+    return switch (shape) {
+        case Circle(double r)                       -> 2 * Math.PI * r;
+        case Rectangle(double w, double h)          -> 2 * (w + h);
+        case Triangle(double b, double h)           -> b + 2 * Math.sqrt(h * h + (b / 2) * (b / 2));
+    };
+}
+
+// Record pattern in instanceof — bound variables usable immediately
+Object payload = receiveMessage();
+if (payload instanceof Rectangle(double w, double h) && w > h) {
+    System.out.println("Landscape rectangle: " + w + " x " + h);
+}
+
+// Nested record patterns — deconstruct trees and compositions
+public record Point(double x, double y) {}
+public record Line(Point start, Point end) {}
+
+double length(Object obj) {
+    return switch (obj) {
+        // Destructure nested records in one arm — no intermediate variable needed
+        case Line(Point(double x1, double y1), Point(double x2, double y2)) ->
+            Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
+        default -> throw new IllegalArgumentException("Not a Line: " + obj);
+    };
+}
+```
+
 ### try-with-resources
 Any `AutoCloseable` resource declared in the `try` header is closed automatically even if an exception is thrown, preventing resource leaks.
 
@@ -731,6 +876,125 @@ SequencedCollection<String> reversed = items.reversed();
 reversed.forEach(System.out::println);  // z, a, b, c
 ```
 
+### EnumSet and EnumMap — Enum-Optimised Collections
+`EnumSet` and `EnumMap` are specialised implementations for enum keys that use compact bit-vector and array representations internally — dramatically more efficient than `HashSet<MyEnum>` or `HashMap<MyEnum, V>`. Use them whenever the key domain is an enum type.
+
+```java
+public enum Permission { READ, WRITE, EXECUTE, ADMIN }
+
+// EnumSet — a compact, efficient set of enum constants
+EnumSet<Permission> adminPerms  = EnumSet.allOf(Permission.class);
+EnumSet<Permission> readOnly    = EnumSet.of(Permission.READ);
+EnumSet<Permission> readWrite   = EnumSet.of(Permission.READ, Permission.WRITE);
+
+// Set operations — fast bit-manipulation under the hood
+EnumSet<Permission> missing = EnumSet.complementOf(readOnly);  // {WRITE, EXECUTE, ADMIN}
+boolean canAdmin = adminPerms.containsAll(readOnly);            // true
+
+// EnumMap — array-backed map keyed by enum ordinal; faster than HashMap
+EnumMap<Permission, String> descriptions = new EnumMap<>(Permission.class);
+descriptions.put(Permission.READ,    "Can view resources");
+descriptions.put(Permission.WRITE,   "Can modify resources");
+descriptions.put(Permission.EXECUTE, "Can run commands");
+descriptions.put(Permission.ADMIN,   "Full administrative access");
+
+// Iteration preserves enum declaration order (unlike HashMap)
+descriptions.forEach((perm, desc) -> System.out.println(perm + ": " + desc));
+```
+
+### java.time API — Modern Date and Time
+The `java.time` package (Java 8+, JSR-310) is the definitive replacement for `java.util.Date`, `Calendar`, and `SimpleDateFormat`. All classes are immutable and thread-safe. Use `LocalDate`/`LocalDateTime` for human dates; `Instant` for machine timestamps; `ZonedDateTime` for timezone-aware operations; `Duration`/`Period` for amounts of time.
+
+```java
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+
+// LocalDate — date without time; no timezone; human calendars
+LocalDate today    = LocalDate.now();
+LocalDate nextWeek = today.plusWeeks(1);
+LocalDate birthday = LocalDate.of(1990, Month.JUNE, 15);
+long daysOld = ChronoUnit.DAYS.between(birthday, today);
+
+// LocalDateTime — date + time without timezone
+LocalDateTime meeting = LocalDateTime.of(2026, 5, 10, 14, 30);
+
+// Instant — machine timestamp; nanosecond precision; UTC
+Instant now  = Instant.now();
+Instant later = now.plusSeconds(3600);
+
+// ZonedDateTime — instant in a specific timezone
+ZonedDateTime nyNow    = ZonedDateTime.now(ZoneId.of("America/New_York"));
+ZonedDateTime tokyoNow = nyNow.withZoneSameInstant(ZoneId.of("Asia/Tokyo"));
+
+// Formatting and parsing — DateTimeFormatter is immutable (thread-safe)
+DateTimeFormatter iso = DateTimeFormatter.ISO_LOCAL_DATE;
+String formatted   = today.format(iso);                      // "2026-05-03"
+LocalDate parsed   = LocalDate.parse("2026-05-03", iso);
+
+// Duration (machine precision) vs Period (human calendar units)
+Duration twoHours   = Duration.ofHours(2);
+Period   threeMonths = Period.ofMonths(3);
+LocalDate deadline   = today.plus(threeMonths);
+```
+
+### Effective Enum Patterns — Abstract Methods and Singleton Enums
+Java enums are full classes. Each constant can override abstract methods, implement interfaces, and carry fields. This enables the "Constant-Specific Class Body" pattern (Effective Java Item 34): behaviour varies per constant without a `switch` statement scattered throughout the codebase.
+
+```java
+// Abstract method per constant — each constant defines its own behaviour
+public enum Operation {
+    PLUS("+") {
+        @Override public double apply(double x, double y) { return x + y; }
+    },
+    MINUS("-") {
+        @Override public double apply(double x, double y) { return x - y; }
+    },
+    TIMES("*") {
+        @Override public double apply(double x, double y) { return x * y; }
+    },
+    DIVIDE("/") {
+        @Override public double apply(double x, double y) {
+            if (y == 0) throw new ArithmeticException("Division by zero");
+            return x / y;
+        }
+    };
+
+    private final String symbol;
+    Operation(String symbol) { this.symbol = symbol; }
+
+    public abstract double apply(double x, double y);
+
+    @Override public String toString() { return symbol; }
+
+    // Enum as a safe lookup by symbol — no switch, no null
+    private static final Map<String, Operation> BY_SYMBOL =
+        Arrays.stream(values())
+              .collect(Collectors.toMap(op -> op.symbol, op -> op));
+
+    public static Optional<Operation> fromSymbol(String sym) {
+        return Optional.ofNullable(BY_SYMBOL.get(sym));
+    }
+}
+
+// Enum as a thread-safe singleton (Effective Java Item 3)
+// Best singleton pattern in Java — enum handles serialization and reflection attacks
+public enum DatabasePool {
+    INSTANCE;
+
+    private final HikariDataSource pool = initPool();
+
+    private HikariDataSource initPool() {
+        var config = new HikariConfig();
+        config.setJdbcUrl(System.getenv("DB_URL"));
+        return new HikariDataSource(config);
+    }
+
+    public Connection getConnection() throws SQLException {
+        return pool.getConnection();
+    }
+}
+```
+
 ### Unnamed Patterns and Unnamed Variables (Java 22+)
 Java 22 introduced unnamed patterns (`_`) for ignoring components you don't need in pattern matching, and unnamed variables (`_`) for lambda parameters and catch clauses you don't use. This reduces boilerplate and makes intent clear.
 
@@ -837,6 +1101,77 @@ List<Integer> totals = numbers.stream()
     .gather(runningTotal)
     .toList();
 // [1, 3, 6, 10, 15, 21, 28, 36]
+```
+
+### Primitive Types in Patterns (Java 23+ — JEP 455)
+Java 23 extended pattern matching to support primitive types in `instanceof` and `switch`, eliminating the awkward narrowing cast pattern and enabling exhaustive switching over primitives with guarded cases.
+
+```java
+// Before Java 23 — boxing + instanceof or manual cast needed
+Object rawValue = getSensorReading();
+if (rawValue instanceof Integer i && i > 100) {
+    triggerAlert(i);
+}
+
+// Java 23+ — primitive types work directly in instanceof patterns
+int reading = getSensorValueAsInt();
+if (reading instanceof int i && i > 100) {  // no boxing; direct primitive pattern
+    triggerAlert(i);
+}
+
+// Switch over primitives with type patterns (Java 23+)
+// Previously only constants were valid switch arms
+double result = switch (reading) {
+    case int i when i < 0    -> 0.0;           // negative: clamp
+    case int i when i > 1000 -> 1.0;           // saturate
+    case int i               -> i / 1000.0;    // normalise
+};
+
+// Exhaustive over byte/short/char/int/long without a default arm
+// when all sub-ranges are covered by guarded cases (Java 23+ preview)
+byte status = getStatusByte();
+String description = switch (status) {
+    case byte b when b == 0   -> "idle";
+    case byte b when b == 1   -> "active";
+    case byte b when b < 0    -> "error: " + b;
+    default                   -> "unknown: " + status;
+};
+```
+
+### Structured Concurrency (Java 21 preview → Java 24 standard — JEP 505)
+Structured concurrency treats a group of related tasks as a single unit of work. If any subtask fails, sibling tasks are automatically cancelled, and all task lifetimes are bounded to the enclosing scope. This eliminates the common bug where a parent thread continues while child tasks leak into the background.
+
+```java
+import java.util.concurrent.StructuredTaskScope;
+import java.util.concurrent.StructuredTaskScope.Subtask;
+
+// ShutdownOnFailure — cancel all subtasks if any fails
+public record OrderDetails(User user, Inventory inventory, Pricing pricing) {}
+
+public OrderDetails buildOrderDetails(long orderId) throws Exception {
+    try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+        // Fork all three fetches concurrently
+        Subtask<User>      user      = scope.fork(() -> userService.findById(orderId));
+        Subtask<Inventory> inventory = scope.fork(() -> inventoryService.check(orderId));
+        Subtask<Pricing>   pricing   = scope.fork(() -> pricingService.quote(orderId));
+
+        scope.join()           // wait for all subtasks to complete or any to fail
+             .throwIfFailed(); // re-throws the first exception
+
+        // All subtasks succeeded — safe to read results
+        return new OrderDetails(user.get(), inventory.get(), pricing.get());
+    }
+    // scope.close() cancels any still-running subtasks automatically
+}
+
+// ShutdownOnSuccess — return the first successful result, cancel the rest
+public String fetchFromFastestReplica(List<String> replicaUrls) throws Exception {
+    try (var scope = new StructuredTaskScope.ShutdownOnSuccess<String>()) {
+        replicaUrls.forEach(url -> scope.fork(() -> httpClient.fetch(url)));
+        scope.join();
+        return scope.result();  // returns the first successful response
+    }
+}
 ```
 
 ---
@@ -1133,6 +1468,313 @@ public class Order {
 ```
 **WHY:** An object that allows external mutation of its fields is not truly immutable. "Final" only prevents reassigning the reference — it does not make the referenced list immutable. Use `List.copyOf()` (null-safe, throws on null elements) or `Collections.unmodifiableList()` depending on whether you need snapshot semantics or a live read-only view.
 
+**19. Misusing Parallel Streams for I/O-bound Work [community]**
+`stream.parallel()` uses the common `ForkJoinPool`, which defaults to `Runtime.getRuntime().availableProcessors() - 1` threads. Using it for I/O-bound tasks (database calls, HTTP, file reads) starves CPU-bound computations sharing that pool — and it does NOT scale beyond the number of processors. The root cause is confusing parallelism (more CPUs) with concurrency (more tasks in flight). Fix: use virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`) for I/O-bound concurrency; reserve `parallel()` for CPU-bound, data-parallel operations on large collections.
+
+```java
+// BAD — parallel stream doing I/O starves the shared ForkJoinPool
+List<User> users = ids.parallelStream()
+    .map(id -> database.findUserById(id))  // blocking I/O on ForkJoinPool thread
+    .toList();
+
+// GOOD — virtual threads for I/O-bound concurrency
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    List<Future<User>> futures = ids.stream()
+        .map(id -> executor.submit(() -> database.findUserById(id)))
+        .toList();
+    List<User> users = futures.stream()
+        .map(f -> { try { return f.get(); } catch (Exception e) { throw new RuntimeException(e); } })
+        .toList();
+}
+
+// OK — parallel stream for CPU-bound data processing over large arrays
+double sum = largeDoubleArray.stream()
+    .parallel()
+    .mapToDouble(d -> Math.sqrt(d))   // pure CPU computation — good fit for parallel
+    .sum();
+```
+**WHY:** The `ForkJoinPool` common pool is shared across the entire JVM (including framework internals). Blocking it on I/O tasks can deadlock or severely degrade unrelated parallel streams. Virtual threads are designed exactly for this use case — cheap, scalable I/O concurrency without starving CPU workers.
+
+**20. Forgetting to Close HttpClient (Java 11+) [community]**
+`java.net.http.HttpClient` holds a thread pool and connection pool that are NOT automatically closed. Creating a new `HttpClient` per request leaks threads until GC happens to finalize the client. The root cause is that `HttpClient` looks lightweight to create but is actually a heavyweight resource. Fix: create one `HttpClient` instance per application lifecycle (or per connection pool configuration), store it as a field or singleton, and close it on shutdown.
+
+```java
+// BAD — new client per request; leaks connection pool threads
+public String fetchData(String url) throws Exception {
+    var client = HttpClient.newHttpClient();  // new pool every call
+    var request = HttpRequest.newBuilder().uri(URI.create(url)).build();
+    return client.send(request, BodyHandlers.ofString()).body();
+}
+
+// GOOD — shared client, closed with try-with-resources or on shutdown
+public class ApiClient implements AutoCloseable {
+    private final HttpClient client = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(10))
+        .executor(Executors.newVirtualThreadPerTaskExecutor())  // virtual threads for sends
+        .build();
+
+    public String fetch(String url) throws Exception {
+        var request = HttpRequest.newBuilder().uri(URI.create(url)).build();
+        return client.send(request, BodyHandlers.ofString()).body();
+    }
+
+    @Override
+    public void close() throws Exception {
+        client.close();  // available since Java 21
+    }
+}
+```
+**WHY:** Each `HttpClient.newHttpClient()` creates a dedicated thread pool (default: one thread per processor). In applications that make frequent, short-lived calls, this silently accumulates thread stacks until the JVM crashes with `OutOfMemoryError: unable to create native thread`.
+
+**21. Using String.intern() as a Memory Optimization [community]**
+`String.intern()` stores a string in the JVM's string pool so that identical strings share a single reference. Developers sometimes use it to reduce memory when storing millions of repeated strings. However, in modern JVMs (JDK 7+), the string pool lives on the heap, and aggressive interning on high-throughput paths is measured to slow down GC because the pool is a permanent reference root. The root cause is applying an outdated optimization from the PermGen era. Fix: use a `HashMap<String, String>` as a manual string cache when you genuinely need deduplication; or use `String.intern()` only for strings that are truly static and few in number (e.g., protocol tokens).
+
+```java
+// BAD — interning dynamically generated strings causes GC pressure
+for (String line : Files.readAllLines(Path.of("data.csv"))) {
+    String key = line.split(",")[0].intern();  // floods string pool with CSV data
+    cache.put(key, parseRecord(line));
+}
+
+// GOOD — manual canonical map for deduplication with bounded size
+private final Map<String, String> canonicalStrings = new HashMap<>();
+
+private String deduplicate(String s) {
+    return canonicalStrings.computeIfAbsent(s, k -> k);
+}
+```
+**WHY:** The JVM's string pool is a `ConcurrentHashMap` protected by a global lock. On multi-threaded applications with millions of unique strings, `intern()` becomes a bottleneck. Use explicit deduplication maps with controlled eviction (e.g., `LinkedHashMap` with LRU) instead.
+
+**22. Integer Overflow in Arithmetic Without Using Math.addExact [community]**
+Java's `int` and `long` arithmetic silently wraps on overflow — there's no exception, no flag, no indication that a calculation produced a wrong result. This is a common source of subtle bugs in financial calculations, size computations, and index arithmetic. Fix: use `Math.addExact`, `Math.multiplyExact`, and `Math.subtractExact` (Java 8+) when overflow must be detected; use `BigDecimal` for monetary values.
+
+```java
+// BAD — silent overflow; no exception, wrong result
+int a = Integer.MAX_VALUE;
+int b = a + 1;  // b = -2147483648 (Integer.MIN_VALUE) — wrong!
+
+// GOOD — throws ArithmeticException on overflow
+int safe = Math.addExact(a, 1);  // throws: "integer overflow"
+
+// GOOD — for financial calculations, BigDecimal is always correct
+BigDecimal price   = new BigDecimal("99999999.99");
+BigDecimal taxRate = new BigDecimal("0.09");
+BigDecimal tax     = price.multiply(taxRate, new MathContext(10, RoundingMode.HALF_EVEN));
+
+// GOOD — detect overflow in complex expressions using long
+long result = (long) a * b;  // upcast before multiply to avoid int overflow
+if (result > Integer.MAX_VALUE) {
+    throw new ArithmeticException("Result exceeds int range: " + result);
+}
+```
+**WHY:** Integer overflow in Java is undefined behavior in C but defined (wrapping) behavior in Java — so the compiler does not flag it and the JVM does not throw. Real-world bugs from silent overflow include the famous `(low + high) / 2` binary search overflow bug and financial calculation errors.
+
+**23. `Arrays.asList()` vs `List.of()` — Fixed-Size vs Truly Immutable [community]**
+`Arrays.asList()` returns a fixed-size list backed by the original array: you can call `set()` on it, the array and list share the same backing store (mutating one mutates the other), but calling `add()` or `remove()` throws `UnsupportedOperationException`. `List.of()` returns a truly unmodifiable list where ALL mutating operations throw. The root cause is that `Arrays.asList()` predates the Collections factory methods and has surprising semantics. Fix: prefer `List.of()` for literal immutable lists; use `new ArrayList<>(Arrays.asList(...))` when you need a mutable copy.
+
+```java
+String[] arr = {"a", "b", "c"};
+List<String> asList = Arrays.asList(arr);   // fixed-size, backed by array
+
+asList.set(0, "z");    // OK — set works
+arr[1] = "y";          // also changes asList[1] — same backing array!
+asList.add("d");       // throws UnsupportedOperationException
+
+// List.of() — truly immutable, no shared array
+List<String> immutable = List.of("a", "b", "c");
+immutable.set(0, "z"); // throws UnsupportedOperationException — even set!
+
+// When you need a mutable copy
+List<String> mutable = new ArrayList<>(List.of("a", "b", "c"));
+mutable.add("d");      // OK
+```
+**WHY:** Code that receives a `List` and calls `set()` on it will "work" with `Arrays.asList()` but break with `List.of()`. Code that calls `add()` breaks with both but gives the same exception, masking the underlying difference. Always choose the right factory for the intended semantics.
+
+**24. Logging Instead of Propagating Exceptions — Log-and-Rethrow Anti-Pattern [community]**
+Logging an exception at the catch site AND re-throwing it results in the same stack trace appearing multiple times in logs — once at the catch point, once at each level above. This makes root-cause analysis harder, not easier. The root cause is defensive logging without considering what the upstream caller does with the exception. Fix: either log OR throw, not both. Only the layer that makes a final decision about the exception (i.e., does not re-throw) should log it.
+
+```java
+// BAD — logs the exception AND re-throws it; stack trace appears twice (or more) in logs
+public User findUser(long id) {
+    try {
+        return userRepository.findById(id);
+    } catch (DatabaseException e) {
+        log.error("Failed to find user {}", id, e);  // logged here
+        throw e;                                      // AND propagated — logged again upstream
+    }
+}
+
+// GOOD — propagate with context; let the boundary layer (controller/handler) log once
+public User findUser(long id) {
+    try {
+        return userRepository.findById(id);
+    } catch (DatabaseException e) {
+        throw new UserLookupException("Cannot find user id=" + id, e);  // wraps with context
+    }
+}
+
+// GOOD — boundary layer: log once, at the point of final handling
+// (e.g., REST controller exception handler)
+@ExceptionHandler(UserLookupException.class)
+public ResponseEntity<Error> handleUserLookup(UserLookupException e) {
+    log.error("User lookup failed", e);   // logged ONCE
+    return ResponseEntity.status(404).body(new Error(e.getMessage()));
+}
+```
+**WHY:** Log-and-rethrow produces duplicate log lines. In high-traffic services, this doubles log volume and makes Kibana/Splunk/Loki searches confusing because the same incident has multiple log entries at different stack depths.
+
+**25. Iterating a Map with `keySet()` and Then Calling `get()` [community]**
+Iterating over `map.keySet()` and calling `map.get(key)` inside the loop performs two hash lookups per entry — one to get the key, one to retrieve the value. On large maps or tight loops, this roughly doubles the work. Fix: always iterate over `map.entrySet()` which provides the key-value pair in a single lookup.
+
+```java
+// BAD — two hash lookups per iteration (keySet() + get())
+for (String key : map.keySet()) {
+    String value = map.get(key);   // second lookup — wasteful
+    process(key, value);
+}
+
+// GOOD — entrySet() provides key and value together (single lookup)
+for (Map.Entry<String, String> entry : map.entrySet()) {
+    process(entry.getKey(), entry.getValue());
+}
+
+// ALSO GOOD — forEach lambda (Java 8+)
+map.forEach((key, value) -> process(key, value));
+
+// METHOD REFERENCE form when the method signature matches
+map.forEach(MyClass::process);
+```
+**WHY:** A `HashMap` bucket lookup requires computing `hashCode()`, finding the bucket, and walking the chain. With `keySet()` + `get()`, you do this twice. With `entrySet()`, you traverse the internal table once. For a 10,000-entry map with complex `hashCode()`, this measurably affects performance in hot loops.
+
+**26. Using `Optional.get()` Without `isPresent()` Check [community]**
+`Optional.get()` throws `NoSuchElementException` if the Optional is empty — it is NOT a null-safe operation. Using `optional.get()` directly without checking `isPresent()` is no safer than dereferencing a null reference; you've just replaced `NullPointerException` with `NoSuchElementException`. Fix: use `orElse()`, `orElseGet()`, `orElseThrow()`, `ifPresent()`, or `map()`/`flatMap()` chaining — never call `get()` without a preceding `isPresent()` check.
+
+```java
+Optional<User> user = repo.findById(id);
+
+// BAD — throws NoSuchElementException if empty; no better than dereferencing null
+String email = user.get().getEmail();
+
+// BAD — get() with isPresent() is verbose and breaks the monadic chaining idiom
+if (user.isPresent()) {
+    String email = user.get().getEmail();
+}
+
+// GOOD — declarative, exception thrown on absence with a meaningful message
+User u = user.orElseThrow(() -> new UserNotFoundException("No user with id " + id));
+
+// GOOD — provide default
+String email = user.map(User::getEmail).orElse("unknown@example.com");
+
+// GOOD — side-effect only when present
+user.ifPresent(u -> notificationService.notify(u));
+
+// GOOD — if present/absent both need handling
+user.ifPresentOrElse(
+    u -> log.info("Found: {}", u.name()),
+    () -> log.warn("User {} not found", id)
+);
+```
+**WHY:** `Optional.get()` is the only method on `Optional` that can throw without a null being involved. It exists for rare cases where the developer has external knowledge that the optional is non-empty (e.g., after `isPresent()`). In practice, it signals a design error — if you know the value is present, you shouldn't have returned an `Optional` in the first place.
+
+**27. Modifying a Collection While Iterating It — ConcurrentModificationException [community]**
+`java.util` collections (ArrayList, HashMap, HashSet) use a `modCount` mechanism that throws `ConcurrentModificationException` if the collection is structurally modified while an enhanced `for` loop or iterator is in progress. This happens even on single-threaded code. The root cause is using the enhanced for loop (which creates an implicit `Iterator`) and then calling `list.remove()` directly on the collection instead of `iterator.remove()`. Fix: collect items to remove in a separate list and remove after iteration, use `removeIf()`, or use `Iterator.remove()`.
+
+```java
+List<String> items = new ArrayList<>(List.of("a", "b", "c", "d"));
+
+// BAD — throws ConcurrentModificationException
+for (String item : items) {
+    if (item.equals("b")) {
+        items.remove(item);  // modifies collection while iterator is live
+    }
+}
+
+// GOOD — removeIf (Java 8+) — clear, single-line, no manual iterator
+items.removeIf(item -> item.equals("b"));
+
+// GOOD — Iterator.remove() — safe way to remove during iteration
+Iterator<String> it = items.iterator();
+while (it.hasNext()) {
+    if (it.next().equals("b")) {
+        it.remove();   // safe: removes via iterator, updates modCount correctly
+    }
+}
+
+// GOOD — collect then remove
+List<String> toRemove = items.stream()
+    .filter(i -> i.equals("b"))
+    .toList();
+items.removeAll(toRemove);
+```
+**WHY:** The fast-fail `modCount` check exists to catch bugs, not as a concurrency mechanism — it works on single-threaded code too. `CopyOnWriteArrayList` avoids the issue but is only appropriate for read-heavy, rarely-written collections due to copy-on-write overhead.
+
+**28. Forgetting to Close Streams from `Files.lines()` [community]**
+`Files.lines(path)` opens a file and returns a lazy `Stream<String>`. If the stream is not closed, the file handle leaks until GC runs a finalizer. In applications processing many files, this exhausts the OS file descriptor limit with no helpful error until `Too many open files` appears. Fix: always use `Files.lines()` inside a `try-with-resources` block; or prefer `Files.readAllLines()` for small files where the full content fits in memory.
+
+```java
+// BAD — file handle leaks; stream not closed
+Stream<String> lines = Files.lines(Path.of("data.txt"));
+long count = lines.filter(l -> l.startsWith("#")).count();
+// lines is never closed — file descriptor leaks
+
+// GOOD — try-with-resources closes the stream (and the file) automatically
+try (Stream<String> lines = Files.lines(Path.of("data.txt"))) {
+    long count = lines.filter(l -> l.startsWith("#")).count();
+}  // file closed here even if an exception is thrown
+
+// ALSO GOOD — for small files, readAllLines loads fully, closes immediately
+List<String> allLines = Files.readAllLines(Path.of("data.txt"), StandardCharsets.UTF_8);
+long count = allLines.stream().filter(l -> l.startsWith("#")).count();
+```
+**WHY:** `Stream<String>` implements `AutoCloseable`, but unlike database connections and sockets, developers rarely think of streams as resources. `Files.lines()` documentation warns about this, but it's easy to miss. In containerised environments with strict fd limits (e.g., Docker default of 1024), this causes failures under moderate load.
+
+**29. Using String.format() in Log Messages Instead of Parameterised Logging [community]**
+`String.format("User %s logged in from %s", user, ip)` eagerly builds the string even when the log level is below the threshold. For a `DEBUG` message in production where DEBUG is disabled, this allocates a formatted string for every call, only for the logging framework to immediately discard it. Fix: use parameterised logging arguments (`log.debug("User {} logged in from {}", user, ip)`) which are only evaluated if the message is actually logged.
+
+```java
+// BAD — String.format() always runs; allocates a String even when DEBUG is off
+log.debug("Processing order " + orderId + " for user " + userId);   // string concat
+log.debug(String.format("Computed %d items in %.2fms", count, elapsed));  // String.format
+
+// GOOD — parameterised logging; string only built when level is enabled
+log.debug("Processing order {} for user {}", orderId, userId);       // SLF4J style
+log.debug("Computed {} items in {}ms", count, elapsed);
+
+// Also good — isEnabled guard for expensive computations
+if (log.isDebugEnabled()) {
+    log.debug("State dump: {}", expensiveStateSnapshot());  // function not called unless debug on
+}
+```
+**WHY:** In a high-throughput service logging millions of DEBUG lines per second (disabled in prod), String.format() adds significant GC pressure. SLF4J's `{}` placeholders only call `toString()` on the arguments when the level is actually enabled. This is not just a style preference — it is a measurable performance difference in hot code paths.
+
+**30. Ignoring the `@Override` Annotation [community]**
+Omitting `@Override` on methods intended to override a supertype method causes silent bugs: if the method signature changes in the supertype (e.g., a parameter type changes or the method is removed), the "override" silently becomes an overload or orphaned method. The root cause is treating `@Override` as optional because the code compiles without it. Fix: always add `@Override` on methods that are intended to override superclass or interface methods — the compiler will flag it immediately if the method no longer matches.
+
+```java
+// BAD — if Comparable.compareTo(T other) changes, this silently stops overriding it
+public class Version {
+    public int compareTo(Version other) {   // missing @Override
+        return Integer.compare(this.major, other.major);
+    }
+}
+
+// GOOD — @Override guarantees this is actually an override; compiler error if not
+public class Version implements Comparable<Version> {
+    @Override
+    public int compareTo(Version other) {
+        return Integer.compare(this.major, other.major);
+    }
+}
+
+// Also: @Override must be used when implementing interface methods in Java 6+
+public class EmailSender implements NotificationSender {
+    @Override  // required: catches interface method removal/rename at compile time
+    public void send(Notification n) { /* ... */ }
+}
+```
+**WHY:** A missing `@Override` on `equals(Object)` is a classic Java trap — developers write `equals(MyClass other)` (an overload) instead of `equals(Object other)` (the override), and the wrong method is silently called in collections. `@Override` turns this runtime bug into a compile-time error.
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -1162,3 +1804,15 @@ public class Order {
 | `map.get()` + null check instead of `computeIfAbsent` | Verbose; non-atomic under concurrency | Use `computeIfAbsent` (atomic); `getOrDefault` for reads |
 | Implementing `Comparable` for multiple sort orders | Locks in one sort order; inflexible | Use `Comparator` chains at the call site; reserve `Comparable` for natural order types |
 | `Serializable` without explicit `serialVersionUID` | Class changes silently break deserialization | Declare `serialVersionUID = 1L` or avoid `Serializable`; prefer JSON/Protobuf |
+| `stream.parallel()` for I/O-bound tasks | Starves shared ForkJoinPool; blocks CPU-bound work | Use virtual threads (`newVirtualThreadPerTaskExecutor`) for I/O |
+| `new HttpClient()` per request | Leaks thread pools; OOM under load | Share one `HttpClient` per application lifecycle; close on shutdown |
+| `String.intern()` on dynamic data | Floods JVM pool; GC pause spikes on high-throughput paths | Use a bounded `HashMap` cache for deduplication |
+| Integer arithmetic without overflow check | Silent wrap; produces wrong results with no exception | Use `Math.addExact`/`multiplyExact`; `BigDecimal` for money |
+| `Arrays.asList()` when immutability is expected | Fixed-size (not immutable); shares backing array | Use `List.of()` for immutable; `new ArrayList<>(...)` for mutable copy |
+| Log-and-rethrow exception pattern | Duplicate log entries; obscures root cause in multi-layer stacks | Log once at the final handling boundary; propagate with context otherwise |
+| `map.keySet()` + `get()` in loop | Two hash lookups per entry; wasteful on large maps | Iterate `map.entrySet()` or use `map.forEach()` |
+| `Optional.get()` without `isPresent()` | Throws `NoSuchElementException` on empty; no safer than null | Use `orElse()`, `orElseThrow()`, `map()`, `ifPresent()` chains |
+| Modifying collection during for-each loop | `ConcurrentModificationException` at runtime | Use `removeIf()`, `Iterator.remove()`, or collect-then-remove pattern |
+| Unclosed `Files.lines()` stream | Leaks file descriptors; crashes under load with "Too many open files" | Wrap in `try-with-resources`; use `Files.readAllLines()` for small files |
+| `String.format()` in log messages | Always builds string even when log level is disabled; adds GC pressure | Use SLF4J parameterised logging `log.debug("msg {}", arg)` |
+| Missing `@Override` annotation | Silent overloads instead of overrides; bugs evade the compiler | Always annotate intended overrides; catches signature mismatches at compile time |

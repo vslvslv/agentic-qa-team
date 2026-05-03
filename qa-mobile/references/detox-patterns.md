@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 19 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 29 | score: 100/100 | date: 2026-05-03 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 
@@ -2443,6 +2443,17 @@ it('verifies disabled button is not interactive', async () => {
 or displayed text. These are independent: an element can have `testID="login-btn"` (for
 Detox) AND `accessibilityLabel="Log in to your account"` (for screen readers).
 
+**`accessibilityHint` vs `accessibilityLabel`:** `toHaveLabel()` matches `accessibilityLabel` (the primary label read by VoiceOver/TalkBack). `accessibilityHint` provides supplementary guidance ("double-tap to submit the form") and is NOT exposed via a Detox matcher — it can be verified indirectly via `getAttributes()`:
+
+```js
+it('verifies submit button has correct hint for screen readers', async () => {
+  const attrs = await element(by.id('submit-button')).getAttributes();
+  // accessibilityHint is in attrs.hint on iOS
+  expect(attrs.hint).toBe('Submits the form and navigates to the confirmation screen');
+  expect(attrs.label).toBe('Submit Order');
+});
+```
+
 **Integration with a11y CI audits:** Run `toHaveLabel()` assertions in a dedicated
 `accessibility.test.js` suite to prevent a11y regressions from reaching production.
 
@@ -2513,6 +2524,228 @@ xcrun simctl list devices
 # Kill and restart a hung simulator
 xcrun simctl shutdown "iPhone 15" && xcrun simctl boot "iPhone 15"
 ```
+
+---
+
+## Additional Community Pitfalls
+
+### 19. Status bar inconsistency breaks screenshot visual diffs on CI [community]
+
+**Root cause**: CI runners often show different status bar states than developer machines — different time ("9:41" vs actual time), signal bars, battery icon, and cellular carrier text. When visual diff tools compare screenshots, the status bar region triggers false failures every run because the time is always different.
+
+**WHY this is missed**: Teams focus on functional assertions and forget the status bar is part of every screenshot. The failure mode shows up only after integrating a visual regression tool (Percy, Applitools, Chromatic for mobile), not during initial test development.
+
+**Fix**: Set a normalized status bar in `beforeAll` so every screenshot has consistent content:
+
+```js
+// e2e/setup.js — normalize status bar for visual regression consistency
+beforeAll(async () => {
+  await device.launchApp({ newInstance: true });
+
+  if (device.getPlatform() === 'ios') {
+    // Set a deterministic status bar for all screenshots
+    await device.setStatusBar({
+      time: '9:41',          // Apple's classic product photo time
+      batteryLevel: 100,
+      batteryState: 'charging',
+      cellularBars: 4,
+      wifiBars: 3,
+      dataNetwork: 'wifi',
+    });
+  }
+  // Android: use `adb shell settings put global system_ui_demo_mode 1`
+  // and broadcast the demo mode intents before running tests
+});
+```
+
+```bash
+# Android emulator: enable demo mode for consistent status bar
+adb shell settings put global sysui_demo_allowed 1
+adb shell am broadcast -a com.android.systemui.demo -e command enter
+adb shell am broadcast -a com.android.systemui.demo -e command clock -e hhmm 0941
+adb shell am broadcast -a com.android.systemui.demo -e command battery -e level 100 -e plugged true
+adb shell am broadcast -a com.android.systemui.demo -e command network -e wifi show -e level 4
+```
+
+### 20. `typeText()` vs `replaceText()` performance regression on long strings [community]
+
+**Root cause**: `typeText()` simulates individual key presses for every character. For long strings (passwords ≥ 20 chars, UUIDs, base64 tokens), this adds up: a 32-character string takes ~32 synthetic key events, each with a synchronization cycle. On CI, this can add 3–5 seconds per field — and test suites that fill 6–8 form fields add 30+ seconds of unnecessary overhead.
+
+**WHY it matters**: Teams benchmark `typeText` vs `replaceText` locally on fast hardware and see no difference. On CI with slower I/O, the difference is significant. A suite with 40 tests that each type credentials can see 20+ minutes of wasted time per run.
+
+**Fix**: Use `replaceText()` for all text input. Reserve `typeText()` only for scenarios that specifically need to test the keypress-by-keypress behavior (autocomplete triggers, character-limit validation, masked input fields):
+
+```js
+// SLOW — avoid for long strings
+await element(by.id('api-key-input')).typeText('sk-abcdef1234567890abcdef1234567890');
+
+// FAST — preferred for all text input
+await element(by.id('api-key-input')).replaceText('sk-abcdef1234567890abcdef1234567890');
+
+// Use typeText() ONLY when testing character-by-character behavior:
+it('shows autocomplete suggestions after typing 3 chars', async () => {
+  await element(by.id('search-input')).typeText('spa'); // trigger autocomplete at char 3
+  await waitFor(element(by.id('autocomplete-dropdown')))
+    .toBeVisible()
+    .withTimeout(2000);
+});
+```
+
+### 21. Missing `afterAll` cleanup causes simulator state to leak into next test file [community]
+
+**Root cause**: Jest runs multiple test files sequentially in the same worker process (when `maxWorkers: 1`). If a test file opens a modal, triggers a system permission dialog, or navigates deep into the app without resetting in `afterAll`, the next test file in the queue starts with the app in an unexpected state. The first test in the next file fails with "element not found" — but the real bug is in the previous file's missing cleanup.
+
+**WHY it's hard to diagnose**: The failure is always reported against the first test of the *next* file, never against the test file that caused the pollution. Teams fix the wrong test.
+
+**Fix**: Add `afterAll` to every test file that navigates away from the app's initial state:
+
+```js
+// e2e/modal-flow.test.js
+describe('Modal flow', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  afterAll(async () => {
+    // Ensure the modal is closed and app is in root navigation state
+    // before Jest runs the next test file
+    await device.reloadReactNative();
+    // OR for hard reset:
+    // await device.terminateApp();
+  });
+
+  it('opens and interacts with modal', async () => {
+    await element(by.id('open-modal-button')).tap();
+    await waitFor(element(by.id('modal-screen'))).toBeVisible().withTimeout(3000);
+    // ... interactions ...
+  });
+});
+```
+
+The safest global cleanup pattern is to set `restoreLaunchArgs: true` in the Detox `testRunner` config and use `beforeAll({ newInstance: true })` in every file — accepting the cold-boot overhead in exchange for reliable isolation.
+
+### 22. `element()` not failing fast on ambiguous matches in multi-window apps [community]
+
+**Root cause**: On iOS, apps that use `UIScene`-based multi-window architecture (e.g., iPadOS split-screen, Catalyst apps, apps that open a sheet window) can have multiple view hierarchies simultaneously. When `element(by.id('submit-button'))` matches in two different windows, Detox may interact with the element in the inactive window, causing silent failures where the tap appears to succeed but the expected navigation never happens.
+
+**WHY it's subtle**: The test does not throw an error — `element()` finds a match and `tap()` succeeds. The failure only surfaces when the expected next screen doesn't appear, making root-cause analysis difficult.
+
+**Fix**: Use `withAncestor` or add window-specific container `testID`s to narrow scope:
+
+```js
+// Narrow the submit button to the main content container
+// to prevent matching a button in a popover or sheet window
+await element(
+  by.id('submit-button').withAncestor(by.id('main-content-container'))
+).tap();
+
+// For iPadOS testing: explicitly test in the primary window context
+// by setting a unique root testID on the main window's root view
+await expect(
+  element(by.id('submit-button').withAncestor(by.id('primary-window-root')))
+).toBeVisible();
+```
+
+### 23. Using `device.openURL()` for warm deep links breaks if app uses custom URL schemes without Universal Links [community]
+
+**Root cause**: `device.openURL({ url: 'myapp://...' })` requires the OS to route the custom URL scheme to the foreground app. On iOS Simulator, this goes through `xcrun simctl openurl`, which launches the *default handler* for the scheme. If the app has never been launched with that scheme registered (e.g., first cold boot, or after a reinstall), the OS may not recognize the scheme and the URL silently fails to route — the test hangs waiting for the navigation.
+
+**WHY teams miss this**: Works perfectly after the first test that uses `launchApp({ url })` because that registers the scheme. Fails on the first test in a fresh CI run because the scheme is registered only at first launch.
+
+**Fix**: Always `launchApp` (even with `newInstance: false`) before calling `device.openURL()`, and verify the scheme is registered:
+
+```js
+describe('Warm deep link navigation', () => {
+  beforeAll(async () => {
+    // First launch: registers custom URL scheme with the OS
+    await device.launchApp({ newInstance: true });
+    await waitFor(element(by.id('home-screen'))).toBeVisible().withTimeout(10000);
+  });
+
+  it('navigates via warm deep link', async () => {
+    // App is running — openURL routes to the running instance
+    await device.openURL({ url: 'myapp://orders/99' });
+    await waitFor(element(by.id('order-detail-99')))
+      .toBeVisible()
+      .withTimeout(5000);
+  });
+});
+```
+
+For Universal Links (https://), use `device.openURL({ url: 'https://...' })` — these are routed by iOS's Associated Domains mechanism and do not require scheme registration.
+
+### 24. Detox worker environment variables not forwarded to the app process [community]
+
+**Root cause**: Environment variables set in the test runner (e.g., `process.env.API_BASE_URL`) are NOT automatically forwarded to the app binary running in the simulator. The app process runs in its own sandbox. Teams set `API_BASE_URL` in their CI pipeline and then wonder why the app still hits the production URL.
+
+**WHY this bites teams**: Works in unit/integration tests (same process) but fails for e2e tests. The mental model of "env vars flow everywhere" breaks at the native app boundary.
+
+**Fix**: Forward env vars via `launchArgs` in `launchApp`. The app must read them via a native module bridge (`NativeModules.RNConfig`) or the React Native launch args:
+
+```js
+// e2e/setup.js — forward CI environment variables to the app via launchArgs
+beforeAll(async () => {
+  await device.launchApp({
+    newInstance: true,
+    launchArgs: {
+      // These are accessible in the native app via NSBundle's infoDictionary (iOS)
+      // or through intent extras (Android)
+      API_BASE_URL: process.env.API_BASE_URL || 'http://localhost:8088',
+      FEATURE_FLAG_NEW_CHECKOUT: process.env.FEATURE_FLAG_NEW_CHECKOUT || '0',
+      DETOX_MODE: '1',
+    },
+  });
+});
+```
+
+```js
+// In RN app — read launch args forwarded by Detox
+import { NativeModules, Platform } from 'react-native';
+
+// iOS: read from RNConfig native module (implement once, use everywhere)
+// Android: read from the intent extras passed by Detox
+const launchArgs = NativeModules.DetoxSync?.launchArgs ?? {};
+
+const API_BASE_URL = launchArgs.API_BASE_URL ?? 'https://api.production.com';
+```
+
+---
+
+## Timeline Artifact and Performance Profiling
+
+Detox can record a test execution timeline — a JSON file that maps every Detox action to a wall-clock timestamp. This is invaluable for identifying slow tests and understanding where time is spent.
+
+```js
+// .detoxrc.js — enable timeline artifact
+artifacts: {
+  rootDir: '.artifacts',
+  plugins: {
+    timeline: {
+      enabled: true,
+    },
+    screenshot: {
+      shouldTakeAutomaticSnapshots: true,
+      takeWhen: { testFailure: true },
+    },
+  },
+},
+```
+
+```bash
+# Record timeline in CLI
+npx detox test -c ios.sim.release --record-timeline all
+
+# The timeline is saved to .artifacts/<run-id>/timeline.json
+# Open with: chrome://tracing (paste the JSON) or https://ui.perfetto.dev
+```
+
+The timeline output shows:
+- `detox_action` spans: each `tap()`, `typeText()`, `waitFor()` call
+- `idle_wait` spans: time Detox spent waiting for the app to become idle
+- `element_visibility_check` spans: polling cycles inside `waitFor()`
+
+If `idle_wait` spans are long, use `--debug-synchronization 3000` to find the culprit.
+If `waitFor` polls many times before resolving, the timeout is generous — reduce it after confirming the feature's real latency.
 
 ---
 

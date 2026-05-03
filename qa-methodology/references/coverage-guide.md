@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -74,6 +74,61 @@ rarely target MC/DC, but teams working in regulated contexts should understand t
 their Istanbul branch coverage numbers do **not** satisfy MC/DC requirements — DO-178C
 auditors require dedicated tool-generated MC/DC artefacts, not istanbul-lcov reports.
 ISTQB CTFL 4.0 defines MC/DC as a white-box test technique under "coverage criteria."
+
+### 9. Effective Line Coverage (ELC) vs raw line coverage
+Google's internal testing infrastructure distinguishes **Effective Line Coverage** — the
+fraction of lines covered by tests that also contain at least one assertion about
+behaviour — from raw line coverage. The concept is not yet standardised in open-source
+tooling, but the insight is directly applicable: a line `calculateTotal(items)` is
+covered but not effectively tested unless a subsequent assertion verifies the result.
+
+Operationalising ELC without custom tooling: pair coverage reports with mutation scores.
+If mutation score is substantially lower than line coverage (e.g., 90 % lines, 45 % MSI),
+the gap represents ineffective coverage — lines executed but not verified. This ratio
+is a leading indicator of assertion-free test theatre.
+
+### 12. Happy-path-only test suites achieve high line coverage but near-zero branch coverage
+A test suite that exercises only the success path of a function can achieve 100 % line
+coverage while leaving all error paths, guard clauses, and fallback branches untested.
+This is the most common root cause of "we have 85 % coverage but bugs keep shipping."
+
+In TypeScript, error paths are particularly affected: `catch` blocks, `if (!result)` guards,
+and optional chaining fallbacks (`result?.value ?? defaultValue`) are nearly never exercised
+by success-path tests. Branch coverage (with Istanbul) is the minimum metric that reveals
+this; mutation testing confirms it.
+
+**Detection heuristic**: if branch coverage is more than 15 percentage points below line
+coverage on the same file, the file likely has untested error/guard paths. Run Istanbul
+in HTML mode and look for red branch markers on `catch` blocks and null checks.
+
+### 11. Coverage inversion: well-tested easy code, untested hard code
+A common pattern in large TypeScript codebases is **coverage inversion**: utility
+functions, data transformers, and DTOs achieve 95–100 % coverage naturally (they are
+simple, pure, and easy to test), while complex orchestration services, retry logic, and
+error handlers sit at 30–50 % because they are harder to set up and exercise. The
+aggregate coverage number is pulled up by the easy code, masking risk in the hard code.
+
+Detection: sort the per-file branch coverage report by ascending branch coverage. The
+bottom 20 % of files by branch coverage are almost always the highest-complexity,
+highest-risk modules. These are the files that benefit most from mutation testing.
+
+### 10. Coverage data as an input to technical debt prioritisation
+Coverage reports are most actionable when used as triage inputs, not compliance gates.
+The workflow: (1) generate per-file branch coverage, (2) cross-reference with file change
+frequency (git log --follow -- <file> | wc -l), (3) prioritise writing tests for files
+that are both frequently modified AND under-tested. Files with low coverage and low churn
+may not warrant investment; files with low coverage and high churn are the highest-risk
+items in the backlog.
+
+```bash
+# Quick churn × coverage gap prioritisation (bash, runs at repo root)
+# Outputs: lines_changed  branch_coverage  filepath  (sorted by risk = churn × gap)
+git log --name-only --pretty=format: --since="6 months ago" \
+  | grep -E '^src/.*\.ts$' \
+  | sort | uniq -c | sort -rn \
+  | head -20
+# Cross-reference with coverage/coverage-summary.json for branch % per file
+```
 
 ### 8. Mutation testing tools by ecosystem
 Each language ecosystem has a primary mutation testing tool:
@@ -656,6 +711,405 @@ describe('clamp properties', () => {
 reasonably cover edge cases. `fast-check` will find the minimal failing example
 (`shrink`) automatically, making it a powerful addition to mutation testing.
 
+### Pattern 19 — Stryker `--since` flag for targeted mutation on changed files  [community]
+
+Stryker's `--since` flag restricts mutation to files modified since a given git ref.
+This enables mutation testing on PR-changed files only — avoiding the 10–30 minute
+full-codebase mutation runs that make mutation testing impractical in CI.
+
+```typescript
+// stryker.config.ts — with since support (git-based incremental)
+import type { PartialStrykerOptions } from '@stryker-mutator/api/core';
+
+const config: PartialStrykerOptions = {
+  testRunner: 'vitest',
+  vitest: { configFile: 'vitest.config.ts' },
+  coverageAnalysis: 'perTest',
+  checkers: ['typescript'],
+  tsconfigFile: 'tsconfig.json',
+  mutate: [
+    'src/**/*.ts',
+    '!src/**/*.spec.ts',
+    '!src/**/*.test.ts',
+    '!src/**/__mocks__/**',
+    '!src/**/index.ts',
+  ],
+  thresholds: { high: 80, low: 60, break: 50 },
+  reporters: ['html', 'progress', 'json'],
+  timeoutMS: 5000,
+  concurrency: 4,
+  // Incremental: persist mutation state across runs for changed files
+  incremental: true,
+  incrementalFile: '.stryker-tmp/incremental.json',
+};
+
+export default config;
+```
+
+```yaml
+# .github/workflows/mutation.yml — run mutation only on PR-changed files
+name: Mutation Testing (PR only)
+
+on: [pull_request]
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # required for --since to access base ref history
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      - name: Run Stryker on changed files only
+        # --since=origin/main restricts mutations to files modified vs main branch
+        run: npx stryker run --since=origin/main
+        env:
+          STRYKER_DASHBOARD_API_KEY: ${{ secrets.STRYKER_DASHBOARD_API_KEY }}
+
+      - name: Upload Stryker HTML report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stryker-report
+          path: reports/mutation/
+```
+
+**Production pattern**: schedule full mutation runs (`npx stryker run`) nightly and
+use `--since` for PR runs. Nightly runs update the incremental state file; PR runs
+consume it and re-run only affected mutants. This reduces PR mutation time from
+20–30 minutes to 2–5 minutes on typical TypeScript codebases.
+
+### Pattern 18 — Discovering entirely untested files with `all: true` (Istanbul/Vitest)  [community]
+
+By default, Istanbul only reports coverage for files that are imported by at least one
+test. Files with zero test coverage (never imported) are silently excluded, giving
+an inflated aggregate. The `all: true` / `--all` flag forces Istanbul to include all
+source files in the report, even those never imported. This is critical for detecting
+entirely untested modules.
+
+```typescript
+// vitest.config.ts — enable all: true to expose zero-coverage files
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',
+      include: ['src/**/*.ts'],
+      exclude: [
+        'src/**/*.d.ts',
+        'src/**/index.ts',
+        'src/**/__mocks__/**',
+        'src/**/*.stories.ts',
+      ],
+      all: true,                // Include files never imported by any test — exposes zero-coverage modules
+      reporter: ['text', 'html', 'lcov'],
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+      },
+    },
+  },
+});
+```
+
+**Without `all: true`**: a new `src/services/billing.ts` added by a PR with no
+corresponding test will not appear in the coverage report at all. The aggregate
+numbers stay the same; the gap is invisible. With `all: true`, the file appears
+with 0 % across all metrics, immediately failing per-file thresholds.
+
+**Critical for greenfield growth**: in growing TypeScript codebases, the highest-risk
+period for coverage gaps is when new features ship without tests. `all: true` makes
+these gaps visible from day one.
+
+### Pattern 17 — Programmatic coverage threshold enforcement via coverage-summary.json  [community]
+
+Jest and Vitest write a machine-readable `coverage/coverage-summary.json` that can be
+consumed in CI to enforce custom thresholds without relying on the runner's built-in
+threshold config. This enables dynamic thresholds (e.g., higher for recently modified
+files) and custom failure messages.
+
+```typescript
+// scripts/check-coverage.ts — read and assert coverage thresholds programmatically
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+interface FileCoverageEntry {
+  lines: { total: number; covered: number; pct: number };
+  branches: { total: number; covered: number; pct: number };
+  functions: { total: number; covered: number; pct: number };
+  statements: { total: number; covered: number; pct: number };
+}
+
+interface CoverageSummary {
+  total: FileCoverageEntry;
+  [filePath: string]: FileCoverageEntry;
+}
+
+const HIGH_RISK_DIRS = ['src/payments', 'src/auth', 'src/security'];
+const HIGH_RISK_BRANCH_THRESHOLD = 90;
+const GLOBAL_BRANCH_THRESHOLD = 75;
+
+function checkCoverage(): void {
+  const summaryPath = resolve(process.cwd(), 'coverage/coverage-summary.json');
+  const summary: CoverageSummary = JSON.parse(readFileSync(summaryPath, 'utf-8'));
+
+  const failures: string[] = [];
+
+  // Check global threshold
+  const totalBranch = summary.total.branches.pct;
+  if (totalBranch < GLOBAL_BRANCH_THRESHOLD) {
+    failures.push(`Global branch coverage ${totalBranch}% < ${GLOBAL_BRANCH_THRESHOLD}%`);
+  }
+
+  // Check per-file thresholds for high-risk directories
+  for (const [filePath, entry] of Object.entries(summary)) {
+    if (filePath === 'total') continue;
+    const isHighRisk = HIGH_RISK_DIRS.some((dir) => filePath.includes(dir));
+    if (isHighRisk && entry.branches.pct < HIGH_RISK_BRANCH_THRESHOLD) {
+      failures.push(
+        `HIGH-RISK file ${filePath}: branch coverage ${entry.branches.pct}% < ${HIGH_RISK_BRANCH_THRESHOLD}%`,
+      );
+    }
+  }
+
+  if (failures.length > 0) {
+    console.error('Coverage check FAILED:\n' + failures.join('\n'));
+    process.exit(1);
+  }
+
+  console.log(`Coverage check passed. Global branch: ${totalBranch}%`);
+}
+
+checkCoverage();
+```
+
+```bash
+# Run after vitest --coverage in CI
+npx tsx scripts/check-coverage.ts
+```
+
+**When to use**: when built-in threshold configuration is insufficient — e.g., you need
+to enforce different thresholds based on file path patterns, risk tiers, or recent change
+history. The programmatic approach also produces actionable error messages naming the
+specific files, rather than Jest's generic "branch threshold not met" error.
+
+### Pattern 16 — Mocha + TypeScript + c8 for pure-ESM projects  [community]
+
+Projects using Mocha with native ESM TypeScript (Node 22+, `--experimental-strip-types`)
+can collect coverage via `c8` without any additional transpiler configuration. This is
+the lowest-overhead path for library packages.
+
+```typescript
+// src/lib/retry.ts — ESM TypeScript library
+export interface RetryOptions {
+  maxAttempts: number;
+  delayMs: number;
+  shouldRetry?: (error: unknown) => boolean;
+}
+
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  options: RetryOptions,
+): Promise<T> {
+  const { maxAttempts, delayMs, shouldRetry = () => true } = options;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts && shouldRetry(error)) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      } else {
+        break;
+      }
+    }
+  }
+  throw lastError;
+}
+```
+
+```typescript
+// test/retry.test.ts — Mocha with Node's assert (ESM-native)
+import { describe, it } from 'mocha';
+import assert from 'node:assert/strict';
+import { withRetry } from '../src/lib/retry.js';
+
+describe('withRetry', () => {
+  it('returns result on first success', async () => {
+    const result = await withRetry(() => Promise.resolve(42), { maxAttempts: 3, delayMs: 0 });
+    assert.equal(result, 42);
+  });
+
+  it('retries on transient failures and eventually succeeds', async () => {
+    let calls = 0;
+    const result = await withRetry(
+      () => {
+        calls++;
+        if (calls < 3) throw new Error('transient');
+        return Promise.resolve('ok');
+      },
+      { maxAttempts: 3, delayMs: 0 },
+    );
+    assert.equal(result, 'ok');
+    assert.equal(calls, 3);
+  });
+
+  it('throws after exhausting all attempts', async () => {
+    await assert.rejects(
+      withRetry(() => Promise.reject(new Error('perm')), { maxAttempts: 2, delayMs: 0 }),
+      /perm/,
+    );
+  });
+
+  it('respects shouldRetry: stops early when predicate returns false', async () => {
+    let calls = 0;
+    await assert.rejects(
+      withRetry(
+        () => { calls++; return Promise.reject(new Error('fatal')); },
+        { maxAttempts: 5, delayMs: 0, shouldRetry: () => false },
+      ),
+      /fatal/,
+    );
+    assert.equal(calls, 1);    // must not retry when shouldRetry is false
+  });
+});
+```
+
+```bash
+# package.json scripts for Mocha + c8 + ESM TypeScript
+# "test": "node --experimental-strip-types --loader=mocha/esm node_modules/.bin/mocha 'test/**/*.test.ts'"
+# "test:coverage": "c8 --reporter=text --reporter=lcov --include='src/**/*.ts' mocha 'test/**/*.test.ts'"
+```
+
+**When to use this pattern**: pure ESM TypeScript library packages where introducing
+Jest/Vitest would add unnecessary complexity. The `c8` wrapper adds near-zero overhead
+compared to Istanbul instrumentation.
+
+### Pattern 14 — ESM TypeScript coverage with Node's built-in test runner  [community]
+
+Node 22+ ships a built-in test runner with native ESM support. When using TypeScript
+with ESM and `tsx` or `ts-node/esm`, Istanbul-based coverage via `c8` is the correct
+tool — Jest and Vitest are not required.
+
+```typescript
+// src/utils/format.ts — ESM-native TypeScript module
+export function formatCurrency(amount: number, currency: string): string {
+  if (!Number.isFinite(amount)) {
+    throw new TypeError(`Invalid amount: ${amount}`);
+  }
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: 2,
+  }).format(amount);
+}
+```
+
+```typescript
+// src/utils/format.test.ts — using Node built-in test runner (no Jest/Vitest)
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { formatCurrency } from './format.js';   // .js extension required in ESM
+
+describe('formatCurrency', () => {
+  it('formats USD correctly', () => {
+    assert.equal(formatCurrency(1234.5, 'USD'), '$1,234.50');
+  });
+
+  it('throws on non-finite amount', () => {
+    assert.throws(() => formatCurrency(Infinity, 'USD'), TypeError);
+  });
+
+  it('throws on NaN', () => {
+    assert.throws(() => formatCurrency(NaN, 'USD'), TypeError);
+  });
+});
+```
+
+```json
+// package.json — run with c8 for V8 coverage on ESM TypeScript
+{
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/**/*.test.ts",
+    "test:coverage": "c8 --reporter=text --reporter=lcov node --experimental-strip-types --test src/**/*.test.ts"
+  }
+}
+```
+
+**Why this matters**: Node 22's `--experimental-strip-types` flag enables running
+TypeScript files directly without transpilation. `c8` wraps the process and collects
+V8 coverage natively. Teams that previously required a full Jest or Vitest setup for
+TypeScript can now obtain line coverage with zero build tooling. Branch detection
+limitations (same as V8 provider in Vitest) still apply.
+
+### Pattern 15 — Coverage differential: report only new/changed lines on PRs  [community]
+
+Running full coverage on every PR is noisy — engineers see failures for pre-existing
+gaps unrelated to their change. Coverage differential tools report coverage only for
+lines added or modified by the current PR, enforcing "you must test what you add"
+without requiring teams to fix all legacy debt first.
+
+```typescript
+// .nycrc.json — using nyc with diff-based reporting (legacy codebases)
+// For new projects, prefer Vitest + codecov with --patch-coverage-threshold
+{
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.d.ts", "src/**/index.ts"],
+  "reporter": ["lcov", "text-summary"],
+  "check-coverage": false,     // global threshold disabled — PR diff threshold used instead
+  "branches": 0,
+  "lines": 0
+}
+```
+
+```yaml
+# .github/workflows/coverage-diff.yml — PR coverage gate on new lines only
+name: Coverage Diff Gate
+
+on: [pull_request]
+
+jobs:
+  coverage-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # full history required for diff
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      - name: Run tests with coverage
+        run: npx vitest run --coverage --reporter=lcov
+
+      - name: Upload to Codecov with patch threshold
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info
+          fail_ci_if_error: true
+          # Enforce 80% coverage on NEW lines only — does not block PRs for legacy gaps
+          patch_coverage_threshold: 80
+```
+
+**Production usage pattern**: Codecov's `patch_coverage_threshold` is the most widely
+used approach for differential coverage. It reports per-PR coverage on changed lines
+and blocks merge only when the new code itself is under-tested. This decouples the
+legacy coverage debt problem from the new-code quality gate.
+
 ### Pattern 13 — Minimal tsconfig.json for reliable TypeScript coverage  [community]
 
 Coverage accuracy depends on correct TypeScript compiler settings. Without source maps,
@@ -785,6 +1239,81 @@ yet tested. A PR that introduces new logic alongside suppress comments is a red 
 **Policy**: Suppress comments in `src/` directories require a PR comment justifying
 the exemption. TypeScript's exhaustive type checking (`never`) can sometimes replace
 coverage suppress — prefer type-safe unreachability proofs over ignore directives.
+
+### AP11 — Using coverage to replace code review for test quality
+Some teams automate coverage checks and remove the test quality step from code review,
+assuming the CI gate is sufficient. Coverage gates verify execution, not intent.
+
+**WHY it fails**: A test that calls a pricing function with five inputs but only
+`expect(result).toBeDefined()` passes all coverage thresholds and all CI gates.
+The function's business logic — discount tiers, currency rounding, tax application —
+is completely unverified. Coverage is a CI pre-filter, not a substitute for human
+review of test assertions, input choices, and missing edge cases.
+
+**Correct complement**: in PR review checklists, add an explicit step: "Are the new
+tests asserting the right outcomes with realistic inputs?" Coverage tells you that
+something was called; review tells you whether the right thing was verified.
+
+### AP10 — Testing private implementation details to inflate branch coverage
+TypeScript's `private` modifier is a compile-time constraint only — at runtime, all
+class members are accessible via `(instance as any).privateMethod()`. When teams face
+failing coverage thresholds, they sometimes test private methods directly to bring
+numbers up without adding end-user-facing test coverage.
+
+**WHY it backfires**: Private method tests are implementation-coupled. Refactoring the
+internal implementation (renaming, extracting, inlining) breaks the tests without
+changing any public behaviour. The coverage numbers rise while test fragility rises
+proportionally. Prefer testing private logic through the public API that uses it;
+if the private logic is too complex to reach via the public API, that is a design signal
+to extract it into a testable module.
+
+```typescript
+// ❌ Testing private method directly — brittle, implementation-coupled
+class PricingEngine {
+  private applyTax(price: number, rate: number): number {
+    return price * (1 + rate);
+  }
+  public calculateFinal(price: number): number {
+    return this.applyTax(price, 0.2);
+  }
+}
+
+it('applies tax — BAD: tests private internals', () => {
+  const engine = new PricingEngine();
+  expect((engine as any).applyTax(100, 0.2)).toBe(120);  // breaks on rename
+});
+
+// ✅ Test via the public API — refactoring-safe
+it('calculateFinal applies 20% tax', () => {
+  expect(new PricingEngine().calculateFinal(100)).toBe(120);
+});
+```
+
+### AP9 — Over-mocking hollows out branch coverage accuracy  [community]
+Mocking entire modules (e.g., `jest.mock('./payment-service')`) causes Istanbul and V8 to
+skip instrumentation of the mocked module's branches entirely. A team with 90 % branch
+coverage that heavily mocks its business-logic layer may have 0 % branch coverage on the
+modules that matter most.
+
+**WHY it's dangerous**: Mocked modules appear in coverage as fully "not collected" rather
+than "not covered", so aggregate branch coverage does not drop. Engineers believe the
+number is representative while critical conditional logic in payment, auth, and validation
+services has never been exercised by any test. Prefer shallow mocking (mock only the
+I/O boundary — HTTP, DB, filesystem) and allow business logic to execute under real
+conditions.
+
+```typescript
+// ❌ Full module mock — branches in calculateDiscount are never instrumented
+jest.mock('./discount-service', () => ({
+  calculateDiscount: jest.fn().mockReturnValue(10),
+}));
+
+// ✅ Mock only the I/O boundary; let discount logic execute under test
+jest.mock('./pricing-api', () => ({          // mock the HTTP call, not the service
+  fetchPricingRules: jest.fn().mockResolvedValue({ tier: 'premium', factor: 0.9 }),
+}));
+// calculateDiscount now runs with a real test input — branches are measured
+```
 
 ### AP8 — Including TypeScript declaration files and barrel re-exports in coverage  [community]
 Including `*.d.ts` files or barrel `index.ts` files (that contain only re-exports) in
@@ -924,9 +1453,115 @@ Use type guards (`function isUser(x: unknown): x is User { ... }`) instead of as
 for paths where runtime validation matters. Type guard functions are real branches that
 Istanbul and V8 both track, making them both safer and more testable.
 
+### G14 — esbuild transform in Vitest silently drops some branch instrumentation  [community]
+Vitest uses esbuild by default for TypeScript transformation. When using
+`provider: 'istanbul'`, Vitest instruments the esbuild-transformed output rather than
+the original TypeScript source. Ternary operators and optional chaining in TypeScript
+are frequently collapsed by esbuild before Istanbul sees them, causing the resulting
+branch count to be lower than expected. **WHY it matters**: Teams that see unexpectedly
+high branch coverage on complex TypeScript code may be benefiting from esbuild collapsing
+branches before instrumentation. Switch to `transformMode: 'ssr'` in Vitest config or
+use `@vitest/coverage-istanbul` with a babel transform to instrument pre-esbuild source
+for accurate branch counts on complex TypeScript expressions.
+
+### G21 — Istanbul and TypeScript generic types: phantom uncovered branches  [community]
+TypeScript generics compile to JavaScript that sometimes includes implicit type checks
+injected by the compiler. When Istanbul instruments this output, it may report uncovered
+branches in source lines that contain only type parameters — lines like
+`function fetchAll<T extends BaseEntity>(repo: Repository<T>)` can show a red branch
+marker pointing at `T extends BaseEntity`. These are TypeScript type narrowing compile
+artefacts, not real runtime branches. **WHY it matters**: Teams see Istanbul red markers
+on lines with generic constraints and waste time writing tests to "cover" them, not
+realising they are phantom branches that no runtime test can exercise. Use
+`sourceMap: true` and cross-check the HTML report against the compiled `.js` output
+in the source map viewer — if the branch is on a type-only construct in TypeScript but
+maps to a runtime check in JS, consider adding `/* istanbul ignore next */` with a
+comment explaining the phantom branch.
+
+### G20 — Concurrent test workers and coverage merge failures in Vitest  [community]
+Vitest runs tests in parallel worker threads or child processes. Each worker collects
+its own coverage data that is merged at the end. When workers crash, time out, or are
+force-killed (common with out-of-memory conditions on large integration test suites),
+their coverage data is lost. The merged report silently excludes crashed workers' files.
+**WHY it matters**: A CI run that reports 85 % coverage while two workers crashed
+mid-run may actually be missing coverage for 30 % of the codebase. Watch for mismatches
+between expected file count in `coverage/coverage-summary.json` and the actual file
+count in `src/`. Add `pool: 'forks'` + `maxWorkers` limits in Vitest config to reduce
+worker crash rates, and verify the coverage file count in CI with a post-step assertion.
+
+### G19 — TypeScript decorators inflate uncovered branch counts in Istanbul  [community]
+TypeScript decorators (NestJS controllers, TypeORM entities, class-validator) compile to
+helper functions that Istanbul instruments as separate branches. A class decorated with
+`@Injectable()` and `@Controller()` can show 20–30 additional "branches" in Istanbul's
+output, all of which appear as uncovered unless the decorator factory functions are
+exercised. **WHY it matters**: NestJS projects using class decorators heavily often see
+lower branch coverage than equivalent Express projects doing the same work, purely due
+to instrumentation of decorator helper code. Exclude decorator-heavy infrastructure
+files (controllers, modules, entities) from branch threshold enforcement, or use
+`experimentalDecorators: true` with `emitDecoratorMetadata: true` in a separate
+tsconfig for infrastructure layers and exclude those files from the coverage `include`
+pattern.
+
+### G18 — Vitest's `--reporter=verbose` does not show coverage branch details  [community]
+Engineers new to Vitest often run `vitest --reporter=verbose --coverage` expecting
+branch-level details in the terminal output. The `text` and `verbose` reporters show
+only file-level percentages. Branch-level detail (which specific `if` statements and
+operators are uncovered) requires the `html` reporter and opening
+`coverage/index.html` in a browser. **WHY it matters**: Teams relying only on terminal
+output cannot pinpoint uncovered branches and often add tests that exercise already-covered
+paths instead of the actual gaps. Add `reporter: ['text', 'html', 'lcov']` to your
+Vitest coverage config so the HTML report is always generated in CI and can be downloaded
+as a build artefact for inspection.
+
+### G17 — CI coverage cache invalidation: stale coverage passes for changed code  [community]
+GitHub Actions and other CI systems cache `node_modules` and sometimes the coverage
+output directory. If the cache key does not include a hash of test files and source
+files, a PR that modifies source but restores a cached `coverage/` directory will
+report the previous run's coverage as the current run's result. **WHY it matters**:
+CI shows "coverage gate passed" while the tests for the changed module never ran. Cache
+keys for coverage directories should always incorporate a hash of all source files:
+`hashFiles('src/**/*.ts', 'test/**/*.ts')`. Verify by checking that the coverage
+report timestamp matches the current commit in the CI job summary.
+
+### G16 — Async code coverage gaps: unresolved Promises appear covered  [community]
+In TypeScript test suites, a common async coverage mistake is forgetting `await` in a
+test, causing the test to pass (the Promise is returned but never settled) while the
+async code's branches run asynchronously outside Jest/Vitest's tracking window. Istanbul
+and V8 record those branches as covered in the same process, but the assertion never
+executes. **WHY it matters**: The coverage shows green; the test passes; the behavior
+is unverified. Use `--detectOpenHandles` (Jest) or `pool: 'forks'` with async cleanup
+(Vitest) to surface unresolved Promises. TypeScript's `eslint-plugin-vitest` rule
+`no-floating-promises` or `typescript-eslint`'s `@typescript-eslint/no-floating-promises`
+catches this class of error at lint time before coverage runs.
+
+### G15 — nyc-to-Istanbul migration: hidden behaviour changes in threshold semantics  [community]
+Many legacy TypeScript projects still use `nyc` (the Istanbul 1.x CLI wrapper) via
+`ts-node` and `mocha`. When migrating to Istanbul 2.x (`@vitest/coverage-istanbul` or
+`jest --coverage`), the branch threshold semantics change: `nyc` counts uncovered
+branches differently for try/catch blocks and for TypeScript-specific constructs like
+optional parameters with default values. **WHY it matters**: A migration that "passes"
+because the new threshold check also shows 82 % may be measuring different branches than
+before. Teams should audit the HTML coverage diff between nyc and Istanbul/V8 outputs
+before removing `nyc` from the CI pipeline, particularly for TypeScript files with
+optional parameters, default argument handling, and try/catch error paths.
+
 ---
 
 ## Tradeoffs & Alternatives
+
+### Risk-tiered coverage thresholds (recommended production default)
+
+Rather than a flat global threshold, the most effective production configuration uses
+three risk tiers:
+
+| Risk tier | Example modules | Recommended line | Recommended branch |
+|-----------|----------------|-----------------|-------------------|
+| Critical | payments, auth, security, crypto | ≥ 95 % | ≥ 90 % |
+| Business logic | domain services, validation, calculations | ≥ 85 % | ≥ 80 % |
+| Infrastructure | DTOs, mappers, generated code, UI components | ≥ 70 % | ≥ 60 % |
+
+This aligns coverage investment with risk, avoids the "boilerplate subsidises business
+logic" problem (AP3), and prevents teams from wasting effort on generated files.
 
 ### When coverage metrics provide clear value
 - Legacy codebases being incrementally tested: coverage maps show where to invest.
@@ -993,3 +1628,6 @@ Istanbul and V8 both track, making them both safer and more testable.
 | Google Testing Blog — Code Coverage Best Practices | Community | https://testing.googleblog.com/2020/08/code-coverage-best-practices.html | Production-grade guidance from Google's test engineering team |
 | ISTQB CTFL 4.0 Syllabus | Official | https://www.istqb.org/certifications/certified-tester-foundation-level | Defines white-box coverage criteria including MC/DC |
 | Kent C. Dodds — Write Fewer, Longer Tests | Community | https://kentcdodds.com/blog/write-fewer-longer-tests | Argues against coverage-driven test fragmentation |
+| Codecov — Patch Coverage Docs | Official | https://docs.codecov.com/docs/patch-coverage | Coverage differential for PRs: test only new/changed lines |
+| Node.js built-in test runner | Official | https://nodejs.org/api/test.html | Native Node test runner with c8 coverage, no Jest/Vitest required |
+| c8 — V8 coverage CLI (bcoe) | Official | https://github.com/bcoe/c8 | Lightweight V8 coverage wrapper for any Node test runner including ESM TypeScript |

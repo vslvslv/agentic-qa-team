@@ -1,5 +1,5 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 12 | score: 100/100 | date: 2026-05-03 -->
 <!-- sources: training knowledge (WebFetch/WebSearch unavailable) | official: docs.pact.io, pact-foundation/pact-js | community: production lessons -->
 
 ## Terminology (ISTQB CTFL 4.0 alignment)
@@ -1370,6 +1370,597 @@ describe('OrderService → InventoryService contract (Vitest)', () => {
 | `arrayContaining([...])` | Array contains these items (subset) | `arrayContaining([string('a')])` |
 | `fromProviderState(expr, value)` | Value injected from provider state | `fromProviderState('${orderId}', 'ORD-001')` |
 
+---
+
+### React / Browser Consumer Contract Test (TypeScript — fetch + Pact mock server)
+
+Browser-side consumers are often overlooked in CDC. The same `@pact-foundation/pact` library works in Node-based test environments (Jest/Vitest + jsdom) because the mock server runs as a local HTTP process, not in-browser. The consumer test exercises the real `fetch` call from your React service layer.
+
+```typescript
+// product-api.consumer.pact.spec.ts
+// Tests the Pact contract for a React app's ProductApiClient using real fetch.
+// Runs in Jest with jsdom environment — the Pact mock server is a Node child process.
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+
+const { like, string, integer, eachLike } = MatchersV3;
+
+// The real API client used by the React component — no mocking here.
+class ProductApiClient {
+  constructor(private baseUrl: string) {}
+
+  async getProduct(id: string): Promise<{ id: string; name: string; price: number }> {
+    const response = await fetch(`${this.baseUrl}/products/${id}`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  }
+
+  async listProducts(
+    category: string
+  ): Promise<{ items: Array<{ id: string; name: string; price: number }>; total: number }> {
+    const response = await fetch(
+      `${this.baseUrl}/products?category=${encodeURIComponent(category)}`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  }
+}
+
+const provider = new PactV3({
+  consumer: 'ShopFrontend',
+  provider: 'ProductService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8090,
+  logLevel: 'warn',
+});
+
+describe('ShopFrontend → ProductService contract', () => {
+  describe('GET /products/:id', () => {
+    it('returns a product by id', async () => {
+      await provider
+        .given('product PROD-42 exists')
+        .uponReceiving('a request for product PROD-42')
+        .withRequest({
+          method: 'GET',
+          path: '/products/PROD-42',
+          headers: { Accept: 'application/json' },
+        })
+        .willRespondWith({
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+          body: {
+            id: string('PROD-42'),
+            name: like('Widget Pro'),
+            price: like(29.99),
+          },
+        })
+        .executeTest(async (mockServer) => {
+          const client = new ProductApiClient(mockServer.url);
+          const product = await client.getProduct('PROD-42');
+          // Only assert fields the component actually renders
+          expect(product.id).toBe('PROD-42');
+          expect(typeof product.name).toBe('string');
+          expect(typeof product.price).toBe('number');
+        });
+    });
+  });
+
+  describe('GET /products?category=:category', () => {
+    it('returns a list of products for a category', async () => {
+      await provider
+        .given('at least one product in category "electronics" exists')
+        .uponReceiving('a request for electronics products')
+        .withRequest({
+          method: 'GET',
+          path: '/products',
+          query: { category: 'electronics' },
+          headers: { Accept: 'application/json' },
+        })
+        .willRespondWith({
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+          body: {
+            items: eachLike({ id: string('PROD-1'), name: like('Widget'), price: like(9.99) }),
+            total: integer(5),
+          },
+        })
+        .executeTest(async (mockServer) => {
+          const client = new ProductApiClient(mockServer.url);
+          const result = await client.listProducts('electronics');
+          expect(result.items.length).toBeGreaterThanOrEqual(1);
+          expect(result.total).toBeGreaterThan(0);
+        });
+    });
+  });
+});
+```
+
+**Key points:**
+- The real `fetch` call (not `axios` or a spy) hits the Pact mock server — this proves the client's actual HTTP layer constructs valid requests
+- The `jsdom` environment in Jest provides `fetch` via `node-fetch` polyfill or Node 18+ built-in; set `testEnvironment: 'node'` if using Node 18+ (which has global `fetch`)
+- `port: 8090` is a dedicated port for the frontend consumer test; separate it from backend consumer ports to avoid collision
+- Only assert response fields that the React component actually reads (`id`, `name`, `price`) — asserting `createdAt` or `vendorId` that the component never uses creates brittle contracts
+- The pact file produced (`ShopFrontend-ProductService.json`) goes to the same Pact Broker; the `ProductService` provider verification verifies all consumers in a single run
+
+---
+
+### GraphQL Consumer Contract Test (TypeScript — Pact + GraphQL)
+
+Pact tests GraphQL over HTTP by matching the HTTP body (the GraphQL query + variables). Use `MatchersV3.regex` for `operationName` matching and `MatchersV3.like` for the data shape.
+
+```typescript
+// catalog-graphql.consumer.pact.spec.ts
+// Contract test for a GraphQL API consumed by a TypeScript service.
+// GraphQL over HTTP = match on method (POST), path (/graphql), and body (query + variables).
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+
+const { like, string, integer, eachLike, regex } = MatchersV3;
+
+interface CatalogItem {
+  id: string;
+  title: string;
+  price: number;
+}
+
+interface SearchCatalogData {
+  searchCatalog: { items: CatalogItem[]; totalCount: number };
+}
+
+// Minimal GraphQL HTTP client — in production this would be Apollo Client or urql
+class GraphQLClient {
+  constructor(private baseUrl: string) {}
+
+  async query<T>(
+    operationName: string,
+    query: string,
+    variables: Record<string, unknown>
+  ): Promise<T> {
+    const response = await fetch(`${this.baseUrl}/graphql`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ operationName, query, variables }),
+    });
+    if (!response.ok) throw new Error(`GraphQL HTTP ${response.status}`);
+    const json = await response.json();
+    if (json.errors?.length) throw new Error(json.errors[0].message);
+    return json.data as T;
+  }
+}
+
+const SEARCH_CATALOG_QUERY = `
+  query SearchCatalog($term: String!, $limit: Int) {
+    searchCatalog(term: $term, limit: $limit) {
+      items { id title price }
+      totalCount
+    }
+  }
+`;
+
+const provider = new PactV3({
+  consumer: 'SearchUI',
+  provider: 'CatalogGraphQL',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8091,
+  logLevel: 'warn',
+});
+
+describe('SearchUI → CatalogGraphQL contract', () => {
+  it('executes SearchCatalog query and returns matching items', async () => {
+    await provider
+      .given('catalog has items matching "widget"')
+      .uponReceiving('a SearchCatalog query for "widget"')
+      .withRequest({
+        method: 'POST',
+        path: '/graphql',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: {
+          // Match the operation name by type, not exact string — allows whitespace variation
+          operationName: string('SearchCatalog'),
+          // regex match allows minor query whitespace/comment variation
+          query: regex(
+            /query SearchCatalog\(\$term: String!, \$limit: Int\)/,
+            SEARCH_CATALOG_QUERY
+          ),
+          variables: {
+            term: like('widget'),
+            limit: integer(10),
+          },
+        },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          data: {
+            searchCatalog: {
+              items: eachLike({ id: string('ITEM-1'), title: like('Widget A'), price: like(19.99) }),
+              totalCount: integer(3),
+            },
+          },
+        },
+      })
+      .executeTest(async (mockServer) => {
+        const client = new GraphQLClient(mockServer.url);
+        const result = await client.query<SearchCatalogData>(
+          'SearchCatalog',
+          SEARCH_CATALOG_QUERY,
+          { term: 'widget', limit: 10 }
+        );
+        expect(result.searchCatalog.items.length).toBeGreaterThanOrEqual(1);
+        expect(result.searchCatalog.totalCount).toBeGreaterThan(0);
+        expect(result.searchCatalog.items[0]).toHaveProperty('id');
+      });
+  });
+});
+```
+
+**Key points:**
+- GraphQL is still HTTP POST — Pact matches on the body `{ operationName, query, variables }` structure
+- Using `regex()` on the `query` field tolerates whitespace/formatting differences between consumer and the stored pact; exact string matching on multi-line GraphQL queries is extremely brittle
+- The `data` wrapper in `willRespondWith` mirrors the real GraphQL response envelope — the consumer's error handling (checking `json.errors`) must also be tested via separate consumer interactions
+- GraphQL mutations follow the same pattern: change `operationName` to the mutation name, use `mutation` keyword in the query body
+- For Apollo Client consumers, the consumer test wraps `ApolloClient` with an `HttpLink` pointed at `mockServer.url` — the real Apollo network layer is exercised without modifications
+
+---
+
+### Contract Testing in a Monorepo (TypeScript — Nx / Turborepo)
+
+Monorepos add topology constraints to Pact: all consumer and provider tests live in the same repo, but they must still be run and published independently to preserve CDC's isolation guarantees.
+
+```typescript
+// packages/order-service/jest.pact.config.ts
+// Per-package Jest config for Pact tests in an Nx/Turborepo monorepo.
+// Each package has its own jest.pact.config.ts; the root runs them via `nx run-many`.
+import type { Config } from 'jest';
+import path from 'path';
+
+const config: Config = {
+  displayName: 'order-service:pact',
+  rootDir: __dirname,
+  testMatch: ['<rootDir>/src/**/*.pact.spec.ts'],
+  testPathIgnorePatterns: ['\\.provider\\.pact\\.spec\\.ts$'],
+  transform: { '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.spec.json' }] },
+  testTimeout: 30_000,
+  maxWorkers: 1,
+  // Write pacts to a workspace-level /pacts directory so the publish script
+  // can glob all consumer pact files in one command.
+  // Each consumer writes to /pacts/<ConsumerName>-<ProviderName>.json
+  // No collision because consumer and provider names are unique per package.
+  globals: {
+    PACT_DIR: path.resolve(__dirname, '../../pacts'),
+  },
+};
+
+export default config;
+```
+
+```typescript
+// packages/order-service/src/inventory-client.pact.spec.ts
+// Reads PACT_DIR from Jest globals to write pacts to workspace root.
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { InventoryClient } from './inventory-client';
+
+const { like, integer } = MatchersV3;
+
+// Read pact output dir from Jest global (set per-package in jest.pact.config.ts)
+const pactDir =
+  (global as Record<string, unknown>).PACT_DIR as string ??
+  path.resolve(process.cwd(), 'pacts');
+
+const provider = new PactV3({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: pactDir,
+  port: 8085,
+  logLevel: 'warn',
+});
+
+describe('OrderService → InventoryService contract (monorepo)', () => {
+  it('fetches available stock for a SKU', async () => {
+    await provider
+      .given('SKU ABC-123 is available')
+      .uponReceiving('a stock availability check')
+      .withRequest({ method: 'GET', path: '/inventory/ABC-123/availability' })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: { sku: like('ABC-123'), available: integer(5) },
+      })
+      .executeTest(async (mockServer) => {
+        const client = new InventoryClient(mockServer.url);
+        const result = await client.checkAvailability('ABC-123');
+        expect(result.available).toBeGreaterThanOrEqual(0);
+      });
+  });
+});
+```
+
+```jsonc
+// nx.json (relevant excerpt) — monorepo task pipeline for Pact
+{
+  "targetDefaults": {
+    "pact:consumer": {
+      "executor": "@nx/jest:jest",
+      "options": { "jestConfig": "jest.pact.config.ts", "passWithNoTests": false },
+      "outputs": ["{workspaceRoot}/pacts"],
+      // Consumer pact runs independently — no `dependsOn`
+      "cache": false
+    },
+    "pact:provider": {
+      "executor": "@nx/jest:jest",
+      "options": { "jestConfig": "jest.provider.pact.config.ts", "passWithNoTests": false },
+      // Provider verification must run after consumer pact tests have published to Broker
+      // In CI, this is enforced by pipeline stage ordering, not nx dependency
+      "cache": false
+    }
+  }
+}
+```
+
+**Key points:**
+- Write all pact files to a single workspace-level `pacts/` directory (configured via Jest globals) so the publish script runs once: `pact-broker publish ./pacts --consumer-app-version "$GIT_COMMIT" ...`
+- Never use `dependsOn` to link `pact:provider` after `pact:consumer` in the nx task graph — this recreates the tight coupling that Pact's Broker model is designed to eliminate
+- In CI, run `pact:consumer` for all affected packages in one pipeline stage, publish to Broker, then run `pact:provider` for all affected packages in an independent subsequent stage
+- Port allocation in monorepos: assign a fixed, unique port per consumer package in that package's `jest.pact.config.ts` to prevent collision when nx runs multiple packages in parallel (or switch to PactV4's auto-port assignment)
+
+---
+
+### Cursor-Based Pagination Contract (TypeScript)
+
+APIs with cursor-based pagination (`after`, `before`, `cursor`) require specific matcher strategies — the cursor value is opaque and server-assigned, making exact matching impossible.
+
+```typescript
+// feed-service.cursor.consumer.pact.spec.ts
+// Contract for a cursor-paginated feed API.
+// Cursors are server-assigned opaque strings — use `like()` or `fromProviderState()`.
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { FeedClient } from '../src/feed-client';
+
+const { like, string, integer, boolean: boolMatch, eachLike, fromProviderState } = MatchersV3;
+
+interface FeedPage {
+  items: Array<{ id: string; content: string; timestamp: string }>;
+  pageInfo: {
+    hasNextPage: boolean;
+    endCursor: string | null;
+    hasPreviousPage: boolean;
+    startCursor: string | null;
+  };
+}
+
+const provider = new PactV3({
+  consumer: 'ActivityDashboard',
+  provider: 'FeedService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8086,
+  logLevel: 'warn',
+});
+
+describe('ActivityDashboard → FeedService contract (cursor pagination)', () => {
+  describe('First page (no cursor)', () => {
+    it('returns the first page of feed items', async () => {
+      await provider
+        .given('feed has at least 2 items')
+        .uponReceiving('a request for the first feed page (limit=2)')
+        .withRequest({
+          method: 'GET',
+          path: '/feed',
+          query: { limit: '2' },
+          headers: { Accept: 'application/json' },
+        })
+        .willRespondWith({
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+          body: {
+            items: eachLike({
+              id: string('ITEM-001'),
+              content: like('some content'),
+              timestamp: like('2025-01-01T00:00:00Z'),
+            }),
+            pageInfo: {
+              hasNextPage: boolMatch(true),
+              endCursor: like('eyJpZCI6IklURU0tMDAxIn0='),   // opaque base64 cursor
+              hasPreviousPage: boolMatch(false),
+              startCursor: like('eyJpZCI6IklURU0tMDAxIn0='),
+            },
+          },
+        })
+        .executeTest(async (mockServer) => {
+          const client = new FeedClient(mockServer.url);
+          const page: FeedPage = await client.getFeed({ limit: 2 });
+          expect(page.items.length).toBeGreaterThanOrEqual(1);
+          expect(typeof page.pageInfo.endCursor).toBe('string');
+          expect(page.pageInfo.hasNextPage).toBe(true);
+        });
+    });
+  });
+
+  describe('Subsequent page (with cursor)', () => {
+    it('returns the next page when a cursor is provided', async () => {
+      await provider
+        .given('feed has at least 4 items', { afterCursor: 'eyJpZCI6IklURU0tMDAxIn0=' })
+        .uponReceiving('a request for the next feed page using a cursor')
+        .withRequest({
+          method: 'GET',
+          path: '/feed',
+          // fromProviderState: provider injects the actual cursor at verification time;
+          // consumer test uses the fallback value during local execution
+          query: { limit: '2', after: fromProviderState('${afterCursor}', 'eyJpZCI6IklURU0tMDAxIn0=') as unknown as string },
+          headers: { Accept: 'application/json' },
+        })
+        .willRespondWith({
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+          body: {
+            items: eachLike({ id: string('ITEM-003'), content: like('more content'), timestamp: like('2025-01-02T00:00:00Z') }),
+            pageInfo: {
+              hasNextPage: boolMatch(false),
+              endCursor: like('eyJpZCI6IklURU0tMDAzIn0='),
+              hasPreviousPage: boolMatch(true),
+              startCursor: like('eyJpZCI6IklURU0tMDAzIn0='),
+            },
+          },
+        })
+        .executeTest(async (mockServer) => {
+          const client = new FeedClient(mockServer.url);
+          const page: FeedPage = await client.getFeed({
+            limit: 2,
+            after: 'eyJpZCI6IklURU0tMDAxIn0=',
+          });
+          expect(page.items.length).toBeGreaterThanOrEqual(1);
+          expect(page.pageInfo.hasPreviousPage).toBe(true);
+        });
+    });
+  });
+});
+```
+
+**Key points:**
+- Cursors are opaque strings — never match them exactly (they encode server state). Use `like()` to assert type only
+- `fromProviderState('${afterCursor}', fallback)` lets the provider inject a real cursor created by the state handler during verification — the handler seeds two items and returns the cursor pointing to the first
+- `boolean(true)` from `MatchersV3` matches the type `boolean` with an example value `true` — it does NOT assert the exact value, which is correct since `hasNextPage` depends on real data
+- Separate interactions for first-page (no cursor) and subsequent-page (with cursor) requests — they have different provider states and different query parameters
+- The provider state handler for the "subsequent page" interaction receives `{ afterCursor: '...' }` params and seeds accordingly, returning the opaque cursor value for injection
+
+---
+
+### Multi-Environment can-i-deploy Matrix (GitHub Actions — TypeScript workflow)
+
+Real multi-service deployments require `can-i-deploy` checks for multiple environments and multiple services in the same CI pipeline. A GitHub Actions matrix strategy keeps the pipeline DRY.
+
+```yaml
+# .github/workflows/pact-multi-env.yml
+# Multi-service, multi-environment can-i-deploy matrix.
+# Each matrix cell checks one service against one environment.
+name: Pact can-i-deploy Matrix
+
+on:
+  workflow_call:
+    inputs:
+      git_sha:
+        required: true
+        type: string
+      target_environment:
+        required: true
+        type: string
+
+env:
+  PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
+  PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+
+jobs:
+  can-i-deploy:
+    name: can-i-deploy — ${{ matrix.service }} → ${{ inputs.target_environment }}
+    runs-on: ubuntu-latest
+    strategy:
+      # fail-fast: false ensures all services are checked, not just the first failure
+      fail-fast: false
+      matrix:
+        service:
+          - OrderService
+          - InventoryService
+          - NotificationService
+          - CheckoutService
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Pact CLI
+        run: npm install -g @pact-foundation/pact-cli
+
+      - name: can-i-deploy ${{ matrix.service }}
+        run: |
+          pact-broker can-i-deploy \
+            --pacticipant "${{ matrix.service }}" \
+            --version "${{ inputs.git_sha }}" \
+            --to-environment "${{ inputs.target_environment }}" \
+            --broker-base-url "$PACT_BROKER_URL" \
+            --broker-token "$PACT_BROKER_TOKEN" \
+            --retry-while-unknown 5 \
+            --retry-interval 15
+
+  record-all-deployments:
+    name: Record deployments
+    runs-on: ubuntu-latest
+    needs: [can-i-deploy]
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - OrderService
+          - InventoryService
+          - NotificationService
+          - CheckoutService
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install -g @pact-foundation/pact-cli
+      - name: Record ${{ matrix.service }} deployment to ${{ inputs.target_environment }}
+        run: |
+          pact-broker record-deployment \
+            --pacticipant "${{ matrix.service }}" \
+            --version "${{ inputs.git_sha }}" \
+            --environment "${{ inputs.target_environment }}" \
+            --broker-base-url "$PACT_BROKER_URL" \
+            --broker-token "$PACT_BROKER_TOKEN"
+```
+
+**Key points:**
+- `fail-fast: false` in the matrix strategy reports all failing services in a single CI run rather than stopping at the first failure — essential for diagnosing cross-service compatibility issues
+- Using `workflow_call` inputs makes this a reusable workflow callable from any deployment pipeline with `uses: ./.github/workflows/pact-multi-env.yml`
+- `record-all-deployments` runs after ALL `can-i-deploy` checks pass (`needs: [can-i-deploy]`) — recording a deployment before the full matrix check passes would corrupt the Broker's environment state
+- In TypeScript monorepos, the `matrix.service` values should match the exact `provider` name used in `PactV3` constructor options — case-sensitive; a mismatch causes the Broker to treat them as different participants
+
+---
+
+### Additional Community Production Lessons [community]
+
+16. **[community] Pact mock server port collisions in Docker containers.** When running Pact consumer tests inside a Docker container with `--network=host`, the mock server port must not conflict with any other container or host process. Teams that hard-code `port: 8080` in their `PactV3` options frequently hit this. Mitigation: always use a dedicated port in the 8900–8999 range for Pact mock servers, document the allocation, and consider migrating to PactV4 which auto-assigns ports.
+
+17. **[community] Consumer version selectors fetch stale pacts after a long-lived branch is merged.** The `{ branch: 'feature/big-refactor' }` selector continues fetching pacts from a merged feature branch until the branch is deleted from the Broker. Provider teams experience mysterious CI failures weeks after a feature branch merges. **Fix:** use `{ branch: 'feature/X', fallbackBranch: 'main' }` and remove the branch selector once the feature branch is deleted from the Broker.
+
+18. **[community] State handlers that call external services make provider verification flaky.** Some teams write state handlers that seed data via the real external API (e.g., calling a payment gateway in test mode). Network failures in state setup cascade into Pact verification failures that look like contract mismatches. **Rule:** state handlers must only interact with local resources (in-process database, in-memory cache, local filesystem). If the provider depends on an external API, stub it in the test server setup.
+
+19. **[community] Pact tests in a monorepo are accidentally cached by Nx/Turborepo.** Contract tests should never be cached: publishing a pact is a side effect, and a cached "success" means the pact is not republished on the next run. Both Nx and Turborepo support `"cache": false` per target — set this explicitly on all `pact:consumer` and `pact:provider` targets. A cached Pact run that doesn't publish to the Broker silently breaks the `can-i-deploy` gate when the consumer code has changed.
+
+20. **[community] The Pact Broker's "environment" concept requires an explicit `create-environment` step.** Teams that skip `pact-broker create-environment --name staging ...` when setting up a new environment find that `record-deployment` silently fails or that `can-i-deploy --to-environment staging` returns "environment not found." Create environments once during initial Broker setup (or in infrastructure-as-code) before any service attempts to record a deployment.
+
+21. **[community] GraphQL subscriptions cannot be tested with Pact.** Pact models request/response over HTTP. GraphQL subscriptions use WebSocket (or SSE), which Pact cannot intercept. Teams that add subscriptions to a previously-pacted GraphQL API assume coverage extends automatically. It does not. For subscription contracts, use integration tests with a real event stream, or test subscription message payloads as message pacts using `MessageConsumerPact`.
+
+22. **[community] Provider verification timeout is a hidden cost of large provider state catalogs.** A provider with 20 consumers, each with 15 interactions (300 total interactions), and state handlers that each seed 10 database rows, can take 15+ minutes to verify. This blocks the provider's CI pipeline. Mitigation strategies: (1) use `consumerVersionSelectors: [{ mainBranch: true }, { deployedOrReleased: true }]` to limit the verification scope; (2) split the provider into verification shards by consumer using `filterConsumerNames`; (3) move to PactFlow's bi-directional contracts for consumers with stable, schema-only contracts.
+
+---
+
+### Pact Specification Version Reference
+
+Understanding which Pact specification version your pact files use affects compatibility between consumer teams, provider teams, and Broker versions.
+
+| Spec Version | pact-js version | Key capabilities | Notes |
+|---|---|---|---|
+| Pact V1 | pact-js < v2 | Basic request/response matching | Legacy; do not use in new projects |
+| Pact V2 | pact-js v2–v9 | `term()` regex matchers, `eachLike` | `term()` replaced by `regex()` in V3 |
+| Pact V3 | pact-js v9–v12 | Provider states with params, `MatchersV3`, message pacts | Still widely used; stable |
+| Pact V4 | pact-js v13+ | Plugin architecture, auto-port, gRPC, Protobuf | Recommended for new projects |
+
+**Migration notes for TypeScript projects:**
+- V3 → V4 migration: Replace `PactV3` with `PactV4`; update `withRequest` builder API; pact files are backward-compatible in the Broker
+- Pact V2 `term()` → V3 `regex()` from `MatchersV3`: `term(value, regex)` → `regex(pattern, value)` (argument order reverses)
+- pact-js v13 (V4) requires Node.js ≥ 18 due to native binary changes (uses Rust-based pact core)
+- V4 pact files include a `pluginConfiguration` section when plugins (gRPC, XML) are used — these files cannot be verified by a Broker running an older verifier
+
+---
+
 ### Reference Links
 
 | Name | Type | URL | Why useful |
@@ -1386,3 +1977,246 @@ describe('OrderService → InventoryService contract (Vitest)', () => {
 | OpenAPI Specification | Spec | https://spec.openapis.org/oas/latest.html | For the lighter schema-validation alternative |
 | buf — Protobuf breaking change detection | Docs | https://buf.build/docs/breaking/ | gRPC/Protobuf CDC alternative |
 | ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology reference |
+
+---
+
+### Error Response Contract Patterns (TypeScript — RFC 7807 Problem Details)
+
+Provider error responses are frequently under-tested in CDC. Consumers must know the exact shape of error payloads to display meaningful UI messages. RFC 7807 "Problem Details for HTTP APIs" provides a standard error envelope.
+
+```typescript
+// inventory-errors.consumer.pact.spec.ts
+// Tests the error response contract for the InventoryService using RFC 7807 Problem Details.
+// Ensures error shapes are as stable as success shapes.
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { InventoryClient, StockError } from '../src/inventory-client';
+
+const { like, string, integer, regex } = MatchersV3;
+
+// RFC 7807 Problem Details envelope — consumed by the UI error handler
+interface ProblemDetails {
+  type: string;       // URI identifying the problem type
+  title: string;      // Human-readable summary
+  status: number;     // HTTP status code
+  detail?: string;    // Human-readable explanation
+  instance?: string;  // URI reference to this occurrence
+}
+
+const provider = new PactV3({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8087,
+  logLevel: 'warn',
+});
+
+describe('OrderService → InventoryService error contracts', () => {
+  describe('404 — SKU not found', () => {
+    it('returns RFC 7807 Problem Details for an unknown SKU', async () => {
+      await provider
+        .given('SKU UNKNOWN-999 does not exist')
+        .uponReceiving('a stock request for a non-existent SKU')
+        .withRequest({ method: 'GET', path: '/inventory/UNKNOWN-999' })
+        .willRespondWith({
+          status: 404,
+          headers: {
+            // RFC 7807 content type — the consumer must handle this MIME type
+            'Content-Type': 'application/problem+json',
+          },
+          body: {
+            type: regex(
+              /^https:\/\/api\.example\.com\/problems\//,
+              'https://api.example.com/problems/not-found'
+            ),
+            title: like('SKU not found'),
+            status: integer(404),
+            detail: like('No inventory record found for SKU UNKNOWN-999'),
+            instance: like('/inventory/UNKNOWN-999'),
+          },
+        })
+        .executeTest(async (mockServer) => {
+          const client = new InventoryClient(mockServer.url);
+          const error = await client.getStock('UNKNOWN-999').catch((e: StockError) => e);
+          expect(error).toBeInstanceOf(StockError);
+          expect(error.status).toBe(404);
+          expect(error.problemDetails?.type).toMatch(/^https:\/\/api\.example\.com\/problems\//);
+        });
+    });
+  });
+
+  describe('409 — Insufficient stock (optimistic concurrency)', () => {
+    it('returns Problem Details when reservation fails due to insufficient stock', async () => {
+      await provider
+        .given('SKU ABC-123 has 0 units available')
+        .uponReceiving('a reservation request that exceeds available stock')
+        .withRequest({
+          method: 'POST',
+          path: '/inventory/reserve',
+          headers: { 'Content-Type': 'application/json' },
+          body: { sku: like('ABC-123'), quantity: integer(5) },
+        })
+        .willRespondWith({
+          status: 409,
+          headers: { 'Content-Type': 'application/problem+json' },
+          body: {
+            type: like('https://api.example.com/problems/insufficient-stock'),
+            title: like('Insufficient stock'),
+            status: integer(409),
+            detail: like('Requested 5 but only 0 available for SKU ABC-123'),
+            // Extension members — RFC 7807 permits provider-specific fields
+            availableQuantity: integer(0),
+            requestedQuantity: integer(5),
+          },
+        })
+        .executeTest(async (mockServer) => {
+          const client = new InventoryClient(mockServer.url);
+          const error = await client.reserveStock({ sku: 'ABC-123', quantity: 5 }).catch((e: StockError) => e);
+          expect(error.status).toBe(409);
+          expect(error.problemDetails?.availableQuantity).toBe(0);
+        });
+    });
+  });
+
+  describe('503 — Warehouse offline', () => {
+    it('returns Problem Details with Retry-After when service is degraded', async () => {
+      await provider
+        .given('Warehouse WH-001 is temporarily offline')
+        .uponReceiving('a stock request during warehouse outage')
+        .withRequest({ method: 'GET', path: '/inventory/ABC-123' })
+        .willRespondWith({
+          status: 503,
+          headers: {
+            'Content-Type': 'application/problem+json',
+            // Retry-After header — consumer must respect this for backpressure
+            'Retry-After': like('30'),
+          },
+          body: {
+            type: like('https://api.example.com/problems/service-unavailable'),
+            title: like('Warehouse temporarily unavailable'),
+            status: integer(503),
+          },
+        })
+        .executeTest(async (mockServer) => {
+          const client = new InventoryClient(mockServer.url);
+          const error = await client.getStock('ABC-123').catch((e: StockError) => e);
+          expect(error.status).toBe(503);
+          expect(error.retryAfter).toBeGreaterThan(0);
+        });
+    });
+  });
+});
+```
+
+**Key points:**
+- Testing error response shapes is as important as success shapes — a UI that cannot parse the error envelope shows a generic "Something went wrong" instead of a specific message
+- `regex(pattern, example)` on `type` enforces the URI structure without hardcoding the exact problem type — allows the provider to add new problem types under the same base URI without breaking the contract
+- RFC 7807 extension members (`availableQuantity`, `requestedQuantity`) should be tested with `like()` if the consumer renders them — don't over-specify fields the consumer doesn't use
+- `Retry-After` header matching with `like('30')` asserts it is a string (numeric seconds), not the exact value — the provider may vary the backoff duration
+- Each error scenario is a separate provider state with a distinct interaction — never combine error scenarios into a single interaction
+
+---
+
+### Contract Evolution Strategy (TypeScript — Adding Fields Without Breaking Consumers)
+
+One of CDC's highest-value scenarios is safely evolving provider APIs. This section demonstrates the three safe change patterns and the one unsafe pattern, with TypeScript-specific mitigation.
+
+```typescript
+// SAFE CHANGE #1: Adding a new optional field to the provider response
+// ─────────────────────────────────────────────────────────────────────
+// Consumer pact (existing — does NOT mention `stockLocation`):
+// { sku: string('ABC-123'), available: integer(10) }
+//
+// Provider adds `stockLocation` to the response:
+// { sku: 'ABC-123', available: 10, stockLocation: 'WH-001' }
+//
+// ✓ SAFE: Pact matching is additive — extra provider fields don't break consumer tests.
+// ✓ No consumer pact update needed.
+// ✗ Only safe because consumer uses type matchers (like/string/integer) — NOT exact body matching.
+
+// SAFE CHANGE #2: Provider renames a field using the strangler pattern
+// ───────────────────────────────────────────────────────────────────
+// Step 1: Provider returns BOTH old and new field names.
+// Consumer pact: { warehouseId: like('WH-001') }        ← consumer still uses old name
+// Provider returns: { warehouseId: 'WH-001', facilityId: 'WH-001' }  ← both present
+
+// Step 2: Consumer team updates their code to use `facilityId`,
+//         publishes a NEW pact: { facilityId: like('WH-001') }
+//         (warehouseId no longer mentioned — consumer doesn't need it)
+
+// Step 3: can-i-deploy check passes for the NEW consumer pact (both fields present in provider)
+//         Provider removes `warehouseId` only after ALL deployed consumers no longer reference it.
+//         The Pact Broker compatibility matrix shows which consumer versions are still deployed.
+
+// SAFE CHANGE #3: Consumer adds a new field to the request body
+// ─────────────────────────────────────────────────────────────
+// Old consumer pact request body: { sku: like('ABC-123'), quantity: integer(5) }
+// New consumer pact request body: { sku: like('ABC-123'), quantity: integer(5), priority: like('STANDARD') }
+//
+// ✓ SAFE if provider ignores unknown request fields (standard REST practice).
+// ✗ UNSAFE if provider validates request body with a strict schema that rejects unknown fields.
+//   Mitigation: provider uses `{ additionalProperties: true }` in JSON Schema validation.
+
+// UNSAFE CHANGE: removing a required field from the provider response
+// ──────────────────────────────────────────────────────────────────
+// Provider removes `warehouseId` without the strangler step:
+// Consumer pact: { sku: string('ABC-123'), available: integer(10), warehouseId: like('WH-001') }
+// Provider now returns: { sku: 'ABC-123', available: 10 }
+//
+// ✗ BREAKS: provider verification fails — `warehouseId` matcher has no match.
+// ✗ `can-i-deploy` blocks deployment.
+// ✓ The correct signal: fix the provider (add field back) or update all consumers first.
+
+// TypeScript helper: verify consumer interface stays in sync with pact matchers
+// ──────────────────────────────────────────────────────────────────────────────
+// Define the interface ONCE and derive the pact body from it using a mapping function.
+import { MatchersV3 } from '@pact-foundation/pact';
+
+const { like, string, integer } = MatchersV3;
+
+// The interface is the canonical contract definition — change the interface → compiler
+// flags all places that need updating (including the pact body mapper below).
+interface StockResponse {
+  sku: string;
+  available: number;
+  warehouseId: string;
+}
+
+// Map each interface field to a Pact matcher — explicit, auditable, compile-time safe
+function stockResponsePactBody(): Record<keyof StockResponse, unknown> {
+  return {
+    sku: string('ABC-123'),
+    available: integer(10),
+    warehouseId: like('WH-001'),
+  };
+}
+
+// Usage in pact consumer test:
+// .willRespondWith({
+//   status: 200,
+//   headers: { 'Content-Type': 'application/json' },
+//   body: stockResponsePactBody(),
+// })
+//
+// When a field is added to StockResponse, `stockResponsePactBody()` won't compile
+// until the new field is mapped — the TypeScript compiler enforces contract completeness.
+
+export { stockResponsePactBody };
+export type { StockResponse };
+```
+
+**Contract evolution rules summary:**
+
+| Change Type | Safe? | CDC Behavior | Action Required |
+|---|---|---|---|
+| Provider adds optional response field | Yes | Consumer test ignores unknown fields | None |
+| Provider adds required response field | Yes, if default provided | Existing consumers unaffected | None |
+| Provider renames response field | No (direct) | Verification fails | Use strangler: dual-field transition |
+| Provider removes response field | No | Verification fails if consumer pacts it | Update all consumers first, then remove |
+| Consumer adds optional request field | Yes | Provider ignores unknown fields by default | Ensure provider uses loose request validation |
+| Consumer removes request field | Yes | Provider receives request without field | Ensure provider handles missing-as-default |
+| Provider changes response field type | No | Verification fails | Dual-type transition or add new field |
+
+**TypeScript-specific anti-pattern:** Defining `StockResponse` interface separately from the Pact matcher body leads to drift — the interface can add a field that the pact body doesn't assert, creating a false sense of safety. The `stockResponsePactBody(): Record<keyof StockResponse, unknown>` pattern uses `keyof` to force the body mapper and interface to stay in sync at compile time.
+
+---

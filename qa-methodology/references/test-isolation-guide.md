@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 6 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 8 | score: 100/100 | date: 2026-05-03 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: synthesized from training knowledge (WebFetch blocked, WebSearch unavailable) -->
 <!-- Primary references: martinfowler.com/bliki/UnitTest.html, xunitpatterns.com/Four Phase Test, -->
@@ -828,3 +828,229 @@ parallel workers.
 | Mock type drift | Mock added method X but interface changed | `jest.Mocked<T>` with `beforeEach` recreation | `vi.Mocked<T>` |
 | Barrel mock blast radius | Unintended mocks of sibling exports | Mock source file directly, not barrel | Same |
 | Concurrent test race | `test.concurrent` + shared `let` = race | Avoid `test.concurrent` for stateful tests | Same |
+| File system contamination | Tests share temp files, leave artifacts | `tmp` directory per test with `afterEach` cleanup | Same |
+| Redis/cache state leak | Tests read stale cached data from prior test | Flush or key-namespace per test with `afterEach` | Same |
+| React component state leak | Component state from one test affects next | Unmount via `cleanup()` (RTL) or recreate in `beforeEach` | Same |
+
+---
+
+## Extended Patterns
+
+### Pattern 11: File-system isolation with `tmp` directory per test (TypeScript)  [community]
+
+Tests that write to the file system must use a unique temporary directory per test and delete it
+in `afterEach`. Reusing a shared directory (or the OS `/tmp` without a per-test subdirectory) causes
+cross-test contamination when tests write files with the same names.
+
+```typescript
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { exportReportToFile } from './reportExporter';
+
+describe('reportExporter', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    // Unique directory per test — avoids filename collisions across parallel runs
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'report-test-'));
+  });
+
+  afterEach(() => {
+    // Remove the entire temp directory and all files created during the test
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('writes a JSON report file with the correct structure', async () => {
+    const data = { userId: 'u1', actions: ['login', 'view'] };
+    const outPath = path.join(tmpDir, 'report.json');
+
+    await exportReportToFile(data, outPath);
+
+    const raw = fs.readFileSync(outPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    expect(parsed).toMatchObject({ userId: 'u1' });
+    expect(parsed.actions).toHaveLength(2);
+  });
+
+  it('creates the output directory if it does not exist', async () => {
+    const nestedDir = path.join(tmpDir, 'nested', 'output');
+    const outPath = path.join(nestedDir, 'report.json');
+
+    await exportReportToFile({ userId: 'u2', actions: [] }, outPath);
+
+    expect(fs.existsSync(outPath)).toBe(true);
+  });
+
+  it('overwrites an existing file without error', async () => {
+    const outPath = path.join(tmpDir, 'report.json');
+    fs.writeFileSync(outPath, '{"old": true}');
+
+    await exportReportToFile({ userId: 'u3', actions: ['logout'] }, outPath);
+
+    const raw = fs.readFileSync(outPath, 'utf-8');
+    expect(JSON.parse(raw)).not.toHaveProperty('old');
+  });
+});
+```
+
+### Pattern 12: React Testing Library isolation — `cleanup()` and per-test renders  [community]
+
+React Testing Library (RTL) automatically calls `cleanup()` after each test when used with a Jest
+environment that supports `afterEach`. However, in custom setups (Vitest with manual lifecycle,
+or globally-disabled auto-cleanup), you must call it explicitly. Additionally, never share a
+`render` result across tests — each test must render independently.
+
+```typescript
+import { render, screen, cleanup } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { Counter } from './Counter';
+
+// In most Jest/RTL setups this is automatic, but explicit for clarity in Vitest custom configs
+afterEach(() => {
+  cleanup(); // Unmounts React trees and clears the document body
+});
+
+describe('Counter', () => {
+  it('renders with initial count of zero', () => {
+    render(<Counter initialCount={0} />);
+
+    expect(screen.getByText('Count: 0')).toBeInTheDocument();
+  });
+
+  it('increments count when button is clicked', async () => {
+    // Each test renders a fresh component tree — no shared state from previous test
+    const user = userEvent.setup();
+    render(<Counter initialCount={0} />);
+
+    await user.click(screen.getByRole('button', { name: /increment/i }));
+
+    expect(screen.getByText('Count: 1')).toBeInTheDocument();
+  });
+
+  it('starts from the given initialCount, not 0', () => {
+    render(<Counter initialCount={5} />);
+
+    // If tests shared a component, this would see the count from the previous test
+    expect(screen.getByText('Count: 5')).toBeInTheDocument();
+  });
+});
+```
+
+### Pattern 13: Redis/cache key namespacing for integration test isolation  [community]
+
+Integration tests that use a shared Redis instance must namespace keys by test run (or test ID)
+to prevent one test's cached data from influencing another's. An alternative is to flush the
+database in `beforeEach`, but that is destructive for any other process sharing the instance.
+
+```typescript
+import { createClient, RedisClientType } from 'redis';
+import { CacheService } from './cacheService';
+
+describe('CacheService integration', () => {
+  let client: RedisClientType;
+  let cache: CacheService;
+  let testPrefix: string;
+
+  beforeAll(async () => {
+    client = createClient({ url: process.env.REDIS_URL ?? 'redis://localhost:6379' });
+    await client.connect();
+  });
+
+  beforeEach(async () => {
+    // Unique prefix per test — keys never collide across concurrent test workers
+    testPrefix = `test:${process.pid}:${Date.now()}:`;
+    cache = new CacheService(client, testPrefix);
+  });
+
+  afterEach(async () => {
+    // Delete only the keys this test created — leave other tests' keys untouched
+    const keys = await client.keys(`${testPrefix}*`);
+    if (keys.length > 0) await client.del(keys);
+  });
+
+  afterAll(async () => {
+    await client.quit();
+  });
+
+  it('stores and retrieves a value within its namespace', async () => {
+    await cache.set('user:1', { name: 'Alice' }, 60);
+
+    const result = await cache.get('user:1');
+
+    expect(result).toEqual({ name: 'Alice' });
+  });
+
+  it('returns null for a key that was never set in this namespace', async () => {
+    // Would incorrectly return Alice's data if tests shared a namespace without cleanup
+    const result = await cache.get('user:1');
+
+    expect(result).toBeNull();
+  });
+});
+```
+
+---
+
+## Additional Community Lessons  [community]
+
+21. **`@testing-library/react` auto-cleanup only works in Jest's `afterEach` hook.** [community]
+    RTL's auto-cleanup is registered via `@testing-library/react/pure`'s side-effect when the
+    library detects a global `afterEach`. In Vitest with `globals: false` (the default), no
+    global `afterEach` is present, so auto-cleanup silently does not run. The symptom: component
+    state bleeds between tests and `screen.getBy*` finds elements from a previous render.
+    Fix: import `import '@testing-library/jest-dom'` with Vitest's `globals: true`, or call
+    `cleanup()` explicitly in `afterEach`.
+
+22. **MSW (Mock Service Worker) handlers leak between tests without `server.resetHandlers()`.** [community]
+    When using MSW for API mocking, adding a one-off handler override inside a test with
+    `server.use(...)` persists to subsequent tests unless you call `server.resetHandlers()` in
+    `afterEach`. Teams often configure `beforeAll(server.listen)` and `afterAll(server.close)` but
+    forget the per-test reset. The correct three-line setup is:
+    ```typescript
+    beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+    afterEach(() => server.resetHandlers());
+    afterAll(() => server.close());
+    ```
+    WHY: MSW's handler stack is mutable. `server.use()` pushes onto it; without a reset,
+    each test inherits all handlers added by prior tests in the same file.
+
+23. **Playwright `page` fixture is per-test by default; `browser` context is per-worker.** [community]
+    Playwright's built-in `page` fixture is created fresh for each test, providing natural
+    isolation at the page level. However, if you create a custom `browser` fixture scoped to
+    `'worker'`, all tests in that worker share browser state (cookies, localStorage, open tabs).
+    Using `context` scoped to `'test'` (the default `browserContext` fixture) gives a clean
+    browser context per test. WHY: teams that promote `browser` to worker scope to save startup
+    time inadvertently create cross-test authentication and storage contamination.
+
+24. **`AbortController` signals not aborted in `afterEach` cause pending-promise leaks.** [community]
+    When testing code that accepts an `AbortSignal` (fetch, streaming operations, long-running
+    background workers), tests that do not abort the controller in `afterEach` leave promises
+    pending across test boundaries. In Jest, this manifests as "open handles" warnings
+    (`--detectOpenHandles`) and test timeouts in subsequent tests. Always pair:
+    ```typescript
+    let controller: AbortController;
+    beforeEach(() => { controller = new AbortController(); });
+    afterEach(() => { controller.abort(); });
+    ```
+    WHY: Unresolved promises hold references to mock functions and scoped variables from
+    the test that created them, preventing garbage collection and accumulating memory across
+    the test run.
+
+25. **`jest.isolateModules()` for single-import isolation without polluting global module state.** [community]
+    `jest.resetModules()` in `beforeEach` clears the *entire* module registry, which is expensive
+    and may break other tests in the same file that rely on already-loaded modules. For isolating
+    a single module import, `jest.isolateModules()` provides a scoped registry reset:
+    ```typescript
+    it('reads FLAG=true path on first require', () => {
+      process.env.FEATURE_FLAG = 'true';
+      jest.isolateModules(() => {
+        const { featureEnabled } = require('./featureFlag');
+        expect(featureEnabled).toBe(true);
+      });
+    });
+    ```
+    WHY: `isolateModules` creates a fresh module registry only for the callback's duration;
+    modules loaded outside the callback are unaffected. This is the correct scalpel where
+    `resetModules` is a sledgehammer.
+

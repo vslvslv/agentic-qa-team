@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
 <!-- sources: training-knowledge synthesis (WebFetch blocked, WebSearch unavailable) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog -->
@@ -37,6 +37,8 @@ No codebase naturally has exactly 70% unit test cases. Use ratio targets as a di
 ISTQB CTFL 4.0 defines the *test basis* as the body of knowledge used to design test cases. At the unit test level the test basis is the source code and low-level design; at the integration test level it is the interface specifications and component interaction design; at the system test level it is functional requirements and user stories. In TypeScript projects, the TypeScript type definitions (`.d.ts` files, `interface` and `type` declarations) extend the unit-level test basis — the compiler verifies the type portion automatically, freeing unit test cases to focus on business logic and edge cases rather than type safety.
 
 > **ISTQB CTFL 4.0 terminology note:** This guide uses ISTQB-standard terms. "Test level" (not "test layer") refers to a distinct group of test activities organised and managed together. "Test case" is the preferred term for a single executable test specification. "Test suite" is a collection of test cases. "Defect" (not "bug") is used for observed deviations from expected behaviour. "Test object" refers to the component or system under test. "Test basis" refers to the body of knowledge used as the basis for test analysis and test design (requirements, design specs, source code).
+>
+> **ISTQB CTFL 4.0 — Component vs Component Integration distinction:** ISTQB CTFL 4.0 formally separates *component test level* (testing a single component in isolation — equivalent to "unit") from *component integration test level* (testing interactions between components — equivalent to "integration"). The test pyramid's middle layer maps precisely to the component integration test level. In TypeScript monorepos with Nx or Turborepo, the component integration test level corresponds to testing across package boundaries with real in-process imports — not mocked module boundaries. This distinction matters when writing test plans for regulated environments where ISTQB level names are required in documentation.
 
 ---
 
@@ -51,6 +53,9 @@ ISTQB CTFL 4.0 defines the *test basis* as the body of knowledge used to design 
 | CLI tooling / data pipelines | Unit test cases dominate; e2e test cases are often a single smoke test |
 | Highly regulated (finance, health) | May require 100% branch coverage at unit level regardless of pyramid ratio |
 | NestJS / Express TypeScript APIs | Integration test cases with Supertest exercise the DI container, decorators, and middleware — unit tests alone cannot catch misconfigured `@Module` bindings |
+| Bun runtime (TypeScript native) | Bun's built-in `bun:test` runner executes TypeScript natively without a transpiler step. Unit test cases gain speed; use the same pyramid ratios. Be aware that `bun:test`'s module mock API differs from Vitest's `vi.mock()` — mocks must be declared at the top of the file before imports. Integration tests with `testcontainers` work but require Node.js compatibility mode (`--bun` flag not needed for `testcontainers` since Bun 1.1+). |
+| Deno runtime (TypeScript native) | Deno's `Deno.test()` runner has built-in TypeScript support. Use `npm:testcontainers` for integration tests. The pyramid applies identically; the main difference is that Deno's permissions model (`--allow-net`, `--allow-read`) can isolate tests more granularly than Node.js — use this to enforce that unit tests truly have no network access. |
+| OpenAPI-first TypeScript services | Generate TypeScript client types and MSW handlers from the OpenAPI schema (`orval`, `openapi-typescript`). Integration tests use the generated types and handlers, creating a compile-time coupling between the test layer and the API contract. This eliminates a whole class of integration test defects caused by manually maintained mock data diverging from the real schema. |
 
 ---
 
@@ -440,9 +445,47 @@ describe('OrdersService (integration)', () => {
 });
 ```
 
-### Contract Testing with Pact (Fourth Layer for Microservices)
+### Playwright Component Testing at the Integration Test Level
 
-In distributed TypeScript services, contract tests act as a fourth pyramid layer between integration and e2e. The consumer writes the contract; the provider verifies it. This catches integration defects before a full system test. The `@pact-foundation/pact` package provides TypeScript typings.
+Playwright 1.35+ introduced native component testing (`@playwright/experimental-ct-react` / `@playwright/experimental-ct-vue`) that mounts components in a real browser without starting a full server. This sits at the integration test level: the component is rendered with real browser APIs (not jsdom), but the network is intercepted. This makes it appropriate for components that depend on browser-specific APIs (ResizeObserver, IntersectionObserver, Web Workers) that jsdom cannot emulate.
+
+```typescript
+// src/components/ProductCard.ct.test.tsx — Playwright Component Test
+// playwright-ct.config.ts is separate from playwright.config.ts (e2e)
+import { test, expect } from '@playwright/experimental-ct-react';
+import { ProductCard } from './ProductCard.js';
+import type { Product } from '../types.js';
+
+const sampleProduct: Product = {
+  id: 'p1',
+  name: 'TypeScript Handbook',
+  price: 29.99,
+  inStock: true,
+};
+
+test('renders product name and price', async ({ mount }) => {
+  const component = await mount(<ProductCard product={sampleProduct} />);
+  await expect(component.getByRole('heading')).toContainText('TypeScript Handbook');
+  await expect(component.getByText('$29.99')).toBeVisible();
+});
+
+test('shows out-of-stock badge when inStock is false', async ({ mount }) => {
+  const outOfStock: Product = { ...sampleProduct, inStock: false };
+  const component = await mount(<ProductCard product={outOfStock} />);
+  await expect(component.getByRole('status')).toContainText(/out of stock/i);
+});
+
+test('calls onAddToCart with product id when button is clicked', async ({ mount }) => {
+  let calledWith: string | null = null;
+  const component = await mount(
+    <ProductCard product={sampleProduct} onAddToCart={(id) => { calledWith = id; }} />
+  );
+  await component.getByRole('button', { name: /add to cart/i }).click();
+  expect(calledWith).toBe('p1');
+});
+```
+
+Playwright component tests run in real Chromium/Firefox/WebKit, which closes the gap between jsdom-based integration tests and full e2e tests. They are faster than e2e (no full app server needed) but slower than jsdom-based RTL tests. Place them in a `*.ct.test.tsx` naming convention and a separate Playwright CT workspace project to keep them distinct from both RTL integration tests and e2e tests in the pyramid reporting script. contract tests act as a fourth pyramid layer between integration and e2e. The consumer writes the contract; the provider verifies it. This catches integration defects before a full system test. The `@pact-foundation/pact` package provides TypeScript typings.
 
 ```typescript
 // consumer/src/orders-client.pact.test.ts — consumer-side contract test
@@ -485,6 +528,42 @@ describe('OrdersService Pact', () => {
   });
 });
 ```
+
+### Mutation Testing with Stryker at the Unit Test Level
+
+Mutation testing validates that your unit test cases are *effective* — not just that they pass, but that they detect real logic defects. Stryker Mutator (`@stryker-mutator/core`) supports TypeScript natively and integrates with Vitest. A high mutation score (>80%) confirms that the unit test layer is actually exercising all the business logic branches it claims to cover.
+
+```typescript
+// stryker.config.mts — Stryker v8 + Vitest + TypeScript
+import type { Config } from '@stryker-mutator/api/config';
+
+const config: Config = {
+  testRunner: 'vitest',
+  plugins: [
+    '@stryker-mutator/vitest-runner',
+    '@stryker-mutator/typescript-checker',
+  ],
+  checkers: ['typescript'],
+  tsconfigFile: 'tsconfig.json',        // TypeScript checker re-validates each mutant
+  mutate: [
+    'src/**/*.ts',
+    '!src/**/*.test.ts',
+    '!src/**/*.test-d.ts',
+  ],
+  thresholds: {
+    high: 80,
+    low: 60,
+    break: 50,                           // fail CI if mutation score drops below 50%
+  },
+  // Stryker reports which unit test cases caught each mutant, identifying dead/weak tests
+  reporters: ['html', 'clear-text', 'json'],
+  htmlReporter: { fileName: 'reports/mutation/mutation-report.html' },
+};
+
+export default config;
+```
+
+Stryker's TypeScript checker re-compiles each mutant — if a mutation produces a TypeScript compile error, Stryker marks it as *compile-time killed*, which is a free win from the type system. The remaining surviving mutants (mutations the TypeScript compiler accepts but tests don't catch) are the actionable signal. Add `stryker run` as a weekly CI step — not on every commit — because mutation testing can take minutes to hours on large codebases.
 
 ### Property-Based Testing for Edge Cases (Unit Level)
 
@@ -666,6 +745,10 @@ Enforcing "70/20/10" as a hard CI gate is counterproductive. [community] A CLI t
 
 Teams that don't measure their test-type distribution let the pyramid quietly invert over months. New engineers add e2e test cases because they are the most visible; unit test cases get deleted during refactoring because they feel brittle. Without a CI check, nobody notices until the build takes 45 minutes. [community] Fix: add a test-count-by-type job to CI that warns when e2e count exceeds integration count.
 
+### Coverage Theater
+
+Achieving a high line/branch coverage percentage at the unit test level while systematically under-investing in integration and e2e test cases. The metric looks healthy (e.g., 95% line coverage) while the test suite provides low defect-detection effectiveness. This anti-pattern is especially common in TypeScript projects where `vi.mock()` makes it trivial to achieve full branch coverage in a unit test suite that never exercises a real database query, real HTTP call, or real module boundary. The quantified cost: internal studies at large software organisations (Google, Amazon, Microsoft) consistently find that 60–80% of production defects originate at integration boundaries — not in isolated unit logic. A 95%-covered unit suite that never exercises integration boundaries provides false confidence. Fix: track integration test coverage separately from unit test coverage; require a minimum non-zero count of integration test cases as a merge gate, independently of the overall coverage threshold. In TypeScript projects, use `vitest --coverage --reporter=json` per workspace project to get per-level coverage reports, not just an aggregate number.
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -702,6 +785,33 @@ Teams that don't measure their test-type distribution let the pyramid quietly in
 
 16. **Declaration merging silently widens interfaces used in test doubles** [community] — TypeScript's declaration merging allows multiple `interface User { ... }` blocks to merge into one. When a third-party library (e.g., `@types/express`) extends a core interface via merging, test doubles typed to the original interface may be missing the merged properties. The TypeScript compiler accepts the partial object, but the real runtime throws. Fix: use `satisfies` when creating test doubles (`const fakeReq = { ... } satisfies Request`) rather than explicit type annotations — `satisfies` validates all merged properties including those from ambient declarations.
 
+17. **Vitest workspace projects share a root `tsconfig.json` but separate type environments** [community] — In a Vitest workspace with multiple projects (unit, integration, e2e), each project compiles TypeScript in its own context. If the root `tsconfig.json` uses `"moduleResolution": "bundler"` for the application but the integration test project requires `"moduleResolution": "node16"` for `testcontainers`'s ESM exports, the test project silently falls back to incorrect resolution. Fix: each Vitest workspace project should reference its own `tsconfig.json` (e.g., `tsconfig.integration.json`) with the correct `moduleResolution` for its runtime context. This prevents "module has no default export" errors that appear only in CI.
+
+18. **Affected-test pipelines in monorepos skip cross-package integration tests** [community] — Nx and Turborepo affected-task algorithms determine which tests to run based on the dependency graph derived from `tsconfig.json` `references` entries and `package.json` `dependencies`. If a shared utility package is updated but the consuming service's `tsconfig.json` does not declare a `references` entry for it (only a `package.json` dependency), the consuming service's integration tests are not marked as affected. The cross-package integration defect ships undetected. Fix: keep `tsconfig.json` `references` in strict alignment with `package.json` dependencies; use Nx's `@nx/enforce-module-boundaries` ESLint rule to detect undeclared cross-package dependencies.
+
+19. **Test data factories fall out of sync with TypeScript interfaces** [community] — Teams manually write `const fakeOrder = { id: '1', total: 100 }` as test fixtures. When the `Order` interface gains a required field, TypeScript reports an error in application code but the fixture object was cast with `as Order` — silently ignoring the missing field. Integration tests then run against an incomplete test object, hiding defects caused by the missing field at runtime. Fix: use typed factory libraries such as `fishery` or `factory.ts` with `faker-js` that derive their type from the interface, making any missing required field a compile-time error:
+
+```typescript
+// tests/factories/order.factory.ts — fishery + @faker-js/faker + TypeScript
+import { Factory } from 'fishery';
+import { faker } from '@faker-js/faker';
+import type { Order } from '../../src/orders/types.js';
+
+export const orderFactory = Factory.define<Order>(() => ({
+  id: faker.string.uuid(),
+  customerId: faker.string.alphanumeric(8),
+  total: faker.number.float({ min: 10, max: 500, fractionDigits: 2 }),
+  status: faker.helpers.arrayElement(['pending', 'confirmed', 'cancelled'] as const),
+  createdAt: faker.date.recent(),
+}));
+
+// Usage in integration test case:
+// const order = orderFactory.build({ total: 0 }); // override specific fields
+// const orders = orderFactory.buildList(5);        // build a list of 5 orders
+// Adding a new required field to Order will produce a TypeScript error here —
+// forcing the factory to be updated before the test suite can compile.
+```
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -731,6 +841,8 @@ Teams that don't measure their test-type distribution let the pyramid quietly in
 - **Playwright configuration** (parallelism, retries, sharding) requires senior engineering time to tune; getting it wrong produces more flakiness than no e2e tests at all.
 - **Ratio monitoring** requires custom CI scripts or third-party tooling (Codecov, Datadog CI Visibility) to track over time.
 - **TypeScript compilation in test pipelines** adds 10–30 s to test startup unless `ts-node`/`tsx`/`vitest` transpile-only mode is used. Use `vitest` (which uses Vite's `esbuild` transform) or `tsx` for fast TypeScript test execution without full `tsc` type-checking in hot paths.
+- **AI-generated TypeScript test code** (GitHub Copilot, Cursor) reduces initial write time but produces unit-test-heavy suites with `vi.mock()` overuse. When adopting AI code generation, add a lint rule or CI ratio check to prevent the pyramid from silently inverting as AI-generated unit tests accumulate. Teams using AI assistants for test generation report faster test authoring but higher maintenance cost from over-mocked, brittle unit suites without intentional integration coverage.
+- **TypeScript monorepo test isolation** (Nx, Turborepo, pnpm workspaces) requires per-package `vitest.config.ts` or a root workspace config with explicit `include` paths. Affected-test-only pipelines (running only tests for changed packages) rely on the build graph being accurate — if a package's `tsconfig.json` does not declare a `references` entry for a dependency, Nx/Turborepo may skip tests that should be affected. This silently reduces integration test coverage for cross-package interactions.
 
 ### Lighter alternatives
 
@@ -763,3 +875,7 @@ Teams that don't measure their test-type distribution let the pyramid quietly in
 | expect-type | Tool | https://github.com/mmkal/expect-type | Compile-time type assertions for TypeScript — the base layer of the Testing Trophy |
 | @pact-foundation/pact | Tool | https://github.com/pact-foundation/pact-js | Consumer-driven contract testing for TypeScript microservices |
 | vite-tsconfig-paths | Tool | https://github.com/aleclarson/vite-tsconfig-paths | Syncs `tsconfig.json` path aliases to Vitest/Vite — prevents "alias works in tsc, fails in test" defects |
+| Stryker Mutator | Tool | https://stryker-mutator.io/docs/stryker-js/introduction | Mutation testing for TypeScript with Vitest integration; `@stryker-mutator/typescript-checker` validates mutants against `tsc` |
+| fishery | Tool | https://github.com/thoughtbot/fishery | Type-safe test data factory library for TypeScript; compile-time errors when factory misses required interface fields |
+| @faker-js/faker | Tool | https://fakerjs.dev/ | Realistic TypeScript test data generation; used with fishery for typed factories |
+| Playwright Component Testing | Tool | https://playwright.dev/docs/test-components | Integration-level browser component testing; covers browser APIs jsdom cannot emulate; `@playwright/experimental-ct-react` |

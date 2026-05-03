@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -40,9 +40,14 @@ Information and UI components must be presentable to users in ways they can perc
 - **1.2.x Captions/Audio Description (A/AA)**: Offer captions for video, transcripts for audio; critical for deaf users
 - **1.3.1 Info and Relationships (A)**: Semantic HTML (`<h1>`–`<h6>`, `<table>`, `<ul>`) conveys structure to screen readers — do not use `<div>` for structure that has a semantic equivalent
 - **1.3.3 Sensory Characteristics (A)**: Do not rely solely on color, shape, or position to convey meaning (e.g., "click the red button" fails)
+- **1.3.4 Orientation (AA)**: Content must not be restricted to a single screen orientation (portrait/landscape) unless the restriction is essential
+- **1.3.5 Identify Input Purpose (AA)**: Form fields collecting personal data must expose their purpose via the `autocomplete` attribute — enables browser auto-fill and reduces burden for motor-impaired users
 - **1.4.3 Contrast Minimum (AA)**: 4.5:1 for normal text, 3:1 for large text
 - **1.4.4 Resize Text (AA)**: Text must resize to 200% without loss of content or functionality
+- **1.4.10 Reflow (AA)**: Content must reflow to a single column at 320px CSS width without horizontal scrolling — ensures readability at 400% zoom
 - **1.4.11 Non-text Contrast (AA)**: UI component boundaries and graphical objects must meet 3:1 contrast against adjacent colors
+- **1.4.12 Text Spacing (AA)**: Content must not be lost when users override: line-height ≥ 1.5× font size, paragraph spacing ≥ 2× font size, letter spacing ≥ 0.12× font size, word spacing ≥ 0.16× font size
+- **1.4.13 Content on Hover or Focus (AA)**: Tooltip/popover content triggered by hover or focus must be dismissible (Escape), hoverable (pointer can move to the content without it disappearing), and persistent (does not disappear until dismissed or trigger loses focus)
 
 ### Operable
 UI components and navigation must be operable. If a user cannot operate the interface, they cannot use it. This addresses motor disabilities and users who rely on keyboard or switch access devices.
@@ -50,7 +55,9 @@ UI components and navigation must be operable. If a user cannot operate the inte
 - **2.1.2 No Keyboard Trap (A)**: Focus must not get stuck inside a component unless it is a dialog that intentionally traps focus (and provides a dismiss mechanism)
 - **2.4.3 Focus Order (A)**: Tab order must be logical and match visual reading order
 - **2.4.7 Focus Visible (AA)**: Keyboard focus indicator must be visible — `outline: none` without replacement is a failure
-- **2.5.3 Label in Name (A)**: For UI components with visible text labels, the accessible name must contain the visible text
+- **2.5.1 Pointer Gestures (A)**: All functionality using multi-point or path-based gestures (pinch-zoom, swipe-to-dismiss, draw gesture) must have a single-pointer alternative — critical for switch access and one-finger mobile users
+- **2.5.3 Label in Name (A)**: For UI components with visible text labels, the accessible name must contain the visible text — voice control users say the visible label to activate controls; if the accessible name differs, voice control fails
+- **2.5.4 Motion Actuation (A)**: Functionality triggered by device motion (shake to undo, tilt to scroll) must have a UI alternative and must be able to be disabled — prevents accidental activation for users with tremors
 
 ### Understandable
 Information and the operation of the UI must be understandable. This addresses users with cognitive disabilities, learning differences, and non-native language users.
@@ -58,6 +65,7 @@ Information and the operation of the UI must be understandable. This addresses u
 - **3.2.1 On Focus (A)**: Receiving focus must not trigger unexpected context changes (no auto-submit on focus)
 - **3.3.1 Error Identification (A)**: Form errors must be described in text — "This field is required" not just a red border
 - **3.3.2 Labels or Instructions (A)**: All form inputs must have visible labels (not just placeholder text, which disappears on input)
+- **3.3.4 Error Prevention (AA)**: For legal, financial, or data submission: provide the ability to check, correct, and confirm data before submission — prevents catastrophic errors for users with cognitive or motor disabilities
 
 ### Robust
 Content must be robust enough to be interpreted by a wide variety of user agents, including current and future assistive technologies. This is the technical foundation that enables the other three principles to work.
@@ -1442,21 +1450,57 @@ export const test = base.extend<{ checkA11y: (selector?: string) => Promise<void
 
 ## Anti-Patterns
 
-1. **Using ARIA to override semantics without purpose**: `<div role="button">` without `tabIndex={0}` and keyboard handlers is worse than `<button>`. Native HTML elements carry built-in keyboard support and implicit roles.
+Each anti-pattern includes: the problematic pattern, **WHY it fails**, the **named alternative**, and the **WCAG criterion** it violates.
 
-2. **Removing focus outlines without replacement**: `outline: none` in CSS without providing an alternative visible focus indicator is a WCAG 2.4.7 failure and locks out keyboard-only users.
+1. **`<div role="button">` without keyboard handler**
+   - **WHY it fails**: `<div>` gets the ARIA role but not native button behavior. It is not in the tab order by default, does not respond to Enter/Space keyboard activation, and does not dispatch synthetic click events in all browsers.
+   - **Named alternative**: Use `<button type="button">`. Native `<button>` has tabIndex, Enter/Space activation, and implicit `role="button"` — three features you get for free.
+   - **WCAG**: 2.1.1 Keyboard, 4.1.2 Name Role Value
 
-3. **Testing only with axe and calling it done**: axe-core catches ~57% of WCAG issues. Skipping keyboard and screen reader testing leaves nearly half of all issues undetected.
+2. **`outline: none` without replacement focus indicator**
+   - **WHY it fails**: Removing the default browser focus outline without providing an alternative leaves keyboard-only users with no visible indication of where focus is. They cannot use the application at all.
+   - **Named alternative**: Replace with a custom outline: `outline: 2px solid #0057b7; outline-offset: 2px;` — meets WCAG 2.4.7 and 2.4.11 (WCAG 2.2) simultaneously.
+   - **WCAG**: 2.4.7 Focus Visible (AA), 2.4.11 Focus Appearance (WCAG 2.2 AA)
 
-4. **Generic link text**: `<a href="/report">Click here</a>` fails 2.4.6. Screen reader users navigate by links in isolation; the link text must describe the destination.
+3. **axe-only CI gate without manual testing**
+   - **WHY it fails**: axe-core catches ~57% of WCAG 2.1 issues. The 43% it misses includes the most impactful user-experience issues: wrong announcement order, screen reader Browse Mode navigation, cognitive load, and dynamic live region timing.
+   - **Named alternative**: Three-layer strategy — axe CI gate (automated) + keyboard audit every sprint (manual) + screen reader session for every new interactive pattern (manual). This combination addresses all WCAG categories.
+   - **WCAG**: Multiple; most critical misses are in Perceivable and Understandable principles
 
-5. **Placeholder text as label substitute**: `placeholder` disappears on typing; it fails WCAG 3.3.2 when used instead of a visible `<label>`. Users with cognitive disabilities often forget what the field asks.
+4. **Generic link text ("click here", "read more", "learn more")**
+   - **WHY it fails**: Screen reader users navigate by pulling up a list of all links on the page. "Click here" repeated 10 times is meaningless out of context. The link text is the only information available in a links list.
+   - **Named alternative**: Descriptive links: `<a href="/report">Download the 2025 Annual Report (PDF)</a>`. Or use `aria-label` to augment short visible text: `<a href="/report" aria-label="Download 2025 Annual Report PDF">Download</a>`.
+   - **WCAG**: 2.4.6 Headings and Labels (AA), 2.4.4 Link Purpose (A)
 
-6. **Auto-playing media**: Auto-playing video or audio without controls violates WCAG 1.4.2 and is disruptive to screen reader users who cannot distinguish the page content from the media audio.
+5. **Placeholder text as the sole form label**
+   - **WHY it fails**: Placeholder text disappears on input, giving users with cognitive disabilities or short-term memory impairments no way to recall what the field requires. It also has typically insufficient contrast (3:1 spec for placeholder is often not met).
+   - **Named alternative**: Always use a visible `<label htmlFor="field-id">`. Placeholder is acceptable as a hint in addition to a label, never as a substitute.
+   - **WCAG**: 3.3.2 Labels or Instructions (A), 1.4.3 Contrast (AA for label, which placeholder fails to meet in most design systems)
 
-7. **aria-label overuse on every element**: Adding `aria-label` to every `<div>` and `<span>` creates noise for screen reader users. Use ARIA only when native semantics are insufficient.
+6. **Auto-playing media without pause/stop control**
+   - **WHY it fails**: Screen reader users hear both the page content and the auto-playing audio simultaneously, making both unintelligible. Users with vestibular disorders are harmed by motion that starts without consent.
+   - **Named alternative**: Provide a pause/stop control as the first interactive element in the media region, or do not autoplay. For animation, support `prefers-reduced-motion: reduce`.
+   - **WCAG**: 1.4.2 Audio Control (A), 2.2.2 Pause/Stop/Hide (A)
 
-8. **Using `display: none` incorrectly for visually-hidden content**: Elements with `display: none` are removed from the accessibility tree (correct for truly hidden content). Elements hidden with only CSS `opacity: 0` or `transform` remain in the tab order — always use `display: none` or `inert` to fully hide interactive content from all users.
+7. **aria-label on every element regardless of native semantics**
+   - **WHY it fails**: Adds redundant or conflicting announcements. Screen readers may announce both the native role and the label, creating double-announcements for elements like `<h2 aria-label="Section title">Section title</h2>`. Over-labeling also signals to reviewers that the team is compensating for missing semantic structure.
+   - **Named alternative**: Use ARIA only as a last resort when no native HTML element carries the required semantics. First try: semantic HTML. Second: `aria-labelledby` pointing to existing visible text. Third: `aria-label` for icon-only controls that have no visible text.
+   - **WCAG**: 4.1.2 Name Role Value (A)
+
+8. **Using `opacity: 0` or `visibility: hidden` to hide interactive content**
+   - **WHY it fails**: `opacity: 0` keeps the element in the tab order and the accessibility tree. Keyboard users Tab to invisible buttons; screen reader users encounter invisible interactive elements. `visibility: hidden` removes from accessibility tree but still occupies layout space.
+   - **Named alternative**: Use `display: none` to hide content from all users (removes from tab order + accessibility tree + layout). Use `inert` attribute to prevent interaction while keeping visual presence (e.g., a dimmed background behind a modal).
+   - **WCAG**: 2.4.3 Focus Order (A), 1.3.1 Info and Relationships (A)
+
+9. **Positive tabIndex values (`tabIndex={1}`, `tabIndex={2}`)**
+   - **WHY it fails**: A positive tabIndex creates a separate, prioritized tab order that runs before the natural DOM order. It causes wildly unexpected Tab sequence that confuses keyboard users and is nearly impossible to maintain as components are added or reordered.
+   - **Named alternative**: Use only `tabIndex={0}` (include in natural tab order at its DOM position) or `tabIndex={-1}` (remove from tab order, accessible via programmatic focus only). Reorder DOM elements if the visual and logical order do not match.
+   - **WCAG**: 2.4.3 Focus Order (A)
+
+10. **`role="presentation"` on semantic structural elements**
+    - **WHY it fails**: `role="presentation"` (alias: `role="none"`) removes the element's semantic role from the accessibility tree. Applying it to `<h1>`, `<nav>`, `<table>`, or `<button>` strips the semantics screen reader users depend on to navigate by headings, landmarks, or tables.
+    - **Named alternative**: If an element provides visual styling only (e.g., a `<table>` used for page layout, not data), `role="presentation"` is correct. For all semantic elements conveying real structure, keep native semantics or use an appropriate ARIA role.
+    - **WCAG**: 1.3.1 Info and Relationships (A), 4.1.2 Name Role Value (A)
 
 ---
 
@@ -1538,6 +1582,18 @@ axe-core's automated rules detect approximately **57% of WCAG 2.1 issues** (Dequ
 
 24. **[community] ARIA combobox pattern changed in ARIA 1.2 — ARIA 1.1 pattern is widely deprecated but still common in codebases**: The ARIA 1.1 combobox pattern used `role="combobox"` on a wrapper `<div>` containing an `<input>`. ARIA 1.2 (2023) moved `role="combobox"` directly to the `<input>` element and changed which attributes apply where. Screen readers were updated to expect the ARIA 1.2 pattern. Teams using older component libraries (pre-2022 Headless UI, react-select < v5, older Downshift) may be using the ARIA 1.1 pattern that modern screen readers announce incorrectly. The APG Combobox Pattern page shows the current correct pattern. Verify with NVDA + Firefox and VoiceOver.
 
+25. **[community] Switch access and voice control users are broken by click-only event handlers**: Switch access devices (used by users with severe motor disabilities) and voice control tools (Dragon NaturallySpeaking, Voice Control on macOS/iOS) activate interactive elements by simulating pointer clicks or by referencing the visible accessible name. A component that only responds to `mousedown` (not `click`) fails for switch access. A button labeled "X" that visually says "Close" fails voice control — the user says "Close" but the accessible name is "X". WHY: voice control tools match spoken words to accessible names; always use the visible label as (or in) the accessible name. Test by: (1) voice control: verify every button's accessible name contains its visible text. (2) switch access: verify all interactions work via the `click` event, not `mousedown`/`mouseup` alone.
+
+26. **[community] React 18 Concurrent Mode with `<Suspense>` can expose live regions before content is ready**: When React suspends a component tree and shows a fallback (spinner), then hydrates the actual content, any `aria-live` regions inside the suspended subtree may announce their initial empty state, then the loaded content state. Screen reader users hear two announcements for one page load. WHY: React's fiber reconciler commits updates in batches; ARIA live regions announce every DOM mutation. Mitigation: render the `aria-live` region outside the Suspense boundary and update it only when content is fully loaded.
+
+27. **[community] `useEffect` cleanup timing causes double-announcement in StrictMode**: React 18 StrictMode invokes `useEffect` twice (mount, unmount, remount) in development. If your focus management or `aria-live` update runs in `useEffect`, screen readers in development can hear the announcement twice. WHY: this reveals underlying robustness issues — production builds do not double-invoke effects, but the double-announcement in dev exposes that the a11y behavior depends on side-effect timing. Fix by ensuring focus management is idempotent and live region content is deduplicated.
+
+28. **[community] Content Security Policy (CSP) blocks axe-core injection in Playwright**: axe-core is injected as an inline script into the page by `@axe-core/playwright`. A strict CSP that disallows `'unsafe-inline'` or requires `'strict-dynamic'` will block axe-core injection, causing scans to silently fail or throw an error. WHY: teams enabling CSP headers in staging environments discover that all Playwright axe scans report 0 violations — including real ones — because the engine never loaded. Fix: add a CSP nonce for testing environments, use the `page.addScriptTag` approach with a nonce, or whitelist the axe-core CDN hash in the CSP.
+
+29. **[community] Stagger animations and skeleton loaders hide content from screen reader users during loading**: A skeleton loader with `aria-hidden="true"` + `role="status"` updates are a common pattern to communicate "loading." However, when the skeleton loader is replaced by real content, teams that forget to remove `aria-hidden` from the content wrapper cause the entire loaded page to remain invisible to screen readers. WHY: the `aria-hidden` attribute is often set on a wrapping `<section>` during the loading state and removed programmatically after; if that removal is tied to a UI animation completion event (rather than data ready), a race condition can leave the content hidden. Test: after every data-load flow, assert that no `aria-hidden="true"` exists on content-bearing elements.
+
+30. **[community] Missing `autocomplete` attributes on address/payment fields fail WCAG 1.3.5 and fail users with motor disabilities**: WCAG 1.3.5 (Identify Input Purpose, AA) requires that form fields collecting personal data expose their purpose via the `autocomplete` attribute. This allows browsers and AT to auto-fill data and reduces typing burden for users with tremors, limited motor control, or cognitive disabilities. WHY: teams implement auto-complete widgets but forget the `autocomplete` HTML attribute on `<input>` elements. axe-core does not currently catch this (it is on the roadmap but not yet in the rule set as of 4.11). Manual testing is required: check that `<input type="email">` has `autocomplete="email"`, `<input type="tel">` has `autocomplete="tel"`, name/address fields have appropriate token values.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -1560,11 +1616,118 @@ axe-core's automated rules detect approximately **57% of WCAG 2.1 issues** (Dequ
 |------|------|------|---------|
 | axe-core (jest-axe) | Fast, CI-friendly, component-level | No contrast check in JSDOM | Unit/component CI gating |
 | @axe-core/playwright | Real browser, catches contrast, dynamic content | Slower, needs live server | E2E CI gating |
+| Playwright `page.accessibility.snapshot()` | Accessibility tree snapshot testing (structure, names, roles) | Not a WCAG checker; different purpose | Regression testing AT structure |
 | Lighthouse (Chrome) | Integrated in DevTools, accessibility + perf score | Less detailed rule set, can score 100 with real issues | Dashboard metrics, quick checks |
+| Storybook `@storybook/addon-a11y` | Per-story axe scan in browser, zero CI setup | Only covers isolated stories, not full user flows | Design system component gates |
 | WAVE | Visual overlay, education-friendly | Manual only, not automatable | Auditor walkthroughs |
 | Pa11y | CLI + CI automation | Less comprehensive than axe | Lightweight CI pipelines |
 | Deque WorldSpace | Enterprise audit workflow management | Commercial license | Large org compliance tracking |
 | axe DevTools (Deque) | Guided issue reporting with fix guidance | Commercial | Developer-guided manual audits |
+| IBM Equal Access Checker | Free, targets WCAG 2.1 AA + EN 301 549 | Smaller community than axe | Supplementary EU EAA verification |
+| Cypress + cypress-axe | Axe integration for Cypress E2E | Requires Cypress infrastructure; axe-core via Playwright is newer | Existing Cypress test suites |
+
+**Playwright `page.accessibility.snapshot()` for structural regression testing:**
+
+```typescript
+// File: e2e/accessibility/a11y-tree-snapshot.spec.ts
+// Captures the accessibility tree as a snapshot to catch structural regressions.
+// This is DIFFERENT from axe scanning — it does not check WCAG rules but does
+// detect when accessible names, roles, or tree structure change unexpectedly.
+import { test, expect } from '@playwright/test';
+
+test.describe('Accessibility tree snapshot regression', () => {
+  test('navigation accessibility tree matches snapshot', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Capture the accessibility tree of the navigation region only
+    const navHandle = await page.locator('nav[aria-label="Main navigation"]').elementHandle();
+    if (!navHandle) {
+      throw new Error('Main navigation not found');
+    }
+
+    const snapshot = await page.accessibility.snapshot({ root: navHandle });
+
+    // Playwright's toMatchSnapshot stores the first run as the baseline.
+    // Subsequent runs fail if the structure, role, or name changes — catching
+    // regressions like a renamed aria-label or a missing list item.
+    // NOTE: Remove this snapshot file when intentional navigation changes are made.
+    expect(snapshot).toMatchSnapshot('main-nav-a11y-tree.json');
+  });
+
+  test('login form accessibility tree matches snapshot', async ({ page }) => {
+    await page.goto('/login');
+    await page.waitForLoadState('networkidle');
+
+    const formHandle = await page.locator('form').elementHandle();
+    const snapshot = await page.accessibility.snapshot({ root: formHandle ?? undefined });
+
+    expect(snapshot).toMatchSnapshot('login-form-a11y-tree.json');
+  });
+});
+```
+
+**Storybook `@storybook/addon-a11y` integration** — runs axe on each story in the browser:
+
+```typescript
+// File: .storybook/main.ts
+// Add addon-a11y to Storybook — provides an Accessibility panel with axe results per story.
+import type { StorybookConfig } from '@storybook/react-vite';
+
+const config: StorybookConfig = {
+  addons: [
+    '@storybook/addon-essentials',
+    '@storybook/addon-a11y', // Adds axe scan in the Accessibility panel
+  ],
+  // ... rest of config
+};
+
+export default config;
+```
+
+```typescript
+// File: src/components/Button/Button.stories.tsx
+// Configure addon-a11y per story: set axe rules or disable for known issues.
+import type { Meta, StoryObj } from '@storybook/react';
+import { Button } from './Button';
+
+const meta: Meta<typeof Button> = {
+  title: 'Components/Button',
+  component: Button,
+  parameters: {
+    a11y: {
+      // Override axe config for this story — document reason
+      config: {
+        rules: [
+          {
+            // Disable color-contrast in Storybook (JSDOM limitation); test in Playwright
+            id: 'color-contrast',
+            enabled: false,
+          },
+        ],
+      },
+    },
+  },
+};
+
+export default meta;
+type Story = StoryObj<typeof Button>;
+
+export const Primary: Story = {
+  args: { label: 'Click me', variant: 'primary' },
+};
+
+export const IconOnly: Story = {
+  args: { icon: 'close', ariaLabel: 'Close dialog' },
+  parameters: {
+    a11y: {
+      // This story intentionally tests the icon button pattern
+      // axe will verify aria-label is present
+      config: { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } },
+    },
+  },
+};
+```
 
 **Automated vs Manual split:** axe-core detects approximately **57% of WCAG 2.1 issues** automatically. The remaining ~43% require keyboard testing, screen reader verification, and cognitive review.
 
@@ -1757,7 +1920,376 @@ Screen readers are the primary assistive technology for blind and low-vision use
 5. Verify that images have contextually meaningful `alt` text (not just non-empty)
 6. Test the skip link — screen reader users depend on it to skip repetitive navigation
 
-**axe-core does NOT replace screen reader testing.** It catches structural issues but cannot verify that the announced experience is meaningful, logical, or correct.
+### WCAG 1.3.5, 1.4.10, and 1.4.12 Testing (Often Missed AA Criteria)
+
+These three WCAG 2.1 AA criteria are frequently omitted from accessibility test suites because they do not fire axe-core violations — they require specific testing scenarios.
+
+**1.3.5 Identify Input Purpose**: axe-core does not currently check `autocomplete` attribute presence. Manual check required.
+
+**1.4.10 Reflow**: Content at 320px CSS width must not require horizontal scrolling (unless for specific content like maps or data tables). Playwright can emulate a narrow viewport.
+
+**1.4.12 Text Spacing**: Content must not lose information when CSS overrides increase letter, word, and line spacing. Playwright can inject text-spacing CSS and verify no content overflow.
+
+```typescript
+// File: e2e/accessibility/wcag21-missed-criteria.spec.ts
+// Tests for WCAG 2.1 AA criteria that axe-core does not catch automatically:
+// 1.3.5 Identify Input Purpose, 1.4.10 Reflow, 1.4.12 Text Spacing.
+import { test, expect } from '@playwright/test';
+
+test.describe('WCAG 2.1 AA — commonly missed criteria', () => {
+  // ─── 1.3.5 Identify Input Purpose ─────────────────────────────────────────
+  // Form fields collecting personal info must have autocomplete attribute.
+  // axe-core does not currently check this criterion — manual/test required.
+  test.describe('1.3.5 Identify Input Purpose (autocomplete attributes)', () => {
+    const AUTOCOMPLETE_MAP: Record<string, string> = {
+      'input[name="name"], input[id*="name"][type="text"]': 'name',
+      'input[type="email"]': 'email',
+      'input[type="tel"]': 'tel',
+      'input[autocomplete="given-name"], input[name="first_name"]': 'given-name',
+      'input[autocomplete="family-name"], input[name="last_name"]': 'family-name',
+      'input[type="password"]:not([autocomplete="new-password"])': 'current-password',
+    };
+
+    test('registration form has autocomplete attributes on personal data fields', async ({
+      page,
+    }) => {
+      await page.goto('/register');
+      await page.waitForLoadState('networkidle');
+
+      // Check that each personal data field has an autocomplete attribute
+      const missingAutocomplete = await page.evaluate(() => {
+        const personalFields = document.querySelectorAll<HTMLInputElement>(
+          'input[type="email"], input[type="tel"], input[name*="name"], input[type="text"]'
+        );
+        const missing: string[] = [];
+        personalFields.forEach((input) => {
+          if (!input.hasAttribute('autocomplete')) {
+            const id = input.id || input.name || input.type;
+            missing.push(`<input ${id ? `id="${id}"` : ''} type="${input.type}">`);
+          }
+        });
+        return missing;
+      });
+
+      if (missingAutocomplete.length > 0) {
+        console.error(
+          'Fields missing autocomplete attribute (WCAG 1.3.5):\n' +
+          missingAutocomplete.join('\n')
+        );
+      }
+      expect(missingAutocomplete).toEqual([]);
+    });
+  });
+
+  // ─── 1.4.10 Reflow ──────────────────────────────────────────────────────────
+  // Content must be accessible at 320px width without horizontal scrolling.
+  // Exception: data tables, maps, and video can scroll horizontally.
+  test.describe('1.4.10 Reflow (320px viewport — no horizontal scroll)', () => {
+    test.use({ viewport: { width: 320, height: 568 } });
+
+    test('homepage reflows at 320px with no horizontal overflow', async ({ page }) => {
+      await page.goto('/');
+      await page.waitForLoadState('networkidle');
+
+      const hasHorizontalOverflow = await page.evaluate(() => {
+        // Check the document body for horizontal overflow
+        return document.body.scrollWidth > document.documentElement.clientWidth;
+      });
+
+      expect(hasHorizontalOverflow).toBe(false);
+    });
+
+    test('login form reflows at 320px', async ({ page }) => {
+      await page.goto('/login');
+      await page.waitForLoadState('networkidle');
+
+      const hasHorizontalOverflow = await page.evaluate(() => {
+        return document.body.scrollWidth > document.documentElement.clientWidth;
+      });
+
+      expect(hasHorizontalOverflow).toBe(false);
+    });
+  });
+
+  // ─── 1.4.12 Text Spacing ────────────────────────────────────────────────────
+  // Content must not lose information when text spacing CSS is overridden:
+  //   - Line height: ≥ 1.5 × font size
+  //   - Paragraph spacing: ≥ 2 × font size
+  //   - Letter spacing: ≥ 0.12 × font size
+  //   - Word spacing: ≥ 0.16 × font size
+  // Inject the bookmarklet CSS and verify no content is truncated or overlapping.
+  test.describe('1.4.12 Text Spacing (user CSS overrides)', () => {
+    // CSS from the text-spacing bookmarklet (W3C technique C36):
+    const TEXT_SPACING_CSS = `
+      * {
+        line-height: 1.5 !important;
+        letter-spacing: 0.12em !important;
+        word-spacing: 0.16em !important;
+      }
+      p { margin-bottom: 2em !important; }
+    `;
+
+    test('homepage has no truncated or hidden text with text spacing overrides', async ({
+      page,
+    }) => {
+      await page.goto('/');
+      await page.waitForLoadState('networkidle');
+
+      // Inject text-spacing CSS override
+      await page.addStyleTag({ content: TEXT_SPACING_CSS });
+
+      // Check for common failure patterns: overflow hidden clipping content
+      const clippedElements = await page.evaluate(() => {
+        const elements = Array.from(document.querySelectorAll<HTMLElement>('*'));
+        const clipped: string[] = [];
+
+        elements.forEach((el) => {
+          const style = getComputedStyle(el);
+          // Only check elements with visible text
+          if (!el.textContent?.trim()) return;
+          if (el.children.length > 0) return; // Skip non-leaf nodes
+
+          // If overflow is hidden and scrollHeight > clientHeight, text is clipped
+          if (
+            style.overflow === 'hidden' &&
+            el.scrollHeight > el.clientHeight + 2 // +2px tolerance
+          ) {
+            clipped.push(`${el.tagName.toLowerCase()}[${el.className}]: text clipped`);
+          }
+        });
+
+        return clipped.slice(0, 10); // Return first 10 issues max
+      });
+
+      if (clippedElements.length > 0) {
+        console.error(
+          'Text clipped with text-spacing overrides (WCAG 1.4.12):\n' +
+          clippedElements.join('\n')
+        );
+      }
+
+      expect(clippedElements).toEqual([]);
+    });
+  });
+});
+```
+
+### WCAG 2.5.3 Label in Name — Voice Control Compatibility Testing
+
+WCAG 2.5.3 (Level A) requires that the accessible name of a UI component with visible text must *contain* the visible text. Voice control users (Dragon, Voice Control on macOS/iOS) activate controls by speaking the visible label. If the accessible name differs from the visible text, the voice command fails.
+
+**Common failure patterns:**
+- Button has visible text "Buy now" but `aria-label="Purchase product"` — voice user says "Buy now" and nothing happens
+- Icon button with `aria-label="X"` but visible label "Close" — voice user says "Close" but the button is named "X"
+- A link wrapping an image with `alt="home"` and visible span "Home page" — accessible name is "home" but visible text is "Home page"
+
+axe-core catches some 2.5.3 violations via the `label-content-name-mismatch` rule, but it does not catch all cases. Playwright can verify alignment programmatically:
+
+```typescript
+// File: e2e/accessibility/label-in-name.spec.ts
+// WCAG 2.5.3 Label in Name: verify accessible names contain visible text labels.
+// Catches voice control failures where accessible name differs from visible label.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('WCAG 2.5.3 Label in Name', () => {
+  test('axe label-content-name-mismatch rule passes on homepage', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Run specifically the label-content-name-mismatch rule
+    const results = await new AxeBuilder({ page })
+      .withRules(['label-content-name-mismatch'])
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+
+  test('all buttons with visible text have accessible names containing that text', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const mismatches = await page.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('button'));
+      const issues: Array<{ html: string; visibleText: string; ariaLabel: string }> = [];
+
+      buttons.forEach((btn) => {
+        const visibleText = btn.textContent?.trim() ?? '';
+        const ariaLabel = btn.getAttribute('aria-label') ?? '';
+
+        // If button has aria-label AND visible text, check containment
+        if (ariaLabel && visibleText && visibleText.length > 0) {
+          // WCAG 2.5.3: accessible name must CONTAIN the visible text (case-insensitive)
+          const normalized = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+          if (!normalized(ariaLabel).includes(normalized(visibleText))) {
+            issues.push({
+              html: btn.outerHTML.slice(0, 80),
+              visibleText,
+              ariaLabel,
+            });
+          }
+        }
+      });
+
+      return issues;
+    });
+
+    if (mismatches.length > 0) {
+      console.error(
+        'WCAG 2.5.3 violations — accessible name does not contain visible text:\n' +
+        mismatches
+          .map(
+            (m) =>
+              `  visible: "${m.visibleText}" | aria-label: "${m.ariaLabel}"\n  ${m.html}`
+          )
+          .join('\n')
+      );
+    }
+
+    expect(mismatches).toEqual([]);
+  });
+});
+```
+
+
+
+For brownfield projects with existing accessibility debt, a "zero violations or it fails CI" gate is often too aggressive to adopt immediately — it causes every PR to fail on pre-existing issues unrelated to the PR's changes. The **known violations baseline** pattern lets teams:
+1. Snapshot existing violations as an accepted baseline
+2. Gate CI on **no new violations** (regressions blocked)
+3. Gradually remediate baseline items over sprints
+
+**Why this approach works:** It separates "do not make things worse" (enforced immediately) from "fix all existing issues" (scheduled remediation). Teams that skip this step often abandon CI gating entirely because the initial failure count is overwhelming.
+
+```typescript
+// File: e2e/accessibility/violations-baseline.spec.ts
+// Known violations baseline: allows pre-existing a11y debt while blocking regressions.
+// USAGE:
+//   1. Run once with GENERATE_BASELINE=true to record current violations.
+//   2. Commit the generated baseline file to version control.
+//   3. CI runs in normal mode — it fails only if new violations appear.
+//   4. Schedule quarterly sprints to reduce baseline items.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import * as fs from 'fs';
+import * as path from 'path';
+
+const BASELINE_PATH = path.join(__dirname, 'known-violations-baseline.json');
+const GENERATE_BASELINE = process.env.GENERATE_BASELINE === 'true';
+
+type BaselineEntry = {
+  page: string;
+  ruleId: string;
+  impact: string;
+  description: string;
+  nodeCount: number;
+};
+
+function loadBaseline(): BaselineEntry[] {
+  if (!fs.existsSync(BASELINE_PATH)) return [];
+  return JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8')) as BaselineEntry[];
+}
+
+function saveBaseline(entries: BaselineEntry[]): void {
+  fs.writeFileSync(BASELINE_PATH, JSON.stringify(entries, null, 2));
+}
+
+function violationKey(entry: BaselineEntry): string {
+  return `${entry.page}::${entry.ruleId}`;
+}
+
+const pagesToScan = ['/', '/login', '/dashboard', '/settings'];
+
+test.describe('Accessibility regression gate (baseline mode)', () => {
+  test('no new violations beyond the accepted baseline', async ({ page }) => {
+    const baseline = loadBaseline();
+    const baselineKeys = new Set(baseline.map(violationKey));
+
+    const newViolations: BaselineEntry[] = [];
+    const allCurrentEntries: BaselineEntry[] = [];
+
+    for (const url of pagesToScan) {
+      await page.goto(url);
+      await page.waitForLoadState('networkidle');
+
+      const results = await new AxeBuilder({ page })
+        .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+        .analyze();
+
+      for (const v of results.violations) {
+        const entry: BaselineEntry = {
+          page: url,
+          ruleId: v.id,
+          impact: v.impact ?? 'unknown',
+          description: v.description,
+          nodeCount: v.nodes.length,
+        };
+        allCurrentEntries.push(entry);
+        if (!baselineKeys.has(violationKey(entry))) {
+          newViolations.push(entry);
+        }
+      }
+    }
+
+    if (GENERATE_BASELINE) {
+      // Baseline generation mode: save current violations as the accepted baseline
+      saveBaseline(allCurrentEntries);
+      console.log(`[a11y] Baseline generated: ${allCurrentEntries.length} violations accepted.`);
+      console.log(`[a11y] Commit ${BASELINE_PATH} to version control.`);
+      return; // Do not fail in generation mode
+    }
+
+    // Normal CI mode: fail only on new violations (regressions)
+    if (newViolations.length > 0) {
+      const report = newViolations
+        .map((v) => `[${v.impact.toUpperCase()}] ${v.ruleId} on ${v.page}: ${v.description}`)
+        .join('\n');
+      expect.fail(
+        `${newViolations.length} NEW accessibility violation(s) detected (not in baseline):\n\n${report}`
+      );
+    }
+
+    // Log baseline items as a reminder of existing debt
+    const resolvedItems = baseline.filter(
+      (b) => !allCurrentEntries.some((c) => violationKey(c) === violationKey(b))
+    );
+    if (resolvedItems.length > 0) {
+      console.log(
+        `[a11y] ${resolvedItems.length} baseline item(s) resolved — update the baseline file!`
+      );
+    }
+  });
+});
+```
+
+**Baseline file format** (`known-violations-baseline.json` example):
+```json
+[
+  {
+    "page": "/",
+    "ruleId": "color-contrast",
+    "impact": "serious",
+    "description": "Elements must have sufficient color contrast",
+    "nodeCount": 3
+  },
+  {
+    "page": "/settings",
+    "ruleId": "label",
+    "impact": "critical",
+    "description": "Form elements must have labels",
+    "nodeCount": 1
+  }
+]
+```
+
+**Baseline workflow:**
+1. First run: `GENERATE_BASELINE=true npx playwright test e2e/accessibility/violations-baseline.spec.ts`
+2. Commit `known-violations-baseline.json`
+3. CI gating: every PR runs without `GENERATE_BASELINE` — new violations fail the build
+4. Sprint remediation: fix baseline items, re-generate baseline, commit updated baseline
+
+---
 
 ### Advanced axe-core Configuration Patterns
 
@@ -1836,6 +2368,462 @@ configureAxe({
 });
 ```
 
+### Custom axe-core Rules for Organization-Specific Standards
+
+Teams enforcing standards beyond WCAG (design-system token compliance, custom branding rules, specific ARIA patterns required by their component library) can author custom axe rules. Custom rules integrate into the same reporting pipeline as built-in rules, appear in violation reports, and can be required-to-pass in CI.
+
+**When to author a custom rule:**
+- Your design system requires a specific `data-*` attribute on all interactive components for analytics (and you want to enforce presence)
+- Organization policy requires every image to have a detailed `alt` with specific format (beyond axe's non-empty check)
+- Internal component library mandates all modals use a `data-modal` attribute for teleportation support
+- You want to enforce a brand-specific minimum font size policy
+
+**When NOT to use custom rules:**
+- When a built-in axe rule already covers the requirement — duplicate rules create noise
+- When the check requires visual rendering (use Playwright instead)
+- For one-off per-component checks — use regular test assertions instead
+
+```typescript
+// File: e2e/config/axe-custom-rules.ts
+// Custom axe-core rules for organization-specific accessibility standards.
+// Register these rules via axe.configure() before running scans.
+import axe from 'axe-core';
+import type { Rule, Check } from 'axe-core';
+
+// Custom check: all <img> with non-empty alt must have alt longer than 2 characters
+// (enforces meaningful alt text, not just presence)
+const meaningfulAltCheck: Check = {
+  id: 'meaningful-alt-text',
+  evaluate(node: Element): boolean {
+    const alt = (node as HTMLImageElement).getAttribute('alt');
+    // Decorative images with alt="" are acceptable
+    if (alt === '') return true;
+    // Non-decorative images need alt text longer than 2 chars (e.g. not ".")
+    return alt !== null && alt.trim().length > 2;
+  },
+  metadata: {
+    type: 'failure',
+    messages: {
+      pass: 'Image has meaningful alt text',
+      fail: 'Image alt text is too short to be meaningful (must be > 2 characters or alt="")',
+    },
+  },
+};
+
+// Custom rule: img elements must have meaningful alt text
+const meaningfulAltRule: Rule = {
+  id: 'org-meaningful-alt',
+  selector: 'img',
+  tags: ['org-standards', 'best-practice'],
+  metadata: {
+    description: 'Images must have meaningful alt text (> 2 characters) or empty alt for decorative images',
+    help: 'Provide descriptive alt text that communicates the image content or purpose',
+    helpUrl: 'https://your-org.example.com/accessibility/images',
+  },
+  any: ['meaningful-alt-text'],
+  all: [],
+  none: [],
+};
+
+// Custom check: all interactive elements must have data-testid (for QA automation)
+const testIdCheck: Check = {
+  id: 'has-test-id',
+  evaluate(node: Element): boolean {
+    return node.hasAttribute('data-testid');
+  },
+  metadata: {
+    type: 'failure',
+    messages: {
+      pass: 'Interactive element has data-testid',
+      fail: 'Interactive element is missing data-testid attribute (required by org QA policy)',
+    },
+  },
+};
+
+const testIdRule: Rule = {
+  id: 'org-require-test-id',
+  selector: 'button, a[href], input, select, textarea',
+  tags: ['org-standards'],
+  metadata: {
+    description: 'Interactive elements must have data-testid attribute for QA automation',
+    help: 'Add data-testid to all interactive elements',
+    helpUrl: 'https://your-org.example.com/qa/test-ids',
+  },
+  any: ['has-test-id'],
+  all: [],
+  none: [],
+};
+
+// Register custom rules and checks with axe-core
+export function registerCustomRules(): void {
+  axe.configure({
+    checks: [meaningfulAltCheck, testIdCheck],
+    rules: [meaningfulAltRule, testIdRule],
+  });
+}
+```
+
+```typescript
+// File: e2e/accessibility/custom-rules.spec.ts
+// Test custom organization-specific axe rules alongside standard WCAG rules.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import axe from 'axe-core';
+
+// Must import registration before the AxeBuilder calls inject axe-core
+import { registerCustomRules } from '../config/axe-custom-rules';
+
+test.describe('Organization standards (custom axe rules)', () => {
+  test.beforeAll(() => {
+    // Register custom rules once before the suite
+    registerCustomRules();
+  });
+
+  test('all interactive elements on dashboard have data-testid', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      // Combine standard WCAG rules with org-specific rules
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'org-standards'])
+      .analyze();
+
+    // Filter violations to just org-standard failures for targeted reporting
+    const orgViolations = results.violations.filter((v) =>
+      v.tags.includes('org-standards')
+    );
+    const wcagViolations = results.violations.filter((v) =>
+      !v.tags.includes('org-standards')
+    );
+
+    if (orgViolations.length > 0) {
+      console.warn('[Org policy violations]', orgViolations.map((v) => v.id));
+    }
+
+    expect(wcagViolations).toEqual([]);
+    // Org standards violations are tracked separately — treat as warnings in CI
+    // or escalate to errors once the team has remediated existing elements
+  });
+});
+```
+
+**Custom rule authoring checklist:**
+- `id`: must be unique and not conflict with built-in axe rule IDs
+- `tags`: include an org-specific tag (e.g., `'org-standards'`) to filter separately from WCAG rules
+- `metadata.helpUrl`: link to your internal docs — makes it actionable when the rule fires in a report
+- `evaluate` function: runs in the browser context — no module imports, no async
+- Test the custom rule itself: write a unit test that verifies `evaluate` returns `true`/`false` for known inputs
+
+---
+
+### Accessible Name Computation Testing
+
+The **accessible name computation algorithm** (ARIA spec §4.3) defines how browsers compute the announced name for an element: content > aria-labelledby > aria-label > title > placeholder. Testing that computed names match expectations is critical for 4.1.2 (Name, Role, Value). Two approaches: `@testing-library` query priority (reflects accessible tree) and Playwright's `getByRole` with the `name` option.
+
+**Why this pattern matters:** Teams frequently add ARIA attributes they believe will be read, then discover the browser computes a different name due to precedence rules. An element with both `aria-labelledby` and `aria-label` always uses `aria-labelledby`. An element whose content text differs from its `aria-label` uses `aria-label`. These overrides are invisible in visual tests.
+
+```typescript
+// File: src/components/IconButton/IconButton.a11y.test.tsx
+// Test accessible name computation for icon-only buttons using @testing-library query priority.
+// getByRole({ name }) asserts the accessible name computed by the a11y tree — not DOM text.
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+
+expect.extend(toHaveNoViolations);
+
+// Icon button patterns in order of preference:
+// 1. aria-label on button (no visible text)
+// 2. aria-labelledby pointing to existing visible text
+// 3. visually hidden <span> inside button with screen-reader-only class
+
+const IconButton: React.FC<{ label: string; onClick: () => void }> = ({ label, onClick }) => (
+  <button type="button" aria-label={label} onClick={onClick}>
+    {/* SVG icon: aria-hidden prevents double-announcement of icon content */}
+    <svg aria-hidden="true" focusable="false" width="16" height="16">
+      <path d="M3 9h14v-2H3v2zm0 5h14v-2H3v2zm0-12v2h14V2H3z" />
+    </svg>
+  </button>
+);
+
+// Pattern 2: button labeled by adjacent visible text via aria-labelledby
+const LabeledByButton: React.FC<{ labelId: string; onClick: () => void }> = ({
+  labelId,
+  onClick,
+}) => (
+  <div>
+    <span id={labelId} style={{ display: 'block', fontSize: '0.75rem' }}>
+      Download report
+    </span>
+    <button type="button" aria-labelledby={labelId} onClick={onClick}>
+      <svg aria-hidden="true" focusable="false" width="16" height="16">
+        <path d="M5 20h14v-2H5v2zm7-18l-5 5h3v4h4v-4h3l-5-5z" />
+      </svg>
+    </button>
+  </div>
+);
+
+describe('IconButton accessible name', () => {
+  it('aria-label is the computed accessible name', () => {
+    render(<IconButton label="Open navigation menu" onClick={() => {}} />);
+    // getByRole({ name }) queries by the computed accessible name
+    // If the accessible name does not match, this query fails — catching name computation bugs
+    expect(screen.getByRole('button', { name: 'Open navigation menu' })).toBeInTheDocument();
+  });
+
+  it('aria-labelledby overrides aria-label when both present', async () => {
+    const { container } = render(<LabeledByButton labelId="dl-label" onClick={() => {}} />);
+    // The button's accessible name comes from the <span> text, not from aria-label
+    expect(screen.getByRole('button', { name: 'Download report' })).toBeInTheDocument();
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('SVG icon-only button without aria-label fails button-name rule', async () => {
+    const { container } = render(
+      <button type="button">
+        <svg aria-hidden="true" focusable="false" width="16" height="16">
+          <path d="M3 9h14v-2H3v2z" />
+        </svg>
+      </button>
+    );
+    const results = await axe(container);
+    expect(results.violations.map((v) => v.id)).toContain('button-name');
+  });
+
+  it('visually-hidden span inside button provides accessible name', async () => {
+    const { container } = render(
+      <button type="button">
+        <svg aria-hidden="true" focusable="false" width="16" height="16">
+          <path d="M3 9h14v-2H3v2z" />
+        </svg>
+        <span className="sr-only">Toggle sidebar</span>
+      </button>
+    );
+    expect(screen.getByRole('button', { name: 'Toggle sidebar' })).toBeInTheDocument();
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+});
+```
+
+**Accessible name computation priority (ARIA accName spec):**
+
+| Priority | Mechanism | Example |
+|----------|-----------|---------|
+| 1 (highest) | `aria-labelledby` (points to text) | `<button aria-labelledby="h2-id">` |
+| 2 | `aria-label` | `<button aria-label="Close">` |
+| 3 | Native label | `<label htmlFor="email">` on `<input id="email">` |
+| 4 | `title` attribute | `<button title="Submit">` — avoid; uses tooltip, not visible label |
+| 5 | Element content | `<button>Submit form</button>` |
+| 6 | `alt` attribute | `<img alt="Logo">` |
+| 7 | `placeholder` | Last resort; disappears on input |
+
+**Playwright accessible name assertion:**
+
+```typescript
+// File: e2e/accessibility/accessible-names.spec.ts
+// Verify that critical interactive elements have correct computed accessible names.
+// Uses Playwright's getByRole({ name }) which queries the accessibility tree.
+import { test, expect } from '@playwright/test';
+
+test.describe('Accessible name assertions', () => {
+  test('navigation landmark has a unique accessible label', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Multiple <nav> elements require unique aria-label to distinguish them
+    // WCAG technique ARIA13: Using aria-labelledby to name regions and landmarks
+    const primaryNav = page.getByRole('navigation', { name: 'Main navigation' });
+    const footerNav = page.getByRole('navigation', { name: 'Footer navigation' });
+
+    await expect(primaryNav).toBeVisible();
+    await expect(footerNav).toBeVisible();
+  });
+
+  test('all dialog elements have accessible names', async ({ page }) => {
+    await page.goto('/');
+    await page.click('[data-testid="open-settings"]');
+    await page.waitForSelector('[role="dialog"]');
+
+    // Every dialog must have an accessible name — axe-core 4.10+ enforces this
+    const dialog = page.getByRole('dialog');
+    const dialogName = await dialog.getAttribute('aria-label') ??
+      await page.evaluate(() => {
+        const d = document.querySelector('[role="dialog"]');
+        const labelledById = d?.getAttribute('aria-labelledby');
+        if (labelledById) {
+          return document.getElementById(labelledById)?.textContent?.trim() ?? null;
+        }
+        return null;
+      });
+
+    expect(dialogName).toBeTruthy();
+    expect(dialogName!.length).toBeGreaterThan(0);
+  });
+
+  test('icon buttons in toolbar have non-empty accessible names', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForLoadState('networkidle');
+
+    // Get all buttons within the toolbar and verify each has an accessible name
+    const toolbar = page.getByRole('toolbar');
+    const buttons = toolbar.getByRole('button');
+    const count = await buttons.count();
+
+    for (let i = 0; i < count; i++) {
+      const button = buttons.nth(i);
+      const name = await button.getAttribute('aria-label') ??
+        (await button.textContent())?.trim();
+      expect(name, `Toolbar button ${i} has no accessible name`).toBeTruthy();
+    }
+  });
+});
+```
+
+### axe-core 4.10+ New Rules and WCAG 2.2 CI Configuration
+
+axe-core 4.10 (late 2024) and 4.11 (2025–2026) added new rules that enable automated WCAG 2.2 AA testing. Teams upgrading from 4.8/4.9 will see new CI failures from these rules — treat them as a rule-change upgrade rather than a regression.
+
+**New rules in axe-core 4.10+:**
+
+| Rule ID | WCAG Criterion | What it catches |
+|---------|---------------|-----------------|
+| `aria-dialog-name` | 4.1.2 AA | Dialogs without `aria-label` or `aria-labelledby` |
+| `aria-tooltip-name` | 4.1.2 AA | `role="tooltip"` elements without an accessible name |
+| `scrollable-region-focusable` | 2.1.1 A | Scrollable containers that cannot receive keyboard focus |
+| `target-size` | 2.5.8 AA (WCAG 2.2) | Interactive targets smaller than 24×24px |
+| `focus-order-semantics` | 1.3.1 A | Elements with positive tabIndex affecting focus order |
+| `identical-links-same-purpose` | 2.4.9 AAA | Links with same accessible name but different destinations |
+| `color-contrast-enhanced` | 1.4.6 AAA | 7:1 contrast ratio for text (AAA — opt-in only) |
+
+**EU EAA WCAG 2.2 AA CI configuration (June 2025+ compliance deadline):**
+
+```typescript
+// File: e2e/fixtures/axe-wcag22-fixture.ts
+// WCAG 2.2 AA axe configuration — required for EU EAA compliance (EN 301 549 v3.3.2).
+// EU private-sector products must comply with WCAG 2.2 AA as of June 28, 2025.
+// Use this configuration when your product ships to EU consumers.
+import { test as base } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+type CheckA11yOptions = {
+  selector?: string;
+  disableRules?: string[];
+};
+
+export const test = base.extend<{
+  checkA11yWCAG22: (options?: CheckA11yOptions) => Promise<void>;
+}>({
+  checkA11yWCAG22: async ({ page }, use) => {
+    const checkA11yWCAG22 = async (options: CheckA11yOptions = {}) => {
+      const { selector, disableRules = [] } = options;
+
+      // WCAG 2.2 AA: use wcag22aa tag (superset of wcag21aa + wcag2aa + wcag2a)
+      // This includes the 9 new WCAG 2.2 criteria: 2.4.11, 2.4.12, 2.5.7, 2.5.8, 3.3.7, 3.3.8, etc.
+      let builder = new AxeBuilder({ page })
+        .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa', 'best-practice']);
+
+      if (selector) {
+        builder = builder.include(selector);
+      }
+
+      if (disableRules.length > 0) {
+        // Disable specific rules with documentation in test comments
+        builder = builder.disableRules(disableRules);
+      }
+
+      const results = await builder.analyze();
+
+      if (results.violations.length > 0) {
+        const report = results.violations
+          .map((v) => {
+            const wcagRefs = v.tags
+              .filter((t) => t.startsWith('wcag'))
+              .join(', ');
+            return `[${v.impact?.toUpperCase()}] ${v.id} (${wcagRefs}): ${v.description}\n` +
+              v.nodes
+                .slice(0, 3) // Show first 3 nodes to avoid overwhelming output
+                .map((n) => `  - ${n.html.slice(0, 100)}`)
+                .join('\n');
+          })
+          .join('\n\n');
+
+        throw new Error(
+          `WCAG 2.2 AA violations found (${results.violations.length} rules):\n\n${report}`
+        );
+      }
+
+      // Log incomplete items as review notes
+      if (results.incomplete.length > 0) {
+        console.warn(
+          `[WCAG 2.2 AA] ${results.incomplete.length} items need manual review:\n` +
+          results.incomplete.map((i) => `  - ${i.id}: ${i.description}`).join('\n')
+        );
+      }
+    };
+
+    await use(checkA11yWCAG22);
+  },
+});
+
+export { expect } from '@playwright/test';
+```
+
+```typescript
+// File: e2e/accessibility/wcag22-compliance.spec.ts
+// Full WCAG 2.2 AA compliance test suite for EU EAA compliance.
+// Import the WCAG 2.2 fixture above to use checkA11yWCAG22.
+import { test, expect } from '../fixtures/axe-wcag22-fixture';
+
+test.describe('WCAG 2.2 AA compliance (EU EAA)', () => {
+  const criticalFlows = [
+    { url: '/', name: 'Homepage' },
+    { url: '/login', name: 'Login page' },
+    { url: '/dashboard', name: 'Dashboard' },
+    { url: '/checkout', name: 'Checkout flow' },
+  ];
+
+  for (const flow of criticalFlows) {
+    test(`${flow.name} has no WCAG 2.2 AA violations`, async ({ page, checkA11yWCAG22 }) => {
+      await page.goto(flow.url);
+      await page.waitForLoadState('networkidle');
+
+      // checkA11yWCAG22 uses wcag22aa tag (superset of wcag21aa)
+      await checkA11yWCAG22();
+    });
+  }
+
+  test('authenticated flow has no WCAG 2.2 AA violations', async ({
+    page,
+    checkA11yWCAG22,
+  }) => {
+    // Login first
+    await page.goto('/login');
+    await page.fill('input[type="email"]', 'test@example.com');
+    await page.fill('input[type="password"]', 'testpassword');
+    await page.click('button[type="submit"]');
+    await page.waitForURL('/dashboard');
+
+    // Scan authenticated state
+    await checkA11yWCAG22();
+  });
+});
+```
+
+**Key difference between WCAG 2.1 AA and WCAG 2.2 AA axe scans:**
+
+| tag | Rules added | Most impactful new checks |
+|-----|-------------|--------------------------|
+| `wcag21aa` | ~75 rules | Color contrast, keyboard shortcuts, pointer gestures |
+| `wcag22aa` | +~8 rules | `target-size` (2.5.8), focus appearance hints, `aria-dialog-name` enforcement |
+
+**WCAG 2.2 upgrade migration strategy for CI:**
+1. Run `axe --tags wcag22aa` once in report-only mode (`resultTypes: ['violations']`) to baseline existing failures
+2. Categorize: structural (fix immediately) vs design (target size, contrast) — schedule separately
+3. Enable `wcag22aa` tag in CI gate after fixing structural failures
+4. Add WCAG 2.2-specific Playwright tests (target size, focus appearance) for the design-level criteria
+
 ---
 
 ## Key Resources
@@ -1846,18 +2834,26 @@ configureAxe({
 | WCAG 2.2 New Criteria | Official spec | https://www.w3.org/TR/WCAG22/ | 9 new criteria including target size and dragging; legally required under EU EAA |
 | EU Accessibility Act (EAA) | Legal reference | https://ec.europa.eu/social/main.jsp?catId=1202 | EU private-sector accessibility law; June 28, 2025 compliance deadline |
 | EN 301 549 v3.3.2 | Standard | https://www.etsi.org/deliver/etsi_en/301500_302000/301549/03.03.02_60/ | Technical standard for EAA; maps WCAG 2.2 AA to EU law |
-| ARIA Authoring Practices Guide | Official guide | https://www.w3.org/WAI/ARIA/apg/ | Patterns for custom widgets |
-| axe-core | Open source | https://github.com/dequelabs/axe-core | Rule documentation and changelog (v4.11.4 current) |
+| ARIA Authoring Practices Guide | Official guide | https://www.w3.org/WAI/ARIA/apg/ | Patterns for custom widgets — roving tabindex, combobox, dialog, etc. |
+| ARIA Accessible Name Computation | Spec | https://www.w3.org/TR/accname-1.2/ | Authoritative source for name/label precedence rules |
+| axe-core | Open source | https://github.com/dequelabs/axe-core | Rule documentation and changelog (v4.11.4 current); custom rule API |
+| axe-core Rule Descriptions | Reference | https://github.com/dequelabs/axe-core/blob/develop/doc/rule-descriptions.md | Full list of all axe rules with WCAG mapping |
 | jest-axe | Open source | https://github.com/nickcolley/jest-axe | Jest integration for axe |
 | @axe-core/playwright | Open source | https://github.com/dequelabs/axe-core-npm | Playwright integration |
+| @storybook/addon-a11y | Open source | https://storybook.js.org/addons/@storybook/addon-a11y | Per-story axe scan in Storybook; catches component-level issues in design system |
+| IBM Equal Access Checker | Open source | https://www.ibm.com/able/toolkit/tools/ | Supplementary rule engine with EN 301 549 focus |
 | WebAIM Million Report | Research | https://webaim.org/projects/million/ | Most common real-world failures (contrast 81%, alt 55%, labels 49%) |
 | WebAIM Screen Reader Survey | Research | https://webaim.org/projects/screenreadersurvey/ | Actual AT usage statistics |
 | MDN ARIA reference | Reference | https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA | Role and attribute documentation |
 | MDN forced-colors | Reference | https://developer.mozilla.org/en-US/docs/Web/CSS/@media/forced-colors | Windows High Contrast Mode CSS media feature |
+| MDN autocomplete values | Reference | https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes/autocomplete | Complete list of autocomplete token values for WCAG 1.3.5 |
 | TPGi Colour Contrast Analyser | Tool | https://www.tpgi.com/color-contrast-checker/ | Desktop tool for manual contrast checking |
 | ARIA Combobox Pattern (APG) | Pattern guide | https://www.w3.org/WAI/ARIA/apg/patterns/combobox/ | Authoritative ARIA 1.2 combobox pattern — critical for custom autocomplete |
 | Inclusive Components | Book/blog | https://inclusive-components.design/ | Heydon Pickering's production-ready accessible component patterns |
 | A11y Project | Community | https://www.a11yproject.com/ | Checklists, articles, and WCAG success criterion explanations |
+| Text Spacing Bookmarklet (W3C) | Tool | https://www.html5accessibility.com/tests/tsbookmarklet.html | Test WCAG 1.4.12 text spacing in any browser |
 | PAC (PDF Accessibility Checker) | Tool | https://pac.pdf-accessibility.org/ | Free PDF accessibility validator (ISO 14289 / PDF/UA) |
 | iOS Accessibility Inspector | Tool | Built into Xcode | Native iOS/macOS accessibility audit tool |
 | Android Accessibility Scanner | Tool | https://play.google.com/store/apps/details?id=com.google.android.apps.accessibility.auditor | Native Android a11y audit app by Google |
+| NVDA Screen Reader | Free tool | https://www.nvaccess.org/ | Most widely used free screen reader — ~41% market share; test with Firefox |
+| WCAG 2.5.3 Understanding | Official | https://www.w3.org/WAI/WCAG21/Understanding/label-in-name.html | Label in Name — critical for Dragon/Voice Control users |

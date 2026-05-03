@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 27 | score: 100/100 | date: 2026-05-02 -->
+<!-- sources: official | community | mixed | iteration: 37 | score: 100/100 | date: 2026-05-03 -->
 
 ## Core Philosophy
 
@@ -2160,6 +2160,449 @@ npx tsc --noEmit --watch # live checking
 
 ---
 
+## Web Platform APIs
+
+### Web Crypto API — Secure Randomness and Cryptography
+
+The Web Crypto API (`crypto.subtle` + `crypto.randomUUID()`) is available in both browsers and Node.js 18+. Use it instead of `Math.random()` for security-sensitive work and instead of the `uuid` npm package for UUID generation.
+
+```javascript
+// crypto.randomUUID() — cryptographically random UUID v4 (no package needed)
+const id = crypto.randomUUID();
+// 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
+
+// Hashing with SHA-256 (browser + Node.js)
+async function sha256(message) {
+  const encoded = new TextEncoder().encode(message);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
+  // Convert ArrayBuffer to hex string
+  return Array.from(new Uint8Array(hashBuffer))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+const hash = await sha256('Hello, World!');
+
+// Symmetric encryption: AES-GCM (authenticated encryption)
+async function encryptAES(plaintext, key) {
+  const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit IV
+  const encoded = new TextEncoder().encode(plaintext);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    encoded,
+  );
+  return { ciphertext, iv };
+}
+
+// Generate an AES-GCM key (use CryptoKeyPair for asymmetric)
+const key = await crypto.subtle.generateKey(
+  { name: 'AES-GCM', length: 256 },
+  true,   // extractable
+  ['encrypt', 'decrypt'],
+);
+
+// HMAC for message authentication
+async function hmacSign(message, secret) {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign', 'verify'],
+  );
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    keyMaterial,
+    new TextEncoder().encode(message),
+  );
+  return Buffer.from(signature).toString('base64');
+}
+```
+
+**Security notes:**
+- `crypto.getRandomValues()` is cryptographically secure; `Math.random()` is not — never use `Math.random()` for tokens, IDs, or keys.
+- `crypto.subtle` operations are async (Promise-based) to allow off-main-thread execution.
+- Use AES-GCM (authenticated) not AES-CBC (unauthenticated) — GCM detects tampering.
+- In Node.js, `crypto.subtle` is available as `globalThis.crypto.subtle` (Node 18+) or via `import { webcrypto } from 'node:crypto'`.
+
+### URL and URLSearchParams — Parse, Build, and Modify URLs
+
+The `URL` and `URLSearchParams` classes provide a standards-compliant, cross-environment (browser + Node.js) API for working with URLs. Never manually concatenate URL strings.
+
+```javascript
+// Parse and read URL components
+const url = new URL('https://api.example.com/v1/users?page=2&limit=10#section');
+url.hostname;   // 'api.example.com'
+url.pathname;   // '/v1/users'
+url.searchParams.get('page');   // '2'
+url.searchParams.get('limit');  // '10'
+url.hash;       // '#section'
+
+// Safely build URLs — no string concatenation (no injection risk)
+function buildEndpoint(base, userId, query = {}) {
+  const url = new URL(`/api/users/${userId}`, base);
+  for (const [key, value] of Object.entries(query)) {
+    url.searchParams.set(key, value);
+  }
+  return url.toString();
+}
+buildEndpoint('https://api.example.com', 42, { page: '1', limit: '20' });
+// 'https://api.example.com/api/users/42?page=1&limit=20'
+
+// URLSearchParams — parse query strings standalone
+const params = new URLSearchParams('page=1&tags=js&tags=ts&sort=desc');
+params.get('page');          // '1'
+params.get('sort');          // 'desc'
+params.getAll('tags');       // ['js', 'ts']
+params.has('page');          // true
+
+// Append, set, delete
+params.append('page', '2');  // adds second page= entry
+params.set('sort', 'asc');   // replaces existing sort
+params.delete('tags');
+[...params];                 // [['page','1'],['page','2'],['sort','asc']]
+params.toString();           // 'page=1&page=2&sort=asc'
+
+// Build a fetch URL cleanly — no manual encoding
+async function searchUsers(query, options = {}) {
+  const params = new URLSearchParams({ q: query, ...options });
+  const res = await fetch(`/api/search?${params}`);
+  return res.json();
+}
+```
+
+**Why it matters:** manual URL string building with template literals doesn't encode special characters correctly (`+`, `&`, `=`, `%`), causing broken requests or accidental parameter injection. `URLSearchParams` handles encoding automatically.
+
+### TextEncoder / TextDecoder — String ↔ Binary Conversion
+
+`TextEncoder` and `TextDecoder` are the standard cross-environment APIs for converting between JavaScript strings and `Uint8Array` binary data. They replace Node.js-only `Buffer.from(str, 'utf8')` patterns in code that must run in both environments.
+
+```javascript
+// String → Uint8Array (UTF-8 bytes)
+const encoder = new TextEncoder(); // always UTF-8
+const bytes = encoder.encode('Hello, 🌍');
+// Uint8Array [72, 101, 108, 108, 111, 44, 32, 240, 159, 140, 141]
+
+// Single-use convenience
+const { written, read } = encoder.encodeInto('Hello', new Uint8Array(16));
+// Writes directly into a pre-allocated buffer — avoids intermediate allocation
+
+// Uint8Array → String (specify encoding)
+const decoder = new TextDecoder('utf-8');
+decoder.decode(bytes);  // 'Hello, 🌍'
+
+// Stream decoding — process chunks that may split multibyte characters
+const streamDecoder = new TextDecoder('utf-8', { fatal: true }); // throws on invalid bytes
+for (const chunk of byteChunks) {
+  const partial = streamDecoder.decode(chunk, { stream: true }); // true = more chunks coming
+  process(partial);
+}
+const final = streamDecoder.decode(); // flush remaining state
+
+// Cross-environment hex utility using TextEncoder
+function toHex(str) {
+  return [...new TextEncoder().encode(str)]
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+toHex('ABC'); // '414243'
+
+// Detect encoding boundary issues — byte length ≠ string length for non-ASCII
+const emoji = '🌍';
+new TextEncoder().encode(emoji).length; // 4 bytes
+emoji.length;                           // 2 code units (surrogate pair in JS)
+[...emoji].length;                      // 1 grapheme
+```
+
+**Common pitfall:** `string.length` counts UTF-16 code units, not bytes or characters. For accurate byte budgets (e.g., Kafka message limits, HTTP header size), always use `new TextEncoder().encode(str).length`.
+
+### Web Streams API — Browser-Native Streaming
+
+The Web Streams API (`ReadableStream`, `WritableStream`, `TransformStream`) is supported in all modern browsers and Node.js 18+. It provides a standard, cross-environment streaming model with backpressure built in.
+
+```javascript
+// ReadableStream — produce data lazily with backpressure
+function numberStream(start, end) {
+  return new ReadableStream({
+    start(controller) {
+      for (let i = start; i <= end; i++) {
+        controller.enqueue(i); // push value into the stream
+      }
+      controller.close();
+    },
+  });
+}
+
+// Consume with pipeTo (applies backpressure automatically)
+const writable = new WritableStream({
+  write(chunk) { console.log('Received:', chunk); },
+  close()      { console.log('Done'); },
+});
+await numberStream(1, 5).pipeTo(writable);
+
+// TransformStream — transform chunks in transit (e.g., gzip, JSON parse)
+function csvToJSON(headers) {
+  return new TransformStream({
+    transform(chunk, controller) {
+      const values = chunk.split(',');
+      const obj = Object.fromEntries(headers.map((h, i) => [h, values[i]]));
+      controller.enqueue(obj);
+    },
+  });
+}
+
+// Pipe through a transform
+const csv = new ReadableStream({ /* yields CSV rows */ });
+const transform = csvToJSON(['name', 'age', 'city']);
+const output = csv.pipeThrough(transform);
+for await (const record of output) {
+  console.log(record); // { name: '...', age: '...', city: '...' }
+}
+
+// fetch() response body IS a ReadableStream — stream large responses without buffering
+async function streamLargeDownload(url, onChunk) {
+  const response = await fetch(url);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    onChunk(decoder.decode(value, { stream: true }));
+  }
+}
+```
+
+**Backpressure:** unlike Node.js EventEmitter streams, Web Streams apply backpressure by default. A slow `WritableStream` automatically slows down the producer — no risk of unbounded memory growth.
+
+---
+
+## Additional Language Idioms
+
+### `Object.fromEntries()` — Transform Maps and Arrays to Objects
+
+`Object.fromEntries()` is the inverse of `Object.entries()`. Together they form a powerful pair for transforming object shapes without intermediate variables.
+
+```javascript
+// Map → Object
+const map = new Map([['a', 1], ['b', 2], ['c', 3]]);
+const obj = Object.fromEntries(map); // { a: 1, b: 2, c: 3 }
+
+// Transform object values — rename/filter keys without lodash
+const prices = { apple: 1.0, banana: 0.5, cherry: 2.5 };
+
+// Double every price
+const doubled = Object.fromEntries(
+  Object.entries(prices).map(([k, v]) => [k, v * 2])
+);
+// { apple: 2.0, banana: 1.0, cherry: 5.0 }
+
+// Filter object entries
+const expensive = Object.fromEntries(
+  Object.entries(prices).filter(([, v]) => v > 1)
+);
+// { apple: 1.0, cherry: 2.5 }
+
+// Rename keys via lookup
+const keyMap = { apple: 'APPLE', banana: 'BANANA', cherry: 'CHERRY' };
+const renamed = Object.fromEntries(
+  Object.entries(prices).map(([k, v]) => [keyMap[k] ?? k, v])
+);
+
+// URLSearchParams → Object (useful for form parsing)
+const params = new URLSearchParams('name=Alice&age=30&active=true');
+const formData = Object.fromEntries(params); // { name: 'Alice', age: '30', active: 'true' }
+```
+
+### Regex Named Capture Groups and the `d` Flag
+
+Named capture groups (`(?<name>...)`) make regex matches self-documenting. The `d` flag (ES2022) adds `indices` to the match result — the start/end position of each capture group, enabling precise string manipulation.
+
+```javascript
+// Named capture groups — self-documenting regex
+const ISO_DATE = /(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})/;
+const match = '2026-05-03'.match(ISO_DATE);
+const { year, month, day } = match.groups;
+// year='2026', month='05', day='03'
+
+// Named backreferences — same group referenced later in the pattern
+const HTML_TAG = /<(?<tag>[a-z]+)>.*?<\/\k<tag>>/i; // \k<tag> = same tag name
+HTML_TAG.test('<div>Hello</div>');  // true
+HTML_TAG.test('<div>Hello</span>'); // false
+
+// 'd' flag — capture group indices (ES2022)
+const dMatch = /(?<word>\w+)/d.exec('hello world');
+dMatch.indices;          // [[0, 5], [0, 5]] — full match + first group
+dMatch.indices.groups;   // { word: [0, 5] }
+// Use for precise editor highlighting, diff tooling, code formatting
+
+// Replace with named groups
+const swapDate = '2026-05-03'.replace(
+  /(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})/,
+  '$<month>/$<day>/$<year>'  // Named group reference in replacement
+);
+// '05/03/2026'
+
+// Regex hasIndices check
+const re = /\d+/d;
+re.hasIndices; // true — tells you the 'd' flag is set
+```
+
+### `globalThis` — Cross-Environment Global Object Access
+
+`globalThis` provides a universal reference to the global object that works in browsers (`window`), Node.js (`global`), Web Workers (`self`), and any future runtime. Use it for cross-environment polyfills and detection.
+
+```javascript
+// Before globalThis: environment-specific hacks
+const global = (typeof window !== 'undefined') ? window
+             : (typeof self   !== 'undefined') ? self
+             : (typeof global !== 'undefined') ? global
+             : {}; // fragile — misses Deno, Bun, edge runtimes
+
+// With globalThis — always correct, no hacks
+console.log(globalThis === window); // true in browsers
+console.log(globalThis === global); // true in Node.js
+
+// Safe feature detection without environment guards
+if (typeof globalThis.fetch === 'function') {
+  // Native fetch is available (browser, Node 18+, Deno, Bun)
+}
+
+// Polyfill a global — attaches to the correct object in any environment
+if (!globalThis.structuredClone) {
+  globalThis.structuredClone = obj => JSON.parse(JSON.stringify(obj));
+}
+
+// Cross-environment global configuration store (use sparingly)
+globalThis.__APP_CONFIG__ ??= { version: '1.0.0', debug: false };
+```
+
+**Caution:** polluting `globalThis` causes the same module-isolation problems as `window.foo` in browser code. Prefer explicit imports/exports or dependency injection. Use `globalThis` only for polyfills and cross-environment compatibility layers.
+
+### `Array.flat()` and `Array.flatMap()` — Flatten Nested Arrays
+
+`flat()` flattens one or more levels of nested arrays. `flatMap()` combines a `map()` and a `flat(1)` in a single pass — more efficient than calling them separately, and useful for transformations that produce variable numbers of output elements.
+
+```javascript
+// flat() — flatten one level by default
+[1, [2, 3], [4, [5, 6]]].flat();     // [1, 2, 3, 4, [5, 6]]
+[1, [2, [3, [4]]]].flat(2);          // [1, 2, 3, [4]]  — 2 levels
+[1, [2, [3, [4]]]].flat(Infinity);   // [1, 2, 3, 4] — fully flatten
+
+// Remove empty slots in sparse arrays
+[1, , , 2, , 3].flat(); // [1, 2, 3]
+
+// flatMap() — map then flatten one level (single pass, more efficient)
+const sentences = ['Hello World', 'Goodbye Moon'];
+sentences.flatMap(s => s.split(' ')); // ['Hello', 'World', 'Goodbye', 'Moon']
+
+// Key superpower: return 0 or 2+ elements per input (impossible with map alone)
+const orders = [
+  { id: 1, items: ['apple', 'banana'] },
+  { id: 2, items: [] },              // empty — filtered out naturally
+  { id: 3, items: ['cherry'] },
+];
+const allItems = orders.flatMap(o => o.items);
+// ['apple', 'banana', 'cherry'] — order 2 disappears without a filter step
+
+// Conditional inclusion via flatMap (replace item or skip)
+const data = [1, -2, 3, -4, 5];
+const positiveDoubled = data.flatMap(n => n > 0 ? [n * 2] : []);
+// [2, 6, 10]
+```
+
+### BigInt for Exact Integer Arithmetic
+
+`BigInt` handles integers larger than `Number.MAX_SAFE_INTEGER` (2^53 − 1) without precision loss. Use it for cryptographic keys, high-precision timestamps, database IDs from 64-bit systems, and financial calculations that exceed the safe integer range.
+
+```javascript
+// Number precision failure — silent corruption
+Number.MAX_SAFE_INTEGER;          // 9007199254740991
+9007199254740991 + 1;             // 9007199254740992 ✓
+9007199254740991 + 2;             // 9007199254740992 ✗ — wrong! same as +1
+9007199254740992 === 9007199254740993; // true — silently equal!
+
+// BigInt — exact arithmetic for any magnitude
+const big = 9007199254740991n;   // 'n' suffix creates BigInt literal
+big + 1n;                        // 9007199254740992n ✓
+big + 2n;                        // 9007199254740993n ✓ — correct
+
+// BigInt with large IDs from 64-bit databases (e.g., Twitter Snowflakes)
+const tweetId = 1234567890123456789n; // No precision loss
+
+// Arithmetic: BigInt only mixes with other BigInts (no implicit conversion)
+5n + 3n;   // 8n
+5n * 3n;   // 15n
+5n ** 2n;  // 25n
+5n / 2n;   // 2n — integer division (truncates, no fractions)
+5n % 2n;   // 1n
+
+// ❌ Can't mix BigInt and Number
+// 5n + 3;  // TypeError: Cannot mix BigInt and other types
+
+// Convert carefully
+const n = 42n;
+Number(n);     // 42  — safe if n ≤ Number.MAX_SAFE_INTEGER
+String(n);     // '42'
+parseInt('42') === Number(42n); // true — only if in safe range
+
+// Check at runtime
+function safeBigIntToNumber(n) {
+  if (n > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError(`BigInt ${n} exceeds MAX_SAFE_INTEGER`);
+  }
+  return Number(n);
+}
+
+// JSON doesn't support BigInt — use a replacer
+JSON.stringify(42n); // TypeError: Do not know how to serialize a BigInt
+const safeJSON = {
+  stringify: (v) => JSON.stringify(v, (_, val) =>
+    typeof val === 'bigint' ? val.toString() : val
+  ),
+};
+```
+
+**Note:** numeric separators (`1_000_000n`, `0xFF_FF`) work with BigInt literals too, and apply to all numeric literals in ES2021+ for readability without affecting the value.
+
+---
+
+## Additional Community Pitfalls
+
+**27. Not Using `crypto.randomUUID()` for Secure IDs** [community] — Developers still reach for `Math.random()` or short `Math.random().toString(36)` snippets for ID generation. WHY it causes problems: `Math.random()` is not cryptographically secure — attackers who observe a few IDs can predict future ones. For session tokens, CSRF tokens, and document IDs, this is an exploitable vulnerability. Fix: use `crypto.randomUUID()` (built-in, no package needed) or `crypto.getRandomValues()` for custom formats.
+
+**28. Forgetting `TextEncoder` Byte Length ≠ String Length** [community] — Using `string.length` to budget message sizes (Kafka limits, Redis key sizes, HTTP header caps) gives byte counts only for pure ASCII. WHY it causes problems: non-ASCII characters (emoji, CJK, accented letters) occupy 2–4 bytes in UTF-8; `string.length` counts UTF-16 code units — a 10-character emoji string can be 40 bytes. Messages silently exceed byte limits at runtime, causing dropped messages or truncation. Fix: use `new TextEncoder().encode(str).length` for accurate byte counts.
+
+**29. Building URLs via String Template Literals** [community] — Constructing query strings with template literals (`\`/api?q=${userInput}\``) fails to encode special characters and creates injection vectors. WHY it causes problems: if `userInput` contains `&`, `=`, `+`, or `%`, the URL is malformed or injects additional parameters. Fix: use `new URL()` + `URLSearchParams` to construct URLs programmatically — encoding is automatic and correct.
+
+**30. `BigInt` Silently Not Serializing to JSON** [community] — Calling `JSON.stringify()` on an object containing `BigInt` values throws a `TypeError: Do not know how to serialize a BigInt` at runtime, not at the `BigInt` assignment. WHY it causes problems: the code works fine during development (where BigInt values are small enough to fit in `Number`), but fails in production when IDs from 64-bit databases or large counters arrive as BigInt. Fix: use a `replacer` function in `JSON.stringify` to convert BigInt to string, or use a library like `superjson`.
+
+**31. Mutating `globalThis` in Libraries** [community] — Library code that writes to `globalThis` (e.g., `globalThis.myLib = ...`) pollutes the global scope for every consumer. WHY it causes problems: two libraries writing to the same global key silently overwrite each other, and consumers have no way to scope or version-control globals. Conflicts surface as mysterious errors far from the mutation site. Fix: libraries must never write to `globalThis`; use ESM exports and let consumers manage scope. Acceptable exceptions: polyfills that check `typeof globalThis.feature !== 'undefined'` before assigning.
+
+**32. Timing-Sensitive Comparisons with `===`** [community] — Comparing secret tokens, HMAC signatures, or passwords with `===` is vulnerable to timing attacks. WHY it causes problems: JavaScript's strict equality short-circuits on the first differing character — an attacker who measures response time can deduce how many leading characters of their guess match the secret. Fix: always use a constant-time comparison function (`crypto.timingSafeEqual` in Node.js) for secret data. Never use `===` to validate tokens.
+
+```javascript
+import { timingSafeEqual } from 'node:crypto';
+
+// BAD — short-circuit leaks information via timing
+function verifyToken(provided, expected) {
+  return provided === expected; // timing-vulnerable
+}
+
+// GOOD — constant-time comparison
+function verifyTokenSafe(provided, expected) {
+  const a = Buffer.from(provided,  'utf8');
+  const b = Buffer.from(expected,  'utf8');
+  // Lengths must match before comparing content
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+```
+
+**33. Regex Without Timeout on User-Supplied Patterns** [community] — Running `new RegExp(userInput)` on untrusted patterns with backtracking (like `(a+)+$`) causes catastrophic backtracking (ReDoS — Regular Expression Denial of Service). WHY it causes problems: a single malicious pattern can pin a Node.js thread at 100% CPU for seconds or minutes, starving all other requests. Fix: validate user regex patterns against a safe subset before executing (no nested quantifiers, bounded lengths), or run them in a worker thread with a timeout that kills the thread if exceeded. Never execute untrusted regex in the main event loop.
+
+---
+
 ## Anti-Patterns Quick Reference
 
 | Anti-Pattern | Why It's Harmful | What to Do Instead |
@@ -2190,3 +2633,9 @@ npx tsc --noEmit --watch # live checking
 | Not calling `worker.terminate()` after use | Worker thread stays alive consuming memory until process exits | Call `worker.terminate()` or confirm the worker exits naturally |
 | `.sort()` / `.reverse()` on shared arrays | Mutates in place; all references to that array silently see the sorted/reversed order | Use `.toSorted()` / `.toReversed()` (ES2023) which return new arrays |
 | Module-level singleton imports in testable code | Unit tests require module-system patching (`jest.mock`); creates fragile, order-dependent tests | Use factory functions with injected dependencies; pass stubs at test time |
+| `Math.random()` for security tokens or IDs | Not cryptographically secure; future values predictable from observed outputs | Use `crypto.randomUUID()` or `crypto.getRandomValues()` |
+| `string.length` for byte budgets | Counts UTF-16 code units, not bytes; emoji and CJK overflow byte limits silently | Use `new TextEncoder().encode(str).length` for accurate byte counts |
+| Template literals to build URLs with user input | Does not encode special chars; injects extra query params or breaks URL | Use `new URL()` + `URLSearchParams` for automatic encoding |
+| `===` to compare secret tokens/HMACs | Short-circuits on first differing char; timing leaks leading characters to attackers | Use `crypto.timingSafeEqual` (Node.js) for constant-time comparison |
+| `JSON.stringify` on objects with `BigInt` values | Throws `TypeError` at runtime; not caught at build time or by static analysis | Use a replacer: `JSON.stringify(v, (_, val) => typeof val === 'bigint' ? val.toString() : val)` |
+| `new RegExp(userInput)` without safeguards | ReDoS: backtracking patterns can pin the event loop at 100% CPU | Validate pattern safety or run in a worker thread with timeout |

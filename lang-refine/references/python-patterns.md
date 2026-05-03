@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 17 | score: 100/100 | date: 2026-05-02 -->
+<!-- sources: mixed (official + community) | iteration: 27 | score: 100/100 | date: 2026-05-03 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -21,6 +21,16 @@
      Iter 15 (this run iter 8): 100/100 (+0) — added typing.Self return type, thread-safety gotcha (#12), more dunder coverage
      Iter 16 (this run iter 9): 100/100 (+0) — added class-based __enter__/__exit__ context manager, importlib.resources, deep-copy gotcha (#13)
      Iter 17 (this run iter 10 — FINAL): 100/100 (+0) — added importlib.resources, __future__ annotations best practices, final anti-pattern expansions
+     [lang-refine parallel run] Iter 18 (run2 iter 1): 100/100 (+0) — added typing.NewType for domain types, TypedDict for structured dicts, Python 3.13 features, ExceptionGroup gotcha (#14)
+     Iter 19 (run2 iter 2): 100/100 (+0) — added typing.Annotated for metadata-rich types, operator module idioms, __slots__ inheritance pitfall gotcha (#15)
+     Iter 20 (run2 iter 3): 100/100 (+0) — added __repr__/__str__/__format__ contract, bisect module, generator exhaustion gotcha (#16)
+     Iter 21 (run2 iter 4): 100/100 (+0) — added heapq priority queues, __hash__/__eq__ consistency, mutable class variable gotcha (#17)
+     Iter 22 (run2 iter 5): 100/100 (+0) — added __iter__/__len__/__contains__ container protocol, abstract properties idiom, string concat gotcha (#18)
+     Iter 23 (run2 iter 6): 100/100 (+0) — added contextvars.ContextVar for async-safe state, __getattr__ vs __getattribute__, float equality gotcha (#19)
+     Iter 24 (run2 iter 7): 100/100 (+0) — added weakref for memory-safe caches, __bool__/__len__ truthiness, None comparison gotcha (#20)
+     Iter 25 (run2 iter 8): 100/100 (+0) — added typing.Literal for exact-value types, dict merge | operator, **kwargs validation gotcha (#21)
+     Iter 26 (run2 iter 9): 100/100 (+0) — added __bool__/__len__ truthiness pattern, global state anti-pattern gotcha (#22)
+     Iter 27 (run2 iter 10 — FINAL): 100/100 (+0) — added functools.reduce/pipeline patterns, fixed Literal section header, expanded anti-pattern table with 9 new rows
 -->
 
 ## Core Philosophy
@@ -1801,3 +1811,1459 @@ print(cfg.tags)             # ["production"]  ← safe
 | `isinstance` chain instead of `singledispatch` | Hard to extend; violates open/closed principle | Use `@functools.singledispatch` for type-based dispatch |
 | Manual retry loop with `time.sleep()` | Inefficient, non-configurable, swallows errors | Use `tenacity` library or implement with exponential backoff and `asyncio.sleep()` |
 | Using bare `dict` for config / options | No type safety; typos silently create new keys | Use `TypedDict`, `@dataclass`, or `pydantic.BaseModel` |
+| Catching `ExceptionGroup` with `except` | Misses sub-exceptions in groups raised by `TaskGroup` | Use `except*` syntax (Python 3.11+) |
+| `NewType` confused with type alias | `NewType` creates a distinct subtype; aliases are synonyms | Use `NewType` when values must not be mixed (e.g., `UserId` vs raw `int`) |
+
+---
+
+### `typing.NewType` for Domain-Specific Types
+
+`NewType` creates a distinct type that the type checker treats as a subtype of the base — preventing accidental mixing of semantically different values that share the same runtime representation.
+
+```python
+from typing import NewType
+
+# Create distinct types — both are int at runtime, but distinct statically
+UserId = NewType("UserId", int)
+OrderId = NewType("OrderId", int)
+
+
+def get_user(user_id: UserId) -> dict:
+    return {"id": user_id, "name": f"User_{user_id}"}
+
+
+def get_order(order_id: OrderId) -> dict:
+    return {"id": order_id, "items": []}
+
+
+uid = UserId(42)
+oid = OrderId(99)
+
+get_user(uid)   # OK
+get_order(oid)  # OK
+
+# Type checker rejects these:
+# get_user(oid)   # error: Argument 1 to "get_user" has incompatible type "OrderId"; expected "UserId"
+# get_user(99)    # error: int is not UserId
+
+# NewType is zero-cost at runtime — just an identity function
+assert UserId(42) == 42   # True — same runtime value
+
+
+# Contrast with TypeAlias — aliases are synonymous, NewType is a subtype
+from typing import TypeAlias
+
+IntAlias: TypeAlias = int
+x: IntAlias = 5
+y: int = x   # OK — alias and original are fully interchangeable
+```
+
+**When to use `NewType`:** Database IDs (UserId, ProductId), validated strings (EmailAddress, SlugStr), measurement types (Metres, Seconds) — anywhere two values of the same primitive type must not be accidentally mixed.
+
+---
+
+### `TypedDict` for Structured Dictionaries
+
+`TypedDict` annotates dictionaries where keys are known at design time. Unlike `dict[str, Any]`, it gives you per-key types, completions, and type-checker errors for missing or extra keys.
+
+```python
+from typing import TypedDict, Required, NotRequired
+
+
+class MovieBase(TypedDict):
+    title: str
+    year: int
+    genre: str
+
+
+class Movie(MovieBase, total=False):
+    """total=False: all keys are optional EXCEPT those with Required[]."""
+    rating: NotRequired[float]    # Optional key
+    director: NotRequired[str]    # Optional key
+
+
+# Required[] and NotRequired[] (Python 3.11+) let you mix
+class UserProfile(TypedDict):
+    id: Required[int]             # Must be present
+    username: Required[str]       # Must be present
+    bio: NotRequired[str]         # May be omitted
+    avatar_url: NotRequired[str]  # May be omitted
+
+
+def format_movie(movie: Movie) -> str:
+    base = f"{movie['title']} ({movie['year']}) — {movie['genre']}"
+    if "rating" in movie:
+        base += f" [{movie['rating']}/10]"
+    return base
+
+
+m: Movie = {"title": "Inception", "year": 2010, "genre": "Sci-Fi", "rating": 8.8}
+print(format_movie(m))   # Inception (2010) — Sci-Fi [8.8/10]
+
+# Type checker catches:
+# m2: Movie = {"title": "X"}   # Missing required keys 'year' and 'genre'
+# m3: Movie = {"title": "X", "year": 2020, "genre": "Drama", "foo": 1}  # Extra key
+```
+
+**`TypedDict` vs `@dataclass`:** Use `TypedDict` when you are working with existing dict-shaped data (JSON responses, config files, kwargs). Use `@dataclass` when you control the data model and want methods, `__post_init__`, and `slots=True`.
+
+---
+
+### Python 3.13 — Key New Features and Best Practices
+
+Python 3.13 (released October 2024) brings several developer-experience improvements worth knowing:
+
+```python
+# 1. Improved error messages — tracebacks now include color and column markers
+# NameError: Did you mean 'username'?  (improved "did you mean" suggestions)
+# AttributeError: 'list' object has no attribute 'appned'. Did you mean: 'append'?
+
+# 2. Free-threaded CPython (PEP 703) — experimental, opt-in build
+# python3.13t  — the 't' suffix enables the no-GIL experimental build
+# Enables true parallel threads for CPU-bound work
+# CAUTION: Not all C extensions support free-threading yet (2026)
+# Use --disable-gil / PYTHON_GIL=0 env var for testing
+
+# 3. copy.replace() — generic shallow-copy-with-overrides (extends dataclasses.replace)
+import copy
+from dataclasses import dataclass
+
+@dataclass
+class Config:
+    host: str
+    port: int
+
+cfg = Config("localhost", 5432)
+new_cfg = copy.replace(cfg, port=5433)   # Python 3.13+ generic replace
+print(new_cfg)  # Config(host='localhost', port=5433)
+
+# 4. locals() now returns a fresh snapshot (not a live view) — safer for introspection
+# 5. Interactive REPL improved: multi-line editing, colour, paste mode
+# 6. Deprecated: bool(datetime.time(0)) returning False — fixed in 3.14
+
+# 7. Better __str__ for exceptions in tracebacks
+try:
+    {}["missing"]
+except KeyError as e:
+    print(e)  # 'missing'  (improved quoting and display)
+```
+
+**Migration note:** `typing.get_type_hints()` behavior changed for `from __future__ import annotations` — use `typing.get_annotations()` (Python 3.10+) for safer runtime inspection.
+
+---
+
+### 14. Mishandling `ExceptionGroup` in Async Code  [community]
+**Problem:** Python 3.11's `asyncio.TaskGroup` (and `asyncio.gather`) wraps multiple task exceptions in an `ExceptionGroup`. Using `except ValueError` will not catch a `ValueError` nested inside an `ExceptionGroup`, causing the exception to propagate uncaught.
+**Why:** `ExceptionGroup` is a new `BaseException` subclass that holds a collection of exceptions. Regular `except E:` only matches the group itself (if `E` is `ExceptionGroup` or `BaseException`), not the individual sub-exceptions inside it.
+**Fix:** Use `except* SomeError:` (PEP 654, Python 3.11+) which matches and extracts sub-exceptions from the group by type.
+```python
+import asyncio
+
+
+async def might_fail(n: int) -> int:
+    if n == 2:
+        raise ValueError(f"bad value: {n}")
+    return n * 10
+
+
+# BAD — ValueError from TaskGroup is wrapped in ExceptionGroup; this won't catch it
+async def run_bad() -> None:
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tasks = [tg.create_task(might_fail(i)) for i in range(4)]
+    except ValueError:
+        print("caught!")  # Never reached — ExceptionGroup is not a ValueError
+
+
+# GOOD — except* extracts sub-exceptions by type
+async def run_good() -> None:
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tasks = [tg.create_task(might_fail(i)) for i in range(4)]
+    except* ValueError as eg:
+        for exc in eg.exceptions:
+            print(f"Handled: {exc}")   # Handled: bad value: 2
+    else:
+        results = [t.result() for t in tasks]
+        print(results)
+
+
+asyncio.run(run_good())
+```
+
+---
+
+### `typing.Annotated` for Metadata-Rich Types
+
+`Annotated[T, metadata...]` wraps a type with arbitrary metadata for frameworks (Pydantic, FastAPI, attrs) and custom validation logic — without changing the type checker's view of the type.
+
+```python
+from typing import Annotated, get_type_hints, get_args, get_origin
+from dataclasses import dataclass
+
+
+# Sentinel classes for metadata
+class Gt:
+    """Greater-than constraint."""
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+
+class MaxLen:
+    """Maximum string/sequence length constraint."""
+    def __init__(self, length: int) -> None:
+        self.length = length
+
+
+# Annotated keeps T as the primary type; metadata is ignored by type checkers
+PositiveInt = Annotated[int, Gt(0)]
+ShortStr = Annotated[str, MaxLen(50)]
+
+
+@dataclass
+class Product:
+    name: ShortStr
+    price: PositiveInt
+    quantity: PositiveInt
+
+
+def validate(cls: type) -> None:
+    """Naive runtime validator that reads Annotated metadata."""
+    hints = get_type_hints(cls, include_extras=True)
+    for field, hint in hints.items():
+        if get_origin(hint) is Annotated:
+            _, *constraints = get_args(hint)
+            for c in constraints:
+                if isinstance(c, Gt):
+                    print(f"  {field}: must be > {c.value}")
+                elif isinstance(c, MaxLen):
+                    print(f"  {field}: max length {c.length}")
+
+
+validate(Product)
+# name: max length 50
+# price: must be > 0
+# quantity: must be > 0
+
+# FastAPI / Pydantic use the same mechanism:
+# from pydantic import BaseModel, Field
+# class Item(BaseModel):
+#     price: Annotated[float, Field(gt=0, description="Must be positive")]
+```
+
+**Key insight:** `Annotated` decouples type information (for the checker) from runtime metadata (for frameworks). The same field can be validated, documented, and serialised from a single source of truth.
+
+---
+
+### `operator` Module for Functional-Style Code
+
+The `operator` module provides function-form equivalents of Python operators. Use them instead of `lambda x: x.attr` or `lambda x: x[key]` for performance and readability in `sorted()`, `map()`, `functools.reduce()`, etc.
+
+```python
+import operator
+from functools import reduce
+from dataclasses import dataclass
+
+
+@dataclass
+class Employee:
+    name: str
+    department: str
+    salary: float
+
+
+employees = [
+    Employee("Alice", "Engineering", 95_000),
+    Employee("Bob", "Marketing", 72_000),
+    Employee("Carol", "Engineering", 110_000),
+    Employee("Dan", "Marketing", 68_000),
+]
+
+# operator.attrgetter — faster than lambda e: e.salary
+by_salary = sorted(employees, key=operator.attrgetter("salary"), reverse=True)
+print(by_salary[0].name)   # Carol
+
+# operator.itemgetter — for dicts and sequences
+records = [{"id": 3, "score": 88}, {"id": 1, "score": 95}, {"id": 2, "score": 72}]
+by_score = sorted(records, key=operator.itemgetter("score"), reverse=True)
+print(by_score[0]["id"])   # 1
+
+# Chained attrgetter — multi-key sort
+by_dept_then_salary = sorted(
+    employees,
+    key=operator.attrgetter("department", "salary"),
+)
+
+# operator.methodcaller — call a named method on each item
+words = ["hello", "WORLD", "Python"]
+lowered = list(map(operator.methodcaller("lower"), words))
+# ['hello', 'world', 'python']
+
+# operator.add with reduce — sum without lambda
+total_salary = reduce(operator.add, (e.salary for e in employees))
+print(f"Total payroll: ${total_salary:,.0f}")   # Total payroll: $345,000
+```
+
+---
+
+### 15. `__slots__` Inheritance Pitfalls  [community]
+**Problem:** Defining `__slots__` in a subclass of a class that does NOT use `__slots__` provides no memory benefit — the subclass still has a `__dict__` inherited from the parent, negating the purpose of slots.
+**Why:** `__slots__` only works if *every class in the MRO* declares `__slots__`. If any ancestor class (including `object` indirectly via a class without `__slots__`) has `__dict__`, the subclass also has `__dict__`. The slots descriptor is added but the dict remains.
+**Fix:** If you want slots throughout, use `@dataclass(slots=True)` (which generates a fresh class) or define `__slots__` consistently in *all* classes in the hierarchy, including the base.
+```python
+import sys
+
+
+# BAD — parent has __dict__; slots on child are ignored
+class Base:
+    def __init__(self, x: float) -> None:
+        self.x = x   # stored in __dict__
+
+
+class Child(Base):
+    __slots__ = ("y",)   # y gets a slot descriptor BUT __dict__ still exists from Base
+
+    def __init__(self, x: float, y: float) -> None:
+        super().__init__(x)
+        self.y = y
+
+
+c = Child(1.0, 2.0)
+print(hasattr(c, "__dict__"))   # True — __dict__ still present from Base!
+print(sys.getsizeof(c))         # ~56 bytes obj + 232 bytes dict — no savings
+
+c.extra = "unexpected"          # Allowed because __dict__ still exists
+
+
+# GOOD — slots throughout the hierarchy
+class BaseSlotted:
+    __slots__ = ("x",)
+
+    def __init__(self, x: float) -> None:
+        self.x = x
+
+
+class ChildSlotted(BaseSlotted):
+    __slots__ = ("y",)   # Only NEW slots — x inherited from BaseSlotted
+
+    def __init__(self, x: float, y: float) -> None:
+        super().__init__(x)
+        self.y = y
+
+
+cs = ChildSlotted(1.0, 2.0)
+print(hasattr(cs, "__dict__"))   # False — no __dict__!
+# cs.extra = "x"                 # AttributeError — slots prevent dynamic attributes
+
+
+# EASIEST — use @dataclass(slots=True) which does this automatically
+from dataclasses import dataclass
+
+@dataclass(slots=True)
+class FastPoint:
+    x: float
+    y: float
+```
+
+---
+
+### `__repr__` vs `__str__` — The Correct Contract
+
+`__repr__` should produce an unambiguous string that ideally recreates the object. `__str__` is for human-readable display. Always implement `__repr__` first; if `__str__` is not defined, `repr()` is used as the fallback.
+
+```python
+from __future__ import annotations
+import json
+from datetime import date
+
+
+class Invoice:
+    """Demonstrates the __repr__/__str__ contract."""
+
+    def __init__(self, invoice_id: str, amount: float, due: date) -> None:
+        self.invoice_id = invoice_id
+        self.amount = amount
+        self.due = due
+
+    def __repr__(self) -> str:
+        # Unambiguous, ideally eval()-able; used in debugging/logging
+        return (
+            f"Invoice("
+            f"invoice_id={self.invoice_id!r}, "
+            f"amount={self.amount!r}, "
+            f"due={self.due!r}"
+            f")"
+        )
+
+    def __str__(self) -> str:
+        # Human-readable; shown in print() and f-strings
+        return f"Invoice #{self.invoice_id}: ${self.amount:,.2f} due {self.due}"
+
+    def __format__(self, spec: str) -> str:
+        # Custom format spec support: f"{inv:json}"
+        if spec == "json":
+            return json.dumps({
+                "id": self.invoice_id,
+                "amount": self.amount,
+                "due": self.due.isoformat(),
+            })
+        return str(self)
+
+
+inv = Invoice("INV-001", 1250.50, date(2026, 6, 1))
+print(repr(inv))   # Invoice(invoice_id='INV-001', amount=1250.5, due=datetime.date(2026, 6, 1))
+print(str(inv))    # Invoice #INV-001: $1,250.50 due 2026-06-01
+print(f"{inv}")    # Invoice #INV-001: $1,250.50 due 2026-06-01
+print(f"{inv:json}")  # {"id": "INV-001", "amount": 1250.5, "due": "2026-06-01"}
+```
+
+**Rule:** Never return the same string from both `__repr__` and `__str__` unless the object truly has only one useful representation. Classes that skip `__repr__` show unhelpful `<MyClass object at 0x...>` in logs.
+
+---
+
+### `bisect` Module for Sorted Sequences
+
+`bisect` provides O(log n) insertion-point search in a sorted list — far faster than scanning with `next(x for x in items if x >= target)` and avoids sorting after every insert.
+
+```python
+import bisect
+from dataclasses import dataclass
+
+
+# Find the insertion point (binary search)
+breakpoints = [0, 60, 70, 80, 90, 100]
+grades = ["F", "D", "C", "B", "A", "A+"]
+
+
+def letter_grade(score: float) -> str:
+    """O(log n) grade lookup using a sorted breakpoint table."""
+    i = bisect.bisect_right(breakpoints, score) - 1
+    return grades[max(0, i)]
+
+
+print(letter_grade(55))   # F
+print(letter_grade(72))   # C
+print(letter_grade(91))   # A
+
+# insort — insert into a sorted list and keep it sorted (O(n) but avoids re-sort)
+events = [10, 20, 30, 50]
+bisect.insort(events, 35)
+print(events)   # [10, 20, 30, 35, 50]
+
+# SortedList pattern — maintain a live sorted collection
+@dataclass(order=True)
+class Task:
+    priority: int      # Compared first (dataclass order=True)
+    name: str
+
+
+task_queue: list[Task] = []
+for task in [Task(3, "low"), Task(1, "critical"), Task(2, "medium")]:
+    bisect.insort(task_queue, task)
+
+print([t.name for t in task_queue])   # ['critical', 'medium', 'low']
+```
+
+---
+
+### 16. Generator Exhaustion — Iterating a Generator Twice  [community]
+**Problem:** A generator is a one-shot iterator. Once all values have been yielded, it is exhausted and subsequent iterations return nothing, silently producing empty results or incorrect aggregations.
+**Why:** Unlike lists, generators have no `__rewind__` or `__reset__`. When the generator function returns (or falls off the end), `StopIteration` is raised and the generator is permanently closed. Calling `for x in gen` a second time immediately raises `StopIteration` on the first `next()` call — the loop body simply never executes.
+**Fix:** If you need to iterate multiple times, convert to a `list` or `tuple` first. If memory is a concern, re-create the generator for each pass, or use `itertools.tee()` for two simultaneous consumers (but `tee` buffers data internally — list is usually cleaner).
+```python
+import itertools
+
+
+# BAD — generator exhausted after first loop
+def squares(n: int):
+    for i in range(n):
+        yield i * i
+
+
+gen = squares(5)
+total = sum(gen)       # 0+1+4+9+16 = 30
+count = sum(1 for _ in gen)  # 0 — gen is exhausted!
+print(f"sum={total}, count={count}")   # sum=30, count=0  — wrong!
+
+
+# GOOD option A — materialize to list when multi-pass is needed
+vals = list(squares(5))
+total = sum(vals)
+count = len(vals)
+print(f"sum={total}, count={count}")   # sum=30, count=5  — correct
+
+
+# GOOD option B — re-create the generator for each pass
+def get_gen():
+    return squares(5)
+
+total = sum(get_gen())
+count = sum(1 for _ in get_gen())
+print(f"sum={total}, count={count}")   # sum=30, count=5  — correct
+
+
+# GOOD option C — itertools.tee (two simultaneous consumers)
+gen_a, gen_b = itertools.tee(squares(5), 2)
+total = sum(gen_a)
+count = sum(1 for _ in gen_b)
+print(f"sum={total}, count={count}")   # sum=30, count=5
+# NOTE: tee buffers values from the faster consumer — only use if consumers
+#       advance roughly in lockstep; otherwise list() is more memory-efficient.
+```
+
+---
+
+### `heapq` for Priority Queues and Top-N Selection
+
+`heapq` provides a min-heap in O(log n) per push/pop, and `nlargest`/`nsmallest` for efficient top-N without full sorts.
+
+```python
+import heapq
+from dataclasses import dataclass, field
+
+
+@dataclass(order=True)
+class PrioritisedTask:
+    priority: int
+    # order=True compares fields left-to-right; lower priority = higher urgency
+    name: str = field(compare=False)   # Exclude name from comparison
+
+
+# Min-heap as a priority queue
+heap: list[PrioritisedTask] = []
+heapq.heappush(heap, PrioritisedTask(3, "low-priority-job"))
+heapq.heappush(heap, PrioritisedTask(1, "critical-job"))
+heapq.heappush(heap, PrioritisedTask(2, "medium-job"))
+
+while heap:
+    task = heapq.heappop(heap)
+    print(f"Running: {task.name} (priority {task.priority})")
+# Running: critical-job (priority 1)
+# Running: medium-job (priority 2)
+# Running: low-priority-job (priority 3)
+
+
+# nlargest / nsmallest — O(n log k) vs O(n log n) for full sort
+scores = [34, 78, 91, 45, 62, 88, 77, 55, 23, 99]
+top3    = heapq.nlargest(3, scores)     # [99, 91, 88]
+bottom3 = heapq.nsmallest(3, scores)   # [23, 34, 45]
+print(top3, bottom3)
+
+
+# heapq.merge — merge already-sorted iterables lazily (no materialisation)
+import heapq
+sorted_a = [1, 4, 7]
+sorted_b = [2, 5, 8]
+sorted_c = [3, 6, 9]
+merged = list(heapq.merge(sorted_a, sorted_b, sorted_c))
+print(merged)   # [1, 2, 3, 4, 5, 6, 7, 8, 9]
+```
+
+**Rule of thumb:** Use `heapq.nlargest(k, items)` when `k << len(items)`; use `sorted(..., reverse=True)[:k]` when `k` approaches `len(items)`.
+
+---
+
+### `__hash__` and `__eq__` Consistency
+
+Whenever you define `__eq__`, Python automatically sets `__hash__` to `None`, making the class unhashable. You must explicitly define `__hash__` if instances should be usable in sets or as dict keys.
+
+```python
+from functools import cached_property
+
+
+class Point:
+    """Demonstrates the __eq__ / __hash__ contract."""
+
+    def __init__(self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Point):
+            return NotImplemented
+        return self.x == other.x and self.y == other.y
+
+    def __hash__(self) -> int:
+        # MUST hash the same fields used in __eq__
+        # If a == b then hash(a) == hash(b) — this invariant must hold
+        return hash((self.x, self.y))
+
+    @cached_property
+    def magnitude(self) -> float:
+        """Lazy-computed, cached; safe because Point is effectively immutable."""
+        return (self.x ** 2 + self.y ** 2) ** 0.5
+
+
+# Now Points can be used in sets and as dict keys
+points = {Point(0, 0), Point(1, 1), Point(0, 0)}
+print(len(points))   # 2 — duplicates removed via __hash__ + __eq__
+
+p = Point(3.0, 4.0)
+print(p.magnitude)   # 5.0 — computed once, cached on the instance
+
+
+# BAD — defining __eq__ without __hash__ breaks set/dict usage
+class BadPoint:
+    def __init__(self, x, y): self.x, self.y = x, y
+    def __eq__(self, other):
+        if not isinstance(other, BadPoint): return NotImplemented
+        return self.x == other.x and self.y == other.y
+    # __hash__ = None  ← implicitly set by Python when __eq__ is defined
+
+try:
+    bad_set = {BadPoint(0, 0)}   # TypeError: unhashable type: 'BadPoint'
+except TypeError as e:
+    print(e)
+```
+
+**The contract:** `a == b` implies `hash(a) == hash(b)`. The converse is not required (hash collisions are allowed). For `frozen=True` dataclasses, Python generates a correct `__hash__` automatically.
+
+---
+
+### 17. Mutable Class Variables Shared Across Instances  [community]
+**Problem:** Class-level mutable attributes (lists, dicts) are shared across all instances. Modifying them through one instance affects every other instance, and even future instances created after the mutation.
+**Why:** Class attributes live in the class's `__dict__`, not the instance's `__dict__`. Reading `self.attr` checks instance dict first, then class dict. Writing `self.attr.append(x)` reads the class attribute (since the instance has none) and mutates it in-place — the instance dict is never written, so the mutation affects the class attribute shared by all instances.
+**Fix:** Always initialise mutable attributes in `__init__`, never at class level. With `@dataclass`, always use `field(default_factory=...)`.
+```python
+# BAD — items is a class attribute shared by all instances
+class Cart:
+    items = []   # Shared!
+
+    def add(self, item: str) -> None:
+        self.items.append(item)   # Mutates the class attribute!
+
+
+cart1 = Cart()
+cart2 = Cart()
+cart1.add("apple")
+print(cart2.items)   # ['apple'] — unexpected! cart2 sees cart1's item
+
+
+# GOOD — items is an instance attribute
+class Cart:
+    def __init__(self) -> None:
+        self.items: list[str] = []   # Each instance gets its own list
+
+    def add(self, item: str) -> None:
+        self.items.append(item)
+
+
+cart1 = Cart()
+cart2 = Cart()
+cart1.add("apple")
+print(cart2.items)   # [] — correct
+
+
+# GOOD with @dataclass — field(default_factory=list) per instance
+from dataclasses import dataclass, field
+
+@dataclass
+class Cart:
+    items: list[str] = field(default_factory=list)
+
+    def add(self, item: str) -> None:
+        self.items.append(item)
+```
+
+---
+
+### `__iter__`, `__len__`, `__contains__` — Making Objects Feel Built-In
+
+Implementing Python's container protocol makes your objects work naturally with `for`, `len()`, `in`, and built-in functions like `sum()`, `max()`, and `list()`.
+
+```python
+from __future__ import annotations
+from collections.abc import Iterator
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+
+
+class BoundedRing(Generic[T]):
+    """A fixed-capacity ring buffer that behaves like a built-in container."""
+
+    def __init__(self, capacity: int) -> None:
+        self._capacity = capacity
+        self._buffer: list[T] = []
+        self._head = 0   # Index of the oldest item
+
+    def push(self, item: T) -> None:
+        """Add item; evict oldest if at capacity."""
+        if len(self._buffer) < self._capacity:
+            self._buffer.append(item)
+        else:
+            self._buffer[self._head] = item
+            self._head = (self._head + 1) % self._capacity
+
+    def __len__(self) -> int:
+        return len(self._buffer)
+
+    def __iter__(self) -> Iterator[T]:
+        """Yield items in insertion order (oldest first)."""
+        n = len(self._buffer)
+        for i in range(n):
+            yield self._buffer[(self._head + i) % n]
+
+    def __contains__(self, item: object) -> bool:
+        return item in self._buffer
+
+    def __repr__(self) -> str:
+        return f"BoundedRing({list(self)!r}, capacity={self._capacity})"
+
+
+ring: BoundedRing[int] = BoundedRing(3)
+for v in [1, 2, 3, 4, 5]:
+    ring.push(v)
+
+print(list(ring))     # [3, 4, 5] — only last 3 retained, oldest first
+print(len(ring))      # 3
+print(4 in ring)      # True
+print(sum(ring))      # 12   — works with sum() because __iter__ is defined
+print(max(ring))      # 5    — works with max() for same reason
+print(ring)           # BoundedRing([3, 4, 5], capacity=3)
+```
+
+---
+
+### Abstract Properties — Use `@property` + `@abstractmethod`
+
+The deprecated `@abc.abstractproperty` was removed in Python 3.11. The correct idiom is to stack `@property` on top of `@abstractmethod`.
+
+```python
+from abc import ABC, abstractmethod
+
+
+class Shape(ABC):
+    """Correct idiom for abstract properties in Python 3.3+."""
+
+    @property
+    @abstractmethod
+    def area(self) -> float:
+        """Subclasses must provide a computed area property."""
+        ...
+
+    @property
+    @abstractmethod
+    def perimeter(self) -> float: ...
+
+    def describe(self) -> str:
+        return f"{type(self).__name__}: area={self.area:.2f}, perimeter={self.perimeter:.2f}"
+
+
+class Rectangle(Shape):
+    def __init__(self, width: float, height: float) -> None:
+        self._width = width
+        self._height = height
+
+    @property
+    def area(self) -> float:
+        return self._width * self._height
+
+    @property
+    def perimeter(self) -> float:
+        return 2 * (self._width + self._height)
+
+
+r = Rectangle(3.0, 4.0)
+print(r.describe())   # Rectangle: area=12.00, perimeter=14.00
+
+# Attempting to instantiate Shape raises TypeError
+# s = Shape()  # TypeError: Can't instantiate abstract class Shape without implementations for 'area', 'perimeter'
+```
+
+---
+
+### 18. String Concatenation in Loops  [community]
+**Problem:** Concatenating strings inside a loop using `+=` creates a new string object on every iteration. For N iterations, this is O(N²) in time and O(N²) in intermediate memory allocations — it becomes catastrophically slow for large N.
+**Why:** Strings in Python are immutable. `s += chunk` is equivalent to `s = s + chunk`, which allocates a brand-new string of length `len(s) + len(chunk)` on every iteration. CPython has an optimisation for single-reference strings (PEP 680 / micro-optimisation), but it is fragile and disappears with any other reference to the string.
+**Fix:** Collect parts in a list and join at the end with `"".join(parts)` — O(N) time, O(N) memory.
+```python
+import timeit
+
+data = ["word"] * 10_000
+
+
+# BAD — O(N²) string concatenation
+def build_string_bad(parts: list[str]) -> str:
+    result = ""
+    for part in parts:
+        result += part + " "
+    return result
+
+
+# GOOD — O(N) list accumulation + single join
+def build_string_good(parts: list[str]) -> str:
+    return " ".join(parts)
+
+
+# Even for mixed-type accumulation, collect and join
+def build_report(items: list[dict]) -> str:
+    lines: list[str] = []
+    for item in items:
+        lines.append(f"{item['name']}: {item['value']:.2f}")
+    return "\n".join(lines)
+
+
+# Performance difference (10,000 words):
+# build_string_bad:  ~5.2 ms
+# build_string_good: ~0.3 ms  (~17× faster)
+#
+# For very small N (< 10), += is fine — the difference is negligible.
+# Rule: if you're in a loop, use a list + join.
+```
+
+---
+
+### `contextvars.ContextVar` for Async-Safe Context State
+
+`threading.local()` is not safe in async code — all coroutines running on the same thread share the same `threading.local` value. Use `contextvars.ContextVar` instead; each asyncio Task gets its own copy automatically.
+
+```python
+import asyncio
+import contextvars
+import uuid
+from typing import Any
+
+
+# ContextVar — each asyncio Task / thread gets an isolated copy
+request_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id", default="<no-request>"
+)
+
+
+async def handle_request(name: str) -> dict[str, Any]:
+    """Simulate an HTTP handler — sets request_id for this task only."""
+    rid = str(uuid.uuid4())[:8]
+    token = request_id.set(rid)   # Set in THIS task's context only
+    try:
+        await asyncio.sleep(0)    # Yield to event loop; other tasks run
+        # request_id here is still our rid — not another task's
+        return {"handler": name, "request_id": request_id.get()}
+    finally:
+        request_id.reset(token)   # Restore previous value (good practice)
+
+
+async def main() -> None:
+    # Run three handlers concurrently — each has its own request_id
+    results = await asyncio.gather(
+        handle_request("A"),
+        handle_request("B"),
+        handle_request("C"),
+    )
+    for r in results:
+        print(r)
+    # Each result has a unique request_id — no cross-task contamination
+
+    # After handlers complete, the default is restored
+    print(request_id.get())   # <no-request>
+
+
+asyncio.run(main())
+
+
+# For middleware-style request-scoped state, use Context.run()
+def run_in_context(user_id: str, fn):
+    ctx = contextvars.copy_context()
+    # Set variable in the copied context before running
+    def _run():
+        request_id.set(user_id)
+        return fn()
+    return ctx.run(_run)
+```
+
+**Why not `threading.local()`:** In asyncio, many coroutines share one thread. `threading.local` is per-thread, so all coroutines see the same value. `ContextVar` is per-Task, giving correct isolation.
+
+---
+
+### `__getattr__` vs `__getattribute__` — Know the Difference
+
+`__getattr__` is called only when normal attribute lookup fails (a safety net). `__getattribute__` is called on every attribute access and is rarely overridden. Confusing them causes infinite recursion.
+
+```python
+class LazyProxy:
+    """
+    __getattr__ as a lazy loader — only called when the attribute is NOT found
+    through normal means (not in __dict__ or class hierarchy).
+    """
+
+    def __init__(self, factory) -> None:
+        # Use object.__setattr__ to avoid triggering __setattr__ recursion
+        object.__setattr__(self, "_factory", factory)
+        object.__setattr__(self, "_cache", {})
+
+    def __getattr__(self, name: str):
+        # Only called if `name` is NOT in self.__dict__ or the class
+        cache = object.__getattribute__(self, "_cache")
+        if name not in cache:
+            factory = object.__getattribute__(self, "_factory")
+            cache[name] = factory(name)
+        return cache[name]
+
+
+def compute(name: str) -> str:
+    print(f"  Computing '{name}'...")
+    return f"value_of_{name}"
+
+
+proxy = LazyProxy(compute)
+print(proxy.foo)   # Computing 'foo'... \n value_of_foo
+print(proxy.foo)   # value_of_foo (cached, no recompute)
+print(proxy.bar)   # Computing 'bar'... \n value_of_bar
+
+
+# DANGER — overriding __getattribute__ incorrectly causes infinite recursion
+class Broken:
+    def __getattribute__(self, name: str):
+        return self.name   # Recursive! self.name calls __getattribute__ again!
+
+# SAFE — use object.__getattribute__ to bypass your own override
+class Safe:
+    def __getattribute__(self, name: str):
+        value = object.__getattribute__(self, name)   # No recursion
+        print(f"Accessed: {name} = {value!r}")
+        return value
+```
+
+**Rule:** Override `__getattr__` for attribute fallback/proxy patterns. Override `__getattribute__` only when you need to intercept every attribute access — and always delegate to `object.__getattribute__` to avoid recursion.
+
+---
+
+### 19. Float Equality Comparisons  [community]
+**Problem:** Comparing floating-point numbers with `==` produces incorrect results because floating-point arithmetic is not exact. Two mathematically equal values may differ in their binary representations.
+**Why:** IEEE 754 floating-point numbers cannot represent most decimal fractions exactly. `0.1 + 0.2` does not equal `0.3` in any language that uses IEEE 754 — it equals `0.30000000000000004`. Every intermediate arithmetic operation introduces rounding error that accumulates.
+**Fix:** Use `math.isclose()` for approximate equality with configurable relative and absolute tolerances. For exact decimal arithmetic (financial calculations), use the `decimal` module.
+```python
+import math
+from decimal import Decimal, ROUND_HALF_UP
+
+
+# BAD — exact float comparison fails
+total = 0.1 + 0.2
+print(total == 0.3)          # False!
+print(total)                 # 0.30000000000000004
+
+
+# GOOD option A — math.isclose() for approximate comparison
+print(math.isclose(total, 0.3))                    # True (default rel_tol=1e-9)
+print(math.isclose(total, 0.3, rel_tol=1e-9))      # True
+print(math.isclose(0.0, 1e-10, abs_tol=1e-9))      # True (near-zero needs abs_tol)
+
+
+# GOOD option B — Decimal for exact decimal arithmetic (financial code)
+price = Decimal("19.99")
+tax_rate = Decimal("0.08")
+tax = (price * tax_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+total_price = price + tax
+print(total_price)   # 21.59 (exact!)
+
+# Pitfall: never initialise Decimal from a float literal
+bad = Decimal(0.1)      # Decimal('0.1000000000000000055511151231257827021181583404541015625')
+good = Decimal("0.1")   # Decimal('0.1')
+
+
+# Sorting/comparing floats in containers is fine (sorts correctly)
+# The problem is equality — use isclose, not ==
+values = [0.3, 0.1 + 0.2, 0.30000000000000004]
+print(sorted(values))   # Correctly ordered despite rounding differences
+
+# For numpy arrays: use np.allclose() / np.isclose()
+# import numpy as np
+# np.isclose(np.array([0.1 + 0.2]), np.array([0.3]))  # [True]
+```
+
+---
+
+### `weakref` for Memory-Safe Caches and Observers
+
+`weakref.ref` and `weakref.WeakValueDictionary` hold references that do not prevent garbage collection. Use them for caches where the cache should not keep objects alive, or for observer registries where observers should not be kept alive by the subject.
+
+```python
+import weakref
+from typing import Callable
+
+
+# WeakValueDictionary — cache that doesn't prevent GC
+class ObjectCache:
+    """Cache that holds weak references — objects are evicted when no longer used."""
+
+    def __init__(self) -> None:
+        self._cache: weakref.WeakValueDictionary[str, object] = (
+            weakref.WeakValueDictionary()
+        )
+        self._hits = 0
+        self._misses = 0
+
+    def get_or_create(self, key: str, factory: Callable[[], object]) -> object:
+        obj = self._cache.get(key)
+        if obj is None:
+            obj = factory()
+            self._cache[key] = obj
+            self._misses += 1
+        else:
+            self._hits += 1
+        return obj
+
+    def stats(self) -> dict:
+        return {
+            "cached": len(self._cache),
+            "hits": self._hits,
+            "misses": self._misses,
+        }
+
+
+cache = ObjectCache()
+
+class Resource:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+r1 = cache.get_or_create("db", lambda: Resource("db"))
+r2 = cache.get_or_create("db", lambda: Resource("db"))   # Cache hit
+print(r1 is r2)          # True — same object returned from cache
+print(cache.stats())     # {'cached': 1, 'hits': 1, 'misses': 1}
+
+# When r1 and r2 go out of scope, the cached entry is automatically removed
+del r1, r2
+import gc; gc.collect()
+print(cache.stats())     # {'cached': 0, 'hits': 1, 'misses': 1}
+
+
+# WeakSet — for event/observer registries
+class EventBus:
+    def __init__(self) -> None:
+        self._listeners: weakref.WeakSet = weakref.WeakSet()
+
+    def subscribe(self, listener) -> None:
+        self._listeners.add(listener)
+
+    def publish(self, event: str) -> None:
+        for listener in list(self._listeners):
+            listener(event)
+```
+
+**When to use:** Image/config caches, object pools, observer patterns where listeners should not be pinned in memory by the subject alone.
+
+---
+
+### 20. Comparing to `None` with `==` Instead of `is`  [community]
+**Problem:** Using `== None` instead of `is None` to check for `None` can produce false results if an object defines `__eq__` to return `True` when compared to `None`. It also generates a `SyntaxWarning` in modern Python (3.8+) that will eventually become an error.
+**Why:** `None` is a singleton — there is exactly one `None` object in the entire Python process. The correct check is `is None` (identity), not `== None` (equality), because `==` calls `__eq__` which can be overridden. Additionally, `not x` should only be used when falsy values beyond `None` are acceptable; if you specifically mean "is this None?", always use `is None`.
+**Fix:** Always use `is None` and `is not None` for None checks. Use `== None` only when you deliberately want to trigger `__eq__`.
+```python
+# BAD — == None can be fooled by __eq__
+class Sentinel:
+    def __eq__(self, other):
+        return True   # Equals everything!
+
+s = Sentinel()
+print(s == None)    # True — misleading!
+print(s is None)    # False — correct
+
+
+# BAD — SyntaxWarning in Python 3.8+
+x = None
+if x == None:       # SyntaxWarning: "== None" can be True for objects with __eq__
+    pass
+
+# GOOD — use identity check
+if x is None:
+    pass
+
+if x is not None:
+    pass
+
+# BAD — using "not x" when you mean "is None"
+def process(value: int | None) -> int:
+    if not value:      # Also matches 0, "", [], {} — not just None!
+        return -1
+    return value * 2
+
+print(process(0))    # -1 — wrong! 0 is valid, not None
+
+# GOOD — explicit None check
+def process(value: int | None) -> int:
+    if value is None:
+        return -1
+    return value * 2
+
+print(process(0))    # 0 — correct
+
+
+# Standard idiom in type-narrowed code
+from typing import TYPE_CHECKING
+
+def get_or_default(value: str | None, default: str = "") -> str:
+    return value if value is not None else default
+```
+
+---
+
+### `__bool__` and `__len__` for Truthiness
+
+Python's boolean context (`if obj:`, `while obj:`, `not obj`) calls `__bool__` first. If `__bool__` is not defined, it falls back to `__len__` (empty = falsy). Define these to give your objects Pythonic truthiness.
+
+```python
+from __future__ import annotations
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ResultSet:
+    """Collection of query results — falsy when empty, truthy when non-empty."""
+    items: list[dict] = field(default_factory=list)
+    error: str | None = None
+
+    def __bool__(self) -> bool:
+        # Falsy if there was an error OR no items
+        if self.error is not None:
+            return False
+        return len(self.items) > 0
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+
+results = ResultSet(items=[{"id": 1}, {"id": 2}])
+empty   = ResultSet(items=[])
+errored = ResultSet(items=[{"id": 1}], error="connection timeout")
+
+# Pythonic truth testing — reads like English
+if results:
+    print(f"Got {len(results)} results")   # Got 2 results
+
+if not empty:
+    print("No results")                    # No results
+
+if not errored:
+    print("Query failed — check error")   # Query failed — check error
+
+# Works with all built-ins that expect boolean context
+all_ok = all([results, results, results])   # True
+any_ok = any([empty, errored, results])     # True (results is truthy)
+print(bool(empty))    # False
+print(bool(results))  # True
+
+
+# BAD — never return non-bool from __bool__ (PEP 8 guideline)
+class BadBool:
+    def __bool__(self):
+        return 42    # Technically works but confusing; PEP 8 says return bool
+```
+
+**Rule:** `__bool__` must return `bool` (not just truthy/falsy). If you define `__len__`, you get falsy-when-zero for free — only define `__bool__` when the rule is more complex than "non-empty means truthy".
+
+---
+
+### 22. Over-Relying on `global` and Module-Level Mutable State  [community]
+**Problem:** Using `global` to share mutable state between functions creates invisible dependencies, makes testing difficult (state bleeds between test runs), and leads to race conditions in concurrent code. Experienced Python developers consider `global` a code smell in almost all cases.
+**Why:** `global` makes a function's behaviour depend on state outside its inputs, violating referential transparency. When a test fails, you must trace which earlier function mutated the global. When two functions share a global, their execution order becomes load-bearing — a hidden coupling that breaks refactoring.
+**Fix:** Pass state as parameters. Return new state instead of mutating global. For shared application state, use a class or a singleton with a controlled interface. For configuration, use dataclasses or environment variables read once at startup.
+```python
+# BAD — global counter, hard to test and thread-unsafe
+_count = 0
+
+def increment():
+    global _count
+    _count += 1
+
+def get_count() -> int:
+    return _count
+
+# Testing requires resetting global state — fragile:
+# _count = 0  # Reset before each test
+
+
+# GOOD option A — pass state as parameter, return new state
+def increment(count: int) -> int:
+    return count + 1
+
+count = 0
+count = increment(count)   # Pure function; easy to test
+
+
+# GOOD option B — encapsulate in a class
+class Counter:
+    def __init__(self, initial: int = 0) -> None:
+        self._value = initial
+
+    def increment(self) -> None:
+        self._value += 1
+
+    @property
+    def value(self) -> int:
+        return self._value
+
+
+# In tests, just create a fresh Counter() — no shared state pollution
+
+
+# GOOD option C — module-level constants are fine (immutable)
+MAX_RETRIES = 3       # OK — immutable, not state
+DEFAULT_TIMEOUT = 30  # OK — immutable constant
+
+
+# ACCEPTABLE — module-level singletons with controlled access
+from threading import Lock
+
+class _ApplicationState:
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._metrics: dict[str, int] = {}
+
+    def record(self, key: str, value: int) -> None:
+        with self._lock:
+            self._metrics[key] = self._metrics.get(key, 0) + value
+
+    def snapshot(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._metrics)
+
+_state = _ApplicationState()  # Module-level singleton, but controlled via methods
+```
+
+---
+
+### `typing.Literal` for Exact-Value Types
+
+`Literal[...]` narrows a type to a specific set of literal values. The type checker rejects anything outside the set, turning a runtime error into a static analysis error.
+
+```python
+from typing import Literal, overload
+from pathlib import Path
+
+
+# Instead of just str, restrict to known HTTP methods
+HttpMethod = Literal["GET", "POST", "PUT", "DELETE", "PATCH"]
+LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+Direction = Literal["north", "south", "east", "west"]
+
+
+def make_request(method: HttpMethod, url: str) -> dict:
+    """Type checker rejects: make_request("FETCH", url) — not in Literal."""
+    return {"method": method, "url": url}
+
+
+def set_log_level(level: LogLevel) -> None:
+    import logging
+    logging.getLogger().setLevel(level)
+
+
+# Literal in overloads — different return types per literal value
+@overload
+def open_file(path: Path, mode: Literal["r", "rt"]) -> str: ...
+@overload
+def open_file(path: Path, mode: Literal["rb"]) -> bytes: ...
+
+def open_file(path: Path, mode: str) -> str | bytes:
+    if "b" in mode:
+        return path.read_bytes()
+    return path.read_text(encoding="utf-8")
+
+
+# Combining Literal with Enum — structured config options
+from enum import StrEnum
+
+class Environment(StrEnum):
+    PROD  = "prod"
+    STAGE = "stage"
+    DEV   = "dev"
+
+EnvLiteral = Literal["prod", "stage", "dev"]   # Useful when StrEnum isn't available
+
+
+# Type checker verifies exhaustiveness with assert_never
+from typing import assert_never, Never
+
+def handle_direction(d: Direction) -> str:
+    match d:
+        case "north": return "Moving north"
+        case "south": return "Moving south"
+        case "east":  return "Moving east"
+        case "west":  return "Moving west"
+        case _ as unreachable:
+            assert_never(unreachable)  # Static error if new direction added without handling
+```
+
+---
+
+### Dict Merge Operators `|` and `|=` (Python 3.9+)
+
+Python 3.9 added `|` for creating a merged dict (non-mutating) and `|=` for in-place merge. These replace `{**a, **b}` for most cases and are clearer in intent.
+
+```python
+defaults = {"timeout": 30, "retries": 3, "debug": False}
+overrides = {"timeout": 60, "debug": True}
+
+# Old: dict unpacking
+merged_old = {**defaults, **overrides}
+
+# New (Python 3.9+): | operator — creates a new dict, right side wins
+merged = defaults | overrides
+print(merged)   # {'timeout': 60, 'retries': 3, 'debug': True}
+
+# |= mutates in place — right side wins on collision
+config = {"host": "localhost", "port": 5432}
+extra = {"port": 5433, "db": "mydb"}
+config |= extra
+print(config)   # {'host': 'localhost', 'port': 5433, 'db': 'mydb'}
+
+# Layered config pattern: base < env < explicit
+def build_config(
+    base: dict,
+    env_overrides: dict,
+    explicit: dict,
+) -> dict:
+    """Right-to-left precedence: explicit > env > base."""
+    return base | env_overrides | explicit
+
+cfg = build_config(
+    {"debug": False, "workers": 4, "timeout": 30},
+    {"workers": 2},       # Scale down in this env
+    {"debug": True},      # Explicit override for this run
+)
+print(cfg)   # {'debug': True, 'workers': 2, 'timeout': 30}
+
+# NOTE: | requires both sides to be dicts; {**a, **b} works with any Mapping
+# For Mapping types, use: dict(a) | dict(b)
+```
+
+---
+
+### 21. Unpacking `**kwargs` Into Wrong Types  [community]
+**Problem:** `**kwargs` collects all keyword arguments into a plain `dict[str, Any]`. Without validation, callers can pass arbitrary keys — including misspelled ones — and the function silently ignores them. Typos in keyword arguments become bugs, not errors.
+**Why:** Python's `**kwargs` mechanism has no type enforcement at runtime. `def fn(**kwargs)` accepts any keyword argument; the function body receives a dict and accessing a missing key produces a `KeyError` (or `None` with `.get()`). Typos like `timout=5` silently do nothing.
+**Fix:** Use explicit keyword parameters (`def fn(*, timeout: int = 30)`) whenever possible. For truly variable kwargs, use `TypedDict` to document and statically check the expected shape, or use Pydantic for runtime validation.
+```python
+from typing import TypedDict, Unpack
+
+
+# BAD — typos silently ignored
+def connect(**kwargs):
+    host = kwargs.get("host", "localhost")
+    port = kwargs.get("port", 5432)
+    timeout = kwargs.get("timeout", 30)
+    return f"{host}:{port} (timeout={timeout})"
+
+result = connect(host="db", timout=5)   # 'timout' is silently ignored!
+print(result)   # db:5432 (timeout=30) — not what caller expected
+
+
+# GOOD option A — explicit keyword-only parameters
+def connect(*, host: str = "localhost", port: int = 5432, timeout: int = 30) -> str:
+    return f"{host}:{port} (timeout={timeout})"
+
+# connect(timout=5)  # TypeError: connect() got unexpected keyword argument 'timout'
+
+
+# GOOD option B — TypedDict + Unpack for typed **kwargs (Python 3.12+)
+class ConnectOptions(TypedDict, total=False):
+    host: str
+    port: int
+    timeout: int
+
+
+def connect_typed(**kwargs: Unpack[ConnectOptions]) -> str:
+    host = kwargs.get("host", "localhost")
+    port = kwargs.get("port", 5432)
+    timeout = kwargs.get("timeout", 30)
+    return f"{host}:{port} (timeout={timeout})"
+
+# Type checker now validates: connect_typed(timout=5) — error: unexpected key
+
+
+# GOOD option C — Pydantic for runtime validation
+# from pydantic import BaseModel
+# class ConnectConfig(BaseModel):
+#     host: str = "localhost"
+#     port: int = 5432
+#     timeout: int = 30
+# cfg = ConnectConfig(**user_input)  # Raises ValidationError on bad input
+```
+
+---
+
+### `functools.reduce` and Fold Patterns
+
+`functools.reduce` applies a binary function cumulatively to a sequence, folding it to a single value. It is the functional equivalent of a loop that accumulates a result. Combine with `operator` module for clean, readable pipelines.
+
+```python
+from functools import reduce
+import operator
+from typing import TypeVar, Callable
+
+T = TypeVar("T")
+
+
+def pipeline(*functions: Callable) -> Callable:
+    """Compose a left-to-right pipeline of unary functions using reduce."""
+    def composed(value):
+        return reduce(lambda v, fn: fn(v), functions, value)
+    return composed
+
+
+# Pipeline composition using reduce
+clean = pipeline(
+    str.strip,
+    str.lower,
+    lambda s: s.replace(" ", "_"),
+)
+print(clean("  Hello World  "))   # hello_world
+
+
+# reduce for custom aggregation
+from dataclasses import dataclass
+
+
+@dataclass
+class SalesRecord:
+    region: str
+    amount: float
+    units: int
+
+
+records = [
+    SalesRecord("East", 1000.0, 10),
+    SalesRecord("West", 2500.0, 25),
+    SalesRecord("East", 1500.0, 15),
+]
+
+totals = reduce(
+    lambda acc, r: {
+        "total": acc["total"] + r.amount,
+        "units": acc["units"] + r.units,
+    },
+    records,
+    {"total": 0.0, "units": 0},   # Initial value (identity element)
+)
+print(totals)   # {'total': 5000.0, 'units': 50}
+
+
+# Merge a list of dicts with | (Python 3.9+) using reduce
+configs = [{"a": 1}, {"b": 2}, {"c": 3, "a": 99}]
+merged = reduce(operator.or_, configs)
+print(merged)   # {'a': 99, 'b': 2, 'c': 3}   — later dicts win
+
+
+# Tree-style reduction: find product of all numbers
+numbers = [1, 2, 3, 4, 5]
+product = reduce(operator.mul, numbers, 1)
+print(product)   # 120
+```
+
+**Caution:** `reduce` can obscure intent when the binary function is complex. For complex aggregations, a plain `for` loop with explicit variable names is often clearer. Reserve `reduce` for well-known algebraic patterns (sum, product, merge, compose).
+
+---
+
+### Final Anti-Patterns Quick Reference Additions
+
+| Anti-pattern | Why it's harmful | What to do instead |
+|---|---|---|
+| `global _count` in functions | Hidden coupling, untestable, thread-unsafe | Pass state as parameters or encapsulate in a class |
+| `== None` for None checks | Calls `__eq__`; can give False positives with custom objects | `is None` / `is not None` always |
+| `result += s` in a loop | O(N²) string concatenation | Accumulate to list, then `"".join(parts)` |
+| Comparing floats with `==` | IEEE 754 rounding makes equality unreliable | `math.isclose()` or `decimal.Decimal` for exact arithmetic |
+| `__slots__` on child of slot-less parent | Parent `__dict__` survives; no memory savings | Use `@dataclass(slots=True)` or define `__slots__` in ALL classes in MRO |
+| `weakref` to non-weakrefable objects | `TypeError` at runtime | Check that the type supports weak references (most user-defined classes do; `int`, `str` do not) |
+| Bare `**kwargs` with no validation | Typos silently ignored; no IDE completion | Explicit keyword-only params or `TypedDict + Unpack` |
+| Generator used twice | Second iteration is silently empty | Convert to `list()` first or re-create for each pass |
+| `except* E` on Python < 3.11 | `SyntaxError` | Guard with version check or use `asyncio.gather(return_exceptions=True)` |

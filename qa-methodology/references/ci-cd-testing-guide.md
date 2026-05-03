@@ -1,5 +1,5 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 12 | score: 100/100 | date: 2026-05-03 -->
 <!-- sources: training knowledge + iterative refinement pass -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 11 CI testing pillars covered in this guide:**
+**The 15 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -29,6 +29,10 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 9 | Test results reporting | JUnit XML, PR annotations, coverage delta |
 | 10 | Environment parity | UTC, pinned Node, case-sensitive paths |
 | 11 | TypeScript type-check gate | `tsc --noEmit` as separate required CI gate |
+| 12 | Distributed task execution | Nx Cloud DTE for task-level (not just shard-level) parallelism |
+| 13 | OIDC credentials | Short-lived cloud credentials instead of stored secrets |
+| 14 | Test runner selection | Bun for pure Node.js speed vs. Jest/Vitest for full ecosystem |
+| 15 | Pipeline observability | OTEL spans per suite; `cache_hit` and `install_duration_ms` metrics |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -1955,6 +1959,14 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 | `skipLibCheck: true` in CI tsconfig | Type definition mismatches between packages go undetected | Use `skipLibCheck: false` in CI; allow `true` in local dev config |
 | Not caching `.tsbuildinfo` in monorepo | Incremental type-check benefit lost; full recheck every CI run | Cache `.tsbuildinfo` files alongside `node_modules` |
 | `ts-jest` `isolatedModules: true` assumed to type-check | Transpiles without cross-file type checking; type errors slip through | Always run `tsc --noEmit` as a separate CI step |
+| Long-lived cloud credentials stored as CI secrets | Compromised secret grants permanent cloud access | Use OIDC short-lived tokens; scope IAM role `sub` claim to repo |
+| `bun test` with jsdom-dependent component tests | bun-dom support incomplete; tests silently skip DOM assertions | Use Vitest for jsdom component tests; Bun for pure Node.js unit tests |
+| No OTEL CI instrumentation on slow pipelines | Slow pipeline root cause unknown; hours of log archaeology | Add OTEL spans per suite; emit `cache_hit` and `install_duration_ms` |
+| Nx DTE with under-decomposed monorepo packages | DTE agents idle waiting for single bottleneck package | Validate module boundaries with `nx graph`; split mega-packages first |
+| OIDC trust policy missing `sub` condition | Any GitHub repo can assume the role | Always add `StringLike` condition: `token.actions.githubusercontent.com:sub: repo:myorg/myrepo:*` |
+| Reusable workflow caller not passing secrets | Inner workflow sees empty secret string; silent failure | Explicitly pass each secret via `secrets:` in the calling workflow |
+| Feature flag tests only covering flags-OFF state | Flag-ON code path untested; defects reach production | Always write tests for both flag states for any flag-branched code path |
+| Feature flag removal without cleaning up old-path tests | Dead tests inflate coverage; old assertions test nothing | Tag tests with flag name; remove both flag and tests together in same PR |
 
 ## Real-World Gotchas [community]
 
@@ -2061,9 +2073,19 @@ export default env;
 
 24. **TypeScript version drift between developer machines and CI** [community]: Teams that install TypeScript globally (e.g., `npm install -g typescript`) and reference it in CI scripts can have different TypeScript versions on dev machines and CI. TypeScript is not semver-stable — minor versions introduce new strict checks. Always declare TypeScript as a `devDependency` in `package.json` and run `npx tsc` (which uses the local version) rather than `tsc`. Enforce version in CI by checking `node_modules/.bin/tsc --version` against the version in `package.json`.
 
-## Tradeoffs & Alternatives
+25. **OIDC trust policy too permissive — missing `sub` claim condition** [community]: GitHub Actions OIDC lets CI runners assume cloud IAM roles without stored secrets. The most common misconfiguration: the trust policy only validates the OIDC issuer (`token.actions.githubusercontent.com`) but not the `sub` claim. Without the `sub` condition, any public GitHub Actions workflow can assume the role — including workflows in attacker-controlled repositories. Always add a `StringLike` condition on `sub: repo:OWNER/REPO:*`. Teams that perform IAM role audits after enabling OIDC discover this misconfiguration in approximately 30% of roles.
 
-### Time vs. Coverage
+26. **Nx Cloud DTE with zero module boundary enforcement** [community]: Nx Cloud Distributed Task Execution (DTE) distributes tasks across agents based on the dependency graph. If the dependency graph is inaccurate (packages importing from each other without workspace declarations), DTE will run tasks in the wrong order and produce false-positive failures. Before enabling DTE, run `nx graph` and audit every package's `implicitDependencies`. Teams that skip this step see DTE introduce new test failures rather than accelerate existing ones — a confusing regression that takes 2–4 hours to diagnose.
+
+27. **Bun test runner producing false-green results for DOM-dependent tests** [community]: `bun test` does not support jsdom (as of 2025). Tests that use `document`, `window`, or `@testing-library/react` will either throw or silently pass vacuously (if the test body is never entered). Teams migrating from Jest to Bun for speed without auditing their test environment requirements discover this in a confusing way: the test output shows 0 failures but the browser behavior is broken. Always inventory which tests require jsdom before switching test runners.
+
+28. **OpenTelemetry CI spans missing on flaky retry runs** [community]: Teams that add OTEL tracing to CI emit one span per `test run`. But GitHub Actions retry reruns (`Re-run failed jobs`) create a new `GITHUB_RUN_ATTEMPT` for the same run ID. If the tracer doesn't include `GITHUB_RUN_ATTEMPT` in the run ID attribute, retry spans overwrite the original failure spans in the OTEL backend. Always include `run_attempt: process.env['GITHUB_RUN_ATTEMPT'] ?? '1'` as a resource attribute so each attempt is independently traceable.
+
+29. **Reusable workflow caller forgetting to pass secrets** [community]: GitHub Actions reusable workflows run in an isolated job context and do NOT inherit the caller's secrets automatically. Any secret referenced inside the reusable workflow must be explicitly passed by the caller via `secrets:`. Teams that define a reusable workflow and then call it from a new workflow file consistently hit this: the secret exists in the repository settings, the calling workflow has access to it, but the inner reusable workflow sees an empty string. The fix is mechanical but the discovery is frustrating because no error is raised — the secret is silently empty.
+
+30. **Feature flag tests not covering the removal path** [community]: When a feature flag is promoted to permanent (flag removed, one code path deleted), any test that only covered the old code path becomes dead code — it still runs but tests a branch that no longer exists or silently passes because it imports the now-absent old-path function which was replaced. Teams that track feature flag lifecycle in their test suite (flag name in test file name or describe block) catch this during code review. Teams without such tracking discover it months later when coverage metrics mysteriously improve — a sign tests are testing nothing.
+
+## Tradeoffs & Alternatives
 
 | Strategy | CI time | Coverage | Use when |
 |---|---|---|---|
@@ -2318,6 +2340,602 @@ describe('UserService', () => {
 
 > [community] Using `satisfies` with mock objects (TypeScript 4.9+) is the most effective way to catch mock drift — when the real interface changes (e.g., a method is renamed or its signature changes), `satisfies` causes a compile-time error on the mock object immediately. Teams that adopt this pattern report finding interface-vs-mock mismatches in code review rather than at runtime.
 
+### Nx Cloud Distributed Task Execution [community]
+
+Nx Cloud's Distributed Task Execution (DTE) splits tasks across multiple agents at the task level — not the project level. Unlike simple matrix sharding, DTE uses a coordinator that dynamically assigns individual lint, test, and build tasks to whichever agent is free, eliminating idle time when one shard finishes before others.
+
+> [community] Nx Cloud's own benchmarks show that DTE achieves 90–95% of theoretical maximum parallelism for task graphs with many independent nodes. Static matrix sharding achieves 70–80% because shard boundaries create artificial serialization — if shard 2 has 3 slow tests and shard 1 finishes in 30 seconds, shard 1's runner idles while waiting. DTE eliminates this by continuously assigning newly freed tasks to idle agents.
+
+**GitHub Actions workflow with Nx Cloud DTE:**
+
+```yaml
+# .github/workflows/ci-nx-cloud.yml — distributed task execution
+name: CI (Nx Cloud DTE)
+
+on: [push, pull_request]
+
+env:
+  NX_CLOUD_ACCESS_TOKEN: ${{ secrets.NX_CLOUD_ACCESS_TOKEN }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Coordinator: schedules tasks and collects results
+  main:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Start the Nx Cloud run — waits for all agent slots to complete
+      - run: npx nx-cloud start-ci-run --distribute-on="3 linux-medium-js"
+      - run: npx nx affected --targets=lint,test,build --base=origin/main --head=HEAD
+      - run: npx nx-cloud stop-all-agents
+
+  # Agents: execute tasks distributed by the coordinator
+  agents:
+    runs-on: ubuntu-latest
+    name: Agent ${{ matrix.agent }}
+    strategy:
+      matrix:
+        agent: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Each agent polls for available tasks until the coordinator signals done
+      - run: npx nx-cloud start-agent
+        env:
+          NX_CLOUD_ACCESS_TOKEN: ${{ secrets.NX_CLOUD_ACCESS_TOKEN }}
+```
+
+**`nx.json` task configuration for DTE:**
+
+```json
+{
+  "$schema": "https://nx.dev/schemas/nx-schema.json",
+  "tasksRunnerOptions": {
+    "default": {
+      "runner": "@nx/cloud",
+      "options": {
+        "cacheableOperations": ["lint", "test", "build", "typecheck"],
+        "accessToken": "{NX_CLOUD_ACCESS_TOKEN}"
+      }
+    }
+  },
+  "targetDefaults": {
+    "test": {
+      "dependsOn": ["^build"],
+      "inputs": ["default", "^default"],
+      "outputs": ["{projectRoot}/coverage"]
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["production", "^production"],
+      "outputs": ["{projectRoot}/dist"]
+    }
+  }
+}
+```
+
+> [community] The practical ceiling for Nx Cloud DTE agents is determined by the number of independent tasks in the affected graph, not by the suite size. A 30-package monorepo with well-isolated packages benefits from 4–6 agents; a poorly structured monorepo with a single "mega-package" containing 80% of the code will barely benefit from 2. The prerequisite for DTE gains is a well-defined module boundary structure — validate with `nx graph` before investing in DTE setup.
+
+### OIDC-Based Secrets for CI Test Environments [community]
+
+Storing long-lived cloud credentials as CI secrets is an anti-pattern — any secret that can be exfiltrated from a CI log or compromised GitHub secret grants indefinite access. OIDC (OpenID Connect) tokens issued per-run by GitHub Actions allow cloud providers to grant temporary, scoped credentials without storing any long-lived secret.
+
+> [community] AWS, GCP, and Azure all support GitHub Actions OIDC. Teams that migrate from IAM user credentials stored as secrets to OIDC report eliminating the largest single cloud security risk in their CI pipelines. The credential lifetime is bounded to the workflow run (typically minutes), so compromise of a single CI run grants no persistent access to production resources.
+
+**GitHub Actions OIDC with AWS for integration test access:**
+
+```yaml
+# .github/workflows/ci-oidc.yml — use OIDC instead of stored AWS credentials
+name: CI with OIDC
+
+on: [pull_request]
+
+permissions:
+  id-token: write    # required: allow Actions to request OIDC token
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Exchange GitHub OIDC token for temporary AWS credentials
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/GitHubActionsTestRole
+          aws-region: us-east-1
+          # No aws-access-key-id or aws-secret-access-key needed — OIDC only
+
+      # AWS credentials are now available as environment variables for the run
+      - name: Run integration tests
+        run: npm run test:integration
+        env:
+          NODE_ENV: test
+          # Tests that access S3, DynamoDB, etc. use the temporary credentials above
+```
+
+**TypeScript integration test using temporary AWS credentials:**
+
+```typescript
+// tests/integration/s3-storage.test.ts — uses OIDC-granted temporary creds
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { StorageService } from '../../src/services/storage-service';
+
+describe('StorageService (S3 integration)', () => {
+  let service: StorageService;
+  const testBucket = process.env['TEST_S3_BUCKET'] ?? 'my-test-bucket';
+
+  beforeAll(() => {
+    // AWS SDK picks up credentials from OIDC-granted env vars automatically
+    // No explicit credentials needed when running in CI with OIDC
+    const s3 = new S3Client({ region: 'us-east-1' });
+    service = new StorageService(s3, testBucket);
+  });
+
+  it('stores and retrieves a file', async () => {
+    const key = `test-${Date.now()}.txt`;
+    const content = 'test content';
+
+    await service.put(key, Buffer.from(content));
+    const result = await service.get(key);
+
+    expect(result.toString('utf8')).toBe(content);
+
+    // Cleanup — always delete test artifacts
+    await service.delete(key);
+  });
+});
+```
+
+> [community] The IAM role trust policy for GitHub Actions OIDC must scope the `sub` claim to the specific repository and branch to prevent other GitHub repositories from assuming the same role. A misconfigured trust policy that only checks `token.actions.githubusercontent.com` as the issuer grants any public GitHub Actions workflow access to the role. Always add a condition: `"StringLike": {"token.actions.githubusercontent.com:sub": "repo:myorg/myrepo:*"}`.
+
+### Bun as a Test Runner Alternative [community]
+
+Bun's built-in test runner (`bun test`) is significantly faster than Jest or Vitest for TypeScript projects because it uses a native-speed JavaScript engine and skips the transpilation layer entirely. For CI pipelines where test run time is the bottleneck, Bun is a viable alternative worth evaluating.
+
+> [community] Early adopters of `bun test` in 2024–2025 report 4–8× faster test runs compared to Jest+ts-jest for large TypeScript test suites. The primary constraint is compatibility: Bun's Jest-compatible API covers ~90% of typical Jest usage, but custom reporters, certain mocking patterns (`jest.requireActual`, module factory mocks), and `jsdom` environment features have gaps. Teams with straightforward unit test suites benefit most; teams with complex test infrastructure should stay on Jest/Vitest until ecosystem gaps close.
+
+**Bun test configuration and TypeScript integration:**
+
+```typescript
+// bun-test-runner example — tests/unit/calculator.test.ts
+// No config file needed for basic usage; Bun auto-discovers *.test.ts files
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { Calculator } from '../../src/calculator';
+import type { Logger } from '../../src/types';
+
+// Type-safe mock with Bun's mock API (compatible with Jest mock interface)
+const mockLogger: Logger = {
+  log: mock<Logger['log']>(() => {}),
+  error: mock<Logger['error']>(() => {}),
+};
+
+describe('Calculator', () => {
+  let calc: Calculator;
+
+  beforeEach(() => {
+    calc = new Calculator(mockLogger);
+    // Reset mocks between tests
+    (mockLogger.log as ReturnType<typeof mock>).mockClear();
+  });
+
+  it('adds two numbers and logs the result', () => {
+    const result = calc.add(2, 3);
+    expect(result).toBe(5);
+    expect(mockLogger.log).toHaveBeenCalledWith('add: 2 + 3 = 5');
+  });
+
+  it('throws on division by zero', () => {
+    expect(() => calc.divide(10, 0)).toThrow('Division by zero');
+  });
+});
+```
+
+**GitHub Actions CI with Bun:**
+
+```yaml
+# .github/workflows/ci-bun.yml — fast TypeScript test run with Bun
+name: CI (Bun)
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+      - run: bun install --frozen-lockfile  # equivalent to npm ci
+      # Type-check separately (Bun transpiles, does not type-check)
+      - run: bunx tsc --noEmit --project tsconfig.json
+        name: TypeScript type-check
+      # Run tests with coverage
+      - run: bun test --coverage
+        name: Unit tests
+      # Optional: generate lcov for PR coverage comment
+      - run: bun test --coverage --coverage-reporter lcov
+        if: github.event_name == 'pull_request'
+```
+
+**Tradeoffs: Bun vs. Jest vs. Vitest for CI:**
+
+| Dimension | Bun test | Vitest | Jest + ts-jest |
+|---|---|---|---|
+| Speed | 4–8× faster than Jest | 2–3× faster than Jest | Baseline |
+| TypeScript support | Native (transpile only) | Native ESM | Via ts-jest |
+| Type-check in runner | None — needs separate tsc | None — needs separate tsc | Optional (diagnostics flag) |
+| jsdom support | Limited (bun-dom in progress) | Full | Full |
+| Custom reporters | Limited | Full | Full |
+| Ecosystem maturity | Early (2024+) | Stable (2022+) | Mature (2017+) |
+| Best for | Pure unit tests, services | New Vite projects | Existing Jest codebases |
+
+> [community] The Bun test runner's biggest CI advantage is cold-start performance: on a GitHub Actions runner with no warm npm cache, `bun install` + `bun test` for a 200-test TypeScript project takes ~8 seconds compared to ~45 seconds for `npm ci` + `npx jest`. The difference narrows significantly with warm caches (npm cache restores node_modules in 3–5 seconds), so the benefit is most pronounced on first-run CI scenarios like PR checks on new forks or runners with evicted caches.
+
+### OpenTelemetry CI Tracing for Pipeline Observability [community]
+
+CI pipelines are programs. Like production services, they benefit from distributed tracing: spans for each job, child spans for each test suite, and attributes for test counts, durations, and flakiness rates. OpenTelemetry (OTEL) CI instrumentation makes the critical path of a slow pipeline immediately visible without log archaeology.
+
+> [community] Platform engineering teams at mid-to-large companies (100+ engineers) consistently identify CI observability as the highest-leverage investment for reducing mean-time-to-resolve pipeline issues. A team that added OTEL tracing to their CI pipeline reduced "why is CI slow today?" investigations from 2–3 hours to 10–15 minutes by making the critical path and its change history visible in Jaeger/Honeycomb.
+
+**TypeScript CI span instrumentation using `@opentelemetry/sdk-node`:**
+
+```typescript
+// scripts/ci-tracer.ts — emit one span per test suite to OTEL backend
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { Resource } from '@opentelemetry/resources';
+import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
+import { trace, context, SpanStatusCode } from '@opentelemetry/api';
+import * as fs from 'fs';
+
+const sdk = new NodeSDK({
+  resource: new Resource({
+    [SemanticResourceAttributes.SERVICE_NAME]: 'ci-pipeline',
+    'ci.provider': process.env['CI'] ? 'github-actions' : 'local',
+    'ci.branch': process.env['GITHUB_REF_NAME'] ?? 'local',
+    'ci.sha': process.env['GITHUB_SHA']?.slice(0, 8) ?? 'local',
+    'ci.run_id': process.env['GITHUB_RUN_ID'] ?? '0',
+  }),
+  traceExporter: new OTLPTraceExporter({
+    url: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] ?? 'http://localhost:4318/v1/traces',
+  }),
+});
+
+sdk.start();
+
+const tracer = trace.getTracer('ci-test-run', '1.0.0');
+
+interface JestResult {
+  testFilePath: string;
+  numPassingTests: number;
+  numFailingTests: number;
+  numPendingTests: number;
+  perfStats: { start: number; end: number };
+  testResults: Array<{ status: string; title: string; duration?: number }>;
+}
+
+async function traceTestRun(resultsPath: string): Promise<void> {
+  const raw = JSON.parse(fs.readFileSync(resultsPath, 'utf8')) as {
+    testResults: JestResult[];
+    numTotalTests: number;
+    numPassedTests: number;
+    numFailedTests: number;
+    startTime: number;
+  };
+
+  const rootSpan = tracer.startSpan('ci.test-run', {
+    startTime: raw.startTime,
+    attributes: {
+      'test.total': raw.numTotalTests,
+      'test.passed': raw.numPassedTests,
+      'test.failed': raw.numFailedTests,
+    },
+  });
+
+  const rootCtx = trace.setSpan(context.active(), rootSpan);
+
+  for (const suite of raw.testResults) {
+    const suiteSpan = tracer.startSpan(
+      `suite: ${suite.testFilePath.split('/').slice(-2).join('/')}`,
+      {
+        startTime: suite.perfStats.start,
+        attributes: {
+          'test.suite.passed': suite.numPassingTests,
+          'test.suite.failed': suite.numFailingTests,
+          'test.suite.skipped': suite.numPendingTests,
+        },
+      },
+      rootCtx,
+    );
+
+    if (suite.numFailingTests > 0) {
+      suiteSpan.setStatus({ code: SpanStatusCode.ERROR, message: `${suite.numFailingTests} test(s) failed` });
+    }
+
+    suiteSpan.end(suite.perfStats.end);
+  }
+
+  if (raw.numFailedTests > 0) {
+    rootSpan.setStatus({ code: SpanStatusCode.ERROR, message: `${raw.numFailedTests} test(s) failed` });
+  }
+
+  rootSpan.end();
+  await sdk.shutdown();
+}
+
+traceTestRun(process.env['RESULTS_FILE'] ?? 'test-results/jest-results.json').catch(console.error);
+```
+
+**GitHub Actions step to emit OTEL spans after tests:**
+
+```yaml
+# .github/workflows/ci.yml — OTEL instrumentation after test step
+- name: Run tests
+  run: npm test -- --ci --json --outputFile=test-results/jest-results.json
+  continue-on-error: true   # capture results even on failure
+
+- name: Emit CI spans to OTEL backend
+  if: always()
+  run: npx ts-node scripts/ci-tracer.ts
+  env:
+    RESULTS_FILE: test-results/jest-results.json
+    OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_ENDPOINT }}
+    OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer ${{ secrets.OTEL_TOKEN }}"
+```
+
+> [community] The most impactful OTEL attribute to add to CI spans: `ci.cache_hit` (true/false) and `ci.install_duration_ms`. Teams consistently find that 40–60% of their "CI is slow today" reports are actually "npm cache missed today". Tracking cache hit rate as a metric (emitted as a span attribute) turns this from a mystery into a measurable SLI with alerting.
+
+> [community] Self-hosted OTEL collectors (Jaeger, Zipkin, Grafana Tempo) work well for CI tracing. For teams without existing OTEL infrastructure, Honeycomb's free tier (20M events/month) is a low-friction starting point. The OTLP HTTP exporter in the example above works with all three. Budget 2–3 hours for initial setup; the ongoing maintenance cost is near zero.
+
+### Reusable Workflow Composability (GitHub Actions) [community]
+
+Large repositories accumulate duplicated CI YAML across multiple workflow files. GitHub Actions reusable workflows allow a team to define a canonical CI pipeline once and call it from multiple contexts (PR, main, nightly, release) with per-call parameterization.
+
+> [community] Teams with 5+ workflow files sharing the same lint → typecheck → test → build sequence report spending 30–60 minutes per sprint keeping the YAML in sync. A single reusable workflow reduces this to a one-place change. The primary tradeoff: callers lose visibility into the inner workflow's steps without clicking into the called workflow; document the interface (inputs/secrets) clearly.
+
+**Reusable workflow definition (`ci-core.yml`):**
+
+```yaml
+# .github/workflows/ci-core.yml — reusable CI workflow
+name: CI Core (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version to use
+        type: string
+        default: '20'
+      run-e2e:
+        description: Whether to run e2e tests
+        type: boolean
+        default: false
+      coverage-threshold:
+        description: Minimum coverage percentage
+        type: number
+        default: 80
+    secrets:
+      NPM_TOKEN:
+        description: Private npm registry token (optional)
+        required: false
+    outputs:
+      coverage-pct:
+        description: Achieved line coverage percentage
+        value: ${{ jobs.unit.outputs.coverage-pct }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: ${{ inputs.node-version }}, cache: npm }
+      - run: npm ci
+      - run: npm run lint && npm run typecheck
+
+  unit:
+    needs: lint
+    runs-on: ubuntu-latest
+    outputs:
+      coverage-pct: ${{ steps.coverage.outputs.pct }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: ${{ inputs.node-version }}, cache: npm }
+      - run: npm ci
+      - run: npm test -- --ci --coverage --json --outputFile=results.json
+      - name: Extract coverage percentage
+        id: coverage
+        run: |
+          PCT=$(node -e "const r=require('./coverage/coverage-summary.json');console.log(r.total.lines.pct)")
+          echo "pct=$PCT" >> $GITHUB_OUTPUT
+          if (( $(echo "$PCT < ${{ inputs.coverage-threshold }}" | bc -l) )); then
+            echo "::error::Coverage $PCT% is below threshold ${{ inputs.coverage-threshold }}%"
+            exit 1
+          fi
+
+  e2e:
+    if: ${{ inputs.run-e2e }}
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: ${{ inputs.node-version }}, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+```
+
+**Caller workflows that compose the reusable core:**
+
+```yaml
+# .github/workflows/pr.yml — PR check (no e2e for speed)
+name: PR Check
+on: [pull_request]
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ci:
+    uses: ./.github/workflows/ci-core.yml
+    with:
+      node-version: '20'
+      run-e2e: false
+      coverage-threshold: 80
+
+---
+# .github/workflows/main.yml — merge to main (full pipeline)
+name: Main Branch CI
+on:
+  push:
+    branches: [main]
+jobs:
+  ci:
+    uses: ./.github/workflows/ci-core.yml
+    with:
+      node-version: '20'
+      run-e2e: true
+      coverage-threshold: 85
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+```
+
+> [community] GitHub Actions reusable workflows do NOT share the calling workflow's environment by default — each called workflow runs in its own isolated job context. If your reusable workflow needs access to secrets, every caller must explicitly pass them via `secrets:`. Teams that forget this spend 30–60 minutes debugging "why does the reusable workflow fail with a missing secret that the calling workflow has access to?"
+
+### Feature Flag Testing in CI [community]
+
+Applications that use feature flags (LaunchDarkly, Unleash, GrowthBook, custom flags) require explicit CI test strategies to prevent feature flags from causing inconsistent test results. A test suite that passes with all flags `OFF` but fails with a production flag combination is a CI safety gap.
+
+> [community] Teams with >20 active feature flags report that at least one flag combination causes test failures per quarter — always discovered in production, never in CI. The root cause is that tests run with a single static flag state (usually all OFF or the developer's local flag state). Systematic flag matrix testing in CI catches these before deployment.
+
+**TypeScript helper to inject flags in tests:**
+
+```typescript
+// tests/helpers/feature-flags.ts — deterministic flag injection for CI
+export type FeatureFlags = {
+  newCheckoutFlow: boolean;
+  betaDashboard: boolean;
+  strictPasswordPolicy: boolean;
+};
+
+// Default flags for CI — all flags OFF unless test explicitly enables them
+export const DEFAULT_CI_FLAGS: FeatureFlags = {
+  newCheckoutFlow: false,
+  betaDashboard: false,
+  strictPasswordPolicy: false,
+};
+
+// Factory function for test isolation — each test gets its own flag context
+export function createFlagContext(overrides: Partial<FeatureFlags> = {}): FeatureFlags {
+  return { ...DEFAULT_CI_FLAGS, ...overrides };
+}
+
+// Vitest/Jest module mock for LaunchDarkly client
+export function mockLaunchDarkly(flags: Partial<FeatureFlags> = {}): void {
+  const resolvedFlags = createFlagContext(flags);
+  vi.mock('@launchdarkly/node-server-sdk', () => ({
+    init: vi.fn().mockReturnValue({
+      waitForInitialization: vi.fn().mockResolvedValue(undefined),
+      variation: vi.fn().mockImplementation(
+        (key: keyof FeatureFlags) => resolvedFlags[key] ?? false,
+      ),
+      close: vi.fn(),
+    }),
+  }));
+}
+```
+
+```typescript
+// tests/checkout/checkout-flow.test.ts — testing both flag states
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { mockLaunchDarkly } from '../helpers/feature-flags';
+import { CheckoutService } from '../../src/services/checkout-service';
+
+describe('CheckoutService', () => {
+  describe('with newCheckoutFlow=OFF (legacy)', () => {
+    beforeEach(() => {
+      mockLaunchDarkly({ newCheckoutFlow: false });
+    });
+
+    it('uses legacy payment flow', async () => {
+      const service = new CheckoutService();
+      const result = await service.processOrder({ items: [], total: 100 });
+      expect(result.flow).toBe('legacy');
+    });
+  });
+
+  describe('with newCheckoutFlow=ON (new)', () => {
+    beforeEach(() => {
+      mockLaunchDarkly({ newCheckoutFlow: true });
+    });
+
+    it('uses new optimized payment flow', async () => {
+      const service = new CheckoutService();
+      const result = await service.processOrder({ items: [], total: 100 });
+      expect(result.flow).toBe('optimized');
+      expect(result.estimatedDelivery).toBeDefined(); // new field in new flow
+    });
+  });
+});
+```
+
+**CI matrix for critical flag combinations:**
+
+```yaml
+# .github/workflows/feature-flag-matrix.yml — test key flag combinations
+name: Feature Flag Matrix
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # nightly — flag combinations are expensive to test on every PR
+  workflow_dispatch:        # allow manual trigger before releases
+
+jobs:
+  flag-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Test the two most important production flag states
+        flags:
+          - name: all-off
+            env: '{"NEW_CHECKOUT_FLOW":"false","BETA_DASHBOARD":"false","STRICT_PASSWORD":"false"}'
+          - name: all-on
+            env: '{"NEW_CHECKOUT_FLOW":"true","BETA_DASHBOARD":"true","STRICT_PASSWORD":"true"}'
+          - name: checkout-on-only
+            env: '{"NEW_CHECKOUT_FLOW":"true","BETA_DASHBOARD":"false","STRICT_PASSWORD":"false"}'
+    name: Flags ${{ matrix.flags.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Run tests with flag combination
+        run: npm test -- --ci
+        env:
+          CI_FEATURE_FLAGS: ${{ matrix.flags.env }}
+```
+
+> [community] The most neglected aspect of feature flag CI testing: testing the removal path. When a flag is removed and the old code path is deleted, any test that was only run with the flag `OFF` becomes permanently skipped. Schedule a quarterly "flag cleanup review" that removes quarantined old-path tests alongside flag removal. Teams that skip this accumulate dead test code that inflates coverage numbers without testing real behavior.
+
+> [community] LaunchDarkly's own engineering team recommends treating the `variation()` call in tests as a boundary — mock it at the LaunchDarkly client level, not by mocking the module that consumes flag values. Mocking at the client level ensures the flag-consumption code (the `if (newCheckoutFlow)` branch) is actually exercised in both states, while mocking at the module level can accidentally make both branches always return the same value.
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -2349,3 +2967,11 @@ describe('UserService', () => {
 | Pact Foundation — JavaScript/TypeScript | Official docs | https://docs.pact.io/implementation_guides/javascript | Consumer-driven contract testing in TypeScript |
 | davelosert/vitest-coverage-report-action | Community | https://github.com/davelosert/vitest-coverage-report-action | Vitest coverage PR comment action |
 | TypeScript strict mode flags | Official docs | https://www.typescriptlang.org/tsconfig#strict | Reference for incremental strict adoption |
+| Bun test runner docs | Official docs | https://bun.sh/docs/cli/test | Bun native test runner for TypeScript |
+| Nx Cloud DTE docs | Official docs | https://nx.dev/ci/features/distribute-task-execution | Distributed task execution across agents |
+| GitHub Actions OIDC with AWS | Official docs | https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services | OIDC-based short-lived credentials in CI |
+| OpenTelemetry Node.js SDK | Official docs | https://opentelemetry.io/docs/languages/js/ | CI pipeline observability via OTEL spans |
+| Honeycomb — CI observability guide | Community | https://www.honeycomb.io/blog/ci-observability | OTEL for CI pipelines in practice |
+| GitHub Actions — Reusable workflows | Official docs | https://docs.github.com/en/actions/using-workflows/reusing-workflows | Composable CI pipelines |
+| LaunchDarkly — Testing with feature flags | Official guide | https://docs.launchdarkly.com/guides/infrastructure/unit-tests | Feature flag testing strategies |
+| Unleash — Feature toggle testing | Official docs | https://docs.getunleash.io/feature-flag-tutorials/testing | Open-source feature flag CI patterns |

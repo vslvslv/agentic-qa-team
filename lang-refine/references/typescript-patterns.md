@@ -1,5 +1,5 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-05-02 -->
+<!-- sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-05-03 -->
 
 ## Core Philosophy
 
@@ -685,6 +685,48 @@ Requires `"target": "ES2022"` or higher and `"lib": ["es2022", "esnext.disposabl
 
 ---
 
+### `DisposableStack` and `AsyncDisposableStack` — Composing Multiple Disposables
+
+When you need to acquire multiple resources and dispose them all as a unit — in reverse acquisition order — `DisposableStack` and `AsyncDisposableStack` (TypeScript 5.2+ with `esnext.disposable`) provide a container that automatically tracks and disposes each resource. This is cleaner than chaining `using` declarations when resources are conditionally acquired.
+
+```typescript
+// Compose multiple disposables in a single stack
+function processFiles(paths: string[]): string[] {
+  using stack = new DisposableStack();
+
+  // register resources imperatively — disposed in LIFO order
+  const readers = paths.map(p => {
+    const reader = stack.use(openFileReader(p)); // openFileReader implements Disposable
+    return reader;
+  });
+
+  // all readers disposed when stack goes out of scope
+  return readers.map(r => r.readAll());
+}
+
+// defer() registers an arbitrary cleanup function (no Disposable needed)
+function withTempDirectory(): string {
+  using stack = new DisposableStack();
+  const dir = createTempDir();
+  stack.defer(() => fs.rmSync(dir, { recursive: true }));
+  doWork(dir);
+  return dir; // cleanup runs automatically
+}
+
+// AsyncDisposableStack for async cleanup
+async function runMigration(): Promise<void> {
+  await using stack = new AsyncDisposableStack();
+  const db  = stack.use(await connectDatabase());       // AsyncDisposable
+  const log = stack.use(await openAuditLog('migrate')); // Disposable
+  await db.runMigrations();
+  await log.flush();
+} // both disposed in reverse order, awaiting async dispose
+```
+
+[community] **Pitfall:** Forgetting that `DisposableStack` itself is `Disposable` — it MUST be declared with `using`, not `const`, or its accumulated cleanup callbacks never fire. Assigning to `const stack = new DisposableStack()` is a silent no-op for all registered disposals.
+
+---
+
 ### Type-Safe Builder Pattern
 
 The classic builder pattern can be made fully type-safe in TypeScript by tracking which fields have been set using a phantom type parameter. The `build()` method is only available once all required fields are set — the compiler catches incomplete builds at compile time, not runtime.
@@ -1244,7 +1286,91 @@ export const MAX_RETRIES = 3;       // number — OK
 export const BASE_URL = '/api/v1';  // string — OK
 ```
 
-Enable in `tsconfig.json`: `"isolatedDeclarations": true` (requires `"declaration": true`). Combine with `noImplicitOverride` and explicit return types for the highest build performance in monorepos. TypeScript's structural type system means `type UserId = string` and `type ProductId = string` are interchangeable. Branded types add a phantom property that makes them nominally distinct — the compiler rejects mixing them even though the underlying runtime type is identical.
+Enable in `tsconfig.json`: `"isolatedDeclarations": true` (requires `"declaration": true`). Combine with `noImplicitOverride` and explicit return types for the highest build performance in monorepos.
+
+---
+
+### Named Complex Types for Compiler Caching
+
+Conditional types and mapped type expressions are re-evaluated every time they appear inline. Extracting them into a named `type` alias allows the compiler to cache the evaluation result and reuse it. This is the type-level equivalent of extracting a computed value into a variable.
+
+```typescript
+// SLOW: inline conditional type re-evaluated at every call site
+function processItems<T>(
+  items: Array<T extends Promise<infer U> ? U : T>
+): void { /* ... */ }
+
+// FAST: named alias is computed once and cached
+type Awaited<T> = T extends Promise<infer U> ? U : T;
+
+function processItems<T>(items: Array<Awaited<T>>): void { /* ... */ }
+
+// Same pattern for complex mapped types
+// SLOW: re-evaluated at every use
+type Slow = {
+  [K in keyof SomeHugeType as SomeHugeType[K] extends string ? K : never]: SomeHugeType[K];
+};
+
+// FAST: name the transformation, reference the name
+type StringKeysOf<T> = {
+  [K in keyof T as T[K] extends string ? K : never]: T[K];
+};
+type Fast = StringKeysOf<SomeHugeType>; // evaluated once, then cached
+
+// Also: avoid deeply nested inline generics
+// SLOW: chained inline expressions each re-evaluated
+function transform<T>(x: Readonly<Partial<Pick<T, keyof T>>>): void {}
+
+// FAST: name the intermediate type
+type SafePartial<T> = Readonly<Partial<T>>;
+function transform<T>(x: SafePartial<T>): void {}
+```
+
+[community] **Pitfall:** Teams writing performance-critical type utilities often miss that `type Foo<T> = T extends Bar<infer U> ? U : never` is re-evaluated every time `Foo<Something>` appears in the code — unless it becomes part of a cached structural relationship (which only happens with interfaces, not type aliases). Name your complex utility types, and where possible replace a mapped+conditional combination with an interface hierarchy.
+
+---
+
+### Build Performance: `incremental`, `skipLibCheck`, and `composite`
+
+TypeScript provides three complementary compiler flags that dramatically reduce cold-start and warm build times. Most projects use none of them by default.
+
+```json
+{
+  "compilerOptions": {
+    // incremental: saves a .tsbuildinfo file after each build.
+    // On subsequent runs, only files that have changed (and their transitive
+    // dependents) are re-checked. For a medium project (500 files), this
+    // typically reduces warm build time from ~15s to ~2s.
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo",
+
+    // skipLibCheck: skips type-checking .d.ts files from node_modules.
+    // Safe for most projects because library authors are responsible for
+    // their own .d.ts correctness. Avoids costly re-checking of all vendor
+    // types on every build (saves 1-5s depending on @types package count).
+    "skipLibCheck": true,
+
+    // composite: required for project references (--build mode).
+    // Enables per-project incremental caching in monorepos.
+    // Each package is checked once; changes only re-check dependent packages.
+    "composite": true,
+    "declaration": true  // required when composite is true
+  }
+}
+```
+
+Recommended adoption order:
+1. Add `"incremental": true` immediately — zero downside for any project.
+2. Add `"skipLibCheck": true` unless you specifically rely on type checking library `.d.ts` files.
+3. Add `"composite": true` + `"references"` only in monorepos where you need per-package caching.
+
+[community] **Pitfall:** Setting `"incremental": true` but committing `.tsbuildinfo` to git. The build info file is large, binary-ish, and changes on every build — it belongs in `.gitignore`. On CI, either delete it before each run or cache it by branch using your CI cache key strategy.
+
+---
+
+### Branded / Nominal Types — Prevent Primitive Confusion
+
+TypeScript's structural type system means `type UserId = string` and `type ProductId = string` are interchangeable. Branded types add a phantom property that makes them nominally distinct — the compiler rejects mixing them even though the underlying runtime type is identical.
 
 ```typescript
 // Create brands with an intersection and a unique phantom property
@@ -1282,7 +1408,7 @@ This pattern is especially valuable for IDs, currency amounts, validated email a
 **`namespace` keyword in modern TypeScript code.** [community]
 The TypeScript `namespace` (and the legacy `module`) keyword was introduced before ES modules existed. It compiles to an IIFE-based pattern that bundlers and native ESM runtimes do not understand. Teams new to TypeScript sometimes use `namespace Foo {}` for code organisation, which produces confusing runtime behaviour when mixed with ESM. **Fix:** Use ES module `import`/`export` for all code organization. Reserve `declare namespace` (ambient declaration) only in `.d.ts` files for declaring global APIs that cannot use ES modules.
 
-
+**`any` at data boundaries silently poisons type inference.** [community]
 When you receive data from external sources (API responses, `JSON.parse`, event payloads), reaching for `any` silences all type errors instead of requiring you to narrow safely. `unknown` forces a type guard or assertion before use. The root cause is that `any` is bidirectional — it's assignable to and from everything — so it silently poisons every downstream type inference. **Fix:** Replace `any` with `unknown` in catch blocks, JSON parse results, and external data boundaries, then use `instanceof` or type predicates before accessing fields.
 
 **Intersection types instead of interface extension.** [community]
@@ -1366,3 +1492,90 @@ Without `exactOptionalPropertyTypes`, TypeScript treats `{ name?: string }` as e
 | Passing object literal to bypass excess check | Use intermediate variable to widen type | Use `satisfies` to validate shape while preserving literal inference |
 | TypeScript `namespace` in new code | `namespace`/`module` keywords are legacy, pre-ESM TypeScript constructs — bundlers and runtimes do not understand them | Use ES module `import`/`export`; reserve `declare namespace` only for global augmentation in `.d.ts` files |
 | Inferring complex return types on hot paths | Large anonymous inferred types inflate `.d.ts` size and slow incremental compilation | Add explicit return type annotations to all exported functions; use `isolatedDeclarations` to enforce it |
+| Inline conditional/mapped types on hot paths | Re-evaluated at every call site; no compiler caching | Extract into a named `type` alias so the compiler can cache the result |
+| `DisposableStack` declared with `const` | Resource cleanup callbacks never fire — `const` prevents disposal | Always use `using stack = new DisposableStack()` |
+| Committing `.tsbuildinfo` to git | File is large, changes every build, and pollutes diffs | Add `*.tsbuildinfo` to `.gitignore`; cache by branch on CI |
+| Missing `incremental: true` on any project | Full type-check on every `tsc` run even for unchanged files | Add `"incremental": true` to `tsconfig.json` immediately |
+
+---
+
+## TypeScript 5.6 / 5.7 Language Additions
+
+### Iterator Helper Types (TypeScript 5.6+)
+
+TypeScript 5.6 added built-in type support for the ECMAScript iterator helpers proposal — `.map()`, `.filter()`, `.take()`, `.drop()`, `.flatMap()`, `.reduce()`, and `.forEach()` on `Iterator<T>` objects. This lets you write lazy pipelines over custom iterables with full type safety, without pulling in a library.
+
+```typescript
+// Any class implementing Iterator<T> gains .map(), .filter(), etc.
+function* range(start: number, end: number): Iterator<number> {
+  for (let i = start; i < end; i++) yield i;
+}
+
+// chain iterator helpers lazily — no intermediate arrays
+const result = range(0, 100)
+  .filter(n => n % 2 === 0)   // Iterator<number>
+  .map(n => n * n)             // Iterator<number>
+  .take(5);                    // Iterator<number>
+
+// spread or for..of to materialise
+const squares = [...result]; // [0, 4, 16, 36, 64]
+
+// Type-safe custom iterator
+class InfiniteCounter implements Iterator<number> {
+  private n = 0;
+  next(): IteratorResult<number> {
+    return { value: this.n++, done: false };
+  }
+}
+
+const counter = new InfiniteCounter();
+const firstFive = counter.take(5); // Iterator<number>
+```
+
+[community] **Pitfall:** Iterator helpers require `"lib": ["ES2025"]` or `"esnext"` in `tsconfig.json` and a runtime that supports the proposal (Node 22+, modern browsers). Polyfills exist but add bundle weight — check your target environment before relying on them.
+
+---
+
+### `--noCheck` Flag (TypeScript 5.7+)
+
+TypeScript 5.7 introduced `--noCheck`, which skips type-checking entirely and only emits JavaScript. This is useful in CI pipelines where you want to separate the "type check" job from the "build" job — type checking runs once in parallel while the build proceeds without waiting for it.
+
+```json
+// package.json scripts — split type check and build for faster CI
+{
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build":     "tsc --noCheck",
+    "ci":        "npm run typecheck & npm run build"
+  }
+}
+```
+
+[community] **Pitfall:** Using `--noCheck` as the primary build script in development environments defeats the purpose of TypeScript. It should only appear in CI parallelisation strategies or in tools (like esbuild/swc wrappers) where a separate type-check pass is explicitly scheduled.
+
+---
+
+### Relative Import Completions and Path Rewriting (TypeScript 5.7+)
+
+TypeScript 5.7 added support for rewriting relative import paths when emitting JavaScript — solving a long-standing ergonomic pain point in projects that write `.ts` source but need `.js` extensions in output. Combined with `allowImportingTsExtensions`, you can now write `.ts` extensions in source and have them rewritten to `.js` in emit without requiring a bundler.
+
+```typescript
+// tsconfig.json for native ESM Node projects (no bundler)
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "rewriteRelativeImportExtensions": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": false,
+    "outDir": "dist"
+  }
+}
+
+// Source: src/server.ts
+import { createApp } from './app.ts'; // write .ts — emitted as ./app.js
+
+// Emitted: dist/server.js
+// import { createApp } from './app.js'; — automatically rewritten
+```
+
+This eliminates the previously common workaround of writing `.js` extensions in `.ts` source files, which confused editors and was invisible to new contributors.
