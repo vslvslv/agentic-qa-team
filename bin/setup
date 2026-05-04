@@ -137,11 +137,11 @@ HOOK_SCRIPT="$REPO_DIR/bin/qa-team-suggest-rerun"
 HOOK_MATCHER="main-agent"
 
 _hook_already_installed() {
-  # Returns 0 if a Stop hook entry with our command is present in CLAUDE_SETTINGS.
+  # Returns 0 if a Stop hook entry with the correct nested shape is present.
   [ -f "$CLAUDE_SETTINGS" ] || return 1
   command -v jq >/dev/null 2>&1 || return 2
   jq -e --arg cmd "$HOOK_SCRIPT" \
-    'first(.hooks.Stop[]? | select(.command == $cmd))' \
+    'first(.hooks.Stop[]?.hooks[]? | select(.type == "command" and .command == $cmd))' \
     "$CLAUDE_SETTINGS" >/dev/null 2>&1
 }
 
@@ -157,7 +157,7 @@ _install_hook() {
     cat <<JSON
         {
           "matcher": "$HOOK_MATCHER",
-          "command": "$HOOK_SCRIPT"
+          "hooks": [{"type": "command", "command": "$HOOK_SCRIPT"}]
         }
 JSON
     return 0
@@ -177,7 +177,11 @@ JSON
   local TMP
   TMP="$(mktemp)"
   jq --arg cmd "$HOOK_SCRIPT" --arg matcher "$HOOK_MATCHER" \
-    '.hooks.Stop = ((.hooks.Stop // []) + [{matcher: $matcher, command: $cmd}])' \
+    '.hooks.Stop = (
+      (.hooks.Stop // [])
+      | map(select(not (.matcher == $matcher and .command == $cmd)))
+      + [{matcher: $matcher, hooks: [{type: "command", command: $cmd}]}]
+    )' \
     "$CLAUDE_SETTINGS" > "$TMP"
   mv "$TMP" "$CLAUDE_SETTINGS"
   echo "  HOOK  installed: Stop / $HOOK_MATCHER → $HOOK_SCRIPT"
