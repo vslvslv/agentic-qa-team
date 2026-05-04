@@ -165,7 +165,26 @@ Count detected tools from `K6_PRESENT`, `JMETER_PRESENT`, `LOCUST_PRESENT`, `NBO
 
 **Two or more detected** → list which were found, ask which to use for this run.
 
-## Phase 1 — Identify Test Targets
+```bash
+# LitmusChaos detection (BL-039)
+_LITMUS_AVAILABLE=0
+command -v litmusctl >/dev/null 2>&1 && _LITMUS_AVAILABLE=1
+kubectl get namespace litmus >/dev/null 2>&1 && _LITMUS_AVAILABLE=1
+echo "LITMUS_AVAILABLE: $_LITMUS_AVAILABLE"
+
+# Bencher detection (BL-040)
+_BENCHER_AVAILABLE=0
+command -v bencher >/dev/null 2>&1 && _BENCHER_AVAILABLE=1
+[ -n "$BENCHER_API_TOKEN" ] && _BENCHER_AVAILABLE=1
+echo "BENCHER_AVAILABLE: $_BENCHER_AVAILABLE"
+
+# GoReplay detection (BL-041)
+_GOREPLAY_AVAILABLE=0
+command -v gor >/dev/null 2>&1 && _GOREPLAY_AVAILABLE=1
+[ -f "requests.gor" ] && _GOREPLAY_REPLAY_READY=1 || _GOREPLAY_REPLAY_READY=0
+echo "GOREPLAY_AVAILABLE: $_GOREPLAY_AVAILABLE"
+echo "GOREPLAY_REPLAY_READY: $_GOREPLAY_REPLAY_READY"
+```
 
 ```bash
 # OpenAPI endpoints
@@ -265,7 +284,84 @@ Collect all phase results for Phase 4 report under `### Artillery Phase Results`
 Dispatch to the correct runner based on `_PERF_TOOL` — the execute block is in
 `qa-perf/tools/<_PERF_TOOL>.md`. Run it now.
 
-## Phase 4 — Report
+## Phase 3.5 — Chaos Resilience (BL-039) + Production Traffic Replay (BL-041)
+
+### LitmusChaos Concurrent Resilience Testing (BL-039)
+
+Skip if `QA_CHAOS!=1` OR `_LITMUS_AVAILABLE=0`.
+
+```bash
+if [ "${QA_CHAOS:-0}" = "1" ] && [ "$_LITMUS_AVAILABLE" = "1" ]; then
+  # Claude auto-generates ChaosEngine YAML from k6 thresholds
+  _K6_THRESHOLDS=$(grep -r "thresholds:" --include="*.js" --include="*.ts" \
+    ! -path "*/node_modules/*" 2>/dev/null | head -5)
+  echo "CHAOS_HYPOTHESIS: derived from thresholds: $_K6_THRESHOLDS"
+fi
+```
+
+**ChaosEngine template** (generated from k6 thresholds):
+```yaml
+# generated: qa-perf/litmus-chaos-engine.yaml
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: qa-perf-chaos
+spec:
+  appinfo:
+    appns: default
+    applabel: "app=<detected from k8s labels>"
+  engineState: active
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "30"
+            - name: CHAOS_INTERVAL
+              value: "10"
+            - name: FORCE
+              value: "false"
+```
+
+**Concurrent execution**: run LitmusChaos experiment AND k6 load test simultaneously:
+1. `litmusctl run chaosengine -f qa-perf/litmus-chaos-engine.yaml &`
+2. `k6 run <test-script.js>` (with same thresholds as baseline run)
+3. Compare: did system hold SLO thresholds during chaos?
+
+**Report**: boundary thresholds for each fault type, e.g.
+"p99 held at 30% pod kill (494ms vs 450ms baseline), breached at 50% pod kill (820ms)."
+
+### GoReplay Production Traffic Replay (BL-041)
+
+Skip if `QA_REPLAY_MODE!=1`. Requires production access — **confirm URL before executing**.
+
+**Capture mode** (run once on production):
+```bash
+if [ "${QA_REPLAY_MODE:-0}" = "1" ] && [ "$_GOREPLAY_AVAILABLE" = "1" ]; then
+  if [ "${QA_GOREPLAY_CAPTURE:-0}" = "1" ]; then
+    echo "GOREPLAY_CAPTURE: capturing traffic from $_API_URL"
+    gor --input-raw ":80" --output-file requests.gor --exit-after 60s &
+    echo "GOREPLAY_CAPTURE_PID: $!"
+  elif [ "$_GOREPLAY_REPLAY_READY" = "1" ]; then
+    echo "GOREPLAY_REPLAY: replaying requests.gor against $_API_URL"
+    gor --input-file requests.gor --output-http "$_API_URL" \
+      --stats --output-http-stats \
+      2>&1 | tee "$_TMP/qa-perf-goreplay.txt"
+    echo "GOREPLAY_EXIT: $?"
+  fi
+fi
+```
+
+**Analysis** (after replay): compare baseline vs replay per endpoint:
+- Claude prompt: "Compare baseline vs replay results from `$_TMP/qa-perf-goreplay.txt`.
+  Identify endpoints with p95 regression >10%. Summarize likely root causes."
+
+In Phase 4 report, add `### Production Traffic Replay (GoReplay)` section:
+```
+| Endpoint | Baseline p99 | Replay p99 | Delta | Verdict |
+|----------|-------------|------------|-------|---------|
+```
 
 Write report to `$_TMP/qa-perf-report.md`:
 
@@ -344,6 +440,46 @@ If `$_TMP/pyroscope-profile.json` obtained, analyze it and generate 3-bullet ins
 1. **Hottest function**: name and % CPU time during load
 2. **Regression vs idle**: functions consuming >3× more CPU under load vs idle
 3. **Recommendation**: specific optimization suggestion (e.g., "add DB connection pooling", "cache result of X")
+
+## Phase 4.6 — Bencher Continuous Benchmarking (BL-040)
+
+Skip if `_BENCHER_AVAILABLE=0`. Pushes k6 summary to Bencher's trend store and generates
+a narrative from the historical data.
+
+```bash
+if [ "$_BENCHER_AVAILABLE" = "1" ]; then
+  _K6_SUMMARY=$(ls "$_TMP"/qa-perf-*.json 2>/dev/null | head -1)
+  if [ -n "$_K6_SUMMARY" ] && [ -n "$BENCHER_API_TOKEN" ]; then
+    bencher run \
+      --project "${BENCHER_PROJECT:-qa-perf}" \
+      --token "$BENCHER_API_TOKEN" \
+      --adapter json \
+      --file "$_K6_SUMMARY" \
+      2>&1 | tee "$_TMP/qa-perf-bencher.txt"
+    echo "BENCHER_EXIT: $?"
+    # Fetch trend history for narrative
+    bencher metric list \
+      --project "${BENCHER_PROJECT:-qa-perf}" \
+      --token "$BENCHER_API_TOKEN" \
+      --per-page 30 \
+      2>&1 | tee "$_TMP/qa-perf-bencher-history.txt"
+  fi
+fi
+```
+
+If `$_TMP/qa-perf-bencher-history.txt` obtained, generate a trend narrative:
+- Claude prompt: "Here is 30 runs of performance data for this project. Write a 1-paragraph
+  narrative identifying: (1) which endpoint's p95 has the largest drift over time, (2) whether
+  the regression is gradual or spike-shaped, (3) which git SHA was the inflection point if visible,
+  (4) what profiling step would you recommend next."
+
+In Phase 4 report, add `### Bencher Trend Analysis` section with the narrative paragraph and a
+threshold violation summary table:
+```
+| Metric | Baseline (run 1) | Current | Drift | Trend |
+|--------|-----------------|---------|-------|-------|
+| p95 GET /api/checkout | 120ms | 164ms | +37% | ↑ gradual |
+```
 
 ## CTRF Output
 

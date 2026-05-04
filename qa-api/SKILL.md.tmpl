@@ -160,6 +160,32 @@ echo "SEED_MODE: $_SEED_MODE"
 _OTEL_AVAILABLE=0
 [ -n "$OTEL_EXPORTER_OTLP_ENDPOINT" ] && _OTEL_AVAILABLE=1
 echo "OTEL_AVAILABLE: $_OTEL_AVAILABLE"
+
+# aimock API record/replay detection (BL-025)
+_AIMOCK_AVAILABLE=0
+command -v aimock >/dev/null 2>&1 && _AIMOCK_AVAILABLE=1
+_AIMOCK_FIXTURES=0
+[ -d "fixtures" ] && ls fixtures/*.json 2>/dev/null | grep -q '.' && _AIMOCK_FIXTURES=1
+echo "AIMOCK_AVAILABLE: $_AIMOCK_AVAILABLE"
+echo "AIMOCK_FIXTURES: $_AIMOCK_FIXTURES"
+
+# Keploy eBPF recording detection (BL-064)
+_KEPLOY_AVAILABLE=0
+command -v keploy >/dev/null 2>&1 && _KEPLOY_AVAILABLE=1
+_KEPLOY_FIXTURES=0
+[ -d "keploy" ] && ls keploy/*.yaml 2>/dev/null | grep -q '.' && _KEPLOY_FIXTURES=1
+echo "KEPLOY_AVAILABLE: $_KEPLOY_AVAILABLE"
+echo "KEPLOY_FIXTURES: $_KEPLOY_FIXTURES"
+
+# Pact contract detection (BL-031)
+_PACT_FILES=$(find . \( -name "*.pact.json" -o -path "*/pacts/*.json" \) \
+  ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+echo "PACT_FILES: $_PACT_FILES"
+
+# Tracetest detection (BL-056)
+_TRACETEST_AVAILABLE=0
+command -v tracetest >/dev/null 2>&1 && _TRACETEST_AVAILABLE=1
+echo "TRACETEST_AVAILABLE: $_TRACETEST_AVAILABLE"
 ```
 
 If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
@@ -189,6 +215,40 @@ Parse output:
 - `warning` severity lines → collect into `$_TMP/qa-api-spectral-warnings.txt`; surface in Phase 5 report
 
 If Spectral exits non-zero due to errors: abort with message "Spectral found spec errors — fix before running API tests."
+
+## Phase 0.75 — OpenAPI Contract Testing (BL-010)
+
+Skip if `_SPEC_FILE` is empty. Validates that the running API matches its declared OpenAPI contract —
+flags schema drift before functional tests run.
+
+```bash
+if [ -n "$_SPEC_FILE" ] && [ -n "$_API_URL" ]; then
+  # Dredd: zero-config spec validation
+  if command -v dredd >/dev/null 2>&1 || npx --yes @dredd/dredd --version >/dev/null 2>&1; then
+    npx @dredd/dredd "$_SPEC_FILE" "$_API_URL" \
+      --no-color --reporter=markdown \
+      2>&1 | tee "$_TMP/qa-api-dredd.txt" | tail -30
+    echo "DREDD_EXIT: $?"
+  else
+    echo "DREDD_UNAVAILABLE: install with npm install -g dredd"
+  fi
+fi
+```
+
+Parse `$_TMP/qa-api-dredd.txt`:
+- Lines matching `fail:` → **schema drift findings** — add to Phase 5 report as `### Contract Drift` section
+- Lines matching `pass:` → contract-compliant endpoints
+- Lines matching `skip:` → endpoints with no example responses in spec (not a failure)
+
+**Schema drift findings block Phase 4 test generation for the affected endpoints** — log `CONTRACT_DRIFT: <endpoint>` and add a "Fix spec or implementation" recommendation.
+
+In Phase 5 report, add `### Contract Testing (Dredd)` section:
+```
+- Spec: <file>  Endpoints validated: N  Passing: N  Drifting: N
+| Endpoint | Method | Issue |
+|----------|--------|-------|
+| GET /api/users | GET | Response body missing required field 'createdAt' |
+```
 
 ## Phase 1 — Discover Endpoints
 
@@ -390,6 +450,47 @@ const response = await request.get('/api/endpoint', {
 Include the `traceId` annotation in CTRF `message` field on failure so the backend trace
 can be retrieved from Jaeger/Tempo. Only add traceparent when `OTEL_EXPORTER_OTLP_ENDPOINT`
 is set — do not add it unconditionally.
+
+### Tracetest Span Assertions (BL-056)
+
+If `_TRACETEST_AVAILABLE=1` and `_OTEL_AVAILABLE=1`, generate Tracetest YAML definitions
+alongside standard HTTP tests. These assert on distributed trace spans, not just HTTP responses.
+
+```yaml
+# tracetest/test-checkout.yaml — generated alongside checkout API tests
+type: Test
+spec:
+  id: checkout-span-assertions
+  name: "Checkout span assertions"
+  trigger:
+    type: http
+    httpRequest:
+      method: POST
+      url: "${ENV:API_URL}/api/checkout"
+      headers:
+        - key: Content-Type
+          value: application/json
+      body: '{"items": [{"id": "test-item", "qty": 1}]}'
+  specs:
+    - selector: span[name="POST /api/checkout"]
+      assertions:
+        - attr:http.status_code = 201
+        - attr:http.response_body contains "orderId"
+    - selector: span[name="postgres/query"][db.operation="INSERT"]
+      assertions:
+        - attr:duration < 100ms
+    - selector: span[name="grpc.auth.verify"]
+      assertions:
+        - attr:rpc.grpc.status_code = 0
+```
+
+**Template rules:**
+- Every endpoint test gets a matching `tracetest/test-<endpoint>.yaml`
+- Assert: parent span status code, key DB spans `< 100ms`, auth span success
+- On Tracetest failure: fetch OTel waterfall using `traceId` from annotation, feed to Claude with prompt:
+  "Root span: `<name>` | First error span: `<name>` | Duration: <ms> | What went wrong?"
+
+In Phase 5 report, add `### Tracetest Span Assertions` section showing pass/fail per span assertion.
 
 ### DELETE endpoint policy (read before writing any test)
 
@@ -632,6 +733,128 @@ Add **OFFAT** section to Phase 5 report:
 | Endpoint | Method | OWASP Category | Severity | Description |
 |----------|--------|---------------|----------|-------------|
 ```
+
+## Phase 4d — Pact Consumer-Driven Contract Verification (BL-031)
+
+Skip if `_PACT_FILES=0` (no `.pact.json` or `pacts/*.json` found).
+
+```bash
+if [ "$_PACT_FILES" -gt 0 ]; then
+  _PACT_DIR=$(find . \( -path "*/pacts" \) ! -path "*/node_modules/*" 2>/dev/null | head -1)
+  _PACT_DIR="${_PACT_DIR:-.}"
+  if command -v npx >/dev/null 2>&1; then
+    npx @pact-foundation/pact-verifier \
+      --provider-base-url "$_API_URL" \
+      --pact-files-or-dirs "$_PACT_DIR" \
+      2>&1 | tee "$_TMP/qa-api-pact.txt" | tail -30
+    echo "PACT_EXIT: $?"
+  fi
+fi
+```
+
+Parse `$_TMP/qa-api-pact.txt` for:
+- `FAILED` lines → consumer contract violations — add to Phase 5 as `### Pact Failures` with field-level diff
+- `Verifying a pact between ... PASSED` → contract passing
+
+In Phase 5 report, add `### Consumer Contract Verification (Pact)` section:
+```
+- Contracts verified: N  Passing: N  Failing: N
+| Consumer | Provider | Interaction | Status | Diff |
+|----------|----------|-------------|--------|------|
+```
+
+## Phase 4e — RESTler Stateful REST Fuzzing (BL-032)
+
+Skip if `QA_DEEP_FUZZ!=1` OR no OpenAPI spec found. Runs via Docker — skip if Docker unavailable.
+
+```bash
+if [ "${QA_DEEP_FUZZ:-0}" = "1" ] && [ -n "$_SPEC_FILE" ]; then
+  if command -v docker >/dev/null 2>&1; then
+    echo "RESTLER_START: fuzzing $API_URL with $SPEC_FILE (this may take several minutes)"
+    docker run --rm \
+      -v "$(pwd):/app/src" \
+      -e API_BASE_URL="$_API_URL" \
+      mcr.microsoft.com/restlerfuzzer/restler:latest \
+      Fuzz --grammar_file /app/src/"$_SPEC_FILE" \
+           --settings '{"max_request_execution_time": 30}' \
+      2>&1 | tee "$_TMP/qa-api-restler.txt" | tail -40
+    echo "RESTLER_EXIT: $?"
+    # Collect bug buckets
+    _BUG_BUCKETS=$(find . -path "*/bug_buckets/*.txt" 2>/dev/null | wc -l | tr -d ' ')
+    echo "RESTLER_BUGS: $_BUG_BUCKETS buckets"
+  else
+    echo "RESTLER_SKIP: Docker not available — set QA_DEEP_FUZZ=1 in a Docker-enabled environment"
+  fi
+fi
+```
+
+Parse `bug_buckets/` output:
+- Each `.txt` = one unique bug category; read first 10 lines for reproduction command
+- Map to categories: `500_BugBuckets/` = server errors, `InternalServerError/` = unhandled exceptions, `ResourceHierarchy/` = state machine violations
+
+In Phase 5 report, add `### RESTler Stateful Fuzzing (Phase 4e)` section:
+```
+- Status: PASS / FINDINGS  Bug buckets: N
+| Category | Count | Reproduction |
+|----------|-------|-------------|
+| InternalServerError | 2 | restler Fuzz --replay bug_buckets/... |
+```
+
+## Phase 4f — Keploy eBPF Traffic Recording (BL-064)
+
+Skip if `_KEPLOY_AVAILABLE=0`. Run only when `QA_KEPLOY_RECORD=1` (recording mode) or when
+`_KEPLOY_FIXTURES=1` (replay mode — fixtures already exist).
+
+**Record mode** (`QA_KEPLOY_RECORD=1`):
+```bash
+if [ "${QA_KEPLOY_RECORD:-0}" = "1" ] && [ "$_KEPLOY_AVAILABLE" = "1" ]; then
+  echo "KEPLOY_RECORD: capturing API traffic (run your smoke test suite now)"
+  keploy record --command "$_START_CMD" --delay 5 2>&1 | tee "$_TMP/qa-api-keploy-record.txt"
+  echo "KEPLOY_CAPTURED: $(ls keploy/*.yaml 2>/dev/null | wc -l | tr -d ' ') test cases"
+fi
+```
+
+**Replay mode** (when `_KEPLOY_FIXTURES=1`, default on re-runs):
+```bash
+if [ "$_KEPLOY_FIXTURES" = "1" ] && [ "$_KEPLOY_AVAILABLE" = "1" ]; then
+  keploy test --command "$_START_CMD" --delay 5 \
+    2>&1 | tee "$_TMP/qa-api-keploy-test.txt" | tail -20
+  echo "KEPLOY_EXIT: $?"
+fi
+```
+
+Compare new captures against stored baseline when `QA_KEPLOY_RECORD=1` AND `_KEPLOY_FIXTURES=1`:
+- Schema delta = fields in new capture absent from baseline → report as `KEPLOY_SCHEMA_DRIFT`
+- Auto-update mocks if delta count ≤ 5 and matches PR description; otherwise flag for review
+
+## Phase 4g — aimock Offline Record/Replay (BL-025)
+
+Skip if `_AIMOCK_AVAILABLE=0`. Captures all external API calls (LLM providers, third-party
+services) in record mode; replays them offline in CI.
+
+**Record mode** (first run or `AIMOCK_RECORD=1`):
+```bash
+if [ "${AIMOCK_RECORD:-0}" = "1" ] && [ "$_AIMOCK_AVAILABLE" = "1" ]; then
+  mkdir -p fixtures
+  aimock --record --output fixtures/ \
+    2>&1 | tee "$_TMP/qa-api-aimock-record.txt"
+  echo "AIMOCK_RECORDED: $(ls fixtures/*.json 2>/dev/null | wc -l | tr -d ' ') fixture files"
+fi
+```
+
+**Replay mode** (when `_AIMOCK_FIXTURES=1`, default):
+```bash
+if [ "$_AIMOCK_FIXTURES" = "1" ] && [ "$_AIMOCK_AVAILABLE" = "1" ]; then
+  aimock --replay fixtures/ &
+  _AIMOCK_PID=$!
+  echo "AIMOCK_REPLAY: PID $_AIMOCK_PID — external calls now served from fixtures"
+  # Run tests against replay proxy...
+fi
+```
+
+In Phase 5 report, add `### aimock Offline Replay` note when `_AIMOCK_FIXTURES=1`:
+- List fixture files used + call counts per provider
+- Note any calls that fell through to live (not in fixtures)
 
 ## Phase 5 — Report
 

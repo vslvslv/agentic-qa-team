@@ -304,6 +304,33 @@ Apply repair strategy based on classification. Read the spec file before editing
 
 Apply all edits via `Edit` tool. After each edit, re-read the changed section to verify correctness.
 
+### Keploy eBPF API Traffic Re-Recording (BL-064)
+
+When `_KEPLOY_AVAILABLE=1` and the failure classification is `api-schema-change`:
+
+**Re-record mode**: re-run Keploy to capture the new API behavior and update stored mocks.
+```bash
+if [ "$_KEPLOY_AVAILABLE" = "1" ] && echo "$_FAILURE_TYPES" | grep -q "api-schema-change"; then
+  echo "KEPLOY_RERECORD: API schema changed — re-recording mocks"
+  keploy record --command "$_START_CMD" --delay 5 \
+    2>&1 | tee "$_TMP/qa-heal-keploy-record.txt"
+  _NEW_CAPTURES=$(ls keploy/*.yaml 2>/dev/null | wc -l | tr -d ' ')
+  echo "KEPLOY_NEW_CAPTURES: $_NEW_CAPTURES"
+fi
+```
+
+**Schema delta analysis**: diff new captures against stored baseline.
+```bash
+if [ "$_KEPLOY_FIXTURES" -gt 0 ] && [ "$_NEW_CAPTURES" -gt 0 ]; then
+  echo "KEPLOY_DELTA: comparing new vs baseline captures"
+  git diff keploy/ 2>/dev/null | head -50
+fi
+```
+
+**Auto-update rule**: if `delta ≤ 5 files` AND PR description mentions the changed endpoints
+→ auto-commit the new captures with message `chore: re-record Keploy mocks for <PR title>`.
+Otherwise: flag `[KEPLOY REVIEW NEEDED]` and add the diff as a PR comment.
+
 ## Phase 4 — Validate
 
 Re-run only the previously failing tests:

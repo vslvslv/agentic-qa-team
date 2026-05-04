@@ -191,7 +191,23 @@ If no running services are found, warn the user and ask whether to proceed in of
 
 If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
 
-## Phase 0 — Scope Selection
+```bash
+# Testcontainers / container isolation detection (BL-024)
+_TESTCONTAINERS_AVAILABLE=0
+grep -q '"testcontainers"\|"@testcontainers"' package.json 2>/dev/null && _TESTCONTAINERS_AVAILABLE=1
+[ -f "test-env.yml" ] && _TESTCONTAINERS_AVAILABLE=1
+command -v docker >/dev/null 2>&1 && _DOCKER_AVAILABLE=1 || _DOCKER_AVAILABLE=0
+echo "TESTCONTAINERS_AVAILABLE: $_TESTCONTAINERS_AVAILABLE"
+echo "DOCKER_AVAILABLE: $_DOCKER_AVAILABLE"
+
+# aimock detection (BL-025)
+_AIMOCK_AVAILABLE=0
+command -v aimock >/dev/null 2>&1 && _AIMOCK_AVAILABLE=1
+_AIMOCK_FIXTURES=0
+[ -d "fixtures" ] && ls fixtures/*.json 2>/dev/null | grep -q '.' && _AIMOCK_FIXTURES=1
+echo "AIMOCK_AVAILABLE: $_AIMOCK_AVAILABLE"
+echo "AIMOCK_FIXTURES: $_AIMOCK_FIXTURES"
+```
 
 Use `AskUserQuestion` to confirm which agents to run. Default to auto-detecting based on project signals.
 
@@ -336,6 +352,66 @@ Summarize findings:
 - Detected tools per domain (from Preamble `_WEB_TOOL`, `_PERF_TOOL`, `_MOB_TOOL`)
 
 Save summary to `$_TMP/qa-team-context.md` for sub-agents to reference.
+
+## Phase 1.5 — Container Isolation + Offline Prep (BL-024 + BL-025)
+
+### Container Isolation for Parallel Agents (BL-024)
+
+When `_TESTCONTAINERS_AVAILABLE=1` AND `_DOCKER_AVAILABLE=1` AND multiple sub-agents will run in parallel,
+provision isolated containers so agents don't collide on shared DB state.
+
+**If `test-env.yml` exists**, use it to declare required services:
+```yaml
+# test-env.yml — declare needed services per agent
+services:
+  postgres:
+    image: postgres:16
+    env:
+      POSTGRES_PASSWORD: test
+  redis:
+    image: redis:7
+  kafka:
+    image: confluentinc/cp-kafka:latest
+```
+
+**Provisioning**:
+```bash
+if [ "$_TESTCONTAINERS_AVAILABLE" = "1" ] && [ "$_DOCKER_AVAILABLE" = "1" ]; then
+  if [ -f "test-env.yml" ]; then
+    echo "CONTAINERS: starting isolated test environment"
+    # Start containers and capture injected connection strings
+    _CONTAINER_ENV=$( \
+      npx @testcontainers/cli start test-env.yml 2>/dev/null || \
+      echo "TESTCONTAINERS_UNAVAILABLE" )
+    echo "$_CONTAINER_ENV"
+    # Each sub-agent inherits DB_URL, REDIS_URL, KAFKA_BOOTSTRAP_SERVERS from env
+  fi
+fi
+```
+
+Pass the `DB_URL`, `REDIS_URL` etc. from container provisioning as extra context to each sub-agent.
+**Teardown**: after all sub-agents complete in Phase 2, run:
+```bash
+npx @testcontainers/cli stop 2>/dev/null || true
+```
+
+### aimock Offline Prep (BL-025)
+
+When `_AIMOCK_FIXTURES=1` (fixtures captured from a prior record run), start aimock replay proxy
+before spawning sub-agents so all external calls (LLM, 3rd-party APIs) are served from fixtures.
+
+```bash
+if [ "$_AIMOCK_FIXTURES" = "1" ] && [ "$_AIMOCK_AVAILABLE" = "1" ]; then
+  aimock --replay fixtures/ &
+  _AIMOCK_PID=$!
+  echo "AIMOCK_REPLAY_PID: $_AIMOCK_PID — sub-agents will use fixture responses"
+fi
+```
+
+Stop the aimock proxy after Phase 2 completes:
+```bash
+[ -n "$_AIMOCK_PID" ] && kill "$_AIMOCK_PID" 2>/dev/null || true
+```
 
 ## Phase 2 — Spawn Sub-Agents (Parallel)
 

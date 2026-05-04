@@ -121,7 +121,18 @@ fi
 
 If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
 
-### Tool Selection Gate
+```bash
+# Midscene VLM fallback detection (BL-045)
+_MIDSCENE_AVAILABLE=0
+grep -q '"@midscene/android"\|"@midscene/ios-client"\|"@midscene/web"' package.json 2>/dev/null && _MIDSCENE_AVAILABLE=1
+command -v midscene >/dev/null 2>&1 && _MIDSCENE_AVAILABLE=1
+echo "MIDSCENE_AVAILABLE: $_MIDSCENE_AVAILABLE"
+
+# OmniParser detection (BL-046)
+_OMNIPARSER_AVAILABLE=0
+curl -s --max-time 2 http://localhost:8000/health 2>/dev/null | grep -q 'ok\|healthy' && _OMNIPARSER_AVAILABLE=1
+echo "OMNIPARSER_AVAILABLE: $_OMNIPARSER_AVAILABLE"
+```
 
 Count detected tools from `DETOX_PRESENT`, `APPIUM_PRESENT`, `MAESTRO_PRESENT`.
 
@@ -455,6 +466,103 @@ passed = len(re.findall(r'✓|passing|PASS|Flow Completed', content))
 failed = len(re.findall(r'✗|failing|FAIL|Flow Failed|Error:', content))
 print(json.dumps({"passed": passed, "failed": failed, "raw_summary": content[-500:]}))
 PYEOF
+```
+
+## Phase 4.5 — AI-Augmented Execution Fallbacks
+
+### Midscene.js VLM Fallback (BL-045)
+
+When `_MIDSCENE_AVAILABLE=1`, use Midscene as a fallback executor when primary selectors fail.
+Midscene uses VLM (Qwen3-VL, UI-TARS) to locate elements via screenshot reasoning — zero selector maintenance.
+
+**In generated test code**, wrap critical taps with a Midscene fallback:
+```typescript
+// Generated Detox test with Midscene fallback
+try {
+  await element(by.id('login-button')).tap();
+} catch (selectorErr) {
+  // Midscene fallback — works even when testID is absent
+  const mid = new MidsceneAndroid();
+  await mid.aiAction('tap the Login button');
+}
+```
+
+**Maestro integration**: generate a `.midscene.yaml` alongside each Maestro flow:
+```yaml
+# .maestro/login.midscene.yaml — AI fallback for login.yaml
+- aiAction: "tap the Email input field"
+- aiType: "${EMAIL:-admin@example.com}"
+- aiAction: "tap the Password field"
+- aiType: "${PASSWORD:-password123}"
+- aiAction: "tap the Log In button"
+- aiAssert: "Welcome text is visible"
+```
+
+**On selector failure** in Phase 4: automatically switch to Midscene for that step. Add
+`MIDSCENE_FALLBACK: <step>` annotation to the test report.
+
+### OmniParser Perception Layer (BL-046)
+
+When `_OMNIPARSER_AVAILABLE=1` (Docker service at `localhost:8000`), use OmniParser as a
+last-resort perception layer when the accessibility tree yields 0 interactive elements
+(Flutter canvas, games, custom-drawn UIs).
+
+**Trigger condition**: after standard selector/accessibility scan returns `_ELEMENTS_FOUND=0`.
+
+```bash
+if [ "$_ELEMENTS_FOUND" = "0" ] && [ "$_OMNIPARSER_AVAILABLE" = "1" ]; then
+  echo "OMNIPARSER: accessibility tree empty — falling back to OmniParser"
+  # 1. Capture device screenshot
+  adb exec-out screencap -p > "$_TMP/device-screenshot.png" 2>/dev/null || \
+    xcrun simctl io booted screenshot "$_TMP/device-screenshot.png" 2>/dev/null
+  # 2. Send to OmniParser
+  curl -s -X POST http://localhost:8000/parse \
+    -F "image=@$_TMP/device-screenshot.png" \
+    -o "$_TMP/omniparser-elements.json" 2>/dev/null
+  echo "OMNIPARSER_ELEMENTS: $(python3 -c "import json; d=json.load(open('$_TMP/omniparser-elements.json')); print(len(d.get('elements', [])))" 2>/dev/null || echo 0)"
+fi
+```
+
+Claude then reads `$_TMP/omniparser-elements.json` to generate element interactions:
+- Each element: `{ label, type, boundingBox, confidence }` → map to ADB tap coordinates or XCUITest click
+- Particularly useful for Flutter apps and canvas-based games
+
+### Mobile-Agent Reflector (BL-047)
+
+**On any step failure** during Phase 4 execution, trigger a reflection loop before marking the test as failed.
+
+**Reflection hook** (add to test runner wrapper):
+```typescript
+// On step failure — max 2 retries
+async function withReflection(step: () => Promise<void>, stepName: string, page?: any) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await step();
+      return; // success
+    } catch (err) {
+      if (attempt >= 2) throw err; // give up after 2 reflections
+      // Capture screenshot and ask Claude for alternative action
+      const screenshot = await captureDeviceScreenshot();
+      const reflection = await claudeReflect({
+        prompt: `Step "${stepName}" failed: ${err.message}. Current screenshot attached. What alternative action achieves the same goal? Respond with a single action: tap(selector), type(text), swipe(direction), or scroll(direction).`,
+        image: screenshot,
+      });
+      console.log(`REFLECTION[${attempt + 1}]: ${stepName} → ${reflection.action}`);
+      await executeReflectedAction(reflection.action);
+    }
+  }
+}
+```
+
+**Reflection rate tracking**: after Phase 4 completes, count reflection events per test.
+- Tests with `reflectionRate > 1` per run → **flakiness candidates** (feed to `qa-heal`)
+- Add `REFLECTION_RATE: N` annotation to each test result
+
+In Phase 5 report, add `### Reflection Events` table:
+```
+| Test | Steps | Reflections | Outcome |
+|------|-------|-------------|---------|
+| login_test | 5 | 1 (step 3) | ✅ recovered |
 ```
 
 ## Phase 5 — Report

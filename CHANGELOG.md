@@ -5,6 +5,50 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.14.0.0 — 2026-05-04 — [M] batch: observability RCA, contract testing, chaos, VLM mobile, DOM metrics, offline CI
+
+### qa-observability (new skill — BL-057)
+- New skill + agent: HolmesGPT-style failure RCA loop — fetches OTel traces (Jaeger/Tempo), queries Loki logs (±30s window), synthesizes root cause with HIGH/MEDIUM/LOW confidence
+- Auto-discovers local observability endpoints (localhost:16686 Jaeger, :3200 Tempo, :3100 Loki)
+- Output: `FAILURE_REASON` block appended to failing skill's report; CTRF JSON emitted
+
+### qa-api (BL-010 + BL-025 + BL-031 + BL-032 + BL-056 + BL-064)
+- Phase 0.75: OpenAPI contract testing via Dredd — validates running API against spec, flags schema drift before test generation
+- Phase 3: Tracetest span assertions — generates `tracetest/*.yaml` alongside HTTP tests; asserts DB span latency, auth gRPC status
+- Phase 4d: Pact consumer contract verification — auto-runs when `*.pact.json` / `pacts/*.json` found
+- Phase 4e: RESTler stateful REST fuzzing — opt-in via `QA_DEEP_FUZZ=1`; Docker-based; reports bug buckets by category
+- Phase 4f: Keploy eBPF traffic re-recording — record mode (`QA_KEPLOY_RECORD=1`) + replay mode when fixtures exist
+- Phase 4g: aimock offline record/replay — record mode + replay proxy for deterministic CI
+- Preamble: aimock, Keploy, Pact file, Tracetest detections added
+
+### qa-visual (BL-009 + BL-043)
+- Phase 4.5: DOM metric extraction — `page.evaluate()` captures bounding boxes, colors, font sizes; only escalates to full screenshot when metrics diverge; `.visual-spec/` file support
+- Phase 5.5: Multi-model consensus (Layer 2b) — second judge call + arbiter when models disagree; verdict caching by diff-file SHA
+
+### qa-mobile (BL-045 + BL-046 + BL-047)
+- Phase 4.5: Midscene VLM fallback — `aiAction()` when selectors break; Maestro `.midscene.yaml` parallel flows
+- Phase 4.5: OmniParser perception layer — triggered when accessibility tree yields 0 elements; Docker service at localhost:8000
+- Phase 4.5: Mobile-Agent Reflector — `withReflection()` wrapper; up to 2 retries per step; reflection rate tracking → flakiness candidates
+
+### qa-perf (BL-039 + BL-040 + BL-041)
+- Phase 3.5: LitmusChaos concurrent resilience — `QA_CHAOS=1`; ChaosEngine YAML auto-generated from k6 thresholds; concurrent chaos + load run
+- Phase 3.5: GoReplay production traffic replay — `QA_REPLAY_MODE=1`; capture + replay modes; per-endpoint p99 regression analysis
+- Phase 4.6: Bencher continuous benchmarking — pushes k6 summary to Bencher trend store; Claude writes 1-paragraph regression narrative
+
+### qa-web (BL-005 + BL-025 + BL-066)
+- Phase 2: aimock record/replay integration — fixture-based offline CI mode
+- Phase 2: TestZeus Hercules — Gherkin `.feature` file detection; Hercules execution when available; fallback to Playwright spec generation from Gherkin steps
+- BL-005 marked implemented (NL mode covered by BL-049)
+
+### qa-team (BL-024 + BL-025)
+- Phase 1.5: Container isolation — Testcontainers provisioning from `test-env.yml`; per-agent `DB_URL`/`REDIS_URL` injection; teardown after Phase 2
+- Phase 1.5: aimock pre-spawn proxy — starts replay proxy before spawning sub-agents; stops after Phase 2
+
+### qa-heal (BL-064)
+- Phase 3: Keploy eBPF re-recording — triggered on `api-schema-change` failure type; schema delta analysis; auto-commit when ≤5 files changed
+
+---
+
 ## v1.13.0.0 — 2026-05-03 — [S] quick-wins: AndroidWorld templates, NL tests, OTel tracing, Honeycomb CI, Lost Pixel, test impact scoping
 
 ### qa-mobile

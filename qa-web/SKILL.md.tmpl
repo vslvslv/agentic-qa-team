@@ -167,6 +167,22 @@ echo "NL_TESTS_EXIST: $_NL_TESTS_EXIST"
 _OTEL_AVAILABLE=0
 [ -n "$OTEL_EXPORTER_OTLP_ENDPOINT" ] && _OTEL_AVAILABLE=1
 echo "OTEL_AVAILABLE: $_OTEL_AVAILABLE"
+
+# aimock record/replay detection (BL-025)
+_AIMOCK_AVAILABLE=0
+command -v aimock >/dev/null 2>&1 && _AIMOCK_AVAILABLE=1
+_AIMOCK_FIXTURES=0
+[ -d "fixtures" ] && ls fixtures/*.json 2>/dev/null | grep -q '.' && _AIMOCK_FIXTURES=1
+echo "AIMOCK_AVAILABLE: $_AIMOCK_AVAILABLE"
+echo "AIMOCK_FIXTURES: $_AIMOCK_FIXTURES"
+
+# TestZeus Hercules / Gherkin detection (BL-066)
+_GHERKIN_FILES=$(find . -name "*.feature" ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+_HERCULES_AVAILABLE=0
+command -v hercules >/dev/null 2>&1 && _HERCULES_AVAILABLE=1
+grep -q '"testzeus-hercules"\|"@testzeus"' package.json 2>/dev/null && _HERCULES_AVAILABLE=1
+echo "GHERKIN_FILES: $_GHERKIN_FILES"
+echo "HERCULES_AVAILABLE: $_HERCULES_AVAILABLE"
 ```
 
 If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
@@ -371,6 +387,58 @@ On failure: Claude receives the failing sentence + DOM snapshot → rewrite the 
 description rather than a CSS selector.
 
 Note: `shortest` requires `ANTHROPIC_API_KEY` set in the environment.
+
+### aimock Offline Record/Replay (BL-025)
+
+If `_AIMOCK_AVAILABLE=1`, wrap the test run with aimock to make tests fully offline/deterministic.
+
+**Record mode** (first run or `AIMOCK_RECORD=1`):
+```bash
+if [ "${AIMOCK_RECORD:-0}" = "1" ] && [ "$_AIMOCK_AVAILABLE" = "1" ]; then
+  mkdir -p fixtures
+  aimock --record --output fixtures/ &
+  _AIMOCK_PID=$!
+  echo "AIMOCK_RECORD_PID: $_AIMOCK_PID — capturing external API calls"
+fi
+```
+
+**Replay mode** (when `_AIMOCK_FIXTURES=1`):
+```bash
+if [ "$_AIMOCK_FIXTURES" = "1" ] && [ "$_AIMOCK_AVAILABLE" = "1" ]; then
+  aimock --replay fixtures/ &
+  echo "AIMOCK_REPLAY: external calls served from fixtures — deterministic CI mode"
+fi
+```
+
+The generated `playwright.config.ts` sets `use.baseURL` normally; aimock transparently
+intercepts external calls (LLM providers, 3rd-party APIs) via proxy. Tests run offline.
+Add `AIMOCK_FIXTURES: true` annotation to CI run summary.
+
+### TestZeus Hercules: Gherkin + DOM Distillation (BL-066)
+
+When `_GHERKIN_FILES > 0`, offer Hercules as the execution engine instead of static Playwright specs.
+Hercules converts Gherkin → E2E tests at runtime via DOM Distillation — no hardcoded selectors.
+
+**Detect and offer**:
+- If `_HERCULES_AVAILABLE=1` AND `_GHERKIN_FILES > 0` → run Hercules on `.feature` files
+- If `_HERCULES_AVAILABLE=0` AND `_GHERKIN_FILES > 0` → note: `npm install testzeus-hercules` and show Gherkin files found
+
+**Execution** (when Hercules is available):
+```bash
+if [ "$_HERCULES_AVAILABLE" = "1" ] && [ "$_GHERKIN_FILES" -gt 0 ]; then
+  _FEATURE_DIRS=$(find . -name "*.feature" ! -path "*/node_modules/*" 2>/dev/null \
+    | xargs -I{} dirname {} | sort -u | tr '\n' ' ')
+  hercules run --base-url "$_BASE_URL" --features "$_FEATURE_DIRS" \
+    --reporter ctrf --output "$_TMP/qa-web-hercules-ctrf.json" \
+    2>&1 | tee "$_TMP/qa-web-hercules.txt" | tail -20
+  echo "HERCULES_EXIT: $?"
+fi
+```
+
+**Gherkin-only mode** (no Hercules): when `.feature` files exist but Hercules is absent,
+generate standard Playwright tests from the Gherkin `Given/When/Then` steps.
+
+**On PR changing user-facing behavior**: update `Then` clauses in `.feature` files based on PR diff — the Gherkin stays stable, Hercules re-discovers selectors on next run.
 
 Then select and read the language-appropriate reference guide based on `_WEB_TOOL` and `_TARGET_LANG`:
 

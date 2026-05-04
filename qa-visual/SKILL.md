@@ -347,6 +347,60 @@ else
 fi
 ```
 
+## Phase 4.5 — DOM Metric Extraction (BL-043)
+
+Before running full screenshot comparison, extract structured DOM metrics for key elements.
+This dramatically reduces token cost — only escalate to VLM review when metrics diverge.
+
+**Baseline capture** (first run, or when `--update-snapshots`):
+
+```typescript
+// playwright — run in Phase 4 baseline capture pass
+const metrics = await page.evaluate((selectors) => {
+  return selectors.map(sel => {
+    const el = document.querySelector(sel);
+    if (!el) return { selector: sel, found: false };
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return {
+      selector: sel,
+      found: true,
+      boundingBox: { x: Math.round(rect.x), y: Math.round(rect.y),
+                     w: Math.round(rect.width), h: Math.round(rect.height) },
+      color: style.color,
+      backgroundColor: style.backgroundColor,
+      fontSize: style.fontSize,
+      text: el.textContent?.trim().slice(0, 100),
+    };
+  });
+}, KEY_SELECTORS);
+// write to visual-baselines/<page>-dom-metrics.json
+```
+
+**Comparison run**: re-extract metrics → compare against baseline JSON.
+
+**Escalation rule**: only run full `toHaveScreenshot()` comparison (expensive) when ANY of:
+- Bounding box shift > 5px on a key element
+- Font size change detected
+- Background color changed
+- Text content changed on a non-dynamic element
+
+**Visual spec file** (optional): define expected metric ranges per page in `.visual-spec/<page>.json`:
+```json
+{
+  "selectors": ["header", "nav", ".hero-cta", "footer"],
+  "rules": {
+    "header": { "maxHeightDelta": 10, "colorMustMatch": true },
+    ".hero-cta": { "mustBeVisible": true, "minWidth": 100 }
+  }
+}
+```
+
+If no `.visual-spec/` files exist, use default selectors: `header, main, footer, nav, [data-testid]`.
+
+In Phase 6 report, add `### DOM Metric Summary` section — show which pages escalated to screenshot
+comparison vs. passed on metrics alone.
+
 ## Phase 5 — Execute Visual Comparison
 
 ```bash
@@ -420,6 +474,21 @@ For each flagged diff image at `backstop_data/bitmaps_test/<name>` or `playwrigh
 - Load reference + test screenshots via Read tool
 - Prompt: "Compare these two screenshots. Classify as: (A) COSMETIC — font/spacing/color change, no functional impact; (B) FUNCTIONAL — layout shift, hidden element, broken component; (C) CONTENT — text or data changed. One word answer: COSMETIC, FUNCTIONAL, or CONTENT."
 - Record classification and a 1-sentence rationale
+
+**Layer 2b — Multi-Model Consensus (BL-009):**
+
+When `GEMINI_API_KEY` is set (or any second model key is available), run a two-model consensus
+to eliminate false positives before routing.
+
+For each diff in the 0.1%–20% range:
+1. Judge 1 (Claude): classify as above → `{verdict, confidence, reasoning}`
+2. Judge 2 (Gemini or second Claude call): same prompt → `{verdict, confidence, reasoning}`
+3. **Agreement**: both agree → use that verdict with high confidence
+4. **Disagreement**: pass both verdicts to an arbiter call:
+   - Arbiter prompt: "Two AI judges disagree on this screenshot diff. Judge 1: <verdict + reasoning>. Judge 2: <verdict + reasoning>. What is the correct classification? Answer COSMETIC, FUNCTIONAL, or CONTENT with a tie-breaking reason."
+5. Cache verdict by diff-file SHA to avoid re-judging identical diffs between runs:
+   - Cache file: `$_TMP/qa-visual-verdict-cache.json` — key = `sha256(diffFilePath)`, value = verdict
+   - Load cache at start of Phase 5.5; skip judging if cache hit
 
 **Layer 3 — Routing**:
 - `COSMETIC` → `[WARN]` in report (does not block)

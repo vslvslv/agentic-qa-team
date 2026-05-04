@@ -97,7 +97,7 @@ A dedicated healing skill: reads a CI failure log, identifies broken selectors, 
 
 ---
 
-#### BL-005 — Natural Language Test Cases → Playwright Execution `[M]`
+#### BL-005 — Natural Language Test Cases → Playwright Execution `[M]` ✅ **Implemented v1.14.0.0** (qa-web NL mode via BL-049; TCMS bridge pending qa-manager) ✅ **Implemented v1.14.0.0** (qa-web NL mode; TCMS bridge pending qa-manager)
 **Source:** [antiwork/shortest](https://github.com/antiwork/shortest)
 **Target skills:** `qa-web`, `qa-manager` (TCMS bridge)
 **Description:**
@@ -158,7 +158,7 @@ A post-deploy smoke testing skill: spawn N parallel agents to freeform-explore t
 
 ---
 
-#### BL-009 — AI Visual Consensus (Multi-Model) `[M]`
+#### BL-009 — AI Visual Consensus (Multi-Model) `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [bug0inc/passmark](https://github.com/bug0inc/passmark)
 **Target skills:** `qa-visual`
 **Description:**
@@ -172,7 +172,7 @@ Augment pixel-diff visual regression with an AI judge: after detecting a visual 
 
 ---
 
-#### BL-010 — OpenAPI Contract Testing in `qa-api` `[M]`
+#### BL-010 — OpenAPI Contract Testing in `qa-api` `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [PactFlow Drift + AI Beta](https://pactflow.io/blog/)
 **Target skills:** `qa-api`
 **Description:**
@@ -377,7 +377,7 @@ Seed the test DB with intentionally chaotic data (null injection, row duplicatio
 
 ---
 
-#### BL-024 — Isolated Container Environments for Parallel Agents `[M]`
+#### BL-024 — Isolated Container Environments for Parallel Agents `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [SwissLife-OSS/squadron](https://github.com/SwissLife-OSS/squadron)
 **Target skills:** `qa-team` (parallel agent coordination)
 **Description:**
@@ -391,7 +391,7 @@ When `qa-team` spawns multiple sub-agents in parallel, they can collide on share
 
 ---
 
-#### BL-025 — Offline-First CI via API Record/Replay `[M]`
+#### BL-025 — Offline-First CI via API Record/Replay `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [CopilotKit/aimock](https://github.com/CopilotKit/aimock)
 **Target skills:** `qa-web`, `qa-api`, `qa-team`
 **Description:**
@@ -466,7 +466,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-031 — Pact Consumer-Driven Contract Verification `[M]`
+#### BL-031 — Pact Consumer-Driven Contract Verification `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [pact-foundation/pact-js](https://github.com/pact-foundation/pact-js) — 1.8k stars
 **Target skills:** `qa-api`
 **Description:** If pact files exist in the repo, run provider verification. Breaking changes are visible before deployment: if a provider renames a field, the consumer's pact fails in the provider's CI. The existing `contract-testing-guide.md` already covers Pact conceptually.
@@ -477,7 +477,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-032 — RESTler Stateful REST Fuzzing (Opt-In) `[M]`
+#### BL-032 — RESTler Stateful REST Fuzzing (Opt-In) `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [microsoft/restler-fuzzer](https://github.com/microsoft/restler-fuzzer) — 2.9k stars
 **Target skills:** `qa-api`
 **Description:** Infers producer-consumer dependencies from OpenAPI spec (e.g., `POST /users` returns `id` that `DELETE /users/{id}` consumes) then fuzzes state-machine paths. Discovers resource-leak bugs and state-transition 500s that flat endpoint testing never exercises.
@@ -565,7 +565,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-039 — LitmusChaos Concurrent Resilience Testing `[M]`
+#### BL-039 — LitmusChaos Concurrent Resilience Testing `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [litmuschaos/litmus](https://github.com/litmuschaos/litmus) — 5.3k stars (CNCF)
 **Target skills:** `qa-perf`
 **Description:** A `--chaos` flag interleaves a LitmusChaos experiment with a k6 load test. Claude defines the `SteadyStateHypothesis` from existing k6 thresholds, then interprets the result: "System maintained p99 under load during 30% pod kill but breached during 50% — resilience threshold is between 30-50% instance loss."
@@ -577,7 +577,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-040 — Bencher Continuous Benchmarking + Trend Narrative `[M]`
+#### BL-040 — Bencher Continuous Benchmarking + Trend Narrative `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [bencherdev/bencher](https://github.com/bencherdev/bencher) — 832 stars
 **Target skills:** `qa-perf`
 **Description:** Stable bare-metal benchmarking infrastructure (<2% variance vs. >30% on CI runners) feeds k6 summaries into a historical trend store. Claude reads the trend history and writes narratives: "This endpoint's p99 has drifted +12% over the last 8 PRs — regression is gradual, not spike-shaped."
@@ -588,7 +588,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-041 — GoReplay Production Traffic Replay `[M]`
+#### BL-041 — GoReplay Production Traffic Replay `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [buger/goreplay](https://github.com/buger/goreplay) — 19.3k stars
 **Target skills:** `qa-perf`
 **Description:** Capture live HTTP traffic from production and replay it verbatim against staging. The load profile IS real users — no synthetic traffic assumptions. Claude diffs replay results against baseline per endpoint: latency regressions, new error codes, coverage of previously untested flows.
@@ -614,7 +614,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-043 — DOM Metric Extraction for Cost-Efficient Visual Comparison `[M]`
+#### BL-043 — DOM Metric Extraction for Cost-Efficient Visual Comparison `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [simbo1905/gux-tool](https://github.com/simbo1905/gux-tool)
 **Target skills:** `qa-visual`
 **Description:** Instead of sending multi-MB screenshots to Claude on every run, extract structured DOM metrics (bounding boxes, computed colors, font sizes, text content for key selectors) via `page.evaluate()` and have Claude verify them against a recorded spec. Dramatically reduces token cost per comparison.
@@ -640,7 +640,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ### 📱 Mobile Testing Enhancements
 
-#### BL-045 — Midscene.js: Pure-Vision No-Selector Mobile Testing `[M]`
+#### BL-045 — Midscene.js: Pure-Vision No-Selector Mobile Testing `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [web-infra-dev/midscene](https://github.com/web-infra-dev/midscene) — 12.9k stars
 **Target skills:** `qa-mobile`
 **Description:** Abandons selectors entirely — all element localization is based on screenshots via VLM (Qwen3-VL, UI-TARS, Gemini). Tests written in plain English; the model reasons over a screenshot to find and interact with UI elements. Works on iOS, Android, React Native, Flutter (native pixels). Zero brittleness from selector drift.
@@ -652,7 +652,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-046 — OmniParser Perception Layer for Canvas/Game UIs `[M]`
+#### BL-046 — OmniParser Perception Layer for Canvas/Game UIs `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [microsoft/OmniParser](https://github.com/microsoft/OmniParser) — 24.7k stars
 **Target skills:** `qa-mobile`
 **Description:** Parses any UI screenshot into structured, labeled elements using CV (interactive region detection + icon classification). Acts as a universal "UI parser" when accessibility labels are absent (Flutter canvas, games, custom-drawn UIs). Claude reasons over OmniParser's structured output rather than raw pixels.
@@ -664,7 +664,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-047 — Mobile-Agent Reflector: Automatic Test Recovery `[M]`
+#### BL-047 — Mobile-Agent Reflector: Automatic Test Recovery `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [X-PLUG/MobileAgent](https://github.com/X-PLUG/MobileAgent) — 8.6k stars
 **Target skills:** `qa-mobile`
 **Description:** Multi-agent system with a Reflector agent that detects step failures and re-plans without hard-failing. When a test step fails, pass the failed screenshot + error to Claude with the reflection prompt → get a revised action plan → re-execute. Ideal for flaky real-device tests.
@@ -781,7 +781,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-056 — Tracetest Span Assertions as API Tests `[M]`
+#### BL-056 — Tracetest Span Assertions as API Tests `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [kubeshop/tracetest](https://github.com/kubeshop/tracetest) — 1.3k stars
 **Target skills:** `qa-api`
 **Description:** Assert on the distributed trace emitted by the system under test, not just the HTTP response body. Write span assertions: "every database span must complete in under 100ms" or "the auth gRPC call must return code 0." Test failures now identify the specific span that introduced a regression.
@@ -793,7 +793,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-057 — `qa-observability` Sub-Agent for Failure RCA `[M]`
+#### BL-057 — `qa-observability` Sub-Agent for Failure RCA `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [robusta-dev/holmesgpt](https://github.com/robusta-dev/holmesgpt) — 2.3k stars (CNCF Sandbox)
 **Target skills:** All skills (post-failure hook)
 **Description:** When any skill reports a failure, a `qa-observability` sub-agent runs a HolmesGPT-style loop: fetch the test's network requests, query backend logs for the 30 seconds around the failure, fetch OTel spans for the trace ID, synthesize a root cause statement. Appended as `FAILURE_REASON` block to the test report.
@@ -882,7 +882,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-064 — Keploy eBPF API Traffic Recording for Test Updates `[M]`
+#### BL-064 — Keploy eBPF API Traffic Recording for Test Updates `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [keploy/keploy](https://github.com/keploy/keploy) — 17.2k stars
 **Target skills:** `qa-heal`, `qa-api`
 **Description:** Record real API traffic at the network layer using eBPF and auto-generate tests + mocks from recordings. When APIs change, re-record against the new behavior — the "test update" is re-running the recorder, not editing test code.
@@ -906,7 +906,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-066 — TestZeus Hercules: Gherkin + DOM Distillation `[M]`
+#### BL-066 — TestZeus Hercules: Gherkin + DOM Distillation `[M]` ✅ **Implemented v1.14.0.0**
 **Source:** [test-zeus-ai/testzeus-hercules](https://github.com/test-zeus-ai/testzeus-hercules) — 997 stars
 **Target skills:** `qa-web`, `qa-manager`
 **Description:** Converts Gherkin specifications to automated E2E tests at runtime using DOM Distillation — only relevant elements are extracted and tagged with custom attributes. No hardcoded selectors; the agent re-discovers how to perform each action every run. Tests survive UI refactors because the Gherkin intent is the stable artifact.
