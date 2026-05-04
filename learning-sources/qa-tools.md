@@ -1,5 +1,5 @@
 # Learning Sources: QA Tools
-<!-- updated: 2026-05-03 | entries: 30 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-04 | entries: 86 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobile`
 
@@ -30,6 +30,22 @@ Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobi
 | Maestro Docs | https://maestro.mobile.dev/platform-support/react-native | official-docs | Maestro / YAML | 2026-05-03 | ⭐ |
 | Schemathesis Docs | https://schemathesis.readthedocs.io/en/stable/ | official-docs | API fuzzing | 2026-05-03 | ⭐ Property-based API testing |
 | Spectral Docs | https://docs.stoplight.io/docs/spectral | official-docs | OpenAPI linting | 2026-05-03 | ⭐ |
+| Storybook Docs | https://storybook.js.org/docs | official-docs | Component testing | 2026-05-03 | ⭐ 89.8k stars — stories as tests |
+| fast-check Docs | https://fast-check.dev/ | official-docs | Property-based testing | 2026-05-03 | ⭐ 4.9k stars — generative testing |
+| Litmus Chaos Docs | https://litmuschaos.io/ | official-docs | Chaos engineering | 2026-05-03 | ⭐ CNCF project, 5.3k stars |
+| Pyroscope Docs | https://grafana.com/docs/pyroscope/latest/ | official-docs | Profiling | 2026-05-03 | ⭐ Grafana continuous profiling |
+| Stryker.js Docs | https://stryker-mutator.io/docs/stryker-js/introduction/ | official-docs | Mutation testing | 2026-05-03 | ⭐ JS/TS mutation testing |
+| Pitest Docs | https://pitest.org/quickstart/ | official-docs | Mutation testing / Java | 2026-05-03 | ⭐ Java mutation testing |
+| grpcurl Docs | https://github.com/fullstorydev/grpcurl#readme | official-docs | gRPC testing | 2026-05-03 | ⭐ 12.6k stars — gRPC reflection + smoke testing |
+| RESTler Fuzzer Docs | https://github.com/microsoft/restler-fuzzer/blob/main/docs/user-guide/QuickStart.md | official-docs | API fuzzing | 2026-05-03 | ⭐ 2.9k stars — stateful REST fuzzing |
+| Artillery MCP Server | https://github.com/jch1887/artillery-mcp-server#readme | official-docs | Load testing MCP | 2026-05-03 | 15 MCP tools for adaptive load testing |
+| Playwright Trace Viewer | https://playwright.dev/docs/trace-viewer-intro | official-docs | Playwright | 2026-05-04 | ⭐ GUI for recorded test traces; CI-first debugging |
+| Playwright Test Fixtures | https://playwright.dev/docs/test-fixtures | official-docs | Playwright | 2026-05-04 | ⭐ Fixture DI patterns, worker-scoped, autouse |
+| Playwright Component Testing | https://playwright.dev/docs/test-components | official-docs | Playwright | 2026-05-04 | ⭐ React/Vue component testing in real browser |
+| Playwright Test Reporters | https://playwright.dev/docs/test-reporters | official-docs | Playwright | 2026-05-04 | ⭐ Built-in + custom reporters; Allure/ReportPortal hooks |
+| k6 Browser Module | https://grafana.com/docs/k6/latest/using-k6-browser/ | official-docs | k6 / browser | 2026-05-04 | ⭐ Browser automation built into k6; Web Vitals metrics |
+| Vitest Docs | https://vitest.dev/guide/ | official-docs | Vitest / TypeScript | 2026-05-04 | ⭐ Vite-native test runner; Jest-compatible, 16.5k stars |
+| Robot Framework User Guide | https://robotframework.org/robotframework/latest/RobotFrameworkUserGuide.html | official-docs | Robot Framework | 2026-05-04 | ⭐ Keyword-driven / BDD / RPA; 11.6k stars |
 
 ---
 
@@ -47,3 +63,42 @@ Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobi
 | ctrf-io/ctrf | https://github.com/ctrf-io/ctrf | github-repo | Test reporting | 2026-05-03 | 🌟 Universal test result format |
 | ctrf-io/ai-test-reporter | https://github.com/ctrf-io/ai-test-reporter | github-repo | AI test reporting | 2026-05-03 | Claude/GPT failure summarizer |
 | dequelabs/axe-core | https://github.com/dequelabs/axe-core | github-repo | Accessibility | 2026-05-03 | 🌟 Accessibility testing engine |
+| antiwork/shortest | https://github.com/antiwork/shortest | github-repo | NL test automation | 2026-05-03 | 🌟 5.6k stars — natural language → Playwright, 2FA support |
+| ctrf-io/github-test-reporter | https://github.com/ctrf-io/github-test-reporter | github-repo | Test reporting / CI | 2026-05-03 | GitHub PR comments + job summaries from CTRF |
+| daun/playwright-report-summary | https://github.com/daun/playwright-report-summary | github-repo | Playwright reporting | 2026-05-03 | Playwright PR summary with re-run commands |
+| hyangminj/ddl2data | https://github.com/hyangminj/ddl2data | github-repo | Test data | 2026-05-03 | SQL DDL / Prisma schema → synthetic test data |
+| gourav-shokeen/chaoslake | https://github.com/gourav-shokeen/chaoslake | github-repo | Test data / chaos | 2026-05-03 | Chaos test data: null injection, duplication, drift |
+| SwissLife-OSS/squadron | https://github.com/SwissLife-OSS/squadron | github-repo | Test environments | 2026-05-03 | Docker-based isolated test environment per agent |
+| CopilotKit/aimock | https://github.com/CopilotKit/aimock | github-repo | API mocking | 2026-05-03 | 🌟 570 stars — LLM/MCP record-replay mock server |
+| microsoft/restler-fuzzer | https://github.com/microsoft/restler-fuzzer | github-repo | API fuzzing | 2026-05-03 | 🌟 2.9k stars — stateful REST fuzzing via OpenAPI |
+| kamilkisiela/graphql-inspector | https://github.com/kamilkisiela/graphql-inspector | github-repo | GraphQL | 2026-05-03 | 🌟 1.7k stars — schema drift: BREAKING/DANGEROUS/NON_BREAKING |
+| fullstorydev/grpcurl | https://github.com/fullstorydev/grpcurl | github-repo | gRPC testing | 2026-05-03 | 🌟 12.6k stars — gRPC smoke testing via reflection |
+| stryker-mutator/stryker-js | https://github.com/stryker-mutator/stryker-js | github-repo | Mutation testing | 2026-05-03 | 🌟 2.9k stars — JS/TS incremental mutation |
+| hcoles/pitest | https://github.com/hcoles/pitest | github-repo | Mutation testing / Java | 2026-05-03 | 🌟 1.8k stars — Java bytecode mutation |
+| boxed/mutmut | https://github.com/boxed/mutmut | github-repo | Mutation testing / Python | 2026-05-03 | 🌟 1.3k stars — Python mutation with coverage filter |
+| codeintegrity-ai/mutahunter | https://github.com/codeintegrity-ai/mutahunter | github-repo | LLM mutation testing | 2026-05-03 | 296 stars — LLM-native semantic mutant generation |
+| buger/goreplay | https://github.com/buger/goreplay | github-repo | Load testing | 2026-05-03 | 🌟 19.3k stars — production traffic capture + replay |
+| getanteon/anteon | https://github.com/getanteon/anteon | github-repo | Load testing | 2026-05-03 | 🌟 8.5k stars — distributed load testing platform |
+| bencherdev/bencher | https://github.com/bencherdev/bencher | github-repo | Benchmarking | 2026-05-03 | 832 stars — continuous benchmarking + trend history |
+| slok/sloth | https://github.com/slok/sloth | github-repo | SLO tooling | 2026-05-03 | 🌟 2.5k stars — SLO-as-code from k6 thresholds |
+| OpenSLO/OpenSLO | https://github.com/OpenSLO/OpenSLO | github-repo | SLO spec | 2026-05-03 | 🌟 1.5k stars — vendor-neutral SLO specification |
+| litmuschaos/litmus | https://github.com/litmuschaos/litmus | github-repo | Chaos engineering | 2026-05-03 | 🌟 5.3k stars — CNCF chaos engineering platform |
+| grafana/pyroscope | https://github.com/grafana/pyroscope | github-repo | Profiling | 2026-05-03 | 🌟 11.4k stars — continuous flamegraph profiling |
+| Visual-Regression-Tracker/visual-regression-tracker | https://github.com/Visual-Regression-Tracker/visual-regression-tracker | github-repo | Visual regression | 2026-05-03 | 685 stars — self-hosted visual tracking |
+| garris/BackstopJS | https://github.com/garris/BackstopJS | github-repo | Visual regression | 2026-05-03 | 🌟 7.1k stars — battle-tested visual regression |
+| argos-ci/argos | https://github.com/argos-ci/argos | github-repo | Visual CI | 2026-05-03 | 580 stars — CI visual review workflow |
+| web-infra-dev/midscene | https://github.com/web-infra-dev/midscene | github-repo | Vision UI testing | 2026-05-03 | 🌟 12.9k stars — vision-based no-selector testing |
+| storybookjs/storybook | https://github.com/storybookjs/storybook | github-repo | Component testing | 2026-05-03 | 🌟 89.8k stars — stories as interaction + a11y tests |
+| dubzzz/fast-check | https://github.com/dubzzz/fast-check | github-repo | Property-based testing | 2026-05-03 | 🌟 4.9k stars — generative prop testing |
+| microsoft/playwright-mcp | https://github.com/microsoft/playwright-mcp | github-repo | Playwright MCP | 2026-05-03 | 🌟 31.9k stars — official Playwright MCP server |
+| honeycombio/buildevents | https://github.com/honeycombio/buildevents | github-repo | CI tracing | 2026-05-03 | CI build OTel traces — each phase as child span |
+| grafana/tempo | https://github.com/grafana/tempo | github-repo | Distributed tracing | 2026-05-03 | 🌟 5.2k stars — scalable distributed trace backend |
+| open-telemetry/opentelemetry-demo | https://github.com/open-telemetry/opentelemetry-demo | github-repo | Observability reference | 2026-05-03 | 🌟 3.1k stars — OTel reference implementation |
+| google-research/android_world | https://github.com/google-research/android_world | github-repo | Mobile / Android | 2026-05-03 | 750 stars — 116 validated Android task templates |
+| coroot/coroot | https://github.com/coroot/coroot | github-repo | Observability | 2026-05-03 | 🌟 7.6k stars — eBPF-based observability platform |
+| dotenvx/dotenvx | https://github.com/dotenvx/dotenvx | github-repo | Test infrastructure | 2026-05-03 | Encrypted env management for test environments |
+| vitest-dev/vitest | https://github.com/vitest-dev/vitest | github-repo | Vitest / TypeScript | 2026-05-04 | 🌟 16.5k stars — Vite-native Jest-compatible test runner |
+| testcontainers/testcontainers-node | https://github.com/testcontainers/testcontainers-node | github-repo | Test environments / Node | 2026-05-04 | 🌟 2.5k stars — Docker-based throwaway test instances |
+| testcontainers/testcontainers-java | https://github.com/testcontainers/testcontainers-java | github-repo | Test environments / Java | 2026-05-04 | 🌟 8.6k stars — JUnit Docker integration testing |
+| robotframework/robotframework | https://github.com/robotframework/robotframework | github-repo | Robot Framework | 2026-05-04 | 🌟 11.6k stars — keyword-driven acceptance testing |
+| pactumjs/pactum | https://github.com/pactumjs/pactum | github-repo | API testing / Node | 2026-05-04 | 612 stars — REST API testing for all pyramid levels |

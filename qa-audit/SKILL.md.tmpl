@@ -156,6 +156,36 @@ if [ -n "$QA_EXTRA_PATHS" ]; then
   done
 fi
 
+# --- Mutation tool detection ---
+echo "--- MUTATION TOOLS ---"
+_STRYKER_AVAILABLE=0
+grep -q '"@stryker-mutator/' package.json 2>/dev/null && _STRYKER_AVAILABLE=1
+echo "STRYKER_AVAILABLE: $_STRYKER_AVAILABLE"
+
+_PITEST_AVAILABLE=0
+[ -f pom.xml ] && grep -q "pitest" pom.xml 2>/dev/null && _PITEST_AVAILABLE=1
+echo "PITEST_AVAILABLE: $_PITEST_AVAILABLE"
+
+_MUTMUT_AVAILABLE=0
+command -v mutmut >/dev/null 2>&1 && _MUTMUT_AVAILABLE=1
+echo "MUTMUT_AVAILABLE: $_MUTMUT_AVAILABLE"
+
+_MUTAHUNTER_AVAILABLE=0
+command -v mutahunter >/dev/null 2>&1 && _MUTAHUNTER_AVAILABLE=1
+echo "MUTAHUNTER_AVAILABLE: $_MUTAHUNTER_AVAILABLE"
+
+_DIFF_FILES=$(git diff --name-only 2>/dev/null | grep -E "\.(ts|tsx|js|jsx|py|java)$" | grep -v "spec\|test\|node_modules" || true)
+_DIFF_COUNT=$(echo "$_DIFF_FILES" | grep -c '.' 2>/dev/null || echo 0)
+echo "MUTATION_DIFF_FILES: $_DIFF_COUNT"
+echo "$_DIFF_FILES" | head -10
+
+_TEST_CMD=""
+grep -q '"jest"' package.json 2>/dev/null && _TEST_CMD="npx jest --no-coverage"
+grep -q '"vitest"' package.json 2>/dev/null && _TEST_CMD="npx vitest run"
+{ [ -f pytest.ini ] || grep -q "\[tool.pytest" pyproject.toml 2>/dev/null; } && _TEST_CMD="python3 -m pytest"
+[ -f pom.xml ] && _TEST_CMD="mvn test -q"
+echo "TEST_CMD: ${_TEST_CMD:-none}"
+
 echo "--- DONE ---"
 ```
 
@@ -370,6 +400,42 @@ grep -r "\-\-runInBand\|runInBand\|maxWorkers.*[\"']1[\"']\|workers.*=.*1\b\|sin
 Red flags: hardcoded ports or database names shared across test workers; `--runInBand` / `maxWorkers=1` suppressing parallelism to paper over race conditions instead of fixing them.
 Green: tests use randomised/ephemeral ports, per-worker databases, or have no shared I/O resources.
 
+## Phase 2.5 — Flaky Test Classification
+
+Check `./qa-flaky-registry.json` if present for historical flake rates.
+
+Identify candidates: test files flagged in Checks 4 and 10 (sleep/retry patterns, skipped tests).
+
+For each candidate file (up to 5), run an isolation test:
+
+```bash
+# JS/TS (Jest/Vitest)
+_ISOLATION_FILE="<file>"
+if grep -q '"jest"\|"vitest"' package.json 2>/dev/null; then
+  _RUNNER=$(grep -q '"vitest"' package.json && echo "vitest" || echo "jest")
+  npx "$_RUNNER" --testPathPattern="$(basename "$_ISOLATION_FILE")" --no-coverage 2>&1 | tail -20
+fi
+
+# Python (pytest)
+[ -f pytest.ini ] || [ -f pyproject.toml ] && \
+  python3 -m pytest "$_ISOLATION_FILE" -q 2>&1 | tail -10
+```
+
+**Classify each flagged test**:
+- Passes in isolation, fails in full suite → **Order-Dependent (OD)**
+  Fix direction: add `beforeEach`/`afterEach` to reset shared state; avoid module-level mutations
+- Fails in isolation too → **Implementation-Dependent (ID)**
+  Fix direction: replace `setTimeout`/`sleep` with explicit waits; mock non-deterministic calls
+- Only flagged by static signals, not confirmed by run → **Suspected-Flaky**
+
+**Skip isolation run** if `qa-flaky-registry.json` shows `flakeRate > 0.3` for the test — use
+registry classification directly.
+
+Add classification column to the report's flakiness section:
+```
+| Test file | Type (OD/ID/Suspected) | Fix direction |
+```
+
 ## Phase 3 — Load Methodology Guides
 
 Check for pre-generated methodology guides:
@@ -391,6 +457,242 @@ Relevant guide mapping:
 
 If no guides exist, use built-in methodology knowledge and note:
 "Run `/qa-methodology-refine <topic>` to generate richer guidance for this finding."
+
+## Phase 2.7 — Risk-Weighted Coverage Gap Scoring (BL-013)
+
+Skip if `QA_SKIP_RISK_SCORE=1` is set.
+
+**Step 1 — Collect change and fix history**
+
+```bash
+_RECENT_CHANGED=$(git log --since="30 days ago" --name-only --format='' 2>/dev/null \
+  | grep -E "\.(ts|tsx|js|jsx|py|java|cs|rb)$" | sort -u)
+echo "RECENT_CHANGED_FILES: $(echo "$_RECENT_CHANGED" | grep -c '.' 2>/dev/null || echo 0)"
+
+_FIX_FILES=$(git log --since="90 days ago" --format='' \
+  --grep="fix\|bug\|patch\|hotfix\|defect" --name-only 2>/dev/null \
+  | grep -E "\.(ts|tsx|js|jsx|py|java|cs|rb)$" | sort -u)
+echo "FIX_COMMIT_FILES: $(echo "$_FIX_FILES" | grep -c '.' 2>/dev/null || echo 0)"
+
+echo "RECENT_SAMPLE:"; echo "$_RECENT_CHANGED" | head -10
+echo "FIX_SAMPLE:"; echo "$_FIX_FILES" | head -10
+```
+
+**Step 2 — Score each gap file**
+
+| Signal | Points |
+|--------|--------|
+| File in `_RECENT_CHANGED` (changed last 30 days) | +3 |
+| File in `_FIX_FILES` (fix/bug commit last 90 days) | +2 |
+| Path contains `auth`, `payment`, `checkout`, `billing`, `password`, `token`, `session`, `wallet`, `stripe`, `oauth` | +3 |
+| High complexity (>150 lines, nested conditionals, multiple exports) | +2 |
+| Already has >50% statement coverage | −5 |
+
+**Step 3 — Produce ranked Top 5 table**
+
+```
+## Risk-Weighted Coverage Gaps
+| Rank | File | Risk Score | Signals |
+|------|------|------------|---------|
+| 1 | src/auth/login.ts | 8 | recently_changed + fix_commits + auth_path |
+...
+```
+
+**Pass this ranked list to Phase 3.5** as the prioritized fill order — address files by risk score descending, not alphabetically or by coverage percentage alone.
+
+---
+
+## Phase 3.5 — Coverage Gap Fill Loop
+
+Skip this phase if: no test runner is available, `_LANG` is not JS/TS or Python, or
+coverage already meets threshold (0 source files below 80%). Threshold configurable via
+`QA_COV_THRESHOLD` env var (default: 80).
+
+**Step 1 — Run Coverage**
+
+```bash
+_COV_THRESHOLD="${QA_COV_THRESHOLD:-80}"
+
+if grep -q '"jest"\|"vitest"' package.json 2>/dev/null; then
+  _RUNNER=$(grep -q '"vitest"' package.json && echo "vitest" || echo "jest")
+  npx "$_RUNNER" --coverage --coverageReporters=json --silent 2>/dev/null | tail -5
+  _COV_FILE="coverage/coverage-summary.json"
+elif [ -f pytest.ini ] || [ -f pyproject.toml ]; then
+  python3 -m pytest --cov=. --cov-report=json -q 2>/dev/null | tail -5
+  _COV_FILE="coverage.json"
+else
+  echo "COVERAGE: no supported runner found — skipping Phase 3.5"
+  # Continue to Phase 4
+fi
+```
+
+Parse coverage JSON and extract under-threshold files:
+
+```python
+python3 - << 'PYEOF'
+import json, os, sys
+
+threshold = int(os.environ.get('QA_COV_THRESHOLD', '80'))
+
+# Try Jest coverage-summary.json
+cov_file = 'coverage/coverage-summary.json'
+if not os.path.exists(cov_file):
+    cov_file = 'coverage.json'
+if not os.path.exists(cov_file):
+    print("COV_FILE: not found — skipping")
+    sys.exit(0)
+
+data = json.load(open(cov_file, encoding='utf-8'))
+
+# Jest format: { "total": {...}, "path/to/file.ts": { "statements": {"pct": N}, ... } }
+under = []
+for path, metrics in data.items():
+    if path == 'total':
+        continue
+    if isinstance(metrics, dict) and 'statements' in metrics:
+        pct = metrics['statements'].get('pct', 100)
+        if pct < threshold:
+            under.append((path, pct))
+
+under.sort(key=lambda x: x[1])
+print(f"FILES_BELOW_{threshold}PCT: {len(under)}")
+for f, pct in under[:10]:
+    print(f"  {pct:.0f}% — {f}")
+PYEOF
+```
+
+**Step 2 — Generate Targeted Tests** (up to 5 files per iteration, max 3 iterations)
+
+For each under-threshold source file:
+1. Read the source file
+2. Identify uncovered functions/branches (lines with 0 hits in coverage data)
+3. Read the project's existing test style (framework + naming conventions from similar spec files)
+4. Generate targeted tests covering the uncovered paths
+5. Append to existing spec file if present; create new spec file following project conventions
+6. Write via Write tool
+
+**Step 3 — Re-run Coverage** and compare before/after.
+
+**Step 4 — Repeat** up to 3 total iterations until all files reach threshold or no further
+progress is made.
+
+Add coverage summary table to Phase 5 report:
+```
+| File | Coverage Before | Coverage After | Tests Generated |
+```
+
+## Phase 3.8 — Two-Tier Mutation Testing (BL-034)
+
+Skip entirely if `QA_SKIP_MUTATION=1` or `_DIFF_COUNT=0`.
+
+### Tier 1 — Tool-Based Incremental Mutation
+
+**JS/TS** (if `_STRYKER_AVAILABLE=1`):
+```bash
+if [ "$_STRYKER_AVAILABLE" = "1" ] && [ "$_DIFF_COUNT" -gt 0 ]; then
+  _MUTATE_GLOBS=$(echo "$_DIFF_FILES" | grep -E "\.(ts|tsx|js|jsx)$" | tr '\n' ',')
+  [ -n "$_MUTATE_GLOBS" ] && \
+    npx stryker run --mutate "${_MUTATE_GLOBS%,}" --incremental \
+    --reporters json,clear-text 2>&1 | tail -40 | tee "$_TMP/qa-audit-stryker.txt"
+fi
+```
+
+**Java** (if `_PITEST_AVAILABLE=1`):
+```bash
+if [ "$_PITEST_AVAILABLE" = "1" ] && [ "$_DIFF_COUNT" -gt 0 ]; then
+  mvn pitest:mutationCoverage -DwithHistory=true -DmutationThreshold=60 -q 2>&1 \
+    | tail -30 | tee "$_TMP/qa-audit-pitest.txt"
+fi
+```
+
+**Python** (if `_MUTMUT_AVAILABLE=1`):
+```bash
+if [ "$_MUTMUT_AVAILABLE" = "1" ] && [ "$_DIFF_COUNT" -gt 0 ]; then
+  _PY_DIFF=$(echo "$_DIFF_FILES" | grep "\.py$" | tr '\n' ' ')
+  [ -n "$_PY_DIFF" ] && mutmut run --paths-to-mutate $_PY_DIFF 2>&1 \
+    | tail -30 | tee "$_TMP/qa-audit-mutmut.txt"
+  mutmut results 2>&1 | tail -20 | tee -a "$_TMP/qa-audit-mutmut.txt" 2>/dev/null || true
+fi
+```
+
+Parse whichever output file was produced. Extract: raw mutation score %, total mutants, survived mutant list (file:line + mutation description).
+
+### Tier 2 — Claude Survived Mutant Analysis
+
+For each survived mutant (up to 20 per run), classify:
+- **EQUIVALENT** — same observable behavior (e.g., `x <= 0` vs `x < 1` for integers, dead branches, cosmetic swaps). Exclude from adjusted score.
+- **GENUINE-GAP** — real test gap. Generate a **killing assertion** in the project's test style.
+
+Example:
+```typescript
+// Kills mutant at auth/login.ts:47 — `&&` changed to `||`
+expect(canAccess({ role: 'user', verified: false })).toBe(false);
+```
+
+### Thresholds
+
+- **Adjusted score** = killed / (total − EQUIVALENT_tool − EQUIVALENT_claude) × 100
+- Score < 40%: **BLOCK** — CRITICAL finding; apply −5 to CI/Coverage dimension in Phase 4
+- Score 40–59%: **WARN** — IMPORTANT finding
+- Score ≥ 60%: PASS
+- Override with `QA_SKIP_MUTATION_GATE=1`
+
+Include in Phase 5 report:
+```
+## Mutation Testing (Phase 3.8)
+- Tool: Stryker / Pitest / mutmut / none  Diff files: N
+- Total mutants: N  Killed: N  Survived: N  Raw score: N%
+- EQUIVALENT (tool): N  EQUIVALENT (Claude): N  Adjusted score: N% → PASS / WARN / BLOCK
+- Killing assertions generated: N
+
+| File:Line | Mutation | Classification | Killing Assertion |
+|-----------|----------|----------------|-------------------|
+```
+
+---
+
+## Phase 3.9 — MutaHunter LLM-Native Mutant Generation (BL-035)
+
+**Opt-in only.** Skip unless ALL: `_MUTAHUNTER_AVAILABLE=1` AND `QA_MUTAHUNTER=1` AND `QA_SKIP_MUTATION!=1` AND `_DIFF_COUNT>0`.
+
+**Few-shot seeding:**
+```bash
+if [ "${QA_MUTAHUNTER:-0}" = "1" ]; then
+  git log --since="180 days ago" --format="%h %s" \
+    --grep="fix\|bug\|patch\|hotfix" 2>/dev/null | head -5
+fi
+```
+Read diffs of top 3 fix commits; note patterns (null-check additions, off-by-one fixes, auth guard insertions) as implicit mutation guidance.
+
+**Run (up to 3 diff files, 50-mutant cap ~$0.05):**
+```bash
+if [ "$_MUTAHUNTER_AVAILABLE" = "1" ] && [ "${QA_MUTAHUNTER:-0}" = "1" ] && \
+   [ "${QA_SKIP_MUTATION:-0}" != "1" ] && [ "$_DIFF_COUNT" -gt 0 ]; then
+  for _mh_file in $(echo "$_DIFF_FILES" | head -3); do
+    mutahunter run \
+      --test-command "$_TEST_CMD" \
+      --model "claude-haiku-4-5-20251001" \
+      --source-path "$_mh_file" \
+      --max-mutations 50 \
+      2>&1 | tail -25 | tee -a "$_TMP/qa-audit-mutahunter.txt"
+  done
+fi
+```
+
+**Scientific debugging loop** (max 3 turns per survived mutant):
+1. **Hypothesize**: why did this mutant survive (what code path isn't tested)?
+2. **Generate**: minimal assertion targeting the gap.
+3. **Validate**: explain why the assertion kills the mutant.
+4. Refine once if hypothesis was incomplete.
+
+Add sub-section to Phase 5 mutation block:
+```
+### MutaHunter Results (opt-in)
+- Files: N  Mutants: N  Killed: N  Survived: N  Cost: ~$N
+- Scientific debugging turns: N  Additional killing assertions: N
+```
+
+---
 
 ## Phase 4 — Score
 
@@ -469,6 +771,90 @@ Ranked by impact (CRITICAL → IMPORTANT → NICE-TO-HAVE):
 <list qa-methodology/references/*.md with one-line descriptions>
 OR
 "No methodology guides generated yet. Run `/qa-methodology-refine <topic>` to enrich future audits."
+```
+
+## CTRF Output
+
+```python
+python3 - << 'PYEOF'
+import json, os, time
+
+tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+report_path = os.path.join(tmp, 'qa-audit-report.md')
+
+# Read score from report if available
+score = 0
+try:
+    content = open(report_path, encoding='utf-8').read()
+    import re
+    m = re.search(r'Overall Score:\s*(\d+)/100', content)
+    if m:
+        score = int(m.group(1))
+except:
+    pass
+
+# 5 methodology dimension tests — map to passed/failed based on score tiers
+dimensions = [
+    ('Pyramid Balance',            score >= 60),
+    ('Test Isolation',             score >= 55),
+    ('Test Data',                  score >= 50),
+    ('Assertion & Naming Quality', score >= 55),
+    ('CI / Coverage & Reliability', score >= 50),
+]
+
+tests = []
+for name, passed in dimensions:
+    tests.append({
+        'name': name,
+        'status': 'passed' if passed else 'failed',
+        'duration': 0,
+        'suite': 'methodology',
+    })
+
+# Add OD/ID flaky tests as individual entries
+flaky_registry = 'qa-flaky-registry.json'
+if os.path.exists(flaky_registry):
+    try:
+        reg = json.load(open(flaky_registry, encoding='utf-8'))
+        for key, info in reg.get('tests', {}).items():
+            if info.get('flakeRate', 0) > 0.2:
+                tests.append({
+                    'name': key,
+                    'status': 'failed',
+                    'duration': 0,
+                    'suite': 'flakiness',
+                    'message': f'flakeRate={info["flakeRate"]:.2f} ({info.get("classification","suspected")})',
+                })
+    except:
+        pass
+
+passed_count = sum(1 for t in tests if t['status'] == 'passed')
+failed_count = sum(1 for t in tests if t['status'] == 'failed')
+now_ms = int(time.time() * 1000)
+
+ctrf = {
+    'results': {
+        'tool': {'name': 'qa-audit'},
+        'summary': {
+            'tests': len(tests),
+            'passed': passed_count,
+            'failed': failed_count,
+            'pending': 0,
+            'skipped': 0,
+            'other': 0,
+            'start': now_ms - 1000,
+            'stop': now_ms,
+        },
+        'tests': tests,
+        'environment': {'reportName': 'qa-audit', 'score': score},
+    }
+}
+
+out = os.path.join(tmp, 'qa-audit-ctrf.json')
+json.dump(ctrf, open(out, 'w', encoding='utf-8'), indent=2)
+print(f'CTRF_WRITTEN: {out}')
+print(f'  tests={len(tests)} passed={passed_count} failed={failed_count} score={score}')
+PYEOF
 ```
 
 ## Important Rules

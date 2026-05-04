@@ -5,6 +5,37 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.13.0.0 — 2026-05-03 — [S] quick-wins: AndroidWorld templates, NL tests, OTel tracing, Honeycomb CI, Lost Pixel, test impact scoping
+
+### qa-mobile
+- Phase 2.5: AndroidWorld template matching (BL-048) — maps discovered screens to 20 task categories (Clock, Calendar, Contacts, File Manager, Settings, Browser, Messaging, Email, Maps, Camera, Notes, Tasks, Shopping, Media, Health, Finance, Auth, Search, Notifications, Forms); generates framework-appropriate tests per category
+
+### qa-web
+- Phase 2 NL mode (BL-049): Shortest natural-language test generation — `<feature>.shortest.ts` pattern when `_SHORTEST_AVAILABLE=1`; reads `tests.nl.md` if present
+- Preamble: `_SHORTEST_AVAILABLE` + `_NL_TESTS_EXIST` detection
+- Phase 2 OTel tracing (BL-055): injects W3C `traceparent` header into all test-driven HTTP requests via `page.route()`; annotates failures with `traceId` for backend correlation
+
+### qa-api
+- Phase 3 OTel header (BL-055): injects `traceparent` into `APIRequestContext` when `_OTEL_AVAILABLE=1`; annotates CTRF failure messages with trace IDs
+- Preamble: `_OTEL_AVAILABLE` detection (`OTEL_EXPORTER_OTLP_ENDPOINT` presence)
+
+### qa-visual
+- Phase 4 Lost Pixel fallback (BL-061): when neither `APPLITOOLS_API_KEY` nor `CHROMATIC_PROJECT_TOKEN` is set, auto-generates `lostpixel.config.ts` with Tailwind-derived breakpoints `[375, 768, 1280, 1920]`; coexists with Playwright `toHaveScreenshot`
+
+### qa-heal
+- Phase 0.5 test impact scoping (BL-063): `git diff --name-only origin/main` → stem-based co-located test mapping; scopes heal run to impacted tests when `_IMPACTED_COUNT > 0`; falls back to full suite when no mapping found
+
+### CI (.github/workflows/qa-report.yml)
+- Honeycomb opt-in step (BL-058): emits one OTel event per QA domain to Honeycomb Events API; activated by `HONEYCOMB_API_KEY` secret; dataset configurable via `HONEYCOMB_DATASET` var
+
+### learning-sources (catalog expansion)
+- `qa-tools.md`: expanded from 30 → 74 entries (BACKLOG sources: Storybook, fast-check, Litmus, Pyroscope, Stryker, BackstopJS, Playwright MCP, Midscene, shortest, Artillery MCP, GoReplay, 35+ repos)
+- `qa-methodology.md`: expanded from 22 → 24 entries (Trunk flaky-tests blog, PactFlow blog, Meta ACH mutation testing research)
+- `security-a11y-ai.md`: expanded from 20 → 36 entries (sniff, ai-pentest-agent, Aura, testsigma, AppAgent, MobileAgent, UI-TARS, OmniParser, HolmesGPT, TestZeus, TestPilot2, Autonomous-QA-Agent, FinalRun, SWE-AF, Passmark)
+- `INDEX.md`: updated entry counts to 74/24/28/36
+
+---
+
 ## v1.12.0.0 — 2026-05-03 — learning-sources-refinement skill + catalog-first integration
 
 ### learning-sources-refinement (new skill)

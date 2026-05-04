@@ -1,5 +1,5 @@
 # Learning Sources: Security, Accessibility & AI/Agent Testing
-<!-- updated: 2026-05-03 | entries: 20 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-04 | entries: 43 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skills
 
@@ -17,7 +17,11 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | Nuclei Templates | https://github.com/projectdiscovery/nuclei | github-repo | vulnerability scanning | 2026-05-03 | 🌟 28k+ stars — 9000+ templates |
 | Nuclei Docs | https://docs.projectdiscovery.io/tools/nuclei/overview | official-docs | vulnerability scanning | 2026-05-03 | ⭐ |
 | BurpMCP | https://github.com/swgee/BurpMCP | github-repo | authenticated testing | 2026-05-03 | Burp Suite MCP extension |
-| OFFAT (OWASP OFFAT) | https://github.com/OWASP/OFFAT | github-repo | API fuzzing | 2026-05-03 | OWASP API Top 10 fuzzing from OpenAPI |
+| Aboudjem/sniff | https://github.com/Aboudjem/sniff | github-repo | network sniffing | 2026-05-03 | HTTP/S traffic capture for security analysis |
+| CyberWardion/ai-pentest-agent | https://github.com/CyberWardion/ai-pentest-agent | github-repo | AI pentesting | 2026-05-03 | AI-driven penetration testing agent |
+| trufflesecurity/trufflehog | https://github.com/trufflesecurity/trufflehog | github-repo | secrets scanning | 2026-05-04 | 🌟 26k stars — 800+ secret types, active credential verification |
+| semgrep/semgrep | https://github.com/semgrep/semgrep | github-repo | static analysis / SAST | 2026-05-04 | 🌟 15k stars — fast multi-language SAST with 30+ languages |
+| dependency-check/DependencyCheck | https://github.com/dependency-check/DependencyCheck | github-repo | SCA / CVE scanning | 2026-05-04 | 🌟 7.5k stars — OWASP SCA; detects known CVEs in dependencies |
 
 ---
 
@@ -26,11 +30,14 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | Source | URL | Type | Topic | Last Verified | Notes |
 |--------|-----|------|-------|---------------|-------|
 | W3C WAI WCAG 2.1 | https://www.w3.org/WAI/WCAG21/quickref/ | research/standard | accessibility | 2026-05-03 | 📄 ⭐ WCAG authority |
+| W3C WAI WCAG 2.2 | https://www.w3.org/WAI/WCAG22/quickref/ | research/standard | accessibility | 2026-05-04 | 📄 ⭐ Current WCAG standard — supersedes 2.1 |
 | W3C WAI ARIA | https://www.w3.org/WAI/ARIA/apg/ | official-docs | accessibility | 2026-05-03 | ⭐ ARIA patterns |
 | Deque axe-core | https://www.deque.com/axe/axe-for-web/ | official-docs | accessibility | 2026-05-03 | ⭐ |
 | dequelabs/axe-core GitHub | https://github.com/dequelabs/axe-core | github-repo | accessibility | 2026-05-03 | 🌟 |
 | navable-web-accessibility-mcp | https://github.com/web-DnA/navable-web-accessibility-mcp | github-repo | accessibility | 2026-05-03 | MCP-based a11y testing |
 | Pa11y | https://pa11y.org/ | official-docs | accessibility | 2026-05-03 | Automated a11y scanning |
+| architzero/Aura-accessibility-scanner | https://github.com/architzero/Aura-accessibility-scanner | github-repo | accessibility | 2026-05-03 | AI-generated alt text + axe violations |
+| Farhod75/ai-a11y-testing | https://github.com/Farhod75/ai-a11y-testing | github-repo | accessibility | 2026-05-03 | AI-assisted accessibility testing patterns |
 
 ---
 
@@ -44,3 +51,18 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | NihadMemmedli/quorvex_ai | https://github.com/NihadMemmedli/quorvex_ai | github-repo | AI test generation | 2026-05-03 | 4-stage Plan/Generate/Validate/Heal |
 | modal-labs/devlooper | https://github.com/modal-labs/devlooper | github-repo | AI code loop | 2026-05-03 | 🌟 468 stars — diagnose-then-fix loop |
 | proffesor-for-testing/agentic-qe | https://github.com/proffesor-for-testing/agentic-qe | github-repo | agentic QA | 2026-05-03 | 60+ agents, pattern memory, risk-weighted gaps |
+| testsigmahq/testsigma | https://github.com/testsigmahq/testsigma | github-repo | AI QA platform | 2026-05-03 | 1.2k stars — GenAI QA with Generator/Runner/Healer agents |
+| final-run/finalrun-agent | https://github.com/final-run/finalrun-agent | github-repo | Mobile QA AI | 2026-05-03 | 253 stars — YAML-driven mobile QA agent |
+| Agent-Field/SWE-AF | https://github.com/Agent-Field/SWE-AF | github-repo | SWE agent fleet | 2026-05-03 | 742 stars — hardness-aware agent routing |
+| bug0inc/passmark | https://github.com/bug0inc/passmark | github-repo | Visual AI consensus | 2026-05-03 | 690 stars — multi-model visual test consensus |
+| mnotgod96/AppAgent | https://github.com/mnotgod96/AppAgent | github-repo | Mobile AI agent | 2026-05-03 | 🌟 6.7k stars — multimodal mobile test agent |
+| X-PLUG/MobileAgent | https://github.com/X-PLUG/MobileAgent | github-repo | Mobile AI agent | 2026-05-03 | 🌟 8.6k stars — multi-agent with Reflector for flaky recovery |
+| bytedance/UI-TARS | https://github.com/bytedance/UI-TARS | github-repo | Vision UI agent | 2026-05-03 | 🌟 10.2k stars — vision-native UI interaction model |
+| microsoft/OmniParser | https://github.com/microsoft/OmniParser | github-repo | UI parsing | 2026-05-03 | 🌟 24.7k stars — CV-based UI element detection |
+| neu-se/testpilot2 | https://github.com/neu-se/testpilot2 | github-repo | LLM test generation | 2026-05-03 | LLM-driven test suite generation research |
+| robusta-dev/holmesgpt | https://github.com/robusta-dev/holmesgpt | github-repo | AI RCA | 2026-05-03 | 🌟 2.3k stars — CNCF Sandbox AI root-cause analysis |
+| EsraaKamel11/Autonomous-QA-Agent-Framework | https://github.com/EsraaKamel11/Autonomous-QA-Agent-Framework | github-repo | Autonomous QA | 2026-05-03 | Confidence-gated repair pipeline (auto-commit / review / issue) |
+| test-zeus-ai/testzeus-hercules | https://github.com/test-zeus-ai/testzeus-hercules | github-repo | Gherkin execution | 2026-05-03 | 997 stars — Gherkin + DOM distillation, no hardcoded selectors |
+| confident-ai/deepeval | https://github.com/confident-ai/deepeval | github-repo | LLM evaluation | 2026-05-04 | 🌟 15.1k stars — pytest-like LLM eval: RAG, agents, multimodal |
+| promptfoo/promptfoo | https://github.com/promptfoo/promptfoo | github-repo | LLM red-teaming | 2026-05-04 | 🌟 20.8k stars — LLM eval + automated red-teaming CLI |
+| openai/evals | https://github.com/openai/evals | github-repo | LLM benchmarks | 2026-05-04 | 🌟 18.4k stars — open-source LLM benchmark registry |

@@ -676,7 +676,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-048 — AndroidWorld Task Templates as Scenario Seeds `[S]`
+#### BL-048 — AndroidWorld Task Templates as Scenario Seeds `[S]` ✅ **Implemented v1.13.0.0**
 **Source:** [google-research/android_world](https://github.com/google-research/android_world) — 750 stars
 **Target skills:** `qa-mobile`
 **Description:** 116 validated task templates across 20 real-world Android apps with dynamic parameterization. Import as a "standard scenario library" — when testing a new app, Claude matches screens to the closest AndroidWorld task template and adapts it, cutting test authoring time significantly.
@@ -690,7 +690,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ### 📋 Requirements-to-Tests Bridge
 
-#### BL-049 — Shortest: TCMS Test Cases → Playwright Execution `[S]`
+#### BL-049 — Shortest: TCMS Test Cases → Playwright Execution `[S]` ✅ **Implemented v1.13.0.0**
 **Source:** [antiwork/shortest](https://github.com/antiwork/shortest) — 5.6k stars
 **Target skills:** `qa-web`, `qa-manager`
 **Description:** Tests written as plain English strings are interpreted by Claude at runtime into Playwright actions. Bridge path: TCMS test case text → `shortest()` call → automated Playwright execution. Zero selector maintenance; the NL sentence is the stable artifact.
@@ -769,7 +769,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ### 🔭 Test Observability & Distributed Tracing
 
-#### BL-055 — `traceparent` Injection in Playwright Tests `[S]`
+#### BL-055 — `traceparent` Injection in Playwright Tests `[S]` ✅ **Implemented v1.13.0.0**
 **Source:** [kubeshop/tracetest](https://github.com/kubeshop/tracetest) (1.3k), [open-telemetry/opentelemetry-js-contrib](https://github.com/open-telemetry/opentelemetry-js-contrib) (904), [open-telemetry/opentelemetry-demo](https://github.com/open-telemetry/opentelemetry-demo) (3.1k)
 **Target skills:** `qa-web`, `qa-api`
 **Description:** In Playwright's `beforeEach`, create an OTel span for the test and inject its `traceparent` header into all page requests via `page.route()`. Every test-driven HTTP call now carries a known trace ID. On failure, include the trace ID as a link to the project's Jaeger/Tempo backend.
@@ -805,7 +805,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-058 — Honeycomb buildevents CI Trace Wrapper `[S]`
+#### BL-058 — Honeycomb buildevents CI Trace Wrapper `[S]` ✅ **Implemented v1.13.0.0**
 **Source:** [honeycombio/buildevents](https://github.com/honeycombio/buildevents) — 230 stars
 **Target skills:** CI workflows (`.github/workflows/`)
 **Description:** Wrap CI test commands in `buildevents cmd` to build a hierarchical OTel trace of the entire build — each test phase becomes a child span. View the full build timeline in Honeycomb with test phases as spans and failures as errored spans with timing context.
@@ -843,7 +843,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-061 — Lost Pixel Self-Hosted Multi-Browser Visual `[S]`
+#### BL-061 — Lost Pixel Self-Hosted Multi-Browser Visual `[S]` ✅ **Implemented v1.13.0.0**
 **Source:** [lost-pixel/lost-pixel](https://github.com/lost-pixel/lost-pixel) — open source (MIT)
 **Target skills:** `qa-visual`
 **Description:** Open-source, fully self-hosted visual regression across Chrome, Firefox, Safari with configurable responsive breakpoints. Used when cloud visual-testing services are unavailable (privacy, security). Auto-generate `lostpixel.config.ts` with breakpoints derived from project's Tailwind/CSS config.
@@ -870,7 +870,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-063 — Chisel MCP Test Impact Analysis for Scoped Healing `[S]`
+#### BL-063 — Chisel MCP Test Impact Analysis for Scoped Healing `[S]` ✅ **Implemented v1.13.0.0**
 **Source:** [GitHub test-impact-analysis topic](https://github.com/topics/test-impact-analysis)
 **Target skills:** `qa-heal`, `qa-team`
 **Description:** Before running the full repair pipeline, use test impact analysis to identify only the tests impacted by changed files. Bounds the cost and scope of `qa-heal` to tests that could actually be broken by the PR.

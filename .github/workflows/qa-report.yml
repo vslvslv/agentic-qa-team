@@ -1,0 +1,64 @@
+name: QA Report
+on:
+  workflow_run:
+    workflows: ["*"]
+    types: [completed]
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion != 'skipped'
+    steps:
+      - name: Download CTRF artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: qa-*-ctrf
+          merge-multiple: true
+          path: ctrf-reports/
+        continue-on-error: true
+
+      - name: Post test results to PR
+        uses: ctrf-io/github-test-reporter@v1
+        with:
+          report-path: 'ctrf-reports/*.json'
+          summary: true
+          pull-request-comment: true
+          update-comment: true
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # BL-058 — Honeycomb buildevents: emit one OTel event per QA domain (opt-in)
+      # Set HONEYCOMB_API_KEY secret and optionally HONEYCOMB_DATASET var to enable.
+      - name: Emit QA domain events to Honeycomb (opt-in)
+        if: env.HONEYCOMB_API_KEY != ''
+        run: |
+          for f in ctrf-reports/*.json; do
+            [ -f "$f" ] || continue
+            domain=$(basename "$f" | sed 's/-ctrf\.json//')
+            passed=$(python3 -c "
+import json, sys
+d = json.load(open('$f'))
+s = d.get('results', {}).get('summary', {})
+print(s.get('passed', 0))" 2>/dev/null || echo 0)
+            failed=$(python3 -c "
+import json, sys
+d = json.load(open('$f'))
+s = d.get('results', {}).get('summary', {})
+print(s.get('failed', 0))" 2>/dev/null || echo 0)
+            curl -s -X POST \
+              "https://api.honeycomb.io/1/events/${HONEYCOMB_DATASET:-qa-agentic-team}" \
+              -H "X-Honeycomb-Team: $HONEYCOMB_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"qa.domain\": \"$domain\",
+                \"qa.passed\": $passed,
+                \"qa.failed\": $failed,
+                \"build.run_id\": \"${{ github.run_id }}\",
+                \"build.branch\": \"${{ github.ref_name }}\",
+                \"build.workflow\": \"${{ github.event.workflow_run.name }}\"
+              }" 2>/dev/null || true
+          done
+        env:
+          HONEYCOMB_API_KEY: ${{ secrets.HONEYCOMB_API_KEY }}
+          HONEYCOMB_DATASET: ${{ vars.HONEYCOMB_DATASET }}

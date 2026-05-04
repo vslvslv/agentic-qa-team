@@ -1,5 +1,5 @@
 # Learning Sources: Programming Languages
-<!-- updated: 2026-05-03 | entries: 28 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-04 | entries: 33 | skill-version: 1.12.0.0 -->
 
 Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 
@@ -33,6 +33,10 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | Ruby Enumerable | https://ruby-doc.org/core/Enumerable.html | official-docs | Ruby | 2026-05-03 | ⭐ |
 | Google Shell Style Guide | https://google.github.io/styleguide/shellguide.html | official-docs | Bash | 2026-05-03 | ⭐ |
 | ShellCheck Common Warnings | https://www.shellcheck.net/wiki/SC2034 | official-docs | Bash | 2026-05-03 | ⭐ |
+| Go testing package | https://pkg.go.dev/testing | official-docs | Go | 2026-05-04 | ⭐ Standard library: T/B/F, table-driven tests, fuzz |
+| Rust — Writing Automated Tests | https://doc.rust-lang.org/book/ch11-00-testing.html | official-docs | Rust | 2026-05-04 | ⭐ Official Rust book ch.11; unit + integration tests |
+| pytest How-to Guides | https://docs.pytest.org/en/stable/how-to/index.html | official-docs | Python | 2026-05-04 | ⭐ Fixtures, parametrize, mocking, plugins |
+| pytest Fixtures Reference | https://docs.pytest.org/en/stable/reference/fixtures.html | official-docs | Python | 2026-05-04 | ⭐ Built-in fixtures, scopes, conftest patterns |
 
 ---
 
@@ -50,6 +54,7 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | markets/awesome-ruby | https://github.com/markets/awesome-ruby | github-repo | Ruby | 2026-05-03 | 🌟 Curated list |
 | alebcay/awesome-shell | https://github.com/alebcay/awesome-shell | github-repo | Bash | 2026-05-03 | 🌟 Curated list |
 | stoeffel/awesome-fp-js | https://github.com/stoeffel/awesome-fp-js | github-repo | Functional / JS | 2026-05-03 | 🌟 FP patterns in JS |
+| stretchr/testify | https://github.com/stretchr/testify | github-repo | Go | 2026-05-04 | 🌟 26k stars — Go assertions, mocks, and test suites |
 
 ---
 

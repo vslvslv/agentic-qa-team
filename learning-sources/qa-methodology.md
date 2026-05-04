@@ -1,5 +1,5 @@
 # Learning Sources: QA Methodology
-<!-- updated: 2026-05-03 | entries: 22 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-04 | entries: 26 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 
@@ -31,6 +31,8 @@ Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 | Martin Fowler — Testing | https://martinfowler.com/testing/ | blog | all | 2026-05-03 | 🌟 Foundational test strategy |
 | Kent C. Dodds — Write Tests | https://kentcdodds.com/blog/write-tests | blog | test-pyramid | 2026-05-03 | 📰 Testing Trophy concept |
 | Tracetest Docs | https://docs.tracetest.io/ | official-docs | ci-cd-testing | 2026-05-03 | Distributed trace-based testing |
+| Trunk — Flaky Tests | https://trunk.io/flaky-tests | official-docs | flakiness | 2026-05-03 | Flaky test detection + quarantine SaaS |
+| PactFlow Blog | https://pactflow.io/blog/ | blog | contract-testing | 2026-05-03 | Contract testing patterns + PactFlow AI beta |
 
 ---
 
@@ -40,6 +42,7 @@ Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 |--------|-----|------|-------|---------------|-------|
 | ISTQB CTFL 4.0 Syllabus | https://www.istqb.org/certifications/certified-tester-foundation-level | research/standard | all | 2026-05-03 | 📄 Authoritative terminology |
 | ISTQB Glossary | https://glossary.istqb.org/ | research/standard | all | 2026-05-03 | 📄 |
+| Meta ACH: Mutation-Guided LLM Test Generation | https://arxiv.org/abs/2501.12862 | research/standard | coverage / tdd | 2026-05-03 | 📄 arXiv:2501.12862 — mutation-guided LLM test synthesis |
 
 ---
 
@@ -51,3 +54,5 @@ Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 | Codium-ai/cover-agent | https://github.com/Codium-ai/cover-agent | github-repo | coverage | 2026-05-03 | Coverage gap filler via LLM |
 | Intelligent-CAT-Lab/FlakyDoctor | https://github.com/Intelligent-CAT-Lab/FlakyDoctor | github-repo | flakiness | 2026-05-03 | Neurosymbolic flaky repair (ISSTA 2024) |
 | kubeshop/tracetest | https://github.com/kubeshop/tracetest | github-repo | ci-cd-testing | 2026-05-03 | Trace-based test assertions |
+| cucumber/cucumber-js | https://github.com/cucumber/cucumber-js | github-repo | bdd | 2026-05-04 | 🌟 5.3k stars — official JS Cucumber for Gherkin execution |
+| pact-foundation/pact_broker | https://github.com/pact-foundation/pact_broker | github-repo | contract-testing | 2026-05-04 | 742 stars — OSS contract registry; share + verify pacts |

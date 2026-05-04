@@ -98,3 +98,4 @@
 - BDD guide underwent largest growth (+2,385 lines): new sections on GraphQL BDD, OpenAPI validation, mobile BDD with Detox, WebSocket BDD, i18n/l10n, microservices BDD, and legacy migration.
 - Playwright doc grew from v11 to v21 (+~2,806 lines) covering HTTP auth, browser emulation, data-driven tests, WebSocket, GraphQL intercept, route management, and step decorators.
 - ISTQB CTFL 4.0 standardized terminology maintained across all methodology guides.
+learning-sources-refinement: 26 new sources added, 0 stale flagged — catalog ready for refine skills at 02:17

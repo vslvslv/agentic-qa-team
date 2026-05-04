@@ -155,6 +155,11 @@ _SEED_MODE="${QA_SEED_MODE:-clean}"
 echo "SEED_MODE: $_SEED_MODE"
 [ "$_SEED_MODE" = "chaos" ] && \
   echo "CHAOS_MODE: active — tests running against chaos-seeded data; new failures may indicate data-handling regressions"
+
+# OTel traceparent injection detection (BL-055)
+_OTEL_AVAILABLE=0
+[ -n "$OTEL_EXPORTER_OTLP_ENDPOINT" ] && _OTEL_AVAILABLE=1
+echo "OTEL_AVAILABLE: $_OTEL_AVAILABLE"
 ```
 
 If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
@@ -364,6 +369,27 @@ Use this output in Phase 3 to:
 - Tag pre-existing failures as `CI_GROUND_FAIL` so Phase 5 diagnosis can distinguish regressions from known failures
 
 ## Phase 3 — Generate API Tests
+
+### OTel Traceparent Header (BL-055)
+
+If `_OTEL_AVAILABLE=1`, add a `traceparent` header to all generated API requests so
+backend distributed traces can be correlated to specific test runs on failure.
+
+```typescript
+// Playwright APIRequestContext — add to test setup or request helper
+const traceId = crypto.randomUUID().replace(/-/g, '');
+const spanId = Math.random().toString(16).slice(2, 18).padStart(16, '0');
+const traceparent = `00-${traceId}-${spanId}-01`;
+test.info().annotations.push({ type: 'traceId', description: traceId });
+
+const response = await request.get('/api/endpoint', {
+  headers: { traceparent },
+});
+```
+
+Include the `traceId` annotation in CTRF `message` field on failure so the backend trace
+can be retrieved from Jaeger/Tempo. Only add traceparent when `OTEL_EXPORTER_OTLP_ENDPOINT`
+is set — do not add it unconditionally.
 
 ### DELETE endpoint policy (read before writing any test)
 

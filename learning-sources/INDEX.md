@@ -1,5 +1,5 @@
 # Learning Sources Catalog
-<!-- updated: 2026-05-03 | version: 1.12.0.0 -->
+<!-- updated: 2026-05-04 | version: 1.12.0.0 -->
 
 Maintained by `/learning-sources-refinement`. Run that skill to search for new sources,
 verify staleness, and update this catalog. All refine skills read from this catalog
@@ -9,10 +9,10 @@ before falling back to hardcoded URLs (catalog-first integration).
 
 | Domain | File | Entries | Last Updated |
 |--------|------|---------|--------------|
-| QA Tools | [qa-tools.md](qa-tools.md) | 30 | 2026-05-03 |
-| QA Methodology | [qa-methodology.md](qa-methodology.md) | 22 | 2026-05-03 |
-| Languages | [languages.md](languages.md) | 28 | 2026-05-03 |
-| Security, A11y & AI Testing | [security-a11y-ai.md](security-a11y-ai.md) | 20 | 2026-05-03 |
+| QA Tools | [qa-tools.md](qa-tools.md) | 86 | 2026-05-04 |
+| QA Methodology | [qa-methodology.md](qa-methodology.md) | 26 | 2026-05-04 |
+| Languages | [languages.md](languages.md) | 33 | 2026-05-04 |
+| Security, A11y & AI Testing | [security-a11y-ai.md](security-a11y-ai.md) | 43 | 2026-05-04 |
 
 ## Usage by Refine Skills
 
