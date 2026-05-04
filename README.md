@@ -1,25 +1,39 @@
 # QA Agentic Team
 
-A suite of Claude Code skills that give any project an autonomous QA team. One command launches specialized agents for web, API, mobile, performance, visual testing, and methodology auditing — each discovering your app's structure, generating test specs, executing them, and reporting results.
+A suite of Claude Code skills that give any project an autonomous QA team. One command launches specialized agents for web, API, mobile, performance, visual, accessibility, security, and more — each discovering your app's structure, generating test specs, executing them, and reporting results.
+
+> **Version:** see [VERSION](VERSION) · **Full docs:** [docs/](docs/index.md)
+
+---
 
 ## Skills
 
-| Skill | Command | What it does |
-|-------|---------|--------------|
-| **Orchestrator** | `/qa-team` | Auto-detects project type and tools, spawns all relevant agents in parallel (including methodology audit), aggregates results into a unified quality report |
-| **Web E2E** | `/qa-web` | Auto-detects Playwright, Cypress, or Selenium WebDriver; discovers pages/routes, writes specs, executes, reports coverage |
-| **API** | `/qa-api` | Language-driven: REST Assured (Java), pytest+requests (Python), HttpClient+NUnit (C#), RSpec+Faraday (Ruby), Playwright request context (JS/TS); reads OpenAPI/routes, generates contract tests |
-| **Mobile** | `/qa-mobile` | Auto-detects Detox (RN/Expo), Appium+WebDriverIO (native), or Maestro (cross-platform YAML); generates screen tests, runs on simulator/emulator |
-| **Performance** | `/qa-perf` | Auto-detects k6, JMeter, or Locust; writes load scripts, runs with ramp-up profiles, reports p50/p95/p99 |
-| **Visual** | `/qa-visual` | Captures Playwright screenshots, diffs against baselines, masks dynamic content, reports pixel regressions |
-| **Methodology Audit** | `/qa-audit` | Scores the existing test suite across 5 dimensions: pyramid balance, test isolation, test data strategy, naming quality, CI/coverage. Produces ranked recommendations with before/after code examples |
-| **QA Refine** | `/qa-refine` | Researches best practices for Playwright, Cypress, Selenium, k6, JMeter, Locust, Detox, Appium, Maestro from official docs + community sources; iteratively scores and refines reference guides; supports TypeScript, Java, Python, C#, Ruby |
-| **Methodology Refine** | `/qa-methodology-refine` | Researches QA methodology topics (test pyramid, TDD, BDD, test isolation, flakiness, coverage, contract testing, CI/CD, accessibility, shift-left, exploratory) and generates scored reference guides consumed by `/qa-audit` |
-| **Lang Refine** | `/lang-refine` | Researches programming language best practices, design patterns (GoF, SOLID, Clean Code) and idioms; generates reference guides for general, TypeScript, JavaScript, Java, Python, C#, Kotlin, Ruby, Bash, and functional patterns |
+| Command | What it does |
+|---------|--------------|
+| `/qa-team` | Orchestrator — auto-detects project type, spawns all relevant agents in parallel, aggregates results |
+| `/qa-web` | Web E2E — Playwright, Cypress, or Selenium; discovers routes, writes specs, executes |
+| `/qa-api` | API contract tests — language-driven (JS/TS, Java, Python, C#, Ruby); REST + GraphQL + OpenAPI |
+| `/qa-mobile` | Mobile tests — Detox (RN/Expo), Appium+WebDriverIO (native), or Maestro (cross-platform) |
+| `/qa-perf` | Performance — k6, JMeter, or Locust; ramp-up profiles, p50/p95/p99 thresholds |
+| `/qa-visual` | Visual regression — Playwright screenshots diffed against baselines; masks dynamic content |
+| `/qa-a11y` | Accessibility — axe-core + Playwright ARIA assertions + WCAG 2.2 AA reporting |
+| `/qa-security` | Security — OWASP ZAP DAST + Nuclei CVE scanning; auth bypass + injection checks |
+| `/qa-explore` | Exploratory testing — parallel swarm agents autonomously navigate and probe the app |
+| `/qa-component` | Component tests — Storybook interaction tests + React Testing Library unit coverage |
+| `/qa-seed` | Test data seeding — schema-aware (DDL / Prisma / TypeORM); clean or chaos mode |
+| `/qa-heal` | Self-healing — classifies CI failures (broken selector, timing, logic) and commits fixes |
+| `/qa-observability` | Observability RCA — reads OTel traces / Loki logs to root-cause QA failures |
+| `/qa-simulate` | User journey simulation — generates realistic user flows and executes them end-to-end |
+| `/qa-audit` | Methodology audit — scores test suite across pyramid balance, isolation, flakiness, naming, CI |
+| `/qa-refine` | Tool research — generates scored best-practice guides for Playwright, Cypress, k6, Appium, etc. |
+| `/qa-methodology-refine` | Methodology research — generates guides for TDD, BDD, test pyramid, contract testing, etc. |
+| `/lang-refine` | Language best practices — GoF patterns, SOLID, Clean Code for TS, Java, Python, C#, Ruby |
+| `/qa-meta-eval` | Adversarial eval — red-teams QA skill outputs using UserSimulatorAgent + JudgeAgent |
+| `/qa-manager` | Requirements bridge — Epic → Playwright skeletons (Mode A) · Figma → TCMS test cases (Mode B) |
+
+---
 
 ## Install
-
-### For users
 
 ```bash
 git clone https://github.com/vslvslv/agentic-qa-team
@@ -27,37 +41,7 @@ cd qa-agentic-team
 bash bin/setup
 ```
 
-Skills are installed as **symlinks** in `~/.claude/skills/` — keeping them in sync with the repo.
-
-To check for updates later:
-
-```bash
-bash bin/qa-team-update-check
-# UPGRADE_AVAILABLE: 1.0.0.0 → 1.1.0.0
-#   cd ~/qa-agentic-team && git pull && bash bin/setup
-```
-
-### For contributors
-
-```bash
-git clone https://github.com/vslvslv/agentic-qa-team
-cd qa-agentic-team
-bash bin/dev-setup      # creates ~/.claude/skills/qa-agentic-team → this repo
-```
-
-In dev mode, a single namespace symlink is created (`~/.claude/skills/qa-agentic-team → repo`). Edits to `SKILL.md.tmpl` files take effect after regenerating docs — no re-install needed:
-
-```bash
-# Edit source
-vim qa-web/SKILL.md.tmpl
-
-# Regenerate SKILL.md
-bash scripts/gen-skill-docs.sh
-
-# Done — skills update immediately
-```
-
-When finished: `bash bin/dev-teardown`
+Skills are installed as symlinks in `~/.claude/skills/` — edits stay in sync with the repo automatically.
 
 ## Quick start
 
@@ -67,201 +51,20 @@ Open Claude Code in your project and type:
 /qa-team
 ```
 
-The orchestrator auto-detects your stack and asks which agents to run.
+The orchestrator auto-detects your stack and spawns the relevant agents. Or invoke individual skills directly (`/qa-web`, `/qa-api`, `/qa-perf`, etc.).
 
-Or run individual agents:
-
-```
-/qa-web          # E2E browser tests only
-/qa-api          # API contract tests only
-/qa-mobile       # Mobile tests only
-/qa-perf         # Load/performance tests only
-/qa-visual       # Visual regression only
-/qa-audit        # Methodology audit only
-```
-
-## Requirements
-
-### All agents
-- Claude Code CLI
-- Node.js ≥ 18
-- `npx playwright install` (Playwright browsers — required by `/qa-web`, `/qa-visual`, `/qa-perf` Web Vitals)
-
-### `/qa-web`
-- **Playwright**: built-in (no extra install)
-- **Cypress**: `npm install -D cypress`
-- **Selenium WebDriver**: `npm install -D selenium-webdriver` + ChromeDriver
-
-### `/qa-mobile`
-- **React Native / Expo**: [Detox](https://wix.github.io/Detox/) (`npm install -D detox`)
-- **Native iOS/Android**: [Appium](https://appium.io/) + [WebDriverIO](https://webdriver.io/) (`npm install -D appium @wdio/cli`)
-- **Cross-platform**: [Maestro](https://maestro.mobile.dev/) (`curl -Ls "https://get.maestro.mobile.dev" | bash`)
-- iOS Simulator (macOS only) or Android Emulator via Android Studio
-
-### `/qa-perf`
-- [k6](https://k6.io/): `winget install k6` (Windows) · `brew install k6` (macOS) · `snap install k6` (Linux)
-- [JMeter](https://jmeter.apache.org/): `brew install jmeter` (macOS) · download from jmeter.apache.org
-- [Locust](https://locust.io/): `pip install locust`
-- Or: Playwright Web Vitals tests (no extra install — falls back automatically if no perf tool found)
-
-### `/qa-audit`
-- No extra install required — reads existing test files and config
-- Richer recommendations if methodology guides are pre-generated: run `/qa-methodology-refine <topic>` first
-
-### `/qa-methodology-refine`
-- No extra install required — uses WebFetch/WebSearch + writes markdown files
-
-## Configuration
-
-### Environment variables
-
-| Variable | Default | Used by |
-|---|---|---|
-| `E2E_USER_EMAIL` | `admin@example.com` | All agents |
-| `E2E_USER_PASSWORD` | `password123` | All agents |
-| `API_URL` | `http://localhost:3001` | `/qa-api`, `/qa-perf` |
-| `WEB_URL` | `http://localhost:3000` | `/qa-web`, `/qa-visual`, `/qa-perf` |
-
-Set these in your project's `.env.local` or export them before running.
-
-### Playwright config
-
-Agents look for `playwright.config.ts` at the project root and create one if missing. For best results, configure `baseURL` and `storageState`:
-
-```typescript
-import { defineConfig } from "@playwright/test";
-
-export default defineConfig({
-  use: {
-    baseURL: process.env.WEB_URL || "http://localhost:3000",
-    storageState: "e2e/.auth/user.json",
-  },
-  projects: [
-    { name: "setup", testMatch: /auth\.setup/ },
-    {
-      name: "chromium",
-      dependencies: ["setup"],
-      use: { ...devices["Desktop Chrome"] },
-    },
-  ],
-  snapshotDir: "./visual-baselines",
-});
-```
-
-## Design principles
-
-- **Additive only** — agents append `test.describe` blocks to existing spec files; never delete them
-- **Idempotent** — safe to run multiple times; fills gaps without creating duplicates
-- **Portable** — Playwright request context for API tests; no extra test runner dependency
-- **Progressive degradation** — if k6/Detox/Appium is missing, agents write tests and document setup steps
-- **Stable selectors** — enforces `getByRole`, `getByLabel`, `getByTestId`; never raw CSS
-
-## Repository structure
-
-```
-qa-agentic-team/
-├── qa-team/              ← /qa-team orchestrator skill
-│   ├── SKILL.md          ← generated (do not edit)
-│   └── SKILL.md.tmpl     ← source (edit this)
-├── qa-web/               ← /qa-web E2E skill (Playwright/Cypress/Selenium)
-│   ├── SKILL.md
-│   ├── SKILL.md.tmpl
-│   ├── tools/
-│   │   ├── playwright.md ← Playwright patterns + execute block
-│   │   ├── cypress.md    ← Cypress patterns + execute block
-│   │   └── selenium.md   ← Selenium patterns + execute block
-│   └── references/       ← qa-refine-generated deep-dive guides
-├── qa-api/               ← /qa-api REST + GraphQL skill (language-driven)
-├── qa-mobile/            ← /qa-mobile Detox / Appium / Maestro skill
-│   ├── SKILL.md
-│   ├── SKILL.md.tmpl
-│   └── references/
-│       ├── detox-patterns.md
-│       └── maestro-patterns.md
-├── qa-perf/              ← /qa-perf performance skill (k6/JMeter/Locust)
-│   ├── SKILL.md
-│   ├── SKILL.md.tmpl
-│   ├── tools/
-│   │   ├── k6.md         ← k6 patterns + execute block
-│   │   ├── jmeter.md     ← JMeter patterns + execute block
-│   │   └── locust.md     ← Locust patterns + execute block
-│   └── references/       ← qa-refine-generated deep-dive guides
-├── qa-visual/            ← /qa-visual screenshot diffing skill
-├── qa-audit/             ← /qa-audit methodology audit skill
-│   ├── SKILL.md
-│   └── SKILL.md.tmpl
-├── qa-refine/            ← /qa-refine iterative tool research skill
-├── qa-methodology-refine/ ← /qa-methodology-refine iterative methodology research skill
-│   ├── SKILL.md
-│   └── SKILL.md.tmpl
-├── qa-methodology/       ← methodology reference guides (written by /qa-methodology-refine)
-│   └── references/       ← <topic>-guide.md files consumed by /qa-audit
-├── lang-refine/          ← /lang-refine language best-practices skill
-├── bin/
-│   ├── setup             ← install: creates symlinks in ~/.claude/skills/
-│   ├── dev-setup         ← dev mode: single namespace symlink
-│   ├── dev-teardown      ← remove dev symlink
-│   ├── qa-team-update-check  ← poll GitHub for new version
-│   └── qa-team-next-version  ← calculate next 4-part semver
-├── scripts/
-│   ├── gen-skill-docs.sh     ← SKILL.md.tmpl → SKILL.md
-│   └── check-skill-docs.sh   ← CI freshness gate
-├── .github/workflows/
-│   ├── version-gate.yml      ← validates VERSION + CHANGELOG on PRs
-│   └── skill-docs.yml        ← fails if SKILL.md is stale vs .tmpl
-├── VERSION               ← 4-part semver (1.5.0.0)
-├── CHANGELOG.md
-├── conductor.json
-└── package.json
-```
-
-## Contributing
-
-### Versioning
-
-This repo uses 4-part semantic versioning: `MAJOR.MINOR.PATCH.MICRO`
-
-| Bump | When | Command |
-|------|------|---------|
-| `major` | Breaking changes to skill interface | `bash bin/qa-team-next-version major` |
-| `minor` | New skill or significant new capability | `bash bin/qa-team-next-version minor` |
-| `patch` | Bug fix or improvement to existing skill | `bash bin/qa-team-next-version patch` |
-| `micro` | Typo fix, minor wording change | `bash bin/qa-team-next-version micro` |
-
-Every PR that changes skill content **must** bump VERSION and add a CHANGELOG entry. The `version-gate` CI job enforces this.
-
-### Editing skills
-
-1. Edit `<skill>/SKILL.md.tmpl` — never edit `SKILL.md` directly
-2. Regenerate: `bash scripts/gen-skill-docs.sh`
-3. Bump version: `bash bin/qa-team-next-version patch > VERSION`
-4. Add CHANGELOG entry
-5. Open PR — CI validates docs freshness and version bump
-
-### Skill format
-
-Each skill follows the Claude Code SKILL.md spec:
-
-```markdown
----
-name: qa-<name>
-version: X.Y.Z.W
-description: |
-  <what it does — include trigger phrases>
-allowed-tools:
-  - Bash
-  - Read
-  - Write
-  - Edit
-  - Glob
-  - Grep
-  - AskUserQuestion
-  - Agent
 ---
 
-## Preamble (run first)
-...
+## Documentation
 
-## Phase N — <phase name>
-...
-```
+| Guide | Description |
+|-------|-------------|
+| [Getting Started](docs/getting-started.md) | Install, first run, per-skill requirements, environment variables |
+| [Skills Overview](docs/skills/overview.md) | All skills grouped by category with detailed capability lists |
+| [Advanced Features](docs/skills/advanced-features.md) | AI visual consensus, VLM mobile, OTel tracing, chaos testing, aimock, Bencher, and more |
+| [Workflows](docs/guides/workflows.md) | Pre-PR, nightly, sprint kickoff, Epic→Playwright, self-healing, and other recipes |
+| [CI/CD Integration](docs/guides/ci-cd-integration.md) | GitHub Actions setup, CTRF reports, AI failure summaries, auto-heal, flaky registry |
+| [Configuration](docs/guides/configuration.md) | All env vars, JIRA/Figma/TCMS/observability integration config |
+| [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
+| [Contributing](docs/contributing/contributing.md) | Workflow, versioning rules, code style, PR requirements |
+| [Adding a Skill](docs/contributing/adding-a-skill.md) | Complete step-by-step checklist for creating a new skill |
