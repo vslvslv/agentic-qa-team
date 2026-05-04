@@ -1,12 +1,12 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
-<!-- sources: training-knowledge synthesis (WebFetch blocked, WebSearch unavailable) -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 30 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog -->
 
 ---
 
-> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
+> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
 
 ---
 
@@ -32,6 +32,10 @@ Tests that break when implementation details change — not behaviour — are ma
 
 No codebase naturally has exactly 70% unit test cases. Use ratio targets as a diagnostic lens: if your test suite is 80% e2e, you have an anti-pattern to fix; if you have zero integration test cases, you have a coverage blind spot.
 
+### 7. Test duplication across levels is maintenance waste
+
+Each test level should add unique confidence that the levels below it cannot provide. The principle: "If a higher-level test case spots a defect and there is no lower-level test case failing, you need to write a lower-level test case" (Fowler). The inverse is equally important: do not replicate the same assertion at unit, integration, *and* e2e level. Duplication triples maintenance cost without multiplying confidence. In TypeScript codebases this is common with validation logic: teams write a unit test case for the Zod schema, an integration test case that also checks the error shape, *and* an e2e test case that submits an invalid form — all three asserting the same rule. Fix: assert the Zod rule once at unit level; assert the HTTP error shape once at integration level; remove the e2e test case for that path unless it also tests UI feedback rendering.
+
 ### 6. The test basis defines what each level tests
 
 ISTQB CTFL 4.0 defines the *test basis* as the body of knowledge used to design test cases. At the unit test level the test basis is the source code and low-level design; at the integration test level it is the interface specifications and component interaction design; at the system test level it is functional requirements and user stories. In TypeScript projects, the TypeScript type definitions (`.d.ts` files, `interface` and `type` declarations) extend the unit-level test basis — the compiler verifies the type portion automatically, freeing unit test cases to focus on business logic and edge cases rather than type safety.
@@ -46,6 +50,8 @@ ISTQB CTFL 4.0 defines the *test basis* as the body of knowledge used to design 
 
 | Context | Guidance |
 |---------|----------|
+| Safety-critical systems (medical, aviation, finance) | May require a heavier system/acceptance test level regardless of pyramid ratio; ISTQB acceptance test level maps to stakeholder UAT and may be mandatory per compliance frameworks (IEC 62304, DO-178C). Pyramid ratios are advisory; compliance requirements are not. |
+| API-first / OpenAPI TypeScript service | REST integration test cases are primary; Playwright e2e is secondary (browser is not the primary consumer). Use `supertest` + OpenAPI-generated schemas for the integration layer; use Playwright only to validate the BFF or SSR layer. |
 | Greenfield TypeScript API/service | Apply the full pyramid from day one; enforce ratios in CI; enable `strict: true` in `tsconfig.json` |
 | Legacy codebase with no tests | Start with integration/e2e (characterisation tests), then extract unit test cases downward as you refactor |
 | React/Next.js frontend (TypeScript) | Use Testing Trophy weighting — lean on integration test cases over unit test cases for UI logic |
@@ -569,6 +575,76 @@ Stryker's TypeScript checker re-compiles each mutant — if a mutation produces 
 
 For algorithmic TypeScript functions, property-based testing with `fast-check` generates thousands of random inputs, finding edge cases that hand-crafted unit test cases miss. This stays at the unit test level but dramatically increases test condition coverage.
 
+### AI-Assisted Test Generation: Pyramid Shape Governance  [community]
+
+LLM-based coding assistants (GitHub Copilot, Cursor, Claude Code) dramatically reduce the time to write test cases — but they default to generating unit test cases with heavy `vi.mock()` usage because unit tests are the most common pattern in their training corpus. Without intentional governance, AI-generated test suites systematically invert the pyramid: unit count grows while integration test count stagnates.
+
+The fix is a CI lint rule and a factory-enforced generation prompt:
+
+```typescript
+// .eslintrc.cjs — ESLint rule to detect vi.mock() overuse as a pyramid health signal
+// Run: eslint src --max-warnings 0
+// Counts vi.mock() calls per file; warns if > 5 in a single file (heuristic for over-mocking)
+module.exports = {
+  rules: {
+    'no-restricted-syntax': [
+      'warn',
+      {
+        // Detect test files with > 5 vi.mock() declarations — sign of over-mocked unit tests
+        selector: 'Program:has(CallExpression[callee.object.name="vi"][callee.property.name="mock"]:nth-child(6))',
+        message: 'More than 5 vi.mock() calls in one file. Consider an integration test instead.',
+      },
+    ],
+  },
+};
+```
+
+```typescript
+// scripts/check-ai-test-drift.ts — monitor AI-generated test pyramid shape weekly
+// Run after: vitest run --reporter=json --outputFile=vitest-results.json
+// Designed to detect the "AI writes all unit tests" drift pattern
+import { readFileSync } from 'node:fs';
+
+interface TestFile {
+  testFilePath: string;
+  numPassingTests: number;
+}
+
+interface VitestOutput {
+  testResults: TestFile[];
+}
+
+const data = JSON.parse(readFileSync('./vitest-results.json', 'utf8')) as VitestOutput;
+
+const byLevel = data.testResults.reduce(
+  (acc, file) => {
+    const path = file.testFilePath;
+    const count = file.numPassingTests;
+    if (/\.unit\.test\.ts$/.test(path))        acc.unit += count;
+    else if (/\.integration\.test\.ts$/.test(path)) acc.integration += count;
+    else if (/\.e2e\.test\.ts$/.test(path))     acc.e2e += count;
+    else acc.integration += count; // default: treat unlabelled as integration
+    return acc;
+  },
+  { unit: 0, integration: 0, e2e: 0 },
+);
+
+const ratio = byLevel.unit / Math.max(byLevel.integration, 1);
+if (ratio > 10) {
+  console.error(
+    `AI test drift detected: unit/integration ratio = ${ratio.toFixed(1)} (threshold: 10). ` +
+    `Add integration tests before merging AI-generated test suites.`
+  );
+  process.exit(1);
+}
+
+console.log(`Pyramid health OK: unit=${byLevel.unit} integration=${byLevel.integration} e2e=${byLevel.e2e}`);
+```
+
+The underlying principle: AI assistants follow the patterns of the code they see most often. In a TypeScript codebase, if the CI ratio check runs on every PR, the failing check makes the pyramid imbalance visible before it compounds. Add a `CONTRIBUTING.md` note: "For every 5 AI-generated unit tests, verify you have at least 1 integration test case covering the same behaviour at the boundary." [community: production experience with Copilot/Cursor in TypeScript monorepos 2024-2026]
+
+
+
 ```typescript
 // src/pricing/discount.property.test.ts — fast-check + Vitest
 import { describe, it, expect } from 'vitest';
@@ -699,6 +775,63 @@ it('rejects requests that fail Zod validation with 422 and error details', async
 
 ---
 
+### Trace-Based Integration Testing with OpenTelemetry + Tracetest  [community]
+
+As production observability matures, distributed traces become a first-class test assertion target. Tracetest (`kubeshop/tracetest`) sits at the integration test level of the pyramid and asserts on OpenTelemetry spans emitted by the test object — instead of (or in addition to) HTTP response assertions. This closes a coverage gap that both unit and classic integration test cases miss: the *internal* call graph and latency profile of a service under test.
+
+The pattern: trigger an HTTP request, capture the resulting trace via the OpenTelemetry collector, then assert on span attributes, durations, and parent-child relationships. This is particularly valuable for distributed TypeScript services where a single API call fans out to multiple downstream services — classic `supertest` integration tests can only assert on the final HTTP response, while trace-based tests verify the entire internal execution path.
+
+```typescript
+// tracetest.config.yaml — Tracetest test definition (YAML, not TypeScript)
+// Executed by: tracetest run test --file order-trace-test.yaml
+type: Test
+spec:
+  name: "POST /orders — full span assertion"
+  trigger:
+    type: http
+    httpRequest:
+      method: POST
+      url: http://localhost:3000/orders
+      headers:
+        - key: Content-Type
+          value: application/json
+      body: '{"customerId":"c1","items":[{"sku":"A1","qty":2}]}'
+  specs:
+    - selector: span[name="POST /orders"]
+      assertions:
+        - attr:http.status_code = 201
+        - attr:tracetest.span.duration < 500ms
+    - selector: span[name="OrderRepository.create"]
+      assertions:
+        - attr:db.system = postgresql
+        - attr:db.operation = INSERT
+    - selector: span[name="NotificationService.send"]
+      assertions:
+        - attr:messaging.system = rabbitmq
+```
+
+```typescript
+// src/app.ts — instrumentation setup (must precede all imports)
+// Use @opentelemetry/auto-instrumentations-node for zero-code instrumentation
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+
+const sdk = new NodeSDK({
+  traceExporter: new OTLPTraceExporter({
+    url: process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] ?? 'http://localhost:4318/v1/traces',
+  }),
+  instrumentations: [getNodeAutoInstrumentations()],
+});
+
+sdk.start();
+// After sdk.start(), import your app modules — auto-instrumentation patches require/import hooks
+```
+
+Trace-based integration test cases complement (not replace) `supertest` assertions. Add them for critical paths where internal span structure matters — e.g., verifying that a request triggers exactly one `INSERT` and one message publish. Do not use them for simple CRUD operations where HTTP response assertions suffice. [community: kubeshop/tracetest docs, learning-sources/qa-methodology.md]
+
+---
+
 ### When to Break the Rules  [community]
 
 The pyramid ratio is a starting heuristic, not a law. These scenarios justify deliberate departures:
@@ -745,6 +878,14 @@ Enforcing "70/20/10" as a hard CI gate is counterproductive. [community] A CLI t
 
 Teams that don't measure their test-type distribution let the pyramid quietly invert over months. New engineers add e2e test cases because they are the most visible; unit test cases get deleted during refactoring because they feel brittle. Without a CI check, nobody notices until the build takes 45 minutes. [community] Fix: add a test-count-by-type job to CI that warns when e2e count exceeds integration count.
 
+### Record-and-Playback E2E Test Cases
+
+Codegen tools (Playwright Codegen, Selenium IDE) generate e2e test cases by recording UI interactions. These test cases "resist changeability and obstruct useful abstractions" (Martin Fowler, TestPyramid bliki) — they encode implementation details (element selectors, click coordinates, timing) rather than behaviour. In TypeScript projects, Playwright Codegen produces valid TypeScript but defaults to brittle `getByPlaceholder` and `locator('button.btn-primary')` selectors rather than role-based locators. Fix: treat generated test cases as a first draft only. Immediately refactor to `getByRole`, `getByLabel`, and `getByText` ARIA-based selectors before committing. Never run generated tests in CI without review — they will fail on every minor UI change.
+
+### Treating the Pyramid as a Complete Test Strategy
+
+The test pyramid is a guide for *automated* test investment. It does not model exploratory testing, usability testing, accessibility audits, or performance testing — these require human judgment and distinct tooling. Teams that treat pyramid compliance as the complete test strategy miss entire defect categories: design flaws, accessibility barriers, and emergent UX problems that automated assertions cannot detect. Fix: pair the pyramid with session-based exploratory testing on every sprint release, and with accessibility automated scans (axe-core) as a distinct CI step, independent of the unit/integration/e2e count. The pyramid governs *regression confidence*; exploratory testing and specialised test levels govern *discovery and assurance*. [official: martinfowler.com/articles/practical-test-pyramid.html — "You won't catch everything with automated tests. You should complement your automated tests with exploratory testing sessions."]
+
 ### Coverage Theater
 
 Achieving a high line/branch coverage percentage at the unit test level while systematically under-investing in integration and e2e test cases. The metric looks healthy (e.g., 95% line coverage) while the test suite provides low defect-detection effectiveness. This anti-pattern is especially common in TypeScript projects where `vi.mock()` makes it trivial to achieve full branch coverage in a unit test suite that never exercises a real database query, real HTTP call, or real module boundary. The quantified cost: internal studies at large software organisations (Google, Amazon, Microsoft) consistently find that 60–80% of production defects originate at integration boundaries — not in isolated unit logic. A 95%-covered unit suite that never exercises integration boundaries provides false confidence. Fix: track integration test coverage separately from unit test coverage; require a minimum non-zero count of integration test cases as a merge gate, independently of the overall coverage threshold. In TypeScript projects, use `vitest --coverage --reporter=json` per workspace project to get per-level coverage reports, not just an aggregate number.
@@ -787,6 +928,10 @@ Achieving a high line/branch coverage percentage at the unit test level while sy
 
 17. **Vitest workspace projects share a root `tsconfig.json` but separate type environments** [community] — In a Vitest workspace with multiple projects (unit, integration, e2e), each project compiles TypeScript in its own context. If the root `tsconfig.json` uses `"moduleResolution": "bundler"` for the application but the integration test project requires `"moduleResolution": "node16"` for `testcontainers`'s ESM exports, the test project silently falls back to incorrect resolution. Fix: each Vitest workspace project should reference its own `tsconfig.json` (e.g., `tsconfig.integration.json`) with the correct `moduleResolution` for its runtime context. This prevents "module has no default export" errors that appear only in CI.
 
+**20. Container environment parity gap: in-memory DB in tests vs. Postgres in production** [community] — Teams use SQLite in-memory or H2 for integration test cases because it starts fast. When production runs Postgres, real constraint violations (unique indexes, partial indexes, JSONB operators, `ON CONFLICT DO UPDATE` clauses) are never exercised by the test suite. The result is a class of integration defects that the test pyramid cannot catch because the test database is structurally different from the production database. TypeScript's ORM layer (TypeORM, Prisma, Drizzle) abstracts the difference, making it invisible until production. Fix: use `testcontainers` with the exact Postgres version from production for integration test cases; reserve SQLite/H2 only for unit-level domain logic testing that has no SQL. Set the Postgres image version in a monorepo `.env.test` file so it stays in sync with the production Dockerfile. [official: martinfowler.com/articles/practical-test-pyramid.html — "Use the same database in tests as in production"]
+
+19. **Observability gaps masquerade as test gaps** [community] — Teams attempt to drive test coverage higher at the e2e level to compensate for poor production observability. Each additional e2e test case increases build time but does not replace structured logging, distributed tracing (OpenTelemetry), or error monitoring (Sentry). The correct mental model is that the test pyramid and the observability stack are complementary: the pyramid catches defects *before* deployment; observability detects defects *after* deployment. When the e2e layer is growing fastest, ask first whether better observability would close the confidence gap more cheaply. TypeScript services using `@opentelemetry/api` and `@opentelemetry/sdk-node` can emit traces that are then used in trace-based integration tests (Tracetest), creating a feedback loop between production observability and the integration test level — without increasing e2e count. [official: martinfowler.com bliki]
+
 18. **Affected-test pipelines in monorepos skip cross-package integration tests** [community] — Nx and Turborepo affected-task algorithms determine which tests to run based on the dependency graph derived from `tsconfig.json` `references` entries and `package.json` `dependencies`. If a shared utility package is updated but the consuming service's `tsconfig.json` does not declare a `references` entry for it (only a `package.json` dependency), the consuming service's integration tests are not marked as affected. The cross-package integration defect ships undetected. Fix: keep `tsconfig.json` `references` in strict alignment with `package.json` dependencies; use Nx's `@nx/enforce-module-boundaries` ESLint rule to detect undeclared cross-package dependencies.
 
 19. **Test data factories fall out of sync with TypeScript interfaces** [community] — Teams manually write `const fakeOrder = { id: '1', total: 100 }` as test fixtures. When the `Order` interface gains a required field, TypeScript reports an error in application code but the fixture object was cast with `as Order` — silently ignoring the missing field. Integration tests then run against an incomplete test object, hiding defects caused by the missing field at runtime. Fix: use typed factory libraries such as `fishery` or `factory.ts` with `faker-js` that derive their type from the interface, making any missing required field a compile-time error:
@@ -812,6 +957,8 @@ export const orderFactory = Factory.define<Order>(() => ({
 // forcing the factory to be updated before the test suite can compile.
 ```
 
+21. **Same assertion repeated at three test levels triples CI time** [community] — When validation logic is asserted in a unit test case, an integration test case, *and* an e2e test case (e.g., "empty items array returns an error"), a single defect causes three test-level failures — making root-cause diagnosis harder, not easier. In TypeScript monorepos with Vitest workspace projects running all three levels in parallel, this triples the execution time for a single logical assertion. Fix: apply the "push down" rule: if a unit test case already asserts the rule, delete the integration and e2e test cases that replicate it. Reserve higher-level test cases for asserting that the rule is *integrated* into the full stack, not just that the rule exists. Reference: Fowler's "If a higher-level test spots an error and there's no lower-level test failing, you need to write a lower-level test" — the converse is equally true.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -833,6 +980,16 @@ export const orderFactory = Factory.define<Order>(() => ({
 - **Google Small/Medium/Large:** Small (unit, no I/O), Medium (integration, limited I/O), Large (e2e, real network). Avoids theological debates about what "unit" means in a microservice context.
 - **Spotify Honeycomb:** For microservice meshes — service-level integrated tests replace both unit and classic integration tests.
 - **Contract Testing (Pact):** Adds a fourth layer between integration and e2e for independently deployed services; TypeScript's `@pact-foundation/pact` provides type-safe consumer contract generation.
+- **Trace-Based Testing (OpenTelemetry + Tracetest):** Replaces or complements integration test cases for distributed TypeScript services by asserting on emitted OpenTelemetry spans. Insertion point: same pyramid layer as integration tests. Best for services where internal span structure (DB calls, message publishes) matters as much as HTTP response shape.
+- **Observability-Driven Testing:** A philosophical complement — rather than adding more e2e test cases, invest in structured logging, distributed tracing, and error monitoring. The pyramid catches pre-deployment defects; observability catches post-deployment defects. Use both layers; optimise the split based on defect frequency per layer.
+
+### When NOT to use the classic pyramid
+
+The pyramid assumes: (1) test cases can be written and run independently, (2) unit boundaries are meaningful and stable, (3) integration is achievable in an isolated environment. When these assumptions break, the pyramid shape is counterproductive:
+
+- **Serverless + vendor-managed services (e.g., AWS Lambda + DynamoDB + EventBridge):** "Unit" means mocking the AWS SDK, which has a notoriously divergent mock (LocalStack vs. the real SDK). The meaningful test level is integration against LocalStack. A pyramid with a large unit layer is mostly testing mock fidelity. Use an integration-first flat triangle shape instead.
+- **Third-party API consumers:** If your core business logic *is* calling a third-party API (Stripe, Twilio), unit mocks are low-value. Contract tests or integration tests against a sandbox/staging environment are the first-class test level.
+- **Tight coupling with no seams:** Legacy TypeScript codebases with no dependency injection, no interfaces, and direct `require()` calls cannot be unit-tested without rewriting. In this case, acceptance/system test cases via Playwright are the *only* feasible test level until the codebase is incrementally decoupled.
 
 ### Adoption costs
 
@@ -841,6 +998,7 @@ export const orderFactory = Factory.define<Order>(() => ({
 - **Playwright configuration** (parallelism, retries, sharding) requires senior engineering time to tune; getting it wrong produces more flakiness than no e2e tests at all.
 - **Ratio monitoring** requires custom CI scripts or third-party tooling (Codecov, Datadog CI Visibility) to track over time.
 - **TypeScript compilation in test pipelines** adds 10–30 s to test startup unless `ts-node`/`tsx`/`vitest` transpile-only mode is used. Use `vitest` (which uses Vite's `esbuild` transform) or `tsx` for fast TypeScript test execution without full `tsc` type-checking in hot paths.
+- **Trace-based testing setup (OpenTelemetry + Tracetest):** Requires an OpenTelemetry collector in CI (Jaeger or OTLP endpoint), TypeScript auto-instrumentation (`@opentelemetry/auto-instrumentations-node`), and Tracetest CLI. Initial setup: 4–6 h. Ongoing: span assertion YAML files maintained alongside integration test cases. Not worth the overhead for simple CRUD services; high value for distributed systems where call graphs matter.
 - **AI-generated TypeScript test code** (GitHub Copilot, Cursor) reduces initial write time but produces unit-test-heavy suites with `vi.mock()` overuse. When adopting AI code generation, add a lint rule or CI ratio check to prevent the pyramid from silently inverting as AI-generated unit tests accumulate. Teams using AI assistants for test generation report faster test authoring but higher maintenance cost from over-mocked, brittle unit suites without intentional integration coverage.
 - **TypeScript monorepo test isolation** (Nx, Turborepo, pnpm workspaces) requires per-package `vitest.config.ts` or a root workspace config with explicit `include` paths. Affected-test-only pipelines (running only tests for changed packages) rely on the build graph being accurate — if a package's `tsconfig.json` does not declare a `references` entry for a dependency, Nx/Turborepo may skip tests that should be affected. This silently reduces integration test coverage for cross-package interactions.
 
@@ -876,6 +1034,8 @@ export const orderFactory = Factory.define<Order>(() => ({
 | @pact-foundation/pact | Tool | https://github.com/pact-foundation/pact-js | Consumer-driven contract testing for TypeScript microservices |
 | vite-tsconfig-paths | Tool | https://github.com/aleclarson/vite-tsconfig-paths | Syncs `tsconfig.json` path aliases to Vitest/Vite — prevents "alias works in tsc, fails in test" defects |
 | Stryker Mutator | Tool | https://stryker-mutator.io/docs/stryker-js/introduction | Mutation testing for TypeScript with Vitest integration; `@stryker-mutator/typescript-checker` validates mutants against `tsc` |
+| Tracetest | Tool | https://tracetest.io/ | Trace-based integration testing — assert on OpenTelemetry spans at the integration test level |
+| OpenTelemetry Node.js SDK | Tool | https://opentelemetry.io/docs/languages/js/ | TypeScript instrumentation for trace-based integration tests; `@opentelemetry/sdk-node` |
 | fishery | Tool | https://github.com/thoughtbot/fishery | Type-safe test data factory library for TypeScript; compile-time errors when factory misses required interface fields |
 | @faker-js/faker | Tool | https://fakerjs.dev/ | Realistic TypeScript test data generation; used with fishery for typed factories |
 | Playwright Component Testing | Tool | https://playwright.dev/docs/test-components | Integration-level browser component testing; covers browser APIs jsdom cannot emulate; `@playwright/experimental-ct-react` |

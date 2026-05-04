@@ -1,5 +1,5 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 12 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 14 | score: 100/100 | date: 2026-05-03 -->
 <!-- sources: training knowledge (WebFetch/WebSearch unavailable) | official: docs.pact.io, pact-foundation/pact-js | community: production lessons -->
 
 ## Terminology (ISTQB CTFL 4.0 alignment)
@@ -2220,3 +2220,359 @@ export type { StockResponse };
 **TypeScript-specific anti-pattern:** Defining `StockResponse` interface separately from the Pact matcher body leads to drift — the interface can add a field that the pact body doesn't assert, creating a false sense of safety. The `stockResponsePactBody(): Record<keyof StockResponse, unknown>` pattern uses `keyof` to force the body mapper and interface to stay in sync at compile time.
 
 ---
+
+### Zod Schema + Pact Matchers (TypeScript — runtime validation + contract testing)
+
+Modern TypeScript projects use [Zod](https://zod.dev/) for runtime schema validation. Pairing Zod schemas with Pact matchers eliminates drift between "what the consumer validates at runtime" and "what the consumer expects in its contract."
+
+```typescript
+// zod-pact-bridge.ts
+// Utility: derive Pact matchers from a Zod schema shape.
+// Keeps runtime validation and Pact contract in sync from a single source of truth.
+import { z } from 'zod';
+import { MatchersV3 } from '@pact-foundation/pact';
+
+const { like, string, integer, decimal, boolean: boolMatch, regex } = MatchersV3;
+
+// The Zod schema is the canonical type definition — used for:
+//   1. Runtime validation of real HTTP responses in production
+//   2. Deriving Pact matchers for contract tests (via zodToPactBody)
+export const StockResponseSchema = z.object({
+  sku: z.string().regex(/^[A-Z]{2,}-\d+$/),
+  available: z.number().int().nonnegative(),
+  warehouseId: z.string(),
+  lastUpdated: z.string().datetime(),
+});
+
+export type StockResponse = z.infer<typeof StockResponseSchema>;
+
+// Map a Zod object shape to Pact matchers for use in .willRespondWith({ body: ... })
+// Supports string, number, boolean, and z.string().regex() shapes.
+export function zodToPactBody(
+  schema: z.ZodObject<z.ZodRawShape>,
+  examples: Record<string, unknown>
+): Record<string, unknown> {
+  const shape = schema.shape;
+  const result: Record<string, unknown> = {};
+
+  for (const [key, zodType] of Object.entries(shape)) {
+    const example = examples[key];
+    if (zodType instanceof z.ZodString) {
+      // Check for regex refinement — use Pact regex() matcher if available
+      const checks = (zodType as z.ZodString)._def.checks ?? [];
+      const regexCheck = checks.find((c: { kind: string }) => c.kind === 'regex') as
+        | { kind: 'regex'; regex: RegExp }
+        | undefined;
+      result[key] = regexCheck
+        ? regex(regexCheck.regex, String(example))
+        : string(String(example));
+    } else if (zodType instanceof z.ZodNumber) {
+      const isInt = (zodType as z.ZodNumber)._def.checks?.some(
+        (c: { kind: string }) => c.kind === 'int'
+      );
+      result[key] = isInt ? integer(Number(example)) : decimal(Number(example));
+    } else if (zodType instanceof z.ZodBoolean) {
+      result[key] = boolMatch(Boolean(example));
+    } else {
+      result[key] = like(example);
+    }
+  }
+  return result;
+}
+```
+
+```typescript
+// inventory-client.zod.pact.spec.ts
+// Uses zodToPactBody to derive Pact matchers from the Zod schema.
+// Single source of truth: change the Zod schema → pact body updates automatically.
+import path from 'path';
+import { PactV3 } from '@pact-foundation/pact';
+import { InventoryClient } from '../src/inventory-client';
+import { StockResponseSchema, zodToPactBody } from '../shared/zod-pact-bridge';
+
+const provider = new PactV3({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8092,
+  logLevel: 'warn',
+});
+
+// Example values — used by zodToPactBody to generate the Pact body
+const stockExamples = {
+  sku: 'ABC-123',
+  available: 10,
+  warehouseId: 'WH-001',
+  lastUpdated: '2025-01-15T10:00:00.000Z',
+};
+
+describe('OrderService → InventoryService contract (Zod-derived matchers)', () => {
+  it('returns stock response that matches the Zod schema shape', async () => {
+    await provider
+      .given('SKU ABC-123 exists with 10 units in stock')
+      .uponReceiving('a stock request for SKU ABC-123 (Zod-derived matchers)')
+      .withRequest({
+        method: 'GET',
+        path: '/inventory/ABC-123',
+        headers: { Accept: 'application/json' },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        // Matchers derived from the Zod schema — stays in sync automatically
+        body: zodToPactBody(StockResponseSchema, stockExamples),
+      })
+      .executeTest(async (mockServer) => {
+        const client = new InventoryClient(mockServer.url);
+        const result = await client.getStock('ABC-123');
+        // Parse with Zod — proves the mock response passes runtime validation
+        const parsed = StockResponseSchema.safeParse(result);
+        expect(parsed.success).toBe(true);
+      });
+  });
+});
+```
+
+**Key points:**
+- `zodToPactBody` maps Zod types to the most specific Pact matcher: `z.string().regex(...)` → `regex()`, `z.number().int()` → `integer()`, `z.string()` → `string()`
+- The Zod schema is the **single source of truth**: when a field is added or its type changes, the pact body updates automatically at the next test run — no manual sync needed
+- `StockResponseSchema.safeParse(result)` inside `executeTest` proves that the mock server's response (generated from Pact matchers) also satisfies the Zod schema — a consistency check between the two systems
+- For production use, `zodToPactBody` should handle `z.ZodOptional`, `z.ZodArray`, `z.ZodObject` recursively; the example above handles the common scalar cases
+
+---
+
+### Pact Broker Webhook Configuration (Bash — trigger provider CI automatically)
+
+Without webhooks, the provider team must manually trigger their CI pipeline after a consumer publishes a new pact. Webhooks automate this loop: when a consumer publishes a new or changed pact, the Broker notifies the provider's CI.
+
+```bash
+#!/usr/bin/env bash
+# setup-pact-webhooks.sh
+# Creates Pact Broker webhooks to trigger provider verification CI automatically.
+# Run once during infrastructure setup (or from IaC/Terraform provider config).
+
+BROKER_URL="${PACT_BROKER_URL:?PACT_BROKER_URL required}"
+BROKER_TOKEN="${PACT_BROKER_TOKEN:?PACT_BROKER_TOKEN required}"
+CI_TOKEN="${CI_API_TOKEN:?CI_API_TOKEN required}"
+
+# ── Webhook 1: Trigger provider CI when consumer publishes or changes a pact ──
+curl --silent --show-error \
+  -X POST "${BROKER_URL}/webhooks" \
+  -H "Authorization: Bearer ${BROKER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "Trigger InventoryService CI when OrderService pact changes",
+    "events": [
+      { "name": "contract_content_changed" },
+      { "name": "contract_published" }
+    ],
+    "consumer": { "name": "OrderService" },
+    "provider": { "name": "InventoryService" },
+    "request": {
+      "method": "POST",
+      "url": "https://api.github.com/repos/my-org/inventory-service/dispatches",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/vnd.github+json",
+        "Authorization": "token '"${CI_TOKEN}"'"
+      },
+      "body": {
+        "event_type": "pact-verify",
+        "client_payload": {
+          "pact_url": "${pactbroker.pactUrl}",
+          "consumer_version": "${pactbroker.consumerVersionNumber}",
+          "provider": "${pactbroker.providerName}"
+        }
+      }
+    }
+  }' \
+  && echo "Webhook created successfully" \
+  || echo "ERROR: Webhook creation failed"
+
+# ── Webhook 2: Notify Slack when verification fails (optional but recommended) ──
+curl --silent --show-error \
+  -X POST "${BROKER_URL}/webhooks" \
+  -H "Authorization: Bearer ${BROKER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "Slack alert when provider verification fails",
+    "events": [{ "name": "provider_verification_failed" }],
+    "request": {
+      "method": "POST",
+      "url": "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK",
+      "headers": { "Content-Type": "application/json" },
+      "body": {
+        "text": ":x: Provider verification failed: ${pactbroker.providerName} failed to verify pact from ${pactbroker.consumerName} ${pactbroker.consumerVersionNumber}"
+      }
+    }
+  }'
+```
+
+```yaml
+# .github/workflows/pact-provider-dispatch.yml
+# Handles the `pact-verify` repository_dispatch event triggered by the Pact Broker webhook.
+name: Provider Verification (Pact webhook-triggered)
+
+on:
+  repository_dispatch:
+    types: [pact-verify]
+
+jobs:
+  verify-pact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run provider verification against specific pact URL
+        run: npm run test:pact:provider
+        env:
+          # Verify the exact pact URL from the webhook payload — not all pacts
+          PACT_URL: ${{ github.event.client_payload.pact_url }}
+          PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
+          PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+          GIT_COMMIT: ${{ github.sha }}
+          GIT_BRANCH: ${{ github.ref_name }}
+          PUBLISH_VERIFICATION_RESULTS: 'true'
+```
+
+**Key points:**
+- `contract_content_changed` (not just `contract_published`) is the critical event — it fires only when the pact content actually changes, avoiding redundant CI runs on identical re-publishes
+- `${pactbroker.pactUrl}` is a Pact Broker template variable that expands to the specific pact URL — pass this to the provider CI so it verifies only the changed pact, not all pacts
+- Webhooks are idempotent to create via the API — re-running `setup-pact-webhooks.sh` is safe if the Broker is reset or webhooks are lost
+- PactFlow (SaaS Pact Broker) provides a UI for creating and testing webhooks; the OSS Pact Broker requires CLI or API setup as shown above
+- `provider_verification_failed` webhook to Slack closes the feedback loop: the consumer team sees the failure immediately rather than discovering it days later when `can-i-deploy` blocks deployment
+
+---
+
+### `--fail-if-no-pacts-found` Guard (Bash — prevents false-positive provider verification)
+
+```bash
+# Provider verification CI step — guard against empty pact set
+# Without this flag, a provider verification run with zero matching pacts exits 0 (success),
+# creating a false green that hides misconfigured consumer selectors.
+npx pact-broker can-i-deploy \
+  --pacticipant InventoryService \
+  --version "$GIT_COMMIT" \
+  --to-environment staging \
+  --broker-base-url "$PACT_BROKER_URL" \
+  --broker-token "$PACT_BROKER_TOKEN"
+
+# In VerifierV3 options (TypeScript):
+# Add `failIfNoPactsFound: true` to the VerifierV3 config to fail when no pacts are fetched.
+# This prevents a provider from silently passing verification when its consumer selectors
+# match zero pact files — a common misconfiguration after a team renames a pacticipant.
+```
+
+```typescript
+// inventory-service.provider.guard.pact.spec.ts
+// Demonstrates failIfNoPactsFound to guard against misconfigured selectors.
+import { VerifierV3, VerifierOptions } from '@pact-foundation/pact';
+import { startServer, stopServer } from '../src/test-server';
+
+describe('InventoryService provider verification (with no-pacts guard)', () => {
+  let serverPort: number;
+
+  beforeAll(async () => { serverPort = await startServer(); });
+  afterAll(async () => { await stopServer(); });
+
+  it('fails verification if no pacts are found (prevents silent false-positives)', async () => {
+    const verifier = new VerifierV3({
+      provider: 'InventoryService',
+      providerBaseUrl: `http://localhost:${serverPort}`,
+      pactBrokerUrl: process.env.PACT_BROKER_URL,
+      pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+      consumerVersionSelectors: [
+        { mainBranch: true },
+        { deployedOrReleased: true },
+      ],
+      // Fail if the Broker returns zero pacts for the configured selectors.
+      // Without this, a renamed pacticipant or misconfigured selector silently passes.
+      failIfNoPactsFound: true,
+      stateHandlers: {},
+      publishVerificationResult: process.env.PUBLISH_VERIFICATION_RESULTS === 'true',
+      providerVersion: process.env.GIT_COMMIT,
+      providerVersionBranch: process.env.GIT_BRANCH,
+    });
+
+    await verifier.verifyProvider();
+  });
+});
+```
+
+**Key points:**
+- `failIfNoPactsFound: true` is the defensive default for production provider verification — a green build with zero pacts is always wrong for a provider with known consumers
+- Common misconfiguration that this catches: a team renames `OrderService` to `order-service` (kebab-case) — the Broker treats them as different participants; the provider selectors fetch nothing; verification passes silently
+- Disable only when intentionally setting up a new provider that genuinely has no consumers yet (`failIfNoPactsFound: false` or omit the option, which defaults to false in pact-js v13)
+
+---
+
+### Additional Community Production Lessons [community]
+
+23. **[community] Zod + Pact diverge silently when maintained separately.** Teams that define Zod schemas for runtime validation and Pact matcher bodies independently eventually drift — the Zod schema adds a required field that the Pact body doesn't assert, giving the consumer code runtime protection but no contract coverage. The fix: derive Pact matchers from the Zod schema programmatically (see `zodToPactBody` pattern above) so both update from the same source.
+
+24. **[community] Pact Broker webhooks are forgotten during infrastructure teardown.** When a self-hosted Pact Broker is reset (database wipe, container replacement), all webhooks are lost silently. The provider CI no longer auto-triggers on consumer pact changes; teams only notice when a consumer publishes a breaking pact and the provider CI never ran. Treat webhook setup as IaC (store the `curl` script in a `scripts/setup-pact-webhooks.sh` committed to the repo) and re-run it as part of Broker provisioning.
+
+25. **[community] `failIfNoPactsFound` is the most common missing safety net.** Provider teams disable or omit this flag because "sometimes there really are no pacts yet." The correct approach is to add the flag immediately after the first consumer publishes a pact, not from day one. After that, a zero-pact result always indicates a misconfiguration — catching it early saves hours of debugging why `can-i-deploy` always returns "unknown."
+
+---
+
+### `record-deployment` vs `record-release` (Bash — environment tracking precision)
+
+These two commands are frequently confused. Using the wrong one corrupts the Broker's environment tracking and causes `deployedOrReleased` selectors to malfunction.
+
+```bash
+# record-deployment — use when you deploy a specific version to an environment.
+# The Broker records which version is CURRENTLY deployed to that environment.
+# Only one version per service per environment is tracked as "deployed" at a time
+# (calling record-deployment with a new version replaces the previous record).
+pact-broker record-deployment \
+  --pacticipant OrderService \
+  --version "$GIT_COMMIT" \
+  --environment production \
+  --broker-base-url "$PACT_BROKER_URL" \
+  --broker-token "$PACT_BROKER_TOKEN"
+
+# record-release — use when you publish a version to an artifact store or package registry
+# WITHOUT deploying to a specific environment (e.g., publishing a library or Docker image).
+# Multiple versions can be "released" simultaneously — the Broker tracks all of them.
+# Use for: npm publish, Docker Hub push, Maven Central release.
+# Do NOT use for: deploying a service to staging/production.
+pact-broker record-release \
+  --pacticipant OrderClient \
+  --version "$GIT_COMMIT" \
+  --environment npm-registry \
+  --broker-base-url "$PACT_BROKER_URL" \
+  --broker-token "$PACT_BROKER_TOKEN"
+
+# Decision rule:
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │ Deploying to staging/prod?           → record-deployment                    │
+# │ Publishing to registry/artifact?     → record-release                       │
+# │ Both in the same pipeline?           → record-deployment for the env,        │
+# │                                        record-release for the artifact       │
+# └─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key distinctions:**
+
+| Aspect | `record-deployment` | `record-release` |
+|---|---|---|
+| Use case | Service deployed to an environment | Package/library published to a registry |
+| Cardinality | One version per service per environment (replaces previous) | Multiple versions can be "released" (accumulate) |
+| `deployedOrReleased` selector | Included | Included |
+| Typical trigger | After `kubectl apply`, `eb deploy`, `fly deploy` | After `npm publish`, Docker Hub push |
+| Example | OrderService v1.2.3 → production | @myorg/api-client v3.1.0 → npm |
+
+**[community] Most teams only use `record-deployment` and ignore `record-release`**. This is correct for server-side services. Confusion arises only when a consumer is a published npm package or SDK — teams discover that `deployedOrReleased` selectors don't cover their library consumers because they used `record-deployment` (environment-scoped) for an artifact with no environment. The fix: use `record-release` for any consumer that ships as a distributable package.
+
+---
+
+### Additional Community Production Lessons [community]
+
+26. **[community] `record-deployment` called before the deploy succeeds corrupts the Broker.** Some CI pipelines call `record-deployment` as a pre-deploy step to "reserve" the version. If the deploy then fails, the Broker's `deployedOrReleased` selector serves up the wrong version for `can-i-deploy` checks until the next successful deploy records the correct version. Always call `record-deployment` as the **last step** of a successful deploy job, never before.
+
+27. **[community] Using `record-deployment` for library consumers breaks `deployedOrReleased` tracking.** A consumer that is an npm SDK or shared library has no concept of "deployed to an environment" — it can be used by thousands of downstream consumers at once. Teams that use `record-deployment` for such packages effectively overwrite each other's tracking. The correct command is `record-release`, which accumulates versions rather than replacing them. Switch as soon as a consumer package is published to a registry rather than deployed to a server.

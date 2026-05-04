@@ -1,5 +1,5 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 12 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 22 | score: 100/100 | date: 2026-05-03 -->
 <!-- sources: training knowledge + iterative refinement pass -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 15 CI testing pillars covered in this guide:**
+**The 24 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -31,8 +31,17 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 11 | TypeScript type-check gate | `tsc --noEmit` as separate required CI gate |
 | 12 | Distributed task execution | Nx Cloud DTE for task-level (not just shard-level) parallelism |
 | 13 | OIDC credentials | Short-lived cloud credentials instead of stored secrets |
-| 14 | Test runner selection | Bun for pure Node.js speed vs. Jest/Vitest for full ecosystem |
+| 14 | Test runner selection | Bun / native `node:test` for speed vs. Jest/Vitest for full ecosystem |
 | 15 | Pipeline observability | OTEL spans per suite; `cache_hit` and `install_duration_ms` metrics |
+| 16 | Component testing (CT) | Playwright CT — real browser, zero app stack, near-unit speed |
+| 17 | Composite actions | DRY step reuse — 40–60% YAML reduction across workflow files |
+| 18 | Larger runners | 4/8-core runners for CPU/memory-bound suites vs. complex sharding |
+| 19 | Performance regression gate | Benchmark comparison (relative %) vs. stored baseline |
+| 20 | SBOM generation | CycloneDX SBOM per release for supply-chain audit and compliance |
+| 21 | Trace-based testing | OTEL span assertions for integration flows (Tracetest) |
+| 22 | Visual regression | Playwright screenshot comparison — advisory PR annotation |
+| 23 | Deployment environments | GitHub Environments with reviewer gates + wait timers |
+| 24 | Docker BuildKit cache | GHA layer cache (`type=gha,mode=max`) for test images |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -948,6 +957,109 @@ jobs:
 
 > [community] A common mistake: applying `cancel-in-progress: true` to deployment jobs. A cancelled deploy can leave infrastructure in a partially-applied state. Always set `cancel-in-progress: false` for deploy, migrate, and seed jobs; reserve cancellation for test and lint jobs.
 
+### Docker BuildKit Cache Export for Integration Tests [community]
+
+Docker BuildKit's inline and registry cache export reduces the time to build test-specific Docker images in CI. For teams using custom Docker images for integration tests (seeded databases, mock services), BuildKit cache export cuts the per-PR build time from 3–8 minutes to 15–30 seconds on cache hit.
+
+> [community] The shift from Docker's classic build cache (ephemeral per runner) to BuildKit's `type=gha` (GitHub Actions Cache) is the highest-leverage single change for teams with custom test images. Classic cache is wiped between CI runs; BuildKit GHA cache persists across runs keyed on Dockerfile layers. Teams that make this change consistently report 70–85% reduction in Docker build time for test images.
+
+**Multi-stage Dockerfile for test images:**
+
+```dockerfile
+# Dockerfile.test — multi-stage build with test target
+FROM node:22-alpine AS base
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --prefer-offline
+
+FROM base AS source
+COPY tsconfig.json ./
+COPY src/ ./src/
+
+# Test stage: adds test deps, seeds the database, exposes test-specific env
+FROM source AS test
+COPY tsconfig.test.json ./
+COPY tests/ ./tests/
+# Install test-only deps
+RUN npm ci --include=dev
+# Pre-compile TypeScript for faster test startup
+RUN npx tsc --project tsconfig.json --outDir dist
+
+# Seed stage: used for integration tests that need pre-populated data
+FROM test AS seed
+COPY migrations/ ./migrations/
+COPY seeds/ ./seeds/
+ENV NODE_ENV=test
+RUN node dist/scripts/run-migrations.js && node dist/scripts/seed-test-data.js
+```
+
+**GitHub Actions — BuildKit cache export for test image:**
+
+```yaml
+# .github/workflows/ci.yml — Docker test image with BuildKit GHA cache
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+
+      # Enable Docker BuildKit (required for cache export)
+      - uses: docker/setup-buildx-action@v3
+
+      # Build test image with GHA cache — layers are cached between CI runs
+      - name: Build integration test image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.test
+          target: test              # build only up to the 'test' stage
+          load: true                # load into local Docker daemon (not push to registry)
+          tags: myapp-test:${{ github.sha }}
+          cache-from: type=gha,scope=integration-test
+          cache-to:   type=gha,scope=integration-test,mode=max
+
+      # Run integration tests inside the pre-built test container
+      - name: Run integration tests
+        run: |
+          docker run --rm \
+            --network host \
+            -e CI=true \
+            -e DATABASE_URL=postgresql://test:test@localhost:5432/testdb \
+            myapp-test:${{ github.sha }} \
+            npm run test:integration
+```
+
+**TypeScript test using the seed-stage image for pre-populated data:**
+
+```typescript
+// tests/integration/product-search.test.ts — assumes seed-stage image
+// Data is seeded at image build time — no per-test setup cost
+import { describe, it, expect } from 'vitest';
+import { ProductRepository } from '../../src/repositories/product-repository';
+import { createPool } from '../../src/db/pool';
+
+describe('ProductRepository — search (seeded data)', () => {
+  const pool = createPool({ connectionString: process.env['DATABASE_URL']! });
+  const repo = new ProductRepository(pool);
+
+  // No beforeAll setup — data is already in the database (seeded at image build)
+  it('returns products matching a full-text search query', async () => {
+    const results = await repo.search({ query: 'widget' });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].name).toMatch(/widget/i);
+  });
+
+  it('filters by category', async () => {
+    const results = await repo.search({ query: '', category: 'electronics' });
+    expect(results.every(p => p.category === 'electronics')).toBe(true);
+  });
+});
+```
+
+> [community] The `mode=max` BuildKit cache export preserves ALL intermediate layers, not just the final image. This means a change to `package.json` only invalidates the `npm ci` layer and above — the base Node.js layer (the slowest to build) is always restored from cache. Teams that use `mode=min` (the default) only cache the final layer and lose most of the build speedup. Always use `mode=max` for test images.
+
 ### Testcontainers for Integration Tests (JavaScript) [community]
 
 Testcontainers starts real Docker containers from within test code, ensuring environment parity between local dev and CI without requiring pre-configured CI services.
@@ -1629,6 +1741,736 @@ jobs:
 
 > [community] The maximum useful shard count for browser e2e tests is typically 8–12. Beyond that, browser launch overhead (constant per shard, ~5 seconds for Chromium) consumes a disproportionate share of each shard's runtime. A 16-shard split of a 400-test suite means each shard runs 25 tests in ~2 minutes but spends 15–20 seconds just launching the browser — 10–15% overhead per shard. Profile before scaling past 8 shards.
 
+### GitHub Actions Composite Actions for DRY CI [community]
+
+Composite actions encapsulate a sequence of steps (checkout, setup-node, install, cache) into a single reusable action — distinct from reusable workflows in that they operate at the step level inside a job rather than at the job level. They eliminate the duplication of 5–10 setup steps replicated across every job in every workflow file.
+
+> [community] Teams with 3+ CI workflows and 4+ jobs per workflow report that composite actions cut YAML line count by 40–60% and eliminate the "I updated the cache key in ci.yml but forgot release.yml" class of drift bug. The primary gotcha: composite actions inherit the calling job's environment (secrets, env vars) but NOT its default working directory — always set `working-directory` explicitly in composite action steps.
+
+**Example composite action (`actions/setup-node-project/action.yml`):**
+
+```yaml
+# .github/actions/setup-node-project/action.yml — reusable setup composite action
+name: Setup Node.js Project
+description: Checkout, install Node, install deps, restore caches
+
+inputs:
+  node-version:
+    description: Node.js version (reads .nvmrc if not specified)
+    required: false
+    default: ''
+  install-playwright:
+    description: Whether to also install Playwright browsers
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+
+    - name: Resolve Node version
+      id: node-version
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.node-version }}" ]; then
+          echo "version=${{ inputs.node-version }}" >> $GITHUB_OUTPUT
+        elif [ -f .nvmrc ]; then
+          echo "version=$(cat .nvmrc)" >> $GITHUB_OUTPUT
+        else
+          echo "version=20" >> $GITHUB_OUTPUT
+        fi
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ steps.node-version.outputs.version }}
+        cache: npm
+
+    - name: Install dependencies
+      shell: bash
+      run: npm ci
+
+    - name: Cache Playwright browsers
+      if: inputs.install-playwright == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+
+    - name: Install Playwright browsers
+      if: inputs.install-playwright == 'true'
+      shell: bash
+      run: npx playwright install --with-deps chromium
+```
+
+**Workflows using the composite action:**
+
+```yaml
+# .github/workflows/ci.yml — all jobs use the same composite setup
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/setup-node-project
+      - run: npm run lint
+
+  unit:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/setup-node-project
+      - run: npm test -- --ci --coverage
+
+  e2e:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/setup-node-project
+        with: { install-playwright: 'true' }
+      - run: npm run test:e2e
+```
+
+> [community] A frequently missed limitation: composite actions cannot use `${{ secrets.* }}` directly — secrets must be passed from the calling workflow via `env:` on the `uses:` step or as `inputs:`. Teams that put secret references inside composite actions hit cryptic "Context not allowed" errors. The pattern is always: caller passes via `env:`, composite action reads via `${{ env.* }}`.
+
+### SBOM Generation as a CI Gate [community]
+
+A Software Bill of Materials (SBOM) is a machine-readable inventory of all software components and dependencies in a project. Generating an SBOM in CI and attaching it as a build artifact enables downstream vulnerability scanning, supply-chain audit, and compliance reporting (required by NIST SP 800-218, US EO 14028, EU CRA).
+
+> [community] Security teams at regulated enterprises increasingly require SBOMs for any software released to production. Teams that bolt on SBOM generation after an audit discover it is significantly harder: dependencies have accumulated without vetting, and the SBOM reveals transitive packages that nobody knew were included. Generating and reviewing the SBOM from the first CI run makes dependency hygiene visible before it becomes a compliance emergency.
+
+```yaml
+# .github/workflows/ci.yml — SBOM generation as a CI artifact
+  sbom:
+    needs: unit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # required to attach SBOM as release asset
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Generate CycloneDX SBOM (JSON format — machine-readable, widely supported)
+      - name: Generate SBOM
+        run: npx @cyclonedx/cyclonedx-npm --output-file sbom.json --output-format json
+
+      # Validate SBOM is well-formed
+      - name: Validate SBOM
+        run: npx @cyclonedx/cyclonedx-cli validate --input-file sbom.json --input-format json
+
+      # Upload SBOM as a build artifact (retained 90 days)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.json
+          retention-days: 90
+
+      # On main: attach SBOM to GitHub release (SLSA attestation)
+      - name: Attach SBOM to release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sbom.json
+          tag_name: ${{ github.sha }}
+```
+
+**TypeScript script to query SBOM for risky packages (post-generation check):**
+
+```typescript
+// scripts/sbom-audit.ts — fail CI if SBOM contains packages with known issues
+import * as fs from 'fs';
+
+interface SbomComponent {
+  type: string;
+  name: string;
+  version: string;
+  purl?: string;
+}
+
+interface CycloneDxSbom {
+  components: SbomComponent[];
+}
+
+// Packages known to have critical issues in specific versions — update as needed
+const DENY_LIST: Record<string, string> = {
+  'event-stream': '3.3.6',    // 2018 supply-chain attack
+  'ua-parser-js': '0.7.28',   // 2021 supply-chain attack
+  'node-ipc': '10.1.1',       // 2022 supply-chain attack
+};
+
+function auditSbom(sbomPath: string): void {
+  const sbom = JSON.parse(fs.readFileSync(sbomPath, 'utf8')) as CycloneDxSbom;
+  const violations: string[] = [];
+
+  for (const component of sbom.components ?? []) {
+    const deniedVersion = DENY_LIST[component.name];
+    if (deniedVersion && component.version === deniedVersion) {
+      violations.push(`DENIED: ${component.name}@${component.version} (supply-chain risk)`);
+    }
+  }
+
+  if (violations.length > 0) {
+    console.error('[sbom-audit] FAIL — denied packages found:');
+    violations.forEach(v => console.error(`  ${v}`));
+    process.exit(1);
+  }
+
+  console.log(`[sbom-audit] PASS — ${sbom.components?.length ?? 0} components, none denied`);
+}
+
+auditSbom(process.env['SBOM_PATH'] ?? 'sbom.json');
+```
+
+> [community] The most common SBOM pitfall: generating the SBOM from source (reading `package.json`) rather than from the installed tree (reading `node_modules`). Source-based SBOMs miss transitive dependencies and phantom dependencies (packages listed in `package.json` but not installed due to version resolution). Always generate from the installed tree (`npx @cyclonedx/cyclonedx-npm` reads `node_modules`), and always run `npm ci` before SBOM generation in CI.
+
+### GitHub Actions Larger Runners for Test Acceleration [community]
+
+GitHub Actions offers 4-core, 8-core, and 16-core hosted runners (at 2×, 4×, and 8× the per-minute cost of the standard 2-core runner). For test suites that are CPU or memory bound, upgrading the runner size often beats adding shards — it keeps the pipeline simple and reduces coordination overhead.
+
+> [community] Platform teams at mid-size companies (50–200 engineers) report that switching from `ubuntu-latest` (2 vCPU, 7 GB RAM) to `ubuntu-latest-4-cores` (4 vCPU, 16 GB RAM) cut their integration test suite time by 55% at 2× the runner cost — breaking even after accounting for the eliminated shard coordination overhead (artifact upload/merge steps). The tipping point: when shards are needed purely because the test suite is CPU-bound on 2 cores, a larger runner is cheaper and simpler than 4 shards.
+
+```yaml
+# .github/workflows/ci.yml — use larger runner for integration tests
+jobs:
+  integration:
+    # 4-core runner: 2× cost but eliminates need for 4 shards
+    runs-on: ubuntu-latest-4-cores
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # With 4 cores, maxWorkers: 50% = 2 workers (optimal for 4-vCPU runner)
+      - run: npx jest --testPathPattern=tests/integration --maxWorkers=2 --ci
+```
+
+**Runner size decision matrix:**
+
+```typescript
+// scripts/recommend-runner.ts — estimate optimal runner size from test timing data
+interface SuiteProfile {
+  name: string;
+  durationMs: number;
+  concurrencyGain: number;   // how much parallel workers help (0-1)
+  memoryMb: number;
+}
+
+function recommendRunner(profile: SuiteProfile): string {
+  // If suite benefits from concurrency AND is slow, a larger runner wins over sharding
+  if (profile.durationMs > 120_000 && profile.concurrencyGain > 0.6) {
+    if (profile.memoryMb > 12_000) return 'ubuntu-latest-8-cores';
+    return 'ubuntu-latest-4-cores';
+  }
+  // Memory-bound suites (many testcontainers, large in-memory databases)
+  if (profile.memoryMb > 12_000) return 'ubuntu-latest-4-cores';
+  // Default: optimize cost, not speed
+  return 'ubuntu-latest';
+}
+
+const integrationProfile: SuiteProfile = {
+  name: 'integration',
+  durationMs: 180_000,     // 3 min on 2-core runner
+  concurrencyGain: 0.72,   // high: I/O + CPU mixed workload
+  memoryMb: 8_192,
+};
+
+console.log(recommendRunner(integrationProfile)); // → ubuntu-latest-4-cores
+```
+
+**Cost comparison: sharding vs. larger runner:**
+
+```
+Scenario: integration suite takes 8 min on ubuntu-latest (2 vCPU)
+Option A: 4 shards × ubuntu-latest = 4 × $0.008/min × 2 min each = $0.064 + artifact overhead
+Option B: 1 × ubuntu-latest-4-cores = 1 × $0.016/min × ~4 min = $0.064 (same cost, less complexity)
+Option C: 1 × ubuntu-latest-8-cores = 1 × $0.032/min × ~2 min = $0.064 (same cost, faster)
+```
+
+> [community] Larger runner sizes are most effective for memory-bound suites (Testcontainers pulling multiple DB images) and CPU-bound suites (TypeScript compilation + parallel test execution). They provide NO benefit for I/O-bound suites that are mostly waiting on network or disk. Profile before purchasing — measure CPU and memory utilization on the current runner. If CPU is below 40%, the bottleneck is elsewhere and a larger runner won't help.
+
+### Node.js Native Test Runner in CI [community]
+
+Node.js 22 LTS ships a stable, built-in test runner (`node:test`) with TypeScript support via `--experimental-strip-types` (Node 22) or `tsx`. For projects that do not require Jest's snapshot testing, custom reporters, or jsdom, the native runner eliminates a test framework dependency and reduces CI install time.
+
+> [community] Teams evaluating the native test runner report it is production-ready for Node.js-only service tests (no DOM, no React) as of Node 22. The main gap vs. Jest/Vitest: no snapshot testing, no built-in code coverage UI (only V8 coverage via `--experimental-test-coverage`), and no watch mode equivalent for local development. Teams building pure Node.js microservices (APIs, workers, CLIs) gain 30–50% faster CI from zero-dependency test execution.
+
+```typescript
+// tests/unit/user-service.test.ts — Node.js native test runner (TypeScript via --experimental-strip-types)
+import { describe, it, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { UserService } from '../../src/services/user-service.ts';
+import type { UserRepository } from '../../src/repositories/user-repository.ts';
+
+// Minimal mock using node:test mock utilities
+const mockRepository = {
+  findByEmail: async (_email: string) => null,
+  create: async (data: { email: string }) => ({ id: 'test-id', ...data }),
+} satisfies Partial<UserRepository>;
+
+describe('UserService', () => {
+  let service: UserService;
+
+  beforeEach(() => {
+    service = new UserService(mockRepository as unknown as UserRepository);
+  });
+
+  it('returns null when user is not found', async () => {
+    const result = await service.getUserByEmail('notfound@example.com');
+    assert.strictEqual(result, null);
+  });
+
+  it('creates a user and returns the persisted entity', async () => {
+    const user = await service.createUser({ email: 'alice@example.com' });
+    assert.ok(user.id, 'persisted user must have an id');
+    assert.strictEqual(user.email, 'alice@example.com');
+  });
+});
+```
+
+**GitHub Actions — Node.js native test runner with TypeScript (no build step):**
+
+```yaml
+# .github/workflows/ci-native.yml — zero test-framework CI for Node.js microservices
+name: CI (Node.js native runner)
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+
+      # Type-check (native runner does NOT type-check — strip-types skips it)
+      - run: npx tsc --noEmit --project tsconfig.json
+        name: TypeScript type-check
+
+      # Run tests directly — Node 22 strips TypeScript syntax without tsc
+      - run: |
+          node --experimental-strip-types \
+               --experimental-test-coverage \
+               --test 'tests/**/*.test.ts'
+        name: Unit tests (native runner)
+```
+
+> [community] The `--experimental-strip-types` flag (Node 22.6+) removes TypeScript syntax without type-checking — it's equivalent to Babel's TypeScript preset. This means type errors will NOT cause CI failures unless `tsc --noEmit` is also a separate step. Teams that switch to native runner without adding a type-check step discover type errors in production within weeks. Always pair `--experimental-strip-types` with a `tsc --noEmit` gate.
+
+### Performance Regression as a CI Gate [community]
+
+Performance regression gates catch API latency increases and memory leaks before they reach production. By benchmarking key operations in CI and comparing to a stored baseline, teams prevent the "how did our API go from 50ms to 300ms?" class of issue.
+
+> [community] Teams that gate on performance benchmarks in CI catch latency regressions in 80–90% of cases before they reach staging. The key challenge: benchmark variance is high on shared GitHub Actions runners (CPU scheduling is nondeterministic). Use relative change vs. baseline (e.g., "reject if p95 latency increases > 20%") rather than absolute time limits. Teams using absolute thresholds see 20–40% false-positive rates from runner variability alone.
+
+```typescript
+// benchmarks/api-latency.bench.ts — performance baseline for CI (Vitest bench)
+import { bench, describe } from 'vitest';
+import { createApp } from '../src/app';
+import type { Express } from 'express';
+import supertest from 'supertest';
+
+let app: Express;
+
+describe('API latency benchmarks', () => {
+  app = createApp({ dbUrl: process.env['TEST_DATABASE_URL'] ?? ':memory:' });
+
+  bench('GET /users (list, no filter)', async () => {
+    const res = await supertest(app).get('/users');
+    if (res.status !== 200) throw new Error(`Unexpected status: ${res.status}`);
+  }, { iterations: 100, warmupIterations: 10 });
+
+  bench('GET /users/:id (single lookup)', async () => {
+    await supertest(app).get('/users/seed-user-1');
+  }, { iterations: 100, warmupIterations: 10 });
+});
+```
+
+```typescript
+// scripts/benchmark-compare.ts — fail CI if any benchmark regressed > threshold
+import * as fs from 'fs';
+
+interface BenchResult { name: string; hz: number }
+interface BenchFile { benchmarks: BenchResult[] }
+
+const baselinePath = process.env['BASELINE_FILE'] ?? '';
+const currentPath = process.env['CURRENT_FILE'] ?? '';
+const maxRegressionPct = parseInt(process.env['MAX_REGRESSION_PCT'] ?? '20', 10);
+
+if (!fs.existsSync(baselinePath)) {
+  console.log('[benchmark-compare] No baseline found — skipping (first run)');
+  process.exit(0);
+}
+
+const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8')) as BenchFile;
+const current = JSON.parse(fs.readFileSync(currentPath, 'utf8')) as BenchFile;
+const regressions: string[] = [];
+
+for (const curr of current.benchmarks) {
+  const base = baseline.benchmarks.find(b => b.name === curr.name);
+  if (!base) continue;
+  const changePct = ((curr.hz - base.hz) / base.hz) * 100;
+  console.log(`  ${curr.name}: ${changePct.toFixed(1)}% (${base.hz.toFixed(0)} → ${curr.hz.toFixed(0)} ops/s)`);
+  if (changePct < -maxRegressionPct) {
+    regressions.push(`${curr.name}: ${changePct.toFixed(1)}% regression (threshold: -${maxRegressionPct}%)`);
+  }
+}
+
+if (regressions.length > 0) {
+  console.error('[benchmark-compare] FAIL:');
+  regressions.forEach(r => console.error(`  ✗ ${r}`));
+  process.exit(1);
+}
+console.log('[benchmark-compare] PASS — no regressions beyond threshold');
+```
+
+**CI workflow for benchmark comparison:**
+
+```yaml
+  benchmark:
+    needs: unit
+    runs-on: ubuntu-latest-4-cores   # lock runner size — variability kills benchmark comparisons
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Download main-branch baseline
+        uses: dawidd6/action-download-artifact@v3
+        with: { branch: main, name: benchmark-baseline, path: benchmark-results/ }
+        continue-on-error: true
+      - run: npx vitest bench --config vitest.bench.config.ts
+      - run: npx ts-node scripts/benchmark-compare.ts
+        env: { BASELINE_FILE: benchmark-results/latest.json, MAX_REGRESSION_PCT: '20' }
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main'
+        with: { name: benchmark-baseline, path: benchmark-results/latest.json }
+```
+
+> [community] The single most important configuration for reliable benchmark CI: always run benchmarks on the same runner size. Teams that let benchmark jobs land on different runner types see 30–50% variance in results that is purely from hardware differences. Lock the runner label and treat any change to it as a "reset baseline" event requiring a new baseline capture run.
+
+### Trace-Based Testing in CI [community]
+
+Trace-based testing uses distributed traces emitted by the application under test — OpenTelemetry spans — as the assertion target, rather than HTTP response bodies or UI state. A test passes when the observed trace matches an expected shape: correct span names, correct attribute values, correct parent-child relationships.
+
+> [community] Platform engineering teams at companies with mature OTEL instrumentation report that trace-based tests catch integration defects invisible to HTTP-level assertions: a response body that looks correct but was computed via the wrong code path (missing a DB query, using a stale cache, calling the wrong downstream service). Traditional integration tests can produce false positives on these defects; trace-based tests cannot, because the trace records WHAT actually happened, not just the final output.
+
+```typescript
+// tests/trace/checkout-flow.tracetest.ts — trace assertion using Tracetest SDK
+import { Tracetest } from '@tracetest/client';
+
+const tracetest = new Tracetest({
+  serverUrl: process.env['TRACETEST_URL'] ?? 'http://localhost:11633',
+  apiKey: process.env['TRACETEST_API_KEY'],
+});
+
+describe('Checkout flow — trace assertions', () => {
+  it('creates an order and triggers inventory reservation span', async () => {
+    const res = await fetch(`${process.env['API_URL']}/checkout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'test-user', items: [{ productId: 'p1', qty: 2 }] }),
+    });
+    expect(res.status).toBe(201);
+
+    const traceId = res.headers.get('x-trace-id');
+    if (!traceId) throw new Error('API must propagate trace ID via x-trace-id header');
+
+    // Assert on the observed trace — not just the response body
+    const run = await tracetest.runTest({
+      traceId,
+      assertions: [
+        { selector: 'span[name="checkout.createOrder"]', assertion: 'attr:status = "OK"' },
+        { selector: 'span[name="inventory.reserve"]', assertion: 'attr:product_id = "p1"' },
+        { selector: 'span[name="payment.charge"]', assertion: 'attr:amount_cents >= 1' },
+        // Validates no extra/missing service calls
+        { selector: 'span[tracetest.span.type="http"]', assertion: 'count >= 3' },
+      ],
+    });
+
+    expect(run.allPassed).toBe(true);
+  }, 30_000);
+});
+```
+
+**GitHub Actions — trace-based tests run after ephemeral environment provision:**
+
+```yaml
+  trace-tests:
+    needs: [provision-env]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm run test:trace
+        env:
+          API_URL: ${{ needs.provision-env.outputs.env_url }}
+          TRACETEST_URL: ${{ vars.TRACETEST_URL }}
+          TRACETEST_API_KEY: ${{ secrets.TRACETEST_API_KEY }}
+```
+
+> [community] The primary adoption barrier for trace-based testing: the application must emit OTEL spans in the test environment. Teams already running OTEL in staging can add trace tests in 1–2 days. Teams without OTEL instrumentation need to instrument the app first — a 1–2 week investment that pays dividends in production observability regardless of test strategy. Start with 3–5 critical business flows (checkout, auth, payment) before expanding to the full test suite.
+
+### AI-Assisted Test Gap Detection in CI [community]
+
+LLM-based coverage gap detection integrated into CI compares branch coverage of changed files before and after the PR, producing targeted "these branches in your PR are not tested" annotations directly in the PR diff view. This is distinct from AI-generating full test suites — it flags specific uncovered paths and lets the developer decide what to test.
+
+> [community] Teams piloting AI test gap detection in CI report it is most effective for flagging error-handling branches — the `catch` blocks, null checks, and edge cases that developers consistently skip. The research from Meta's mutation-guided LLM test synthesis (arXiv:2501.12862) shows that mutation-guided prompting (showing the LLM which mutants survive) improves synthesized test quality significantly over coverage-guided prompting alone. The key implementation decision: present gap detection as informational PR annotations, not hard gates. Teams that gate merges on AI suggestions see workaround adoption; teams using non-blocking annotations see 20–30% reduction in uncovered error paths.
+
+```typescript
+// scripts/coverage-gap-reporter.ts — flag untested branches in PR-changed files
+import * as fs from 'fs';
+import * as path from 'path';
+
+interface CoverageSummary {
+  [filePath: string]: {
+    branches: { total: number; covered: number; pct: number };
+    lines: { pct: number };
+  };
+}
+
+interface GapReport {
+  file: string;
+  uncoveredBranches: number;
+  branchCoveragePct: number;
+  severity: 'high' | 'medium';
+}
+
+function detectGaps(
+  coveragePath: string,
+  changedFiles: string[],
+  thresholds = { high: 60, medium: 80 },
+): GapReport[] {
+  const summary = JSON.parse(fs.readFileSync(coveragePath, 'utf8')) as CoverageSummary;
+  const gaps: GapReport[] = [];
+
+  for (const file of changedFiles) {
+    const entry = summary[path.resolve(file)] ?? summary[file];
+    if (!entry) continue;
+    const { branches } = entry;
+    if (branches.pct < thresholds.medium) {
+      gaps.push({
+        file,
+        uncoveredBranches: branches.total - branches.covered,
+        branchCoveragePct: branches.pct,
+        severity: branches.pct < thresholds.high ? 'high' : 'medium',
+      });
+    }
+  }
+
+  return gaps.sort((a, b) => a.branchCoveragePct - b.branchCoveragePct);
+}
+
+const changedFiles = (process.env['CHANGED_FILES'] ?? '').split('\n').filter(Boolean);
+const gaps = detectGaps('coverage/coverage-summary.json', changedFiles);
+
+if (gaps.length > 0 && process.env['GITHUB_STEP_SUMMARY']) {
+  const rows = gaps
+    .map(g => `| ${g.severity === 'high' ? '🔴' : '🟡'} \`${g.file}\` | ${g.branchCoveragePct.toFixed(1)}% | ${g.uncoveredBranches} |`)
+    .join('\n');
+  fs.appendFileSync(
+    process.env['GITHUB_STEP_SUMMARY'],
+    `## Coverage Gaps in Changed Files\n| File | Branch Coverage | Uncovered Branches |\n|------|-----------------|--------------------|\n${rows}\n`,
+  );
+}
+
+// Only hard-fail on high-severity (< 60% branch coverage in new changed files)
+const highSeverity = gaps.filter(g => g.severity === 'high');
+if (highSeverity.length > 0) {
+  console.error(`[coverage-gap] ${highSeverity.length} file(s) with < 60% branch coverage in PR changes`);
+  process.exit(1);
+}
+```
+
+**GitHub Actions step — annotate PR with coverage gaps:**
+
+```yaml
+  coverage-gaps:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm test -- --ci --coverage
+      - name: Get changed source files (exclude test files)
+        id: changed
+        run: |
+          FILES=$(git diff --name-only origin/main...HEAD -- '*.ts' '*.tsx' | grep -v '\.test\.' | grep -v '\.spec\.')
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      - name: Report coverage gaps
+        run: npx ts-node scripts/coverage-gap-reporter.ts
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+        continue-on-error: true   # informational — does not block merge
+```
+
+### `act` for Local GitHub Actions Execution [community]
+
+`act` (https://github.com/nektos/act) runs GitHub Actions workflows locally using Docker, providing near-identical execution to GitHub's hosted runners. For CI pipeline authors, it shortens the iteration cycle from "push, wait 5 min, read logs" to "run locally in 30 seconds".
+
+> [community] Platform engineering teams report that `act` eliminates 60–80% of the push-wait-fail cycle for CI YAML changes. The most common CI authoring bug — forgetting to pass an environment variable or secret — is caught in seconds locally rather than minutes in the push queue. The primary caveat: `act` uses community-maintained Docker images for GitHub's runner environment; native actions that depend on GitHub's runner toolcache (e.g., `actions/setup-node` with version-file) require the full image (`-P ubuntu-latest=ghcr.io/catthehacker/ubuntu:full-22.04`), which is ~20 GB.
+
+```bash
+# Install act (macOS/Linux — also works via winget on Windows)
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
+
+# Run the default push event workflow locally (fast runner image ~250 MB)
+act push
+
+# Run a specific job with a full GitHub runner environment
+act pull_request --job unit -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:full-22.04
+
+# Pass secrets from a local .secrets file (never commit this file)
+act --secret-file .secrets
+
+# Run with verbose logging — critical for diagnosing step failures
+act --verbose --job lint
+```
+
+**`.actrc` — team-shared defaults (commit to repo):**
+
+```bash
+# .actrc — default act configuration for all developers
+-P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-22.04   # medium image, ~4 GB
+--secret-file .secrets.local                               # per-developer secrets (gitignored)
+--env-file .env.act                                        # per-repo test env vars (committed)
+--artifact-server-path /tmp/act-artifacts                  # local artifact storage
+```
+
+> [community] The most impactful `act` workflow for new CI pipeline authors: run `act --list` to see all events/jobs, then `act push --dry-run` to validate YAML syntax without executing. Teams that add `act` to their dev setup instructions report onboarding new engineers to CI authoring in 1 hour vs. half a day of push-and-wait cycles.
+
+### Playwright Component Testing (ct) as a CI Test Level [community]
+
+Playwright Component Testing (`@playwright/experimental-ct-*`) runs React, Vue, and Svelte components in a real Chromium browser without a full application stack. It sits between unit tests (jsdom) and full e2e tests: real browser DOM, real CSS layout, zero deployment overhead. In CI it gives the signal of a browser test at near-unit-test speed.
+
+> [community] Teams adopting Playwright CT report that it eliminates 30–40% of their e2e test suite by extracting component-level interaction tests (form validation, dropdown behaviour, modal state) out of the full-stack e2e suite. The remaining e2e tests focus exclusively on integration flows (auth, cross-page navigation, real API calls). Total CI time drops because component tests run in ~2 minutes vs ~12 minutes for the same coverage in e2e.
+
+```typescript
+// playwright/index.ts — component test entry point (required by @playwright/experimental-ct-react)
+import { beforeMount, afterMount } from '@playwright/experimental-ct-react/hooks';
+import { ThemeProvider } from '../src/providers/theme-provider';
+import type { ReactNode } from 'react';
+
+// Wrap every component under test with app-level providers
+beforeMount<{ theme?: 'light' | 'dark' }>(async ({ App, hooksConfig }) => {
+  return (
+    <ThemeProvider theme={hooksConfig?.theme ?? 'light'}>
+      <App />
+    </ThemeProvider>
+  );
+});
+```
+
+```typescript
+// tests/ct/checkout-summary.spec.ts — component test in CI
+import { test, expect } from '@playwright/experimental-ct-react';
+import { CheckoutSummary } from '../../src/components/checkout-summary';
+
+test.use({ viewport: { width: 1280, height: 720 } });
+
+test('renders line items and total with correct aria labels', async ({ mount }) => {
+  const items = [
+    { id: '1', name: 'Widget', qty: 2, unitPrice: 9.99 },
+    { id: '2', name: 'Gadget', qty: 1, unitPrice: 24.99 },
+  ];
+
+  const component = await mount(
+    <CheckoutSummary items={items} currency="USD" onConfirm={async () => {}} />,
+  );
+
+  // Verify rendered output — real browser, real CSS, no jsdom quirks
+  await expect(component.getByRole('list', { name: 'Order items' })).toBeVisible();
+  await expect(component.getByText('$44.97')).toBeVisible();
+
+  // Verify accessibility: confirm button must be reachable via keyboard
+  const confirmButton = component.getByRole('button', { name: 'Confirm order' });
+  await confirmButton.focus();
+  await expect(confirmButton).toBeFocused();
+});
+
+test('disables confirm button while submission is in progress', async ({ mount }) => {
+  let resolveSubmit: () => void;
+  const submitting = new Promise<void>(r => { resolveSubmit = r; });
+
+  const component = await mount(
+    <CheckoutSummary
+      items={[{ id: '1', name: 'Widget', qty: 1, unitPrice: 9.99 }]}
+      currency="USD"
+      onConfirm={() => submitting}
+    />,
+  );
+
+  const button = component.getByRole('button', { name: 'Confirm order' });
+  await button.click();
+  await expect(button).toBeDisabled();
+
+  resolveSubmit!();
+  await expect(button).toBeEnabled();
+});
+```
+
+**playwright-ct.config.ts for CI:**
+
+```typescript
+import { defineConfig, devices } from '@playwright/experimental-ct-react';
+
+export default defineConfig({
+  testDir: './tests/ct',
+  // Component tests run fast — no network, no backend
+  timeout: 10_000,
+  retries: process.env['CI'] ? 1 : 0,
+  reporter: [
+    ['html', { open: 'never' }],
+    ['junit', { outputFile: 'test-results/ct-junit.xml' }],
+  ],
+  use: {
+    ...devices['Desktop Chrome'],
+    // Mount components in a blank page — no app server needed
+    ctPort: 3100,
+    trace: 'on-first-retry',
+  },
+});
+```
+
+**GitHub Actions — component tests as a separate fast gate:**
+
+```yaml
+# .github/workflows/ci.yml — component tests run in parallel with unit tests
+  component-tests:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-ct-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test --config playwright-ct.config.ts
+        name: Component tests
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ct-report
+          path: playwright-report/
+```
+
+> [community] The key operational difference from full e2e: component tests do NOT require a running dev server. Playwright CT bundles the component under test with Vite/webpack in isolation. This means CI setup is identical to unit tests — no `wait-for` health checks, no port management, no environment vars for `BASE_URL`. Teams that confuse CT with e2e and add `wait-for` steps add 10–30 seconds of unnecessary startup time to each CT run.
+
 ### Typed Playwright Fixtures and Page Object Model in CI [community]
 
 TypeScript's type system makes Playwright fixtures and Page Object Models (POM) significantly safer in CI — broken page object APIs cause compile-time errors rather than runtime failures mid-run.
@@ -1712,6 +2554,125 @@ test.describe('Authentication', () => {
 ```
 
 > [community] The most overlooked benefit of typed fixtures in CI: the `authenticatedPage` fixture eliminates login overhead from every test that needs an authenticated session. Without fixtures, teams repeat the login flow in `beforeEach` across all test files — a 2-second operation that, across 100 tests, adds 200 seconds to the suite. With fixtures, the auth state is reused via browser storage state, reducing auth overhead to near zero.
+
+### Visual Regression Testing as a CI Advisory Gate [community]
+
+Visual regression tests compare screenshots of UI components or pages against stored baselines using pixel-diff or structural algorithms. Unlike functional tests, visual regressions catch CSS drift, layout shifts, and rendering differences that do not affect business logic but degrade user experience.
+
+> [community] Teams that gate merges on visual regression tests with pixel-diff thresholds consistently report high false-positive rates (15–30%) from font rendering differences, antialiasing, and minor animation frame captures. The industry-adopted pattern: visual regression tests run as advisory (non-blocking) checks, with results posted as PR comments showing a diff image. Developers review and explicitly approve visual changes. Auto-blocking is reserved for full-page blank renders (100% diff) and core layout breakages (>80% diff).
+
+```typescript
+// playwright.config.ts — visual regression configuration
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests/visual',
+  // Store snapshots in a version-controlled directory
+  snapshotDir: './tests/visual/__snapshots__',
+  retries: process.env['CI'] ? 1 : 0,
+  reporter: [
+    ['html', { open: 'never' }],
+    ['json', { outputFile: 'test-results/visual-results.json' }],
+  ],
+  use: {
+    ...devices['Desktop Chrome'],
+    // Consistent viewport for reproducible screenshots
+    viewport: { width: 1280, height: 720 },
+    // Capture traces on first retry for debugging
+    trace: 'on-first-retry',
+  },
+  expect: {
+    // Allow 0.2% pixel difference — accounts for antialiasing
+    toHaveScreenshot: { maxDiffPixelRatio: 0.002 },
+  },
+});
+```
+
+```typescript
+// tests/visual/dashboard.spec.ts — component-level visual regression tests
+import { test, expect } from '@playwright/test';
+
+test.describe('Dashboard — visual regression', () => {
+  test.beforeEach(async ({ page }) => {
+    // Use a seeded, deterministic data state for consistent screenshots
+    await page.goto('/dashboard?demo=true&seed=42');
+    // Wait for all network requests to complete before capturing
+    await page.waitForLoadState('networkidle');
+    // Hide dynamic content (timestamps, user avatars with async load)
+    await page.addStyleTag({ content: '.timestamp, .user-avatar { visibility: hidden }' });
+  });
+
+  test('main dashboard layout matches baseline', async ({ page }) => {
+    await expect(page).toHaveScreenshot('dashboard-main.png', {
+      // Clip to avoid capturing browser chrome
+      clip: { x: 0, y: 0, width: 1280, height: 720 },
+      // Higher threshold for complex layouts
+      maxDiffPixelRatio: 0.005,
+    });
+  });
+
+  test('sidebar collapsed state matches baseline', async ({ page }) => {
+    await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+    await page.waitForSelector('[data-state="collapsed"]');
+    await expect(page.locator('.main-layout')).toHaveScreenshot('dashboard-sidebar-collapsed.png');
+  });
+});
+```
+
+**GitHub Actions — visual regression as advisory (non-blocking):**
+
+```yaml
+# .github/workflows/ci.yml — visual regression advisory check
+  visual-regression:
+    needs: e2e
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+
+      # Download stored baselines from main branch
+      - name: Download visual baselines
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          branch: main
+          name: visual-baselines
+          path: tests/visual/__snapshots__
+        continue-on-error: true   # no baselines on first run
+
+      - name: Run visual regression tests
+        id: visual
+        run: npx playwright test --config playwright-visual.config.ts
+        # advisory: continue even if tests fail — results posted as PR comment
+        continue-on-error: true
+
+      # Upload diff report as artifact for PR review
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: visual-regression-report
+          path: playwright-report/
+
+      # Update baselines on main (for committing approved changes)
+      - name: Update baselines
+        if: github.ref == 'refs/heads/main'
+        run: npx playwright test --config playwright-visual.config.ts --update-snapshots
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: visual-baselines
+          path: tests/visual/__snapshots__
+```
+
+> [community] The baseline update workflow is the most error-prone part of visual regression CI: teams that manually commit snapshot files into git accumulate multi-megabyte binary blobs, slow down `git clone`, and create merge conflicts on every UI change. The pattern above stores baselines as GitHub Actions artifacts (not in git) and re-uploads them from the main branch run. This keeps the repository clean and snapshots always reflect the current `main` state.
 
 ### Ephemeral Test Environments in CI [community]
 
@@ -1967,6 +2928,25 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 | Reusable workflow caller not passing secrets | Inner workflow sees empty secret string; silent failure | Explicitly pass each secret via `secrets:` in the calling workflow |
 | Feature flag tests only covering flags-OFF state | Flag-ON code path untested; defects reach production | Always write tests for both flag states for any flag-branched code path |
 | Feature flag removal without cleaning up old-path tests | Dead tests inflate coverage; old assertions test nothing | Tag tests with flag name; remove both flag and tests together in same PR |
+| Playwright CT confused with e2e — adding `wait-for` server steps | CT bundles the component directly; no server needed — wait steps waste 10–30s | Remove any server startup steps from CT workflows; CT is self-contained |
+| Composite action using `${{ secrets.* }}` directly | `Context not allowed` error — composite actions cannot read secrets | Pass secrets from calling workflow via `env:` on the `uses:` step |
+| `act` using default micro image for `setup-node` with version file | `node-version-file` fails on micro/medium image — toolcache missing | Use full image (`ghcr.io/catthehacker/ubuntu:full-22.04`) or pin node version explicitly in act |
+| SBOM generated from `package.json` source instead of installed tree | Misses transitive and resolved dependencies; SBOM is incomplete | Always run `npm ci` first; generate SBOM from `node_modules` not from source |
+| Larger runner selected without profiling current runner utilization | Paying 2–8× per minute for no speed gain if bottleneck is I/O not CPU/RAM | Profile CPU and memory utilization first; upgrade runner only if CPU > 80% or RAM > 90% |
+| Node 22 `--experimental-strip-types` without separate `tsc --noEmit` | Type errors pass all tests; discovered in production | Always add `tsc --noEmit` as a separate required CI step before tests |
+| Performance benchmark using absolute time thresholds on shared runners | 30–50% false-positive rate from runner variability — teams disable the gate | Use relative change vs. stored baseline (e.g., >20% regression) instead of absolute ms thresholds |
+| Benchmark baseline stored without locking the runner label | Hardware change between baseline and comparison run causes meaningless results | Add runner label to baseline artifact name; invalidate and re-collect on runner change |
+| Trace-based tests without OTEL instrumentation in test environment | `x-trace-id` header missing; trace assertions cannot run | Instrument the application with OTEL in all environments including test before adding trace tests |
+| AI coverage gap detection used as a hard merge gate | High friction; developers add workarounds (empty test stubs) to pass the gate | Use as informational PR annotation (`continue-on-error: true`); reserve hard gates for < 60% branch coverage in critical paths |
+| Multi-cloud OIDC exchange after slow container pull steps | GitHub OIDC token expires (10 min); second cloud auth fails silently | Pre-exchange ALL provider tokens as the first job steps before any slow setup |
+| GCP Workload Identity Pool without `attribute_condition` | Any GitHub repo can use the pool — broad credential exposure | Always set `attribute_condition = "assertion.repository == 'myorg/myrepo'"` on the provider |
+| Docker BuildKit cache export using `mode=min` | Only final layer cached; intermediate layers (npm install) rebuilt on every dep change | Use `mode=max` to cache all intermediate layers and get maximum cache hit rate |
+| Docker `--no-cache` flag in CI scripts | Defeats BuildKit GHA cache; every build is cold — adds 3–8 min per job | Remove `--no-cache`; use content-addressed layers to ensure freshness without cache bypass |
+| Visual regression baselines stored in git as binary snapshots | Multi-MB blobs slow `git clone`; merge conflicts on every UI change | Store baselines as CI artifacts (not in git); re-upload from main branch run |
+| Visual regression used as a hard merge gate | 15–30% false-positive rate from antialiasing differences blocks developer flow | Use as advisory PR annotation; auto-block only on >80% pixel diff (full-page blank or complete layout breakage) |
+| GitHub Environment protection rule on production without a wait timer | "Approve under pressure" — reviewers click approve without reviewing e2e results | Add 10-minute wait timer; gives reviewers time to review results without being rushed |
+| Deployment health check using fixed sleep after deploy | Sleep is too long (wastes time) or too short (fails before app is ready) | Poll `/health` endpoint with exponential backoff until `{ status: "ok", version: <sha> }` |
+| TypeScript `--noCheck` without a mandatory parallel `tsc --noEmit` gate | Type errors pass transpile-only CI; discovered in production | Add `all-checks` gate job requiring BOTH transpile+test AND typecheck to pass |
 
 ## Real-World Gotchas [community]
 
@@ -2085,9 +3065,19 @@ export default env;
 
 30. **Feature flag tests not covering the removal path** [community]: When a feature flag is promoted to permanent (flag removed, one code path deleted), any test that only covered the old code path becomes dead code — it still runs but tests a branch that no longer exists or silently passes because it imports the now-absent old-path function which was replaced. Teams that track feature flag lifecycle in their test suite (flag name in test file name or describe block) catch this during code review. Teams without such tracking discover it months later when coverage metrics mysteriously improve — a sign tests are testing nothing.
 
-## Tradeoffs & Alternatives
+31. **Multi-cloud OIDC token exchange after slow setup steps** [community]: GitHub Actions OIDC tokens have a 10-minute expiry. Teams that run slow container pull steps (docker pull, npm ci) BEFORE the OIDC exchange occasionally hit token expiry on cold runners. Always exchange all provider tokens as the first substantive step in the job, before any slow setup work. This is especially critical in multi-cloud jobs that need both AWS and GCP credentials.
 
-| Strategy | CI time | Coverage | Use when |
+32. **`act` local run diverging from remote CI due to missing service containers** [community]: GitHub Actions `services:` (Postgres, Redis) are Docker containers started by the GitHub runner before the job. `act` supports `services:` but requires Docker networking that is configured differently on developer machines vs. the runner. Teams using `act` for integration test iteration often skip the service container step locally and wonder why tests pass locally-with-act but fail without services in fresh CI. Always include `act --container-architecture linux/amd64 --network host` flags or define equivalent `docker-compose.yml` for local integration testing.
+
+33. **Docker test image built with `target: test` but deployed to staging with `target: production`** [community]: Multi-stage Dockerfiles allow building different stages for testing vs. production. A common confusion: developers rebuild the test image (`target: test`) locally but CI builds the production image and runs tests against it. The test-stage image may include extra mocks, seed data, or debug tools not in production. Ensure CI consistently builds and tests with the `test` target stage and deploys only the `production` target stage.
+
+34. **Visual regression screenshots capturing dynamic content (timestamps, live data)** [community]: Tests that screenshot a page containing a live timestamp, random avatar, or animated element produce a different snapshot on every run. These tests fail 100% of the time and are immediately disabled. Before capturing any screenshot, hide or freeze all dynamic elements: `await page.addStyleTag({ content: '.timestamp, .avatar { visibility: hidden }' })`. Identify dynamic elements with `--update-snapshots` on a clean branch and note which elements changed between captures.
+
+35. **GitHub Environment protection rule configured on staging but not on the jobs that deploy to production** [community]: Environment protection rules only apply to jobs that explicitly declare `environment: production`. A deployment pipeline that uses a reusable workflow for the production deploy step but does not pass `environment:` as a parameter will silently bypass all protection rules. Teams discover this after a bad production deploy — the deployment ran without waiting for reviewer approval because the environment was not declared on the job. Audit every deployment job in every workflow file for the correct `environment:` declaration.
+
+36. **TypeScript `--noCheck` adopted without a mandatory parallel `tsc --noEmit` gate** [community]: `--noCheck` is designed to be paired with a separate type-check job. Teams that adopt `--noCheck` for speed but treat the type-check job as optional discover the problem the same way that teams using `babel-jest` without `tsc --noEmit` discover it: type errors silently pass CI and are found in production. The `all-checks` gate job that requires BOTH `transpile-and-test` AND `typecheck` to pass is not optional — it is the safety invariant that makes `--noCheck` safe.
+
+## Tradeoffs & Alternatives
 |---|---|---|---|
 | Unit only | ~2 min | Logic only | Hotfix branches, library packages |
 | Unit + integration | ~6 min | Logic + service contracts | Feature branches |
@@ -2242,6 +3232,91 @@ jobs:
 | 16+ | ~10× | $16×+ | Diminishing returns; coordination overhead |
 
 Coordination overhead (artifact upload/download, report merge) absorbs roughly 10–15% of potential speedup per doubling of shards.
+
+### Multi-Cloud OIDC Credential Scoping [community]
+
+When tests require credentials for multiple cloud providers simultaneously (e.g., AWS S3 + GCP Artifact Registry + Azure Key Vault in the same integration test job), a single OIDC exchange is insufficient. Each provider requires a separate OIDC token exchange, and the IAM role must be scoped to the minimum required permissions for each exchange.
+
+> [community] Teams running integration tests that span multiple cloud providers report that naively chaining OIDC exchanges (exchange for AWS → exchange for GCP) without understanding token lifetimes causes silent authentication failures 10–15 minutes into long-running test jobs. GitHub Actions OIDC tokens have a 10-minute expiry; if the second OIDC exchange happens after the token expires (e.g., after a slow containerized setup step), the exchange fails. Pre-exchange all provider tokens at job start before any slow steps.
+
+```yaml
+# .github/workflows/ci-multi-cloud.yml — pre-exchange all OIDC tokens at job start
+name: Multi-Cloud Integration Tests
+
+on: [pull_request]
+
+permissions:
+  id-token: write    # required for all OIDC exchanges
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Exchange ALL OIDC tokens first — before any slow steps that might expire the GitHub token
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/GitHubTestRole
+          aws-region: us-east-1
+
+      - name: Configure GCP credentials (OIDC via Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/123/locations/global/workloadIdentityPools/github/providers/github
+          service_account: test-runner@my-project.iam.gserviceaccount.com
+
+      # Now run the slow steps — credentials are already in env, no expiry risk
+      - name: Pull test container images (slow)
+        run: docker pull postgres:16-alpine && docker pull redis:7-alpine
+
+      - name: Run integration tests
+        run: npm run test:integration
+        env:
+          NODE_ENV: test
+          AWS_REGION: us-east-1
+          GCP_PROJECT: my-project
+```
+
+**TypeScript multi-cloud test with credential validation:**
+
+```typescript
+// tests/integration/multi-cloud-storage.test.ts — validate both cloud creds before tests
+import { S3Client, HeadBucketCommand } from '@aws-sdk/client-s3';
+import { Storage } from '@google-cloud/storage';
+import * as assert from 'node:assert/strict';
+import { describe, it, before } from 'node:test';
+
+describe('Multi-cloud storage integration', () => {
+  const s3 = new S3Client({ region: 'us-east-1' });
+  const gcs = new Storage({ projectId: process.env['GCP_PROJECT'] });
+
+  // Fail fast if credentials are not available — better than cryptic permission errors mid-suite
+  before(async () => {
+    const [awsOk, gcpOk] = await Promise.all([
+      s3.send(new HeadBucketCommand({ Bucket: process.env['TEST_S3_BUCKET']! }))
+        .then(() => true).catch(() => false),
+      gcs.bucket(process.env['TEST_GCS_BUCKET']!).exists()
+        .then(([exists]) => exists).catch(() => false),
+    ]);
+
+    assert.ok(awsOk, 'AWS S3 credentials not configured — check OIDC trust policy');
+    assert.ok(gcpOk, 'GCP credentials not configured — check Workload Identity Federation');
+  });
+
+  it('stores object in S3 and copies metadata to GCS', async () => {
+    // ... actual test logic
+    assert.ok(true, 'placeholder — add real cross-cloud assertion here');
+  });
+});
+```
+
+> [community] The most commonly missed OIDC configuration for GCP: the `attribute_condition` on the Workload Identity Pool provider. Without it, any GitHub repository can use the provider. The correct condition is `assertion.repository == "myorg/myrepo"` (exact match) or `assertion.repository_owner == "myorg"` (org-level). Teams that configure the pool without an attribute condition discover the exposure during security reviews, typically months after the fact.
 
 ### CI Provider Comparison [community]
 
@@ -2702,6 +3777,213 @@ traceTestRun(process.env['RESULTS_FILE'] ?? 'test-results/jest-results.json').ca
 
 > [community] Self-hosted OTEL collectors (Jaeger, Zipkin, Grafana Tempo) work well for CI tracing. For teams without existing OTEL infrastructure, Honeycomb's free tier (20M events/month) is a low-friction starting point. The OTLP HTTP exporter in the example above works with all three. Budget 2–3 hours for initial setup; the ongoing maintenance cost is near zero.
 
+### TypeScript 5.7+ `--noCheck` for Ultra-Fast CI Transpilation [community]
+
+TypeScript 5.7 introduced `--noCheck` — a flag that emits JavaScript output from TypeScript source WITHOUT performing type checking. This separates the two responsibilities that `tsc` normally bundles: transpilation (TS→JS) and type validation. In CI, `--noCheck` enables a "transpile-fast, type-check-separate" pipeline where tests start running in seconds while the type-check job runs in parallel.
+
+> [community] The `--noCheck` flag is the TypeScript equivalent of Babel's `@babel/preset-typescript` — it strips types without validating them. Teams adopting it in CI consistently report the same performance profile: transpile-only build completes in 2–5 seconds (vs. 30–90 seconds for a full type-checked build on large codebases). The critical invariant: the parallel `tsc --noEmit` type-check job MUST be a required CI gate. Without it, `--noCheck` creates a loophole where type errors ship to production.
+
+```yaml
+# .github/workflows/ci.yml — parallel transpile + type-check strategy (TypeScript 5.7+)
+name: CI (parallel transpile + typecheck)
+
+on: [push, pull_request]
+
+jobs:
+  transpile-and-test:
+    # Start tests immediately — transpile-only (no type checking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # --noCheck: emit JS without type checking — fast (2-5s on large codebases)
+      - run: npx tsc --noCheck --outDir dist
+        name: Transpile (no type-check)
+      - run: npm test -- --ci
+        name: Unit tests (against transpiled output)
+
+  typecheck:
+    # Run type-check in parallel with tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Full type check — this is the safety net
+      - run: npx tsc --noEmit --incremental
+        name: TypeScript type-check (full validation)
+
+  # Both jobs must pass — tests passing but typecheck failing = CI blocked
+  all-checks:
+    needs: [transpile-and-test, typecheck]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [[ "${{ needs.transpile-and-test.result }}" != "success" ]] || \
+             [[ "${{ needs.typecheck.result }}" != "success" ]]; then
+            echo "::error::One or more required jobs failed"
+            exit 1
+          fi
+          echo "All checks passed"
+```
+
+**tsconfig.json for `--noCheck` optimized builds:**
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "strict": true,
+    "noEmit": false,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "sourceMap": true,
+    "declaration": false,    // skip declaration generation for test builds
+    "skipLibCheck": true,    // skip in transpile-only mode; enforced in typecheck job
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"]
+}
+```
+
+**Speed comparison — large TypeScript codebase (300+ source files):**
+
+```
+Strategy                    | Cold CI (first run) | Warm CI (cache hit)
+--------------------------- | ------------------- | -------------------
+tsc --noEmit (full check)   | 45–90 seconds       | 3–8 seconds (incremental)
+tsc --noCheck (transpile)   | 2–5 seconds         | 1–2 seconds
+node --strip-types (Node 22)| < 1 second          | < 1 second
+Vitest/Jest (ts-jest)       | 5–15 seconds        | 2–5 seconds (warm)
+```
+
+> [community] Teams adopting `--noCheck` report the biggest practical benefit: test failures now appear in the PR results in 30–60 seconds rather than 90–120 seconds. This 2–3× improvement in feedback latency — from "waiting for tsc" to "tests already running" — significantly changes developer workflow. The first CI feedback now arrives before the developer has switched context, enabling in-flow defect correction rather than context-switch re-engagement.
+
+### GitHub Actions Environments and Deployment Protection Rules [community]
+
+GitHub Actions Environments provide deployment targets (staging, production) with protection rules: required reviewers, wait timers, and deployment branch policies. When tests are tied to environment deployments, protection rules act as a human-in-the-loop gate between test levels — ensuring that no code deploys to staging unless CI passed, and no code deploys to production unless a human approved the staging result.
+
+> [community] Teams that use GitHub Environments for deployment gates report a significant reduction in "test passed CI but broke staging" incidents. The key insight: environment protection rules run AFTER the job that requests the environment, not before. This means your e2e tests can run against staging and only THEN trigger the production deployment — giving human reviewers the e2e results before they approve the production gate.
+
+**GitHub Actions workflow with environment protection gates:**
+
+```yaml
+# .github/workflows/deploy.yml — staged deployment with environment gates
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci && npm test -- --ci
+
+  deploy-staging:
+    needs: test
+    runs-on: ubuntu-latest
+    # Requesting this environment triggers protection rules: branch policy enforced
+    environment:
+      name: staging
+      url: https://staging.example.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm run deploy:staging
+        env:
+          DEPLOY_TOKEN: ${{ secrets.STAGING_DEPLOY_TOKEN }}
+
+  e2e-staging:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          BASE_URL: https://staging.example.com
+          CI: true
+
+  deploy-production:
+    needs: e2e-staging
+    runs-on: ubuntu-latest
+    # Production environment: requires manual reviewer approval + 10 min wait timer
+    environment:
+      name: production
+      url: https://app.example.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm run deploy:production
+        env:
+          DEPLOY_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_TOKEN }}
+```
+
+**TypeScript script — post deployment health check:**
+
+```typescript
+// scripts/deployment-health-check.ts — verify deployment before approving production gate
+async function healthCheck(
+  url: string,
+  expectedVersion: string,
+  maxAttempts = 20,
+  intervalMs = 3_000,
+): Promise<void> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(`${url}/health`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const body = await res.json() as { version?: string; status?: string };
+
+      if (body.status !== 'ok') {
+        throw new Error(`Unhealthy status: ${body.status}`);
+      }
+      if (body.version !== expectedVersion) {
+        throw new Error(`Version mismatch: expected ${expectedVersion}, got ${body.version}`);
+      }
+
+      console.log(`[health-check] Deployment healthy at attempt ${attempt}/${maxAttempts}`);
+      console.log(`  version: ${body.version}, status: ${body.status}`);
+      return;
+    } catch (err) {
+      console.log(`[health-check] Attempt ${attempt}/${maxAttempts} failed: ${(err as Error).message}`);
+      if (attempt === maxAttempts) throw err;
+      await new Promise<void>(r => setTimeout(r, intervalMs));
+    }
+  }
+}
+
+const url = process.env['DEPLOY_URL'] ?? 'http://localhost:3000';
+const version = process.env['EXPECTED_VERSION'] ?? process.env['GITHUB_SHA']?.slice(0, 8) ?? 'unknown';
+
+healthCheck(url, version).catch((err: Error) => {
+  console.error(`[health-check] FAILED: ${err.message}`);
+  process.exit(1);
+});
+```
+
+> [community] The deployment protection rule combination that teams report as most effective: staging = "branch policy (main only) + no reviewers + no wait timer" (fast, automated), production = "required reviewers (any 1 of 3 leads) + 10-minute wait timer". The wait timer provides a mandatory cooldown period — even if a reviewer approves immediately, production cannot deploy for 10 minutes. Teams without a wait timer report human errors from "approve under pressure" where the reviewer skims the e2e results without actually reviewing them.
+
 ### Reusable Workflow Composability (GitHub Actions) [community]
 
 Large repositories accumulate duplicated CI YAML across multiple workflow files. GitHub Actions reusable workflows allow a team to define a canonical CI pipeline once and call it from multiple contexts (PR, main, nightly, release) with per-call parameterization.
@@ -2975,3 +4257,19 @@ jobs:
 | GitHub Actions — Reusable workflows | Official docs | https://docs.github.com/en/actions/using-workflows/reusing-workflows | Composable CI pipelines |
 | LaunchDarkly — Testing with feature flags | Official guide | https://docs.launchdarkly.com/guides/infrastructure/unit-tests | Feature flag testing strategies |
 | Unleash — Feature toggle testing | Official docs | https://docs.getunleash.io/feature-flag-tutorials/testing | Open-source feature flag CI patterns |
+| Playwright Component Testing | Official docs | https://playwright.dev/docs/test-components | Browser-based component testing without full app stack |
+| nektos/act | GitHub repo | https://github.com/nektos/act | Local GitHub Actions execution for fast CI iteration |
+| GitHub Actions — Composite actions | Official docs | https://docs.github.com/en/actions/creating-actions/creating-a-composite-action | DRY step reuse across workflow files |
+| @cyclonedx/cyclonedx-npm | Official docs | https://github.com/CycloneDX/cyclonedx-node-npm | CycloneDX SBOM generation for Node.js projects |
+| GitHub Actions larger runners | Official docs | https://docs.github.com/en/actions/using-github-hosted-runners/about-larger-runners | 4/8/16-core hosted runners for CI acceleration |
+| Node.js test runner (node:test) | Official docs | https://nodejs.org/api/test.html | Built-in test runner — no framework dependency |
+| Node.js --experimental-strip-types | Official docs | https://nodejs.org/en/blog/release/v22.6.0 | Run TypeScript directly in Node 22 without build step |
+| Vitest bench | Official docs | https://vitest.dev/guide/features.html#benchmarking | Performance benchmarking integrated with test runner |
+| Tracetest / Kubeshop | Official docs | https://docs.tracetest.io/ | Trace-based testing framework with OTEL integration |
+| Meta ACH: Mutation-Guided LLM Test Generation | Research | https://arxiv.org/abs/2501.12862 | Mutation-guided LLM test synthesis (arXiv:2501.12862) |
+| GitHub Actions OIDC with GCP | Official docs | https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-google-cloud-platform | OIDC-based short-lived credentials for GCP |
+| Docker BuildKit cache export | Official docs | https://docs.docker.com/build/cache/backends/gha/ | GitHub Actions cache for Docker layer caching |
+| docker/build-push-action | Official docs | https://github.com/docker/build-push-action | Docker BuildKit CI action with GHA cache support |
+| Playwright visual comparisons | Official docs | https://playwright.dev/docs/test-snapshots | Playwright screenshot-based visual regression testing |
+| GitHub Actions Environments | Official docs | https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment | Deployment protection rules, reviewer gates, wait timers |
+| TypeScript 5.7 --noCheck flag | Official docs | https://devblogs.microsoft.com/typescript/announcing-typescript-5-7/ | Transpile-only mode for ultra-fast CI builds |

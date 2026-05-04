@@ -206,6 +206,43 @@ Build a **screen inventory**:
 - Key interactions (text input, button tap, scroll, swipe)
 - Priority: `critical` | `important` | `nice-to-have`
 
+## Phase 2.5 — AndroidWorld Template Matching (BL-048)
+
+When the detected app targets Android (either `_DETOX=1` with `android/` dir, `_APPIUM=1`,
+or `_MAESTRO=1`), map discovered screens from Phase 2 to the 20 AndroidWorld task categories.
+This accelerates test authoring by starting from battle-tested real-world task patterns rather
+than blank specs.
+
+| Category | Typical screen names | Template scope |
+|----------|---------------------|----------------|
+| Clock / Alarms | AlarmScreen, ClockScreen, TimerScreen | Set alarm, delete alarm, toggle |
+| Calendar / Events | CalendarScreen, EventScreen, AgendaScreen | Create event, view agenda, delete |
+| Contacts | ContactsScreen, ContactDetailScreen | Add contact, search, call/message |
+| File Manager | FileScreen, FolderScreen, DownloadsScreen | Create folder, rename, delete file |
+| Settings | SettingsScreen, PreferencesScreen | Toggle option, change language, reset |
+| Browser / WebView | BrowserScreen, WebViewScreen | Navigate URL, bookmark, back/forward |
+| Messaging / Chat | ChatScreen, MessageScreen, ConversationScreen | Send message, attach media, delete |
+| Email | EmailScreen, InboxScreen, ComposeScreen | Compose, reply, delete, search |
+| Maps / Navigation | MapScreen, NavigationScreen, LocationScreen | Search location, get directions |
+| Camera / Photos | CameraScreen, GalleryScreen, PhotoScreen | Take photo, edit, share |
+| Notes | NoteScreen, EditorScreen, ListScreen | Create, edit, delete, search |
+| Tasks / To-do | TaskScreen, TodoScreen, ChecklistScreen | Add task, complete, reorder |
+| Shopping / Cart | CartScreen, CheckoutScreen, ProductScreen | Add to cart, checkout, search |
+| Media / Player | PlayerScreen, MusicScreen, VideoScreen | Play, pause, seek, playlist |
+| Health / Fitness | HealthScreen, WorkoutScreen, StepsScreen | Log workout, view stats, set goal |
+| Finance / Banking | AccountScreen, TransactionScreen, TransferScreen | View balance, transfer, pay |
+| Auth / Profile | LoginScreen, SignupScreen, ProfileScreen | Login, logout, update profile |
+| Search / Filter | SearchScreen, ResultsScreen, FilterScreen | Search, filter, sort results |
+| Notifications | NotificationScreen, AlertScreen | Clear, manage settings, permissions |
+| Forms / Onboarding | FormScreen, RegistrationScreen, OnboardingScreen | Fill form, validate, submit |
+
+**For each screen in your Phase 2 inventory:**
+1. Identify the closest AndroidWorld category.
+2. Adapt the template scope to the app's actual screen and interactions.
+3. Generate tests using those task patterns (in Maestro YAML or Detox/Appium).
+
+This grounds test authoring in real-world usage patterns — not just "screen renders" checks.
+
 ## Phase 3 — Generate Test Cases
 
 Read existing test files first — append missing `describe`/flow blocks, never delete.
@@ -471,6 +508,61 @@ Write report to `$_TMP/qa-mobile-report.md`:
 - **Clean state** — use `device.launchApp({ newInstance: true })` or `launchApp` (Maestro) for fresh state
 - **Report even if build fails** — document what was blocked and why
 - **Never run `adb root` or modify system settings** on physical devices without explicit confirmation
+
+## CTRF Output
+
+After writing the report, write `$_TMP/qa-mobile-ctrf.json`:
+
+```python
+python3 - << 'PYEOF'
+import json, os, time, re
+
+tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+output_file = os.path.join(tmp, 'qa-mobile-runner-output.txt')
+output = open(output_file, encoding='utf-8', errors='replace').read() \
+         if os.path.exists(output_file) else ''
+
+tests = []
+for line in output.splitlines():
+    m_pass = re.match(r'\s*[✓✅PASS]\s+(.+)', line)
+    m_fail = re.match(r'\s*[✕×FAIL]\s+(.+)', line)
+    if m_pass:
+        tests.append({'name': m_pass.group(1).strip(), 'status': 'passed', 'duration': 0, 'suite': 'mobile'})
+    elif m_fail:
+        tests.append({'name': m_fail.group(1).strip(), 'status': 'failed', 'duration': 0, 'suite': 'mobile',
+                      'message': 'See qa-mobile-report.md for details'})
+
+if not tests:
+    p = len(re.findall(r'passed|PASS|\d+ passing', output))
+    f = len(re.findall(r'failed|FAIL|\d+ failing', output))
+    if p: tests.append({'name': f'{p} tests passed', 'status': 'passed', 'duration': 0, 'suite': 'mobile'})
+    if f: tests.append({'name': f'{f} tests failed', 'status': 'failed', 'duration': 0, 'suite': 'mobile',
+                        'message': 'See qa-mobile-report.md for details'})
+
+p = sum(1 for t in tests if t['status'] == 'passed')
+f = sum(1 for t in tests if t['status'] == 'failed')
+s = sum(1 for t in tests if t['status'] == 'skipped')
+now_ms = int(time.time() * 1000)
+
+ctrf = {
+    'results': {
+        'tool': {'name': os.environ.get('_MOBILE_TOOL', 'detox')},
+        'summary': {
+            'tests': len(tests), 'passed': p, 'failed': f,
+            'pending': 0, 'skipped': s, 'other': 0,
+            'start': now_ms - 5000, 'stop': now_ms,
+        },
+        'tests': tests,
+        'environment': {'reportName': 'qa-mobile'},
+    }
+}
+
+out = os.path.join(tmp, 'qa-mobile-ctrf.json')
+json.dump(ctrf, open(out, 'w', encoding='utf-8'), indent=2)
+print(f'CTRF_WRITTEN: {out}')
+print(f'  tests={len(tests)} passed={p} failed={f} skipped={s}')
+PYEOF
+```
 
 ## Agent Memory
 

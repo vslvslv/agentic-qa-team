@@ -1,5 +1,5 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 30 | score: 100/100 | date: 2026-05-03 -->
 
 ## Core Principles
 
@@ -2838,6 +2838,1291 @@ it('updates live feed when SSE event arrives', () => {
 
 **[community]** WHY: SSE connections are long-lived HTTP streams that Cypress's `cy.intercept()` cannot stub. The `cy.task()` bridge to Node.js is the only Cypress-native way to trigger SSE events and is more reliable than injecting events via `cy.window()`. If your SSE server is embedded in a Next.js or Express app, you can expose a test-only endpoint that pushes events on demand and call it via `cy.request()` instead of `cy.task()`.
 
+### 73. cy.stub().onCall(n) — Call-Number-Specific Stub Behavior  [community]
+
+Use `stub.onCall(n)` to define different behavior for the first, second, or Nth invocation of a stubbed function. Unlike `callsFake()` with a counter variable, `onCall()` is declarative and composable.
+
+```typescript
+it('shows loading state on first call, data on second', () => {
+  const fetchStub = cy.stub(window, 'fetch')
+    .as('fetch')
+    .onCall(0).resolves(new Response(JSON.stringify({ status: 'loading' }), { status: 202 }))
+    .onCall(1).resolves(new Response(JSON.stringify({ items: ['a', 'b'] }), { status: 200 }));
+
+  cy.visit('/dashboard');
+
+  // First fetch → 202 accepted → loading spinner
+  cy.get('[data-cy="loading-spinner"]').should('be.visible');
+
+  // Second fetch (triggered by poll or manual retry) → 200 with data
+  cy.get('[data-cy="retry-btn"]').click();
+  cy.get('[data-cy="item-list"]').should('have.length', 2);
+
+  cy.get('@fetch').should('have.been.calledTwice');
+});
+
+it('simulates MFA flow: first call returns challenge, second returns token', () => {
+  const authStub = cy.stub(window, 'fetch').as('authFetch');
+
+  authStub.onCall(0).resolves(
+    new Response(JSON.stringify({ mfaRequired: true, challengeId: 'ch_123' }), { status: 200 })
+  );
+  authStub.onCall(1).resolves(
+    new Response(JSON.stringify({ token: 'jwt.abc.def', userId: 'usr_1' }), { status: 200 })
+  );
+
+  cy.visit('/login');
+  cy.get('[data-cy="email"]').type('alice@example.com');
+  cy.get('[data-cy="password"]').type('secret');
+  cy.get('[data-cy="submit"]').click();
+
+  // First call → MFA challenge UI appears
+  cy.get('[data-cy="mfa-input"]').should('be.visible');
+  cy.get('[data-cy="mfa-input"]').type('123456');
+  cy.get('[data-cy="mfa-submit"]').click();
+
+  // Second call → authenticated
+  cy.url().should('include', '/dashboard');
+});
+```
+
+**[community]** WHY: Managing call-count behavior via a mutable `let callCount = 0` closure inside `callsFake()` creates invisible shared state — if the test runs multiple times (e.g., retried in CI), the counter carries over and the second run gets the wrong behavior. `onCall(n)` declares behavior per-call at stub creation time, making the stub self-contained and retry-safe.
+
+### 74. testIsolation — Per-Test Browser State Reset (Cypress 12+)
+
+`testIsolation` (introduced in Cypress 12, `true` by default) clears cookies, localStorage, and session storage before each test. Disable it only for suites that explicitly manage shared state across tests.
+
+```typescript
+// cypress.config.ts — testIsolation is true by default in Cypress 12+
+// You only need to set it explicitly when DISABLING it (not recommended for most cases)
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    testIsolation: true,   // default — clears all browser state before each test
+    // Set false only for legacy suites that share state between tests (migration scenario)
+    // testIsolation: false,
+  },
+});
+
+// Per-suite override — disable isolation for a specific describe block
+describe('Legacy stateful suite (migration)', { testIsolation: false }, () => {
+  // Tests in this block share browser state between tests
+  it('step 1: sets up state', () => {
+    cy.window().then(win => win.localStorage.setItem('step', '1'));
+  });
+
+  it('step 2: reads state from step 1', () => {
+    // testIsolation: false → localStorage from step 1 is still present
+    cy.window().its('localStorage').invoke('getItem', 'step').should('eq', '1');
+  });
+});
+
+// The correct modern pattern — always use testIsolation: true and explicit setup
+describe('Modern isolated suite', () => {
+  // With testIsolation: true (default), each test starts clean
+  beforeEach(() => {
+    // Explicit setup is self-documenting and test-order-independent
+    cy.window().then(win => win.localStorage.setItem('step', 'reset'));
+  });
+
+  it('reads the state it sets up', () => {
+    cy.window().its('localStorage').invoke('getItem', 'step').should('eq', 'reset');
+  });
+});
+```
+
+**[community]** WHY: Before `testIsolation: true` (Cypress < 12), teams relied on `cy.clearAllCookies()` + `cy.clearAllLocalStorage()` in every `beforeEach`. Forgetting these in one spec caused mysterious state bleed between tests. `testIsolation: true` makes isolation automatic — but teams migrating from Cypress 11 often set it to `false` for compatibility and never re-enable it. Audit your config: if `testIsolation: false`, migrate tests to explicit setup and re-enable isolation.
+
+### 75. CTRF (Common Test Report Format) Integration  [community]
+
+CTRF provides a vendor-neutral test result schema that works across Playwright, Cypress, Jest, and Vitest. Use `cypress-ctrf-json-reporter` to generate CTRF reports for unified dashboard visibility.
+
+```typescript
+// Install: npm install --save-dev cypress-ctrf-json-reporter
+// cypress.config.ts — add CTRF reporter
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  reporter: 'cypress-ctrf-json-reporter',
+  reporterOptions: {
+    outputDir: 'ctrf',          // output directory
+    outputFile: 'results.json', // output file name
+    minimal: false,             // include per-test timings and metadata
+  },
+  e2e: {
+    // ... rest of config
+  },
+});
+```
+
+```bash
+# After the run, ctrf/results.json contains:
+# { "results": { "summary": { "tests": 42, "passed": 40, "failed": 2, ... }, "tests": [...] } }
+
+# Use ctrf-io/ai-test-reporter to summarize failures with Claude/GPT
+npx ai-test-reporter ctrf/results.json --reporter claude
+
+# Upload to GitHub PR comment with ctrf-io/github-test-reporter
+npx github-test-reporter ctrf/results.json
+```
+
+```typescript
+// Combine with custom Cypress reporter for dual output (spec progress + CTRF)
+// cypress.config.ts — multi-reporter with mochawesome + CTRF
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  reporter: 'cypress-multi-reporters',
+  reporterOptions: {
+    configFile: 'reporter-config.json',
+  },
+  // reporter-config.json:
+  // { "reporterEnabled": "spec, cypress-ctrf-json-reporter",
+  //   "cypressCtrfJsonReporterReporterOptions": { "outputDir": "ctrf", "outputFile": "results.json" } }
+});
+```
+
+**[community]** WHY: Teams running Cypress alongside Playwright or Jest in a monorepo end up with test result formats that are incompatible — JUnit XML from Cypress, JSON from Playwright, and tap from Jest. CTRF normalises all three into a single schema, enabling unified dashboards, PR comment bots, and AI failure summarizers that work across all test frameworks without custom parsing.
+
+### 76. WebSocket Testing via cy.stub() + cy.task()  [community]
+
+`cy.intercept()` cannot intercept WebSocket connections. Use `cy.stub(win, 'WebSocket')` to replace the WebSocket constructor for UI assertion tests, or use `cy.task()` to control a real WebSocket server for integration-level tests.
+
+```typescript
+// Approach 1: Stub the WebSocket constructor for UI behavior tests
+it('shows live updates received over WebSocket', () => {
+  // Create a mock WebSocket class
+  let mockWs: {
+    onmessage: ((event: MessageEvent) => void) | null;
+    onopen: (() => void) | null;
+    send: () => void;
+    close: () => void;
+    readyState: number;
+  };
+
+  cy.visit('/live-dashboard', {
+    onBeforeLoad(win) {
+      // Replace the WebSocket constructor before the app script runs
+      cy.stub(win, 'WebSocket').callsFake(() => {
+        mockWs = {
+          onmessage: null,
+          onopen: null,
+          send: cy.stub().as('wsSend'),
+          close: cy.stub(),
+          readyState: WebSocket.OPEN,
+        };
+        // Simulate connection established
+        setTimeout(() => mockWs.onopen?.(), 10);
+        return mockWs;
+      }).as('WebSocketConstructor');
+    },
+  });
+
+  cy.get('[data-cy="connection-status"]').should('have.text', 'Connected');
+
+  // Simulate receiving a message from the server
+  cy.window().then(() => {
+    mockWs.onmessage?.(
+      new MessageEvent('message', {
+        data: JSON.stringify({ type: 'price_update', symbol: 'AAPL', price: 185.42 }),
+      })
+    );
+  });
+
+  cy.get('[data-cy="price-aapl"]').should('have.text', '$185.42');
+});
+
+// Approach 2: cy.task() bridge to a real WebSocket test server
+it('sends and receives messages via real WebSocket server', () => {
+  cy.task('ws:start', { port: 4001 }).as('wsServer');
+  cy.visit('/chat');
+
+  cy.get('[data-cy="message-input"]').type('Hello from Cypress');
+  cy.get('[data-cy="send-btn"]').click();
+
+  // Task reads messages received by the test WS server
+  cy.task('ws:getMessages').then((messages: string[]) => {
+    expect(messages).to.include('Hello from Cypress');
+  });
+
+  // Task pushes a message from the server to the client
+  cy.task('ws:broadcast', { message: 'Server says hi!' });
+  cy.get('[data-cy="chat-message"]').last().should('contain', 'Server says hi!');
+
+  cy.task('ws:stop');
+});
+```
+
+**[community]** WHY: Teams often discover too late that `cy.intercept()` silently ignores WebSocket upgrade requests. The stub-constructor approach is the only fully client-side method and works without a test server, but it requires the app to expose the WS instance early enough for the stub to be in place. The `cy.task()` bridge to a real WS server is more realistic but adds infrastructure. For most production apps, stub the constructor for unit-style UI tests and use the task bridge for end-to-end message flow tests.
+
+### 77. Email Testing with Mailhog/Mailpit via cy.task()  [community]
+
+Test transactional emails (welcome emails, password resets, OTP codes) by running a local SMTP trap server and reading emails via `cy.task()`.
+
+```typescript
+// cypress/plugins/email.ts — Mailpit HTTP API client
+interface MailpitMessage {
+  ID: string;
+  Subject: string;
+  To: Array<{ Address: string }>;
+  Text: string;
+  HTML: string;
+}
+
+export const emailTasks = {
+  'email:getLatest': async (toAddress: string): Promise<MailpitMessage | null> => {
+    const base = process.env.MAILPIT_URL ?? 'http://localhost:8025';
+    const res = await fetch(`${base}/api/v1/messages`);
+    const data: { messages: MailpitMessage[] } = await res.json();
+
+    const match = data.messages.find(m =>
+      m.To.some(r => r.Address === toAddress)
+    );
+    return match ?? null;
+  },
+
+  'email:deleteAll': async () => {
+    const base = process.env.MAILPIT_URL ?? 'http://localhost:8025';
+    await fetch(`${base}/api/v1/messages`, { method: 'DELETE' });
+    return null;
+  },
+
+  'email:extractOtp': async (toAddress: string): Promise<string | null> => {
+    const base = process.env.MAILPIT_URL ?? 'http://localhost:8025';
+    const res = await fetch(`${base}/api/v1/messages`);
+    const data: { messages: MailpitMessage[] } = await res.json();
+
+    const msg = data.messages.find(m => m.To.some(r => r.Address === toAddress));
+    if (!msg) return null;
+
+    // Extract 6-digit OTP from email body
+    const match = msg.Text.match(/\b(\d{6})\b/);
+    return match?.[1] ?? null;
+  },
+};
+
+// In a spec — registration with email verification
+describe('Registration flow', () => {
+  beforeEach(() => {
+    cy.task('email:deleteAll');
+  });
+
+  it('sends a verification email after signup', () => {
+    cy.visit('/register');
+    cy.get('[data-cy="email"]').type('newuser@example.com');
+    cy.get('[data-cy="password"]').type('Password123!');
+    cy.get('[data-cy="submit"]').click();
+
+    cy.get('[data-cy="verify-email-prompt"]').should('be.visible');
+
+    // Wait for email to arrive (polling with retry)
+    cy.task('email:getLatest', 'newuser@example.com').should('not.be.null');
+
+    cy.task('email:getLatest', 'newuser@example.com').then((msg: MailpitMessage | null) => {
+      expect(msg?.Subject).to.include('Verify your email');
+      expect(msg?.Text).to.include('newuser@example.com');
+    });
+  });
+
+  it('completes OTP verification flow', () => {
+    // Trigger OTP email via API (faster than UI registration)
+    cy.request('POST', '/api/auth/send-otp', { email: 'otp@example.com' });
+
+    // Retry until OTP email arrives (up to 15s)
+    cy.task('email:extractOtp', 'otp@example.com').should('match', /^\d{6}$/).then((otp) => {
+      cy.visit('/verify');
+      cy.get('[data-cy="otp-input"]').type(otp as string);
+      cy.get('[data-cy="verify-btn"]').click();
+      cy.get('[data-cy="verified-banner"]').should('be.visible');
+    });
+  });
+});
+```
+
+**[community]** WHY: Testing email flows by checking the real email inbox (via IMAP) is slow (10-30s per email) and flaky (email delays, spam filters). Local SMTP traps like Mailpit capture all outgoing email synchronously, making email assertions as fast as API assertions. The key pattern is `cy.task().should('not.be.null')` for polling — Cypress retries `.should()` on task results, so you get automatic retry without a `cy.wait(ms)` crutch.
+
+### 78. cy.trigger() for Native DOM Events  [community]
+
+Use `cy.trigger()` to fire native DOM events that Cypress action commands don't cover — mouseover, pointermove, custom events, drag-related events, and touch events.
+
+```typescript
+it('shows tooltip on mouseover', () => {
+  cy.visit('/products');
+
+  // Trigger mouseover to reveal tooltip
+  cy.get('[data-cy="info-icon"]').trigger('mouseover');
+  cy.get('[data-cy="tooltip"]').should('be.visible').and('contain', 'Learn more');
+
+  // Trigger mouseout to hide it
+  cy.get('[data-cy="info-icon"]').trigger('mouseout');
+  cy.get('[data-cy="tooltip"]').should('not.exist');
+});
+
+it('fires pointer events for canvas/SVG interactions', () => {
+  cy.visit('/chart');
+
+  // Get element dimensions to calculate relative coordinates
+  cy.get('[data-cy="chart-canvas"]').then(($canvas) => {
+    const rect = $canvas[0].getBoundingClientRect();
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+
+    cy.get('[data-cy="chart-canvas"]')
+      .trigger('pointerdown', { clientX: rect.left + centerX, clientY: rect.top + centerY })
+      .trigger('pointermove', { clientX: rect.left + centerX + 50, clientY: rect.top + centerY })
+      .trigger('pointerup');
+  });
+
+  cy.get('[data-cy="selected-range"]').should('not.be.empty');
+});
+
+it('dispatches custom application events', () => {
+  cy.visit('/notification-center');
+
+  // Trigger a custom event that the app dispatches internally
+  cy.get('[data-cy="notification-host"]').trigger('app:notification', {
+    bubbles: true,
+    detail: { type: 'success', message: 'Export complete', id: 'notif_1' },
+  });
+
+  cy.get('[data-cy="notification-item"]').should('contain', 'Export complete');
+});
+```
+
+**[community]** WHY: Cypress action commands (`click()`, `type()`, `check()`) are high-level and simulate user intent. `cy.trigger()` fires raw DOM events for scenarios where the high-level commands don't apply: hover states, pointer/touch events, canvas drawing, drag-and-drop via `dragstart/dragover/drop`, and custom application events. Unlike action commands, `trigger()` does not perform actionability checks (visibility, enabled state) — this is intentional for events fired programmatically by the app itself.
+
+### 79. React Testing Library (RTL) with Cypress Component Tests  [community]
+
+When your team uses React Testing Library conventions, use `@testing-library/cypress` to bring RTL queries (`findByRole`, `findByLabelText`) into Cypress Component Testing specs.
+
+```typescript
+// Install: npm install --save-dev @testing-library/cypress
+// cypress/support/component.ts
+import '@testing-library/cypress/add-commands';
+
+// login-form.cy.tsx
+import React from 'react';
+import { LoginForm } from '../../src/components/LoginForm';
+
+describe('LoginForm component', () => {
+  it('submits with accessible role-based queries', () => {
+    const onSubmit = cy.stub().as('onSubmit');
+    cy.mount(<LoginForm onSubmit={onSubmit} />);
+
+    // Use ARIA roles and labels — aligns with screen reader experience
+    cy.findByRole('textbox', { name: /email/i }).type('alice@example.com');
+    cy.findByLabelText(/password/i).type('secret');
+    cy.findByRole('button', { name: /sign in/i }).click();
+
+    cy.get('@onSubmit').should('have.been.calledWith', {
+      email: 'alice@example.com',
+      password: 'secret',
+    });
+  });
+
+  it('shows validation error for empty email', () => {
+    cy.mount(<LoginForm onSubmit={cy.stub()} />);
+
+    cy.findByRole('button', { name: /sign in/i }).click();
+
+    // RTL query for the error message by ARIA role
+    cy.findByRole('alert').should('contain.text', 'Email is required');
+  });
+
+  it('disables submit button while loading', () => {
+    // Pass a never-resolving promise to simulate pending state
+    cy.mount(<LoginForm onSubmit={() => new Promise(() => {})} />);
+
+    cy.findByRole('textbox', { name: /email/i }).type('alice@example.com');
+    cy.findByLabelText(/password/i).type('secret');
+    cy.findByRole('button', { name: /sign in/i }).click();
+
+    cy.findByRole('button', { name: /signing in/i }).should('be.disabled');
+  });
+});
+```
+
+**[community]** WHY: Teams that write unit tests with React Testing Library use ARIA roles and labels as their selector strategy — `getByRole('button', { name: /submit/i })` rather than `data-testid`. Using `@testing-library/cypress` brings the same query strategy into Cypress Component Testing, keeping selector conventions consistent across unit and integration tests. The queries also serve as implicit WCAG 4.1.2 compliance checks: if `findByRole('button', { name: /sign in/i })` can't find the element, the component is missing an accessible name.
+
+### 80. Polling Helper — Wait for Async Background Jobs  [community]
+
+For long-running background jobs (report generation, import processing, async webhooks), wrap `cy.request()` in a recursive polling helper with backoff. Unlike `cy.wait(ms)`, this retries until the job is done without wasting time on fast jobs.
+
+```typescript
+// cypress/support/poll.ts — recursive polling with backoff
+export function pollUntil<T>(
+  fn: () => Cypress.Chainable<T>,
+  predicate: (value: T) => boolean,
+  options: { maxAttempts?: number; intervalMs?: number } = {}
+): Cypress.Chainable<T> {
+  const { maxAttempts = 20, intervalMs = 1000 } = options;
+  let attempts = 0;
+
+  const attempt = (): Cypress.Chainable<T> => {
+    return fn().then((value) => {
+      attempts++;
+      if (predicate(value)) return cy.wrap(value);
+      if (attempts >= maxAttempts) throw new Error(`Polling timed out after ${attempts} attempts`);
+      // Wait before next attempt using cy.wait — integrates with Cypress queue
+      return cy.wait(intervalMs).then(() => attempt());
+    });
+  };
+
+  return attempt();
+}
+
+// In a spec — poll until a background job status becomes 'completed'
+import { pollUntil } from '../support/poll';
+
+it('generates a report asynchronously', () => {
+  cy.request('POST', '/api/reports', { type: 'quarterly', year: 2025 })
+    .its('body.jobId')
+    .then((jobId: string) => {
+      // Poll the job status API until it returns 'completed' or 'failed'
+      pollUntil(
+        () => cy.request(`/api/jobs/${jobId}`).its('body'),
+        (job: { status: string }) => job.status === 'completed',
+        { maxAttempts: 30, intervalMs: 1500 }  // up to 45 seconds
+      ).then((job: { status: string; reportUrl: string }) => {
+        expect(job.status).to.eq('completed');
+
+        // Now visit the report URL
+        cy.visit(job.reportUrl);
+        cy.get('[data-cy="report-title"]').should('be.visible');
+      });
+    });
+});
+
+// Simpler pattern: cy.request() inside .should() for a single retry loop
+it('waits for webhook delivery with .should() retry', () => {
+  cy.request('POST', '/api/webhooks/trigger', { event: 'payment.success' });
+
+  // Retry the GET until the webhook log shows delivery
+  cy.request('/api/webhooks/log').its('body').should((log: Array<{ event: string; delivered: boolean }>) => {
+    const delivered = log.find(e => e.event === 'payment.success' && e.delivered);
+    expect(delivered, 'webhook not yet delivered').to.exist;
+  });
+});
+```
+
+**[community]** WHY: `cy.wait(30000)` to handle a background job that usually finishes in 2 seconds wastes 28 seconds on every passing test run. The polling helper exits as soon as the job is done. The trade-off is complexity — for simple polling needs, `cy.request().its('body').should(...)` (which Cypress retries automatically) is sufficient. Use the recursive helper only when you need configurable backoff or when the total wait would exceed `defaultCommandTimeout`.
+
+### 81. TypeScript Path Aliases in Cypress  [community]
+
+Configure TypeScript path aliases so Cypress test files can use the same `@/components/*` imports as the main application, avoiding brittle relative paths.
+
+```typescript
+// tsconfig.json (project root) — define path aliases
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@fixtures/*": ["cypress/fixtures/*"],
+      "@pages/*": ["cypress/pages/*"],
+      "@support/*": ["cypress/support/*"]
+    }
+  }
+}
+
+// cypress/tsconfig.json — extend the root tsconfig for Cypress files
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["cypress"],
+    "paths": {
+      "@/*": ["../src/*"],
+      "@fixtures/*": ["../fixtures/*"],
+      "@pages/*": ["../pages/*"],
+      "@support/*": ["../support/*"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"]
+}
+```
+
+```typescript
+// cypress.config.ts — register path aliases with the bundler (Vite example)
+import { defineConfig } from 'cypress';
+import { resolve } from 'path';
+
+export default defineConfig({
+  component: {
+    devServer: {
+      framework: 'react',
+      bundler: 'vite',
+      viteConfig: {
+        resolve: {
+          alias: {
+            '@': resolve(__dirname, 'src'),
+          },
+        },
+      },
+    },
+  },
+});
+```
+
+```typescript
+// In a spec — use path aliases instead of relative paths
+import { LoginPage } from '@pages/LoginPage';        // cypress/pages/LoginPage.ts
+import { makeUser } from '@support/factories/user';  // cypress/support/factories/user.ts
+import type { Product } from '@/types/product';      // src/types/product.ts (shared with app)
+
+describe('Product page', () => {
+  it('shows product details', () => {
+    const product: Product = { id: 'prod_1', name: 'Widget', price: 9.99 };
+    cy.intercept('GET', '/api/products/prod_1', product).as('getProduct');
+
+    cy.visit('/products/prod_1');
+    cy.wait('@getProduct');
+    cy.get('[data-cy="product-name"]').should('have.text', product.name);
+  });
+});
+```
+
+**[community]** WHY: Long relative paths like `import { LoginPage } from '../../../pages/LoginPage'` break when files are moved and are hard to read. Path aliases give test files the same import ergonomics as source files. The key pitfall is that `tsconfig.json` paths only affect TypeScript compilation — the Vite/webpack bundler also needs the alias registered (via `resolve.alias` in Vite or `resolve.modules` in webpack). Set up both to avoid "Cannot find module '@/...'" runtime errors that don't show at compile time.
+
+### 82. Performance Timing Assertions via Navigation Timing API  [community]
+
+Assert on page load performance metrics using the browser's `window.performance` API from within a Cypress test. These are lightweight smoke-level performance checks, not a substitute for k6 or Lighthouse.
+
+```typescript
+// Custom command to assert on navigation timing
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      assertPageLoadTime(maxMs: number): Chainable<void>;
+      assertLargestContentfulPaint(maxMs: number): Chainable<void>;
+    }
+  }
+}
+
+Cypress.Commands.add('assertPageLoadTime', (maxMs: number) => {
+  cy.window().then((win) => {
+    const [entry] = win.performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
+    if (!entry) {
+      cy.log('No navigation entry found — skipping timing assertion');
+      return;
+    }
+    const loadTime = entry.loadEventEnd - entry.startTime;
+    expect(loadTime, `Page load time ${loadTime.toFixed(0)}ms > limit ${maxMs}ms`).to.be.lessThan(maxMs);
+    cy.log(`Page load time: ${loadTime.toFixed(0)}ms (limit: ${maxMs}ms)`);
+  });
+});
+
+Cypress.Commands.add('assertLargestContentfulPaint', (maxMs: number) => {
+  // LCP is available via PerformanceObserver — read accumulated entries
+  cy.window().then((win) => {
+    const lcpEntries = win.performance.getEntriesByType('largest-contentful-paint');
+    if (lcpEntries.length === 0) {
+      cy.log('LCP entry not available (page may not have finished painting)');
+      return;
+    }
+    const lcp = lcpEntries[lcpEntries.length - 1].startTime;
+    expect(lcp, `LCP ${lcp.toFixed(0)}ms > limit ${maxMs}ms`).to.be.lessThan(maxMs);
+    cy.log(`LCP: ${lcp.toFixed(0)}ms (limit: ${maxMs}ms)`);
+  });
+});
+
+// In a spec — smoke-level performance check on the landing page
+it('landing page loads within 3 seconds', () => {
+  cy.visit('/');
+
+  // Wait for meaningful content before asserting
+  cy.get('[data-cy="hero-heading"]').should('be.visible');
+
+  // Assert on navigation timing
+  cy.assertPageLoadTime(3000);
+  cy.assertLargestContentfulPaint(2500);
+});
+
+// Assert on API response time via cy.intercept() duration
+it('product API responds within 500ms', () => {
+  cy.intercept('GET', '/api/products*').as('products');
+  cy.visit('/products');
+
+  cy.wait('@products').then((interception) => {
+    const duration = interception.duration ?? 0;
+    expect(duration, `API response time ${duration}ms > 500ms`).to.be.lessThan(500);
+    cy.log(`Products API: ${duration}ms`);
+  });
+});
+```
+
+**[community]** WHY: Running full load tests in Cypress is inappropriate (Cypress runs in the same browser as the app, introducing overhead). However, adding a single `assertPageLoadTime(3000)` to a smoke test catches accidental regressions — a new dependency that doubles load time — without a dedicated k6 run. The `interception.duration` from `cy.wait('@alias')` is the most reliable E2E measure of API latency from the test's perspective.
+
+### 83. Cypress `--grep` Tag Filtering via @cypress/grep  [community]
+
+Use `@cypress/grep` to run tagged subsets of tests — smoke, critical, or regression — from a single spec suite. Replaces the need for separate spec files per environment.
+
+```typescript
+// Install: npm install --save-dev @cypress/grep
+// cypress/support/e2e.ts
+import registerCypressGrep from '@cypress/grep';
+registerCypressGrep();
+
+// Tag tests with @tag syntax in titles
+describe('Checkout flow', { tags: ['@critical', '@smoke'] }, () => {
+  it('completes purchase with credit card', { tags: '@critical' }, () => {
+    // ...
+  });
+
+  it('shows order confirmation email sent message', { tags: '@regression' }, () => {
+    // ...
+  });
+
+  it('handles expired card gracefully', { tags: ['@regression', '@edge-cases'] }, () => {
+    // ...
+  });
+});
+```
+
+```bash
+# Run only @critical tests in CI fast path (PR builds)
+npx cypress run --env grep=@critical
+
+# Run @smoke tests with reporting
+npx cypress run --env grep=@smoke --record
+
+# Exclude @edge-cases (useful for staging where environment has known limitations)
+npx cypress run --env grepInvert=@edge-cases
+
+# Run all tests tagged @regression OR @critical
+npx cypress run --env grep="@regression|@critical"
+
+# Run tests with BOTH tags (AND logic)
+npx cypress run --env grep="@regression @critical"
+```
+
+```typescript
+// cypress.config.ts — register grep plugin
+import { defineConfig } from 'cypress';
+import registerCypressGrep from '@cypress/grep/src/plugin';
+
+export default defineConfig({
+  e2e: {
+    setupNodeEvents(on, config) {
+      registerCypressGrep(config);
+      return config;
+    },
+  },
+});
+```
+
+**[community]** WHY: Separate spec files per environment (`smoke.cy.ts`, `regression.cy.ts`) lead to test duplication — the same test logic exists in two files that drift apart over time. Tag-based filtering keeps all tests in domain-organized spec files and lets you slice them by purpose at runtime. The pattern enables a three-tier CI strategy: `@smoke` on every PR (2-5 min), `@critical` on merge to main (10-15 min), full suite nightly.
+
+### 84. Cypress + Storybook Smoke Integration  [community]
+
+Use `cy.visit()` to open Storybook stories and assert on their rendered output — a lightweight integration test between Storybook (component catalogue) and Cypress (browser automation).
+
+```typescript
+// cypress/e2e/storybook-smoke.cy.ts
+// Assumes Storybook is running at http://localhost:6006
+
+const STORYBOOK_URL = Cypress.env('STORYBOOK_URL') ?? 'http://localhost:6006';
+
+// Build the Storybook iframe URL from story ID
+const storyUrl = (storyId: string) =>
+  `${STORYBOOK_URL}/iframe.html?id=${storyId}&viewMode=story`;
+
+describe('Storybook component smoke tests', () => {
+  it('Button component renders default variant', () => {
+    cy.visit(storyUrl('components-button--default'));
+    cy.get('[data-cy="btn"]').should('be.visible').and('not.be.disabled');
+  });
+
+  it('Button loading state renders spinner', () => {
+    cy.visit(storyUrl('components-button--loading'));
+    cy.get('[data-cy="btn"]').should('be.disabled');
+    cy.get('[data-cy="spinner"]').should('be.visible');
+  });
+
+  it('FormField shows error state', () => {
+    cy.visit(storyUrl('components-formfield--error'));
+    cy.get('[data-cy="field-error"]').should('be.visible');
+    cy.get('[role="alert"]').should('contain.text', 'This field is required');
+  });
+
+  it('DataTable renders with correct column count', () => {
+    cy.visit(storyUrl('components-datatable--with-data'));
+    cy.get('th').should('have.length.gte', 3);
+    cy.get('tbody tr').should('have.length.gte', 1);
+  });
+});
+
+// cypress.config.ts — configure Storybook URL from env
+// npx cypress run --env STORYBOOK_URL=http://localhost:6006
+```
+
+**[community]** WHY: Cypress Component Testing mounts components in isolation within a Vite/webpack dev server. This is ideal for interaction tests but requires the same bundler setup as the app. Storybook stories already define all component states — using `cy.visit()` on the Storybook iframe URL reuses those state definitions as a free test fixture. The Storybook approach is lower maintenance: when the component state changes, the story is updated once and all Cypress smoke tests automatically get the new state.
+
+### 85. Strict cy.intercept() Verification — Asserting No Unexpected Requests  [community]
+
+Use `cy.intercept()` with `spy` mode and after-test assertions to verify that a user action did NOT trigger unexpected network requests — useful for asserting optimistic UI patterns and debounce effectiveness.
+
+```typescript
+it('search input debounces — does not fire on every keystroke', () => {
+  // Track ALL requests to the search API
+  cy.intercept('GET', '/api/search*').as('searchRequests');
+
+  cy.visit('/search');
+  cy.clock();
+
+  // Type quickly — debounce should prevent requests during typing
+  cy.get('[data-cy="search-input"]').type('cypress', { delay: 50 });
+
+  // Only 7 characters typed but debounce delay (500ms) not reached yet
+  cy.get('@searchRequests.all').should('have.length', 0);
+
+  // Advance past debounce threshold
+  cy.tick(500);
+
+  // Exactly ONE request should fire after debounce — not 7
+  cy.get('@searchRequests.all').should('have.length', 1);
+  cy.wait('@searchRequests').its('request.url').should('include', 'query=cypress');
+});
+
+it('clicking "Save" only once does not trigger duplicate requests', () => {
+  cy.intercept('POST', '/api/documents').as('save');
+  cy.visit('/editor');
+
+  cy.get('[data-cy="doc-content"]').type('Test content');
+  cy.get('[data-cy="save-btn"]').click();
+
+  // Assert button is disabled after click (prevents double submit)
+  cy.get('[data-cy="save-btn"]').should('be.disabled');
+
+  // Exactly one POST request — no duplicates
+  cy.wait('@save').its('response.statusCode').should('eq', 201);
+  cy.get('@save.all').should('have.length', 1);
+});
+
+// Assert that a cancelled operation stops pending requests
+it('cancelling a request removes it from the pending queue', () => {
+  let requestReceived = false;
+
+  cy.intercept('GET', '/api/slow-data', (req) => {
+    requestReceived = true;
+    req.on('response', (res) => {
+      res.setDelay(2000);  // simulate slow server
+    });
+  }).as('slowData');
+
+  cy.visit('/data-page');
+  cy.get('[data-cy="cancel-btn"]').click();  // user cancels before data loads
+
+  // After cancel, the component should not render stale data
+  cy.get('[data-cy="data-content"]').should('not.exist');
+  cy.get('[data-cy="cancelled-message"]').should('be.visible');
+});
+```
+
+**[community]** WHY: Tests usually assert that something happened — a request fired, a modal appeared. But for optimistic UI, debounce, and idempotency patterns, asserting that something did NOT happen is equally important. Using `@alias.all` with `.should('have.length', N)` provides a deterministic count assertion. Without this, a form that submits twice on double-click can pass all its tests because the happy path assertion only checks for ≥1 request, not exactly 1.
+
+### 86. Svelte Component Testing  [community]
+
+Cypress Component Testing supports Svelte via the `@vitejs/plugin-svelte` bundler plugin. Mount Svelte components with props and assert on their rendered output.
+
+```typescript
+// cypress.config.ts — Svelte component testing setup
+import { defineConfig } from 'cypress';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
+
+export default defineConfig({
+  component: {
+    devServer: {
+      framework: 'svelte',
+      bundler: 'vite',
+      viteConfig: {
+        plugins: [svelte()],
+      },
+    },
+    specPattern: 'src/**/*.cy.{ts,svelte}',
+  },
+});
+```
+
+```typescript
+// src/components/Counter.cy.ts — Svelte component test
+import { mount } from 'cypress/svelte';
+import Counter from './Counter.svelte';
+
+describe('Counter component', () => {
+  it('renders with initial count', () => {
+    mount(Counter, { props: { initialCount: 5 } });
+    cy.get('[data-cy="count"]').should('have.text', '5');
+  });
+
+  it('increments count on button click', () => {
+    mount(Counter, { props: { initialCount: 0 } });
+
+    cy.get('[data-cy="increment"]').click();
+    cy.get('[data-cy="count"]').should('have.text', '1');
+
+    cy.get('[data-cy="increment"]').click();
+    cy.get('[data-cy="count"]').should('have.text', '2');
+  });
+
+  it('dispatches custom "countChanged" event', () => {
+    const onCountChanged = cy.stub().as('countChanged');
+
+    // Use Cypress event handler for Svelte custom events
+    mount(Counter, {
+      props: { initialCount: 0 },
+      extensions: {
+        on: { countChanged: onCountChanged },
+      },
+    });
+
+    cy.get('[data-cy="increment"]').click();
+    cy.get('@countChanged').should('have.been.calledWith', 1);
+  });
+});
+```
+
+**[community]** WHY: Svelte's reactivity model is fundamentally different from React/Vue — updates are compiled to direct DOM mutations rather than virtual DOM diffing. Cypress Component Testing for Svelte is valuable because Svelte's `{#if}`, `{#each}`, and `$:` reactive declarations can produce subtle DOM state that's difficult to test in isolation with pure unit tests. Mounting Svelte components in a real browser via Cypress catches reactivity edge cases (e.g., `$:` re-runs not triggering when expected) that Jest/Vitest JSDOM mocks miss.
+
+### 87. Seeding Test Data with @faker-js/faker  [community]
+
+Replace static fixture files and hardcoded test data with dynamically generated realistic data using `@faker-js/faker`. Seeded with a fixed seed value for reproducible failures.
+
+```typescript
+// Install: npm install --save-dev @faker-js/faker
+// cypress/support/faker-seed.ts
+import { faker } from '@faker-js/faker';
+
+// Seed with a fixed value for reproducible test data — use Date.now() for randomness
+faker.seed(42);
+
+export function fakeUser(overrides: Partial<{
+  email: string;
+  name: string;
+  role: 'admin' | 'user' | 'viewer';
+}> = {}) {
+  return {
+    id: faker.string.uuid(),
+    email: overrides.email ?? faker.internet.email({ provider: 'e2e.test' }),
+    name: overrides.name ?? faker.person.fullName(),
+    role: (overrides.role ?? 'user') as 'admin' | 'user' | 'viewer',
+    phone: faker.phone.number({ style: 'national' }),
+    createdAt: faker.date.past({ years: 1 }).toISOString(),
+  };
+}
+
+export function fakeProduct(overrides: Partial<{
+  name: string;
+  price: number;
+  category: string;
+}> = {}) {
+  return {
+    id: faker.string.uuid(),
+    name: overrides.name ?? faker.commerce.productName(),
+    price: overrides.price ?? Number(faker.commerce.price({ min: 1, max: 500 })),
+    category: overrides.category ?? faker.commerce.department(),
+    sku: faker.string.alphanumeric({ length: 8, casing: 'upper' }),
+    inStock: faker.datatype.boolean(),
+    description: faker.commerce.productDescription(),
+  };
+}
+
+// In a spec — generate realistic test data
+import { fakeUser, fakeProduct } from '../support/faker-seed';
+
+it('admin can create a product', () => {
+  const admin = fakeUser({ role: 'admin' });
+  const product = fakeProduct({ price: 29.99 });
+
+  // Seed user via API
+  cy.request('POST', '/api/test/users', admin);
+
+  // Login as admin
+  loginAsRole('admin');
+
+  cy.visit('/admin/products/new');
+  cy.get('[data-cy="product-name"]').type(product.name);
+  cy.get('[data-cy="product-price"]').type(String(product.price));
+  cy.get('[data-cy="product-sku"]').type(product.sku);
+  cy.get('[data-cy="submit"]').click();
+
+  cy.get('[data-cy="success-toast"]').should('contain', 'Product created');
+  cy.get('[data-cy="product-list"]').should('contain', product.name);
+});
+```
+
+**[community]** WHY: Hardcoded test data names like "Test User" and "Widget" appear in screenshots, making it hard to distinguish which test created which data. Faker generates realistic names that look like production data in screenshots and catch edge cases with special characters (apostrophes in names, hyphens in phone numbers, long product descriptions) that hardcoded data misses. Use `faker.seed(number)` for reproducible failures — when a test fails with a faker-generated value, record the seed and re-run with that seed to reproduce the exact failure.
+
+### 88. Clipboard Testing with navigator.clipboard  [community]
+
+Test "Copy to clipboard" functionality by granting clipboard permissions via CDP and reading the clipboard value from `navigator.clipboard`.
+
+```typescript
+// cypress/support/commands.ts — clipboard helper
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      grantClipboardPermission(): Chainable<void>;
+      readClipboard(): Chainable<string>;
+    }
+  }
+}
+
+Cypress.Commands.add('grantClipboardPermission', () => {
+  // Grant clipboard-read and clipboard-write permissions via CDP
+  cy.wrap(
+    Cypress.automation('remote:debugger:protocol', {
+      command: 'Browser.grantPermissions',
+      params: {
+        permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+        origin: window.location.origin,
+      },
+    })
+  );
+});
+
+Cypress.Commands.add('readClipboard', () => {
+  cy.window().then((win) => {
+    return win.navigator.clipboard.readText();
+  });
+});
+
+// In a spec — test a "Copy link" button
+describe('Share functionality', () => {
+  before(() => {
+    cy.grantClipboardPermission();
+  });
+
+  it('copies shareable link to clipboard', () => {
+    cy.visit('/articles/123');
+
+    cy.get('[data-cy="copy-link-btn"]').click();
+    cy.get('[data-cy="copy-success-toast"]').should('be.visible');
+
+    cy.readClipboard().should('match', /^https?:\/\/.+\/articles\/123$/);
+  });
+
+  it('copies code snippet to clipboard', () => {
+    cy.visit('/docs/api-reference');
+
+    cy.get('[data-cy="code-block"]').first().find('[data-cy="copy-code"]').click();
+
+    cy.readClipboard().then((text) => {
+      expect(text.trim()).to.not.be.empty;
+      expect(text).to.include('import');  // sanity check for code content
+    });
+  });
+});
+```
+
+**[community]** WHY: By default Cypress (and browsers) deny clipboard access, so `navigator.clipboard.readText()` rejects with `NotAllowedError`. The CDP `Browser.grantPermissions` call is the only way to grant clipboard access in an automated browser context. The `--allow-clipboard-read-write-for-testing` Chrome flag (from `before:browser:launch`) also works but affects the entire browser session. CDP grants are per-origin and more surgical. Electron does not support CDP clipboard grants — run clipboard tests only against Chrome.
+
+### 89. Intercept Header Assertion and Modification  [community]
+
+Assert on request headers sent by the application (e.g., CORS headers, API versioning headers) and inject response headers for testing header-dependent UI behavior.
+
+```typescript
+// Assert that the app sends the correct API version header
+it('sends X-API-Version header on all API requests', () => {
+  cy.intercept('GET', '/api/**', (req) => {
+    // Spy on the header without modifying the request
+    expect(req.headers['x-api-version']).to.eq('2');
+  }).as('apiRequests');
+
+  cy.visit('/products');
+  cy.wait('@apiRequests');
+});
+
+// Inject response headers to test header-dependent behavior
+it('shows CORS error when server returns wrong CORS headers', () => {
+  cy.intercept('GET', '/api/public-data', (req) => {
+    req.reply({
+      statusCode: 200,
+      body: { items: [1, 2, 3] },
+      headers: {
+        // Missing 'Access-Control-Allow-Origin' — simulate misconfigured CORS
+        'Content-Type': 'application/json',
+      },
+    });
+  }).as('publicData');
+
+  cy.visit('/public-page');
+  cy.wait('@publicData');
+  cy.get('[data-cy="cors-error-msg"]').should('be.visible');
+});
+
+// Assert on X-Request-ID for distributed tracing
+it('includes X-Request-ID in all authenticated requests', () => {
+  const observedIds = new Set<string>();
+
+  cy.intercept('/api/**', (req) => {
+    const requestId = req.headers['x-request-id'] as string | undefined;
+    if (requestId) {
+      expect(requestId).to.match(/^[0-9a-f-]{36}$/i);  // UUID format
+      expect(observedIds.has(requestId), 'X-Request-ID must be unique per request').to.be.false;
+      observedIds.add(requestId);
+    }
+  });
+
+  loginAsRole('user');
+  cy.visit('/dashboard');
+  cy.get('[data-cy="load-more"]').click();
+  cy.get('[data-cy="settings-link"]').click();
+
+  // All three API requests should have unique X-Request-IDs
+  cy.wrap(observedIds).its('size').should('be.gte', 3);
+});
+```
+
+**[community]** WHY: Header assertions are often neglected in E2E tests because headers are invisible to the user. But headers carry security-critical information (CSRF tokens, API version contracts, correlation IDs for distributed tracing). Asserting inside a `cy.intercept()` handler that headers are present and correctly formatted is the only way to catch regressions where a header is accidentally dropped without the user experience changing. Use this pattern during API contract audits and security reviews.
+
+### 90. Geolocation and Permissions Testing via CDP  [community]
+
+Test geolocation-dependent features (store locators, localized content, shipping estimates) by overriding the browser's geolocation via CDP before visiting the page.
+
+```typescript
+// cypress/support/commands.ts — geolocation override
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      setGeolocation(coords: { latitude: number; longitude: number; accuracy?: number }): Chainable<void>;
+    }
+  }
+}
+
+Cypress.Commands.add('setGeolocation', ({ latitude, longitude, accuracy = 100 }) => {
+  cy.wrap(
+    Cypress.automation('remote:debugger:protocol', {
+      command: 'Emulation.setGeolocationOverride',
+      params: { latitude, longitude, accuracy },
+    })
+  );
+});
+
+// In a spec — test a store locator feature
+it('shows stores near the user location', () => {
+  // Set location to New York City before visiting
+  cy.setGeolocation({ latitude: 40.7128, longitude: -74.006 });
+
+  cy.visit('/store-locator');
+  cy.get('[data-cy="use-my-location"]').click();
+
+  // App should detect NYC and show local stores
+  cy.get('[data-cy="location-display"]').should('contain', 'New York');
+  cy.get('[data-cy="store-card"]').should('have.length.gte', 1);
+});
+
+it('shows localized shipping estimate based on detected region', () => {
+  // Set location to London
+  cy.setGeolocation({ latitude: 51.5074, longitude: -0.1278 });
+
+  cy.visit('/checkout');
+  cy.get('[data-cy="detect-location"]').click();
+
+  cy.get('[data-cy="shipping-region"]').should('contain', 'United Kingdom');
+  cy.get('[data-cy="shipping-currency"]').should('contain', 'GBP');
+});
+
+it('handles geolocation permission denied gracefully', () => {
+  // Revoke geolocation permission
+  cy.wrap(
+    Cypress.automation('remote:debugger:protocol', {
+      command: 'Browser.resetPermissions',
+      params: {},
+    })
+  );
+
+  cy.visit('/store-locator');
+  cy.get('[data-cy="use-my-location"]').click();
+
+  // App should handle the denial gracefully
+  cy.get('[data-cy="geolocation-error"]').should('contain', 'Location access denied');
+  cy.get('[data-cy="manual-address-input"]').should('be.visible');
+});
+```
+
+**[community]** WHY: Geolocation features are almost never tested in automated suites because the default browser behavior (show permission prompt) blocks test execution. CDP `Emulation.setGeolocationOverride` bypasses both the permission prompt and the physical GPS hardware, setting precise coordinates instantly. This enables CI-stable tests for any feature that reads `navigator.geolocation.getCurrentPosition()`. For permission-denied scenarios, use `Browser.resetPermissions` to revoke the geolocation grant — this is more reliable than trying to click the browser's native permission dialog.
+
+### 91. Parallel Test Execution with Custom Worker Allocation  [community]
+
+Optimize CI test duration by explicitly grouping specs by complexity and allocating parallel workers accordingly.
+
+```yaml
+# .github/workflows/e2e.yml — differentiated parallelism by test weight
+name: E2E Tests — Weighted Parallel
+on: [push, pull_request]
+
+jobs:
+  e2e-fast:
+    name: Fast specs (auth, smoke)
+    runs-on: ubuntu-latest
+    container:
+      image: cypress/included:14.0.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run fast specs
+        run: npx cypress run --spec "cypress/e2e/auth/**,cypress/e2e/smoke/**" --record --parallel --ci-build-id "${{ github.run_id }}-fast"
+        env:
+          CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+
+  e2e-medium:
+    name: Medium specs (checkout, products)
+    runs-on: ubuntu-latest
+    container:
+      image: cypress/included:14.0.0
+    strategy:
+      matrix:
+        containers: [1, 2]  # 2 workers for medium complexity
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run medium specs
+        run: npx cypress run --spec "cypress/e2e/checkout/**,cypress/e2e/products/**" --record --parallel --ci-build-id "${{ github.run_id }}-medium"
+        env:
+          CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+
+  e2e-slow:
+    name: Slow specs (reports, admin)
+    runs-on: ubuntu-latest
+    container:
+      image: cypress/included:14.0.0
+    strategy:
+      matrix:
+        containers: [1, 2, 3]  # 3 workers for slow, long-running specs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run slow specs
+        run: npx cypress run --spec "cypress/e2e/reports/**,cypress/e2e/admin/**" --record --parallel --ci-build-id "${{ github.run_id }}-slow"
+        env:
+          CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+```
+
+```typescript
+// cypress/support/e2e.ts — mark test start time for spec timing
+const specStartTime = Date.now();
+
+after(() => {
+  const duration = ((Date.now() - specStartTime) / 1000).toFixed(1);
+  cy.log(`Spec completed in ${duration}s`);
+  // Log to CTRF or a custom metric for worker allocation tuning
+});
+```
+
+**[community]** WHY: Cypress Cloud's balanced load distribution works well for suites with uniform spec durations, but many teams have a small number of very slow specs (10+ min report generation, admin CRUD) that create a "long tail" — one worker is still running when all others have finished. Splitting by complexity and allocating more workers to slow spec groups cuts total CI wall time without paying for more machines on fast specs. The `--ci-build-id` suffix differentiates Cypress Cloud runs so each group's results appear separately in the dashboard.
+
+### 92. Test Isolation Audit Command  [community]
+
+Detect test isolation violations by logging initial state and asserting that each test resets properly. Use as a pre-commit check for suites with `testIsolation: false`.
+
+```typescript
+// cypress/support/isolation-audit.ts
+// Add to support/e2e.ts imports to enable isolation auditing
+
+const AUDITED_KEYS = ['theme', 'auth_token', 'user_id', 'cart', 'feature_flags'] as const;
+
+// Capture state AFTER each test to detect state leakage
+afterEach(function () {
+  if (this.currentTest?.state === 'passed') {
+    cy.window().then((win) => {
+      const residual: Record<string, string | null> = {};
+      AUDITED_KEYS.forEach((key) => {
+        const val = win.localStorage.getItem(key);
+        if (val !== null) residual[key] = val;
+      });
+
+      if (Object.keys(residual).length > 0) {
+        // Log a warning — don't fail (auditing mode, not enforcement mode)
+        cy.log(
+          `⚠ Isolation warning: "${this.currentTest?.title}" left localStorage keys: ${JSON.stringify(residual)}`
+        );
+      }
+    });
+  }
+});
+
+// Stronger: in enforcement mode, fail the test if it leaves state behind
+// Replace cy.log with: throw new Error(...)
+```
+
+```typescript
+// cypress/support/e2e.ts — enable isolation audit selectively
+// Only audit in development (not CI) to avoid noise
+if (!Cypress.env('CI')) {
+  require('./isolation-audit');
+}
+```
+
+**[community]** WHY: Cross-test state pollution is the root cause of most "passes locally, fails in CI" flakiness. The audit command makes state residue visible during local development, before it causes non-deterministic failures in parallel CI runs. Running it unconditionally in CI would be noisy (every test logs residual state), so limit it to local development or add it to a dedicated `audit` tagged test run.
+
+### 93. Cypress `after:run` Hook — Post-Suite Reporting  [community]
+
+Use the `after:run` event in `setupNodeEvents` to send test results to external systems (Slack, PagerDuty, internal dashboards) or to clean up shared test resources.
+
+```typescript
+// cypress.config.ts — after:run hook
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    setupNodeEvents(on) {
+      on('after:run', async (results) => {
+        // results is a CypressRunResult or CypressFailedRunResult
+        if (results.status === 'failed') {
+          console.error('Run failed — no results to report');
+          return;
+        }
+
+        const { totalTests, totalPassed, totalFailed, totalPending, totalSkipped } = results;
+        const passRate = ((totalPassed / totalTests) * 100).toFixed(1);
+
+        // Send Slack notification on failure
+        if (totalFailed > 0) {
+          await fetch(process.env.SLACK_WEBHOOK_URL ?? '', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: `❌ E2E suite: ${totalFailed}/${totalTests} tests failed (${passRate}% pass rate)`,
+              attachments: [{
+                color: 'danger',
+                fields: [
+                  { title: 'Failed', value: String(totalFailed), short: true },
+                  { title: 'Passed', value: String(totalPassed), short: true },
+                ],
+              }],
+            }),
+          });
+        }
+
+        // Clean up test database state after every run
+        const { dbTasks } = await import('./cypress/plugins/db');
+        await dbTasks['db:clean']();
+
+        console.log(`Run complete: ${totalPassed}/${totalTests} passed (${passRate}%)`);
+      });
+    },
+  },
+});
+```
+
+```typescript
+// Type the results object for full autocomplete
+import type { CypressRunResult } from 'cypress';
+
+// Access per-spec results
+on('after:run', (results: CypressRunResult) => {
+  results.runs.forEach((run) => {
+    const slowTests = run.tests
+      .filter((t) => (t.attempts[0]?.wallClockDuration ?? 0) > 10000)  // > 10s
+      .map((t) => ({ title: t.title.join(' > '), duration: t.attempts[0]?.wallClockDuration }));
+
+    if (slowTests.length > 0) {
+      console.warn(`Slow tests in ${run.spec.relative}:`, slowTests);
+    }
+  });
+});
+```
+
+**[community]** WHY: `after:run` is the correct hook for post-suite cleanup (not `after()` in specs, which runs per-spec). Using it for Slack notifications ensures the message fires once per run, not once per spec file. The `results.runs[].tests` array gives per-test duration, making it the ideal place to surface slow tests that should be moved to dedicated performance test infrastructure. Note: `after:run` only fires when using `cypress run` (headless CI), not during `cypress open` (interactive dev).
+
 ---
 
 ## Selector Strategy (Priority Order)
@@ -2996,6 +4281,48 @@ declare global {
 47. **Factory functions using `Date.now()` produce non-deterministic IDs across parallel workers** [community] — Test data factories that generate IDs or emails using `Date.now()` (e.g., `email-${Date.now()}@e2e.test`) can produce duplicate values when two parallel Cypress workers start within the same millisecond. Use a combination of `Date.now()` + `Math.random()` or, better, a UUID v4 library: `import { v4 as uuidv4 } from 'uuid'`. In factories: `id: uuidv4()`, `email: \`user-${uuidv4().slice(0, 8)}@e2e.test\``.
 
 48. **`cy.checkA11y()` only catches violations visible at test time — not after interactions** [community] — `cypress-axe`'s `cy.checkA11y()` scans the DOM at the moment it is called. If a modal opens, a dropdown expands, or an error message appears after a form submission, none of those dynamically revealed elements are checked unless you call `cy.checkA11y()` again after each interaction. For thorough coverage: call `cy.injectAxe()` once and `cy.checkA11y()` after every significant state change (form submit, modal open, accordion expand, tab change). Tracking axe violations per page state is more effective than a single check on page load.
+
+49. **`cy.stub().onCall(n)` state carries across retries** [community] — When Cypress retries a failed test, it re-runs the test body but does NOT recreate stubs registered in `before()` or at module scope. If you use `cy.stub().onCall(0)` and `onCall(1)` to simulate a two-step flow (e.g., MFA challenge then success), a retried test will start at `onCall(2)` — past the configured behavior — and get `undefined` responses. Always register stubs in `beforeEach()` so they're freshly created on each attempt.
+
+50. **`testIsolation: false` can cause invisible cross-spec pollution** [community] — Disabling `testIsolation` (Cypress 12+) prevents the automatic browser state reset between tests. If any test writes to `sessionStorage` or `indexedDB` without cleaning up, subsequent tests in the file will see that data even if they don't explicitly depend on it. The failure mode is non-deterministic: tests pass when run alone but fail in a full-suite run. Always audit `testIsolation: false` suites with explicit `afterEach` cleanup, or better, migrate them to `testIsolation: true`.
+
+51. **CTRF reporter and `cypress-multi-reporters` conflict on `reporter` key** [community] — When using `cypress-multi-reporters` to combine CTRF with the built-in `spec` reporter, both reporters must be listed in `reporter-config.json`, not split between `cypress.config.ts` and the config file. Setting `reporter: 'spec'` in `cypress.config.ts` and listing CTRF only in the multi-reporter config causes CTRF to be silently ignored — no output file is generated. Always verify CTRF output exists after the first CI run before depending on it for dashboards.
+
+52. **`cy.stub().callsFake()` on `window.fetch` does not affect `XMLHttpRequest` (and vice versa)** [community] — Modern apps may use either `fetch` or `XMLHttpRequest` depending on the library (Axios uses XHR by default; native browser code uses `fetch`). Stubbing `window.fetch` has no effect on XHR calls, and `cy.intercept()` intercepts both. If your test stubs `window.fetch` but the app uses Axios without `adapter: 'fetch'`, your stub is never called. Use `cy.intercept()` for network-level interception unless you specifically need to test the `fetch` API itself.
+
+53. **WebSocket constructor stub must be set in `onBeforeLoad`, not after `cy.visit()`** [community] — The WebSocket constructor (`new WebSocket(url)`) is typically called during module initialization or inside a `useEffect` on mount. Stubbing `win.WebSocket` after `cy.visit()` has returned means the app's `useEffect` has already run and the real WebSocket connection is already open. The stub never intercepts anything. Always set WebSocket stubs inside the `cy.visit(url, { onBeforeLoad })` callback to guarantee the stub is in place before the first script executes.
+
+54. **`cy.task()` does not retry automatically — wrap in `.should()` for polling** [community] — `cy.task()` executes once and yields the result. If you call `cy.task('email:getLatest', address)` immediately after triggering a transactional email, the task may return `null` because the email hasn't arrived yet. `cy.task().should('not.be.null')` causes Cypress to retry the entire `task → assertion` chain, effectively polling until the email arrives or the timeout expires. Without `.should()`, a single null result fails the test immediately rather than waiting.
+
+55. **`cy.stub(win, 'WebSocket')` breaks apps that check `instanceof WebSocket`** [community] — Replacing the global `WebSocket` constructor with a stub class means `someSocket instanceof WebSocket` returns `false` for both stub instances and real WebSocket objects (since the `WebSocket` reference now points to your stub). Apps that use `instanceof` checks (e.g., in reconnection logic or type guards) may silently skip branches or crash. Test for this by logging `someSocket instanceof WebSocket` in the browser console after stubbing. If it matters, copy the original reference: `const OriginalWebSocket = win.WebSocket; cy.stub(win, 'WebSocket').callsFake((...args) => { const ws = new OriginalWebSocket(...args); /* wrap */ return ws; })`.
+
+56. **`cy.trigger('mouseover')` does not work on elements that use CSS `:hover` pseudo-class** [community] — `cy.trigger('mouseover')` fires a DOM `mouseover` event, but CSS `:hover` styles are applied by the browser's rendering engine based on actual pointer position — not JavaScript events. If your tooltip is revealed via `div:hover { display: block }` (pure CSS), `cy.trigger('mouseover')` will not make it appear because the browser's internal hover state is not updated by synthetic events. Use `cy.realHover()` from `cypress-real-events` (fires real pointer events via CDP) for CSS hover states, or use `cy.trigger()` only for JavaScript-driven hover handlers (`mouseenter`, `mouseover` event listeners).
+
+57. **TypeScript path aliases require both `tsconfig.json` and bundler configuration** [community] — Setting `"paths": { "@/*": ["src/*"] }` in `tsconfig.json` only affects TypeScript's type resolution at compile time — it does NOT make the alias work at runtime. Vite requires the alias in `vite.config.ts` under `resolve.alias`; webpack requires it in `resolve.alias` or `resolve.modules`. A common symptom: tests compile successfully with TypeScript but fail at runtime with "Cannot find module '@/...'" because the bundler doesn't know about the alias. Always verify both layers are configured when adding path aliases.
+
+58. **`window.performance.getEntriesByType('navigation')` returns empty until page finishes loading** [community] — If you call `cy.assertPageLoadTime()` immediately after `cy.visit()`, the `loadEventEnd` timing may be 0 because the load event hasn't fired yet. Always assert on a meaningful element (`cy.get('[data-cy="hero"]').should('be.visible')`) before reading performance entries to ensure the page has fully loaded. Additionally, performance timing is not available in Electron — run timing assertions only against Chrome or Firefox by detecting `Cypress.browser.name !== 'electron'`.
+
+59. **`@cypress/grep` tag filtering does not propagate to `before()` hooks** [community] — When using `--env grep=@smoke` to run a subset of tests, Cypress still executes `before()` hooks in every `describe` block regardless of whether any tests in that block match the grep filter. If your `before()` hooks do expensive setup (DB seeding, API login), they run even for suites where all tests are filtered out, wasting CI time. Migrate expensive setup from `before()` to `beforeEach()` with `cy.session()` caching, which only runs when the session doesn't exist — reducing overhead for grep-filtered runs.
+
+60. **Storybook story IDs change when the component's display name changes** [community] — Cypress + Storybook smoke tests that use hardcoded story IDs (e.g., `components-button--default`) break silently when the Storybook story title is renamed. Cypress `cy.visit()` on a non-existent story ID shows an empty iframe rather than throwing an error — the test passes but isn't actually testing anything. Always assert on a specific element after `cy.visit(storyUrl(...))` to detect a missing story, and run `npx storybook build --quiet` in CI to catch story ID changes before merging.
+
+61. **`@alias.all` for counting requests requires the intercept to be set up before the action** [community] — Asserting `cy.get('@save.all').should('have.length', 1)` only counts requests intercepted after `cy.intercept()` was registered. If the intercept is set up after the request fires (e.g., inside a `.then()` callback that runs asynchronously), some requests are missed. Set up ALL intercepts at the beginning of the test body, before any UI interactions, to ensure every request is captured in the count.
+
+62. **Svelte component tests fail with `Cannot use 'import.meta.env'` outside of Vite** [community] — Svelte components that read `import.meta.env.VITE_API_URL` work in the dev server but throw in Cypress component tests if the Vite config doesn't expose environment variables. Add `define: { 'import.meta.env.VITE_API_URL': JSON.stringify('http://localhost:3000') }` to the Vite config in `cypress.config.ts` to inject test values. Never set `import.meta.env.VITE_API_URL` to `undefined` — Svelte's compiler inlines `import.meta.env.*` at build time, so a missing define causes a literal `undefined` string in the bundle.
+
+63. **`faker.seed()` must be called once per test file, not per test** [community] — `faker.seed(42)` resets the internal PRNG to a fixed starting point. If called in `beforeEach`, each test gets the SAME data (same email, same name, same UUID) because the seed resets before every test. Either call `faker.seed()` once at the top of the file (to get different data per test but reproducible per file), or use `faker.seed(Date.now())` in a `before()` hook and log the seed with `cy.log()` so you can reproduce failures.
+
+64. **Clipboard permission grant (`Browser.grantPermissions`) is not supported in Electron** [community] — `Cypress.automation('remote:debugger:protocol', { command: 'Browser.grantPermissions', ... })` works only in Chrome-family browsers (Chrome, Chromium, Edge). Cypress's default Electron browser does not support CDP `Browser.grantPermissions`, and the command silently fails — `navigator.clipboard.readText()` still throws `NotAllowedError`. Always guard clipboard tests with `if (Cypress.browser.name !== 'electron')` or add `{ browser: '!electron' }` to the test block. Run clipboard tests explicitly with `--browser chrome` in CI.
+
+65. **`cy.intercept()` header assertions inside the handler do not fail the test gracefully** [community] — When you call `expect(req.headers['x-api-version']).to.eq('2')` inside a `cy.intercept()` handler and the assertion fails, Cypress logs an `AssertionError` in the browser console but does NOT automatically fail the currently running test. The test continues, and the assertion failure surfaces as an `uncaught:exception` event. Wrap route handler assertions in a `try/catch` and call `req.destroy()` or `throw` to ensure the test fails clearly: `if (!req.headers['x-token']) { req.reply({ statusCode: 401 }); throw new Error('Missing auth header'); }`.
+
+66. **`Emulation.setGeolocationOverride` persists across `cy.visit()` calls but resets between tests** [community] — Once you call `cy.setGeolocation({...})` using the CDP command, the override applies to all subsequent page loads in the same test. When `testIsolation: true` (default in Cypress 12+), the override is cleared between tests because Cypress navigates to `about:blank` which triggers a new browser context. However, if `testIsolation: false`, the geolocation override from one test leaks into subsequent tests. Always call `cy.setGeolocation()` in the test body (not a global `before()`), or reset with `Emulation.clearGeolocationOverride` in `afterEach`.
+
+67. **Weighted parallel CI jobs using separate `--ci-build-id` suffixes create separate Cypress Cloud runs** [community] — When you split tests into `fast`, `medium`, and `slow` job groups with different `--ci-build-id` values (e.g., `${{ github.run_id }}-fast`), Cypress Cloud treats them as three separate runs. This means the Flaky Test dashboard, Smart Orchestration (fail-fast), and branch status checks do not aggregate across groups — a failure in `e2e-slow` does not cancel `e2e-fast`. Use the same `--ci-build-id` for all groups if you want unified Smart Orchestration, or accept separate runs for independent group reporting.
+
+68. **`cy.window().then()` callbacks are NOT retried — use `.should()` for polling window properties** [community] — Unlike `cy.get()` which retries until the element appears, `.then()` callbacks execute once and do not retry. `cy.window().then(win => { expect(win.appReady).to.be.true; })` will immediately fail if `appReady` is not yet set. Replace with `cy.window().should('have.property', 'appReady', true)`, which Cypress retries until the assertion passes or the timeout expires. For nested window properties use `cy.window().its('store.state.user.id').should('eq', 42)`.
+
+69. **`cy.origin()` requires the `experimentalModifyObstructiveThirdPartyCode` option for some SSO flows** [community] — When testing third-party SSO providers (Okta, Azure AD, Google) with `cy.origin()`, some providers serve pages with Content-Security-Policy or X-Frame-Options headers that block Cypress from instrumenting the page. `experimentalModifyObstructiveThirdPartyCode: true` in `cypress.config.ts` rewrites these security headers during testing so Cypress can modify the JavaScript context. Be aware this option also strips CSP headers from all third-party origins — never enable it in production builds, and confine it to the `e2e` configuration block only. For production-safe SSO testing, use `cy.session()` to cache the authenticated state after a single manual sign-in.
 
 ---
 
@@ -3835,8 +5162,55 @@ it('asserts that a new tab URL was requested without navigating', () => {
 | `launchOptions.args.push('--flag')` | Add a Chrome CLI flag via launch options | Disable GPU, allow clipboard, suppress native dialogs |
 | `cy.stub(win, 'open').callsFake(url => win.location.href = url)` | Redirect popup to same tab for cy.origin() testing | Single-window OAuth/popup flow workaround |
 | `prisma.$queryRawUnsafe(sql)` via cy.task() | Direct DB query from test via Prisma | Verify database state after UI action without an API round-trip |
-| `Cypress.Commands.overwrite('type', ...)` with sensitive masking | Mask passwords in Cypress command log | Prevent credential leakage in CI screenshots and artifacts |
+| `cy.trigger(eventName, options)` | Fire a raw DOM event on an element | Hover states, pointer events, canvas interactions, custom app events |
+| `cy.findByRole(role, { name })` (via `@testing-library/cypress`) | Query by ARIA role and accessible name | RTL-style component tests with accessibility-first selectors |
+| `cy.findByLabelText(text)` (RTL) | Query form field by its visible label | Input field selection using screen-reader-visible labels |
+| `cy.findByText(text)` (RTL) | Query element by exact/regex text content | Text-content assertions without data-cy dependencies |
+| `pollUntil(fn, predicate, opts)` (custom helper) | Recursive polling with configurable backoff | Long-running async job status polling without fixed `cy.wait(ms)` |
+| `cy.request().its('body').should(predicate)` | Retrying API poll via assertion | Simple one-shot polling without a recursive helper |
+| `resolve.alias` in `vite.config.ts` | Bundler path alias registration | Required alongside `tsconfig.json` paths for runtime alias resolution |
+| `win.performance.getEntriesByType('navigation')` | Read Navigation Timing API entries | Lightweight page load performance assertions in E2E tests |
+| `interception.duration` | Response time in milliseconds from cy.wait() | API latency smoke assertions per endpoint |
+| `registerCypressGrep(config)` | Enable @cypress/grep tag filtering | Runtime test subset selection by `@tag` without separate spec files |
+| `--env grep=@smoke` | Filter tests by tag at runtime | PR builds run only @smoke; nightly runs full suite |
+| `--env grepInvert=@edge-cases` | Exclude tests by tag at runtime | Skip environment-incompatible tests without modifying spec files |
+| `cy.visit(storyUrl(storyId))` | Visit Storybook story iframe directly | Storybook component smoke tests using Cypress browser automation |
+| `cy.get('@alias.all').should('have.length', N)` | Assert exact request count | Verify debounce, idempotency, no-duplicate-submission patterns |
+| `interception.request.url` | Inspect full request URL in cy.wait() | Assert on query params, path segments in intercepted requests |
+| `cy.realHover()` (via cypress-real-events) | Fire real CDP pointer events for CSS hover | Test CSS :hover states that don't respond to synthetic events |
+| `mount(SvelteComponent, { props, extensions })` | Mount Svelte component via `cypress/svelte` | Svelte reactive component testing in real browser |
+| `extensions.on.eventName` in Svelte mount | Listen for Svelte custom event dispatches | Assert on component-dispatched events in Svelte CT |
+| `faker.seed(n)` | Seed @faker-js/faker PRNG for reproducible data | Fixed seed for reproducible failures; log seed for debug |
+| `faker.internet.email({ provider })` | Generate realistic email with custom domain | Test data factory with domain-scoped emails for cleanup |
+| `faker.string.uuid()` | Generate a v4 UUID | Unique test data IDs that don't collide across parallel workers |
+| `cy.grantClipboardPermission()` (custom) | Grant CDP clipboard-read/write permission | Prerequisite for `navigator.clipboard.readText()` in Chrome |
+| `cy.readClipboard()` (custom) | Read clipboard text via navigator.clipboard | Assert on "Copy to clipboard" button behavior |
+| `Browser.grantPermissions` via CDP | Grant browser permissions programmatically | Clipboard, geolocation, notifications in Chrome automated tests |
+| `req.headers['header-name']` inside intercept handler | Read request header value | Assert API version, auth, correlation ID headers in flight |
+| `req.reply({ headers: { ... } })` | Inject response headers | Test header-dependent UI (CORS error display, cache behavior) |
+| `Emulation.setGeolocationOverride` via CDP | Override GPS location for geolocation tests | Test store locators, region-based content, shipping estimates |
+| `cy.setGeolocation({ lat, lng })` (custom) | Fluent CDP geolocation override command | Geolocation feature tests without physical GPS or permission prompts |
+| `Browser.resetPermissions` via CDP | Reset all granted browser permissions | Test permission-denied scenarios after granting them per-test |
+| `--ci-build-id "${{ github.run_id }}-group"` | Tag CI build for weighted parallel groups | Separate Cypress Cloud dashboard views per spec complexity tier |
+| `cy.task('email:getLatest', addr).should(...)` | Poll email task with retry | Transactional email verification (Mailpit/Mailhog) |
+| `cy.task('ws:broadcast', data)` | Push WS message from test server | Integration-level WebSocket message flow tests |
+| `cy.visit(url, { onBeforeLoad(win) {...} })` | Run code before page scripts execute | WebSocket stubs, feature flag injection, localStorage seeding |
+| `cy.stub().onCall(n).resolves(val)` | Define Nth-call resolved value | Declarative per-call stub sequences (retry, MFA flows) |
+| `cy.stub().onCall(0).rejects(err)` | Make Nth call reject with an error | Test error recovery without a real failing server |
+| `testIsolation: true/false` | Auto-reset browser state between tests (Cy 12+) | Control per-spec or globally; keep true for isolation |
+| `describe(name, { testIsolation: false }, fn)` | Disable isolation for one suite | Legacy test migration without global config change |
+| `cypress-ctrf-json-reporter` | Generate CTRF unified test result JSON | Cross-framework test reporting and AI failure summarizers |
+| `cy.stub().onCall(0).resolves(val)` | Chain per-call resolved values fluently | Declarative multi-call stubs without counter variables |
 | `cy.wait('@alias', { timeout: N })` | Per-alias timeout override | Handle legitimately slow third-party endpoints per-wait |
 | `cy.checkA11y(context, opts, logFn, failSilently)` | Full cypress-axe check with violation logging | WCAG 2.1 AA compliance testing with custom violation handler |
 | `cy.percySnapshot(name, { widths: [...] })` | Percy visual snapshot across viewports | Multi-breakpoint visual regression detection |
 | `.matchImageSnapshot(name, { failureThreshold })` | Local image snapshot comparison | Pixel-diff visual regression without Percy cloud service |
+| `on('after:run', async (results) => {...})` | Post-suite hook for Slack/cleanup (Cy 13+) | Run once per `cypress run`; access per-test durations in `results.runs[].tests` |
+| `results.totalFailed` in `after:run` | Count of failed tests in the completed run | Trigger conditional Slack alerts / artifact uploads in `setupNodeEvents` |
+| `results.runs[].tests[].attempts[0].wallClockDuration` | Per-test wall-clock duration in ms | Identify slow tests after a full run for performance triage |
+| `afterEach(() => { cy.window().then(win => { ... }) })` | Per-test cleanup assertion hook | Detect residual localStorage keys left by tests (isolation audit) |
+| `win.localStorage.getItem(key)` in `afterEach` | Read localStorage entry in test browser context | Isolation audit: flag keys still set after a test completes |
+| `cy.window().should('have.property', key, val)` | Retrying assertion on window property | Poll `window.appReady` or custom window state without `.then()` anti-pattern |
+| `cy.window().its('nested.prop').should(...)` | Retrying nested window property read | Deep window state polling that `.then()` can't retry |
+| `experimentalModifyObstructiveThirdPartyCode: true` | Rewrite third-party CSP/XFO headers for Cypress | Required for `cy.origin()` on strict SSO providers (Okta, Azure AD) |
+| `Emulation.clearGeolocationOverride` via CDP | Remove active geolocation override | Reset GPS state in `afterEach` when `testIsolation: false` |

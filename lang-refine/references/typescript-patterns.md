@@ -1,5 +1,5 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 10 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: official | community | mixed | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
 
 ## Core Philosophy
 
@@ -31,6 +31,8 @@
 | 5.5 | Inferred type predicates, `isolatedDeclarations`, RegExp `v` flag | `"isolatedDeclarations": true` |
 | 5.6 | Disallow NaN equality check, iterator helper types | — |
 | 5.7 | `--noCheck`, path rewriting, relative import completions | — |
+| 5.8 | Granular return expression branch checks, `--erasableSyntaxOnly`, `require()` of ESM in `nodenext`, `--module node18`, `--libReplacement` | `"module": "node18"` or `"nodenext"` |
+| 5.9 | `import defer`, `--module node20`, minimal `tsc --init`, `noUncheckedSideEffectImports`, `verbatimModuleSyntax`, DOM summary hovers | `"moduleDetection": "force"`, `"verbatimModuleSyntax": true` |
 
 Keep `tsconfig.json` at `"strict": true` regardless of version; new strict sub-flags are only added to the umbrella flag after a deprecation period.
 
@@ -226,6 +228,48 @@ type UserSummary = Pick<User, 'id' | 'name'>;
 type StatusColor = Record<'success' | 'warning' | 'error', string>;
 const colors: StatusColor = { success: '#22c55e', warning: '#f59e0b', error: '#ef4444' };
 ```
+
+---
+
+### `noUncheckedIndexedAccess` — Safe Dictionary Access
+
+The `noUncheckedIndexedAccess` compiler flag (TypeScript 4.1+, added to the 5.9 `tsc --init` baseline) adds `undefined` to the type returned by any index signature access where the key is not explicitly declared. Without it, TypeScript trusts that any string key produces a defined value — a common source of `TypeError: Cannot read properties of undefined` at runtime.
+
+```typescript
+// tsconfig: "noUncheckedIndexedAccess": true
+
+interface Config {
+  host: string;    // explicitly declared — still string, not string | undefined
+  port: number;
+  [key: string]: string | number; // index signature for dynamic keys
+}
+
+declare const config: Config;
+
+// Explicitly declared properties: type unchanged
+const host: string = config.host;   // string — OK, explicitly declared
+const port: number = config.port;   // number — OK
+
+// Index signature access: now includes undefined
+const timeout = config.timeout;     // string | number | undefined (with flag)
+// Without flag: string | number (false precision — crashes if key absent)
+
+// Array element access is also guarded
+const items: string[] = ['a', 'b', 'c'];
+const first = items[0];             // string | undefined (with flag)
+const safe = first?.toUpperCase();  // string | undefined — correct handling
+// Without flag: first is string — potential crash on empty array
+
+// Pattern: use nullish coalescing for array defaults
+function head<T>(arr: T[]): T | undefined {
+  return arr[0]; // returns T | undefined — honest about empty arrays
+}
+
+const DEFAULT_TIMEOUT = 5_000;
+const t = config.timeout ?? DEFAULT_TIMEOUT; // number — safe default
+```
+
+[community] **Pitfall:** `noUncheckedIndexedAccess` makes `arr[0]` return `T | undefined` — including inside `for` loops where the index is *known* to be valid. Teams often disable the flag because loops like `for (let i = 0; i < arr.length; i++) arr[i].method()` now produce errors. The correct fix is to use `for...of` (which gives a definite `T`), or to add a null check inside the loop. Do not disable the flag to silence these; the check correctly warns that `arr[i]` can be undefined if the array is modified concurrently.
 
 ---
 
@@ -1496,6 +1540,13 @@ Without `exactOptionalPropertyTypes`, TypeScript treats `{ name?: string }` as e
 | `DisposableStack` declared with `const` | Resource cleanup callbacks never fire — `const` prevents disposal | Always use `using stack = new DisposableStack()` |
 | Committing `.tsbuildinfo` to git | File is large, changes every build, and pollutes diffs | Add `*.tsbuildinfo` to `.gitignore`; cache by branch on CI |
 | Missing `incremental: true` on any project | Full type-check on every `tsc` run even for unchanged files | Add `"incremental": true` to `tsconfig.json` immediately |
+| `import` assertions (`assert {}`) instead of attributes (`with {}`) | Disallowed in `--module nodenext` (TS 5.8+); deprecated in Node 22 | Use `import data from "./f.json" with { type: "json" }` |
+| `import defer` for code splitting | `import defer` defers evaluation, not loading; bundle size unchanged | Use dynamic `import()` for true code splitting |
+| Missing `verbatimModuleSyntax` | Implicit type-import elision causes hard-to-diagnose circular import issues | Enable `verbatimModuleSyntax: true`; use `import type` for all type-only imports |
+| `moduleDetection: "auto"` (default) | Files without `import`/`export` are treated as scripts, polluting global scope | Set `"moduleDetection": "force"` to treat all files as modules |
+| `types: []` not set | Every installed `@types/*` package is auto-included, causing duplicate globals | Explicitly list only needed `@types` in `"types": [...]` |
+
+
 
 ---
 
@@ -1579,3 +1630,928 @@ import { createApp } from './app.ts'; // write .ts — emitted as ./app.js
 ```
 
 This eliminates the previously common workaround of writing `.js` extensions in `.ts` source files, which confused editors and was invisible to new contributors.
+
+---
+
+## TypeScript 5.8 Language Additions
+
+### Granular Return Branch Checks (TypeScript 5.8)
+
+TypeScript 5.8 adds per-branch type checking on conditional expressions directly inside `return` statements. Previously, if a ternary returned `any` on one branch, the `any` silently satisfied the declared return type and masked the type error on the other branch. Now each branch is checked independently.
+
+```typescript
+declare const cache: Map<any, any>;
+
+// Before 5.8: no error — the any from cache.get() hid the type mismatch
+// After  5.8: Error on the false branch: 'string' is not assignable to 'URL'
+function getUrlObject(urlString: string): URL {
+  return cache.has(urlString)
+    ? cache.get(urlString)    // any — TypeScript defers checking
+    : urlString;              // Error: string is not assignable to URL
+}
+
+// Fix: explicitly assert or convert the any-typed value
+function getUrlObjectSafe(urlString: string): URL {
+  return cache.has(urlString)
+    ? (cache.get(urlString) as URL)
+    : new URL(urlString);
+}
+```
+
+[community] **Pitfall:** Code that worked under 5.7 may now surface latent type errors after upgrading to 5.8 — especially when caches, registries, or `any`-typed maps are used in ternary return expressions. These are real bugs exposed by tighter checking, not false positives; fix by adding runtime validation or explicit casts with a comment.
+
+---
+
+### `--erasableSyntaxOnly` Flag (TypeScript 5.8)
+
+Node.js 23.6+ supports stripping TypeScript type annotations natively via `--experimental-strip-types`. However, the native stripper only handles erasable syntax — constructs that produce no JavaScript output. `--erasableSyntaxOnly` makes TypeScript error on non-erasable constructs, ensuring your source is safe to run with Node's type-stripping mode.
+
+Non-erasable constructs disallowed under `--erasableSyntaxOnly`:
+- `enum` declarations (produce JavaScript objects)
+- `namespace` blocks with runtime code (produce IIFEs)
+- Parameter properties in class constructors (`constructor(public x: number)`)
+- Legacy `import =` and `export =` assignments
+
+```typescript
+// ❌ Error under --erasableSyntaxOnly: enum produces runtime JS
+enum Direction { Up, Down, Left, Right }
+// Fix: use string literal union
+type Direction = 'up' | 'down' | 'left' | 'right';
+
+// ❌ Error: parameter property produces runtime code
+class Point {
+  constructor(public x: number, public y: number) {}
+}
+// Fix: explicit field declarations
+class Point {
+  x: number; y: number;
+  constructor(x: number, y: number) { this.x = x; this.y = y; }
+}
+
+// ❌ Error: namespace with runtime code
+namespace Utils {
+  export function parse(s: string): number { return parseInt(s, 10); }
+}
+// Fix: plain ES module exports
+export function parse(s: string): number { return parseInt(s, 10); }
+```
+
+Use `--erasableSyntaxOnly` when your deployment pipeline relies on Node.js native type-stripping, Deno's built-in TypeScript support, or any tool (esbuild, swc) that does comment-removal-only transpilation.
+
+---
+
+### `--module node18` and Import Attributes (TypeScript 5.8)
+
+TypeScript 5.8 adds `--module node18` as a stable flag targeting Node.js 18 semantics, in contrast to `--module nodenext` which tracks the latest Node.js stable release.
+
+Under `--module nodenext` (TypeScript 5.8+), the legacy `assert` import syntax is disallowed in favour of `with` (import attributes):
+
+```typescript
+// ❌ Disallowed under --module nodenext (TypeScript 5.8+)
+import data from "./data.json" assert { type: "json" };
+
+// ✅ Use import attributes (TC39 Stage 3 / Node.js 22+)
+import data from "./data.json" with { type: "json" };
+```
+
+---
+
+## TypeScript 5.9 Language Additions
+
+### `import defer` — Lazy Module Evaluation (TypeScript 5.9)
+
+`import defer` defers the evaluation of a module's side effects until the first time you access an export from it. The module is still resolved and parsed eagerly, but its top-level code does not run until the namespace is first accessed.
+
+```typescript
+// Module imported but NOT yet evaluated — no side effects yet
+import defer * as analytics from "./analytics.js";
+
+function trackEvent(name: string): void {
+  // analytics is evaluated here on first access
+  analytics.record(name); // ← module code runs now, on first call
+}
+
+// Useful for optional/heavy modules whose cost should be deferred
+import defer * as heavyPdf from "./pdf-renderer.js";
+
+async function exportReport(data: ReportData, format: 'csv' | 'pdf'): Promise<Blob> {
+  if (format === 'csv') {
+    return buildCsv(data); // heavyPdf never evaluated
+  }
+  return heavyPdf.render(data); // evaluated here, on first use
+}
+```
+
+Constraints:
+- Only namespace imports allowed (`import defer * as name`)
+- No named imports (`import defer { foo }` is invalid)
+- Requires `--module preserve` or `--module esnext`
+- TypeScript does NOT downlevel `import defer` — it requires a runtime that supports the proposal
+
+[community] **Pitfall:** `import defer` does NOT defer network/disk loading — the module file is still fetched eagerly. The only thing deferred is execution. Teams expecting reduced initial load size should use dynamic `import()` instead; `import defer` is for controlling side-effect timing, not code splitting.
+
+---
+
+### Recommended `tsconfig.json` Baseline (TypeScript 5.9+)
+
+TypeScript 5.9's updated `tsc --init` generates a more opinionated baseline. The key additions versus earlier defaults:
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "module": "nodenext",
+    "target": "esnext",
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
+    "noUncheckedIndexedAccess": true,
+    "noUncheckedSideEffectImports": true,
+    "exactOptionalPropertyTypes": true,
+    "isolatedModules": true,
+    "types": [],
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "skipLibCheck": true
+  }
+}
+```
+
+Key new defaults explained:
+- **`verbatimModuleSyntax`** — Replaces the older `importsNotUsedAsValues` and `preserveValueImports` flags. Enforces that `import type` must be used for type-only imports; value imports are preserved as-is in output. Eliminates the confusion about when TypeScript silently drops imports.
+- **`moduleDetection: "force"`** — Treats every file as a module (has `import`/`export`), preventing TypeScript from treating files as scripts and accidentally merging declarations into the global scope.
+- **`noUncheckedSideEffectImports`** — Errors on `import "./module"` side-effect imports that TypeScript cannot resolve, catching typos in polyfill or CSS import paths.
+- **`types: []`** — Disables auto-inclusion of all `@types/*` packages; list only what you need explicitly.
+
+[community] **Pitfall:** `verbatimModuleSyntax` is stricter than `importsNotUsedAsValues: "error"` — it requires `import type` for ALL type-only imports, not just unused ones. Migrating an existing codebase requires a one-time pass to add `type` to all type-only import lines. Use `tsc --verbatimModuleSyntax --noEmit` as a migration check before enabling it permanently.
+
+---
+
+## Testing Patterns with TypeScript
+
+### Type-Safe Mocks with `vi.mocked` / `jest.mocked`
+
+When using Vitest or Jest with TypeScript, the `vi.mocked()` / `jest.mocked()` helpers wrap a value with `jest.Mock<T>` / `vi.Mock<T>` type information, giving you fully-typed access to `mockResolvedValue`, `mockImplementation`, and mock call tracking.
+
+```typescript
+// src/users/user-service.ts
+import type { UserRepository } from './user-repository';
+
+export class UserService {
+  constructor(private readonly repo: UserRepository) {}
+  async getUser(id: string) { return this.repo.findById(id); }
+}
+
+// src/users/user-service.test.ts
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { UserService } from './user-service';
+import type { UserRepository } from './user-repository';
+
+// Type-safe partial mock: satisfies the interface without implementing every method
+function createMockRepo(): vi.Mocked<UserRepository> {
+  return {
+    findById: vi.fn(),
+    save:     vi.fn(),
+    delete:   vi.fn(),
+  } as vi.Mocked<UserRepository>;
+}
+
+describe('UserService', () => {
+  let repo: vi.Mocked<UserRepository>;
+  let service: UserService;
+
+  beforeEach(() => {
+    repo = createMockRepo();
+    service = new UserService(repo);
+  });
+
+  it('returns user from repository', async () => {
+    const user = { id: 'u1', name: 'Alice', email: 'alice@example.com' };
+    repo.findById.mockResolvedValue(user);  // fully typed: User | null
+    const result = await service.getUser('u1');
+    expect(result).toEqual(user);
+    expect(repo.findById).toHaveBeenCalledWith('u1');
+  });
+});
+```
+
+[community] **Pitfall:** Casting mock objects with `as unknown as UserRepository` bypasses TypeScript's structural check — the mock silently misses a method when the interface grows and the test still compiles. Use `satisfies` or an explicit interface-implementing object to get a compile error when the interface is updated but the mock is not.
+
+---
+
+### Testing Discriminated Unions — Exhaustiveness in Tests
+
+Use a `never`-typed helper to write tests that fail at compile time when a new union variant is added but no test case handles it.
+
+```typescript
+type ApiEvent =
+  | { type: 'request';  method: string; url: string }
+  | { type: 'response'; status: number; body: string }
+  | { type: 'error';    code: number;   message: string };
+
+function processEvent(event: ApiEvent): string {
+  switch (event.type) {
+    case 'request':  return `${event.method} ${event.url}`;
+    case 'response': return `HTTP ${event.status}`;
+    case 'error':    return `Error ${event.code}: ${event.message}`;
+    default:
+      const _never: never = event; // compile error if case added without handler
+      throw new Error(`Unhandled event type: ${String(_never)}`);
+  }
+}
+
+// Test: covers all variants — will fail to compile if ApiEvent gains a new variant
+const cases: ApiEvent[] = [
+  { type: 'request',  method: 'GET', url: '/api' },
+  { type: 'response', status: 200,   body: 'ok' },
+  { type: 'error',    code: 404,     message: 'Not found' },
+];
+
+describe('processEvent', () => {
+  it.each(cases)('handles %j', (event) => {
+    expect(() => processEvent(event)).not.toThrow();
+  });
+});
+```
+
+---
+
+### Branded Error Types for Domain Error Hierarchies
+
+Combining branded types with error classes creates a nominally-typed error hierarchy that the compiler can narrow precisely.
+
+```typescript
+// Domain error base: branded for nominal identity
+type DomainError<Code extends string> = Error & { readonly code: Code };
+
+function createDomainError<Code extends string>(
+  code: Code,
+  message: string
+): DomainError<Code> {
+  const err = new Error(message) as DomainError<Code>;
+  Object.defineProperty(err, 'code', { value: code, enumerable: true });
+  return err;
+}
+
+// Specific error factories
+const NotFoundError     = (msg: string) => createDomainError('NOT_FOUND', msg);
+const ValidationError   = (msg: string) => createDomainError('VALIDATION', msg);
+const UnauthorizedError = (msg: string) => createDomainError('UNAUTHORIZED', msg);
+
+// Union of all domain errors — exhaustive matching
+type AppError =
+  | DomainError<'NOT_FOUND'>
+  | DomainError<'VALIDATION'>
+  | DomainError<'UNAUTHORIZED'>;
+
+function handleAppError(error: AppError): { status: number; message: string } {
+  switch (error.code) {
+    case 'NOT_FOUND':     return { status: 404, message: error.message };
+    case 'VALIDATION':    return { status: 400, message: error.message };
+    case 'UNAUTHORIZED':  return { status: 401, message: error.message };
+    // compile error if a new code is added to AppError without a case here
+  }
+}
+```
+
+[community] **Pitfall:** Extending `Error` in TypeScript compiles correctly but `instanceof` checks can fail when transpiling to ES5 — the prototype chain is not correctly set for subclasses. Fix: call `Object.setPrototypeOf(this, new.target.prototype)` in the constructor when targeting ES5, or set `"target": "ES2015"` or higher and rely on native class semantics.
+
+---
+
+## Suppression Pragmas: `@ts-expect-error` vs `@ts-ignore`
+
+TypeScript provides two suppression comments. `@ts-ignore` is the older form; `@ts-expect-error` is always preferred in new code because it self-documents intent AND errors if the suppression becomes unnecessary.
+
+```typescript
+// @ts-ignore: silent — will never warn you that the error was fixed
+// @ts-ignore
+const x: string = 123; // Suppressed. If you later fix this, the comment stays silently.
+
+// @ts-expect-error: loud — compile error if the next line is now valid
+// @ts-expect-error TS2322 — TODO: fix when User type is updated
+const y: string = 456;
+// If you later fix the type mismatch, TypeScript surfaces:
+// "Unused '@ts-expect-error' directive."
+// This forces cleanup of stale suppressions.
+
+// Best practice: always include the error code and a brief explanation
+// @ts-expect-error TS2339 — third-party lib missing .customMethod in its .d.ts
+thirdPartyObj.customMethod();
+```
+
+[community] **Pitfall:** `@ts-ignore` accumulates silently in codebases undergoing refactoring — after a type is fixed, the suppression persists as dead code and creates confusion ("why was this suppressed?"). Always use `@ts-expect-error` with a TS error code and comment. Configure ESLint rule `@typescript-eslint/prefer-ts-expect-error` to enforce this automatically.
+
+---
+
+## Path Aliases: TypeScript Compile-Time vs Runtime Resolution
+
+`compilerOptions.paths` in `tsconfig.json` tells the TypeScript language service how to resolve paths — but it has NO effect on the JavaScript runtime or Node.js module resolution. Path aliases require additional tooling to work at runtime.
+
+```json
+// tsconfig.json — compile-time alias mapping only
+{
+  "compilerOptions": {
+    "baseUrl": "./src",
+    "paths": {
+      "@utils/*": ["utils/*"],
+      "@services/*": ["services/*"]
+    }
+  }
+}
+```
+
+```typescript
+// ✅ TypeScript compiles this without errors
+import { formatDate } from '@utils/date';
+
+// ❌ Node.js runtime: "Cannot find module '@utils/date'"
+//    The paths mapping is stripped at emit — JS has no knowledge of it
+```
+
+Runtime resolution options by build tool:
+- **Vite / esbuild** — Use the `paths` object in `vite.config.ts` or `esbuild` alias config
+- **Webpack** — `resolve.alias` in `webpack.config.js`  
+- **Jest / Vitest** — `moduleNameMapper` in `jest.config.ts` / `resolve.alias` in `vitest.config.ts`
+- **Pure Node.js (no bundler)** — Use `tsconfig-paths/register` or Node `--import` with a custom resolver
+
+[community] **Pitfall:** Teams often discover that path aliases work in development (because Vite/webpack resolves them) but break in Jest tests or standalone Node scripts where the bundler is absent. The fix is to configure `moduleNameMapper` in Jest to mirror the `tsconfig.json` paths object — they must be kept in sync manually, or use a helper like `jest-tsconfig-paths` to derive the mapping automatically.
+
+---
+
+## TypeScript Go Port (tsgo) — Preview and Future Direction
+
+Microsoft is rewriting the TypeScript compiler in Go (`@typescript/native-preview`, `npx tsgo`). The Go port aims for **10× faster build times** compared to the Node.js compiler. Understanding its implications helps teams make forward-compatible choices today.
+
+```json
+// Try the preview without changing your project
+// No tsconfig changes needed — tsgo is a drop-in replacement for tsc
+```
+
+```typescript
+// package.json scripts — evaluate tsgo alongside tsc
+{
+  "scripts": {
+    "typecheck":         "tsc --noEmit",
+    "typecheck:preview": "tsgo --noEmit"  // npx @typescript/native-preview
+  }
+}
+```
+
+**Status (as of mid-2026):** Type checking and program creation are feature-complete. Language service, JSDoc inference, and the public Compiler API are still in progress. The repo will eventually merge into the main `microsoft/TypeScript` repository.
+
+**Forward-compatible practices today:**
+- Use `--erasableSyntaxOnly` mode — the Go compiler only supports type-erasable syntax natively
+- Avoid `const enum` in library code (inlining is not supported by the native stripper)
+- Prefer interfaces over complex intersection types (caching benefits apply to both compilers)
+- Write explicit return type annotations on exported functions (`isolatedDeclarations`) to maximize parallelism in the new compiler architecture
+
+[community] **Pitfall:** Teams that rely on TypeScript's compiler API (`ts.createProgram`, language service) for custom tooling (linters, codegen) will need to wait for the full API port before migrating. The Go compiler's public API is intentionally not yet stable — do not depend on `@typescript/native-preview`'s internal structures for production tooling.
+
+---
+
+## `satisfies` Operator — Advanced Patterns
+
+The `satisfies` operator (TypeScript 4.9+) validates a value against a type without widening the inferred type. This enables patterns that previously required either unsafe `as` casts or noisy type annotations. Below are advanced use cases beyond the basic example in the Language Idioms section.
+
+```typescript
+// Pattern 1: Config objects with autocomplete + narrow literals
+type AppConfig = {
+  port: number;
+  env: 'development' | 'production' | 'test';
+  features: Record<string, boolean>;
+};
+
+// Without satisfies: config.port is number (wide) — or use 'as const' losing the type check
+// With satisfies: config.port is 3000 (narrow) AND shape is verified
+const config = {
+  port: 3000,
+  env: 'development',
+  features: { darkMode: true, betaApi: false },
+} satisfies AppConfig;
+
+config.port; // 3000 (literal, not number)
+config.env;  // 'development' (literal, not 'development' | 'production' | 'test')
+
+// Pattern 2: Validated route map — keys checked + values narrow
+type RouteHandler = (req: Request, res: Response) => void;
+
+const routes = {
+  '/users':        (req, res) => { /* ... */ },
+  '/products':     (req, res) => { /* ... */ },
+  '/health':       (req, res) => { res.send('ok'); },
+} satisfies Record<string, RouteHandler>;
+
+// routes['/users'] is (req: Request, res: Response) => void
+// routes['/nonexistent'] would be a compile error if accessed via keyof typeof routes
+
+// Pattern 3: Discriminated union validation without casting
+type Event =
+  | { type: 'click'; x: number; y: number }
+  | { type: 'keydown'; key: string };
+
+// satisfies ensures each element matches Event — compile error if shape is wrong
+const events = [
+  { type: 'click', x: 10, y: 20 },
+  { type: 'keydown', key: 'Enter' },
+] satisfies Event[];
+// events[0].x is number (narrow), not unknown
+
+// Pattern 4: Exhaustive record completion
+type Status = 'active' | 'inactive' | 'pending';
+type StatusLabel = Record<Status, string>;
+
+// satisfies errors if a status key is missing — exhaustiveness enforced at definition
+const statusLabels = {
+  active: 'Active',
+  inactive: 'Inactive',
+  pending: 'Pending Review',
+} satisfies StatusLabel;
+```
+
+[community] **Pitfall:** `satisfies` does not narrow type on assignment — the inferred type is based on the literal value, not the constraint type. So `const x = { a: 1 } satisfies { a: number }` gives `x.a` the type `1`, not `number`. This is the intended behavior but confuses teams expecting type narrowing. When you need the wider type for later assignment (`x.a = 2`), annotate explicitly: `const x: { a: number } = { a: 1 }`.
+
+---
+
+## React + TypeScript Patterns
+
+### Component Props and Children
+
+```tsx
+// Use interface for component props — enables declaration merging and compiler caching
+interface ButtonProps {
+  /** Text label displayed inside the button */
+  label: string;
+  /** Disables interaction when true */
+  disabled?: boolean;
+  /** Called when the button is activated */
+  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  /** Renders arbitrary content inside the button */
+  children?: React.ReactNode;
+}
+
+function Button({ label, disabled = false, onClick, children }: ButtonProps) {
+  return (
+    <button disabled={disabled} onClick={onClick}>
+      {children ?? label}
+    </button>
+  );
+}
+
+// Discriminated union for polymorphic components
+type LinkProps =
+  | { variant: 'internal'; to: string }
+  | { variant: 'external'; href: string; target?: string };
+
+function Link({ variant, children, ...rest }: LinkProps & { children: React.ReactNode }) {
+  return variant === 'internal'
+    ? <a href={(rest as { to: string }).to}>{children}</a>
+    : <a href={(rest as { href: string }).href} rel="noopener noreferrer">{children}</a>;
+}
+```
+
+---
+
+### `useRef` Typing Patterns
+
+`useRef` has three overloads; the one you choose determines whether the ref is mutable or read-only.
+
+```tsx
+import { useRef, useEffect } from 'react';
+
+// Read-only ref to a DOM element (initial value null, connected by React)
+// Use this for refs passed to the ref prop on a JSX element
+function AutoFocusInput() {
+  const inputRef = useRef<HTMLInputElement>(null);  // RefObject<HTMLInputElement>
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  return <input ref={inputRef} />;
+}
+
+// Mutable ref for holding a mutable value (not connected to DOM)
+// Pass undefined (not null) to get MutableRefObject<T>
+function Timer() {
+  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  const start = () => { intervalRef.current = setInterval(() => {}, 1000); };
+  const stop  = () => { clearInterval(intervalRef.current); };
+  return <><button onClick={start}>Start</button><button onClick={stop}>Stop</button></>;
+}
+```
+
+[community] **Pitfall:** Passing `null` vs `undefined` as the initial value to `useRef` determines which overload TypeScript picks and therefore whether `current` is mutable. `useRef<HTMLElement>(null)` gives `RefObject<HTMLElement>` where `current` is `HTMLElement | null` (read-only). `useRef<number>(undefined)` gives `MutableRefObject<number | undefined>` where `current` is directly assignable. Using the wrong overload causes spurious `readonly` errors when trying to set the ref imperatively.
+
+---
+
+### Context API with Type Safety
+
+```tsx
+import { createContext, useContext, useState } from 'react';
+
+interface AuthContext {
+  user: User | null;
+  login:  (credentials: { email: string; password: string }) => Promise<void>;
+  logout: () => void;
+}
+
+// Use a non-null assertion in the default to avoid null-checks at every call site
+// The actual null-guard lives in the provider pattern below
+const AuthCtx = createContext<AuthContext | null>(null);
+
+// Custom hook narrows null away — throws descriptively if used outside provider
+function useAuth(): AuthContext {
+  const ctx = useContext(AuthCtx);
+  if (!ctx) throw new Error('useAuth must be used inside <AuthProvider>');
+  return ctx;
+}
+
+// Provider implements the full contract
+function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const login  = async ({ email, password }: { email: string; password: string }) => {
+    const u = await apiLogin(email, password);
+    setUser(u);
+  };
+  const logout = () => setUser(null);
+  return <AuthCtx.Provider value={{ user, login, logout }}>{children}</AuthCtx.Provider>;
+}
+```
+
+### `useState` with Union Types
+
+```tsx
+// Union state: always provide explicit type parameter — inference from initial value is too narrow
+type RequestState<T> =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'success'; data: T }
+  | { status: 'error';   message: string };
+
+function useFetch<T>(url: string) {
+  const [state, setState] = useState<RequestState<T>>({ status: 'idle' });
+
+  const fetch_ = async () => {
+    setState({ status: 'loading' });
+    try {
+      const data = await globalThis.fetch(url).then(r => r.json() as Promise<T>);
+      setState({ status: 'success', data });
+    } catch (err) {
+      setState({ status: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  return { state, fetch: fetch_ };
+}
+```
+
+[community] **Pitfall:** `useState<Status>("idle")` where `type Status = "idle" | "loading"` works, but `useState("idle")` without the explicit generic infers `"idle"` as the literal type — `setStatus("loading")` then errors because `"loading"` is not assignable to `"idle"`. Always provide the explicit type parameter for union state.
+
+---
+
+## Concurrency Patterns — Typed `Promise.all` and `Promise.allSettled`
+
+TypeScript infers precise tuple types from `Promise.all` and `Promise.allSettled` calls, provided you keep the array literal inline (not assigned to an intermediate `Promise[]` variable).
+
+```typescript
+// Promise.all — infers a tuple of resolved types, preserving position
+async function loadDashboard(userId: string) {
+  const [user, orders, settings] = await Promise.all([
+    fetchUser(userId),      // Promise<User>
+    fetchOrders(userId),    // Promise<Order[]>
+    fetchSettings(userId),  // Promise<Settings>
+  ]);
+  // user: User — NOT (User | Order[] | Settings)
+  // orders: Order[]
+  // settings: Settings
+  // Fails fast on first rejection — use only when all must succeed
+  return { user, orders, settings };
+}
+
+// Promise.allSettled — each result is PromiseSettledResult<T>
+// Use when partial success is acceptable (e.g., enrichment calls)
+async function enrichProfile(userId: string) {
+  const [userResult, activityResult, badgesResult] = await Promise.allSettled([
+    fetchUser(userId),        // Promise<User>
+    fetchActivity(userId),    // Promise<Activity[]>
+    fetchBadges(userId),      // Promise<Badge[]>
+  ]);
+  // userResult: PromiseFulfilledResult<User> | PromiseRejectedResult
+
+  const user     = userResult.status     === 'fulfilled' ? userResult.value     : null;
+  const activity = activityResult.status === 'fulfilled' ? activityResult.value : [];
+  const badges   = badgesResult.status   === 'fulfilled' ? badgesResult.value   : [];
+  return { user, activity, badges };
+}
+
+// Promise.race — narrows to union of resolved types
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
+  );
+  return Promise.race([promise, timeout]);
+  // Type: T — because never is absorbed into T in a union
+}
+```
+
+[community] **Pitfall:** Assigning the array to an intermediate variable before passing to `Promise.all` widens the element types to their common supertype, losing the tuple inference: `const tasks: Promise<unknown>[] = [fetchUser(), fetchOrders()]; const [u, o] = await Promise.all(tasks)` gives `[unknown, unknown]`. Always pass the array literal directly to `Promise.all` to preserve positional types.
+
+---
+
+## `Awaited<T>` — Unwrapping Nested Promises
+
+`Awaited<T>` (built-in since TypeScript 4.5) recursively unwraps Promise types — including nested `Promise<Promise<T>>` chains that arise when composing async functions.
+
+```typescript
+// Basic: unwrap a single Promise
+type A = Awaited<Promise<string>>;           // string
+type B = Awaited<Promise<Promise<number>>>;  // number (recursive)
+type C = Awaited<string>;                    // string (non-Promise passthrough)
+
+// Practical: extract the resolved type from any async function
+async function fetchUserOrNull(id: string): Promise<User | null> {
+  return id ? fetchUser(id) : null;
+}
+
+// Derive the return type without re-stating it
+type FetchResult = Awaited<ReturnType<typeof fetchUserOrNull>>;
+// FetchResult: User | null
+
+// Combining with mapped types: create a parallel sync version of an async API
+type SyncApi<T extends Record<string, (...args: unknown[]) => Promise<unknown>>> = {
+  [K in keyof T]: (...args: Parameters<T[K]>) => Awaited<ReturnType<T[K]>>;
+};
+
+interface AsyncUserService {
+  findById(id: string): Promise<User>;
+  create(data: CreateUserInput): Promise<User>;
+}
+
+type SyncUserService = SyncApi<AsyncUserService>;
+// { findById(id: string): User; create(data: CreateUserInput): User }
+```
+
+---
+
+## Enum Alternatives — When to Avoid TypeScript Enums
+
+TypeScript enums have several surprising behaviors that lead practitioners to prefer alternatives. The table below summarizes the tradeoffs:
+
+| Approach | Runtime Cost | Nominal | Reversible | Treeshakeable | Tooling |
+|---|---|---|---|---|---|
+| `enum Status { Active = 'active' }` | Yes (object) | Yes (string) | Yes | No | Excellent |
+| `const enum Status { Active }` | No (inlined) | Numeric only | No | N/A | Breaks with Babel/esbuild |
+| `type Status = 'active' \| 'inactive'` | No | No | N/A | N/A | Excellent |
+| `const STATUS = { Active: 'active', Inactive: 'inactive' } as const` | Yes (tiny obj) | No | Yes | Yes | Excellent |
+| Branded type | No | Yes | N/A | N/A | Good |
+
+**When to use each:**
+
+```typescript
+// 1. String enum (safest general-purpose choice)
+//    + nominal: Status.Active !== 'active' from another enum
+//    + reversible: find label from value
+//    - not tree-shakeable (emits a JS object)
+enum HttpStatus {
+  Ok         = 200,
+  NotFound   = 404,
+  InternalServerError = 500,
+}
+
+// 2. String literal union (most common for simple cases)
+//    + zero runtime cost   + great inference   + tree-shakeable
+//    - not reversible without iteration
+type Severity = 'low' | 'medium' | 'high' | 'critical';
+
+// 3. as-const object (best of both worlds for lookup tables)
+//    + reversible   + tree-shakeable   + autocomplete on values
+//    - structural, not nominal
+const SEVERITY = {
+  Low:      'low',
+  Medium:   'medium',
+  High:     'high',
+  Critical: 'critical',
+} as const;
+
+type Severity = typeof SEVERITY[keyof typeof SEVERITY];
+// 'low' | 'medium' | 'high' | 'critical'
+
+// Reverse lookup: key from value
+type SeverityKey = { [K in keyof typeof SEVERITY]: typeof SEVERITY[K] extends Severity ? K : never }[keyof typeof SEVERITY];
+// 'Low' | 'Medium' | 'High' | 'Critical'
+```
+
+[community] **Pitfall:** Numeric enums allow reverse-mapping (`Status[0] === 'Active'`) but this creates a dual-key object (`{ Active: 0, 0: 'Active' }`). Iterating `Object.keys(Status)` returns both numeric strings and member names — doubling all keys. This breaks serialization and surprises `for..in` loops. Use string enums or `as const` objects unless you specifically need bidirectional lookup.
+
+---
+
+## Mapped Type Filtering — Deep Utilities
+
+Complex mapped types can filter, reshape, and flatten type structures. These patterns appear in framework internals and utility libraries (type-fest, ts-toolbelt).
+
+```typescript
+// Filter properties by value type (string properties only)
+type StringProperties<T> = {
+  [K in keyof T as T[K] extends string ? K : never]: T[K];
+};
+
+interface Entity {
+  id: string;
+  name: string;
+  count: number;
+  active: boolean;
+  tags: string[];
+}
+
+type EntityStringProps = StringProperties<Entity>;
+// { id: string; name: string }
+
+// Filter by required vs optional properties
+type RequiredKeys<T> = {
+  [K in keyof T]-?: {} extends Pick<T, K> ? never : K;
+}[keyof T];
+
+type OptionalKeys<T> = {
+  [K in keyof T]-?: {} extends Pick<T, K> ? K : never;
+}[keyof T];
+
+type Req = RequiredKeys<Entity>;  // 'id' | 'name' | 'count' | 'active' | 'tags'
+
+// Deep readonly — recursively apply readonly
+type DeepReadonly<T> = T extends (infer U)[]
+  ? ReadonlyArray<DeepReadonly<U>>
+  : T extends object
+  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+  : T;
+
+interface Config {
+  server: { host: string; port: number };
+  database: { url: string; pool: { min: number; max: number } };
+}
+
+type ImmutableConfig = DeepReadonly<Config>;
+// { readonly server: { readonly host: string; readonly port: number }; ... }
+
+// Flatten a union of objects to a single intersection
+type UnionToIntersection<U> =
+  (U extends unknown ? (x: U) => void : never) extends (x: infer I) => void
+  ? I : never;
+
+type A = { a: string };
+type B = { b: number };
+type C = { c: boolean };
+
+type ABC = UnionToIntersection<A | B | C>;
+// { a: string } & { b: number } & { c: boolean }
+```
+
+[community] **Pitfall:** `DeepReadonly` with circular types (e.g., a tree node referencing its own type) causes TypeScript to report "Type instantiation is excessively deep and possibly infinite." Fix: add a depth limit via a tuple counter type parameter, or switch to a non-recursive approach using `Readonly<T>` at each manually typed level for the known depth.
+
+---
+
+## Migrating to Strict Mode — Incremental Path
+
+Enabling `strict: true` on an existing codebase of any size is painful if done all at once. The staged approach below lets you add strictness incrementally without blocking commits.
+
+```json
+// Stage 1: Enable only the lowest-friction flags first
+// tsconfig.strict-migration.json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noImplicitAny": true,
+    "strictNullChecks": true
+  }
+}
+```
+
+```typescript
+// Step-by-step migration order (each step independent):
+// 1. noImplicitAny            — force explicit types on all parameters
+// 2. strictNullChecks         — handle null/undefined (biggest change)
+// 3. strictFunctionTypes      — function parameter contravariance
+// 4. strictPropertyInitialization — class field init in constructor
+// 5. noImplicitReturns        — all code paths must return
+// 6. noUnusedLocals           — remove dead variables
+// 7. noUnusedParameters       — remove dead parameters
+// 8. exactOptionalPropertyTypes — distinguish absent vs undefined
+// 9. noImplicitOverride       — add override keyword
+// 10. noUncheckedIndexedAccess — guard array/dict access
+
+// Enable flags one at a time in tsconfig.json;
+// use @ts-expect-error with a migration ticket number to suppress
+// errors you plan to fix in a follow-up:
+function legacyFunction(data: any) {  // will fix in PROJ-123
+  // @ts-expect-error PROJ-123 — migrate to typed params
+  return process(data);
+}
+```
+
+**Practical migration commands:**
+
+```bash
+# Count errors per flag before enabling
+npx tsc --noEmit --strictNullChecks 2>&1 | grep "error TS" | wc -l
+
+# List all files with errors to prioritize
+npx tsc --noEmit --strictNullChecks 2>&1 | grep "\.ts(" | sed 's/(.*//g' | sort -u
+
+# Auto-fix some noImplicitAny issues with ts-migrate
+npx ts-migrate migrate ./src
+```
+
+[community] **Pitfall:** Teams often try to fix `strictNullChecks` by adding `!` non-null assertions everywhere — `user!.name` becomes the new `any`. This silences the compiler without fixing the actual null-handling problem and creates runtime crashes that are harder to trace than TypeScript errors. Fix: use optional chaining (`user?.name ?? 'Anonymous'`) for access, and proper null guards at data ingestion points.
+
+---
+
+## Toolchain Summary — tsconfig Flag Evolution
+
+The table below tracks key compiler flags and the TypeScript version that introduced them, for teams upgrading from older configs:
+
+| Flag | Introduced | Recommended Setting | Replaces / Notes |
+|---|---|---|---|
+| `strict` | 2.3 | `true` | Umbrella: activates 8+ sub-flags |
+| `strictNullChecks` | 2.0 | `true` (via `strict`) | — |
+| `noUncheckedIndexedAccess` | 4.1 | `true` | Not in `strict` umbrella |
+| `useUnknownInCatchVariables` | 4.4 | `true` (via `strict`) | Previously `any` in catch |
+| `exactOptionalPropertyTypes` | 4.4 | `true` | Not in `strict` umbrella |
+| `noImplicitOverride` | 4.3 | `true` | Not in `strict` umbrella |
+| `satisfies` operator | 4.9 | Use explicitly | Not a flag — language feature |
+| `override` keyword | 4.3 | Use with `noImplicitOverride` | Not a flag — language feature |
+| `moduleResolution: "bundler"` | 5.0 | For bundler projects | Replaces `"node"` |
+| `moduleResolution: "nodenext"` | 4.7 | For Node.js ESM | Replaces `"node16"` |
+| `verbatimModuleSyntax` | 5.0 | `true` | Replaces `importsNotUsedAsValues` |
+| `isolatedDeclarations` | 5.5 | `true` (monorepos) | Enables parallel `.d.ts` emit |
+| `noUncheckedSideEffectImports` | 5.9 | `true` | New in TS 5.9 baseline |
+| `moduleDetection: "force"` | 4.7 | `"force"` | Prevents implicit script mode |
+| `erasableSyntaxOnly` | 5.8 | `true` (Node.js strips types) | For type-strip deployments |
+
+---
+
+## Performance Diagnostics — Investigate Before Optimising
+
+TypeScript provides built-in tools to diagnose slow builds. Always measure before adding project references or refactoring types.
+
+```bash
+# Extended diagnostics: shows file counts, type instantiation time, output file sizes
+npx tsc --extendedDiagnostics --noEmit
+
+# Identify which files are included (use to catch accidental node_modules crawl)
+npx tsc --listFiles --noEmit | head -50
+
+# Generate a build trace for deep analysis in Chrome DevTools (Perfetto UI)
+npx tsc --generateTrace ./trace-output --noEmit
+# Open trace-output/trace.json in https://ui.perfetto.dev
+
+# Find the 10 slowest type instantiations
+npx tsc --extendedDiagnostics 2>&1 | grep "Instantiations" -A 20
+```
+
+**Common findings and fixes:**
+
+| Symptom from `--extendedDiagnostics` | Root Cause | Fix |
+|---|---|---|
+| High `Files` count (>2× source count) | `include` crawls `node_modules` | Add `"exclude": ["**/node_modules", "**/.*/"]` |
+| High `Types` count (>100k) | Complex mapped/conditional types | Name and cache intermediate types |
+| High `Instantiations` count | Large union pairwise checks | Replace wide unions with interface hierarchy |
+| Slow `Check time` despite few files | Missing `incremental` | Add `"incremental": true` + `.tsbuildinfo` |
+| `Parse time` dominates | No file filtering | Explicit `"include"` list instead of directory scan |
+
+[community] **Pitfall:** Teams run `tsc --generateTrace` once, see a complex trace, and immediately start refactoring types without reading the trace. The trace's "Heavy" nodes are not always in your own code — they are often in `node_modules/.d.ts` files. Check the **file column** in each heavy instantiation before assuming your types are the bottleneck.
+
+---
+
+## Production Checklist — TypeScript Project Health
+
+A single-page reference for reviewing a TypeScript project's configuration and practices:
+
+**tsconfig.json**
+- [ ] `"strict": true` (and at least TypeScript 5.5+ for latest sub-flags)
+- [ ] `"noUncheckedIndexedAccess": true`
+- [ ] `"exactOptionalPropertyTypes": true`
+- [ ] `"noImplicitOverride": true`
+- [ ] `"moduleResolution": "bundler"` or `"nodenext"` (not the legacy `"node"`)
+- [ ] `"moduleDetection": "force"` (TS 4.7+ — treat all files as modules)
+- [ ] `"verbatimModuleSyntax": true` (TS 5.0+ — explicit `import type`)
+- [ ] `"incremental": true` + `.tsbuildinfo` in `.gitignore`
+- [ ] `"skipLibCheck": true`
+- [ ] `"types": [...]` (explicit — no auto-inclusion)
+- [ ] `"include": ["src"]` (explicit — no accidental crawl)
+
+**Code quality**
+- [ ] No bare `any` — use `unknown` + type guard at boundaries
+- [ ] Runtime validation at external data boundaries (Zod/Valibot/io-ts)
+- [ ] Explicit return types on all exported functions
+- [ ] `import type` for all type-only imports
+- [ ] Discriminated unions for all multi-state data
+- [ ] Exhaustiveness check (`never`) in every discriminated union switch
+- [ ] No `@ts-ignore` — use `@ts-expect-error` with ticket number
+- [ ] `override` keyword on all subclass method overrides
+
+**Architecture**
+- [ ] Feature-module structure with controlled barrel exports (no `export *`)
+- [ ] Interfaces for service contracts (enables DI + mocking)
+- [ ] `interface X extends A, B` for composition (not `type X = A & B`)
+- [ ] Branded types for all domain IDs (UserId, OrderId — not plain string)
+- [ ] `using` / `await using` for all resource cleanup (TS 5.2+ targets)
+
+**Monorepos (if applicable)**
+- [ ] `"composite": true` per package
+- [ ] `"references": [...]` at workspace root
+- [ ] `"isolatedDeclarations": true` for parallel `.d.ts` emit

@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: official | community | mixed | iteration: 22 | score: 100/100 | date: 2026-05-03 -->
 
 ## Core Philosophy
 
@@ -1209,7 +1209,194 @@ TryParse<int> parse2 = (text, out result) => int.TryParse(text, out result);
 ProcessItems((scoped ref item) => item.Price *= 0.9m);
 ```
 
-### `[GeneratedRegex]` — Compile-Time Regex (C# 11+)
+### `partial` Properties and Indexers (C# 13)
+
+`partial` methods were expanded in C# 13 to support properties and indexers. Use partial properties in source-generator scenarios where the declaring declaration (the "contract") lives in a user-authored file and the implementing declaration (the body) is generated. Each partial property has exactly one declaring declaration and one implementing declaration; the signatures must match.
+
+```csharp
+// Declaring file (user-authored): contract only, no body
+public partial class PersonViewModel
+{
+    public partial string DisplayName { get; set; }
+    public partial int Age { get; }
+}
+
+// Implementing file (source-generated or hand-authored): full body
+public partial class PersonViewModel
+{
+    private string _displayName = string.Empty;
+
+    public partial string DisplayName
+    {
+        get => _displayName;
+        set => _displayName = value?.Trim() ?? string.Empty;
+    }
+
+    public partial int Age => (DateTime.UtcNow.Year - _birthYear);
+}
+```
+
+**When to use:** partial properties shine when a Roslyn source generator produces the backing implementation (e.g., MVVM source generators that generate `INotifyPropertyChanged` boilerplate). The user writes the declaring declaration as the spec; the generator fills in the body.
+
+### `OverloadResolutionPriorityAttribute` (C# 13)
+
+Library authors can annotate a method with `[OverloadResolutionPriority(n)]` to steer the compiler toward a preferred overload without breaking callers that depend on the existing one. Higher priority values win. This is intended for BCL-style library authors who need to add more-efficient overloads while preserving backward compatibility.
+
+```csharp
+using System.Runtime.CompilerServices;
+
+public static class TextUtils
+{
+    // Legacy overload — still callable, but compiler prefers the new one
+    public static string Normalize(string input)
+        => input.Trim().ToLowerInvariant();
+
+    // New, allocation-free overload — preferred when applicable
+    [OverloadResolutionPriority(1)]
+    public static string Normalize(ReadOnlySpan<char> input)
+        => input.Trim().ToString().ToLowerInvariant();
+}
+
+// Call site: compiler picks the Span<char> overload when passing a string literal
+// (string has implicit conversion to ReadOnlySpan<char>)
+string result = TextUtils.Normalize("  Hello World  ");
+```
+
+**Guidance:** use this only for library code where you control the API surface and want to deprecate an older overload softly. Do not use it in application code where overload ambiguity is under your control.
+
+### `nameof` with Unbound Generic Types (C# 14)
+
+Before C# 14, `nameof` required a closed generic type (`nameof(List<int>)` returned `"List"`). C# 14 allows unbound generic types so you no longer need to pick a concrete type argument just to get the type name.
+
+```csharp
+// C# 14: unbound generic — no need to supply a type argument
+string name1 = nameof(List<>);          // "List"
+string name2 = nameof(Dictionary<,>);  // "Dictionary"
+
+// Useful in exception messages and logging without allocating a dummy type argument
+void Register<T>()
+{
+    Console.WriteLine($"Registering {nameof(T)}");  // still works
+    Console.WriteLine($"Container: {nameof(List<>)}");  // clean — no dummy type
+}
+```
+
+### Implicit Span Conversions (C# 14)
+
+C# 14 introduces first-class span support with new implicit conversions between `T[]`, `Span<T>`, and `ReadOnlySpan<T>`. These conversions enable span types to be used as extension method receivers and compose naturally with other conversions, eliminating the need for explicit casts in many scenarios.
+
+```csharp
+// C# 14: implicit conversion from T[] to ReadOnlySpan<T> and Span<T>
+int[] numbers = [1, 2, 3, 4, 5];
+
+// Direct implicit conversion — no explicit cast needed
+ReadOnlySpan<int> roSpan = numbers;   // T[] → ReadOnlySpan<T>
+Span<int> span = numbers;             // T[] → Span<T>
+
+// Span<T> implicitly converts to ReadOnlySpan<T>
+ReadOnlySpan<int> ro = span;          // Span<T> → ReadOnlySpan<T>
+
+// Enables zero-allocation APIs to accept arrays, spans, and read-only spans naturally
+public static int Sum(ReadOnlySpan<int> values)
+{
+    int total = 0;
+    foreach (var v in values) total += v;
+    return total;
+}
+
+// All three call forms work without explicit conversion
+int a = Sum(numbers);     // T[] — implicit conversion
+int b = Sum(span);        // Span<T> — implicit conversion
+int c = Sum(roSpan);      // ReadOnlySpan<T> — direct
+```
+
+**Why it matters:** library authors no longer need to write three overloads (`T[]`, `Span<T>`, `ReadOnlySpan<T>`) for performance-sensitive APIs. A single `ReadOnlySpan<T>` parameter now accepts all three without allocations.
+
+### `partial` Constructors and Events (C# 14)
+
+C# 14 extends partial members to include instance constructors and events. A partial constructor has exactly one declaring declaration and one implementing declaration. Only the implementing declaration can include a constructor initializer (`this()` or `base()`). Partial events have a field-like declaring declaration and an implementing declaration with explicit `add`/`remove` accessors.
+
+```csharp
+// Declaring file — contract only
+public partial class Widget
+{
+    // Partial constructor — declaring declaration
+    public partial Widget(string name, int id);
+
+    // Partial event — field-like declaring declaration
+    public partial event EventHandler<WidgetEventArgs>? StateChanged;
+}
+
+// Implementing file — full bodies
+public partial class Widget
+{
+    private readonly string _name;
+    private readonly int _id;
+
+    // Partial constructor implementing declaration — base() allowed here only
+    public partial Widget(string name, int id)
+        : base()
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        _name = name;
+        _id = id;
+    }
+
+    // Partial event implementing declaration — explicit add/remove
+    private EventHandler<WidgetEventArgs>? _stateChangedHandler;
+    public partial event EventHandler<WidgetEventArgs>? StateChanged
+    {
+        add => _stateChangedHandler += value;
+        remove => _stateChangedHandler -= value;
+    }
+}
+```
+
+**Use case:** source generators that augment user-defined types. The user writes the declaring contract; the generator provides the implementation.
+
+
+
+`Task.ContinueWith` predates the `async`/`await` keywords and requires manual error handling, nested lambdas, and `Unwrap()` calls to chain operations. `async`/`await` compiles to an equivalent state machine but reads like synchronous code. Use `ContinueWith` only in rare low-level scenarios (e.g., advanced scheduler control). The official docs explicitly recommend `async`/`await` for all new code.
+
+```csharp
+// BAD: ContinueWith chains — nested, hard to read, error-prone
+Task<Report> report = FetchDataAsync()
+    .ContinueWith(dataTask => ProcessAsync(dataTask.Result))
+    .Unwrap()
+    .ContinueWith(processTask => FormatReportAsync(processTask.Result))
+    .Unwrap();
+
+// GOOD: async/await — reads like sequential synchronous code
+async Task<Report> BuildReportAsync(CancellationToken ct)
+{
+    var data = await FetchDataAsync(ct);
+    var processed = await ProcessAsync(data, ct);
+    return await FormatReportAsync(processed, ct);
+}
+// Error handling: natural try/catch works — no AggregateException unwrapping needed
+```
+
+**Why `ContinueWith` is dangerous:** exceptions in `ContinueWith` lambdas are wrapped in `AggregateException`. If you don't observe the task, the process crashes on GC finalization (in older runtimes). `async`/`await` automatically unwraps the first inner exception, making error handling identical to synchronous code.
+
+### Short-Circuit Boolean Operators (`&&` / `||` over `&` / `|`)
+
+Always use `&&` (conditional AND) and `||` (conditional OR) for boolean conditions. The non-short-circuit versions (`&`, `|`) evaluate both operands even if the first operand determines the outcome, which can cause `NullReferenceException` or unexpected side effects. The official Microsoft coding conventions enforce this rule.
+
+```csharp
+// BAD: non-short-circuit — evaluates both sides, throws NRE if list is null
+if (list != null & list.Count > 0) { }
+
+// GOOD: short-circuit — second clause only evaluated if first is true
+if (list != null && list.Count > 0) { }
+
+// BAD: side effect triggered even when first condition is false
+if (IsEnabled() | LogAction("checking")) { }
+
+// GOOD: LogAction only called when IsEnabled() returns true
+if (IsEnabled() && LogAction("checking")) { }
+```
+
+
 
 The `[GeneratedRegex]` attribute instructs the Roslyn source generator to generate an optimized, compiled regex implementation at build time rather than at runtime. Benefits: no runtime compilation cost, no heap allocation for the `Regex` object, and better startup performance. Use this instead of `new Regex(...)` or `Regex.IsMatch(...)` for any regex used more than once.
 
@@ -1739,7 +1926,45 @@ var match = users.FirstOrDefault(u =>
 if (path.Contains("users", StringComparison.OrdinalIgnoreCase)) { }
 ```
 
-### **EF Core `AsNoTracking` Omission — Unnecessary Change Tracking Overhead**  [community]
+### **`ContinueWith` Instead of `async/await` — Nested Callback Hell**  [community]
+
+Using `Task.ContinueWith` for sequential async operations creates deeply nested callback chains. WHY it causes problems: exceptions are wrapped in `AggregateException`, requiring manual `.Unwrap()` or inspection of `InnerExceptions`; unobserved faulted tasks crash the process on older .NET runtimes; and the code reads right-to-left rather than top-to-bottom, making control flow nearly impossible to follow. Fix: use `async`/`await` for all sequential async chains — the compiler produces the same state machine but the code is maintainable and exception handling is natural.
+
+```csharp
+// BAD: ContinueWith with nested lambdas — brittle, hard to read
+Task<string> result = FetchAsync()
+    .ContinueWith(t => ProcessAsync(t.Result))
+    .Unwrap()
+    .ContinueWith(t => t.Result.ToString());
+
+// GOOD: async/await — sequential, debuggable, natural error handling
+async Task<string> GetResultAsync(CancellationToken ct)
+{
+    var data = await FetchAsync(ct);
+    var processed = await ProcessAsync(data, ct);
+    return processed.ToString();
+}
+```
+
+### **Non-Short-Circuit `&` / `|` in Boolean Guards — Unexpected NRE**  [community]
+
+Using `&` (bitwise AND) instead of `&&` (conditional AND) in boolean conditions evaluates both operands even when the first is `false`. WHY it causes problems: a pattern like `if (obj != null & obj.Property > 0)` throws `NullReferenceException` when `obj` is null, because the right side is always evaluated. This is a common copy-paste error when developers confuse `&` (bitwise) with `&&` (logical short-circuit). Fix: always use `&&` and `||` in boolean conditions; reserve `&` and `|` for bitwise operations on integers.
+
+```csharp
+// BAD: NullReferenceException when order is null — both sides always evaluated
+if (order != null & order.Items.Count > 0) { }
+
+// GOOD: short-circuit — second clause skipped when order is null
+if (order != null && order.Items.Count > 0) { }
+
+// BAD: side effect fires even when condition is false
+if (HasPermission() | Audit("access")) { }
+
+// GOOD: Audit only called when HasPermission returns true
+if (HasPermission() && Audit("access")) { }
+```
+
+
 
 Entity Framework Core tracks all entities it loads by default, maintaining a snapshot for change detection. For read-only queries this is pure overhead — it consumes memory for each snapshot and adds CPU time during `SaveChanges` for a diffing operation that is never needed. WHY it causes problems: a report that loads 10,000 rows allocates 10,000 change-tracking snapshots, significantly increasing GC pressure and response time. Fix: add `.AsNoTracking()` to any query whose results won't be updated and saved back through the same `DbContext`.
 
@@ -1809,4 +2034,6 @@ var summaries = await _db.Orders
 | EF Core read queries without `.AsNoTracking()` | Allocates change-tracking snapshots for all loaded entities; pure overhead for read-only queries | Add `.AsNoTracking()` to every query that won't call `SaveChanges` |
 | Case-insensitive compare with `.ToLower()` | Culture-sensitive; produces wrong result in Turkish and other locales | Use `string.Equals(a, b, StringComparison.OrdinalIgnoreCase)` |
 | Manual null guard `if (x == null) throw` | Verbose and error-prone; forgetting `nameof` gives unhelpful exception messages | Use `ArgumentNullException.ThrowIfNull(x)` (.NET 8+) |
+| `ContinueWith` for sequential async | Nested lambdas, `AggregateException` wrapping, unobserved faults | Use `async`/`await` for all sequential async chains |
+| `&` / `|` in boolean guards | Both sides always evaluated; NRE when left side is null | Use `&&` / `||` for short-circuit boolean evaluation |
 | Regex compiled at runtime inside a method | New `Regex` object allocated on every call; parsing overhead per invocation | Use `[GeneratedRegex]` attribute with partial method for compile-time regex |

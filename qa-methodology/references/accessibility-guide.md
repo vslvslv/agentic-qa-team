@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 30 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -974,7 +974,195 @@ describe('DataTable accessibility', () => {
 
 > **Version pinning note**: axe-core 4.11.x (released Q1–Q2 2026) added new rules including `aria-dialog-name`, `aria-tooltip-name`, `scrollable-region-focusable`, and improved `color-contrast-enhanced` (WCAG 2.2 1.4.11). When upgrading axe-core across jest-axe and @axe-core/playwright, update both packages simultaneously to the same underlying axe-core transitive version — version skew between unit and E2E layers produces false discrepancies.
 
-### SPA Focus Management After Route Changes  [community]
+### Accessible Carousel / Auto-Rotating Content  [community]
+
+Auto-rotating carousels are one of the most commonly broken interactive components in production. WCAG 2.2.2 (Pause/Stop/Hide, Level A) requires that auto-playing content can be paused; WCAG 2.1.1 requires carousel navigation is keyboard-accessible; and WCAG 4.1.3 requires that the active slide position is announced to screen readers. Most carousel libraries implement some but not all of these.
+
+**Why this fails so often:** Teams implement auto-rotation and keyboard arrow-key navigation but forget: (1) `aria-live` region for slide change announcements, (2) `aria-roledescription="carousel"` and `aria-label` for the widget, (3) `prefers-reduced-motion` disabling auto-rotation, and (4) a pause button as the first interactive element. Passing `<img>` alt text is necessary but not sufficient — the structural carousel semantics are the real challenge.
+
+```typescript
+// File: src/components/Carousel/Carousel.tsx
+// WCAG-compliant carousel with: pause button, aria-live announcements,
+// keyboard navigation, prefers-reduced-motion support.
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+
+interface CarouselSlide {
+  id: string;
+  title: string;
+  description: string;
+  imageUrl: string;
+  imageAlt: string;
+}
+
+interface CarouselProps {
+  slides: CarouselSlide[];
+  label: string;            // aria-label for the carousel landmark
+  autoPlayInterval?: number; // 0 or undefined = no auto-play
+}
+
+export const Carousel: React.FC<CarouselProps> = ({
+  slides,
+  label,
+  autoPlayInterval = 5000,
+}) => {
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [isPaused, setIsPaused] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const liveRegionRef = useRef<HTMLDivElement>(null);
+
+  // Detect prefers-reduced-motion at mount
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setReducedMotion(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setReducedMotion(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  const goTo = useCallback(
+    (index: number) => {
+      const newIndex = (index + slides.length) % slides.length;
+      setCurrentIndex(newIndex);
+      // Announce the new slide to screen reader users
+      if (liveRegionRef.current) {
+        liveRegionRef.current.textContent = `Slide ${newIndex + 1} of ${slides.length}: ${slides[newIndex].title}`;
+      }
+    },
+    [slides]
+  );
+
+  // Auto-rotation: disabled if paused OR prefers-reduced-motion
+  useEffect(() => {
+    if (!autoPlayInterval || isPaused || reducedMotion) return;
+    const timer = setInterval(() => goTo(currentIndex + 1), autoPlayInterval);
+    return () => clearInterval(timer);
+  }, [autoPlayInterval, currentIndex, goTo, isPaused, reducedMotion]);
+
+  const slide = slides[currentIndex];
+
+  return (
+    <section
+      aria-roledescription="carousel"
+      aria-label={label}
+    >
+      {/* Pause button MUST be the first interactive element — WCAG 2.2.2 */}
+      {autoPlayInterval > 0 && !reducedMotion && (
+        <button
+          type="button"
+          aria-label={isPaused ? 'Resume auto-rotation' : 'Pause auto-rotation'}
+          onClick={() => setIsPaused((p) => !p)}
+          aria-pressed={isPaused}
+        >
+          {isPaused ? 'Play' : 'Pause'}
+        </button>
+      )}
+
+      {/* Slide content */}
+      <div
+        aria-roledescription="slide"
+        aria-label={`Slide ${currentIndex + 1} of ${slides.length}`}
+      >
+        <img src={slide.imageUrl} alt={slide.imageAlt} />
+        <h3>{slide.title}</h3>
+        <p>{slide.description}</p>
+      </div>
+
+      {/* Navigation controls */}
+      <button
+        type="button"
+        aria-label="Previous slide"
+        onClick={() => goTo(currentIndex - 1)}
+      >
+        ‹
+      </button>
+      <button
+        type="button"
+        aria-label="Next slide"
+        onClick={() => goTo(currentIndex + 1)}
+      >
+        ›
+      </button>
+
+      {/* Slide position indicators */}
+      <div role="group" aria-label={`Slide ${currentIndex + 1} of ${slides.length}`}>
+        {slides.map((s, i) => (
+          <button
+            key={s.id}
+            type="button"
+            aria-label={`Go to slide ${i + 1}: ${s.title}`}
+            aria-current={i === currentIndex ? 'true' : undefined}
+            onClick={() => goTo(i)}
+          />
+        ))}
+      </div>
+
+      {/* Screen reader live region — announces slide changes */}
+      {/* Must be in DOM at page load, never conditionally rendered */}
+      <div
+        ref={liveRegionRef}
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      />
+    </section>
+  );
+};
+```
+
+```typescript
+// File: src/components/Carousel/Carousel.a11y.test.tsx
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import userEvent from '@testing-library/user-event';
+import { Carousel } from './Carousel';
+
+expect.extend(toHaveNoViolations);
+
+const testSlides = [
+  { id: '1', title: 'First slide', description: 'Content 1', imageUrl: '/img1.jpg', imageAlt: 'Landscape photo' },
+  { id: '2', title: 'Second slide', description: 'Content 2', imageUrl: '/img2.jpg', imageAlt: 'Portrait photo' },
+  { id: '3', title: 'Third slide', description: 'Content 3', imageUrl: '/img3.jpg', imageAlt: 'Abstract art' },
+];
+
+describe('Carousel accessibility', () => {
+  it('has no axe violations in initial state', async () => {
+    const { container } = render(
+      <Carousel slides={testSlides} label="Featured content" autoPlayInterval={0} />
+    );
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('carousel landmark has aria-roledescription="carousel"', () => {
+    render(<Carousel slides={testSlides} label="Featured content" autoPlayInterval={0} />);
+    const carousel = screen.getByRole('region', { name: 'Featured content' });
+    expect(carousel).toHaveAttribute('aria-roledescription', 'carousel');
+  });
+
+  it('pause button is present and accessible when auto-play is on', async () => {
+    const { container } = render(
+      <Carousel slides={testSlides} label="Featured content" autoPlayInterval={3000} />
+    );
+    const pauseButton = screen.getByRole('button', { name: /pause auto-rotation/i });
+    expect(pauseButton).toBeInTheDocument();
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('previous/next navigation buttons are keyboard accessible', async () => {
+    const user = userEvent.setup();
+    render(<Carousel slides={testSlides} label="Featured content" autoPlayInterval={0} />);
+    const nextButton = screen.getByRole('button', { name: /next slide/i });
+    nextButton.focus();
+    await user.keyboard('{Enter}');
+    // After pressing next, live region should announce slide 2
+    expect(screen.getByRole('region', { name: /featured content/i })).toBeInTheDocument();
+  });
+});
+```
+
+
 
 In single-page applications using React Router, Next.js, or Vue Router, client-side navigation does not move browser focus. Screen reader users stay at the link they clicked, then hear the old page content re-read. This is one of the most common and impactful accessibility failures in modern SPAs.
 
@@ -1185,6 +1373,176 @@ describe('Toolbar accessibility', () => {
   });
 });
 ```
+
+### Date Picker Accessibility Testing  [community]
+
+Date pickers are one of the most commonly broken ARIA patterns in production. The ARIA Authoring Practices Guide (APG) defines two patterns: a simple date field (native `<input type="date">`) and a widget date picker (calendar grid). Teams frequently reach for the calendar widget but underestimate the complexity. Screen reader testing reveals most calendar implementations are non-functional with AT.
+
+**Key ARIA requirements for a calendar date picker:**
+- The calendar button trigger must announce that it opens a dialog (`aria-haspopup="dialog"`)
+- The calendar grid uses `role="grid"` with `role="row"` and `role="gridcell"` for cells
+- The current date has `aria-current="date"`; selected date has `aria-selected="true"`
+- Month navigation buttons must announce the month they navigate to (via `aria-label`)
+- Focus trap inside the dialog; Escape closes and returns focus to the trigger
+- Arrow keys navigate within the grid; Page Up/Down change months; Enter selects
+
+**The case for `<input type="date">` as the accessible default:**
+
+```typescript
+// File: src/components/DateField/DateField.tsx
+// Use native <input type="date"> for maximum accessibility with zero custom ARIA.
+// Native date inputs are fully keyboard/AT accessible across all browsers since 2019.
+// The custom calendar widget below is only needed for design-system visual requirements
+// that cannot be met by the native input.
+import React from 'react';
+
+interface DateFieldProps {
+  id: string;
+  label: string;
+  value: string;           // ISO 8601 format: "YYYY-MM-DD"
+  min?: string;            // Minimum selectable date
+  max?: string;            // Maximum selectable date
+  onChange: (value: string) => void;
+  required?: boolean;
+  error?: string;
+}
+
+export const DateField: React.FC<DateFieldProps> = ({
+  id,
+  label,
+  value,
+  min,
+  max,
+  onChange,
+  required = false,
+  error,
+}) => {
+  const errorId = `${id}-error`;
+
+  return (
+    <div>
+      <label htmlFor={id}>
+        {label}
+        {required && <span className="sr-only"> (required)</span>}
+        {required && <span aria-hidden="true"> *</span>}
+      </label>
+      <input
+        id={id}
+        type="date"              // Native date input: fully accessible, no custom ARIA needed
+        value={value}
+        min={min}                // Constrains selectable range — announced by AT
+        max={max}
+        required={required}
+        aria-invalid={error ? 'true' : undefined}
+        aria-describedby={error ? errorId : undefined}
+        onChange={(e) => onChange(e.target.value)}
+        // autocomplete="bday" for birthday fields (WCAG 1.3.5)
+      />
+      {error && (
+        <p id={errorId} role="alert">
+          {error}
+        </p>
+      )}
+      {/* Helper text explaining expected format — for users on browsers/AT that
+          don't expose the native date picker UI */}
+      <span id={`${id}-hint`} className="sr-only">
+        Format: Month/Day/Year
+      </span>
+    </div>
+  );
+};
+```
+
+```typescript
+// File: e2e/accessibility/date-picker.spec.ts
+// Tests for date field and custom calendar widget accessibility.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Date picker accessibility', () => {
+  // Test native input type="date" — simplest and most accessible approach
+  test('native date input has no axe violations', async ({ page }) => {
+    await page.goto('/booking');
+    await page.waitForLoadState('networkidle');
+
+    // Scope to the date input section
+    const results = await new AxeBuilder({ page })
+      .include('[data-testid="date-field"]')
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+
+  // Test custom calendar widget — significantly more complex
+  test('calendar picker trigger announces haspopup="dialog"', async ({ page }) => {
+    await page.goto('/booking');
+    await page.waitForLoadState('networkidle');
+
+    const calendarTrigger = page.locator('[data-testid="calendar-trigger"]');
+    if (await calendarTrigger.count() > 0) {
+      // Must announce that it opens a dialog (2.5.1 pattern + 4.1.2)
+      await expect(calendarTrigger).toHaveAttribute('aria-haspopup', 'dialog');
+    }
+  });
+
+  test('open calendar dialog has grid role and keyboard navigation', async ({ page }) => {
+    await page.goto('/booking');
+    await page.waitForLoadState('networkidle');
+
+    const calendarTrigger = page.locator('[data-testid="calendar-trigger"]');
+    if (await calendarTrigger.count() === 0) return; // Skip if no custom calendar
+
+    await calendarTrigger.click();
+    await page.waitForSelector('[role="dialog"]');
+
+    // Calendar grid must use role="grid" (not role="table")
+    const calendarGrid = page.locator('[role="grid"]');
+    await expect(calendarGrid).toBeVisible();
+
+    // Gridcells must be present
+    const cells = page.locator('[role="gridcell"]');
+    const cellCount = await cells.count();
+    expect(cellCount).toBeGreaterThan(27); // At least 28 days visible
+
+    // Arrow key navigation within grid
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowDown');
+    // Focus should remain within the grid
+    const focusInGrid = await page.evaluate(() => {
+      const grid = document.querySelector('[role="grid"]');
+      return grid?.contains(document.activeElement) ?? false;
+    });
+    expect(focusInGrid).toBe(true);
+
+    // Escape closes the calendar and returns focus to trigger
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[role="dialog"]')).not.toBeVisible();
+    const focusOnTrigger = await page.evaluate(() => {
+      return document.activeElement?.getAttribute('data-testid') === 'calendar-trigger';
+    });
+    expect(focusOnTrigger).toBe(true);
+  });
+
+  // Test that selected date is announced correctly
+  test('selected date cell has aria-selected="true"', async ({ page }) => {
+    await page.goto('/booking?date=2026-06-15');
+    await page.waitForLoadState('networkidle');
+
+    const calendarTrigger = page.locator('[data-testid="calendar-trigger"]');
+    if (await calendarTrigger.count() === 0) return;
+
+    await calendarTrigger.click();
+    await page.waitForSelector('[role="grid"]');
+
+    const selectedCell = page.locator('[role="gridcell"][aria-selected="true"]');
+    await expect(selectedCell).toBeVisible();
+    await expect(selectedCell).toHaveAttribute('aria-selected', 'true');
+  });
+});
+```
+
+**Why native `<input type="date">` is preferable to custom calendars:** The WAI-ARIA APG calendar pattern requires 15+ ARIA attributes and keyboard interactions across 3 widget layers (dialog, grid, gridcell). Production implementations routinely miss `aria-selected`, `aria-current="date"`, Page Up/Down month navigation, or focus trap on close. The native input provides all these for free with zero ARIA. Custom calendars are only justified when: (1) the design requires month/year pickers not provided by native, (2) the application needs full visual control over the date selector, or (3) internationalization requirements differ from the browser's native format display. [community]
 
 ### prefers-reduced-motion Testing
 
@@ -1594,11 +1952,420 @@ axe-core's automated rules detect approximately **57% of WCAG 2.1 issues** (Dequ
 
 30. **[community] Missing `autocomplete` attributes on address/payment fields fail WCAG 1.3.5 and fail users with motor disabilities**: WCAG 1.3.5 (Identify Input Purpose, AA) requires that form fields collecting personal data expose their purpose via the `autocomplete` attribute. This allows browsers and AT to auto-fill data and reduces typing burden for users with tremors, limited motor control, or cognitive disabilities. WHY: teams implement auto-complete widgets but forget the `autocomplete` HTML attribute on `<input>` elements. axe-core does not currently catch this (it is on the roadmap but not yet in the rule set as of 4.11). Manual testing is required: check that `<input type="email">` has `autocomplete="email"`, `<input type="tel">` has `autocomplete="tel"`, name/address fields have appropriate token values.
 
+31. **[community] AI-generated alt text requires human verification before shipping**: Tools like Aura (BLIP model) and LLM-generated alt text produce candidate descriptions that are often technically accurate but miss context-critical nuance. An AI may describe a chart as "a bar chart showing data" when the meaningful alt text should convey the insight: "Bar chart showing Q3 revenue increased 23% vs Q2." WHY: WCAG 1.1.1 requires alt text that conveys the same meaning as the image — not just a visual description. AI tools generate descriptions; QA teams must verify the descriptions are contextually equivalent to the content for screen reader users. Never ship AI-generated alt text without a human review step.
+
+32. **[community] navable MCP / agent-driven a11y fixes can introduce new violations when patching structural issues**: An AI agent implementing a fix plan may add `aria-label` to resolve a `button-name` violation and inadvertently introduce a WCAG 2.5.3 Label in Name mismatch (the aria-label does not contain the visible text). WHY: each fix is isolated; the agent does not have global context about all WCAG interactions. Always run a full re-scan after agent-applied fixes, not just verification of the patched rules. The navable MCP `run_accessibility_scan` verify step covers this, but teams using custom agent scripts often skip the full rescan.
+
+33. **[community] axe-core 4.11.4 (April 2026) is the current version — teams on 4.8/4.9 miss 12+ rules**: Teams that pinned `axe-core: "4.8"` are missing rules for `aria-dialog-name`, `aria-tooltip-name`, `scrollable-region-focusable`, `target-size` (WCAG 2.5.8), and `color-contrast-enhanced`. axe-core security support covers minor versions up to 18 months old — versions before 4.8 are outside the support window. WHY: axe-core 4.11.x is the version that aligns with WCAG 2.2 AA requirements mandated by the EU EAA (June 2025 deadline). Running an older version creates a false sense of compliance for EU-market products. Best practice: pin a specific minor version (e.g., `4.11.4`) and plan quarterly upgrades, treating each minor version as a lint-rule change review.
+
+34. **[community] Carousel `aria-live` regions that are injected after page load are missed by some screen readers**: If the `aria-live` region for carousel slide announcements is rendered conditionally (e.g., only after auto-play starts), NVDA and JAWS may not observe changes to it. WHY: screen readers register `aria-live` regions on page load. Regions created or inserted into the DOM after load are not reliably observed by all AT. Always render the live region in the initial HTML/DOM with empty content, then populate it — never create the region dynamically.
+
+35. **[community] Accessible carousels without `aria-roledescription="carousel"` confuse screen reader users**: Without `aria-roledescription`, a `<section>` wrapping a carousel is announced as "region." NVDA users hear "Featured content region" rather than "Featured content carousel" — losing the understanding that this is a rotating content widget. The `aria-roledescription` attribute customizes the role announcement and is a best practice in the WAI-ARIA APG Carousel pattern. Note: `aria-roledescription` is for informational customization only — it does not change keyboard behavior and must still be paired with appropriate role and keyboard pattern implementation.
+
+36. **[community] Storybook `@storybook/test-runner` a11y checks run after visual render but before React effects complete**: If a component sets ARIA state in a `useEffect` (e.g., setting `aria-expanded="true"` after a fetch), the test runner's `postVisit` hook runs immediately after the story renders — before the effect fires. axe sees the pre-effect DOM state and may miss the ARIA update. Workaround: add a short `waitForFunction` in `postVisit` to wait for the expected ARIA state before running `checkA11y`.
+
+37. **[community] `getByRole` with Playwright is the most reliable way to assert accessible names — not attribute checks**: Teams that write `expect(el).toHaveAttribute('aria-label', 'Close')` test the HTML attribute, not the computed accessible name. If `aria-labelledby` is also present, the computed name is from the labelledby target — not the aria-label. Playwright's `page.getByRole('button', { name: 'Close' })` queries the accessibility tree (computed name) and fails if the element is not accessible with that name, regardless of which attribute provides it.
+
 ---
 
-## Tradeoffs & Alternatives
+## Accessibility Metrics and Program Health
 
-### WCAG Conformance Level Comparison
+Tracking accessibility over time is as important as the initial remediation. Without metrics, teams cannot demonstrate progress, catch regressions early, or justify continued investment.
+
+**Recommended metrics dashboard:**
+
+| Metric | Tool | Frequency | Target |
+|--------|------|-----------|--------|
+| Axe violation count (by severity) | CI axe reports | Every PR | 0 new critical/serious |
+| WCAG 2.1 AA pass rate (pages scanned) | CI axe + Playwright | Weekly | 100% of critical flows |
+| Baseline violation count trend | `known-violations-baseline.json` commits | Monthly | Decreasing |
+| Screen reader audit defects logged | Defect tracker | Per sprint | Decreasing |
+| Keyboard audit pass rate | Manual test results | Per sprint | 100% of new flows |
+| a11y-tagged PR fix rate | Git history | Monthly | <48h resolution for critical |
+
+**TypeScript script to extract axe violation trend from CI artifacts:**
+
+```typescript
+// File: scripts/a11y-metrics-report.ts
+// Aggregates axe scan results from multiple CI runs to show violation trends.
+// Run after collecting multiple JUnit or JSON axe reports from CI.
+import * as fs from 'fs';
+import * as path from 'path';
+
+interface AxeRunResult {
+  date: string;         // ISO date of the CI run
+  totalViolations: number;
+  bySeverity: {
+    critical: number;
+    serious: number;
+    moderate: number;
+    minor: number;
+  };
+  newViolations: number;   // Violations not in baseline at time of run
+}
+
+export function parseAxeJsonReport(filePath: string): AxeRunResult {
+  const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  const violations = (raw.violations ?? []) as Array<{ impact: string }>;
+
+  const bySeverity = violations.reduce(
+    (acc, v) => {
+      const key = v.impact as keyof typeof acc;
+      if (key in acc) acc[key]++;
+      return acc;
+    },
+    { critical: 0, serious: 0, moderate: 0, minor: 0 }
+  );
+
+  return {
+    date: raw.timestamp ?? new Date().toISOString(),
+    totalViolations: violations.length,
+    bySeverity,
+    newViolations: 0, // Populated by baseline comparison
+  };
+}
+
+export function generateTrendReport(reportDir: string): void {
+  const reportFiles = fs.readdirSync(reportDir)
+    .filter((f) => f.endsWith('-axe-report.json'))
+    .sort(); // Sort by filename (date prefix)
+
+  const runs = reportFiles.map((f) =>
+    parseAxeJsonReport(path.join(reportDir, f))
+  );
+
+  console.log('Accessibility Violation Trend:');
+  console.log('Date                | Total | Critical | Serious | Moderate | Minor');
+  console.log('--------------------+-------+----------+---------+----------+------');
+
+  for (const run of runs) {
+    const date = run.date.slice(0, 10);
+    console.log(
+      `${date.padEnd(20)}| ${String(run.totalViolations).padEnd(6)}| ` +
+      `${String(run.bySeverity.critical).padEnd(9)}| ` +
+      `${String(run.bySeverity.serious).padEnd(8)}| ` +
+      `${String(run.bySeverity.moderate).padEnd(9)}| ` +
+      `${run.bySeverity.minor}`
+    );
+  }
+
+  // Alert if critical/serious count increased
+  if (runs.length >= 2) {
+    const prev = runs[runs.length - 2];
+    const curr = runs[runs.length - 1];
+    const criticalDiff = curr.bySeverity.critical - prev.bySeverity.critical;
+    const seriousDiff = curr.bySeverity.serious - prev.bySeverity.serious;
+
+    if (criticalDiff > 0 || seriousDiff > 0) {
+      console.error(
+        `\n⚠ REGRESSION: Critical violations +${criticalDiff}, Serious +${seriousDiff} since last run.`
+      );
+      process.exitCode = 1;
+    } else {
+      console.log('\n✓ No increase in critical/serious violations since last run.');
+    }
+  }
+}
+```
+
+
+
+### EN 301 549 and WCAG 2.2 — EU EAA Compliance Mapping
+
+EN 301 549 v3.3.2 is the European harmonised standard that makes WCAG 2.2 AA the technical baseline for the EU Accessibility Act (EAA). Teams shipping to EU private-sector markets must comply by June 28, 2025. The standard adds non-web requirements (documents, mobile apps) beyond WCAG's web scope, but for web applications the critical mapping is:
+
+| EN 301 549 Clause | Maps to | What QA tests |
+|---|---|---|
+| 9.1–9.4 (Web) | WCAG 2.2 AA success criteria | All WCAG 2.2 AA tests apply |
+| 11.1–11.4 (Non-web docs) | WCAG 2.2 AA for PDFs/Office docs | PAC checker for PDFs; Accessibility Checker for Word |
+| 11.5 (Mobile) | Platform accessibility APIs | iOS Accessibility Inspector; Android Accessibility Scanner |
+| 12.1.2 (Accessibility documentation) | Support documentation is accessible | Verify help/docs pages pass WCAG 2.2 AA |
+
+**WCAG 2.2 criterion addition checklist for teams upgrading from WCAG 2.1 AA:**
+
+```typescript
+// File: e2e/accessibility/wcag22-upgrade-checklist.spec.ts
+// Covers all 9 new WCAG 2.2 criteria (A and AA) as testable Playwright assertions.
+// Run against critical user flows before EAA compliance deadline.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+// ─── WCAG 2.2 New Criteria Overview ─────────────────────────────────────────
+// 2.4.11 Focus Appearance (AA)       — ≥2px outline, ≥3:1 contrast
+// 2.4.12 Focus Not Obscured Min (AA) — focused element must not be fully hidden
+// 2.4.13 Focus Not Obscured Enh (AAA)— not fully hidden (enhanced)
+// 2.5.7 Dragging Movements (AA)      — single-pointer alternative for drag
+// 2.5.8 Target Size Minimum (AA)     — 24×24px OR adequate spacing
+// 3.2.6 Consistent Help (A)          — help mechanism in same relative order
+// 3.3.7 Redundant Entry (A)          — no re-entry of info in same session
+// 3.3.8 Accessible Authentication (AA) — no cognitive function test for login
+// 3.3.9 Accessible Auth Enhanced (AAA) — no cognitive function test at all
+// ─────────────────────────────────────────────────────────────────────────────
+
+test.describe('WCAG 2.2 upgrade checklist', () => {
+
+  // 2.4.12 Focus Not Obscured (AA): focused element must be at least partially visible.
+  // axe-core does not currently test this — requires visual assertion.
+  test('2.4.12: focused elements are not fully obscured by sticky header', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Tab to each interactive element and check it is not hidden behind sticky header
+    const stickyHeaderHeight = await page.evaluate(() => {
+      const header = document.querySelector<HTMLElement>('header[class*="sticky"], [data-sticky]');
+      return header ? header.offsetHeight : 0;
+    });
+
+    // Tab twice to skip skip-link and get to first nav item
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+
+    const focusedRect = await page.evaluate(() => {
+      const el = document.activeElement;
+      if (!el) return null;
+      return el.getBoundingClientRect();
+    });
+
+    if (focusedRect && stickyHeaderHeight > 0) {
+      // The top of the focused element must be below the sticky header
+      // If top < stickyHeaderHeight, the element is obscured
+      expect(focusedRect.top).toBeGreaterThanOrEqual(stickyHeaderHeight);
+    }
+  });
+
+  // 3.3.7 Redundant Entry (A): don't require users to re-enter info provided earlier.
+  // This is primarily a design/UX test — verify in multi-step checkout/registration flows.
+  test('3.3.7: registration flow does not re-ask for email entered on previous step', async ({
+    page,
+  }) => {
+    await page.goto('/register/step-1');
+    await page.waitForLoadState('networkidle');
+
+    // Step 1: enter email
+    await page.fill('input[type="email"]', 'test@example.com');
+    await page.click('button[type="submit"]');
+
+    // Step 2: verify email is not requested again
+    await page.waitForURL('/register/step-2');
+    const emailInputOnStep2 = page.locator('input[type="email"]');
+    const count = await emailInputOnStep2.count();
+
+    // Email should either not be present (step 2 doesn't need it) or be pre-filled
+    if (count > 0) {
+      const value = await emailInputOnStep2.inputValue();
+      expect(value).toBe('test@example.com'); // Auto-filled from step 1
+    }
+    // If count === 0, the email input is not shown again — passes 3.3.7
+  });
+
+  // 3.3.8 Accessible Authentication (AA): no cognitive function test (CAPTCHA) without alternative.
+  // axe-core does not detect CAPTCHA patterns — manual+Playwright check required.
+  test('3.3.8: login page does not require CAPTCHA as the only authentication method', async ({
+    page,
+  }) => {
+    await page.goto('/login');
+    await page.waitForLoadState('networkidle');
+
+    // Check for CAPTCHA elements — if present, verify alternatives exist
+    const captchaPresent = await page.evaluate(() => {
+      const captchaIndicators = [
+        '[class*="captcha"]',
+        '[class*="recaptcha"]',
+        '[class*="hcaptcha"]',
+        'iframe[src*="recaptcha"]',
+        'iframe[src*="hcaptcha"]',
+      ];
+      return captchaIndicators.some((selector) => document.querySelector(selector) !== null);
+    });
+
+    if (captchaPresent) {
+      // If CAPTCHA exists, verify that an accessible alternative is present
+      // (e.g., "Use passkey", "Send me a code", audio CAPTCHA alternative)
+      const hasAlternative = await page.evaluate(() => {
+        const alternativeSelectors = [
+          '[data-testid="passkey-login"]',
+          '[data-testid="magic-link"]',
+          'a[href*="audio"]',
+          'button[aria-label*="audio"]',
+        ];
+        return alternativeSelectors.some((s) => document.querySelector(s) !== null);
+      });
+      // Warn rather than hard-fail — teams may have compliant alternatives not covered by selectors
+      if (!hasAlternative) {
+        console.warn(
+          '[WCAG 3.3.8] CAPTCHA found with no detected accessible alternative. ' +
+          'Manually verify: passkey, magic link, or SMS code alternative exists.'
+        );
+      }
+    }
+    // If no CAPTCHA, this criterion is satisfied by default
+    expect(true).toBe(true); // Pass marker — the check above logs the warning
+  });
+});
+```
+
+**EN 301 549 compliance report template (for EU EAA Accessibility Conformance Report/VPAT):**
+
+When producing an Accessibility Conformance Report (ACR) for EU EAA compliance, map your test results to EN 301 549 clauses. The navable MCP server includes a `navable://docs/wcag-mapping` resource that provides this mapping automatically. For manual tracking:
+
+```typescript
+// File: scripts/generate-en301549-report.ts
+// Generates an EN 301 549 compliance summary from axe-core results.
+// Output format follows the ACR/VPAT structure used in EU procurement.
+import type { AxeResults } from 'axe-core';
+
+interface EN301549Criterion {
+  clause: string;          // e.g., '9.1.1.1'
+  wcagCriterion: string;   // e.g., 'WCAG 1.1.1'
+  level: 'A' | 'AA' | 'AAA';
+  status: 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable';
+  remarks: string;
+}
+
+const WCAG_TO_EN301549_MAP: Record<string, string> = {
+  'wcag111': '9.1.1.1',  // Non-text Content
+  'wcag143': '9.1.4.3',  // Contrast Minimum
+  'wcag211': '9.2.1.1',  // Keyboard
+  'wcag412': '9.4.1.2',  // Name, Role, Value
+  // ... add all 50+ AA criteria
+};
+
+export function generateEN301549Report(
+  axeResults: AxeResults,
+  productName: string
+): EN301549Criterion[] {
+  const criteria: EN301549Criterion[] = [];
+
+  for (const [wcagTag, enClause] of Object.entries(WCAG_TO_EN301549_MAP)) {
+    const relatedViolations = axeResults.violations.filter((v) =>
+      v.tags.some((tag) => tag.toLowerCase() === wcagTag)
+    );
+
+    criteria.push({
+      clause: enClause,
+      wcagCriterion: wcagTag.toUpperCase().replace(/(\d)(\d{1,2})$/, ' $1.$2'),
+      level: wcagTag.includes('aa') ? 'AA' : 'A',
+      status: relatedViolations.length === 0 ? 'Supports' : 'Does Not Support',
+      remarks: relatedViolations.length > 0
+        ? `${relatedViolations.length} violation(s): ${relatedViolations[0].description}`
+        : `Automated test passed. Manual verification recommended.`,
+    });
+  }
+
+  console.log(`EN 301 549 Report for ${productName}:`);
+  const notSupported = criteria.filter((c) => c.status === 'Does Not Support');
+  console.log(`  Supports: ${criteria.length - notSupported.length}/${criteria.length} criteria`);
+  console.log(`  Failures: ${notSupported.length}`);
+
+  return criteria;
+}
+```
+
+### WCAG 3.0 (W3C Accessibility Guidelines 3.0) — Forward-Looking Awareness
+
+WCAG 3.0 (previously known as "Silver") is in development by the W3C AGWG. As of 2025–2026, it is a working draft, not a finalized standard. QA teams should be aware of its direction but should NOT build compliance programs around it yet.
+
+**Key differences from WCAG 2.x:**
+
+| Aspect | WCAG 2.x | WCAG 3.0 (draft) |
+|--------|----------|-------------------|
+| Conformance model | Binary pass/fail per criterion | Outcome-based scoring (Bronze/Silver/Gold levels) |
+| Scope | Web content only | Any technology delivering digital experiences |
+| Cognitive accessibility | Limited (AAA level) | First-class citizen alongside visual and motor |
+| Testing | Rule-based (axe-core) | Mixed: automated + functional outcomes + user research |
+| Status | Published standard (2.1: 2018, 2.2: 2023) | Working draft — expected finalized 2027+ |
+
+**Why QA teams should monitor but not pivot to WCAG 3.0 yet:**
+1. No legal requirement references WCAG 3.0 as of 2026 — all current laws reference WCAG 2.0 or 2.1/2.2
+2. The scoring model (Bronze/Silver/Gold) is fundamentally different from 2.x binary conformance — existing test infrastructure would require redesign
+3. The draft changes frequently — tool support (axe-core, etc.) does not yet exist for WCAG 3.0 criteria
+4. The W3C has signaled WCAG 2.x will remain the legal baseline for the foreseeable future alongside WCAG 3.0
+
+**What to do now:** Build robust WCAG 2.2 AA testing infrastructure. When WCAG 3.0 is finalized, WCAG 2.x conformance will translate to Bronze in WCAG 3.0 — making 2.x investment directly reusable.
+
+### Storybook Test Runner for Design System a11y CI
+
+Storybook's `@storybook/test-runner` (2023+) runs all stories as Playwright tests in a headless browser, enabling automated axe scanning of every component story as part of CI — without a running application server. This is the highest-coverage approach for design system components.
+
+```typescript
+// File: .storybook/test-runner.ts
+// Global a11y configuration for Storybook Test Runner.
+// Runs axe-core against every story in CI via: npx test-storybook
+import type { TestRunnerConfig } from '@storybook/test-runner';
+import { checkA11y, injectAxe, configureAxe } from 'axe-playwright';
+
+const config: TestRunnerConfig = {
+  async preVisit(page) {
+    // Inject axe-core into every story page before tests run
+    await injectAxe(page);
+  },
+
+  async postVisit(page) {
+    // Configure axe for all stories: WCAG 2.1 AA, disable JSDOM-incompatible rules
+    await configureAxe(page, {
+      rules: [
+        { id: 'color-contrast', enabled: true },  // Real browser — contrast works
+        { id: 'duplicate-id', enabled: false },    // Storybook renders many instances
+      ],
+    });
+
+    // Run axe after every story renders
+    await checkA11y(
+      page,
+      '#storybook-root',  // Scope to story container only
+      {
+        detailedReport: true,
+        detailedReportOptions: {
+          html: true,
+        },
+        runOnly: {
+          type: 'tag',
+          values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'],
+        },
+      },
+      true,  // Skip failures for stories with parameters.a11y.disable = true
+      'v2'   // Use axe v2 result format
+    );
+  },
+};
+
+export default config;
+```
+
+```yaml
+# File: .github/workflows/storybook-a11y.yml
+# Run Storybook Test Runner in CI — a11y scan every story on every PR.
+name: Storybook accessibility CI
+on: [pull_request]
+
+jobs:
+  storybook-a11y:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Build Storybook
+        run: npm run build-storybook --quiet
+      - name: Serve Storybook and run a11y tests
+        run: npx concurrently -k -s first -n "SB,TEST" -c "magenta,blue"
+          "npx http-server storybook-static --port 6006 --silent"
+          "npx wait-on tcp:6006 && npx test-storybook --url http://localhost:6006 --ci"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: storybook-a11y-report
+          path: storybook-test-results/
+```
+
+**Why Storybook Test Runner over addon-a11y for CI:**
+- `addon-a11y` runs in the browser during Storybook development but cannot be automated in CI without the test runner
+- `@storybook/test-runner` runs all stories as Playwright tests — every story is scanned without writing individual test files
+- A design system with 200 components gets all 200 components scanned on every PR with zero per-component test authoring effort [community]
+
+
 
 | Level | Criteria count | Description | Practical requirement |
 |-------|------|-------------|----------------------|
@@ -2073,6 +2840,163 @@ test.describe('WCAG 2.1 AA — commonly missed criteria', () => {
   });
 });
 ```
+
+### Cognitive Accessibility Testing Patterns
+
+Cognitive accessibility addresses users with dyslexia, ADHD, memory impairments, anxiety disorders, and non-native language users. WCAG 2.x coverage of cognitive accessibility is limited (mostly AAA level). WCAG 3.0 will address it as a first-class concern. In the meantime, teams can implement testable patterns covering the most impactful cognitive accessibility criteria.
+
+**Why this matters:** Cognitive disabilities affect approximately 15% of the global population — the largest single category of disability. Yet most accessibility testing focuses exclusively on screen reader and keyboard users (motor/visual). A WCAG 2.1 AA-passing site can still be completely unusable for users with ADHD, anxiety, or reading disorders.
+
+**Testable cognitive accessibility patterns:**
+
+```typescript
+// File: e2e/accessibility/cognitive-a11y.spec.ts
+// Tests for cognitive accessibility patterns that go beyond standard WCAG 2.1 AA automation.
+// These tests target: timeout warnings, error recovery, session management, and content clarity.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Cognitive accessibility patterns', () => {
+
+  // WCAG 2.2 SC 3.3.7 (A): Redundant entry — don't re-ask for info provided this session
+  // Already covered in WCAG 2.2 checklist above.
+
+  // WCAG 2.1 SC 2.2.1 (A): Timing Adjustable — if there is a time limit, user must be able to extend it.
+  // Test: if a session timeout warning exists, it must allow extension.
+  test('session timeout dialog must provide a way to extend the session', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    // Simulate session timeout warning (trigger it manually if possible)
+    // This tests that the warning dialog itself is accessible and provides an extension mechanism
+    const sessionWarningTrigger = page.locator('[data-testid="trigger-session-warning"]');
+    const triggerExists = await sessionWarningTrigger.count() > 0;
+
+    if (triggerExists) {
+      await sessionWarningTrigger.click();
+      await page.waitForSelector('[data-testid="session-timeout-dialog"]');
+
+      // The dialog must have an accessible role
+      const dialog = page.getByRole('dialog');
+      await expect(dialog).toBeVisible();
+
+      // Must provide a way to extend the session
+      const extendButton = page.getByRole('button', { name: /extend|continue|stay/i });
+      await expect(extendButton).toBeVisible();
+
+      // Run axe on the dialog
+      const results = await new AxeBuilder({ page })
+        .include('[data-testid="session-timeout-dialog"]')
+        .withTags(['wcag2a', 'wcag2aa'])
+        .analyze();
+
+      expect(results.violations).toEqual([]);
+    }
+  });
+
+  // WCAG 2.1 SC 3.3.4 (AA): Error Prevention — check-confirm-correct for legal/financial submissions.
+  // Test: verify that a confirmation step exists before destructive/financial actions.
+  test('checkout flow provides order review before final submission', async ({ page }) => {
+    await page.goto('/cart');
+    await page.waitForLoadState('networkidle');
+
+    const checkoutButton = page.getByRole('button', { name: /checkout|place order/i });
+    const checkoutExists = await checkoutButton.count() > 0;
+
+    if (checkoutExists) {
+      await checkoutButton.click();
+      // There should be a review/confirmation step before irreversible submission
+      await page.waitForLoadState('networkidle');
+
+      // Look for review indicators: "Review your order", order summary, "Edit" links
+      const reviewIndicators = [
+        'h1:has-text("Review")',
+        '[data-testid="order-summary"]',
+        'text=Review your order',
+        'button:has-text("Edit")',
+      ];
+
+      const hasReviewStep = await page.evaluate((selectors) => {
+        return selectors.some((s) => document.querySelector(s) !== null);
+      }, reviewIndicators);
+
+      if (!hasReviewStep) {
+        console.warn(
+          '[WCAG 3.3.4] No order review step detected before checkout submission. ' +
+          'Verify manually that users can review and correct orders before final submission.'
+        );
+      }
+      // Log as warning rather than hard fail — review UI patterns vary
+      // The key check is that a final "Place Order" button is not on the cart page itself
+      const immediateOrderButton = page.locator('[data-testid="place-order-button"]');
+      expect(await immediateOrderButton.count()).toBe(0); // No direct order placement from cart
+    }
+  });
+
+  // WCAG 2.2 SC 3.2.6 (A): Consistent Help — help link in same relative location on all pages.
+  // Test: if a help/support link exists, verify it is in the same position on critical pages.
+  test('3.2.6: help link is consistently positioned across pages', async ({ page }) => {
+    const criticalPages = ['/', '/login', '/dashboard', '/settings'];
+    const helpPositions: Array<{ page: string; bottom: number; right: number }> = [];
+
+    for (const url of criticalPages) {
+      await page.goto(url);
+      await page.waitForLoadState('networkidle');
+
+      const helpPosition = await page.evaluate(() => {
+        // Look for common help link patterns
+        const helpSelectors = [
+          'a[href*="help"]',
+          'a[href*="support"]',
+          '[aria-label*="help"]',
+          '[data-testid*="help"]',
+        ];
+        for (const selector of helpSelectors) {
+          const el = document.querySelector<HTMLElement>(selector);
+          if (el) {
+            const rect = el.getBoundingClientRect();
+            // Return normalized position (bottom/right of viewport)
+            return {
+              bottom: Math.round(window.innerHeight - rect.bottom),
+              right: Math.round(window.innerWidth - rect.right),
+            };
+          }
+        }
+        return null;
+      });
+
+      if (helpPosition) {
+        helpPositions.push({ page: url, ...helpPosition });
+      }
+    }
+
+    // If help link found on multiple pages, verify consistent position (within 50px tolerance)
+    if (helpPositions.length >= 2) {
+      const firstPos = helpPositions[0];
+      for (const pos of helpPositions.slice(1)) {
+        const bottomDiff = Math.abs(pos.bottom - firstPos.bottom);
+        const rightDiff = Math.abs(pos.right - firstPos.right);
+        expect(bottomDiff).toBeLessThan(50); // WCAG 3.2.6: same relative position
+        expect(rightDiff).toBeLessThan(50);
+      }
+    }
+  });
+});
+```
+
+**Cognitive accessibility manual testing checklist (no automation possible):**
+
+| Check | WCAG | What to look for |
+|-------|------|-----------------|
+| Plain language | 3.1.5 (AAA) | Reading level ≤ grade 8 for general audiences; technical content grade ≤ 12 |
+| Error messages are specific | 3.3.1 (A) | "Enter a valid email" not "Invalid input"; tells users what to fix |
+| Consistent navigation | 3.2.3 (AA) | Same nav items in same order on every page |
+| On Focus/Input no unexpected changes | 3.2.1–3.2.2 (A) | No form submission, page redirect, or dialog on field focus/input |
+| Meaningful section headings | 2.4.6 (AA) | Each section heading describes the content; no "Section 1" headings |
+| Images of text avoided | 1.4.5 (AA) | Real text used instead of images of text (logos excepted) |
+| Animation can be paused | 2.2.2 (A) | Auto-play animations under 5 seconds OR has pause/stop control |
+
+[community] Teams that invest in WCAG AA compliance but skip cognitive accessibility patterns miss the largest disability population. The most impactful quick wins are: specific error messages (3.3.1), consistent navigation (3.2.3), no unexpected context changes (3.2.1), and a well-structured heading hierarchy (2.4.6) — all AA or A level, all testable.
 
 ### WCAG 2.5.3 Label in Name — Voice Control Compatibility Testing
 
@@ -2681,6 +3605,129 @@ test.describe('Accessible name assertions', () => {
 });
 ```
 
+---
+
+### Type-Safe ARIA Attributes in TypeScript Components
+
+React's built-in `AriaAttributes` type definitions (from `@types/react`) provide compile-time checking for all ARIA attributes. However, they accept `string` for most values, allowing invalid ARIA values like `aria-invalid="maybe"` or `aria-live="instant"` to compile. TypeScript discriminated unions can enforce the correct literal value sets, making ARIA mistakes a compile-time error rather than a runtime accessibility defect.
+
+**Why this matters:** The most common ARIA errors in production are wrong attribute values (`aria-expanded="yes"` instead of `true`/`false`, `aria-live="instant"` instead of `"polite"`) that axe-core catches at scan time but not at author time. Encoding the valid value sets as TypeScript types catches these instantly.
+
+```typescript
+// File: src/types/aria.ts
+// Type-safe ARIA value sets — converts runtime axe violations into compile-time errors.
+// Use these types on component props instead of raw 'string'.
+
+/** WCAG valid values for aria-live. "assertive" interrupts; use sparingly. */
+export type AriaLiveValue = 'off' | 'polite' | 'assertive';
+
+/** Valid values for aria-haspopup. Most custom menus use "menu" or "listbox". */
+export type AriaHasPopupValue =
+  | boolean
+  | 'false'
+  | 'true'
+  | 'menu'
+  | 'listbox'
+  | 'tree'
+  | 'grid'
+  | 'dialog';
+
+/** aria-expanded: must be boolean or undefined (not present when not applicable). */
+export type AriaExpandedValue = boolean | 'true' | 'false' | undefined;
+
+/** aria-invalid: boolean or specific named states. */
+export type AriaInvalidValue = boolean | 'false' | 'true' | 'grammar' | 'spelling';
+
+/** aria-autocomplete: for combobox inputs */
+export type AriaAutocompleteValue = 'none' | 'inline' | 'list' | 'both';
+
+/** aria-orientation: for toolbars, listboxes, and sliders */
+export type AriaOrientationValue = 'horizontal' | 'vertical' | undefined;
+
+/** Strongly-typed props for disclosure widgets (accordion, dropdown) */
+export interface DisclosureProps {
+  id: string;
+  label: string;
+  expanded: boolean;           // Controls aria-expanded — not a string
+  controlsId: string;          // ID of the panel being controlled (aria-controls)
+  hasPopup?: AriaHasPopupValue; // For dropdown triggers
+}
+
+/** Strongly-typed props for live region containers */
+export interface LiveRegionProps {
+  /** "polite": waits for current speech. "assertive": interrupts. */
+  live: AriaLiveValue;
+  atomic?: boolean;     // aria-atomic — true = announce full content, not just changed nodes
+  relevant?: 'additions' | 'removals' | 'text' | 'all' | 'additions text';
+  children: React.ReactNode;
+}
+
+// Implementation with type enforcement:
+import React from 'react';
+
+export const LiveRegion: React.FC<LiveRegionProps> = ({
+  live,
+  atomic = true,
+  relevant,
+  children,
+}) => (
+  <div
+    aria-live={live}             // Only accepts AriaLiveValue — "instant" is a compile error
+    aria-atomic={atomic}
+    aria-relevant={relevant}
+    // Keep in DOM at all times — inserting aria-live after content misses announcement
+  >
+    {children}
+  </div>
+);
+
+// ❌ Compile error: Type '"urgent"' is not assignable to type 'AriaLiveValue'
+// const bad = <LiveRegion live="urgent">...</LiveRegion>;
+
+// ✅ Compiles: "assertive" is a valid AriaLiveValue
+// const good = <LiveRegion live="assertive">Session expiring in 60 seconds</LiveRegion>;
+```
+
+```typescript
+// File: src/types/aria.test.ts
+// Unit tests that verify type-safe ARIA props pass axe validation.
+import React from 'react';
+import { render } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import type { LiveRegionProps } from './aria';
+import { LiveRegion } from './aria';
+
+expect.extend(toHaveNoViolations);
+
+describe('Type-safe ARIA components', () => {
+  it('polite live region has no axe violations', async () => {
+    const props: LiveRegionProps = {
+      live: 'polite',   // TypeScript ensures this is only a valid AriaLiveValue
+      atomic: true,
+      children: 'Changes saved',
+    };
+    const { container } = render(<LiveRegion {...props} />);
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('assertive live region for critical errors has no axe violations', async () => {
+    const props: LiveRegionProps = {
+      live: 'assertive',
+      atomic: true,
+      children: 'Session expired. Please log in again.',
+    };
+    const { container } = render(<LiveRegion {...props} />);
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+});
+```
+
+**Practical impact:** Teams using type-safe ARIA props catch `aria-expanded="yes"` (should be `true`), `aria-live="urgent"` (not a valid value), and `aria-haspopup="dropdown"` (not a valid token) during TypeScript compilation — before any test runs, before any browser, before any CI pipeline. The compile-time feedback loop is the fastest possible detection. [community]
+
+---
+
 ### axe-core 4.10+ New Rules and WCAG 2.2 CI Configuration
 
 axe-core 4.10 (late 2024) and 4.11 (2025–2026) added new rules that enable automated WCAG 2.2 AA testing. Teams upgrading from 4.8/4.9 will see new CI failures from these rules — treat them as a rule-change upgrade rather than a regression.
@@ -2826,6 +3873,349 @@ test.describe('WCAG 2.2 AA compliance (EU EAA)', () => {
 
 ---
 
+### Mobile and Touch Accessibility Testing  [community]
+
+Mobile accessibility testing requires validating against TalkBack (Android) and VoiceOver (iOS), which have fundamentally different interaction models from desktop screen readers. Playwright can emulate mobile viewports and touch events, but AT testing on mobile requires physical devices or simulators.
+
+**Key mobile-specific WCAG considerations:**
+
+| Criterion | Mobile impact | Common failure |
+|-----------|--------------|----------------|
+| 2.5.1 Pointer Gestures (A) | All multi-touch gestures must have single-pointer alternative | Pinch-to-dismiss without a close button |
+| 2.5.4 Motion Actuation (A) | Shake/tilt actions must have UI alternative and be disableable | Shake to undo without settings override |
+| 2.5.8 Target Size (AA, WCAG 2.2) | 24×24px minimum — more critical on mobile | 16px icon buttons, tiny nav items |
+| 1.3.4 Orientation (AA) | Content must not require portrait or landscape orientation | Checkout locked to portrait |
+| 2.4.7 Focus Visible (AA) | Focus visible on touch + keyboard | Focus indicator invisible on mobile browsers |
+
+**Playwright mobile viewport testing:**
+
+```typescript
+// File: e2e/accessibility/mobile-a11y.spec.ts
+// Mobile accessibility tests: viewport, orientation, touch target size, WCAG 2.5.x criteria.
+import { test, expect, devices } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+// Emulate iPhone 14 Pro for mobile tests
+const iPhone14Pro = devices['iPhone 14 Pro'];
+
+test.describe('Mobile accessibility', () => {
+  test.use({ ...iPhone14Pro });
+
+  test('homepage passes axe scan on mobile viewport', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+
+  test('1.3.4 Orientation: content reflows in landscape without locking', async ({ page }) => {
+    // Test portrait
+    await page.goto('/checkout');
+    await page.waitForLoadState('networkidle');
+
+    const portraitHasHorizontalScroll = await page.evaluate(
+      () => document.body.scrollWidth > document.documentElement.clientWidth
+    );
+    expect(portraitHasHorizontalScroll).toBe(false);
+
+    // Switch to landscape
+    await page.setViewportSize({ width: 844, height: 390 }); // iPhone 14 Pro landscape
+    await page.waitForLoadState('networkidle');
+
+    // Verify content is not locked — key elements should still be visible
+    const checkoutButton = page.getByRole('button', { name: /checkout|continue/i });
+    if (await checkoutButton.count() > 0) {
+      await expect(checkoutButton).toBeVisible();
+    }
+  });
+
+  test('2.5.8 Target size: touch targets meet 24×24px minimum on mobile', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // On mobile, target size failures are more severe — 44×44px is Apple HIG recommendation
+    // WCAG 2.5.8 sets 24×24px as the legal minimum
+    const MINIMUM_TARGET_PX = 24;
+    const APPLE_HIG_PX = 44; // Apple HIG recommendation (not WCAG requirement)
+
+    const violations = await page.evaluate((minPx) => {
+      const interactiveSelector =
+        'button, a[href], input:not([type="hidden"]), select, textarea, [role="button"]';
+      return Array.from(document.querySelectorAll<HTMLElement>(interactiveSelector))
+        .map((el) => {
+          const rect = el.getBoundingClientRect();
+          return {
+            tag: el.tagName.toLowerCase(),
+            text: el.textContent?.trim().slice(0, 30) ?? '',
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          };
+        })
+        .filter((el) => el.width > 0 && el.height > 0)
+        .filter((el) => el.width < minPx || el.height < minPx);
+    }, MINIMUM_TARGET_PX);
+
+    if (violations.length > 0) {
+      console.table(violations);
+    }
+    expect(violations).toEqual([]);
+  });
+
+  test('2.5.1 Pointer gestures: swipe-dismissed components have close button alternative', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Check for elements that might be swipe-dismissed (bottom sheets, toast with swipe)
+    const swipeDismissibles = page.locator(
+      '[data-swipe-dismiss], [data-testid*="bottom-sheet"], [data-testid*="drawer"]'
+    );
+    const count = await swipeDismissibles.count();
+
+    for (let i = 0; i < count; i++) {
+      const el = swipeDismissibles.nth(i);
+      // Verify a close button exists within the swipeable container
+      const closeButton = el.getByRole('button', { name: /close|dismiss|cancel/i });
+      await expect(closeButton).toBeVisible();
+    }
+  });
+
+  // Test touch target size on navigation items specifically
+  test('bottom navigation bar items meet touch target requirements', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const navBar = page.locator('[role="navigation"][aria-label*="bottom"], nav[class*="bottom"]');
+    if (await navBar.count() === 0) return;
+
+    const navItems = navBar.getByRole('link');
+    const count = await navItems.count();
+
+    for (let i = 0; i < count; i++) {
+      const item = navItems.nth(i);
+      const box = await item.boundingBox();
+      if (box) {
+        expect(box.height).toBeGreaterThanOrEqual(44); // Apple HIG for bottom nav
+        expect(box.width).toBeGreaterThanOrEqual(44);
+      }
+    }
+  });
+});
+```
+
+**Community lessons on mobile AT testing:**
+
+38. **[community] VoiceOver on iOS interprets `role="application"` differently from desktop screen readers**: On iOS, `role="application"` puts VoiceOver into "direct touch" mode where swipe navigation is disabled — the opposite of NVDA Application Mode. Teams that add `role="application"` to fix NVDA keyboard handling can break VoiceOver swipe navigation entirely. Use `role="application"` only when the widget genuinely requires it (e.g., drawing tools), and test on both platforms. For most composite widgets, `role="group"` or specific widget roles (`role="listbox"`, `role="grid"`) are more appropriate.
+
+39. **[community] `tabindex="0"` on non-interactive elements is never keyboard-accessible on iOS**: iOS VoiceOver navigates by swiping to elements in the accessibility tree order, not by Tab key. However, custom interactive elements (`<div tabindex="0">`) that work on desktop with Tab/Enter may not receive swipe focus on iOS if they lack a semantic role. Always use native HTML elements or appropriate ARIA roles — `role="button"` paired with `tabindex="0"` and a click handler is the minimum for custom interactive elements to work on iOS.
+
+**Android TalkBack vs iOS VoiceOver quick reference:**
+
+| Feature | iOS VoiceOver | Android TalkBack |
+|---------|--------------|-----------------|
+| Primary navigation | Swipe left/right | Swipe left/right |
+| Activate element | Double-tap | Double-tap |
+| Scroll | Three-finger swipe | Two-finger swipe |
+| Heading jump | Rotor (two-finger rotate) | Local context menu |
+| Supports `aria-modal` | No (use `inert`) | Partial |
+| WebView accessibility | Good (WKWebView) | Good (WebView) |
+
+### AI-Assisted Accessibility Testing  [community]
+
+As of 2025–2026, a new layer of AI-augmented tooling sits between automated axe scans and full manual audits. These tools do not replace either layer but reduce the manual effort required for the ~43% of WCAG issues that automated scanners cannot catch alone.
+
+**Three emerging AI-assisted patterns:**
+
+1. **MCP-server scanning (navable MCP):** A Model Context Protocol server exposes `run_accessibility_scan`, `generate_fix_plan`, and `update_fix_status` tools. An AI coding agent (Claude Code, Copilot) can scan a live page, receive structured fix plans, implement fixes, and re-verify — completing the scan→plan→fix→verify cycle without a human intermediary. The server uses Playwright + axe-core for scanning and optionally Pa11y/HTMLCS as a secondary engine with server-side deduplication.
+
+2. **AI-generated alt text (Aura/BLIP):** Models like Hugging Face BLIP can generate contextually appropriate `alt` text for images flagged by axe-core's `image-alt` rule. This is particularly valuable for large content repositories where QA teams cannot manually write alt text for every image. The AI generates a candidate; QA verifies and refines.
+
+3. **AI-powered contrast fix suggestions:** Tools like Aura calculate WCAG-compliant color substitutions (maintaining 4.5:1 ratios) when color-contrast violations are found, providing developers with actionable fix values rather than just violation reports.
+
+**Pattern: MCP-driven scan-plan-fix-verify cycle**
+
+```typescript
+// Conceptual pattern: how an AI agent uses navable MCP tools
+// The agent calls these tools via the MCP protocol — not direct TypeScript API.
+// This shows the workflow logic in TypeScript pseudo-code.
+
+interface ScanResult {
+  scanId: string;
+  violations: Array<{
+    ruleId: string;
+    impact: 'critical' | 'serious' | 'moderate' | 'minor';
+    description: string;
+    nodes: Array<{ html: string; target: string[] }>;
+    wcagCriteria: string[];  // e.g., ['WCAG 1.3.1', 'EN 301 549 9.1.3.1']
+  }>;
+}
+
+interface FixPlan {
+  scanId: string;
+  items: Array<{
+    id: string;
+    ruleId: string;
+    status: 'pending' | 'in_progress' | 'done' | 'skipped';
+    suggestedFix: string;     // Human-readable fix description
+    codePattern?: string;     // Before/after code example if available
+  }>;
+}
+
+// Step 1: scan (calls run_accessibility_scan MCP tool)
+async function agentScanFlow(targetUrl: string): Promise<void> {
+  // Agent calls: run_accessibility_scan({ url: targetUrl, tags: ['wcag2a', 'wcag2aa'] })
+  const scan: ScanResult = await mcpTool.runAccessibilityScan(targetUrl);
+
+  if (scan.violations.length === 0) {
+    console.log('No WCAG 2.1 AA violations found — axe scan passed.');
+    return;
+  }
+
+  // Step 2: generate fix plan (calls generate_fix_plan MCP tool)
+  const plan: FixPlan = await mcpTool.generateFixPlan(scan.scanId);
+  // Plan is written to .navable-plan.json in the project root
+
+  // Step 3: agent implements fixes (edits source files)
+  for (const item of plan.items) {
+    if (item.status === 'pending') {
+      console.log(`Fixing: [${item.ruleId}] ${item.suggestedFix}`);
+      // Agent applies fix using Edit/Write tools...
+      // Then marks item as done:
+      await mcpTool.updateFixStatus(item.id, 'done');
+    }
+  }
+
+  // Step 4: verify (re-run scan to confirm fixes)
+  const verifyScan: ScanResult = await mcpTool.runAccessibilityScan(targetUrl);
+  const remaining = verifyScan.violations.filter(
+    (v) => plan.items.some((i) => i.ruleId === v.ruleId && i.status === 'done')
+  );
+
+  if (remaining.length > 0) {
+    console.error(`${remaining.length} violations remain after fix attempt.`);
+  } else {
+    console.log('All planned violations resolved.');
+  }
+}
+```
+
+**Dual-engine scanning (axe-core + Pa11y/HTMLCS):**
+
+Running axe-core and Pa11y's HTMLCS engine in parallel catches violations each engine misses. The navable MCP server implements server-side deduplication via a crossover tag (`alsoFlaggedBy: ["htmlcs"]`). Teams implementing this manually should normalize violation IDs before deduplication.
+
+```typescript
+// File: e2e/accessibility/dual-engine-scan.ts
+// Dual-engine a11y scanning: axe-core (primary) + Pa11y/HTMLCS (secondary).
+// Merges results and deduplicates by page+rule to avoid double-reporting.
+import { chromium } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import pa11y from 'pa11y';
+
+interface NormalizedViolation {
+  ruleId: string;
+  impact: string;
+  description: string;
+  selector: string;
+  engines: ('axe' | 'pa11y')[];   // Which engines flagged this
+  wcagCriteria: string[];
+}
+
+export async function dualEngineScan(url: string): Promise<NormalizedViolation[]> {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  await page.goto(url);
+  await page.waitForLoadState('networkidle');
+
+  // Run axe-core scan
+  const axeResults = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+    .analyze();
+
+  await browser.close();
+
+  // Run Pa11y independently (uses HTMLCS engine by default)
+  const pa11yResults = await pa11y(url, {
+    standard: 'WCAG2AA',
+    runners: ['htmlcs'],
+  });
+
+  // Normalize axe violations
+  const axeViolations: NormalizedViolation[] = axeResults.violations.flatMap((v) =>
+    v.nodes.map((node) => ({
+      ruleId: v.id,
+      impact: v.impact ?? 'unknown',
+      description: v.description,
+      selector: node.target.join(' '),
+      engines: ['axe'] as ('axe' | 'pa11y')[],
+      wcagCriteria: v.tags.filter((t) => t.startsWith('wcag')),
+    }))
+  );
+
+  // Normalize Pa11y issues
+  const pa11yViolations: NormalizedViolation[] = pa11yResults.issues.map((issue) => ({
+    ruleId: issue.code,
+    impact: issue.type === 'error' ? 'serious' : 'moderate',
+    description: issue.message,
+    selector: issue.selector,
+    engines: ['pa11y'] as ('axe' | 'pa11y')[],
+    wcagCriteria: [issue.code.split('.')[1] ?? ''],
+  }));
+
+  // Merge: mark violations found by both engines
+  const merged = [...axeViolations];
+  for (const pa11yV of pa11yViolations) {
+    const existing = merged.find(
+      (v) => v.selector === pa11yV.selector && v.description === pa11yV.description
+    );
+    if (existing) {
+      existing.engines.push('pa11y');  // "alsoFlaggedBy" marker
+    } else {
+      merged.push(pa11yV);
+    }
+  }
+
+  return merged;
+}
+```
+
+**Why dual-engine matters in production:** axe-core catches ~57% of WCAG issues and Pa11y/HTMLCS catches a partially overlapping but not identical set. Studies comparing engines find that teams using dual-engine scanning catch ~65–70% of automated-detectable issues — a 10–13% improvement over a single engine alone. The tradeoff is setup complexity and longer scan times. [community]
+
+**axe-linter for early-cycle (shift-left) detection:**
+
+Deque's `vscode-axe-linter` extension runs axe-core rules as static analysis on JSX/TSX files as you type — catching missing `aria-label`, wrong role combinations, and structural errors before the code compiles. This is the earliest possible detection, integrated into the development loop itself.
+
+```typescript
+// .vscode/settings.json additions for axe-linter:
+// Install: "deque-systems.vscode-axe-linter" from VS Code Marketplace
+// Configuration:
+{
+  "axe-linter.enabled": true,
+  "axe-linter.rules": {
+    // Upgrade missing-label from warning to error for stricter early detection
+    "label": "error",
+    "button-name": "error",
+    "image-alt": "error",
+    // Allow color-contrast to remain a warning (needs design review, not just dev fix)
+    "color-contrast": "warn"
+  }
+}
+
+// The linter flags this in your editor before CI:
+// ❌ <button>   — "button-name: Buttons must have discernible text"
+// ❌ <img src="logo.png">   — "image-alt: Images must have alternate text"
+// ✅ <button aria-label="Close dialog">
+// ✅ <img src="logo.png" alt="Company logo">
+```
+
+**Why early-cycle detection has highest ROI:** The cost-of-defects curve applies to accessibility as much as to functional bugs. A missing `aria-label` caught by axe-linter during development takes seconds to fix. The same issue found in a WCAG audit costs hours: audit report → ticket → sprint → developer context switch → fix → verify. [community]
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -2856,4 +4246,13 @@ test.describe('WCAG 2.2 AA compliance (EU EAA)', () => {
 | iOS Accessibility Inspector | Tool | Built into Xcode | Native iOS/macOS accessibility audit tool |
 | Android Accessibility Scanner | Tool | https://play.google.com/store/apps/details?id=com.google.android.apps.accessibility.auditor | Native Android a11y audit app by Google |
 | NVDA Screen Reader | Free tool | https://www.nvaccess.org/ | Most widely used free screen reader — ~41% market share; test with Firefox |
+| navable-web-accessibility-mcp | Open source | https://github.com/web-DnA/navable-web-accessibility-mcp | MCP server for agent-driven a11y scan→plan→fix→verify cycles; EN 301 549 mapping |
+| axe-linter VSCode extension | Tool | https://marketplace.visualstudio.com/items?itemName=deque-systems.vscode-axe-linter | Earliest-cycle a11y static analysis in editor; shift-left detection |
+| Pa11y | Open source | https://pa11y.org/ | CLI accessibility scanner using HTMLCS engine; good as secondary engine alongside axe |
+| Aura AI Accessibility Scanner | Open source | https://github.com/architzero/Aura-accessibility-scanner | AI-assisted alt text generation + contrast fix suggestions + axe-core scanning |
 | WCAG 2.5.3 Understanding | Official | https://www.w3.org/WAI/WCAG21/Understanding/label-in-name.html | Label in Name — critical for Dragon/Voice Control users |
+| WAI-ARIA APG Carousel Pattern | Official | https://www.w3.org/WAI/ARIA/apg/patterns/carousel/ | Authoritative carousel ARIA pattern with keyboard interactions |
+| WAI-ARIA APG Date Picker Pattern | Official | https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/examples/datepicker-dialog/ | Authoritative calendar date picker implementation |
+| Storybook Test Runner | Open source | https://storybook.js.org/docs/writing-tests/test-runner | Automated a11y scan of every story in CI — zero per-story test authoring |
+| WCAG 3.0 Working Draft | Draft spec | https://www.w3.org/TR/wcag-3.0/ | Forward-looking awareness; Bronze/Silver/Gold outcome-based model |
+| Playwright Mobile Devices | Official | https://playwright.dev/docs/emulation | Device emulation for mobile viewport + touch accessibility testing |

@@ -1,9 +1,9 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 11 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
 
-> Generated from official k6 documentation and community sources on 2026-04-30. Verified against k6 v1.7.1 (stable); k6 v2.0.0-rc1 breaking changes documented below. Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-03. Verified against k6 v1.7.1 (latest stable; security patch for CVE-2026-33186 in gRPC); k6 v2.0.0-rc1 breaking changes documented below. Re-run `/qa-refine k6` to refresh.
 
-> **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), and the `k6/experimental/redis` module. See [v2.0.0 Migration](#v200-migration) section.
+> **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section.
 
 ## Core Principles
 
@@ -12,6 +12,13 @@
 3. **Thresholds are pass/fail gates** — Thresholds fail the run (non-zero exit code) when SLAs are breached. Attach them to specific scenarios or custom metrics for precise reporting.
 4. **`setup()` / `teardown()` for shared state** — Authenticate once in `setup()`, pass the token to all VUs; clean up created resources in `teardown()`.
 5. **Checks are assertions, not thresholds** — `check()` records pass/fail counts but does NOT abort the test. Use thresholds on `checks` to gate the run on overall check-pass rate.
+6. **Size VUs with Little's Law** — The required VU count is derived from the system's throughput and the time each VU spends in one iteration:
+   > **VUs = throughput (req/s) × (avg response time (s) + think time (s))**
+   >
+   > *Example:* Target = 100 req/s; avg response time = 300 ms; think time = 1 s.
+   > VUs = 100 × (0.3 + 1.0) = **130 VUs**.
+   >
+   > Use `constant-arrival-rate` when you want to *specify* throughput directly (k6 auto-scales VUs). Use `ramping-vus` when you want to *specify* VU count and measure the resulting throughput.
 
 ---
 
@@ -601,9 +608,157 @@ export default function () {
 > CSV parsed per-VU at 300 VUs = 15 GB — test crashes silently. Always wrap CSV data in
 > `SharedArray`. Use `papaparse` from jslib.k6.io to avoid bundler setup for CSV parsing.
 
+### Native CSV Parsing with `k6/experimental/csv`  [community]
 
+The `k6/experimental/csv` module provides a **Go-native CSV parser** built into k6 —
+faster and more memory-efficient than JavaScript-based papaparse. Two APIs:
 
-k6 provides four metric primitives. Use the right type to get the right aggregation in thresholds.
+| API | Use case |
+|-----|---------|
+| `csv.parse(file, opts)` | Parse entire file upfront into a SharedArray-like structure |
+| `new csv.Parser(file)` | Stream CSV line-by-line for very large files |
+
+```javascript
+// k6/scripts/csv-native.js — native CSV parser (no papaparse dependency needed)
+import { open } from "k6/experimental/fs";
+import { parse, Parser } from "k6/experimental/csv";
+import http from "k6/http";
+import { check } from "k6";
+import exec from "k6/execution";
+
+// Option 1: Full-file parse (fast startup for < ~100 MB CSV)
+// csv.parse() bypasses the JS runtime — parsed entirely in Go for max throughput
+let csvRecords;  // populated in setup()
+
+export async function setup() {
+  const file = await open("./data/users.csv");
+  // records: array of string arrays — [ ["alice@test.com","pw1"], ["bob@test.com","pw2"] ]
+  csvRecords = await parse(file, { delimiter: "," });
+}
+
+export const options = {
+  scenarios: {
+    csv_load: {
+      executor: "constant-arrival-rate",
+      rate: 100, timeUnit: "1s", duration: "2m",
+      preAllocatedVUs: 20, maxVUs: 50,
+    },
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default async function (data) {
+  // Use iterationInTest for unique user per iteration (no collision across VUs)
+  const row = data.csvRecords[exec.scenario.iterationInTest % data.csvRecords.length];
+  const [email, password] = row;
+
+  const res = http.post(
+    `${BASE}/api/auth/login`,
+    JSON.stringify({ email, password }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+  check(res, { "login ok": (r) => r.status === 200 });
+}
+```
+
+```javascript
+// Option 2: Streaming parser — for CSV files too large to hold in memory
+import { open } from "k6/experimental/fs";
+import { Parser } from "k6/experimental/csv";
+import { Counter } from "k6/metrics";
+
+const rowsProcessed = new Counter("csv_rows_processed");
+
+export default async function () {
+  const file = await open("./data/huge-dataset.csv");
+  const parser = new Parser(file);
+
+  while (true) {
+    const { done, value } = await parser.next();
+    if (done) break;
+
+    const [id, payload] = value;  // value is a string array (one CSV row)
+    http.post(`${BASE}/api/items`, JSON.stringify({ id, payload }), {
+      headers: { "Content-Type": "application/json" },
+    });
+    rowsProcessed.add(1);
+  }
+}
+```
+
+> **[community]:** `k6/experimental/csv` requires `k6/experimental/fs` to open the file —
+> you cannot pass a plain `open()` string result to it. The module is experimental; it may
+> graduate to `k6/csv` in a future release. **Choose between papaparse vs native csv**:
+> - **papaparse**: Header-row support, JS-friendly object output, no `async default` needed
+> - **`k6/experimental/csv`**: ~3–5× faster parsing, lower memory, no npm install required
+
+### Memory-Efficient File I/O with `k6/experimental/fs`  [community]
+
+The `k6/experimental/fs` module provides **low-memory file access** — unlike `open()` which
+loads the entire file into a string for every VU, `k6/experimental/fs` shares a single
+memory-mapped copy across all VUs and lets you seek/read in chunks. Use it for large test
+data files (> 10 MB) or when you need random-access within a file.
+
+```javascript
+// k6/scripts/fs-data.js — memory-efficient large-file data loading
+import { open, SeekMode } from "k6/experimental/fs";
+import http from "k6/http";
+import { check } from "k6";
+
+// File is opened once at the module level (init context) and shared across VUs
+let dataFile;
+
+export async function setup() {
+  // Open and stat the file during setup to validate it exists
+  dataFile = await open("./data/large-payloads.json");
+  const stat = await dataFile.stat();
+  console.log(`Payload file: ${stat.name}, size: ${stat.size} bytes`);
+}
+
+export const options = {
+  scenarios: {
+    fs_load: {
+      executor: "constant-vus",
+      vus: 10,
+      duration: "1m",
+    },
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default async function () {
+  // Seek to start of file (rewind)
+  await dataFile.seek(0, SeekMode.Start);
+
+  // Read into a fixed-size buffer — avoids creating large strings
+  const buf = new Uint8Array(4096);
+  const bytesRead = await dataFile.read(buf);
+
+  if (bytesRead === null) return; // EOF
+
+  const payload = new TextDecoder().decode(buf.subarray(0, bytesRead));
+  const res = http.post(`${BASE}/api/ingest`, payload, {
+    headers: { "Content-Type": "application/json" },
+  });
+  check(res, { "ingested": (r) => r.status === 202 });
+}
+```
+
+| `SeekMode` | Value | Seek relative to |
+|-----------|-------|-----------------|
+| `SeekMode.Start` | 0 | Beginning of file |
+| `SeekMode.Current` | 1 | Current position |
+| `SeekMode.End` | 2 | End of file |
+
+> **[community]:** `k6/experimental/fs` is async-only — your `default` function must be
+> `async` when using it. The module is experimental: breaking API changes may occur before
+> it graduates to `k6/fs`. Prefer `SharedArray` + `papaparse` for CSV; use
+> `k6/experimental/fs` when you need streaming or chunked access to binary or very large
+> text files that exceed SharedArray's practical size limits (~50 MB).
+
+ Use the right type to get the right aggregation in thresholds.
 
 ```javascript
 // k6/scripts/custom-metrics.js
@@ -787,7 +942,70 @@ ${metricsHtml}
 > locally (not via raw GitHub URLs) in production CI to avoid network dependency failures
 > during the summary phase.
 
-k6's stable WebSocket module (`k6/websockets`, stable since k6 v0.56) implements the
+### jslib Utility Libraries  [community]
+
+The [jslib.k6.io](https://jslib.k6.io) catalog provides official k6-maintained utilities
+that extend test scripting without requiring npm bundling.
+
+| Library | URL | Purpose |
+|---------|-----|---------|
+| `k6-summary` | `jslib.k6.io/k6-summary/0.0.2/index.js` | `textSummary` + `jUnit` for handleSummary |
+| `papaparse` | `jslib.k6.io/papaparse/5.1.1/index.js` | CSV parsing with header support |
+| `httpx` | `jslib.k6.io/httpx/0.1.0/index.js` | HTTP session wrapper — reusable base URL, headers, auth |
+| `k6chaijs` | `jslib.k6.io/k6chaijs/4.3.4.3/index.js` | BDD-style assertions (`expect`, `chai`) |
+| `utils` | `jslib.k6.io/k6-utils/1.4.0/index.js` | `randomString()`, `uuidv4()`, `randomIntBetween()` |
+| `totp` | `jslib.k6.io/totp/1.0.0/index.js` | TOTP/MFA code generation from shared secret |
+| `http-instrumentation-tempo` | `jslib.k6.io/http-instrumentation-tempo/1.0.1/index.js` | Auto OTel trace context injection |
+| `http-instrumentation-pyroscope` | `jslib.k6.io/http-instrumentation-pyroscope/1.0.1/index.js` | Pyroscope baggage header injection |
+
+```javascript
+// httpx — session wrapper with base URL + default headers baked in
+import { Httpx } from "https://jslib.k6.io/httpx/0.1.0/index.js";
+
+const session = new Httpx({
+  baseURL: __ENV.API_URL || "http://localhost:3001",
+  headers: { "Content-Type": "application/json" },
+  timeout: 20_000,
+});
+
+export function setup() {
+  const res = session.post("/api/auth/login", JSON.stringify({
+    email: __ENV.E2E_USER_EMAIL,
+    password: __ENV.E2E_USER_PASSWORD,
+  }));
+  return { token: res.json("token") };
+}
+
+export default function (data) {
+  session.addHeader("Authorization", `Bearer ${data.token}`);
+  const res = session.get("/api/profile");
+  check(res, { "profile ok": (r) => r.status === 200 });
+}
+```
+
+```javascript
+// k6chaijs — BDD-style assertions (useful for teams migrating from Jest/Mocha)
+import { describe, expect } from "https://jslib.k6.io/k6chaijs/4.3.4.3/index.js";
+import http from "k6/http";
+
+export default function () {
+  const res = http.get(`${__ENV.API_URL}/api/items`);
+
+  describe("GET /api/items", () => {
+    expect(res.status, "status code").to.equal(200);
+    expect(res.json("items"), "items array").to.be.an("array").that.is.not.empty;
+    expect(res.json("items[0].id"), "item id").to.be.a("number");
+  });
+}
+```
+
+> **[community]:** The k6 `testing` jslib (`jslib.k6.io/testing/0.4.0/index.js`) provides
+> a Playwright-inspired assertion API (`assert.equal`, `assert.contains`, `assert.ok`).
+> Unlike `check()`, failed assertions throw errors that stop the current VU iteration —
+> semantically equivalent to `fail()` but with richer error messages. Use it when you want
+> test-style assertions rather than load-test-style pass/fail rates.
+
+ (`k6/websockets`, stable since k6 v0.56) implements the
 WebSocket living standard with a global event loop — use it for all new scripts.
 The `k6/experimental/websockets` and legacy `k6/ws` modules are **deprecated** as of
 k6 v1.x and will be removed in a future release. The key structural difference from
@@ -1024,7 +1242,78 @@ export default async function () {
 > the same scenario. Use `exec` per scenario to separate browser from protocol flows.
 > Each browser VU launches a Chromium subprocess — limit to 10–20 VUs max.
 
-### gRPC Load Testing  [community]
+### Browser Route Interception — Mocking & Stubbing  [community]
+
+`page.route(pattern, handler)` intercepts requests matching `pattern` (glob string or `RegExp`).
+The handler receives a `Route` object with three response strategies:
+
+| Method | Purpose | When to use |
+|--------|---------|-------------|
+| `route.abort()` | Block the request entirely | Block tracking pixels, ad scripts, analytics |
+| `route.fulfill(response)` | Return a synthetic response | Stub third-party APIs, test error states |
+| `route.continue(overrides?)` | Pass through with optional overrides | Add auth headers, rewrite URLs |
+
+Only the **last** registered handler for an overlapping pattern runs. Use `page.unroute(pattern)` to deregister.
+
+```javascript
+// k6/scripts/browser-route-mock.js — stub external dependencies for isolated perf tests
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    ui_with_stubs: {
+      executor: "shared-iterations",
+      vus: 2,
+      iterations: 5,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    // 1. Block analytics — prevents skewing response times with 3rd-party calls
+    await page.route("**/gtm.js", (route) => route.abort());
+    await page.route("**/analytics/**", (route) => route.abort());
+
+    // 2. Stub a slow payment gateway with a fast synthetic response
+    await page.route("**/api/payments/check", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ eligible: true, limit: 5000 }),
+      })
+    );
+
+    // 3. Inject auth header on all API calls (useful when browser tests need tokens)
+    await page.route("**/api/**", (route) =>
+      route.continue({
+        headers: {
+          ...route.request().headers(),
+          Authorization: `Bearer ${__ENV.API_TOKEN}`,
+        },
+      })
+    );
+
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/checkout`);
+    const confirmBtn = page.getByRole("button", { name: "Confirm Order" });
+    await confirmBtn.waitFor();
+    check(await confirmBtn.isEnabled(), { "confirm button enabled": Boolean });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+> **[community]:** `route.fulfill()` does not send a real network request — Web Vital
+> metrics (LCP, FCP) for the stubbed resource are not collected. Use stubs only for
+> isolating the SUT from third-party latency, not for measuring the stub's performance.
+> When testing error handling, set `status: 500` or `status: 503` in `route.fulfill()`
+> to inject failure scenarios without modifying the server.
+
+
 
 Use `k6/net/grpc` for gRPC service performance tests. Load `.proto` files in the init
 context (not inside `default`) — loading per-iteration recreates the client on every VU
@@ -1160,6 +1449,28 @@ export default function () {
 > loaded from `open()`. The secret is baked at init time per VU — if the secret rotates
 > during a soak test, VUs continue using stale secrets and produce 401 errors. Use
 > `k6/secrets` with async `get()` per iteration for rotating HMAC secrets.
+
+> **Note:** `k6/crypto` is deprecated — the official docs recommend using the WebCrypto API
+> (`crypto.subtle`) instead for new code. `k6/crypto` remains available for backward
+> compatibility. The `crypto.subtle` API (k6 v1.6+) adds PBKDF2 support for password-based
+> key derivation, enabling realistic simulation of client-side key derivation flows:
+> ```javascript
+> // WebCrypto PBKDF2 — derive an AES key from a password (async)
+> const keyMaterial = await crypto.subtle.importKey(
+>   "raw",
+>   new TextEncoder().encode(__ENV.USER_PASSWORD),
+>   { name: "PBKDF2" },
+>   false,
+>   ["deriveBits", "deriveKey"]
+> );
+> const derivedKey = await crypto.subtle.deriveKey(
+>   { name: "PBKDF2", salt: new TextEncoder().encode("test-salt"), iterations: 100_000, hash: "SHA-256" },
+>   keyMaterial,
+>   { name: "AES-GCM", length: 256 },
+>   true,
+>   ["encrypt", "decrypt"]
+> );
+> ```
 
 ### Cookie Jar & Session Management  [community]
 
@@ -1507,7 +1818,7 @@ the `experimental/` path is deprecated. Continuing to use them creates a silent 
 debt that surfaces as breakage during k6 upgrades.
 **Fix:** Audit imports on every k6 major version bump. Migrations to stable equivalents:
 - `k6/experimental/websockets` → `k6/websockets`
-- `k6/experimental/redis` → deprecated entirely (no stable replacement yet; use xk6-redis extension)
+- `k6/experimental/redis` → **removed in v2.0** — use `k6/x/redis` extension (`xk6 build --with github.com/grafana/xk6-redis`)
 - `k6/experimental/tracing` → use OpenTelemetry output (`--out opentelemetry`) instead
 
 ### 17. GraphQL 200-response errors bypass HTTP error thresholds  [community]
@@ -1788,6 +2099,22 @@ export const options = {
   // Default: proto, subproto, status, method, url, name, group, check,
   //          error, error_code, tls_version, scenario, service, expected_response
   systemTags: ["status", "method", "url", "scenario", "check", "error"],
+
+  // DNS resolver tuning — useful for load-balanced backends with multiple A records
+  dns: {
+    ttl:    "5m",         // default: "5m" — cache DNS results; set "0s" for no caching
+    select: "roundRobin", // default: "random" | "first" | "roundRobin" — pick from multi-A
+    policy: "preferIPv4", // default: "preferIPv4" | "preferIPv6" | "onlyIPv4" | "onlyIPv6" | "any"
+  },
+
+  // Override User-Agent globally — useful when target has bot detection
+  userAgent: "k6-loadtest/1.0 (performance testing)",
+
+  // Per-host concurrency limit for http.batch() — prevents hammering a single origin
+  batchPerHost: 6,  // simulates browser's per-host connection limit (default: 6)
+
+  // Enforce minimum TLS version — for compliance testing (PCI DSS requires TLS 1.2+)
+  tlsVersion: { min: "tls1.2", max: "tls1.3" },
 };
 ```
 
@@ -2269,6 +2596,56 @@ export function teardown() {
 
 > **[community]:** Opening and closing a gRPC connection per iteration (`connect()` + `invoke()` + `close()` in `default()`) adds ~5-15ms of TLS handshake overhead per request. For high-throughput gRPC tests, connect once per VU (in the first iteration check) and reuse. This matches how real gRPC clients operate (persistent multiplexed connections).
 
+### gRPC Async Invoke  [community]
+
+`client.asyncInvoke()` is the async version of `client.invoke()` — it returns a Promise
+instead of blocking the VU. Use it when you want to fire multiple concurrent unary RPC
+calls from a single VU iteration (fan-out pattern), or when your `default` function is
+already `async` (e.g., mixing gRPC with `k6/experimental/fs`).
+
+```javascript
+// k6/scripts/grpc-async.js — concurrent gRPC calls per iteration
+import grpc from "k6/net/grpc";
+import { check } from "k6";
+
+const client = new grpc.Client();
+client.load(["./proto"], "items.proto", "users.proto");
+
+export const options = {
+  scenarios: {
+    grpc_parallel: { executor: "constant-vus", vus: 10, duration: "2m" },
+  },
+};
+
+const BASE = __ENV.GRPC_TARGET || "localhost:50051";
+
+export async function setup() {
+  client.connect(BASE, { plaintext: true });
+}
+
+export default async function () {
+  // Fire both RPCs concurrently — no sequential wait between them
+  const [itemResp, userResp] = await Promise.all([
+    client.asyncInvoke("items.ItemService/GetItem",  { id: __ITER }),
+    client.asyncInvoke("users.UserService/GetUser",  { id: __ITER % 100 }),
+  ]);
+
+  check(itemResp, { "item ok":  (r) => r.status === grpc.StatusOK });
+  check(userResp, { "user ok":  (r) => r.status === grpc.StatusOK });
+}
+
+export function teardown() {
+  client.close();
+}
+```
+
+> **[community]:** `asyncInvoke()` requires your `default()` function to be `async`.
+> In k6, a single VU runs one async context — concurrent `Promise.all()` calls are
+> interleaved on the VU's event loop, not truly parallel. Use `constant-arrival-rate`
+> to model concurrent requests from independent users; use `asyncInvoke` + `Promise.all`
+> to model a single user making multiple simultaneous service calls (e.g., a dashboard
+> loading data from 3 microservices in parallel).
+
 ---
 
 ### Conditional Scenario Selection  [community]
@@ -2382,6 +2759,16 @@ k6 deps --json k6/scripts/universal.js > k6/results/deps.json
 >   || { echo "ERROR: Script requires custom k6 binary with extensions"; exit 1; }
 > ```
 
+> **[community]:** `K6_DEPENDENCY_MANIFEST` (k6 v1.6+) allows you to pin extension versions
+> in a manifest file instead of the `xk6 build` command, preventing silent breakage when an
+> extension releases a new version. Create a `k6-manifest.json` listing required extensions with
+> exact versions:
+> ```bash
+> # Pin extensions via manifest rather than ad-hoc xk6 build flags
+> export K6_DEPENDENCY_MANIFEST=./k6-manifest.json
+> k6 run k6/scripts/load.js  # k6 reads manifest to resolve extension versions
+> ```
+
 ### Extensions (xk6)  [community]
 
 k6 extensions add capabilities beyond HTTP — Redis shared state, Kafka producers, SQL
@@ -2456,6 +2843,32 @@ export async function teardown() {
 > docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/xk6" grafana/xk6 \
 >   build --with github.com/grafana/xk6-redis@v0.4.0
 > ```
+
+> **[community]:** For cross-VU shared mutable state (e.g., a shared counter, distributed
+> lock, or globally unique ID generator), use the `xk6-kv` extension. Unlike `SharedArray`
+> (read-only), `xk6-kv` provides a read-write key-value store backed by shared memory — safe
+> for concurrent atomic operations across all VUs without an external Redis dependency:
+> ```bash
+> xk6 build --with github.com/szkiba/xk6-kv
+> ```
+> ```javascript
+> import { open } from "k6/x/kv";
+> const kv = open();
+> export async function setup() { await kv.set("order_count", 0); }
+> export default async function () {
+>   await kv.set("order_count", (await kv.get("order_count") || 0) + 1);
+> }
+> ```
+> Note: `xk6-kv` operations are async and add ~0.1ms overhead per call — avoid using them
+> in tight inner loops at >10,000 RPS. Use Redis (via `k6/x/redis`) for production-scale
+> distributed state.
+
+> **[community]:** The `mcp-k6` MCP server (k6 v1.6+) enables AI-assisted script writing and
+> validation through MCP-compatible editors (Claude, Cursor, VSCode with Copilot). It provides
+> tools for generating scripts, validating syntax, and executing test runs from the editor.
+> Useful for onboarding teams new to k6 or for generating boilerplate from natural-language
+> descriptions. Configure in your editor's MCP settings pointing to the k6 binary's built-in
+> MCP server: `k6 x mcp`.
 
 ---
 
@@ -3252,6 +3665,35 @@ export async function uiFlow() {
 > designated in a browser scenario. Mixing them in one function causes a `context deadline
 > exceeded` error. Always use separate `exec` functions.
 
+### Browser Module Environment Variables
+
+Control Chromium behavior without modifying scripts:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `K6_BROWSER_HEADLESS` | `true` | Show browser UI (`false`) for debugging — always `true` in CI |
+| `K6_BROWSER_ARGS` | — | Extra Chromium command-line flags, e.g., `"--disable-gpu --no-sandbox"` |
+| `K6_BROWSER_EXECUTABLE_PATH` | auto | Absolute path to a custom Chromium/Chrome binary |
+| `K6_BROWSER_TIMEOUT` | `30s` | Timeout for connecting to the Chromium DevTools endpoint |
+| `K6_BROWSER_DEBUG` | `false` | Log all CDP messages — very verbose, use for debugging only |
+| `K6_BROWSER_IGNORE_DEFAULT_ARGS` | `false` | Remove k6's default launch args (rarely needed) |
+| `K6_BROWSER_TRACES_METADATA` | — | Key=value pairs added to all browser trace spans |
+
+```bash
+# Run with visible browser (local debugging) — never use in CI
+K6_BROWSER_HEADLESS=false k6 run k6/scripts/browser-smoke.js
+
+# Docker: disable GPU + no sandbox required for containerized Chromium
+K6_BROWSER_ARGS="--disable-gpu --no-sandbox --disable-dev-shm-usage" \
+  k6 run k6/scripts/browser-smoke.js
+
+# Use custom Chrome path (e.g., when testing against a specific Chrome version)
+K6_BROWSER_EXECUTABLE_PATH="/usr/bin/google-chrome-stable" \
+  k6 run k6/scripts/browser-smoke.js
+```
+
+> **[community]:** In Docker containers, always add `K6_BROWSER_ARGS="--no-sandbox --disable-dev-shm-usage"`. The `--no-sandbox` flag is required because Chromium's sandbox needs Linux namespaces which are often disabled in Docker. The `--disable-dev-shm-usage` flag prevents Chromium from crashing when `/dev/shm` is too small — an issue in containers with default 64 MB shared memory.
+
 ---
 
 ## HTTP Timing Metrics — What They Measure
@@ -3329,6 +3771,8 @@ export default function () {
 | `http.batch([...])` | Parallel requests in one call | Simulating page-load asset fetches |
 | `http.file(data, name, type)` | Wrap data as multipart file | File upload tests |
 | `check(res, thunks)` | Record named boolean assertions | All responses — never skip |
+| `check(val, thunks, tags)` | Assertions with extra tags attached to check metrics | Per-operation categorization of check results |
+| `fail(message)` | Throw an error stopping the current iteration (not the test) | Guard clauses after critical checks; auth flows where partial execution is meaningless |
 | `sleep(seconds)` | Pause VU to simulate think time | Between iterations |
 | `group(name, fn)` | Aggregate metrics under a label | Multi-step user journeys |
 | `new Trend(name, isTime)` | Custom timing metric | Per-operation latency |
@@ -3352,15 +3796,27 @@ export default function () {
 | `options.insecureSkipTLSVerify` | Skip TLS cert validation | Self-signed certs on staging |
 | `options.tlsAuth` | Client cert (mTLS) per domain | mTLS/zero-trust internal APIs |
 | `options.systemTags` | Filter system tags on metrics | Reduce metric cardinality in dashboards |
+| `options.dns` | DNS resolver behaviour (`ttl`, `select`, `policy`) | Round-robin DNS for load-balanced backends |
+| `options.userAgent` | Override HTTP `User-Agent` header globally | Simulating specific client types or versions |
+| `options.batchPerHost` | Max parallel requests per host in `http.batch()` | Prevents overwhelming a single origin with batch |
+| `options.tlsVersion` | Restrict TLS version (`"tls1.2"`, `"tls1.3"`) | Enforce minimum TLS for compliance tests |
 | `secrets.get(name)` | Retrieve secret from default source (async) | Credentials, API keys — values are log-redacted |
 | `secrets.source(id).get(name)` | Retrieve from named secret source | Multi-environment credential routing |
 | `page.frameLocator(selector)` | Locate elements inside an iframe | Testing embedded widgets / third-party frames |
 | `page.waitForRequest(urlPattern)` | Wait for a specific HTTP request to fire | Asserting API calls are made on UI interactions |
 | `page.waitForEvent(eventName)` | Wait for a browser event (popup, download, request) | Capturing popups, file downloads, navigation events |
+| `page.on('requestfailed', fn)` | Subscribe to failed network requests (v1.6.0+) | Detecting broken asset loads, API call failures |
+| `page.on('requestfinished', fn)` | Subscribe to completed network requests (v1.6.0+) | Auditing request timings without route interception |
 | `locator.filter({ hasText })` | Filter locator results to only elements containing text | Scoping within lists to a specific item |
 | `locator.pressSequentially(text)` | Type character-by-character with key events | Realistic input for auto-complete / event-driven fields |
 | `page.evaluate(fn)` | Execute JavaScript in page context | Reading DOM state, counting elements, querying hidden data |
 | `page.goBack()` / `page.goForward()` | Navigate browser history | Testing back-navigation flows |
+| `page.route(pattern, handler)` | Intercept matching requests (abort/fulfill/continue) | Stub third-party APIs, inject auth headers, block noise |
+| `route.fulfill(response)` | Return synthetic response without hitting server | Mock API errors (500/503), inject fixed payloads |
+| `route.continue(overrides?)` | Pass through with optional modifications | Append auth headers, rewrite POST bodies |
+| `open(path, 'b')` | Load local file as binary (ArrayBuffer) | Binary upload tests, WASM payloads |
+| `k6/experimental/fs` open | Memory-mapped file sharing across all VUs | Large files > 10 MB; avoids per-VU string copies |
+| `exec.test.fail(msg)` | Mark test failed (exit 110) without stopping | Flag pre-condition failures while collecting all metrics |
 
 ---
 
@@ -3533,7 +3989,28 @@ way return exit code **97** instead of `0`.
 | `exec.vu.iterationInScenario` | number | Per-VU iteration count within scenario |
 | `exec.instance.iterationsCompleted` | number | Total iterations done by this instance |
 | `exec.instance.currentTestRunDuration` | number | Milliseconds elapsed |
-| `exec.test.abort(msg)` | function | Gracefully abort the entire test |
+| `exec.test.abort(msg)` | function | Gracefully abort the entire test (exit 108) |
+| `exec.test.fail(msg)` | function | Mark test as failed without interrupting (exit 110) |
+| `exec.vu.metrics.metadata` | object | High-cardinality key-value store per VU (not exported to output) |
+
+**Test Control exit codes:**
+- `exec.test.abort(msg)` → exit code **108** (Usage error). All VUs finish their current iteration, then the test stops. `teardown()` still executes. In k6 v2.0.0+ cloud mode this returns exit **97** instead of `0`.
+- `exec.test.fail(msg)` → exit code **110** (Threshold failure). The test continues running to completion — only the exit code changes. Use when you want to flag a pre-condition failure but still collect all metrics (e.g., a dependency check failed but you want partial results).
+
+**Metric Enrichment — tags vs metadata:**
+- `exec.vu.metrics.tags` — low-cardinality labels (role, environment, region). These are exported to every metric output format and can be used in threshold filters like `"http_req_duration{role:admin}": ["p(95)<500"]`. Supports strings, numbers, booleans only.
+- `exec.vu.metrics.metadata` — high-cardinality key-value pairs (trace IDs, request IDs, user IDs). Included in the raw event stream but NOT indexed as metric dimensions, so they won't bloat your time-series cardinality. Use for correlating k6 spans with distributed tracing systems.
+
+```javascript
+export default function () {
+  // Low-cardinality: use tags (filterable in thresholds)
+  exec.vu.metrics.tags["region"] = __ENV.REGION || "us-east-1";
+
+  // High-cardinality: use metadata (correlate with traces, not for thresholds)
+  exec.vu.metrics.metadata["trace_id"] = generateTraceId();
+  exec.vu.metrics.metadata["request_id"] = `req-${Date.now()}-${exec.vu.idInTest}`;
+}
+```
 
 ### Dynamic VU Tagging with `exec.vu.metrics.tags`
 
@@ -3739,6 +4216,61 @@ jobs:
           path: results/
 ```
 
+### Synthetic Monitoring — Scheduled Smoke Tests  [community]
+
+Run k6 smoke tests on a cron schedule against production or staging to detect regressions
+between deployments. A 1-VU smoke test every 5 minutes acts as an SLO heartbeat —
+catching endpoint degradations within one polling cycle.
+
+```yaml
+# .github/workflows/synthetic-monitor.yml — k6 as synthetic monitoring tool
+name: Synthetic Monitor
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes
+  workflow_dispatch:          # allow manual trigger
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update && sudo apt-get install k6
+
+      - name: Run production smoke test
+        env:
+          API_URL: ${{ vars.PROD_API_URL }}
+          E2E_USER_EMAIL: ${{ secrets.E2E_USER_EMAIL }}
+          E2E_USER_PASSWORD: ${{ secrets.E2E_USER_PASSWORD }}
+        run: |
+          k6 run --no-color \
+            --out json=smoke-results.json \
+            k6/scripts/smoke.js
+        # Non-zero exit = threshold violation = workflow fails = alert fires
+
+      - name: Upload smoke results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-monitor-${{ github.run_id }}
+          path: smoke-results.json
+          retention-days: 30
+```
+
+> **[community]:** For production synthetic monitoring, keep smoke tests to 1 VU and < 30s
+> duration. Use `--no-color` and `--summary-mode=compact` to minimize log noise in scheduled
+> runs. Set up GitHub Actions alert rules on workflow failure to notify on-call.
+> For more advanced scheduled monitoring with regional coverage, use
+> **Grafana Cloud Synthetic Monitoring** — it runs k6 scripts from multiple AWS regions
+> on your schedule and integrates with Grafana alerting natively.
+
 ### GitLab CI Example
 
 ```yaml
@@ -3879,6 +4411,14 @@ export function handleSummary(data) {
   k6 run --execution-segment "1/2:1" --execution-segment-sequence "0,1/2,1" script.js
   ```
   Note: each instance evaluates thresholds independently; aggregate results manually.
+  For a **3-way split** (e.g., three CI runners in parallel):
+  ```bash
+  k6 run --execution-segment "0:1/3"     --execution-segment-sequence "0,1/3,2/3,1" script.js
+  k6 run --execution-segment "1/3:2/3"   --execution-segment-sequence "0,1/3,2/3,1" script.js
+  k6 run --execution-segment "2/3:1"     --execution-segment-sequence "0,1/3,2/3,1" script.js
+  ```
+  Each segment takes its proportional share of VUs and iterations. Use `--tag segment=N`
+  to identify which machine produced which metrics when aggregating results in Grafana.
 - `gracefulStop` (default `30s`) gives running iterations time to complete when a
   scenario ends. Reduce it in CI to avoid unnecessarily long runs:
   ```javascript
@@ -4031,6 +4571,66 @@ k6 run \
 > `--no-thresholds --summary-mode=disabled` to avoid duplicate computation. These flags skip the
 > local summary output — useful when the external system handles alerting.
 > Note: `--no-summary` was removed in k6 v2.0; use `--summary-mode=disabled` instead.
+
+---
+
+## K6_ Environment Variable Quick Reference
+
+All k6 script `options` have a `K6_*` equivalent for CI/CD override without modifying scripts.
+Note: Complex nested options (`scenarios`, `thresholds`) are NOT configurable via env vars.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `K6_VUS` | `1` | Virtual user count (overrides script) |
+| `K6_DURATION` | `null` | Test duration, e.g., `"5m"` |
+| `K6_ITERATIONS` | `1` | Fixed iteration count |
+| `K6_RPS` | `0` (unlimited) | Global RPS cap across all VUs |
+| `K6_COMPATIBILITY_MODE` | `"extended"` | `"base"` saves ~20-30% memory for large tests |
+| `K6_DISCARD_RESPONSE_BODIES` | `false` | Discard all response bodies to save memory |
+| `K6_NO_THRESHOLDS` | `false` | Skip threshold evaluation (dry run) |
+| `K6_NO_SETUP` | `false` | Skip `setup()` (re-run without re-seeding) |
+| `K6_NO_TEARDOWN` | `false` | Skip `teardown()` (preserve test state) |
+| `K6_DNS` | `ttl=5m,select=random,policy=preferIPv4` | DNS TTL, selection, and IP policy |
+| `K6_LOCAL_IPS` | — | Source IPs/CIDRs for load generator rotation |
+| `K6_USER_AGENT` | `"Grafana k6/<version>"` | Override HTTP User-Agent globally |
+| `K6_BATCH` | `20` | Max concurrent connections in `http.batch()` |
+| `K6_BATCH_PER_HOST` | `6` | Max per-host connections in `http.batch()` |
+| `K6_SETUP_TIMEOUT` | `"60s"` | Max time for `setup()` |
+| `K6_TEARDOWN_TIMEOUT` | `"60s"` | Max time for `teardown()` |
+| `K6_MIN_ITERATION_DURATION` | `0` | Minimum iteration duration (VU sleeps if faster) |
+| `K6_LOG_FORMAT` | default | `"json"` for structured log ingestion |
+| `K6_LOG_OUTPUT` | `stderr` | `"loki=http://loki:3100/loki/api/v1/push"` |
+| `K6_TRACES_OUTPUT` | `none` | `"otel=grpc://tempo:4317"` for OTel traces |
+| `K6_CONSOLE_OUTPUT` | `null` | File path for `console.log()` output |
+| `K6_SUMMARY_MODE` | `"compact"` | `"full"`, `"disabled"` (v2.0: replaces `--no-summary`) |
+| `K6_SUMMARY_TREND_STATS` | `"avg,min,med,max,p(90),p(95)"` | Percentiles in end-of-test summary |
+| `K6_WEB_DASHBOARD` | `false` | `true` enables real-time browser UI at `localhost:5665` |
+| `K6_WEB_DASHBOARD_EXPORT` | `null` | Auto-export HTML report at test end |
+| `K6_SECRET_SOURCE` | — | Identical to `--secret-source` flag for secrets config |
+| `K6_DEPENDENCY_MANIFEST` | `null` | JSON manifest for pinning xk6 extension versions |
+| `K6_CLOUD_TOKEN` | — | Grafana Cloud k6 auth token |
+| `K6_CLOUD_STACK_ID` | — | Grafana Cloud stack (mandatory in k6 v2.0) |
+| `K6_PROFILING_ENABLED` | `false` | Enable pprof endpoint at `localhost:6565/debug/pprof/` |
+| `K6_PAUSED` | `false` | Start test paused (resume via REST API or `k6 resume`) |
+| `K6_NO_COLOR` | `false` | Disable ANSI colors in output (always use in CI) |
+
+```bash
+# Typical CI override — no script modifications needed
+K6_VUS=50 K6_DURATION=2m K6_NO_COLOR=true \
+K6_COMPATIBILITY_MODE=base \
+K6_SUMMARY_TREND_STATS="avg,p(95),p(99),max,count" \
+  k6 run k6/scripts/load.js
+```
+
+> **[community]:** `K6_LOG_OUTPUT=loki=...` (k6 v1.x) routes all k6 logs (including
+> `console.log()` from VU code) directly to Grafana Loki without a log-shipping sidecar.
+> Pair with `K6_LOG_FORMAT=json` and the Loki log stream label `{app="k6",test="smoke"}`
+> for centralized log correlation across distributed k6 runs.
+
+> **[community]:** `K6_TRACES_OUTPUT=otel=grpc://tempo:4317` is the stable replacement
+> for the deprecated `k6/experimental/tracing` module. It enables automatic OTel trace
+> generation for every HTTP request without any script changes — just set the env var and
+> add a Grafana data source pointing to your Tempo instance.
 
 ---
 
@@ -4352,6 +4952,67 @@ K6_PROMETHEUS_RW_PUSH_INTERVAL=10s \
 
 `page.waitForEvent()` waits for a browser event (e.g., `"popup"`, `"download"`, `"request"`) before continuing. Locators now support `hasText` and `hasNotText` filter options for scoping within multi-element matches.
 
+As of k6 v1.6+, you can also subscribe to `requestfailed` and `requestfinished` events via
+`page.on()` for persistent monitoring without blocking test flow:
+
+```javascript
+// k6/scripts/browser-request-monitoring.js — page.on() for request event monitoring (v1.6+)
+import { browser } from "k6/browser";
+import { check } from "k6";
+import { Counter, Trend } from "k6/metrics";
+
+const failedRequests  = new Counter("browser_failed_requests");
+const requestDuration = new Trend("browser_request_duration_ms", true);
+
+export const options = {
+  scenarios: {
+    ui: { executor: "shared-iterations", vus: 1, iterations: 2,
+          options: { browser: { type: "chromium" } } },
+  },
+  thresholds: {
+    browser_failed_requests:    ["count<5"],    // tolerate at most 5 failed sub-requests
+    browser_request_duration_ms: ["p(95)<2000"],
+    checks: ["rate==1.0"],
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    // Subscribe to all failed requests — fires for broken assets, CORS errors, 4xx/5xx
+    page.on("requestfailed", (req) => {
+      failedRequests.add(1, { url: req.url().substring(0, 80) });
+      console.warn(`Request failed: ${req.url()} — ${req.failure()}`);
+    });
+
+    // Subscribe to all completed requests — fires when response received
+    page.on("requestfinished", (req) => {
+      const resp = req.response();
+      if (resp) {
+        requestDuration.add(resp.timing().responseEnd - resp.timing().requestStart,
+          { resource: new URL(req.url()).pathname }
+        );
+      }
+    });
+
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/`);
+    await page.waitForLoadState("networkidle");
+
+    const heading = page.getByRole("heading", { level: 1 });
+    await heading.waitFor({ state: "visible" });
+    check(await heading.textContent(), { "heading visible": (h) => h?.length > 0 });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+> **[community]:** `page.on('requestfailed')` fires for EVERY sub-resource failure (broken
+> images, CDN timeouts, blocked third-party scripts). Without the custom `Counter`, these
+> failures are invisible — they don't increment `http_req_failed` (which only tracks k6/http
+> requests, not browser sub-resources). Add this listener to any browser test that needs
+> complete sub-resource health visibility.
+
 ```javascript
 // k6/scripts/browser-events.js
 import { browser } from "k6/browser";
@@ -4508,6 +5169,30 @@ Then reboot. Verification: `launchctl limit maxfiles` should show `64000 524288`
 
 The default end-of-test summary shows `avg, min, med, max, p(90), p(95)`. Add `p(99)` and `count` for production SLO dashboards:
 
+### Machine-Readable Summary (k6 v1.5+)
+
+The `--new-machine-readable-summary` flag (opt-in in v1.5, stabilized in later releases) emits
+structured JSON output optimized for CI system ingestion. Use it with tools that parse k6 output
+programmatically without the `handleSummary` hook:
+
+```bash
+# Emit structured JSON summary alongside normal stdout
+k6 run --new-machine-readable-summary --no-color \
+  --out json=results/k6-raw.json \
+  k6/scripts/load.js
+
+# Redirect machine-readable summary to file (pipe stdout separately)
+k6 run --new-machine-readable-summary --no-color k6/scripts/load.js \
+  2>results/k6-summary-structured.json
+```
+
+> **[community]:** The `--new-machine-readable-summary` format omits ANSI escape codes and
+> formats thresholds as structured JSON objects — better for programmatic threshold inspection
+> than parsing the human-readable text output. In k6 v2.0, this becomes the default machine
+> output format when `--summary-mode` is used.
+
+
+
 ```javascript
 export const options = {
   summaryTrendStats: ["avg", "min", "med", "max", "p(90)", "p(95)", "p(99)", "p(99.9)", "count"],
@@ -4568,4 +5253,25 @@ k6 cloud login --token "$K6_CLOUD_API_TOKEN" --stack "$K6_CLOUD_STACK"
 k6 cloud run --stack "$K6_CLOUD_STACK" k6/scripts/load.js
 k6 cloud upload --stack "$K6_CLOUD_STACK" k6/scripts/load.js
 ```
+
+### k6 v1.6.0 — Key New APIs (Backport Reference)
+
+If you are on k6 v1.6.x and planning to migrate to v2.0, the following stable APIs were added in
+v1.6 and are forward-compatible with v2.0:
+
+| Feature | API / flag | Notes |
+|---------|-----------|-------|
+| Browser request events | `page.on('requestfailed', fn)` | Subscribe to sub-resource failures |
+| Browser request events | `page.on('requestfinished', fn)` | Subscribe to completed requests |
+| PBKDF2 key derivation | `crypto.subtle.deriveKey(PBKDF2, ...)` | WebCrypto API — replaces deprecated `k6/crypto` |
+| Dependency manifest | `K6_DEPENDENCY_MANIFEST=./manifest.json` | Pin xk6 extension versions |
+| Default cloud stack | `K6_CLOUD_STACK_ID` env var | Set once; used by all `k6 cloud` commands |
+| MCP server | `k6 x mcp` | AI-assisted script writing (Claude, Cursor, Copilot) |
+| iframe interaction | `page.frameLocator('#id')` | Interact with embedded iframes |
+| History navigation | `page.goBack()` / `page.goForward()` | Test browser back/forward flows |
+
+> **Note on `k6/crypto` deprecation (v1.6+):** The docs explicitly mark `k6/crypto` as deprecated
+> in favor of the standard WebCrypto API (`crypto.subtle`). Existing `k6/crypto` code continues
+> to work but will not receive new features. Migrate new cryptographic patterns to `crypto.subtle`.
+
 

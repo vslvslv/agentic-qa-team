@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 29 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 39 | score: 100/100 | date: 2026-05-03 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 
@@ -969,6 +969,25 @@ it('taps at a specific coordinate within an element', async () => {
     .toBeVisible()
     .withTimeout(3000);
 });
+
+it('double-taps to zoom in on a photo', async () => {
+  // multiTap(taps): send N rapid taps to the element
+  // Use for double-tap zoom, double-tap-to-like patterns
+  await element(by.id('photo-view')).multiTap(2);
+  await waitFor(element(by.id('photo-zoomed-indicator')))
+    .toBeVisible()
+    .withTimeout(2000);
+});
+
+it('triple-taps to select all text in a field', async () => {
+  await element(by.id('article-text-view')).multiTap(3);
+  // After triple-tap, text should be selected — verify via getAttributes
+  const attrs = await element(by.id('article-text-view')).getAttributes();
+  // selectedText is platform-specific; verify copy menu appears instead
+  await waitFor(element(by.traits(['button'])).withAncestor(by.id('selection-menu')))
+    .toBeVisible()
+    .withTimeout(2000);
+});
 ```
 
 **When to use each:**
@@ -1534,6 +1553,56 @@ Each Detox worker needs its own simulator instance. On macOS GitHub Actions runn
 
 On Fabric (New Architecture), some third-party components do not yet expose `testID` to the native accessibility tree. If `by.id()` fails to find an element that visually exists, check whether the component is a Fabric-native component without testID bridging. Workaround: wrap in a `<View testID="wrapper-id">` at the parent level.
 
+### React Native 0.74+ Bridgeless Mode and Detox Compatibility [community]
+
+React Native 0.74 introduced **Bridgeless Mode** (the final New Architecture step: removes the legacy JS Bridge entirely, leaving only JSI). Detox 20.8+ supports Bridgeless Mode, but older Detox versions fail silently — the app appears to launch, but `launchArgs`, `setURLBlacklist`, and `disableSynchronization` have no effect because they relied on Bridge calls that no longer exist.
+
+**Symptoms:**
+- `device.setURLBlacklist()` has no visible effect; analytics URLs still block idle detection
+- `launchArgs` values are undefined in `NativeModules.RNConfig` (the RNConfig module no longer bridges)
+- `disableSynchronization()` returns without an error but synchronization is not disabled
+
+**Fix**: Update Detox to 20.8+ before migrating to Bridgeless Mode:
+
+```bash
+# Check current Detox version
+npx detox --version
+
+# Update to latest
+npm install --save-dev detox@latest
+```
+
+In Bridgeless Mode, `launchArgs` must be read via the new TurboModule API instead of `NativeModules`:
+
+```js
+// OLD (Bridge-based) — stops working in Bridgeless Mode
+import { NativeModules } from 'react-native';
+const launchArgs = NativeModules.DetoxSync?.launchArgs ?? {};
+
+// NEW (TurboModule-based) — works in both Bridge and Bridgeless modes
+import { TurboModuleRegistry } from 'react-native';
+const DetoxSync = TurboModuleRegistry.getEnforcing('DetoxSync');
+const launchArgs = DetoxSync?.getLaunchArgs?.() ?? {};
+```
+
+**CI flag**: If you have both Bridgeless and non-Bridgeless builds in CI (e.g., testing both old and new architecture), set `RCT_NEW_ARCH_ENABLED=1` in the build command and create a separate Detox configuration entry:
+
+```js
+// .detoxrc.js — separate config for New Architecture (Bridgeless) build
+configurations: {
+  'ios.sim.release': {      // Old Architecture — Detox < 20.8 compatible
+    device: 'simulator',
+    app: 'ios.release',
+  },
+  'ios.sim.newarch': {      // New Architecture + Bridgeless — requires Detox 20.8+
+    device: 'simulator',
+    app: 'ios.newarch',     // built with RCT_NEW_ARCH_ENABLED=1
+  },
+},
+```
+
+**TurboModule `testID` bridging**: Components built as TurboNative Modules must explicitly implement `getTestID()` in their native code for `by.id()` to find them. If a TurboModule component fails to match, add a `<View testID="wrapper" pointerEvents="none">` wrapper — the native View always bridges `testID` correctly regardless of architecture.
+
 ### Detox cache cleanup
 
 Before running tests on a fresh CI agent, clean framework caches to avoid stale native binaries:
@@ -1669,6 +1738,7 @@ jobs:
 | `.scrollTo(edge)` | Scrolls to `'top'`, `'bottom'`, `'left'`, `'right'` | Quick edge scrolling |
 | `.swipe(direction, speed, norm)` | Swipe gesture | Carousels, dismissible modals |
 | `.longPress()` | Long press | Context menus, drag handles |
+| `.multiTap(n)` | Send N rapid taps (double-tap, triple-tap) | Double-tap to zoom/like, triple-tap to select |
 | `.longPressAndDrag(...)` | Long press then drag to target element | Drag-and-drop, Kanban, reordering |
 | `.pinch(scale, speed)` | Pinch gesture (iOS) | Zoom interactions |
 | `.adjustSliderToPosition(0–1)` | Set native Slider value (0=min, 1=max) | Native slider controls |
@@ -1685,7 +1755,9 @@ jobs:
 | `device.launchApp(params)` | Launch or relaunch the app | `beforeAll` / test-level resets |
 | `device.reloadReactNative()` | Reload JS bundle without restart | Fast `beforeEach` state reset (JS-only) |
 | `device.terminateApp()` | Kill the app process | Cleanup in `afterAll` |
-| `device.sendUserNotification(payload)` | Simulate a push notification | Testing notification-triggered flows |
+| `device.sendUserNotification(payload)` | Simulate a push notification (app must be running) | Testing foreground/background notification flows |
+| `device.sendUserActivity(params)` | Simulate NSUserActivity / Handoff event (iOS) | Handoff, Spotlight, Siri integration tests |
+| `device.setAppearance('dark' \| 'light')` | Switch simulator between dark and light mode (iOS) | Dark mode / theming tests without relaunch |
 | `device.setURLBlacklist(patterns)` | Block URLs from being tracked by sync | Suppress analytics/ad beacon flakiness |
 | `device.disableSynchronization()` | Disable automatic idle waiting | Narrow scope around known sync-breaking code |
 | `device.enableSynchronization()` | Re-enable automatic idle waiting | Re-enable immediately after `disableSynchronization` |
@@ -1839,6 +1911,15 @@ Review your tests against this list when diagnosing a CI failure:
 | `adjustSliderToPosition` on a custom JS slider | Only works on native RN `<Slider>`; use JS test helpers for custom sliders |
 | Leaving `captureViewHierarchy` calls in production tests | Debug utility only — remove before merging; it adds ~500ms per call |
 | Using `launchApp({url})` for a warm deep link | Use `device.openURL()` when app is already running; `launchApp({url})` cold-starts the app |
+| Using `--reuse` flag in CI | `--reuse` is for local iteration only; CI jobs always need a clean launch |
+| `element.scroll()` called on a non-scrollable container | Assign `testID` to the `<ScrollView>` itself, not a wrapper `<View>` (Gotcha 25) |
+| `device.openNotifications()` called on iOS | Android-only API; always guard with `device.getPlatform() === 'android'` (Gotcha 26) |
+| `sendUserNotification()` called when app is killed | Use `device.launchApp({ userNotification: payload })` for cold-start notification tests (Gotcha 27) |
+| `whileElement().scroll(300, 'down')` large step overshoots items | Use ≤50–100px step; ~¼ of minimum item height (Gotcha 28) |
+| `npx detox test` without `-c` flag in CI | Always specify `-c ios.sim.release`; never rely on alphabetical default (Gotcha 29) |
+| Remote config / feature flag fetched from network on startup | Inject flag values via `launchArgs` to short-circuit network call in tests |
+| `sendUserActivity` with unregistered activityType | Register all `NSUserActivityTypes` in `Info.plist` before testing Handoff/Spotlight |
+| `typeText()` for long strings (passwords, UUIDs) | Use `replaceText()` — `typeText` simulates key-by-key and adds 3–5s overhead per field (Gotcha 20) |
 
 ---
 
@@ -1865,6 +1946,10 @@ Use this checklist when a test passes locally but fails on CI:
 17. **React Navigation ghost** — Does the destination screen share a `testID` with the previous screen? Assert a unique landmark + `not.toBeVisible()` for the source (Gotcha 15).
 18. **Keyboard coverage** — Does the software keyboard obscure the submit button on small screens? Scroll the form container before tapping (Gotcha 13).
 19. **iOS Keychain token leak** — Does the app store auth tokens in the Keychain? Use `device.clearKeychain()` (Detox 20+) or `delete: true` in `beforeAll` (Gotcha 16).
+20. **Remote config network call on startup** — Does the app fetch feature flags from a remote config service at launch? Inject via `launchArgs` to short-circuit the async fetch and prevent idle-detection delays.
+21. **`whileElement().scroll()` overshoot** — Is the `scroll` step too large, causing the target element to scroll past the viewport? Reduce to ≤50px per step (Gotcha 28).
+22. **Notification test state** — Is the app in the killed state when you call `sendUserNotification()`? Use `device.launchApp({ userNotification: payload })` for cold-start notification tests (Gotcha 27).
+23. **Wrong configuration on CI** — Was `-c` / `--configuration` omitted? Always specify the exact config name; never rely on alphabetical default (Gotcha 29).
 
 ---
 
@@ -2253,9 +2338,60 @@ npx detox test -c ios.customer.release && npx detox test -c ios.driver.release
 configuration manages its own device lifecycle, and sharing a device between apps
 causes crashes.
 
----
+### Multi-app install/uninstall for cross-app interaction testing
 
-## Custom Jest Reporter for Detox
+When testing flows that span two apps (e.g., a "Share to App" flow, a "Sign in with MyApp"
+OAuth flow, or a deep-link handoff between companion apps), use `device.installApp()` and
+`device.uninstallApp()` to manage the secondary app binary on the same device:
+
+```js
+// e2e/multi-app.test.js
+// Tests the "Sign in with CustomerApp" flow in the DriverApp
+
+const CUSTOMER_APP_BINARY = process.env.CUSTOMER_APP_BINARY
+  || 'ios/build/CustomerApp.app';
+
+describe('Cross-app OAuth flow', () => {
+  beforeAll(async () => {
+    // Launch the primary app (DriverApp — configured in .detoxrc.js)
+    await device.launchApp({
+      newInstance: true,
+      permissions: { notifications: 'YES' },
+    });
+
+    // Install the secondary app (CustomerApp) without launching it
+    await device.installApp(CUSTOMER_APP_BINARY);
+  });
+
+  afterAll(async () => {
+    // Uninstall the secondary app to clean up the device
+    await device.uninstallApp('com.mycompany.customerapp');
+  });
+
+  it('switches to CustomerApp for OAuth and returns to DriverApp', async () => {
+    // Trigger the "Sign in with CustomerApp" button in DriverApp
+    await element(by.id('sign-in-with-customer-app-button')).tap();
+
+    // iOS will switch to CustomerApp — Detox follows the active app
+    await waitFor(element(by.id('customer-app-oauth-screen')))
+      .toBeVisible()
+      .withTimeout(10000);
+
+    // Approve in CustomerApp
+    await element(by.id('approve-access-button')).tap();
+
+    // App switches back to DriverApp after approval
+    await waitFor(element(by.id('driver-home-screen')))
+      .toBeVisible()
+      .withTimeout(10000);
+  });
+});
+```
+
+**Important constraints:**
+- `device.installApp(binaryPath)` installs the binary without launching it. The binary must be pre-built.
+- `device.uninstallApp(bundleId)` uninstalls by bundle ID, not by binary path.
+- Detox does not natively "follow" app switches between two apps on iOS without custom configuration. For complex cross-app flows, prefer testing the OAuth boundary via API-level mocking rather than live app switching.
 
 The built-in Detox reporter is sufficient for CI logs, but a custom reporter enables
 integration with test management systems (e.g., TCMS, TestRail, Allure):
@@ -2319,7 +2455,126 @@ module.exports = {
 
 ## Supplementary Interaction Patterns
 
-### openURL vs launchApp({url})
+### Dark mode / appearance testing with device.setAppearance()
+
+Detox can switch the simulator/emulator between light and dark mode without relaunching
+the app. Use `device.setAppearance()` to verify your app's dark mode styles and theming:
+
+```js
+// e2e/appearance.test.js
+describe('Appearance / dark mode', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  afterAll(async () => {
+    // Reset to light mode after the suite to avoid contaminating subsequent tests
+    await device.setAppearance('light');
+  });
+
+  it('renders the dashboard correctly in dark mode', async () => {
+    await element(by.id('dashboard-tab')).tap();
+    await waitFor(element(by.id('dashboard-screen'))).toBeVisible().withTimeout(3000);
+
+    // Switch to dark mode while app is running
+    await device.setAppearance('dark');
+
+    // Verify dark-mode-specific elements are applied
+    // (your app should toggle background color / text color via useColorScheme())
+    await expect(element(by.id('dashboard-screen'))).toBeVisible();
+    // Verify screenshot manually or with visual regression tooling
+    await device.takeScreenshot('dashboard-dark-mode');
+  });
+
+  it('renders the dashboard correctly in light mode', async () => {
+    await device.setAppearance('light');
+    await expect(element(by.id('dashboard-screen'))).toBeVisible();
+    await device.takeScreenshot('dashboard-light-mode');
+  });
+
+  it('does not crash when appearance switches while a modal is open', async () => {
+    await element(by.id('open-settings-modal-button')).tap();
+    await waitFor(element(by.id('settings-modal'))).toBeVisible().withTimeout(3000);
+
+    // Switch appearance while modal is open — tests for crash during re-render
+    await device.setAppearance('dark');
+    await expect(element(by.id('settings-modal'))).toBeVisible();
+
+    await device.setAppearance('light');
+    await expect(element(by.id('settings-modal'))).toBeVisible();
+  });
+});
+```
+
+**API**: `device.setAppearance('dark' | 'light')` — iOS Simulator only. On Android,
+use ADB to switch system night mode:
+
+```bash
+# Android: switch to dark mode
+adb shell cmd uimode night yes
+
+# Android: switch back to light mode
+adb shell cmd uimode night no
+```
+
+Or call it from the test via Detox's `device.reverseTcp` equivalent pattern:
+
+```js
+// e2e/helpers/setAndroidAppearance.js
+const { execSync } = require('child_process');
+
+function setAndroidAppearance(mode) {
+  const flag = mode === 'dark' ? 'yes' : 'no';
+  execSync(`adb shell cmd uimode night ${flag}`, { stdio: 'inherit' });
+}
+
+module.exports = { setAndroidAppearance };
+```
+
+### Pinch gesture for map zoom and image viewer testing
+
+```js
+// e2e/pinch.test.js
+it('zooms in on a map with a pinch gesture', async () => {
+  await element(by.id('map-view')).tap(); // ensure map is focused
+  await waitFor(element(by.id('map-view'))).toBeVisible().withTimeout(3000);
+
+  // pinch(scale, speed, angle)
+  // scale > 1 = zoom in; scale < 1 = zoom out
+  // speed: 'fast' | 'slow' (default 'fast')
+  // angle: rotation angle in radians (default 0 = horizontal pinch)
+  await element(by.id('map-view')).pinch(2.0, 'slow', 0);
+
+  // Verify map zoom level indicator updated
+  await waitFor(element(by.id('zoom-level-badge')))
+    .toHaveText('Street level')
+    .withTimeout(3000);
+});
+
+it('zooms out with reverse pinch', async () => {
+  // First zoom in
+  await element(by.id('map-view')).pinch(2.0, 'slow', 0);
+  // Then zoom out
+  await element(by.id('map-view')).pinch(0.5, 'slow', 0);
+  await waitFor(element(by.id('zoom-level-badge')))
+    .toHaveText('City level')
+    .withTimeout(3000);
+});
+
+it('rotates an image in the viewer', async () => {
+  await element(by.id('image-carousel')).tap();
+  await waitFor(element(by.id('full-image-viewer'))).toBeVisible().withTimeout(3000);
+
+  // Rotate pinch gesture (angle in radians — Math.PI/2 = 90 degrees)
+  await element(by.id('full-image-viewer')).pinch(1.0, 'slow', Math.PI / 2);
+  await device.takeScreenshot('image-rotated-90deg');
+});
+```
+
+**Notes:**
+- `pinch()` is iOS Simulator only. Android does not support programmatic pinch via the Detox API.
+- `scale` is relative to the current zoom level, not absolute.
+- Combine with `device.takeScreenshot()` to capture the post-gesture state for visual review.
 
 Use `device.launchApp({ url })` when the app must cold-start from the deep link (simulates
 tapping a URL from Safari or a notification). Use `device.openURL({ url })` when the app
@@ -2394,9 +2649,64 @@ it('shows the feedback dialog when device is shaken', async () => {
 });
 ```
 
----
+### Handoff and Spotlight testing with device.sendUserActivity()
 
-## Accessibility (a11y) Testing
+`device.sendUserActivity()` simulates an `NSUserActivity` being sent to the app — the mechanism used by iOS Handoff (continue on another device), Spotlight Search result taps, and Siri App Integration. Test these flows without requiring a real Handoff device or Spotlight indexing:
+
+```js
+// e2e/handoff.test.js
+describe('NSUserActivity routing (Handoff / Spotlight)', () => {
+  beforeAll(async () => {
+    await device.launchApp({
+      newInstance: true,
+      permissions: { notifications: 'YES' },
+    });
+  });
+
+  beforeEach(async () => {
+    await device.reloadReactNative();
+  });
+
+  it('continues a document editing session from Handoff', async () => {
+    // Simulate another Apple device handing off a document activity
+    await device.sendUserActivity({
+      activityType: 'com.myapp.editing',
+      userInfo: {
+        documentId: 'doc-99',
+        scrollPosition: 450,
+      },
+    });
+
+    // App should open the document at the handed-off scroll position
+    await waitFor(element(by.id('document-editor-doc-99')))
+      .toBeVisible()
+      .withTimeout(8000);
+  });
+
+  it('opens a Spotlight search result for a product', async () => {
+    // Simulate tapping a Spotlight result for a product
+    await device.sendUserActivity({
+      activityType: 'com.myapp.viewProduct',
+      userInfo: {
+        productId: 'prod-42',
+      },
+    });
+
+    await waitFor(element(by.id('product-detail-prod-42')))
+      .toBeVisible()
+      .withTimeout(5000);
+    await expect(element(by.id('product-title'))).toBeVisible();
+  });
+});
+```
+
+**API notes:**
+- `activityType` must match the `NSUserActivityTypes` array declared in `Info.plist`.
+- `userInfo` is a plain JS object — it is serialized to NSDictionary for the native layer.
+- If `activityType` is not registered in `Info.plist`, `sendUserActivity` is silently ignored on iOS.
+- This API is iOS-only. On Android, use `device.launchApp({ url: 'https://...' })` for equivalent Universal Link simulation.
+
+---
 
 Detox tests that check accessibility labels and toggle values simultaneously validate
 functional behavior AND screen-reader compatibility. Adding a11y assertions costs nothing
@@ -2512,6 +2822,67 @@ npx detox test -c ios.sim.release e2e/login.test.js
 npx detox test -c ios.sim.release --bail 1
 ```
 
+### --reuse flag for fast local iteration
+
+The `--reuse` flag skips the app install/launch step and reattaches Detox to an already-running simulator. Use it when iterating on a single test locally to avoid the 5–10 second cold-boot overhead on every run:
+
+```bash
+# First run — installs and launches the app normally
+npx detox test -c ios.sim.debug e2e/login.test.js
+
+# Subsequent runs — reuse the already-launched app (no reinstall, no reboot)
+npx detox test -c ios.sim.debug e2e/login.test.js --reuse
+
+# Combine with --testNamePattern to run a single test repeatedly
+npx detox test -c ios.sim.debug --reuse --testNamePattern "logs in with valid credentials"
+```
+
+**WARNING:** Never use `--reuse` in CI. The reuse flag assumes the simulator is already in a known good state. On CI, each job starts fresh — `--reuse` may attach to a stale or crashed simulator from a previous job.
+
+**When `--reuse` breaks:** If a previous test left the app in an unexpected state (e.g., a modal still open), `--reuse` inherits that state and the next test starts from a broken baseline. Fix: add `device.reloadReactNative()` in `beforeAll` even when using `--reuse`, so the JS bundle is reset at the cost of ~1 second.
+
+### testRunner.retries vs jest retryTimes — understanding the difference
+
+Detox `20.0+` introduced its own retry mechanism in `.detoxrc.js` via `testRunner.retries`. This is distinct from Jest's `retryTimes` option and operates at a different layer:
+
+| Mechanism | Config location | Granularity | What it retries |
+|---|---|---|---|
+| Jest `retryTimes` | `jest.config.js` | Per-test | Retries individual test cases (`it()` blocks) |
+| Detox `testRunner.retries` | `.detoxrc.js` | Per-test-file | Retries an entire test file if any test in it fails |
+
+```js
+// .detoxrc.js — Detox-level file retry (entire file reruns if any test fails)
+module.exports = {
+  testRunner: {
+    args: {
+      $0: 'jest',
+      config: 'e2e/jest.config.js',
+    },
+    jest: {
+      setupTimeout: 300000,
+    },
+    retries: process.env.CI ? 1 : 0,  // retry the WHOLE FILE once on CI if any test fails
+  },
+  // ...
+};
+```
+
+```js
+// jest.config.js — Jest-level test retry (individual test cases retry without file reload)
+module.exports = {
+  retryTimes: process.env.CI ? 1 : 0,  // retry individual test cases
+  testTimeout: 120000,
+  globalSetup: 'detox/runners/jest/globalSetup',
+  globalTeardown: 'detox/runners/jest/globalTeardown',
+  testEnvironment: 'detox/runners/jest/testEnvironment',
+};
+```
+
+**Which to use:**
+- **Jest `retryTimes`** — appropriate when a single test occasionally fails due to transient timing, but the rest of the file is stable. The device stays running; only the `it()` block is re-executed.
+- **Detox `testRunner.retries`** — appropriate when an entire test file fails due to a device-level issue (simulator crash, GPU unavailable, Metro port conflict). The device is re-initialized for the retry, giving a clean slate.
+- **Both together** — valid: Jest retries transient test failures first; if too many tests fail and the file-level threshold is hit, Detox retries the whole file with a fresh device.
+
 ### Resetting simulator state between runs
 
 ```bash
@@ -2622,9 +2993,78 @@ describe('Modal flow', () => {
 });
 ```
 
-The safest global cleanup pattern is to set `restoreLaunchArgs: true` in the Detox `testRunner` config and use `beforeAll({ newInstance: true })` in every file — accepting the cold-boot overhead in exchange for reliable isolation.
+### 25. `element.scroll()` silently fails or throws on a non-scrollable container [community]
 
-### 22. `element()` not failing fast on ambiguous matches in multi-window apps [community]
+**Root cause**: `element(by.id('some-view')).scroll(200, 'down')` sends a swipe gesture to the native view. If the view is a `<View>` rather than a `<ScrollView>` / `<FlatList>` / `<SectionList>`, the scroll gesture is delivered but has no effect. On some React Native versions, Detox throws a native exception. On others, it returns successfully while nothing scrolled — the next assertion fails because the target element is still off-screen.
+
+**WHY teams miss this**: The `testID` that the developer added for Detox was added to a wrapper `<View>`, not the inner `<ScrollView>`. The hierarchy looks the same in `captureViewHierarchy`, but the scroll gesture targets the wrong container.
+
+**Fix**: Assign the `testID` to the actual scrollable component, not its wrapper:
+
+```jsx
+// BAD — testID on a non-scrollable wrapper
+<View testID="product-list">
+  <ScrollView>
+    {products.map(p => <ProductItem key={p.id} item={p} />)}
+  </ScrollView>
+</View>
+
+// GOOD — testID on the ScrollView itself
+<View>
+  <ScrollView testID="product-list">
+    {products.map(p => <ProductItem key={p.id} item={p} />)}
+  </ScrollView>
+</View>
+```
+
+When you don't control the component hierarchy, use `waitFor + whileElement.scroll` instead of `element.scroll()` — it handles the scroll position tracking natively:
+
+```js
+// Safer alternative: waitFor drives the scroll, not a standalone .scroll() call
+await waitFor(element(by.id('product-item-99')))
+  .toBeVisible()
+  .whileElement(by.id('product-list'))
+  .scroll(100, 'down');
+```
+
+To confirm the scrollable type at debug time: check `captureViewHierarchy` output — a `ScrollView` shows as `RCTScrollView` (iOS) or `android.widget.ScrollView` (Android); a plain `View` shows as `RCTView` / `android.view.View`. If the type is `RCTView`, the `testID` is on the wrong element.
+
+### 26. `device.openNotifications()` hangs on iOS — it is Android-only [community]
+
+**Root cause**: `device.openNotifications()` is an Android-specific API that pulls down the notification shade. There is no iOS equivalent. Teams who test across both platforms call it inside an `if (device.getPlatform() === 'android')` guard, but when they forget the guard and run on iOS, the call does not throw immediately — it sends a gesture that may interact with whatever is at the swipe-down coordinates, causing unpredictable behavior.
+
+**WHY this catches teams**: The Detox TypeScript types expose `device.openNotifications()` without platform restriction. The API appears platform-agnostic in the type definitions.
+
+**Fix**: Always guard Android-only device APIs:
+
+```js
+it('opens and reads a push notification from the shade', async () => {
+  // Send the notification first
+  await device.sendUserNotification({
+    trigger: { type: 'push' },
+    title: 'Order shipped',
+    body: 'Your package is on its way!',
+  });
+
+  // openNotifications is Android-only — guard explicitly
+  if (device.getPlatform() !== 'android') {
+    // iOS: notification handling must be tested via sendUserNotification + tap simulation
+    // There is no "pull down notification shade" API for iOS
+    return;
+  }
+
+  await device.openNotifications();
+  await waitFor(element(by.text('Order shipped')))
+    .toBeVisible()
+    .withTimeout(5000);
+  await element(by.text('Order shipped')).tap();
+  await waitFor(element(by.id('order-status-screen')))
+    .toBeVisible()
+    .withTimeout(5000);
+});
+```
+
+**Android-only APIs to always guard:** `device.openNotifications()`, `device.pressBack()`, `device.reverseTcp()`, `device.matchFinger()`, `device.unmatchFinger()`. Check `device.getPlatform()` before calling any of these.
 
 **Root cause**: On iOS, apps that use `UIScene`-based multi-window architecture (e.g., iPadOS split-screen, Catalyst apps, apps that open a sheet window) can have multiple view hierarchies simultaneously. When `element(by.id('submit-button'))` matches in two different windows, Detox may interact with the element in the inactive window, causing silent failures where the tap appears to succeed but the expected navigation never happens.
 
@@ -2674,9 +3114,131 @@ describe('Warm deep link navigation', () => {
 
 For Universal Links (https://), use `device.openURL({ url: 'https://...' })` — these are routed by iOS's Associated Domains mechanism and do not require scheme registration.
 
-### 24. Detox worker environment variables not forwarded to the app process [community]
+### 27. `sendUserNotification` behaves differently based on app lifecycle state [community]
 
-**Root cause**: Environment variables set in the test runner (e.g., `process.env.API_BASE_URL`) are NOT automatically forwarded to the app binary running in the simulator. The app process runs in its own sandbox. Teams set `API_BASE_URL` in their CI pipeline and then wonder why the app still hits the production URL.
+**Root cause**: `device.sendUserNotification()` delivers the notification through iOS's UserNotifications framework. The notification routing behavior depends entirely on whether the app is in the foreground, background (suspended), or killed state — and Detox does not expose the app's lifecycle state, so teams write tests that assume one state when the app is actually in another.
+
+**The three notification states:**
+
+| App state | Notification behavior | What Detox's `sendUserNotification` simulates |
+|---|---|---|
+| Foreground | `userNotificationCenter:willPresent:withCompletionHandler:` fires — app receives it directly | ✓ Simulates foreground delivery |
+| Background (suspended) | iOS shows the notification banner; tap routes to `userNotificationCenter:didReceive:withCompletionHandler:` | ✓ Simulates background tap |
+| Killed | iOS shows the notification; tap cold-starts the app via `launchOptions` | Must use `device.launchApp({ userNotification: payload })` NOT `sendUserNotification` |
+
+**Common mistake** — calling `sendUserNotification` when app is killed, expecting cold-start behavior:
+
+```js
+// WRONG — app was just terminated; sendUserNotification cannot deliver to a killed app
+await device.terminateApp();
+await device.sendUserNotification({  // this does nothing — app is not running
+  trigger: { type: 'push' },
+  title: 'Flash sale!',
+});
+// Test hangs waiting for navigation that never happens
+```
+
+**Correct pattern for cold-start via notification:**
+
+```js
+// CORRECT — use launchApp with userNotification payload to simulate tap-from-notification cold start
+it('cold-starts the app from a tapped notification', async () => {
+  await device.terminateApp();
+
+  await device.launchApp({
+    newInstance: true,
+    userNotification: {
+      trigger: { type: 'push' },
+      title: 'Flash sale!',
+      body: '50% off for the next hour',
+      payload: {
+        screenId: 'sale-screen',
+        saleId: 'flash-42',
+      },
+    },
+  });
+
+  // App launched from notification — should route to the sale screen
+  await waitFor(element(by.id('sale-screen-flash-42')))
+    .toBeVisible()
+    .withTimeout(10000);
+});
+```
+
+**Correct pattern for foreground / background notification:**
+
+```js
+it('shows in-app notification banner when app is foregrounded', async () => {
+  // App is running in foreground
+  await waitFor(element(by.id('home-screen'))).toBeVisible().withTimeout(5000);
+
+  // sendUserNotification works because app is running
+  await device.sendUserNotification({
+    trigger: { type: 'push' },
+    title: 'New message',
+    body: 'Alice: Are you coming?',
+  });
+
+  await waitFor(element(by.id('in-app-notification-banner')))
+    .toBeVisible()
+    .withTimeout(3000);
+});
+```
+
+### 28. `waitFor().whileElement().scroll()` overshoots and buries the target element [community]
+
+**Root cause**: `waitFor(element(by.id('target'))).toBeVisible().whileElement(by.id('list')).scroll(300, 'down')` scrolls the list by 300px on *every* poll iteration until the target is visible. If the list scrolls past the target element's position (i.e., the target was only 50px below the fold when the first scroll fired), the target is now 250px *above* the current viewport — no longer visible. Detox keeps scrolling down, never finding the element, until the timeout fires.
+
+**WHY it's confusing**: The test output says "timeout waiting for element to become visible" — which makes it sound like the element doesn't exist, when the real problem is it was visible for one frame and then scrolled past.
+
+**Fix**: Use a smaller `scroll` step size so each poll increments the scroll by a fraction of the viewport height. A step of `50`–`100` px per poll is usually sufficient for items in a virtualized list:
+
+```js
+// BAD — 300px step frequently overshoots items near the current scroll position
+await waitFor(element(by.id('product-item-12')))
+  .toBeVisible()
+  .whileElement(by.id('product-list'))
+  .scroll(300, 'down');
+
+// GOOD — 50px step: slower but reliable; won't overshoot unless item height < 50px
+await waitFor(element(by.id('product-item-12')))
+  .toBeVisible()
+  .whileElement(by.id('product-list'))
+  .scroll(50, 'down');
+```
+
+**Practical rule of thumb**: Set the scroll step to approximately ¼ of the minimum expected item height. If items are 80px tall, use a step of 20–40px. For `SectionList` headers (which are larger), 80–100px is appropriate.
+
+### 29. Running `detox test` without `--configuration` flag silently tests the wrong binary [community]
+
+**Root cause**: When no `-c` / `--configuration` flag is passed to `npx detox test`, Detox uses the *first configuration alphabetically* in `.detoxrc.js`. If the first alphabetical entry is a Debug build but the intent is to run against Release (as recommended for CI), the test runs against the Debug binary — with the JS debugger port open, hot-reload active, and slower cold-boot times. The tests may also behave differently because debug builds include extra logging and slower layout measurements.
+
+**WHY this bites CI pipelines**: Local developers always pass `-c ios.sim.debug`. When a new CI pipeline author copies the command without the flag, it silently picks the wrong configuration. Results look plausible but are not representative of production behavior.
+
+**Fix**: Always specify `-c` in CI scripts, and document the correct configuration in package.json scripts:
+
+```yaml
+# GitHub Actions — always specify configuration explicitly
+- name: Run Detox E2E tests
+  run: |
+    # Fail fast if DETOX_CONFIGURATION is not set (prevents silent misconfiguration)
+    : "${DETOX_CONFIGURATION:?DETOX_CONFIGURATION env var must be set}"
+    npx detox test -c "$DETOX_CONFIGURATION" --loglevel verbose
+  env:
+    DETOX_CONFIGURATION: ios.sim.release
+```
+
+```json
+// package.json — document both local and CI variants explicitly
+{
+  "scripts": {
+    "test:e2e": "detox test -c ios.sim.debug",
+    "test:e2e:ci": "detox test -c ios.sim.release --loglevel verbose"
+  }
+}
+```
+
+### 30. Detox worker environment variables not forwarded to the app process [community]
 
 **WHY this bites teams**: Works in unit/integration tests (same process) but fails for e2e tests. The mental model of "env vars flow everywhere" breaks at the native app boundary.
 
@@ -2711,7 +3273,88 @@ const API_BASE_URL = launchArgs.API_BASE_URL ?? 'https://api.production.com';
 
 ---
 
-## Timeline Artifact and Performance Profiling
+## Feature Flag Variant Testing
+
+When your app has an A/B test or feature flag that changes the UI, run the same e2e test
+against both flag variants by creating two Detox `app` entries — one built with the flag
+enabled, one without. This catches regressions in both variants in CI without duplicating
+test files.
+
+### Pattern: Two-variant Detox configuration
+
+```js
+// .detoxrc.js — two app builds: control (flag off) and variant (flag on)
+apps: {
+  'ios.release': {
+    type: 'ios.app',
+    binaryPath: 'ios/build/Release-control/MyApp.app',
+    build: 'FEATURE_NEW_CHECKOUT=0 npx detox build -c ios.sim.release',
+  },
+  'ios.release.variant': {
+    type: 'ios.app',
+    binaryPath: 'ios/build/Release-variant/MyApp.app',
+    build: 'FEATURE_NEW_CHECKOUT=1 npx detox build -c ios.sim.release',
+  },
+},
+configurations: {
+  'ios.sim.release': {
+    device: 'simulator',
+    app: 'ios.release',
+  },
+  'ios.sim.release.variant': {
+    device: 'simulator',
+    app: 'ios.release.variant',
+  },
+},
+```
+
+```yaml
+# GitHub Actions — matrix across both configurations
+strategy:
+  matrix:
+    config: [ios.sim.release, ios.sim.release.variant]
+steps:
+  - name: Run Detox (${{ matrix.config }})
+    run: npx detox test -c ${{ matrix.config }} --loglevel verbose
+```
+
+### Pattern: Runtime feature flag injection via launchArgs
+
+When the flag is not baked at build time but is read from a remote config at startup, inject
+it via `launchArgs` so the app uses the test value instead of the production remote config:
+
+```js
+// e2e/setup.js — inject feature flags at launch time
+const FEATURE_FLAGS = {
+  NEW_CHECKOUT: process.env.TEST_FEATURE_NEW_CHECKOUT || '0',
+  DARK_MODE: process.env.TEST_FEATURE_DARK_MODE || '0',
+};
+
+beforeAll(async () => {
+  await device.launchApp({
+    newInstance: true,
+    launchArgs: {
+      ...FEATURE_FLAGS,
+      DETOX_MODE: '1',
+    },
+  });
+});
+```
+
+```js
+// In RN app — check launchArgs before fetching remote config
+import { NativeModules } from 'react-native';
+const launch = NativeModules.DetoxSync?.launchArgs ?? {};
+
+// If Detox injected a feature flag, use it directly; otherwise fetch remotely
+const isNewCheckout = launch.NEW_CHECKOUT === '1'
+  ? true
+  : await fetchRemoteFeatureFlag('new_checkout');
+```
+
+**Why this matters [community]:** Remote config services (Firebase Remote Config, LaunchDarkly) fetch flags asynchronously on startup. The async fetch keeps the app "busy" for Detox's idle detector — adding 500–2000 ms of lag to every test. By overriding flags via `launchArgs`, you short-circuit the network call entirely, making tests faster and eliminating a source of intermittent timeouts.
+
+---
 
 Detox can record a test execution timeline — a JSON file that maps every Detox action to a wall-clock timestamp. This is invaluable for identifying slow tests and understanding where time is spent.
 

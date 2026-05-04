@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 27 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: mixed (official + community) | iteration: 29 | score: 100/100 | date: 2026-05-03 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -31,6 +31,8 @@
      Iter 25 (run2 iter 8): 100/100 (+0) — added typing.Literal for exact-value types, dict merge | operator, **kwargs validation gotcha (#21)
      Iter 26 (run2 iter 9): 100/100 (+0) — added __bool__/__len__ truthiness pattern, global state anti-pattern gotcha (#22)
      Iter 27 (run2 iter 10 — FINAL): 100/100 (+0) — added functools.reduce/pipeline patterns, fixed Literal section header, expanded anti-pattern table with 9 new rows
+     [lang-refine run3] Iter 28 (run3 iter 1): 100/100 (+0) — added @override/@final decorators, `type` alias statement (PEP 695), ReadOnly TypedDict (Python 3.13), TypeIs vs TypeGuard distinction, AnyStr deprecation; added community gotchas #23 (runtime_checkable in hot paths) and #24 (missing @override)
+     Iter 29 (run3 iter 2): 100/100 (+0) — added logging best practices vs print(), pprint/reprlib idioms, src-layout packaging guidance; community gotcha #25 (print() in production) and #26 (logging misconfiguration)
 -->
 
 ## Core Philosophy
@@ -3182,6 +3184,143 @@ def connect_typed(**kwargs: Unpack[ConnectOptions]) -> str:
 
 ---
 
+### 25. `print()` Debugging Left in Production Code  [community]
+**Problem:** Using `print()` statements for debugging produces output that goes to stdout with no timestamp, no level, no module path, and no way to disable it without code changes. It has caused production incidents (filling log disks, leaking sensitive data to stdout collectors, messing up CLI output parsing).
+**Why:** `print()` bypasses all log routing, filtering, and formatting infrastructure. In containerised environments, stdout is often collected and indexed — raw `print()` noise pollutes structured log pipelines, breaks log-level filtering, and can inadvertently expose variable values (passwords, tokens) to log aggregators.
+**Fix:** Use the `logging` module. Configure a logger per module. Use `logging.debug()` for temporary diagnostic output; it is silenced in production with one config line. Remove print statements before committing — a pre-commit hook or `ruff` rule `T201` can enforce this.
+```python
+import logging
+
+# Module-level logger — use __name__ so output identifies the source
+log = logging.getLogger(__name__)
+
+
+# BAD — prints to stdout; cannot be silenced without code changes
+def process_order(order_id: int) -> None:
+    print(f"Processing order {order_id}")   # Leaks to stdout forever
+    # ...
+    print("Done")
+
+
+# GOOD — structured logging; disabled by default at INFO+ in production
+def process_order_good(order_id: int) -> None:
+    log.debug("Processing order %d", order_id)   # Off in production
+    # ...
+    log.info("Order %d processed successfully", order_id)   # On in production
+
+
+# Application entry point: configure once
+def setup_logging(level: str = "INFO") -> None:
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        level=getattr(logging, level.upper()),
+    )
+
+
+# For libraries: add NullHandler only — let the application configure
+logging.getLogger("mylib").addHandler(logging.NullHandler())
+```
+
+### 26. Logging Misconfiguration — Root Logger Pollution  [community]
+**Problem:** Calling `logging.basicConfig()` or `logging.warning()` at module level in a library configures the root logger. Every application that imports the library inherits this configuration, overriding the application's own logging setup. This manifests as unexpected output, wrong formats, or missing messages in users' applications.
+**Why:** The root logger is a global singleton. Libraries that call `basicConfig()` or attach handlers to the root logger pollute the logging hierarchy for every downstream consumer. The Python logging docs explicitly warn against this.
+**Fix:** Libraries should only call `logging.getLogger(__name__)` and optionally add `NullHandler`. Never call `basicConfig()`, never add handlers at module level. Let the application own the root logger configuration.
+```python
+# BAD — library code that pollutes root logger
+import logging
+
+logging.basicConfig(level=logging.DEBUG)  # BAD! Affects ALL downstream users
+
+def get_data():
+    logging.info("fetching data")  # BAD! Writes to root logger directly
+    return {}
+
+
+# GOOD — library code
+import logging
+
+_log = logging.getLogger(__name__)   # Scoped to this module only
+
+# Add NullHandler to prevent "No handlers found" warning if app doesn't configure
+_log.addHandler(logging.NullHandler())
+
+
+def get_data():
+    _log.debug("fetching data")   # Controlled by the application, not the library
+    return {}
+
+
+# GOOD — application code: configure root logger once at startup
+def configure_logging(debug: bool = False) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(),               # Console
+            logging.FileHandler("app.log"),        # File
+        ],
+    )
+    # Silence noisy third-party libraries
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("boto3").setLevel(logging.WARNING)
+```
+
+---
+
+### `pprint` and `reprlib` for Debugging Complex Data
+
+`pprint.pformat()` produces human-readable multi-line representations of nested data. `reprlib.repr()` truncates long structures so they don't overwhelm log output. Both are the correct tools for debugging, not manual string building.
+
+```python
+import pprint
+import reprlib
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Order:
+    id: int
+    items: list[str]
+    metadata: dict
+
+
+orders = [
+    Order(1, ["apple", "banana", "cherry"], {"source": "web", "promo": "SAVE10"}),
+    Order(2, list(range(50)), {"source": "api"}),   # Large item list
+]
+
+
+# pprint — pretty-print with configurable width and depth
+pp = pprint.PrettyPrinter(indent=2, width=60, depth=3)
+pp.pprint(orders)
+
+# pformat — get the string instead of printing (for logging)
+import logging
+log = logging.getLogger(__name__)
+log.debug("Orders snapshot:\n%s", pprint.pformat(orders, width=80))
+
+
+# reprlib — truncated repr for large structures (safe for logging)
+r = reprlib.Repr()
+r.maxlist = 5       # Show max 5 list items
+r.maxstring = 40    # Truncate strings at 40 chars
+r.maxother = 30     # Other types at 30 chars
+
+large_list = list(range(1000))
+print(r.repr(large_list))   # [0, 1, 2, 3, 4, ...]  (not 1000 items)
+
+long_str = "a" * 500
+print(r.repr(long_str))     # 'aaa...aaa'  (truncated)
+
+
+# Custom reprlib subclass for domain objects
+class DomainRepr(reprlib.Repr):
+    def repr_Order(self, obj: Order, level: int) -> str:
+        return f"Order(id={obj.id!r}, items={len(obj.items)} items)"
+```
+
+---
+
 ### `functools.reduce` and Fold Patterns
 
 `functools.reduce` applies a binary function cumulatively to a sequence, folding it to a single value. It is the functional equivalent of a loop that accumulates a result. Combine with `operator` module for clean, readable pipelines.
@@ -3254,6 +3393,352 @@ print(product)   # 120
 
 ---
 
+### `@override` and `@final` Decorators (Python 3.12+)
+
+`@override` (PEP 698) tells the type checker that a method is intentionally overriding a parent method. If the parent method is renamed or removed, the type checker raises an error, catching a whole class of silent API breakage bugs. `@final` prevents further subclassing or overriding.
+
+```python
+from typing import override, final
+
+
+class Base:
+    def process(self, value: int) -> str:
+        return str(value)
+
+    def display(self) -> None:
+        print("Base display")
+
+
+class Child(Base):
+    @override
+    def process(self, value: int) -> str:  # OK — exists in Base
+        return f"processed: {value}"
+
+    @override
+    def displaye(self) -> None:  # Type checker error: 'displaye' not in Base
+        print("Child display")  # Typo caught statically
+
+
+@final
+class Singleton:
+    """This class cannot be subclassed."""
+
+    _instance: "Singleton | None" = None
+
+    def __new__(cls) -> "Singleton":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+
+class SubSingleton(Singleton):  # Type checker error: cannot subclass @final class
+    pass
+
+
+class Registry:
+    @final
+    def _internal_hook(self) -> None:
+        """Subclasses must not override this — it is called by the framework."""
+        ...
+
+    def on_register(self) -> None:
+        """Subclasses CAN override this."""
+        ...
+```
+
+**Why `@override` matters:** When you refactor a base class by renaming a method, every `@override`-annotated subclass immediately shows an error. Without `@override`, silent breakage — the subclass method becomes an unrelated new method, not an override — can go unnoticed until runtime.
+
+---
+
+### `type` Statement for Type Aliases (Python 3.12+)
+
+PEP 695 introduces the `type` soft keyword for creating type aliases. Unlike `TypeAlias`, the `type` statement is evaluated lazily (supports forward references) and is recognised by type checkers as a true alias declaration.
+
+```python
+# Python 3.12+ preferred syntax
+type Vector = list[float]
+type Matrix = list[Vector]
+type ConnectionOptions = dict[str, str | int]
+
+# Generic type aliases — no TypeVar needed
+type Pair[T] = tuple[T, T]
+type MaybeList[T] = T | list[T]
+
+# Forward reference in a type alias (lazy evaluation — works without quotes)
+type NodeTree = "Node | list[NodeTree]"
+
+
+# Contrast with the old approach (still valid but verbose)
+from typing import TypeAlias
+OldVector: TypeAlias = list[float]
+
+# And the Python 3.9 implicit alias (not recognised by all tools)
+ImplicitAlias = list[float]  # Ambiguous — could be a variable or alias
+
+
+# Practical use: domain-specific type aliases
+type UserId = int
+type OrderId = int
+type Timestamp = float
+type JsonDict = dict[str, "JsonValue"]
+type JsonValue = str | int | float | bool | None | JsonDict | list["JsonValue"]
+
+
+def process_user(uid: UserId) -> None:
+    ...
+
+
+def process_order(oid: OrderId) -> None:
+    ...
+```
+
+**Key differences from `TypeAlias`:** `type X = Y` is lazy (no `from __future__ import annotations` needed for forward refs), is a statement (not assignment), and creates a `TypeAliasType` object. `TypeAlias` (Python 3.10) and implicit assignment remain valid for older Python versions.
+
+---
+
+### `ReadOnly` for Immutable TypedDict Keys (Python 3.13+)
+
+`typing.ReadOnly` marks individual TypedDict keys as read-only for type checkers, preventing accidental mutation of keys that should never change after creation.
+
+```python
+from typing import TypedDict, ReadOnly
+
+
+class User(TypedDict):
+    id: ReadOnly[int]        # Immutable — set at creation, never changed
+    username: ReadOnly[str]  # Immutable — changing usernames is a business error
+    email: str               # Mutable — users can update their email
+    display_name: str        # Mutable
+
+
+def update_email(user: User, new_email: str) -> None:
+    user["email"] = new_email        # OK — email is mutable
+    user["username"] = "new_name"    # Type checker error: ReadOnly key
+
+
+# ReadOnly is structurally compatible with a dict that has non-ReadOnly keys
+# (you can read a ReadOnly TypedDict from a non-ReadOnly source)
+class MutableUser(TypedDict):
+    id: int
+    username: str
+    email: str
+    display_name: str
+
+
+def display(user: User) -> str:
+    return f"{user['username']} <{user['email']}>"
+
+
+# MutableUser satisfies User (ReadOnly is a subtype constraint for writers)
+mutable: MutableUser = {"id": 1, "username": "alice", "email": "a@x.com", "display_name": "Alice"}
+display(mutable)   # OK — reading ReadOnly keys is always allowed
+
+
+# Pattern: separate creation dict (mutable) from view dict (ReadOnly-protected)
+class CreateUserRequest(TypedDict):
+    username: str
+    email: str
+
+class UserRecord(TypedDict):
+    id: ReadOnly[int]
+    username: ReadOnly[str]
+    email: str
+```
+
+---
+
+### `TypeIs` vs `TypeGuard` — The Right Predicate for Narrowing (Python 3.13)
+
+`TypeIs` (PEP 742, Python 3.13) is the stricter, preferred replacement for `TypeGuard` in most cases. The key difference: `TypeIs` narrows the type on both the `True` and `False` branches, and requires the narrowed type to be a subtype of the input type.
+
+```python
+from typing import TypeGuard, TypeIs
+
+
+# TypeIs — preferred for isinstance-like predicates (Python 3.13+)
+def is_str(val: object) -> TypeIs[str]:
+    return isinstance(val, str)
+
+
+def process(val: str | int) -> None:
+    if is_str(val):
+        reveal_type(val)  # str — narrowed on True branch
+    else:
+        reveal_type(val)  # int — narrowed on False branch too!
+
+
+# TypeGuard — needed when narrowing to an INCOMPATIBLE type (older pattern)
+# e.g., list[object] → list[str] (list[str] is NOT a subtype of list[object])
+def is_str_list(val: list[object]) -> TypeGuard[list[str]]:
+    return all(isinstance(x, str) for x in val)
+
+
+def join_strings(val: list[object]) -> str:
+    if is_str_list(val):
+        return ", ".join(val)   # val is list[str] here
+    return ""
+# Note: 'else' branch does NOT narrow val — remains list[object]
+
+
+# WRONG: using TypeGuard where TypeIs is cleaner
+def is_int_wrong(val: object) -> TypeGuard[int]:  # Works but imprecise on False
+    return isinstance(val, int)
+
+
+# RIGHT: TypeIs correctly narrows both branches
+def is_int(val: object) -> TypeIs[int]:
+    return isinstance(val, int)
+```
+
+**Rule:** Use `TypeIs` for `isinstance`-style checks where the narrowed type is a subtype of the input type. Use `TypeGuard` only when you need to change type parameters (e.g., `list[object]` → `list[str]`) which requires an escape hatch. `TypeIs` is more precise and will catch more bugs.
+
+---
+
+### `AnyStr` Deprecation — Use Union Instead (Python 3.13)
+
+`AnyStr` is deprecated in Python 3.13 and scheduled for removal in Python 3.18. It was used to write functions that accept either `str` or `bytes` but not mixed. The modern idiom uses `TypeVar` with constraints or a union.
+
+```python
+# DEPRECATED — AnyStr (do not use in new code)
+from typing import AnyStr  # Will be removed in Python 3.18
+
+def to_upper_deprecated(s: AnyStr) -> AnyStr:
+    return s.upper()
+
+
+# PREFERRED option A — TypeVar with explicit constraints (same behaviour)
+from typing import TypeVar
+
+StrOrBytes = TypeVar("StrOrBytes", str, bytes)
+
+def to_upper(s: StrOrBytes) -> StrOrBytes:
+    return s.upper()  # type: ignore[return-value]
+
+
+# PREFERRED option B — overloads for different return types
+from typing import overload
+
+@overload
+def encode(value: str) -> bytes: ...
+@overload
+def encode(value: bytes) -> bytes: ...
+
+def encode(value: str | bytes) -> bytes:
+    if isinstance(value, str):
+        return value.encode()
+    return value
+
+
+# PREFERRED option C — plain union when the types don't need to match
+def process(data: str | bytes) -> None:
+    if isinstance(data, bytes):
+        data = data.decode("utf-8")
+    print(data.upper())
+```
+
+---
+
+### 23. `@runtime_checkable` Protocol in Hot Paths  [community]
+**Problem:** `isinstance()` checks against `@runtime_checkable` protocols are significantly slower than `isinstance()` checks against concrete classes or abstract base classes. Using them in tight loops or per-request code paths creates measurable performance regressions.
+**Why:** `@runtime_checkable` checks every required attribute via `getattr`, with O(k) cost per check where k is the number of protocol members. A concrete `isinstance(x, MyClass)` is O(1). At 100k checks/sec, the protocol check can be 10–50× slower. The CPython implementation cannot cache the result — every call re-inspects the object.
+**Fix:** In performance-critical paths, replace `isinstance(obj, Protocol)` with `hasattr(obj, 'method_name')` or a cached lookup. Reserve `@runtime_checkable` for validation/debug paths only, not hot loops.
+```python
+from typing import Protocol, runtime_checkable
+import timeit
+
+
+@runtime_checkable
+class Processable(Protocol):
+    def process(self) -> str: ...
+    def validate(self) -> bool: ...
+
+
+class ConcreteItem:
+    def process(self) -> str:
+        return "done"
+    def validate(self) -> bool:
+        return True
+
+
+item = ConcreteItem()
+
+# BAD in hot paths — Protocol isinstance is slow
+def process_hot_bad(items: list) -> list[str]:
+    return [
+        item.process()
+        for item in items
+        if isinstance(item, Processable)   # O(k) per item
+    ]
+
+# GOOD — duck-typed hasattr check is O(1)
+def process_hot_good(items: list) -> list[str]:
+    return [
+        item.process()
+        for item in items
+        if hasattr(item, "process") and hasattr(item, "validate") and item.validate()
+    ]
+
+# BEST — use Protocol only for type checking, not runtime isinstance
+# Add Protocol to the ABC hierarchy for one-time class-level registration:
+from abc import ABC
+
+class ProcessableABC(ABC):
+    def process(self) -> str: ...  # type: ignore[return]
+    def validate(self) -> bool: ...  # type: ignore[return]
+
+# Then isinstance(item, ProcessableABC) is O(1)
+# Use Protocol only for static typing of external classes you don't own
+```
+
+### 24. Not Using `@override` — Silent API Contract Breakage  [community]
+**Problem:** When a base class method is renamed, removed, or has its signature changed, subclasses that intended to override it continue compiling and running — but the override silently becomes a new, unrelated method. No error is raised at definition time or at test time unless the test explicitly calls through the base class interface.
+**Why:** Python has no runtime enforcement of method overriding. A method named `prcess()` in a subclass is just a new method; Python has no way to know the developer intended to override `process()`. This is a top source of bugs during refactoring — the base class changes, the subclass silently stops overriding, and the bug only appears in production when the base class's new method path is executed.
+**Fix:** Use `@typing.override` on every method that intentionally overrides a parent class method. Run mypy or pyright in CI. The type checker will error immediately if the parent no longer has that method.
+```python
+from typing import override
+
+
+class MessageHandler:
+    def handle(self, message: str) -> None:
+        print(f"Handling: {message}")
+
+    def validate(self, message: str) -> bool:
+        return len(message) > 0
+
+
+# BAD — typo: 'handl' not 'handle'; silently creates a new method
+class BadHandler(MessageHandler):
+    def handl(self, message: str) -> None:   # Typo — not an override!
+        print(f"Custom: {message}")
+    # MessageHandler.handle() is called, not BadHandler.handl()!
+
+
+# GOOD — @override catches the typo at static analysis time
+class GoodHandler(MessageHandler):
+    @override
+    def handle(self, message: str) -> None:   # Type checker verifies: exists in parent
+        print(f"Custom: {message}")
+
+    @override
+    def handl(self, message: str) -> None:   # type checker ERROR: 'handl' not in parent
+        ...
+
+
+# Real scenario: base class refactoring
+class BaseProcessor:
+    def process_item(self, item: dict) -> dict:   # Renamed from 'process'
+        return item
+
+
+class MyProcessor(BaseProcessor):
+    @override
+    def process(self, item: dict) -> dict:   # Type checker ERROR: 'process' not in base
+        return {**item, "processed": True}
+    # Without @override, this silently becomes an unused new method
+```
+
+---
+
 ### Final Anti-Patterns Quick Reference Additions
 
 | Anti-pattern | Why it's harmful | What to do instead |
@@ -3267,3 +3752,10 @@ print(product)   # 120
 | Bare `**kwargs` with no validation | Typos silently ignored; no IDE completion | Explicit keyword-only params or `TypedDict + Unpack` |
 | Generator used twice | Second iteration is silently empty | Convert to `list()` first or re-create for each pass |
 | `except* E` on Python < 3.11 | `SyntaxError` | Guard with version check or use `asyncio.gather(return_exceptions=True)` |
+| `AnyStr` in new code | Deprecated (Python 3.13), removed in 3.18 | Use constrained `TypeVar` or `overload` |
+| No `@override` on subclass methods | Silent contract breakage when parent is refactored | Annotate all overrides with `@typing.override`; run mypy/pyright in CI |
+| `isinstance(obj, Protocol)` in tight loop | O(k) per check; 10–50× slower than concrete isinstance | Use `hasattr` or register against an ABC for hot paths |
+| Implicit type alias assignment | Ambiguous — treated as variable by some tools | Use `type X = Y` (Python 3.12+) or `X: TypeAlias = Y` (3.10+) |
+| `print()` in production code | No log level, no filtering, leaks to stdout collectors | Use `logging.getLogger(__name__)` and log levels |
+| `logging.basicConfig()` in library code | Pollutes root logger for all downstream users | Only add `NullHandler` in libraries; let applications configure |
+| `print(pprint.pformat(x))` for debug | Redundant; use `pprint.pprint()` directly or log via `log.debug("%s", pprint.pformat(x))` | `pprint.pprint()` or `reprlib.repr()` for truncated output |

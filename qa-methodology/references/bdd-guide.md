@@ -1,5 +1,5 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 10 | score: 100/100 | date: 2026-05-03 | sources: training-knowledge -->
+<!-- lang: TypeScript | topic: bdd | iteration: 20 | score: 100/100 | date: 2026-05-03 | sources: training-knowledge -->
 <!-- WebFetch and WebSearch unavailable; synthesized from training knowledge + TypeScript patterns reference -->
 
 ## Core Principles
@@ -3381,3 +3381,2389 @@ session a velocity investment, not a tax.
 - [BDD Books — Gaspar Nagy & Seb Rose](https://bddbooks.com/) — comprehensive practitioner reference for BDD at scale
 - [Example Mapping whitepaper (Matt Wynne)](https://cucumber.io/blog/bdd/example-mapping-introduction/) — structured Three Amigos workshop technique
 - [ISTQB CTFL 4.0 Syllabus](https://www.istqb.org/certifications/certified-tester-foundation-level) — standardized testing terminology reference
+
+---
+
+### Gherkin `Rule` Keyword: Structuring Scenarios by Business Rule
+
+The `Rule` keyword (introduced in Cucumber 6+, now standard) groups related scenarios that
+all test a single business rule within a feature. It sits between the `Feature` header and
+individual `Scenario` blocks, acting as a second-level heading that makes the feature file
+self-documenting.
+
+**Why `Rule` matters**: A `Feature` with 12 unrelated scenarios is hard to read. Grouping
+by business rule reveals which rule each scenario is verifying. Product managers can scan
+the rules at a glance and immediately understand the feature's policy surface. QA engineers
+can see which rules have full scenario coverage and which have gaps.
+
+```gherkin
+# features/payments/refund-policy.feature
+
+Feature: Refund policy enforcement
+  As a finance team
+  I want the refund policy to be consistently enforced
+  So that customers receive fair treatment and the business controls refund costs
+
+  Rule: Refunds are only available within 30 days of order confirmation
+
+    Scenario: Customer requests a refund within the 30-day window
+      Given I have a confirmed order from 15 days ago
+      When I request a full refund
+      Then the refund should be approved
+      And I should receive a refund confirmation email
+
+    Scenario: Customer requests a refund exactly on day 30
+      Given I have a confirmed order from exactly 30 days ago
+      When I request a full refund
+      Then the refund should be approved
+
+    Scenario: Customer requests a refund after 30 days
+      Given I have a confirmed order from 31 days ago
+      When I request a full refund
+      Then the refund should be rejected
+      And I should see the message "Refund window has closed (30-day limit)"
+
+  Rule: Digital products are non-refundable once downloaded
+
+    Scenario: Customer has not downloaded a digital product
+      Given I purchased a digital product 5 days ago
+      And I have not downloaded the product
+      When I request a refund
+      Then the refund should be approved
+
+    Scenario: Customer has downloaded a digital product
+      Given I purchased a digital product 5 days ago
+      And I have already downloaded the product
+      When I request a refund
+      Then the refund should be rejected
+      And I should see the message "Downloaded digital products are non-refundable"
+
+  Rule: Partial refunds apply when only some items in an order are returned
+
+    Background:
+      Given I have a confirmed order containing:
+        | product       | price  |
+        | Laptop stand  | 49.99  |
+        | USB-C hub     | 29.99  |
+
+    Scenario: Returning one item from a multi-item order
+      When I initiate a return for the "Laptop stand" only
+      Then a partial refund of $49.99 should be processed
+      And my order should still show the "USB-C hub" as active
+```
+
+**Step definition handling with `Rule`** — the `Rule` keyword has no corresponding step
+binding. It is purely a Gherkin structural element. Steps work identically; only the
+feature file organization changes:
+
+```typescript
+// src/steps/refund.steps.ts — steps apply to all scenarios regardless of Rule grouping
+import { Given, When, Then } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+Given(
+  'I have a confirmed order from {int} days ago',
+  async function (this: AppWorld, daysAgo: number) {
+    const orderDate = new Date();
+    orderDate.setDate(orderDate.getDate() - daysAgo);
+    const order = await this.dataFactory.createTestOrder(this.customerId, {
+      confirmedAt: orderDate.toISOString(),
+      status: 'confirmed',
+    });
+    this.currentOrderId = order.orderId;
+  }
+);
+
+When('I request a full refund', async function (this: AppWorld) {
+  this.refundResponse = await this.apiContext.post(
+    `/api/orders/${this.currentOrderId}/refund`,
+    { data: { type: 'full', reason: 'customer_request' } }
+  );
+});
+
+Then('the refund should be approved', async function (this: AppWorld) {
+  if (!this.refundResponse.ok()) {
+    const body = await this.refundResponse.json();
+    throw new Error(`Refund rejected unexpectedly: ${JSON.stringify(body)}`);
+  }
+  const body = await this.refundResponse.json() as { status: string };
+  if (body.status !== 'approved') {
+    throw new Error(`Expected refund status "approved", got "${body.status}"`);
+  }
+});
+
+Then('the refund should be rejected', async function (this: AppWorld) {
+  if (this.refundResponse.ok()) {
+    throw new Error(`Expected refund rejection (4xx) but got ${this.refundResponse.status()}`);
+  }
+});
+
+Then('I should see the message {string}', async function (this: AppWorld, message: string) {
+  const body = await this.refundResponse.json() as { message: string };
+  if (!body.message.includes(message)) {
+    throw new Error(`Expected message "${message}", got "${body.message}"`);
+  }
+});
+```
+
+**`Rule` with `Background`** — a `Background` section inside a `Rule` block applies only
+to scenarios within that rule, not the entire feature. This is the primary advantage of
+`Rule` over flat feature files: background setup can be scoped to the scenarios that need it.
+
+```gherkin
+Feature: Shopping cart discounts
+
+  # This Background applies to ALL scenarios in the feature
+  Background:
+    Given I am a registered customer
+
+  Rule: First-time customer discounts are applied automatically
+
+    # This Background applies ONLY to scenarios within this Rule block
+    Background:
+      Given my account was created today
+      And I have never placed an order
+
+    Scenario: First order receives 10% welcome discount
+      When I add items totalling $100 to my cart
+      Then my cart total should show $90
+
+    Scenario: Welcome discount does not apply to subsequent orders
+      Given I have previously placed an order
+      When I add items totalling $100 to my cart
+      Then my cart total should show $100
+```
+
+**[community] `Rule` keyword adoption gap**: Despite being available since Cucumber 6
+(2020), the `Rule` keyword is underused in most BDD suites. Teams default to flat feature
+files with 10–20 unrelated scenarios. The `Rule` keyword pays back immediately in
+readability: stakeholders who review feature files can now understand the policy structure
+of a feature in 30 seconds rather than reading every scenario. Add `one-rule-per-business-rule`
+as a guideline in your Gherkin review checklist.
+
+**[community] `Rule` as design feedback**: When a single `Rule` block in a feature has
+more than 8 scenarios, it is a signal that the business rule has too many edge cases to be
+expressed as a single scenario collection — it likely hides a sub-rule that should be
+elevated to its own `Rule` block or split into a separate feature file.
+
+---
+
+### Screenplay Pattern for BDD Step Definitions  [community]
+
+The Screenplay Pattern is an alternative to Page Objects for organizing automation code
+in BDD step definitions. Instead of objects representing pages, it uses three concepts:
+
+- **Actors**: Represent users (Alice, Bob, admin, guest). Each actor has *Abilities* (browse the web, call an API).
+- **Tasks**: High-level user goals ("Alice places an order"). Tasks are composed of *Actions*.
+- **Actions**: Atomic interactions ("fill the card number field", "click confirm").
+
+The Screenplay Pattern solves the primary Page Object limitation: page objects encourage
+step definitions that are coupled to a single page. An `Actor` can perform tasks across
+multiple pages, which better represents real user journeys.
+
+**Why Screenplay over Page Objects**: Page objects model the system's UI structure.
+Screenplay models user intent. When a user journey spans multiple pages (checkout →
+confirmation → email → account history), a page-object-based step definition calls
+methods on multiple page objects in sequence. A Screenplay `Task` encapsulates the entire
+journey as a named intent — `PlaceOrder.withCreditCard()` — making the step definition
+readable at the business level.
+
+```typescript
+// src/screenplay/abilities/BrowseTheWeb.ts — Actor's ability to use a browser
+import { Page } from '@playwright/test';
+
+export class BrowseTheWeb {
+  private constructor(private readonly page: Page) {}
+
+  static using(page: Page): BrowseTheWeb {
+    return new BrowseTheWeb(page);
+  }
+
+  getPage(): Page {
+    return this.page;
+  }
+}
+
+// src/screenplay/actors/Actor.ts — Actor holds abilities and performs tasks
+export class Actor {
+  private readonly abilities = new Map<Function, object>();
+
+  constructor(public readonly name: string) {}
+
+  whoCan(...newAbilities: object[]): this {
+    for (const ability of newAbilities) {
+      this.abilities.set(ability.constructor, ability);
+    }
+    return this;
+  }
+
+  ability<T>(abilityClass: new (...args: unknown[]) => T): T {
+    const found = this.abilities.get(abilityClass);
+    if (!found) {
+      throw new Error(`${this.name} does not have ${abilityClass.name} ability`);
+    }
+    return found as T;
+  }
+
+  async attemptsTo(...tasks: Array<{ performAs: (actor: Actor) => Promise<void> }>): Promise<void> {
+    for (const task of tasks) {
+      await task.performAs(this);
+    }
+  }
+}
+
+// src/screenplay/tasks/PlaceOrder.ts — Task: place an order end-to-end
+import { Actor } from '../actors/Actor';
+import { BrowseTheWeb } from '../abilities/BrowseTheWeb';
+import { NavigateTo } from '../actions/NavigateTo';
+import { FillField } from '../actions/FillField';
+import { ClickButton } from '../actions/ClickButton';
+
+export class PlaceOrder {
+  private constructor(
+    private readonly items: Array<{ productId: string; quantity: number }>
+  ) {}
+
+  static forItems(items: Array<{ productId: string; quantity: number }>): PlaceOrder {
+    return new PlaceOrder(items);
+  }
+
+  async performAs(actor: Actor): Promise<void> {
+    const page = actor.ability(BrowseTheWeb).getPage();
+
+    // Add items to cart via API (faster than UI interaction)
+    for (const item of this.items) {
+      await page.request.post('/api/cart/items', {
+        data: item
+      });
+    }
+
+    // Navigate to checkout and complete purchase
+    await page.goto('/checkout');
+    await page.getByTestId('card-number').fill('4242424242424242');
+    await page.getByTestId('card-expiry').fill('12/28');
+    await page.getByTestId('card-cvv').fill('123');
+    await page.getByTestId('confirm-order').click();
+    await page.waitForURL(/\/order\/confirmation/);
+  }
+}
+
+// src/steps/checkout.steps.ts — Screenplay-based step definitions
+import { Given, When, Then } from '@cucumber/cucumber';
+import { Actor } from '../screenplay/actors/Actor';
+import { BrowseTheWeb } from '../screenplay/abilities/BrowseTheWeb';
+import { PlaceOrder } from '../screenplay/tasks/PlaceOrder';
+import { AppWorld } from '../support/world';
+import { expect } from '@playwright/test';
+
+Given('Alice is a registered customer', async function (this: AppWorld) {
+  this.alice = new Actor('Alice').whoCan(BrowseTheWeb.using(this.page));
+  // Authenticate via API
+  await this.authenticateActor(this.alice, 'alice@example.com');
+});
+
+When('Alice places an order for a Laptop Stand', async function (this: AppWorld) {
+  await this.alice.attemptsTo(
+    PlaceOrder.forItems([{ productId: 'prod-laptop-stand', quantity: 1 }])
+  );
+});
+
+Then('Alice should see her order confirmation', async function (this: AppWorld) {
+  await expect(this.page.getByTestId('order-confirmation')).toBeVisible();
+});
+```
+
+**[community] Screenplay vs Page Objects — production verdict**: Screenplay delivers the
+most benefit in large test suites (200+ scenarios) with complex multi-step user journeys
+and multiple actor types (admin, customer, guest, support agent). The pattern is overkill
+for suites with fewer than 50 scenarios or single-page interactions. The transition cost
+is significant — rewriting an existing Page Object suite to Screenplay takes 2–3 sprints.
+Teams should consider Screenplay when Page Object step definitions start exceeding 200
+lines and become hard to understand during code review.
+
+**[community] Actor naming in feature files**: Named actors (`Alice`, `Bob`, `admin`) in
+Gherkin scenarios make scenarios dramatically more readable when multiple users interact.
+Compare:
+
+```gherkin
+# Without named actors (confusing with 2 users)
+Scenario: Admin approves a pending order
+  Given a customer has placed an order
+  And the order is in "pending approval" status
+  When an admin approves the order
+  Then the customer should receive an approval notification
+
+# With named actors (clear who does what)
+Scenario: Admin approves Alice's pending order
+  Given Alice has placed an order requiring admin approval
+  When Bob the admin approves Alice's order
+  Then Alice should receive an approval notification
+  And Bob's admin activity log should record the approval
+```
+
+Named actors map directly to Screenplay `Actor` instances in step definitions.
+
+---
+
+### BDD with GraphQL APIs  [community]
+
+GraphQL APIs require different BDD step patterns than REST. A GraphQL API has a single
+endpoint (`/graphql`) with typed queries and mutations. BDD scenarios should test the
+*business behavior* exposed by the API — not the GraphQL syntax — but step definitions
+must understand GraphQL operation types.
+
+**Key differences from REST BDD:**
+- No HTTP verbs to model (`POST` to `/graphql` for everything)
+- Queries fetch data; mutations change state — both use the same endpoint
+- Errors return HTTP 200 with an `errors` array (not 4xx status codes)
+- Schema introspection can be used to validate step definition correctness
+
+```gherkin
+# features/api/product-catalog.feature
+Feature: Product catalog GraphQL API
+
+  Background:
+    Given I have a valid GraphQL authentication token
+
+  Scenario: Fetching a product by ID returns full product details
+    When I query the product with ID "prod-001"
+    Then the response should contain product name "Laptop Stand Pro"
+    And the response should contain price 49.99
+    And the response should have no GraphQL errors
+
+  Scenario: Creating a product with valid data succeeds
+    When I create a product with:
+      | field       | value            |
+      | name        | Wireless Charger |
+      | price       | 34.99            |
+      | category    | electronics      |
+      | inStock     | true             |
+    Then the GraphQL mutation should succeed
+    And the response should contain a generated product ID
+    And the product should be retrievable by the returned ID
+
+  Scenario: Querying a non-existent product returns a null result with no errors
+    When I query the product with ID "prod-DOESNOTEXIST"
+    Then the response product should be null
+    And the response should have no GraphQL errors
+
+  Scenario: Creating a product with a negative price returns a validation error
+    When I create a product with price -10.00
+    Then the GraphQL response should contain the error "Price must be positive"
+    And no product should be created
+```
+
+```typescript
+// src/steps/graphql.steps.ts — GraphQL BDD step definitions
+import { Given, When, Then } from '@cucumber/cucumber';
+import { DataTable } from '@cucumber/cucumber';
+import { expect } from 'chai';
+import { AppWorld } from '../support/world';
+
+// GraphQL client helper — typed wrapper around fetch
+async function graphql<T = unknown>(
+  endpoint: string,
+  query: string,
+  variables: Record<string, unknown>,
+  authToken?: string
+): Promise<{ data: T; errors?: Array<{ message: string; path?: string[] }> }> {
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!res.ok) {
+    throw new Error(`GraphQL transport error: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+const GET_PRODUCT = `
+  query GetProduct($id: ID!) {
+    product(id: $id) {
+      id
+      name
+      price
+      category
+      inStock
+    }
+  }
+`;
+
+const CREATE_PRODUCT = `
+  mutation CreateProduct($input: CreateProductInput!) {
+    createProduct(input: $input) {
+      id
+      name
+      price
+    }
+  }
+`;
+
+Given('I have a valid GraphQL authentication token', async function (this: AppWorld) {
+  const res = await fetch(`${process.env.BASE_URL}/api/auth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      clientId: process.env.TEST_CLIENT_ID,
+      clientSecret: process.env.TEST_CLIENT_SECRET,
+    }),
+  });
+  const body = await res.json() as { accessToken: string };
+  this.authToken = body.accessToken;
+});
+
+When('I query the product with ID {string}', async function (this: AppWorld, productId: string) {
+  this.gqlResponse = await graphql(
+    `${process.env.BASE_URL}/graphql`,
+    GET_PRODUCT,
+    { id: productId },
+    this.authToken
+  );
+});
+
+When('I create a product with:', async function (this: AppWorld, table: DataTable) {
+  const fields = table.rowsHash(); // { field: value, ... }
+  const input = {
+    name: fields.name,
+    price: parseFloat(fields.price),
+    category: fields.category,
+    inStock: fields.inStock === 'true',
+  };
+  this.gqlResponse = await graphql(
+    `${process.env.BASE_URL}/graphql`,
+    CREATE_PRODUCT,
+    { input },
+    this.authToken
+  );
+});
+
+When('I create a product with price {float}', async function (this: AppWorld, price: number) {
+  this.gqlResponse = await graphql(
+    `${process.env.BASE_URL}/graphql`,
+    CREATE_PRODUCT,
+    { input: { name: 'Test Product', price, category: 'test', inStock: true } },
+    this.authToken
+  );
+});
+
+Then('the response should have no GraphQL errors', function (this: AppWorld) {
+  const errors = this.gqlResponse?.errors;
+  if (errors && errors.length > 0) {
+    const errorMessages = errors.map(e => e.message).join('; ');
+    throw new Error(`Unexpected GraphQL errors: ${errorMessages}`);
+  }
+});
+
+Then('the response should contain product name {string}', function (this: AppWorld, name: string) {
+  const product = this.gqlResponse?.data?.product;
+  if (!product) throw new Error('No product in GraphQL response');
+  expect(product.name).to.equal(name, `Expected product name "${name}" but got "${product.name}"`);
+});
+
+Then('the response should contain price {float}', function (this: AppWorld, price: number) {
+  const product = this.gqlResponse?.data?.product;
+  expect(product?.price).to.be.closeTo(price, 0.01);
+});
+
+Then('the response product should be null', function (this: AppWorld) {
+  const product = this.gqlResponse?.data?.product;
+  expect(product).to.be.null;
+});
+
+Then(
+  'the GraphQL response should contain the error {string}',
+  function (this: AppWorld, errorMessage: string) {
+    const errors = this.gqlResponse?.errors;
+    if (!errors || errors.length === 0) {
+      throw new Error(`Expected GraphQL error "${errorMessage}" but response had no errors`);
+    }
+    const found = errors.some(e => e.message.includes(errorMessage));
+    if (!found) {
+      throw new Error(
+        `Expected error "${errorMessage}" but got: ${errors.map(e => e.message).join('; ')}`
+      );
+    }
+  }
+);
+
+Then('the GraphQL mutation should succeed', function (this: AppWorld) {
+  if (this.gqlResponse?.errors?.length) {
+    throw new Error(`Mutation failed: ${this.gqlResponse.errors.map(e => e.message).join('; ')}`);
+  }
+  const result = this.gqlResponse?.data?.createProduct;
+  if (!result) throw new Error('Mutation returned no data');
+});
+```
+
+**[community] GraphQL BDD: the HTTP 200 error trap**: REST step definitions that check
+`response.ok()` for success silently pass on GraphQL errors because GraphQL always returns
+HTTP 200. Every GraphQL `Then` step must explicitly check `response.errors` in addition
+to the data field. Teams migrating from REST BDD to GraphQL BDD consistently miss this
+and ship passing scenarios that mask server-side errors.
+
+**[community] GraphQL schema validation in BDD**: Run `npx graphql-inspector validate`
+as a pre-test step to validate that your step definitions use queries and mutations
+that match the current schema. Breaking schema changes caught before CI run are 10x
+cheaper than failures caught mid-suite.
+
+**[community] N+1 query detection via BDD**: Add a `Then the response should not have
+triggered more than {int} database queries` step using query logging middleware. This
+catches N+1 GraphQL resolver bugs as behavioral regressions before they reach production
+— a category of defect that traditional BDD cannot detect without this pattern.
+
+---
+
+### OpenAPI / Swagger Contract Validation in BDD  [community]
+
+When a REST API has an OpenAPI specification, BDD scenarios can validate API responses
+against the schema in addition to business behavior. This creates a second layer of
+protection: scenarios verify *what* the API does (business logic), while schema validation
+verifies *how* it does it (contract conformance). Together, they catch both behavioral
+regressions and breaking schema changes.
+
+**The integration point**: Use `openapi-backend` or `ajv` to validate API response
+bodies against the OpenAPI schema in `Then` step definitions. This catches schema
+violations (e.g., a required field removed, a field type changed) that the business
+assertion may not catch.
+
+```gherkin
+# features/api/orders-openapi.feature
+Feature: Orders API — OpenAPI contract conformance
+
+  Background:
+    Given I have a valid API token
+
+  Scenario: Create order response conforms to the OpenAPI schema
+    When I create a valid order
+    Then the response status is 201
+    And the response conforms to the "CreateOrderResponse" OpenAPI schema
+    And the response should contain a field "orderId"
+
+  Scenario: List orders response conforms to the OpenAPI schema
+    Given I have 3 confirmed orders
+    When I GET "/api/v1/orders"
+    Then the response status is 200
+    And the response conforms to the "ListOrdersResponse" OpenAPI schema
+    And the response should contain exactly 3 orders
+
+  Scenario: Order not found response conforms to the error schema
+    When I GET "/api/v1/orders/ORD-DOESNOTEXIST"
+    Then the response status is 404
+    And the response conforms to the "ErrorResponse" OpenAPI schema
+```
+
+```typescript
+// src/support/schema-validator.ts — OpenAPI response validation utility
+import Ajv, { ValidateFunction } from 'ajv';
+import addFormats from 'ajv-formats';
+import * as fs from 'fs';
+import * as path from 'path';
+
+interface OpenApiSpec {
+  components: {
+    schemas: Record<string, object>;
+  };
+}
+
+export class SchemaValidator {
+  private readonly ajv: Ajv;
+  private readonly spec: OpenApiSpec;
+  private readonly validators = new Map<string, ValidateFunction>();
+
+  constructor(specPath: string) {
+    this.ajv = new Ajv({ allErrors: true, strict: false });
+    addFormats(this.ajv);
+    this.spec = JSON.parse(fs.readFileSync(specPath, 'utf8')) as OpenApiSpec;
+  }
+
+  // Get or compile a validator for a named schema component
+  getValidator(schemaName: string): ValidateFunction {
+    if (!this.validators.has(schemaName)) {
+      const schema = this.spec.components?.schemas?.[schemaName];
+      if (!schema) {
+        throw new Error(`OpenAPI schema "${schemaName}" not found in spec`);
+      }
+      // Add definitions context for $ref resolution
+      const schemaWithDefs = { ...schema, definitions: this.spec.components.schemas };
+      this.validators.set(schemaName, this.ajv.compile(schemaWithDefs));
+    }
+    return this.validators.get(schemaName)!;
+  }
+
+  validate(schemaName: string, data: unknown): { valid: boolean; errors: string[] } {
+    const validate = this.getValidator(schemaName);
+    const valid = validate(data) as boolean;
+    return {
+      valid,
+      errors: valid ? [] : (validate.errors ?? []).map(e =>
+        `${e.instancePath || 'root'}: ${e.message}`
+      ),
+    };
+  }
+}
+
+// Initialize once at suite startup (loaded from openapi.json at project root)
+export const apiSchemaValidator = new SchemaValidator(
+  path.join(process.cwd(), 'api-specs/openapi.json')
+);
+```
+
+```typescript
+// src/steps/openapi-validation.steps.ts — schema validation step definitions
+import { Then } from '@cucumber/cucumber';
+import { apiSchemaValidator } from '../support/schema-validator';
+import { AppWorld } from '../support/world';
+
+// Matches: And the response conforms to the "CreateOrderResponse" OpenAPI schema
+Then(
+  'the response conforms to the {string} OpenAPI schema',
+  async function (this: AppWorld, schemaName: string) {
+    // this.lastApiResponse should be set by the preceding When step
+    if (!this.lastApiResponse) {
+      throw new Error('No API response captured — ensure a When step made an API call');
+    }
+
+    let body: unknown;
+    try {
+      body = await this.lastApiResponse.json();
+    } catch {
+      throw new Error(`Response body is not valid JSON (status: ${this.lastApiResponse.status()})`);
+    }
+
+    const { valid, errors } = apiSchemaValidator.validate(schemaName, body);
+    if (!valid) {
+      const errorList = errors.map(e => `  - ${e}`).join('\n');
+      throw new Error(
+        `Response does not conform to "${schemaName}" OpenAPI schema:\n${errorList}\n` +
+        `Response body: ${JSON.stringify(body, null, 2)}`
+      );
+    }
+  }
+);
+```
+
+**CI integration — schema validation step**:
+```yaml
+# .github/workflows/bdd.yml — add OpenAPI spec freshness check before BDD run
+- name: Validate OpenAPI spec syntax
+  run: npx @redocly/cli lint api-specs/openapi.json
+
+- name: Check OpenAPI spec matches codebase routes
+  run: npx @redocly/cli bundle api-specs/openapi.json --output api-specs/openapi.bundled.json
+```
+
+**[community] OpenAPI drift: the silent contract break**: In teams where the OpenAPI spec
+is maintained manually (not generated from code), the spec and implementation diverge within
+weeks. BDD scenarios using schema validation catch this immediately: a developer who
+removes a required field from the response gets a CI failure on every scenario that uses
+that response schema — not just the one scenario that checks the removed field. This is
+the fastest feedback loop for API contract maintenance.
+
+**[community] Schema validation + BDD: the "too strict" failure mode**: Validating every
+API response against its OpenAPI schema can produce false failures for intentionally
+optional fields that are context-dependent. Use `nullable: true` and `required: []` carefully
+in the OpenAPI spec to model optional fields correctly. Teams that add schema validation
+to existing BDD suites often discover that their OpenAPI spec has been subtly wrong for
+months — the BDD schema step is the first thing to catch it.
+
+**[community] Contract-first API development with BDD**: When teams adopt contract-first
+development (OpenAPI spec written before implementation), BDD scenarios referencing schema
+names serve as the acceptance test for the spec. A scenario cannot be marked passing until
+the implementation produces responses that match the spec. This makes BDD the enforcer of
+the contract-first discipline.
+
+---
+
+### Cucumber Step Definition Code Generation via CLI  [community]
+
+Manually writing step definition stubs for every Gherkin step is mechanical work. The
+`--dry-run` flag in Cucumber.js generates TypeScript stubs for all unmatched steps, which
+can be piped into new or existing step definition files.
+
+**Workflow: feature-first BDD with auto-generated stubs**
+
+```bash
+# 1. Write the .feature file first (Three Amigos output)
+# 2. Run dry-run to see which steps need implementations
+npx cucumber-js --dry-run --format usage 2>&1 | head -50
+
+# 3. Get auto-generated TypeScript step stubs
+npx cucumber-js --dry-run 2>&1 | grep -A2 "You can implement"
+
+# Sample output:
+# You can implement missing steps with the snippets below:
+#
+# Given('I have a valid GraphQL authentication token', function () {
+#   // Write code here that turns the phrase above into concrete actions
+#   return 'pending';
+# });
+```
+
+**Automated stub generation script** (TypeScript):
+```typescript
+// scripts/generate-step-stubs.ts — parse dry-run output and write to new step file
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+
+function generateStepStubs(outputFile: string, featureGlob = 'features/**/*.feature'): void {
+  // Run dry-run with snippet format
+  const dryRunOutput = execSync(
+    `npx cucumber-js --dry-run --format @cucumber/pretty-formatter 2>&1 || true`,
+    { encoding: 'utf8', cwd: process.cwd() }
+  );
+
+  // Extract the undefined steps section
+  const snippetStart = dryRunOutput.indexOf('You can implement missing steps');
+  if (snippetStart === -1) {
+    console.log('No undefined steps found. All steps are implemented.');
+    return;
+  }
+
+  const snippets = dryRunOutput.slice(snippetStart);
+
+  // Wrap in TypeScript module with proper imports
+  const fileContent = `// AUTO-GENERATED step definition stubs
+// Generated by: npx ts-node scripts/generate-step-stubs.ts
+// Review each stub and replace 'return pending' with real implementation
+import { Given, When, Then } from '@cucumber/cucumber';
+import { CustomWorld } from '../support/world';
+
+${snippets
+  .split('\n')
+  .filter(line => line.trim().startsWith("Given('") || line.trim().startsWith("When('") || line.trim().startsWith("Then('") || line.trim().startsWith('//') || line.includes('pending') || line.includes('});'))
+  .join('\n')}
+`;
+
+  fs.writeFileSync(outputFile, fileContent, 'utf8');
+  console.log(`Step stubs written to: ${outputFile}`);
+  console.log('Next: implement each stub, then re-run to verify all steps are matched.');
+}
+
+const outputPath = path.join(process.cwd(), 'src/steps/_generated-stubs.ts');
+generateStepStubs(outputPath);
+```
+
+**[community] The stub generation → TDD loop**: Use generated stubs as the start of a
+TDD cycle within BDD. The stub returns `'pending'` (Cucumber's signal for "not yet
+implemented"). CI shows the scenario as "Pending" — not failing, but not passing. The
+developer implements the step until the scenario passes. This is the correct BDD workflow:
+Gherkin first → stubs → implementation → green scenario. Teams that skip stubs and write
+step definitions from scratch frequently produce steps that do not match the Gherkin
+phrasing exactly, causing `Undefined step` errors.
+
+---
+
+### BDD for Mobile Applications: React Native + Detox  [community]
+
+Mobile apps present unique BDD challenges: device hardware state (permissions, network
+conditions), platform-specific behavior (iOS vs Android), and the absence of a standard
+browser automation API. Detox is the leading end-to-end testing framework for React Native
+and can be integrated with Gherkin via a custom runner.
+
+**Why mobile BDD is harder than web BDD**: Mobile step definitions must handle:
+- Platform-specific UI element IDs (`testID` in React Native, `accessibilityLabel` as fallback)
+- Device permission grants (camera, location, push notifications)
+- Network condition simulation (offline, slow 3G)
+- App lifecycle events (background/foreground transitions)
+
+**Feature file structure for mobile** (platform-agnostic Gherkin):
+```gherkin
+# features/mobile/onboarding.feature
+@mobile @ios @android
+Feature: User onboarding flow
+  As a new user
+  I want to complete the onboarding process
+  So that I can start using the app
+
+  Scenario: New user completes onboarding and lands on the home screen
+    Given I have freshly installed the app
+    When I grant notification permissions
+    And I complete the 3-step onboarding tutorial
+    And I create an account with valid details
+    Then I should land on the home screen
+    And the navigation bar should show 4 tabs
+
+  @ios-only
+  Scenario: Face ID authentication enables biometric login
+    Given I have completed onboarding
+    And my device supports Face ID
+    When I enable Face ID in account settings
+    And I log out and back in
+    Then the app should prompt for Face ID authentication
+    And successful Face ID should authenticate me without a password
+
+  @offline
+  Scenario: App shows cached data when offline
+    Given I have previously loaded my feed data
+    When I go offline
+    And I navigate to the feed
+    Then I should see the last cached feed content
+    And I should see an "Offline mode — showing cached data" banner
+```
+
+```typescript
+// src/steps/mobile/onboarding.steps.ts — Detox-based mobile step definitions
+// Note: Detox is imported globally in the Jest/Detox setup; element() is a global
+import { Given, When, Then } from '@cucumber/cucumber';
+import { MobileWorld } from '../support/mobile-world';
+import { device, element, by, expect as detoxExpect } from 'detox';
+
+Given('I have freshly installed the app', async function (this: MobileWorld) {
+  await device.uninstallApp();
+  await device.installApp();
+  await device.launchApp({ newInstance: true });
+  // Reset any stored onboarding state
+  await device.clearKeychain(); // iOS: clear stored credentials
+});
+
+When('I grant notification permissions', async function (this: MobileWorld) {
+  // iOS: handle system permission dialog
+  if (device.getPlatform() === 'ios') {
+    await device.launchApp({ permissions: { notifications: 'YES' } });
+  }
+  // Android: permission granted at install time for test builds
+});
+
+When('I complete the {int}-step onboarding tutorial', async function (this: MobileWorld, steps: number) {
+  for (let step = 0; step < steps; step++) {
+    await element(by.id('onboarding-next-button')).tap();
+    await expect(element(by.id(`onboarding-step-${step + 1}`))).toBeVisible();
+  }
+  await element(by.id('onboarding-done-button')).tap();
+});
+
+When('I create an account with valid details', async function (this: MobileWorld) {
+  await element(by.id('signup-email')).typeText('test@example.com');
+  await element(by.id('signup-password')).typeText('TestPass123!');
+  await element(by.id('signup-confirm-password')).typeText('TestPass123!');
+  await element(by.id('signup-submit')).tap();
+  await waitFor(element(by.id('home-screen'))).toBeVisible().withTimeout(5000);
+});
+
+Then('I should land on the home screen', async function (this: MobileWorld) {
+  await detoxExpect(element(by.id('home-screen'))).toBeVisible();
+});
+
+Then('the navigation bar should show {int} tabs', async function (this: MobileWorld, tabCount: number) {
+  await detoxExpect(element(by.id('nav-bar'))).toBeVisible();
+  // Count visible tab items
+  for (let i = 0; i < tabCount; i++) {
+    await detoxExpect(element(by.id(`nav-tab-${i}`))).toBeVisible();
+  }
+});
+
+When('I go offline', async function (this: MobileWorld) {
+  // Detox network simulation
+  await device.setURLBlacklist(['.*']);
+});
+
+Then(
+  'I should see an {string} banner',
+  async function (this: MobileWorld, bannerText: string) {
+    await detoxExpect(element(by.text(bannerText))).toBeVisible();
+  }
+);
+```
+
+```typescript
+// src/support/mobile-world.ts — Mobile-specific World
+import { setWorldConstructor, World, IWorldOptions } from '@cucumber/cucumber';
+
+export class MobileWorld extends World {
+  platform: 'ios' | 'android';
+
+  constructor(options: IWorldOptions) {
+    super(options);
+    this.platform = process.env.DETOX_PLATFORM as 'ios' | 'android' ?? 'ios';
+  }
+}
+
+setWorldConstructor(MobileWorld);
+```
+
+**CI configuration for mobile BDD (GitHub Actions — iOS and Android matrix)**:
+```yaml
+# .github/workflows/mobile-bdd.yml
+jobs:
+  mobile-bdd:
+    strategy:
+      matrix:
+        platform: [ios, android]
+        include:
+          - platform: ios
+            runs-on: macos-latest
+            device: 'iPhone 15'
+            os: '17.0'
+          - platform: android
+            runs-on: ubuntu-latest
+            device: 'Pixel 6'
+            api-level: '33'
+
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app for testing
+        run: npx detox build --configuration ${{ matrix.platform }}.release
+
+      - name: Run BDD scenarios (${{ matrix.platform }})
+        run: npx cucumber-js --profile ${{ matrix.platform }} --tags "@mobile and not @wip"
+        env:
+          DETOX_PLATFORM: ${{ matrix.platform }}
+```
+
+**[community] Mobile BDD slow suite problem**: Detox-based BDD scenarios typically run
+5–10x slower than equivalent web BDD scenarios because each scenario may require app
+relaunching, simulator/emulator boot time, and real device permission dialogs. The
+mitigation is aggressive use of `@ios-only` and `@android-only` tags to split the test
+matrix, running only platform-specific scenarios on each CI runner. Cross-platform
+scenarios that run on both platforms should be the minority — most business behavior is
+platform-agnostic.
+
+**[community] `testID` vs `accessibilityLabel` for mobile step selectors**: React Native
+components accept `testID` (Detox's preferred selector) and `accessibilityLabel` (ARIA
+equivalent). Using `testID` keeps test IDs separate from production accessibility labels.
+Mixing them — using `accessibilityLabel` as a test selector — causes test failures when
+designers update labels for UX reasons, which should not break tests. Convention: all
+mobile Detox selectors use `testID`; all accessibility testing uses `accessibilityLabel`.
+
+---
+
+### Living Documentation Publishing: Cucumber Reports as Stakeholder Dashboards  [community]
+
+Living documentation only fulfills its promise if stakeholders actually read it. Generating
+a Cucumber HTML report in CI is a necessary first step, but reports buried in CI artifact
+lists are never read by product managers or business analysts. The second step is *publishing*
+the report to a URL that stakeholders can bookmark.
+
+**Strategy 1: GitHub Pages (zero infrastructure)**
+
+```yaml
+# .github/workflows/publish-bdd-docs.yml
+name: Publish BDD Living Documentation
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  bdd-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Run full BDD suite (all non-WIP scenarios)
+        run: npx cucumber-js --profile nightly
+        continue-on-error: true  # Publish report even if some scenarios fail
+        env:
+          CI: true
+
+      - name: Generate living documentation HTML
+        run: |
+          npm install --no-save @cucumber/react-components
+          # Generate a navigable feature-browser report
+          npx cucumber-js --dry-run --format @cucumber/html-formatter:docs/bdd-docs/index.html
+
+      - name: Copy latest results to docs
+        run: cp reports/cucumber-report.html docs/bdd-docs/latest-results.html
+
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: docs/bdd-docs
+          branch: gh-pages
+          clean: true
+```
+
+After setup, the living documentation is accessible at `https://<org>.github.io/<repo>/`.
+Product managers can bookmark this URL and check it from any browser — no CI access required.
+
+**Strategy 2: Allure Report with history trend**
+
+```bash
+# Install Allure Cucumber adapter
+npm install --save-dev allure-cucumberjs allure-commandline
+
+# Add to cucumber.js formatters
+# "allure-cucumberjs/reporter"
+
+# After run: generate HTML report with trend
+npx allure generate allure-results --clean -o allure-report
+
+# Start a local server to browse (or upload to static hosting)
+npx allure open allure-report
+```
+
+**Allure provides** beyond standard Cucumber HTML:
+- **Trend charts**: Pass/fail ratio over time (show whether the suite is getting healthier)
+- **Timeline**: Scenario execution timeline showing parallel worker efficiency
+- **Attachments**: Screenshots, API responses, network traces per failed scenario
+- **Categories**: Group failures by type (product defect, test defect, known issue)
+
+```typescript
+// src/support/hooks.ts — enrich Allure report with attachments
+import { Before, After, Status } from '@cucumber/cucumber';
+import { allure } from 'allure-cucumberjs';
+import { AppWorld } from './world';
+
+Before(function (scenario) {
+  allure.label('feature', scenario.pickle.uri.split('/').slice(-2, -1)[0]); // folder name
+  allure.label('suite', scenario.pickle.tags.map(t => t.name).join(', '));
+});
+
+After(async function (this: AppWorld, scenario) {
+  if (scenario.result?.status === Status.FAILED) {
+    // Attach screenshot to Allure
+    const screenshot = await this.page.screenshot({ fullPage: true });
+    allure.attachment('Screenshot at failure', screenshot, 'image/png');
+
+    // Attach page HTML for DOM debugging
+    const html = await this.page.content();
+    allure.attachment('Page HTML at failure', html, 'text/html');
+
+    // Attach browser console log
+    allure.attachment(
+      'Browser console log',
+      this.consoleLogs?.join('\n') ?? 'No logs captured',
+      'text/plain'
+    );
+  }
+});
+```
+
+**[community] Stakeholder engagement metric**: The most reliable proxy for "is our living
+documentation actually read" is whether product managers file bugs via feature file scenarios
+("the scenario for X fails in staging") rather than via Jira tickets with vague descriptions.
+Teams that track this metric typically see it improve after 2–3 sprints of consistently
+publishing reports — once stakeholders trust that the report reflects reality.
+
+**[community] Report retention policy**: Keep BDD reports for at least 30 days in CI
+artifact storage (or on the static hosting). One-day retention makes it impossible to
+diagnose flaky scenarios that fail intermittently — you need historical runs to identify
+the pattern. Set `retention-days: 30` in `actions/upload-artifact@v4` and review storage
+costs quarterly.
+
+**[community] `@cucumber/html-formatter` vs `cucumber-html-reporter`**: The official
+`@cucumber/html-formatter` produces a minimal, fast-loading single-page HTML report.
+`cucumber-html-reporter` (community package) produces a richer report with metadata and
+customizable themes. For stakeholder-facing documentation, the community reporter's
+presentation quality is worth the extra dependency. For developer-focused CI feedback,
+the official formatter's speed and simplicity is preferred.
+
+---
+
+### BDD Performance Scenarios: Asserting Speed as Behavior  [community]
+
+Performance requirements are business behaviors: "The checkout page must load within 2
+seconds for 95% of users" is a testable acceptance criterion that can be expressed as a
+BDD scenario. Performance BDD is distinct from load testing — it verifies that *a single
+user's* experience meets a defined performance budget, not that the system handles
+concurrent load.
+
+**When performance BDD applies**:
+- Core user journeys with explicit SLA requirements (checkout < 2s, search < 1s)
+- Pages where third-party scripts are added frequently (marketing tags, chat widgets)
+- After significant architecture changes (new database, CDN change, SSR migration)
+
+```gherkin
+# features/performance/core-journeys.feature
+@performance @regression
+Feature: Core user journey performance budgets
+
+  Scenario: Product search results load within 1 second
+    Given I am a registered customer
+    When I search for "laptop"
+    Then the search results page should load within 1000 milliseconds
+    And the Largest Contentful Paint should be below 1500 milliseconds
+
+  Scenario: Checkout page meets performance budget
+    Given I have items in my cart
+    When I navigate to the checkout page
+    Then the page should be interactive within 2000 milliseconds
+    And the Cumulative Layout Shift should be below 0.1
+
+  Scenario: Homepage loads within the Core Web Vitals threshold
+    Given I am an anonymous visitor
+    When I navigate to the homepage
+    Then the First Contentful Paint should be below 1800 milliseconds
+    And the Largest Contentful Paint should be below 2500 milliseconds
+    And the Total Blocking Time should be below 300 milliseconds
+```
+
+```typescript
+// src/steps/performance.steps.ts — performance assertion step definitions
+import { When, Then } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+// Capture performance metrics using Playwright's built-in CDP integration
+When('I navigate to the checkout page', async function (this: AppWorld) {
+  // Clear browser cache to simulate first visit
+  await this.context.clearCookies();
+
+  const startTime = Date.now();
+  await this.page.goto('/checkout', { waitUntil: 'networkidle' });
+  this.navigationDurationMs = Date.now() - startTime;
+
+  // Capture Core Web Vitals via CDP Performance API
+  this.webVitals = await this.page.evaluate(() => {
+    return new Promise<{ lcp: number; cls: number; tbt: number; fcp: number }>((resolve) => {
+      new PerformanceObserver((list) => {
+        const entries = list.getEntries();
+        resolve({
+          lcp: entries.find(e => e.entryType === 'largest-contentful-paint')?.startTime ?? 0,
+          cls: entries.reduce((sum, e: PerformanceEntry & { value?: number }) =>
+            sum + (e.value ?? 0), 0),
+          tbt: performance.now() - performance.timing?.domInteractive ?? 0,
+          fcp: entries.find(e => e.name === 'first-contentful-paint')?.startTime ?? 0,
+        });
+      }).observe({ entryTypes: ['largest-contentful-paint', 'layout-shift', 'paint'] });
+      // Fallback: resolve after 2s if observer doesn't fire
+      setTimeout(() => resolve({ lcp: 0, cls: 0, tbt: 0, fcp: 0 }), 2000);
+    });
+  });
+});
+
+Then(
+  'the page should be interactive within {int} milliseconds',
+  function (this: AppWorld, thresholdMs: number) {
+    if (this.navigationDurationMs > thresholdMs) {
+      throw new Error(
+        `Page took ${this.navigationDurationMs}ms to load — exceeded ${thresholdMs}ms budget.\n` +
+        `Performance hint: check for render-blocking scripts or unoptimized images.`
+      );
+    }
+  }
+);
+
+Then(
+  'the Largest Contentful Paint should be below {int} milliseconds',
+  function (this: AppWorld, thresholdMs: number) {
+    const lcp = this.webVitals?.lcp ?? 0;
+    if (lcp > 0 && lcp > thresholdMs) {
+      throw new Error(
+        `LCP: ${lcp.toFixed(0)}ms exceeds ${thresholdMs}ms budget.\n` +
+        `Check: hero image size, font loading, server response time.`
+      );
+    }
+  }
+);
+
+Then(
+  'the Cumulative Layout Shift should be below {float}',
+  function (this: AppWorld, threshold: number) {
+    const cls = this.webVitals?.cls ?? 0;
+    if (cls > threshold) {
+      throw new Error(
+        `CLS: ${cls.toFixed(3)} exceeds ${threshold} threshold.\n` +
+        `Check: images without dimensions, dynamically injected content above the fold.`
+      );
+    }
+  }
+);
+```
+
+**[community] Performance BDD vs load testing**: Performance BDD scenarios (single user,
+Playwright-based) catch *page-level* performance regressions: slow server-side rendering,
+large uncompressed images, render-blocking scripts. Load testing tools (k6, Artillery,
+Gatling) catch *system-level* performance: throughput limits, database connection pool
+exhaustion, memory leaks under sustained load. Both are needed; neither replaces the other.
+Performance BDD runs in < 30 seconds per scenario and belongs in the nightly regression
+suite. Load tests run in minutes and belong in pre-release gates.
+
+**[community] Performance budget drift**: Teams that set performance thresholds once and
+never revisit them accumulate performance debt silently. A page that was 1.2s on launch
+and is now 1.8s has crossed no threshold — but is 50% slower. Review performance budgets
+quarterly using the Allure trend report to catch gradual drift before it becomes
+user-visible.
+
+---
+
+### BDD Database Seeding with Prisma and TypeORM  [community]
+
+Direct database seeding (bypassing the application API) is the fastest way to establish
+test data for BDD scenarios that need complex entity relationships. It is appropriate
+when: (1) the application API does not expose endpoints for creating test-only data,
+(2) scenarios need deeply nested data that would require many sequential API calls, or
+(3) scenarios test behavior that depends on pre-existing database state (e.g., "given a
+customer who has been banned").
+
+**Prisma seeding in `Before` hooks** (TypeScript + PostgreSQL):
+
+```typescript
+// src/support/prisma-seeder.ts — Prisma-based test data management
+import { PrismaClient, OrderStatus, CustomerTier } from '@prisma/client';
+
+const prisma = new PrismaClient({
+  datasources: { db: { url: process.env.TEST_DATABASE_URL } },
+  log: process.env.VERBOSE_SEEDING ? ['query'] : [],
+});
+
+export interface SeededCustomer {
+  customerId: string;
+  email: string;
+  tier: CustomerTier;
+}
+
+export interface SeededOrder {
+  orderId: string;
+  customerId: string;
+  total: number;
+  status: OrderStatus;
+}
+
+export class PrismaSeeder {
+  // Track created record IDs for cleanup
+  private createdCustomerIds: string[] = [];
+  private createdOrderIds: string[] = [];
+
+  async seedCustomer(overrides: {
+    email?: string;
+    tier?: CustomerTier;
+    isBanned?: boolean;
+    createdDaysAgo?: number;
+  } = {}): Promise<SeededCustomer> {
+    const email = overrides.email ?? `test-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
+    const createdAt = overrides.createdDaysAgo
+      ? new Date(Date.now() - overrides.createdDaysAgo * 86_400_000)
+      : new Date();
+
+    const customer = await prisma.customer.create({
+      data: {
+        email,
+        passwordHash: '$2b$10$test-hash', // pre-hashed test password
+        tier: overrides.tier ?? CustomerTier.STANDARD,
+        isBanned: overrides.isBanned ?? false,
+        createdAt,
+      },
+    });
+
+    this.createdCustomerIds.push(customer.id);
+    return { customerId: customer.id, email, tier: customer.tier };
+  }
+
+  async seedOrder(
+    customerId: string,
+    overrides: {
+      status?: OrderStatus;
+      total?: number;
+      confirmedDaysAgo?: number;
+      items?: Array<{ productId: string; quantity: number; unitPrice: number }>;
+    } = {}
+  ): Promise<SeededOrder> {
+    const confirmedAt = overrides.confirmedDaysAgo
+      ? new Date(Date.now() - overrides.confirmedDaysAgo * 86_400_000)
+      : new Date();
+
+    const order = await prisma.order.create({
+      data: {
+        customerId,
+        status: overrides.status ?? OrderStatus.CONFIRMED,
+        total: overrides.total ?? 99.99,
+        confirmedAt,
+        items: overrides.items
+          ? { create: overrides.items }
+          : { create: [{ productId: 'prod-001', quantity: 1, unitPrice: 99.99 }] },
+      },
+    });
+
+    this.createdOrderIds.push(order.id);
+    return { orderId: order.id, customerId, total: order.total, status: order.status };
+  }
+
+  async cleanup(): Promise<void> {
+    // Delete in dependency order (orders before customers)
+    if (this.createdOrderIds.length > 0) {
+      await prisma.orderItem.deleteMany({
+        where: { orderId: { in: this.createdOrderIds } }
+      });
+      await prisma.order.deleteMany({
+        where: { id: { in: this.createdOrderIds } }
+      });
+    }
+    if (this.createdCustomerIds.length > 0) {
+      await prisma.customer.deleteMany({
+        where: { id: { in: this.createdCustomerIds } }
+      });
+    }
+    this.createdCustomerIds = [];
+    this.createdOrderIds = [];
+  }
+
+  async disconnect(): Promise<void> {
+    await prisma.$disconnect();
+  }
+}
+```
+
+```typescript
+// src/support/hooks.ts — integrate PrismaSeeder into World
+import { Before, After, AfterAll } from '@cucumber/cucumber';
+import { AppWorld } from './world';
+import { PrismaSeeder } from './prisma-seeder';
+
+const seeder = new PrismaSeeder(); // shared instance — pools connections
+
+Before(async function (this: AppWorld) {
+  this.seeder = seeder;
+});
+
+After(async function (this: AppWorld) {
+  await this.seeder?.cleanup();
+});
+
+AfterAll(async function () {
+  await seeder.disconnect();
+});
+```
+
+```typescript
+// src/steps/refund-prisma.steps.ts — using Prisma seeder in steps
+import { Given } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+import { OrderStatus } from '@prisma/client';
+
+Given(
+  'I have a confirmed order from {int} days ago',
+  async function (this: AppWorld, daysAgo: number) {
+    const customer = await this.seeder.seedCustomer({ email: 'alice@example.com' });
+    this.customerId = customer.customerId;
+
+    const order = await this.seeder.seedOrder(customer.customerId, {
+      confirmedDaysAgo: daysAgo,
+      status: OrderStatus.CONFIRMED,
+      total: 109.97,
+    });
+    this.currentOrderId = order.orderId;
+
+    // Log in via API as this customer
+    await this.authenticateWithEmail(customer.email, 'TestPass123!');
+  }
+);
+
+Given(
+  'I have a banned customer account',
+  async function (this: AppWorld) {
+    const customer = await this.seeder.seedCustomer({ isBanned: true });
+    this.customerId = customer.customerId;
+    this.customerEmail = customer.email;
+  }
+);
+```
+
+**[community] Prisma seeding vs API seeding tradeoff table**:
+
+| Factor | Prisma direct seeding | API seeding |
+|---|---|---|
+| Speed | 10–100ms per entity | 100–500ms per entity (HTTP round-trip) |
+| Reliability | Very high (no API surface) | Depends on API availability |
+| Data validity | Bypasses business validation | Enforces all business rules |
+| Cascade setup | Easy (Prisma `create` with nested `data`) | Requires multiple sequential API calls |
+| Parallelism | Requires unique IDs (default: `Date.now()` suffix) | Same requirement |
+| Cleanup | Explicit `deleteMany` in reverse dependency order | API DELETE endpoints |
+| When to use | Complex entity graphs, banned/edge states, historical dates | Standard create/update flows |
+
+**[community] Direct DB seeding and bypassed validation**: Prisma seeding bypasses
+application business rules (e.g., "orders require at least one item" validation). This
+is intentional for edge-case scenarios ("given an order with no items due to a legacy
+migration bug"). For scenarios testing the normal flow, always use API seeding to ensure
+the data passes all business validation. Mixing both strategies in the same test suite is
+correct — the key is explicit intent: step definition comments should note whether seeding
+bypasses validation and why.
+
+---
+
+### Cross-Browser BDD: Testing Behavior Parity Across Browsers  [community]
+
+Most BDD suites run on a single browser (Chromium). Cross-browser BDD detects behavioral
+differences between Chrome, Firefox, and Safari/WebKit before users discover them. Playwright
+makes this the lowest-friction approach: the same step definitions run against all three
+browser engines without modification.
+
+```yaml
+# .github/workflows/cross-browser-bdd.yml
+name: Cross-Browser BDD
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'  # Mondays at 2am — weekly cross-browser sweep
+  workflow_dispatch:       # Manual trigger before major releases
+
+jobs:
+  cross-browser:
+    strategy:
+      matrix:
+        browser: [chromium, firefox, webkit]
+      fail-fast: false     # Run all browsers even if one fails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Run BDD suite on ${{ matrix.browser }}
+        run: npx cucumber-js --profile regression --tags "@regression and not @skip-${{ matrix.browser }}"
+        env:
+          PLAYWRIGHT_BROWSER: ${{ matrix.browser }}
+          CI: true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-browser-report-${{ matrix.browser }}
+          path: reports/
+          retention-days: 14
+```
+
+```typescript
+// src/support/hooks.ts — browser-aware setup using PLAYWRIGHT_BROWSER env var
+import { Before } from '@cucumber/cucumber';
+import { chromium, firefox, webkit, Browser } from '@playwright/test';
+import { AppWorld } from './world';
+
+type BrowserName = 'chromium' | 'firefox' | 'webkit';
+
+Before(async function (this: AppWorld) {
+  const browserName = (process.env.PLAYWRIGHT_BROWSER ?? 'chromium') as BrowserName;
+  const launchers = { chromium, firefox, webkit };
+  const launcher = launchers[browserName] ?? chromium;
+
+  this.browser = await launcher.launch({
+    headless: process.env.CI === 'true',
+  });
+  this.context = await this.browser.newContext({
+    // Safari requires explicit viewport (WebKit does not auto-detect)
+    viewport: browserName === 'webkit' ? { width: 1280, height: 720 } : undefined,
+    // Firefox date picker format differs from Chromium
+    locale: 'en-US',
+  });
+  this.page = await this.context.newPage();
+});
+```
+
+**Browser-specific tag exclusions** (Gherkin):
+```gherkin
+# Scenario that uses Web Crypto API — not supported in older WebKit
+@regression @skip-webkit
+Scenario: File upload uses client-side encryption
+  Given I am on the document upload page
+  When I select a file for upload
+  Then the file should be encrypted client-side before transmission
+
+# Scenario relying on CSS :has() selector — not in Firefox before v103
+@regression @skip-firefox
+Scenario: Selected items are visually highlighted in the list
+  Given I have 3 items in my cart
+  When I select the first item
+  Then the first item row should have a highlighted background
+```
+
+**[community] Cross-browser BDD coverage strategy**: Running the full regression suite on
+all three browsers triples test execution time. The pragmatic strategy: run the full suite
+on Chromium in every PR, run only `@critical` and `@smoke` scenarios on Firefox and WebKit
+on each PR, run the full suite on all browsers weekly. This catches 95% of cross-browser
+regressions without tripling CI cost.
+
+**[community] Safari (WebKit) date input handling**: WebKit's `<input type="date">` renders
+differently from Chromium and Firefox. Playwright's `page.fill()` works for WebKit date
+inputs, but `page.type()` may produce unexpected results. The idiomatic Playwright approach
+for cross-browser date input: always use `page.getByTestId('date-input').fill('2026-05-01')`
+with ISO format, which WebKit accepts. This is the most common cross-browser step definition
+bug found in suites that were only tested on Chromium.
+
+---
+
+### BDD for WebSocket and Real-Time Features  [community]
+
+Real-time features — chat, live notifications, collaborative editing, live dashboards —
+are behavior-driven by definition: they respond to events and produce observable state
+changes for users. BDD is well-suited for capturing these behaviors in business language,
+but step definitions require WebSocket-aware patterns.
+
+**The core challenge**: `Then` assertions in real-time BDD cannot check immediate state.
+They must wait for a server-pushed event to arrive and update the UI. The `waitUntil`
+pattern from async BDD applies, but WebSocket-specific patterns allow subscribing to
+the event stream directly rather than polling the UI.
+
+```gherkin
+# features/realtime/live-notifications.feature
+Feature: Live order status notifications
+
+  Background:
+    Given Alice is logged in to the notification dashboard
+
+  Scenario: Order confirmation triggers an instant notification
+    Given Alice has an order in "pending" status
+    When the order processing service confirms the order
+    Then Alice should receive a "Order Confirmed" notification within 5 seconds
+    And the notification should display the correct order number
+    And the notification badge count should increase by 1
+
+  Scenario: Notification is marked as read when clicked
+    Given Alice has 3 unread notifications
+    When Alice clicks on the first notification
+    Then that notification should be marked as read
+    And the unread notification count should decrease to 2
+
+  Scenario: Multiple connected clients receive the same notification
+    Given Alice is logged in on two different browser tabs
+    When a new order notification is triggered for Alice's account
+    Then both tabs should show the notification within 5 seconds
+    And the notification count should be consistent across both tabs
+```
+
+```typescript
+// src/support/websocket-client.ts — typed WebSocket client for BDD
+import { Page } from '@playwright/test';
+
+export interface WebSocketMessage {
+  type: string;
+  payload: Record<string, unknown>;
+  timestamp: number;
+}
+
+export class WebSocketCapture {
+  private readonly messages: WebSocketMessage[] = [];
+  private readonly subscriptions = new Map<string, ((msg: WebSocketMessage) => void)[]>();
+
+  constructor(private readonly page: Page) {
+    // Intercept WebSocket frames via Playwright's route API
+    this.page.on('websocket', ws => {
+      ws.on('framereceived', ({ payload }) => {
+        try {
+          const message = JSON.parse(payload.toString()) as WebSocketMessage;
+          this.messages.push(message);
+          const handlers = this.subscriptions.get(message.type) ?? [];
+          handlers.forEach(h => h(message));
+          const allHandlers = this.subscriptions.get('*') ?? [];
+          allHandlers.forEach(h => h(message));
+        } catch { /* non-JSON frames ignored */ }
+      });
+    });
+  }
+
+  // Wait for a message of a specific type within timeout
+  async waitForMessage(
+    messageType: string,
+    timeoutMs: number,
+    predicate?: (msg: WebSocketMessage) => boolean
+  ): Promise<WebSocketMessage> {
+    // Check already-received messages first
+    const existing = this.messages.find(
+      m => m.type === messageType && (!predicate || predicate(m))
+    );
+    if (existing) return existing;
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(
+          `No "${messageType}" WebSocket message received within ${timeoutMs}ms. ` +
+          `Received: ${this.messages.map(m => m.type).join(', ')}`
+        ));
+      }, timeoutMs);
+
+      const handler = (msg: WebSocketMessage) => {
+        if (!predicate || predicate(msg)) {
+          clearTimeout(timer);
+          resolve(msg);
+        }
+      };
+
+      const handlers = this.subscriptions.get(messageType) ?? [];
+      handlers.push(handler);
+      this.subscriptions.set(messageType, handlers);
+    });
+  }
+
+  getMessages(type?: string): WebSocketMessage[] {
+    return type ? this.messages.filter(m => m.type === type) : [...this.messages];
+  }
+
+  clear(): void {
+    this.messages.length = 0;
+  }
+}
+```
+
+```typescript
+// src/steps/realtime.steps.ts — WebSocket BDD step definitions
+import { Given, When, Then } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+import { WebSocketCapture } from '../support/websocket-client';
+import { expect } from '@playwright/test';
+
+Given('Alice is logged in to the notification dashboard', async function (this: AppWorld) {
+  this.wsCapture = new WebSocketCapture(this.page);
+  await this.authenticateWithEmail('alice@example.com', 'TestPass123!');
+  await this.page.goto('/notifications');
+  await expect(this.page.getByTestId('notification-dashboard')).toBeVisible();
+});
+
+When('the order processing service confirms the order', async function (this: AppWorld) {
+  // Trigger order confirmation via the test API (simulates the processing service)
+  await this.apiContext.post('/api/test/trigger-order-confirmation', {
+    data: { orderId: this.currentOrderId }
+  });
+});
+
+Then(
+  'Alice should receive a {string} notification within {int} seconds',
+  async function (this: AppWorld, notificationType: string, timeoutSeconds: number) {
+    const message = await this.wsCapture.waitForMessage(
+      'notification',
+      timeoutSeconds * 1000,
+      (msg) => msg.payload.type === notificationType
+    );
+    this.lastNotification = message.payload;
+  }
+);
+
+Then(
+  'the notification should display the correct order number',
+  async function (this: AppWorld) {
+    if (!this.lastNotification) throw new Error('No notification received');
+    if (this.lastNotification.orderId !== this.currentOrderId) {
+      throw new Error(
+        `Notification orderId "${this.lastNotification.orderId}" ` +
+        `does not match current order "${this.currentOrderId}"`
+      );
+    }
+    // Also verify visible in UI
+    await expect(
+      this.page.getByTestId('latest-notification').getByText(this.currentOrderId)
+    ).toBeVisible();
+  }
+);
+
+Then(
+  'the notification badge count should increase by {int}',
+  async function (this: AppWorld, increment: number) {
+    const initialCount = this.initialNotificationCount ?? 0;
+    const badge = this.page.getByTestId('notification-badge');
+    await expect(badge).toHaveText(String(initialCount + increment));
+  }
+);
+```
+
+**[community] WebSocket BDD flakiness patterns**: Real-time step definitions that check
+notification counts are disproportionately flaky in parallel CI runs. If two parallel
+workers share the same test user account, notifications from one worker's `When` step
+arrive in the other worker's `Then` step. The fix: each scenario uses a unique test user
+(provisioned in `Before`), ensuring that WebSocket connections are isolated per scenario.
+The `x-test-correlation-id` header pattern used for event-driven BDD applies directly.
+
+**[community] Playwright WebSocket interception limitations**: Playwright's `websocket`
+event captures frames *received by the page*, not frames sent by the page. For scenarios
+that need to verify *outgoing* WebSocket messages (e.g., "client sends heartbeat every
+30 seconds"), instrument the application code to expose sent messages via a test-only
+endpoint, then poll that endpoint from the step definition.
+
+---
+
+### BDD Localization and Internationalization Testing  [community]
+
+BDD scenarios for localization (l10n) and internationalization (i18n) verify that the
+application presents correct content for each supported locale. These are business behaviors
+— the product team defines which locales are supported and what "correct" means — making
+them ideal candidates for BDD coverage.
+
+**Two distinct categories of i18n BDD:**
+1. **Locale-specific content**: Correct date formats, number formats, currency symbols,
+   translated strings.
+2. **Locale-specific business rules**: Tax calculations differ by country, address formats
+   differ, legal text requirements differ.
+
+```gherkin
+# features/i18n/checkout-localization.feature
+@i18n @regression
+Feature: Checkout localization by user locale
+
+  Scenario Outline: Order total displays correct currency format for each locale
+    Given I am a customer with locale "<locale>"
+    And my cart contains items totalling 1234.50 in base currency
+    When I view the checkout summary
+    Then the order total should display as "<expected_format>"
+    And the currency symbol should be "<currency_symbol>"
+
+    Examples:
+      | locale  | expected_format | currency_symbol |
+      | en-US   | $1,234.50       | $               |
+      | de-DE   | 1.234,50 €      | €               |
+      | ja-JP   | ¥1,235          | ¥               |
+      | en-GB   | £1,234.50       | £               |
+      | pt-BR   | R$ 1.234,50     | R$              |
+
+  Scenario: Date format follows user locale in order confirmation
+    Given I am a customer with locale "de-DE"
+    And I have a confirmed order from today
+    When I view the order confirmation page
+    Then the order date should display in German format (DD.MM.YYYY)
+
+  Scenario: Right-to-left layout is applied for Arabic locale
+    Given I am a customer with locale "ar-SA"
+    When I navigate to the checkout page
+    Then the page layout direction should be right-to-left
+    And the navigation elements should be mirrored
+
+  Scenario: Legal terms display country-specific GDPR text for EU customers
+    Given I am a customer in the European Union with locale "fr-FR"
+    When I reach the checkout consent step
+    Then I should see the GDPR consent checkbox
+    And the consent text should reference "Règlement général sur la protection des données"
+```
+
+```typescript
+// src/steps/i18n.steps.ts — localization step definitions
+import { Given, When, Then } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+import { expect } from '@playwright/test';
+
+Given('I am a customer with locale {string}', async function (this: AppWorld, locale: string) {
+  // Create a browser context with the target locale
+  await this.context.close();
+  this.context = await this.browser.newContext({
+    locale,
+    // Timezone affects date display
+    timezoneId: getTimezoneForLocale(locale),
+    // Accept-Language header sent to server
+    extraHTTPHeaders: { 'Accept-Language': locale },
+  });
+  this.page = await this.context.newPage();
+  this.currentLocale = locale;
+  await this.authenticateWithEmail('test@example.com', 'TestPass123!');
+});
+
+function getTimezoneForLocale(locale: string): string {
+  const localeToTimezone: Record<string, string> = {
+    'en-US': 'America/New_York',
+    'de-DE': 'Europe/Berlin',
+    'ja-JP': 'Asia/Tokyo',
+    'en-GB': 'Europe/London',
+    'pt-BR': 'America/Sao_Paulo',
+    'ar-SA': 'Asia/Riyadh',
+    'fr-FR': 'Europe/Paris',
+  };
+  return localeToTimezone[locale] ?? 'UTC';
+}
+
+Then(
+  'the order total should display as {string}',
+  async function (this: AppWorld, expectedFormat: string) {
+    const totalLocator = this.page.getByTestId('order-total');
+    await expect(totalLocator).toBeVisible();
+    const displayedTotal = (await totalLocator.textContent())?.trim() ?? '';
+    // Normalize whitespace (some locales use non-breaking spaces)
+    const normalized = displayedTotal.replace(/ /g, ' ').trim();
+    if (normalized !== expectedFormat) {
+      throw new Error(
+        `Expected total "${expectedFormat}" for locale "${this.currentLocale}" ` +
+        `but got "${normalized}"`
+      );
+    }
+  }
+);
+
+Then(
+  'the page layout direction should be right-to-left',
+  async function (this: AppWorld) {
+    const dir = await this.page.evaluate(() =>
+      document.documentElement.getAttribute('dir') ??
+      getComputedStyle(document.body).direction
+    );
+    expect(dir).toBe('rtl');
+  }
+);
+```
+
+**[community] i18n BDD: the number format edge case trap**: The most common i18n BDD
+failure is number formatting. `1234.50` in `en-US` is `$1,234.50`; in `de-DE` it is
+`1.234,50 €` (period and comma swapped). Scenarios that assert the raw number `1234.50`
+instead of the locale-formatted string will pass for `en-US` and fail for `de-DE`. Always
+use the locale-specific expected format in `Scenario Outline` examples tables, and use
+`Intl.NumberFormat` in the application code to ensure consistency.
+
+**[community] RTL layout BDD**: Right-to-left locales (Arabic, Hebrew, Persian) require
+more than string translation. CSS `direction: rtl` must be applied, flexbox/grid layouts
+must mirror, and icons that imply directionality (back arrow, forward arrow) must flip.
+BDD scenarios that check `direction: rtl` and mirroring catch layout bugs that are
+invisible in LTR-only manual testing. These scenarios are high-ROI in products targeting
+MENA or Israeli markets.
+
+---
+
+### BDD in Microservice Architectures: Service-Level BDD  [community]
+
+In monolithic applications, BDD runs end-to-end through a single deployable unit. In
+microservice architectures, "end-to-end" spans multiple services — making BDD scenarios
+slower, flakier, and harder to own. The recommended strategy is to run BDD at two levels:
+
+1. **Service-level BDD**: Each service owns a BDD suite that tests its own behavior
+   in isolation (downstream dependencies mocked with WireMock or MSW). Fast, isolated,
+   service-team-owned.
+2. **Integration BDD (platform level)**: A small suite of cross-service scenarios that
+   tests the critical user journeys end-to-end with all services deployed. Slower, run
+   nightly, platform-team-owned.
+
+**Why service-level BDD instead of only E2E BDD:**
+- E2E scenarios fail when *any* downstream service has an issue, making failures hard to
+  localize
+- Service teams can run their own BDD suite in < 2 minutes with mocked dependencies
+- Service-level BDD provides the acceptance test layer that E2E tests depend on
+
+```gherkin
+# order-service/features/order-creation.feature
+# Runs against the order-service only; payment-service is mocked
+
+Feature: Order service — order creation
+  As the order service
+  I want to create valid orders and emit the correct events
+  So that downstream services can process them reliably
+
+  Background:
+    Given the payment service is available and accepts charges
+
+  Scenario: Creating an order with valid items returns 201 and emits order.created event
+    When I create an order with 2 items totalling $109.97
+    Then the order service should return 201
+    And the response should include an "orderId" matching /^ORD-[A-Z0-9]{8}$/
+    And an "order.created" event should have been published to the event bus
+    And the event payload should contain the order total $109.97
+
+  Scenario: Creating an order when payment service is unavailable returns 503
+    Given the payment service is currently unavailable
+    When I create an order with 1 item
+    Then the order service should return 503
+    And the response should contain "Payment service unavailable"
+    And no "order.created" event should have been published
+
+  Scenario: Creating an order with an out-of-stock item returns 422
+    Given the product "prod-001" has 0 units in stock
+    When I create an order for 1 unit of "prod-001"
+    Then the order service should return 422
+    And the response should contain "Product out of stock"
+```
+
+```typescript
+// order-service/src/steps/order-creation.steps.ts
+// Uses WireMock for payment service dependency mock
+import { Given, When, Then, Before, After } from '@cucumber/cucumber';
+import supertest from 'supertest';
+import { WireMock } from 'wiremock-client';
+import { createApp } from '../../src/app';
+import { OrderServiceWorld } from '../support/world';
+
+const wireMock = new WireMock('http://localhost:8089');
+const app = createApp({ paymentServiceUrl: 'http://localhost:8089' });
+const api = supertest(app);
+
+Before(async function (this: OrderServiceWorld) {
+  await wireMock.resetAll(); // Clear all stubs between scenarios
+});
+
+Given('the payment service is available and accepts charges', async function () {
+  // WireMock stub: payment service accepts any charge and returns success
+  await wireMock.register({
+    request: { method: 'POST', url: '/api/payments/charge' },
+    response: {
+      status: 200,
+      jsonBody: { chargeId: 'charge-001', status: 'succeeded' }
+    }
+  });
+});
+
+Given('the payment service is currently unavailable', async function () {
+  await wireMock.register({
+    request: { method: 'POST', url: '/api/payments/charge' },
+    response: { status: 503, body: 'Service Unavailable' }
+  });
+});
+
+When(
+  'I create an order with {int} items totalling {string}',
+  async function (this: OrderServiceWorld, itemCount: number, total: string) {
+    const items = Array.from({ length: itemCount }, (_, i) => ({
+      productId: `prod-${String(i + 1).padStart(3, '0')}`,
+      quantity: 1,
+      unitPrice: parseFloat(total.replace('$', '')) / itemCount,
+    }));
+    this.response = await api
+      .post('/api/orders')
+      .set('Authorization', `Bearer ${this.authToken}`)
+      .send({ customerId: 'cust-001', items });
+  }
+);
+
+Then(
+  'the order service should return {int}',
+  function (this: OrderServiceWorld, expectedStatus: number) {
+    if (this.response.status !== expectedStatus) {
+      throw new Error(
+        `Expected HTTP ${expectedStatus}, got ${this.response.status}.\n` +
+        `Body: ${JSON.stringify(this.response.body)}`
+      );
+    }
+  }
+);
+
+Then(
+  'an {string} event should have been published to the event bus',
+  async function (this: OrderServiceWorld, eventType: string) {
+    // Query the in-memory event bus (test-only endpoint)
+    const res = await api.get(`/api/test/events?type=${eventType}`);
+    const events = res.body as Array<{ type: string; payload: Record<string, unknown> }>;
+    if (events.length === 0) {
+      throw new Error(`No "${eventType}" event found in event bus. Published events: ${
+        (await api.get('/api/test/events')).body.map((e: { type: string }) => e.type).join(', ')
+      }`);
+    }
+    this.lastEvent = events[events.length - 1];
+  }
+);
+
+Then(
+  'no {string} event should have been published',
+  async function (this: OrderServiceWorld, eventType: string) {
+    const res = await api.get(`/api/test/events?type=${eventType}`);
+    const events = res.body as unknown[];
+    if (events.length > 0) {
+      throw new Error(
+        `Expected no "${eventType}" events but found ${events.length}`
+      );
+    }
+  }
+);
+```
+
+**Distributed tracing integration for cross-service BDD**:
+```typescript
+// src/support/trace-assertions.ts — validate distributed traces in BDD
+// Uses the OpenTelemetry collector test API to verify trace spans
+export async function assertTraceSpan(
+  correlationId: string,
+  serviceName: string,
+  operationName: string,
+  expectedAttributes: Record<string, unknown>
+): Promise<void> {
+  const collectorUrl = process.env.OTEL_COLLECTOR_TEST_URL ?? 'http://localhost:4318';
+  const res = await fetch(`${collectorUrl}/api/traces?correlationId=${correlationId}`);
+  const traces = await res.json() as { spans: Array<{
+    service: string;
+    operation: string;
+    attributes: Record<string, unknown>;
+  }> };
+
+  const matchingSpan = traces.spans.find(
+    s => s.service === serviceName && s.operation === operationName
+  );
+
+  if (!matchingSpan) {
+    const available = traces.spans.map(s => `${s.service}.${s.operation}`).join(', ');
+    throw new Error(
+      `No span found for ${serviceName}.${operationName}. ` +
+      `Available spans: ${available}`
+    );
+  }
+
+  for (const [key, value] of Object.entries(expectedAttributes)) {
+    if (matchingSpan.attributes[key] !== value) {
+      throw new Error(
+        `Span attribute "${key}": expected "${value}", got "${matchingSpan.attributes[key]}"`
+      );
+    }
+  }
+}
+```
+
+**[community] Service-level BDD ownership**: The biggest microservices BDD failure mode
+is ownership ambiguity. A single centralized BDD suite that tests all services is owned
+by no one and maintained by everyone — which means it degrades quickly. The principle:
+each service team owns and maintains the BDD suite for their service. Platform teams own
+the integration BDD suite. Cross-service scenarios that fail are triaged to the service
+team responsible for the failing step.
+
+**[community] WireMock state management in parallel BDD**: When service-level BDD runs
+in parallel, WireMock instances must be isolated per worker or per scenario. The cleanest
+approach is a WireMock instance per scenario (start/stop in Before/After hooks). The
+alternative — a shared WireMock instance with scenario-scoped state via `stateName` — is
+possible but error-prone under parallel execution. Teams running 50+ parallel scenarios
+consistently prefer the per-scenario instance model despite the startup overhead.
+
+---
+
+### Migrating from Legacy Test Suites to BDD  [community]
+
+Most teams adopting BDD have an existing test suite (Jest, Mocha, Cypress, or Selenium).
+The migration question is: do we rewrite everything in Gherkin, or do we run both systems
+in parallel? The answer is almost always: **incremental migration with no big-bang rewrite**.
+
+**Migration strategy: the BDD overlay approach**
+
+Instead of rewriting existing tests, add BDD scenarios for *new features* while keeping
+existing tests in place. Over 6–12 months, the new BDD suite covers active features and
+the legacy suite covers historical ones. Legacy tests are retired as features are
+significant reworked.
+
+```gherkin
+# Migration signal: when to write BDD instead of Jest/Cypress
+# 
+# USE BDD when:
+# - A product manager or BA has written acceptance criteria for the feature
+# - The feature involves a multi-step user journey
+# - The feature is in a complex business domain with non-obvious rules
+#
+# KEEP Jest/Cypress when:
+# - It's a pure UI component test (rendering, props)
+# - It's an internal utility function test (unit test)  
+# - The existing test is stable and well-understood
+# - The migration cost > the collaboration benefit
+```
+
+```typescript
+// scripts/migration-audit.ts — analyze existing test suite for BDD migration candidates
+import * as fs from 'fs';
+import * as path from 'path';
+import { execSync } from 'child_process';
+
+interface TestFileMigrationScore {
+  file: string;
+  lineCount: number;
+  describeBlockCount: number;
+  itBlockCount: number;
+  hasMockSetup: boolean;
+  hasLoginFlow: boolean;
+  hasBusinessKeywords: boolean;
+  migrationScore: number; // 0-10: higher = stronger BDD candidate
+  recommendation: 'migrate' | 'keep' | 'evaluate';
+}
+
+function analyzeTestFile(filePath: string): TestFileMigrationScore {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split('\n');
+
+  // Heuristic signals that indicate a BDD migration candidate
+  const describeBlockCount = (content.match(/describe\(/g) ?? []).length;
+  const itBlockCount = (content.match(/\bit\(|\btest\(/g) ?? []).length;
+  const hasMockSetup = /jest\.mock|vi\.mock|sinon\.|nock\./.test(content);
+  const hasLoginFlow = /login|auth|token|cookie/i.test(content);
+  const hasBusinessKeywords = /order|checkout|payment|customer|cart|invoice|subscription/i.test(content);
+
+  // Score: scenarios with business language, login flows, and large describe blocks
+  // are the best BDD migration candidates
+  let score = 0;
+  if (hasBusinessKeywords) score += 4;
+  if (hasLoginFlow) score += 2;
+  if (describeBlockCount > 3) score += 2;
+  if (!hasMockSetup) score += 1; // Integration-level: better as BDD
+  if (itBlockCount > 5) score += 1;
+
+  return {
+    file: filePath,
+    lineCount: lines.length,
+    describeBlockCount,
+    itBlockCount,
+    hasMockSetup,
+    hasLoginFlow,
+    hasBusinessKeywords,
+    migrationScore: score,
+    recommendation: score >= 7 ? 'migrate' : score >= 4 ? 'evaluate' : 'keep',
+  };
+}
+
+// Find all test files
+const testFiles = execSync('find . -name "*.spec.ts" -o -name "*.test.ts" -o -name "*.e2e.ts"')
+  .toString().trim().split('\n').filter(Boolean);
+
+const results = testFiles
+  .map(analyzeTestFile)
+  .sort((a, b) => b.migrationScore - a.migrationScore);
+
+console.log('\nBDD Migration Audit Report');
+console.log('===========================\n');
+console.log(`Analyzed: ${results.length} test files\n`);
+
+const migrate = results.filter(r => r.recommendation === 'migrate');
+const evaluate = results.filter(r => r.recommendation === 'evaluate');
+
+console.log(`Migrate to BDD (${migrate.length} files):`);
+migrate.forEach(r => console.log(`  [${r.migrationScore}/10] ${r.file} (${r.itBlockCount} tests)`));
+
+console.log(`\nEvaluate for migration (${evaluate.length} files):`);
+evaluate.forEach(r => console.log(`  [${r.migrationScore}/10] ${r.file}`));
+```
+
+**[community] Migration anti-pattern — "big bang BDD"**: Teams that stop all development
+to rewrite their entire test suite in Gherkin consistently report failure. The rewrite
+takes 2–3 months, the team loses institutional knowledge of why tests were structured
+as they were, and the new BDD suite starts with zero trust from stakeholders who have
+not seen it catch a real bug yet. Incremental migration — one feature area per sprint —
+maintains test coverage continuity and builds confidence gradually.
+
+**[community] Coexistence pattern: Cucumber + Playwright Test in the same repo**: Cucumber.js
+and Playwright Test can coexist in the same repository with separate configuration files.
+Legacy E2E tests in `playwright.config.ts` continue to run. New BDD tests in `cucumber.js`
+add the Gherkin layer. Both write to the `reports/` directory; a combined CI job uploads
+all reports. The key: use different output directories (`reports/playwright/` vs
+`reports/cucumber/`) to avoid artifact collision.
+
+---
+
+### BDD Environment Management and Pre-Run Health Checks  [community]
+
+BDD suites that run against an unreachable or misconfigured environment produce hundreds
+of false failures — not because of bugs in the application, but because the environment
+was not ready. A pre-run health check step fails fast (< 10 seconds) rather than waiting
+for all 300 scenarios to time out. This pattern is especially critical in CI pipelines
+that deploy to staging environments before running BDD.
+
+```typescript
+// src/support/environment-health.ts — pre-run environment validation
+import { BeforeAll } from '@cucumber/cucumber';
+import * as path from 'path';
+
+interface HealthCheckResult {
+  service: string;
+  url: string;
+  status: 'ok' | 'degraded' | 'unreachable';
+  latencyMs: number;
+  details?: string;
+}
+
+async function checkEndpoint(
+  service: string,
+  url: string,
+  expectedStatus = 200
+): Promise<HealthCheckResult> {
+  const start = Date.now();
+  try {
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(5000),  // 5-second timeout per service
+    });
+    const latencyMs = Date.now() - start;
+    return {
+      service,
+      url,
+      status: res.status === expectedStatus ? 'ok' : 'degraded',
+      latencyMs,
+      details: res.status !== expectedStatus
+        ? `Expected HTTP ${expectedStatus}, got ${res.status}`
+        : undefined,
+    };
+  } catch (err) {
+    return {
+      service,
+      url,
+      status: 'unreachable',
+      latencyMs: Date.now() - start,
+      details: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+BeforeAll(async function () {
+  const baseUrl = process.env.BASE_URL ?? 'http://localhost:3000';
+
+  // Define all services that BDD scenarios depend on
+  const checks = await Promise.all([
+    checkEndpoint('app', `${baseUrl}/api/health`),
+    checkEndpoint('auth-service', `${baseUrl}/api/auth/health`),
+    checkEndpoint('payment-service', `${baseUrl}/api/payments/health`),
+    checkEndpoint('notification-service', `${baseUrl}/api/notifications/health`),
+  ]);
+
+  const failed = checks.filter(c => c.status === 'unreachable');
+  const degraded = checks.filter(c => c.status === 'degraded');
+
+  // Print health summary
+  console.log('\n=== Environment Health Check ===');
+  for (const check of checks) {
+    const icon = check.status === 'ok' ? '✓' : check.status === 'degraded' ? '⚠' : '✗';
+    console.log(`  ${icon} ${check.service}: ${check.status} (${check.latencyMs}ms)`);
+    if (check.details) console.log(`    → ${check.details}`);
+  }
+  console.log('================================\n');
+
+  if (failed.length > 0) {
+    const failedServices = failed.map(c => c.service).join(', ');
+    throw new Error(
+      `BDD suite aborted: ${failedServices} unreachable.\n` +
+      `Check that the test environment is deployed and BASE_URL is correct.\n` +
+      `BASE_URL: ${baseUrl}`
+    );
+  }
+
+  if (degraded.length > 0) {
+    console.warn(`Warning: ${degraded.map(c => c.service).join(', ')} degraded — ` +
+      `some scenarios may fail unexpectedly.`);
+  }
+});
+```
+
+**Test environment configuration management** (multiple environments):
+
+```typescript
+// src/config/environments.ts — type-safe environment configuration
+export type EnvironmentName = 'local' | 'staging' | 'preview' | 'production-smoke';
+
+interface EnvironmentConfig {
+  baseUrl: string;
+  apiTimeout: number;
+  headless: boolean;
+  retryCount: number;
+  tags: string; // Default tag filter for this environment
+  auth: {
+    clientId: string;
+    clientSecret: string;
+  };
+}
+
+const environments: Record<EnvironmentName, EnvironmentConfig> = {
+  local: {
+    baseUrl: 'http://localhost:3000',
+    apiTimeout: 10_000,
+    headless: false,
+    retryCount: 0,
+    tags: 'not @wip and not @production-only',
+    auth: {
+      clientId: process.env.LOCAL_CLIENT_ID ?? 'test-client',
+      clientSecret: process.env.LOCAL_CLIENT_SECRET ?? 'test-secret',
+    },
+  },
+  staging: {
+    baseUrl: process.env.STAGING_URL ?? 'https://staging.example.com',
+    apiTimeout: 20_000,
+    headless: true,
+    retryCount: 1,
+    tags: '@regression and not @wip',
+    auth: {
+      clientId: process.env.STAGING_CLIENT_ID ?? '',
+      clientSecret: process.env.STAGING_CLIENT_SECRET ?? '',
+    },
+  },
+  preview: {
+    baseUrl: process.env.PREVIEW_URL ?? '',
+    apiTimeout: 15_000,
+    headless: true,
+    retryCount: 1,
+    tags: '@smoke and not @wip',
+    auth: {
+      clientId: process.env.PREVIEW_CLIENT_ID ?? '',
+      clientSecret: process.env.PREVIEW_CLIENT_SECRET ?? '',
+    },
+  },
+  'production-smoke': {
+    baseUrl: 'https://www.example.com',
+    apiTimeout: 30_000,
+    headless: true,
+    retryCount: 2, // Retry more on production (transient failures common)
+    tags: '@smoke and @production-safe',  // Only non-destructive scenarios
+    auth: {
+      clientId: process.env.PROD_SMOKE_CLIENT_ID ?? '',
+      clientSecret: process.env.PROD_SMOKE_CLIENT_SECRET ?? '',
+    },
+  },
+};
+
+export function getEnvironmentConfig(): EnvironmentConfig {
+  const env = (process.env.TEST_ENV ?? 'local') as EnvironmentName;
+  const config = environments[env];
+  if (!config) {
+    throw new Error(
+      `Unknown TEST_ENV: "${env}". Valid options: ${Object.keys(environments).join(', ')}`
+    );
+  }
+  return config;
+}
+```
+
+**`cucumber.js` with environment-aware profiles**:
+```javascript
+import { getEnvironmentConfig } from './src/config/environments.js';
+
+const envConfig = getEnvironmentConfig();
+
+export default {
+  smoke: {
+    import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+    tags: `@smoke and not @wip`,
+    format: ['progress-bar', 'html:reports/smoke-report.html'],
+    retry: envConfig.retryCount,
+  },
+  regression: {
+    import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+    tags: envConfig.tags,
+    format: ['progress-bar', 'html:reports/regression-report.html'],
+    retry: envConfig.retryCount,
+    parallel: process.env.CI ? 8 : 2,
+  },
+};
+```
+
+**[community] `@production-safe` tag discipline**: Any BDD scenario that runs against
+production must be tagged `@production-safe` — meaning it creates no lasting state, sends
+no real emails, and does not modify production data. The tag is enforced by a CI check:
+`--tags "@production-safe"` can only be combined with the `production-smoke` profile.
+Teams that accidentally run `@regression` scenarios against production typically discover
+it when real users receive test emails or when test orders appear in analytics.
+
+**[community] Preview environment BDD as PR gate**: Platforms like Vercel and Netlify
+create a preview deployment per PR. Running `@smoke` BDD against the preview URL before
+merging is the highest-confidence PR gate: it validates the actual built artifact in a
+production-equivalent environment. The configuration: set `BASE_URL` to the preview URL
+in the CI step that follows the deploy step.
+
+**[community] Environment health check timing**: Run the health check as a separate CI
+step before launching Cucumber, not inside `BeforeAll`. If the health check fails as a
+`BeforeAll`, Cucumber still initializes, loads all step definitions, and generates a
+confusing failure report. A pre-run health check bash script that exits 1 immediately on
+failure is cleaner and produces a more informative CI failure message.
+
+---
+
+## Additional Resources (Iterations 11–20 Additions)
+
+**New framework references (2024–2026):**
+- [Gherkin `Rule` keyword reference](https://cucumber.io/docs/gherkin/reference/#rule) — `Rule` grouping for scenario organization by business rule
+- [Screenplay Pattern — Serenity/JS](https://serenity-js.org/handbook/design/screenplay-pattern/) — TypeScript-native Screenplay Pattern implementation
+- [WireMock Node client](https://github.com/Sairyss/wiremock-node-client) — HTTP service mocking for service-level BDD
+- [Detox — React Native E2E](https://github.com/wix/Detox) — iOS/Android automation for mobile BDD
+- [Allure Framework — TestOps](https://allurereport.org/) — report publishing, trend charts, CI integration
+- [openapi-backend](https://github.com/anttiviljami/openapi-backend) — OpenAPI request/response validation for BDD
+- [ajv](https://ajv.js.org/) — JSON schema validation for OpenAPI contract assertions
+- [Redocly CLI](https://redocly.com/docs/cli/) — OpenAPI spec linting and bundling in CI
+- [playwright-bdd advanced config](https://vitalets.github.io/playwright-bdd/) — Playwright-native BDD runner documentation
+- [Unleash feature flags — Node SDK](https://docs.getunleash.io/reference/sdks/node) — feature flag isolation for parallel BDD scenarios
+- [testcontainers/node](https://github.com/testcontainers/testcontainers-node) — real database and message broker instances for BDD
+- [multiple-cucumber-html-reporter v3](https://github.com/WasiqB/multiple-cucumber-html-reporter) — merged report generation for sharded CI
+- [BDD Books — Gaspar Nagy & Seb Rose](https://bddbooks.com/) — practitioner guide for BDD at scale (includes microservices, migrations)
+
+**Additional community resources:**
+- [Cucumber Discord community](https://discord.gg/cucumber) — active Q&A for Cucumber.js, step definition issues, tooling
+- [OWASP Web Security Testing Guide v4.2](https://owasp.org/www-project-web-security-testing-guide/) — security behavioral patterns for BDD scenarios
+- [Google Web Vitals documentation](https://web.dev/vitals/) — Core Web Vitals thresholds for performance BDD scenarios

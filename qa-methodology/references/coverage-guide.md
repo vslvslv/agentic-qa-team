@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 30 | score: 100/100 | date: 2026-05-03 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -50,12 +50,25 @@ In TypeScript/JavaScript projects, Jest and Vitest support two coverage provider
   Coarse branch detection: `||`/`&&` short-circuits and optional chaining `?.` are often
   not tracked as separate branches. New projects see higher numbers switching to V8 while
   actual branch protection decreases.
+  **Vitest 3.2+ update**: Vitest 3.2.0 introduced **AST-based coverage remapping for V8**
+  that produces identical coverage reports to Istanbul. If using Vitest 3.2+, the
+  historical accuracy gap between V8 and Istanbul is closed — V8 now gives Istanbul-quality
+  branch detection at V8 speed. This is a significant change from prior Vitest versions
+  where Istanbul was always preferred for accurate branch tracking.
 - **Istanbul** (via `@vitest/coverage-istanbul` / `babel-plugin-istanbul`) — instruments
   at the source level, tracks every operator branch. Slower (20–40 % overhead), more
-  accurate branch numbers.
+  accurate branch numbers. Still required for Jest projects and Vitest versions < 3.2.
 
-Rule of thumb: use V8 for fast CI feedback on line coverage; use Istanbul when branch
-accuracy matters (regulated code, payment paths, security logic).
+Rule of thumb: for **Vitest 3.2+**, use V8 (now AST-remapped — equivalent accuracy to Istanbul
+at faster speed). For **Jest** or **Vitest < 3.2**, use Istanbul when branch accuracy matters
+(regulated code, payment paths, security logic).
+
+**esbuild + coverage ignore directives**: when using TypeScript with esbuild as the
+transpiler (Vitest's default), esbuild strips JavaScript comments during transpilation.
+Coverage ignore directives like `/* istanbul ignore next */` are removed before Istanbul
+sees them. Fix: use the `@preserve` marker to keep them: `/* @preserve istanbul ignore next */`.
+Without `@preserve`, all ignore directives in esbuild-transpiled TypeScript are silently
+dropped — coverage will report branches that you intended to suppress.
 
 When using Jest or Vitest with TypeScript, ensure `sourceMap: true` (or
 `inlineSourceMap: true`) is set in your `tsconfig.json`. Coverage providers instrument
@@ -132,12 +145,40 @@ git log --name-only --pretty=format: --since="6 months ago" \
 
 ### 8. Mutation testing tools by ecosystem
 Each language ecosystem has a primary mutation testing tool:
-- **Stryker** — JavaScript/TypeScript (Jest, Vitest, Karma); also has .NET variant
-- **Pitest** — Java/JVM; integrates with Maven and Gradle; widely used in enterprise Java
-- **mutmut** — Python; minimal setup, integrates with pytest; readable diff-style output
+- **Stryker** — JavaScript/TypeScript (Jest, Vitest, Karma); also has .NET variant.
+  Incremental mode via `incremental: true` + `incrementalFile`; use `--since` for PR-scoped runs.
+- **Pitest** — Java/JVM; integrates with Maven and Gradle; widely used in enterprise Java.
+  Operates on **bytecode** (not source), which provides speed advantages but means mutation
+  descriptions reference compiled constructs. Supports incremental analysis via
+  `--historyInputLocation` / `--historyOutputLocation` — store history between runs in CI to
+  avoid full re-mutation on unchanged classes. Use `--threads` for parallel mutation; use
+  `--excludedClasses` and `--excludedMethods` to scope mutations away from generated code.
+- **mutmut** — Python; minimal setup, integrates with pytest; readable diff-style output.
+  Does not have native incremental mode — teams scope runs using `mutmut run <file>` on
+  changed files only.
 
 All three follow the same principle: inject small source mutations, run the test suite,
 count surviving mutants. A surviving mutant = a fault your tests cannot detect.
+
+### 13. Mutation-guided LLM test synthesis: a 2025 production pattern
+Meta's ACH system (arXiv:2501.12862, January 2025) demonstrated a selective mutation
+approach for LLM-guided test generation at production scale: rather than generating
+all possible mutants, ACH generates only **domain-specific** mutants (e.g., mutations
+likely to introduce privacy vulnerabilities) and feeds surviving mutants to an LLM to
+synthesise targeted tests. Applied to 10,795 Android Kotlin classes at Meta, engineers
+accepted 73 % of ACH-generated tests in test-a-thons, with 36 % directly addressing
+privacy concerns.
+
+Key insight for TypeScript teams using AI-assisted development: LLM-generated tests
+(GitHub Copilot, Cursor, Claude) often achieve high **line coverage** by exercising
+the happy path, but have poor **mutation scores** because they pattern-match the
+function signature rather than reason about edge cases and boundary conditions. The
+practical quality gate: run Stryker on any module where AI-generated tests account for
+>30 % of the test suite. A mutation score substantially below line coverage (e.g., 90 %
+lines, 40 % MSI) is a signal that AI-generated tests are covering code without verifying
+behaviour. Feed surviving mutants back to the LLM as context — mutation-guided prompting
+("write a test that catches this specific fault injection") outperforms general "add more
+tests" prompts in improving mutation scores.
 
 ### Coverage type quick reference
 
@@ -222,6 +263,11 @@ const config: Config = {
       lines: 90,
       branches: 85,
     },
+    // Negative thresholds: maximum uncovered entities (not percentage).
+    // Use for rapidly growing modules where a percentage gate is too rigid:
+    // './src/generated/': {
+    //   statements: -50,  // allow up to 50 uncovered statements (not %)
+    // },
   },
 };
 
@@ -269,8 +315,13 @@ removed conditions, swapped return values) and reports each surviving mutant as 
 untested defect hypothesis. This is the only metric that directly measures whether
 your tests can detect real bugs.
 
+**Version note**: Stryker 9 (current as of April 2026) requires **Node 20+** and
+**Vitest v2+** for the Vitest runner. Projects on Node 18 or Vitest v1 must stay on
+Stryker 8.x. The `concurrency` option now accepts percentage strings (`'50%'`) in
+addition to integers — useful for shared CI runners where CPU count varies.
+
 ```typescript
-// stryker.config.ts
+// stryker.config.ts — Stryker 9 with Jest runner (Node 20+)
 import type { PartialStrykerOptions } from '@stryker-mutator/api/core';
 
 const config: PartialStrykerOptions = {
@@ -292,7 +343,8 @@ const config: PartialStrykerOptions = {
   },
   reporters: ['html', 'progress', 'json'],
   timeoutMS: 5000,
-  concurrency: 4,
+  concurrency: '50%',            // Stryker 9+: percentage-based — uses 50% of available CPUs
+  // testFiles: ['src/**/*.test.ts'],  // Stryker 9.5+: optional — limit which tests run mutations
   // Incremental mode: only re-run mutants for files changed since last run
   incremental: true,
   incrementalFile: '.stryker-tmp/incremental.json',
@@ -302,7 +354,7 @@ export default config;
 ```
 
 ```bash
-# Install Stryker with TypeScript checker
+# Install Stryker 9 with TypeScript checker (Node 20+ required)
 npm install --save-dev @stryker-mutator/core @stryker-mutator/jest-runner \
   @stryker-mutator/typescript-checker
 
@@ -447,11 +499,17 @@ suppress coverage for unreachable branches in production code (e.g., defensive f
 generated enums). Misuse to hide real code is an anti-pattern; legitimate use prevents
 false coverage failures on code that cannot be exercised in unit tests.
 
+**esbuild/Vitest users**: esbuild strips block comments during TypeScript transpilation.
+Add `@preserve` to keep ignore directives:
+- `/* @preserve istanbul ignore next */` instead of `/* istanbul ignore next */`
+- `/* @preserve c8 ignore next */` instead of `/* c8 ignore next */`
+Without `@preserve`, all ignore directives are silently dropped in esbuild-transpiled projects.
+
 ```typescript
 // src/config/env.ts — legitimate use: defensive runtime guard
 export function requireEnvVar(name: string): string {
   const value = process.env[name];
-  /* istanbul ignore next — unreachable in tests when env is always mocked */
+  /* @preserve istanbul ignore next — unreachable in tests when env is always mocked */
   if (value === undefined) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
@@ -785,6 +843,68 @@ use `--since` for PR runs. Nightly runs update the incremental state file; PR ru
 consume it and re-run only affected mutants. This reduces PR mutation time from
 20–30 minutes to 2–5 minutes on typical TypeScript codebases.
 
+### Pattern 20 — Stryker advanced performance configuration: ignoreStatic, disableTypeChecks, and prioritizePerformanceOverAccuracy  [community]
+
+Three Stryker options that dramatically reduce CI mutation testing time but are
+frequently overlooked during initial setup. Using `coverageAnalysis: 'perTest'`
+without `ignoreStatic` leaves static mutants running the full test suite on every
+mutation — often doubling wall-clock time on TypeScript projects.
+
+```typescript
+// stryker.config.ts — advanced performance-tuned configuration
+import type { PartialStrykerOptions } from '@stryker-mutator/api/core';
+
+const config: PartialStrykerOptions = {
+  testRunner: 'vitest',
+  vitest: { configFile: 'vitest.config.ts' },
+
+  // Performance-critical options:
+  coverageAnalysis: 'perTest',   // run only tests that cover each mutant (default since v5)
+  ignoreStatic: true,            // skip mutants in static initializers — they run at load time,
+                                  // not per-test, so perTest analysis can't optimise them.
+                                  // Static mutations often constitute 10–20% of total mutants
+                                  // and each runs the entire test suite. Skipping saves 10–25%
+                                  // of total mutation time on TypeScript codebases with class fields.
+
+  checkers: ['typescript'],
+  tsconfigFile: 'tsconfig.json',
+
+  // TypeScript checker performance option:
+  // 'prioritizePerformanceOverAccuracy' accepts mutants that fail to compile with a
+  // "possible" verdict rather than re-checking them individually. In large TS projects,
+  // this saves 20–40% of type-check overhead at the cost of a few false survivors.
+  // Use for PR runs; use the accurate default for nightly runs.
+  // TypeScript.checkerOptions: { prioritizePerformanceOverAccuracy: true },
+
+  // Prevent Stryker from failing on TypeScript errors in mutated source.
+  // Mutants that introduce type errors are discarded before test execution:
+  disableTypeChecks: '**/__mocks__/**/*.ts',  // disable type checking for mock files only
+
+  mutate: [
+    'src/**/*.ts',
+    '!src/**/*.spec.ts',
+    '!src/**/*.test.ts',
+    '!src/**/__mocks__/**',
+    '!src/**/index.ts',
+  ],
+  thresholds: { high: 80, low: 60, break: 50 },
+  reporters: ['html', 'progress', 'json'],
+  timeoutMS: 5000,
+  // timeoutFactor: 1.5,  // (netTimeMs × timeoutFactor) + timeoutMS + overheadMs
+                           // increase for slow integration suites to avoid false infinite-loop positives
+  concurrency: 4,
+  incremental: true,
+  incrementalFile: '.stryker-tmp/incremental.json',
+};
+
+export default config;
+```
+
+**When each option applies:**
+- `ignoreStatic: true` — always enable when using `coverageAnalysis: 'perTest'`; static mutants negate perTest savings
+- `disableTypeChecks` — restrict to generated files and mocks; applying it to `src/**` defeats the TypeScript checker's purpose
+- `prioritizePerformanceOverAccuracy` — safe for PR mutation runs where speed matters; disable for nightly audit runs where full accuracy is required
+
 ### Pattern 18 — Discovering entirely untested files with `all: true` (Istanbul/Vitest)  [community]
 
 By default, Istanbul only reports coverage for files that are imported by at least one
@@ -1001,6 +1121,12 @@ Node 22+ ships a built-in test runner with native ESM support. When using TypeSc
 with ESM and `tsx` or `ts-node/esm`, Istanbul-based coverage via `c8` is the correct
 tool — Jest and Vitest are not required.
 
+**Node 23+ update**: Node 23+ (with `--experimental-strip-types` stabilizing toward
+`--no-strip-types` in Node 24) supports native TypeScript coverage directly via the
+built-in test runner's `--experimental-test-coverage` flag. The `c8` wrapper is no longer
+required for basic coverage — Node handles it natively, including LCOV output.
+Programmatic threshold enforcement is available via the `run()` API.
+
 ```typescript
 // src/utils/format.ts — ESM-native TypeScript module
 export function formatCurrency(amount: number, currency: string): string {
@@ -1037,20 +1163,38 @@ describe('formatCurrency', () => {
 ```
 
 ```json
-// package.json — run with c8 for V8 coverage on ESM TypeScript
+// package.json — native Node coverage with built-in test runner (no c8 required)
 {
   "scripts": {
     "test": "node --experimental-strip-types --test src/**/*.test.ts",
-    "test:coverage": "c8 --reporter=text --reporter=lcov node --experimental-strip-types --test src/**/*.test.ts"
+    "test:coverage": "node --experimental-strip-types --test --experimental-test-coverage --test-reporter=lcov --test-reporter-destination=lcov.info src/**/*.test.ts"
   }
 }
 ```
 
-**Why this matters**: Node 22's `--experimental-strip-types` flag enables running
-TypeScript files directly without transpilation. `c8` wraps the process and collects
-V8 coverage natively. Teams that previously required a full Jest or Vitest setup for
-TypeScript can now obtain line coverage with zero build tooling. Branch detection
-limitations (same as V8 provider in Vitest) still apply.
+```typescript
+// scripts/run-tests-with-thresholds.ts — programmatic Node test runner with thresholds
+// Node 22+: use `run()` from node:test to enforce coverage thresholds inline
+import { run } from 'node:test';
+import process from 'node:process';
+
+const stream = run({
+  files: ['src/**/*.test.ts'],
+  coverage: true,
+  lineCoverage: 80,         // fail if < 80% line coverage
+  branchCoverage: 75,       // fail if < 75% branch coverage
+  functionCoverage: 80,     // fail if < 80% function coverage
+});
+
+stream.on('test:fail', () => process.exitCode = 1);
+```
+
+**Why this matters**: Node 22's `--experimental-strip-types` (Node 23+ further stabilised)
+enables running TypeScript files directly without transpilation. The built-in
+`--experimental-test-coverage` flag collects V8 coverage natively with zero external
+tooling — no `c8`, no Jest, no Vitest. Branch detection has the same characteristics as
+the V8 provider in Vitest < 3.2 (coarser than Istanbul); use `c8` or Vitest 3.2+ V8
+AST remapping for accurate branch tracking in complex TypeScript expressions.
 
 ### Pattern 15 — Coverage differential: report only new/changed lines on PRs  [community]
 
@@ -1155,6 +1299,144 @@ code inflate coverage numbers artificially.
 - `strict: true` — catches type errors that create unreachable branches, reducing spurious coverage gaps
 - `inlineSourceMap: false` — prefer external source maps for Istanbul; inline maps can cause size issues in large codebases
 - `noEmit: true` in test tsconfig — prevents accidental emission during test runs
+
+### Pattern 21 — Jest negative thresholds for fast-growing TypeScript modules  [community]
+
+Jest supports **negative threshold values** as an alternative to percentage-based gates.
+A negative value specifies the maximum number of **uncovered entities** allowed, rather than
+a minimum percentage. This is more stable for rapidly-growing modules where the percentage
+moves with every added function — a negative threshold holds the absolute gap constant.
+
+```typescript
+// jest.config.ts — using negative thresholds for controlled legacy debt
+import type { Config } from 'jest';
+
+const config: Config = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/**/index.ts'],
+  coverageProvider: 'v8',
+  coverageThreshold: {
+    global: {
+      lines: 80,
+      branches: 75,
+      functions: 80,
+      statements: 80,
+    },
+    // Legacy module with known debt: allow up to 15 uncovered branches (not a percentage).
+    // As new tests are added the count decreases; the gate tightens without manual updates.
+    './src/legacy/billing.ts': {
+      branches: -15,     // max 15 uncovered branches allowed
+      statements: -30,   // max 30 uncovered statements allowed
+    },
+    // Rapidly-growing new module: hold the gap at most 5 uncovered functions.
+    // When functions are added WITH tests, count stays at 0; without tests it rises.
+    './src/features/checkout/': {
+      functions: -5,     // max 5 uncovered functions in the checkout feature directory
+    },
+  },
+};
+
+export default config;
+```
+
+**When to use negative thresholds:**
+- Legacy modules being incrementally tested: percentage moves unpredictably as the file grows; absolute count is stable
+- Teams in a coverage improvement sprint: set the initial negative count, tighten it each sprint
+- Generated code with a fixed number of untestable branches: set `-N` to match the known count, prevent drift
+
+**Limitation**: negative thresholds do not work with Vitest — Vitest only supports percentage-based
+`thresholds`. Use Jest or the programmatic approach (Pattern 17) for absolute-count enforcement.
+
+### Pattern 22 — Merging coverage from parallel sharded Vitest runs in GitHub Actions  [community]
+
+Running tests in parallel across multiple CI shards significantly reduces wall-clock time,
+but each shard produces its own coverage data. Without merging, only the last shard's
+coverage is reported, or coverage is silently missing for test files run on other shards.
+Vitest 1.4+ supports `--merge-reports` to combine blob reports from multiple shards.
+
+```yaml
+# .github/workflows/test-sharded.yml — parallel sharding with coverage merge
+name: Sharded Tests with Coverage
+
+on: [pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]      # 4 parallel shards
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+
+      - name: Run Vitest shard ${{ matrix.shard }}
+        run: |
+          npx vitest run \
+            --shard=${{ matrix.shard }}/4 \
+            --coverage \
+            --coverage.reporter=json \
+            --reporter=blob \                  # blob reporter for merge
+            --outputFile=reports/blob-${{ matrix.shard }}.json
+
+      - name: Upload shard blob report
+        uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: reports/blob-${{ matrix.shard }}.json
+
+  merge-coverage:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+
+      - name: Download all shard blob reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: blob-report-*
+          path: reports/
+
+      - name: Merge Vitest reports and coverage
+        run: npx vitest --merge-reports=reports/ --coverage
+
+      - name: Upload merged coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+```
+
+```typescript
+// vitest.config.ts — configure blob reporter and per-shard coverage output
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',                // Vitest 3.2+: AST-remapped V8 = Istanbul accuracy
+      reporter: ['json', 'lcov'],    // json for blob merge, lcov for Codecov
+      reportsDirectory: './coverage',
+      include: ['src/**/*.ts'],
+      all: true,
+    },
+  },
+});
+```
+
+**Key points:**
+- Each shard runs with `--reporter=blob` to produce a mergeable blob file
+- The `merge-coverage` job downloads all shard blobs and runs `--merge-reports` to produce a unified coverage report
+- Coverage thresholds are checked only in the merge job — not per-shard — to avoid false failures on partial test runs
+- Without merging, coverage from shards 2-4 is simply discarded; aggregate numbers are artificially low
 
 ---
 
@@ -1348,6 +1630,20 @@ export default defineConfig({
 });
 ```
 
+### AP12 — Enforcing coverage thresholds per-shard in parallel CI without merging  [community]
+In GitHub Actions matrix builds where each shard runs a subset of tests, teams
+mistakenly add `thresholds` to the Vitest config and run coverage checks per-shard.
+Each shard only executes 25 % (or 1/N) of the tests, so each shard only covers its own
+test files. A shard passes threshold checks not because coverage is adequate, but because
+the uncovered source files are excluded from that shard's report entirely. The CI shows
+all shards green; the merged codebase may have 40 % actual coverage.
+
+**WHY it's dangerous**: per-shard threshold checks create false confidence. The only
+valid coverage gate in a sharded pipeline is on the **merged report**. Remove
+`thresholds` from the shared `vitest.config.ts` and add them only to the merge job
+that calls `vitest --merge-reports`. The merge job fails if merged coverage is below
+threshold; individual shard jobs never check coverage thresholds.
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -1463,6 +1759,11 @@ high branch coverage on complex TypeScript code may be benefiting from esbuild c
 branches before instrumentation. Switch to `transformMode: 'ssr'` in Vitest config or
 use `@vitest/coverage-istanbul` with a babel transform to instrument pre-esbuild source
 for accurate branch counts on complex TypeScript expressions.
+**Vitest 3.2+ update**: AST-based coverage remapping for the **V8 provider** resolves
+this issue for V8 — Vitest 3.2+ V8 coverage is now as accurate as Istanbul. If upgrading
+to Vitest 3.2+, switch to `provider: 'v8'` to benefit from the AST remapping without
+esbuild instrumentation gaps. The istanbul provider still has the esbuild-collapse issue
+in Vitest 3.2+; prefer V8 with AST remapping for accurate branch counts at lower overhead.
 
 ### G21 — Istanbul and TypeScript generic types: phantom uncovered branches  [community]
 TypeScript generics compile to JavaScript that sometimes includes implicit type checks
@@ -1545,6 +1846,196 @@ before. Teams should audit the HTML coverage diff between nyc and Istanbul/V8 ou
 before removing `nyc` from the CI pipeline, particularly for TypeScript files with
 optional parameters, default argument handling, and try/catch error paths.
 
+### G22 — Stryker ignoreStatic omission silently negates perTest performance savings  [community]
+When `coverageAnalysis: 'perTest'` is enabled (the default since Stryker v5), Stryker
+runs only the tests that cover a given mutant. Static mutants — code executed during
+module initialisation (class static fields, top-level const initializers, module-level
+side effects) — cannot be attributed to specific tests, so Stryker falls back to running
+the **entire** test suite for each of them. On TypeScript NestJS or class-heavy codebases
+where static initializers are prevalent, static mutants can account for 10–20 % of all
+mutants. **WHY it matters**: teams enabling `perTest` expecting a 5× speedup are surprised
+to see 2× at best, not realising static mutants are circumventing the optimisation. Setting
+`ignoreStatic: true` skips these mutants entirely, recovering the full perTest benefit.
+The tradeoff is a small reduction in mutation coverage for static logic — acceptable in
+most applications because static initializers rarely contain business logic.
+
+### G23 — Jest 30 moduleFileExtensions ordering affects TypeScript coverage resolution speed  [community]
+Jest 30.0 (released October 2025) resolved TypeScript source files by scanning
+`moduleFileExtensions` in order. The default order ends with `['ts', 'tsx', ...]` after
+JavaScript extensions. In TypeScript-heavy projects with thousands of source files, this
+means Jest checks `.js` and `.mjs` extensions before finding `.ts` files, adding
+unnecessary file-system resolution overhead during coverage collection.
+**WHY it matters**: on monorepos with 2,000+ TypeScript source files, coverage collection
+time increases 15–30 % solely from extension resolution order. Fix by moving TypeScript
+extensions to the front: `moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'json', 'node']`
+in `jest.config.ts`. This is a safe change: Jest still resolves JavaScript files correctly;
+only the probe order changes.
+
+### G24 — Stryker Vitest runner enforces single-thread mode, disabling Vitest's native parallelism  [community]
+The `@stryker-mutator/vitest-runner` forces `singleThread: true` on Vitest because
+Stryker manages its own worker pool. This means all Vitest tests run in a single thread
+per Stryker worker — Vitest's native `pool: 'threads'` parallelism is disabled.
+**WHY it matters**: teams migrating from Jest to Vitest for speed gains (Vitest's parallel
+test execution is a primary selling point) are surprised to find mutation runs are slower
+than expected, not realising Stryker has disabled Vitest's threading. Total mutation
+throughput is controlled by Stryker's `concurrency` setting, not Vitest's thread count.
+Set `concurrency` to match your CI's CPU count (e.g., `concurrency: 4` for a 4-vCPU runner)
+and accept that per-worker test parallelism is unavailable during mutation runs.
+Additionally, Vitest Browser Mode is not supported by the Stryker Vitest runner — tests
+requiring browser context must be excluded from mutation runs with `mutate` glob excludes.
+
+### G25 — Vitest in-source tests require explicit Stryker mutation suppression  [community]
+Vitest supports "in-source tests" — test cases written directly in the source file inside
+`if (import.meta.vitest)` blocks. Stryker mutates all source files by default and will
+inject mutations inside these test blocks, causing test assertions themselves to be mutated
+rather than the production code under test. **WHY it matters**: in-source test mutations
+produce spurious surviving mutants that appear to indicate untested code but are actually
+artifacts of mutating the test logic. The fix: add `// Stryker disable all` immediately
+before any `if (import.meta.vitest)` block and `// Stryker restore all` after. For
+projects making heavy use of in-source tests, add the glob exclusion in `mutate` config:
+`'!src/**/*.test.ts'` is insufficient — in-source tests live in non-test-suffixed files.
+Use `// Stryker disable all` annotations as the canonical approach.
+
+### G26 — Pitest bytecode mutation: mutation descriptions differ from source-level expectations  [community]
+Pitest instruments Java bytecode rather than source code. This means mutation descriptions
+reference compiled constructs — "replaced int return with 0" or "negated conditional" —
+that may not map cleanly to source-level logic, especially after javac applies
+optimisations. In projects with complex conditional chains, the Pitest HTML report may
+show a surviving mutant on a line that looks fully covered in the source. **WHY it
+matters**: teams new to Pitest waste time trying to write tests for mutants they believe
+are in the source, not realising the mutation is on a compiled branch the source-level
+Istanbul comparison would track differently. Use Pitest's `--verbosity` flag and the HTML
+report to understand what bytecode is being mutated; cross-reference with IntelliJ IDEA's
+decompile view if the mutation description is unclear.
+
+### G27 — mutmut lacks native incremental mode: teams must scope runs manually  [community]
+Unlike Stryker's `--since` flag and Pitest's `--historyInputLocation`, mutmut has no
+built-in incremental mutation mode as of 2026. Every run either tests all files or
+requires manual invocation per-file (`mutmut run <file>`). **WHY it matters**: Python
+projects integrating mutmut in CI often either skip mutation on PRs (too slow) or run it
+on the entire codebase (prohibitive on large projects). The practical workaround:
+use `git diff --name-only origin/main HEAD -- '*.py'` to enumerate changed Python files
+and invoke `mutmut run <file>` for each in a loop. Alternatively, use `cosmic-ray` as
+a more CI-friendly alternative — it supports job distribution across workers.
+
+### G28 — Stryker 9 upgrade silently drops Vitest v1 and Node 18 support  [community]
+Stryker 9 (April 2026) dropped Node 18 support and requires **Vitest v2 or higher** for
+the `@stryker-mutator/vitest-runner`. Teams running `npm update @stryker-mutator/core`
+without reviewing the changelog will find their CI failing with cryptic module
+compatibility errors — not a clear "unsupported Node/Vitest version" message.
+**WHY it matters**: monorepos with pinned toolchain versions (common in regulated
+environments) may be blocked from upgrading to Stryker 9 until they first upgrade Node
+and Vitest. If Stryker 8.x is still running correctly, pin the version explicitly:
+`"@stryker-mutator/core": "^8"` until the platform upgrade is planned. Check
+compatibility before running `npm update` on any Stryker package.
+
+### G29 — TypeScript 5 stage-3 decorators create extra Istanbul branches not present in experimental decorators  [community]
+TypeScript 5.0 introduced standards-compliant (stage-3) decorators. Unlike experimental
+decorators (`experimentalDecorators: true`), stage-3 decorators compile to wrapper
+functions that Istanbul instruments as additional branches. A class decorated with
+`@loggedMethod` gains an instrumented replacement function wrapping the original method —
+Istanbul tracks whether both branches of the replacement are covered. **WHY it matters**:
+teams migrating NestJS projects from `experimentalDecorators: true` to TypeScript 5's
+native decorators often see branch coverage drop 5–15 percentage points immediately
+after the migration, without any test change. The fix: exclude decorator implementation
+files from strict branch thresholds, or add targeted tests that exercise decorator-wrapped
+methods through paths that invoke the decorator logic (not just the method body).
+
+### G30 — TypeScript `using` and `await using` disposal paths are invisible to V8 branch coverage  [community]
+TypeScript 5.2's `using` declarations (Explicit Resource Management) generate implicit
+`Symbol.dispose()` calls at scope exit, including on early return and on throw. V8's
+coverage instrumentation does not track these implicit disposal branches as separate
+branch points — they appear to V8 as part of the scope exit machinery, not as decision
+branches. Istanbul instruments them inconsistently: the `Symbol.dispose()` body is marked
+as covered if the scope exits normally, but the throw-path through `SuppressedError`
+(which wraps errors thrown during disposal) is almost never covered in unit tests.
+**WHY it matters**: code using `using` for resource cleanup (file handles, database
+connections, lock management) may appear 100 % branch-covered while the critical error
+path through async disposal exceptions is completely untested. Write explicit tests for
+the disposal failure path using a mock that throws from `Symbol.dispose()` — this is
+the only way to exercise the `SuppressedError` branch that `await using` generates.
+
+### G31 — verbatimModuleSyntax in tsconfig breaks Istanbul source-map continuity  [community]
+TypeScript's `--verbatimModuleSyntax` flag (stable since TS 5.0) preserves import/export
+syntax as-written rather than allowing downlevel transforms. When Istanbul instruments
+code compiled with `verbatimModuleSyntax: true`, source map accuracy degrades for
+type-only import lines — Istanbul may report type-import lines as uncovered statements
+because the compiled output omits them, breaking the source-map line mapping. **WHY it
+matters**: teams enabling `verbatimModuleSyntax` for ESM compatibility (a recommended
+setting for modern Node TypeScript) see phantom uncovered statement markers in Istanbul
+HTML reports on lines containing `import type { ... }` syntax. The fix: add
+`exclude: ['**/*.d.ts']` to coverage config and enable `"importsNotUsedAsValues": "error"`
+in tsconfig — this ensures `import type` is consistently used for type-only imports,
+making the compiled output cleaner for Istanbul's source-map resolver.
+
+### G32 — esbuild strips coverage ignore directives: @preserve required in Vitest TypeScript projects  [community]
+Vitest uses esbuild by default to transpile TypeScript. esbuild removes JavaScript
+comments (including block comments) during transpilation before Istanbul instruments the
+output. This means `/* istanbul ignore next */`, `/* c8 ignore next */`, and
+`/* istanbul ignore file */` directives in TypeScript source files are **silently
+dropped** — the branches they were meant to suppress will appear as uncovered in the
+coverage report. **WHY it matters**: teams that added ignore directives for legitimate
+reasons (exhaustiveness guards, platform-specific branches, TypeScript `never` arms) will
+see coverage failures after switching to Vitest or after esbuild processes their files.
+The fix: prefix ignore directives with `@preserve` so esbuild retains them:
+`/* @preserve istanbul ignore next */` or `/* @preserve c8 ignore next */`. Verify the
+directive survived by checking the compiled output in `node_modules/.vite/` or using
+`vitest --reporter=verbose` to confirm the branch is suppressed.
+
+### G33 — Vitest 3.2 AST-based V8 remapping changes historical coverage numbers  [community]
+Vitest 3.2.0 introduced AST-based coverage remapping for the V8 provider, closing the
+accuracy gap that previously existed between V8 and Istanbul. This is a significant
+improvement — but it is also a **breaking change for coverage baselines**: branch
+coverage numbers reported by V8 in Vitest 3.2+ will differ from those reported by V8
+in Vitest 3.1 and earlier. Projects upgrading from Vitest 3.1 to 3.2 may see branch
+coverage **decrease** (because V8 now counts branches that were previously invisible),
+triggering threshold failures. **WHY it matters**: when upgrading Vitest, temporarily
+lower branch coverage thresholds, run the new report to see the baseline, then restore
+or adjust the thresholds. Treat the upgrade as a coverage baseline reset event, not a
+test failure event.
+
+### G34 — AI-generated tests inflate line coverage while failing mutation testing  [community]
+Tests generated by GitHub Copilot, Cursor, Claude, and similar LLM coding assistants
+tend to exercise the happy path of each function they target, achieving high line coverage
+quickly. However, these tests typically pattern-match the function signature and known
+example outputs — they do not reason about boundary conditions, error paths, or
+adversarial inputs. **WHY it matters**: teams using AI-assisted test generation report
+consistently low mutation scores (30–50 % MSI) on modules with 85–95 % line coverage,
+because the AI-generated tests are assertion-thin or exercise only the success path.
+Run Stryker on any module where AI-generated tests comprise a significant portion of
+the test suite. Feed surviving mutants as context back to the LLM with mutation-specific
+prompts ("the test suite cannot detect this fault: `value <= min` was changed to
+`value < min` on line 12 — write a test that catches this") — mutation-guided prompting
+substantially outperforms general "add more tests" prompts for improving mutation scores.
+Based on Meta's ACH research (arXiv:2501.12862), mutation-guided LLM synthesis achieved
+73 % engineer acceptance in production test-a-thons.
+
+### G35 — Node built-in test coverage thresholds exit code 1 vs c8 threshold semantics differ  [community]
+When using Node's built-in `--experimental-test-coverage` with the `run()` programmatic
+API, threshold failures emit `test:fail` events and set `process.exitCode = 1` — they
+do not throw exceptions. When using `c8` with `--check-coverage`, `c8` exits with code 1
+directly on threshold failure. In a mixed CI pipeline that uses both approaches
+(some test suites on Node native, others on c8), carelessly combining the two means a
+threshold failure from the `run()` API is only caught if the caller correctly observes
+`process.exitCode` after stream completion. **WHY it matters**: CI pipelines that pipe
+`node --test` output through formatters may swallow the exit code, showing green while
+a coverage threshold was breached. Always verify the exit code in CI:
+`node --test --experimental-test-coverage; echo "exit: $?"` — a coverage failure yields
+exit code 1 only if thresholds are configured via `run({ lineCoverage, branchCoverage })`.
+Without thresholds, `--experimental-test-coverage` always exits 0 on test pass.
+
+### G36 — Sharded Vitest runs without blob merge produce silently incomplete coverage  [community]
+Teams running Vitest with `--shard` in GitHub Actions matrix jobs often collect coverage
+independently per shard and upload each shard's `coverage/lcov.info` to Codecov separately.
+Codecov merges the LCOV files automatically — but without Vitest's `--merge-reports`,
+the per-shard coverage JSON files are missing cross-shard data, and each shard only
+covers its own test files. **WHY it matters**: a 4-shard run where each shard runs 25 %
+of tests may report 100 % coverage per shard (only the files those tests cover are
+included), but the aggregate misses 75 % of the codebase. The fix is Vitest's
+`--merge-reports` workflow: collect blob reports from all shards, run `--merge-reports`
+in a dedicated job, and enforce coverage thresholds only on the merged output. Never
+check coverage thresholds per-shard; only the merged report is meaningful.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -1594,17 +2085,23 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Test review / pair review | Assertion quality and intent clarity |
 | Visual regression (Chromatic, Percy) | UI correctness that line coverage cannot measure |
 | TypeScript strict type checking | Eliminates whole classes of runtime bugs without any test |
+| Mutation-guided LLM synthesis (ACH) | Targeted test generation for surviving mutants at production scale |
 
 ### Known adoption costs
 - **Mutation testing**: 5–30x slower than unit test suite; requires incremental/selective
-  configuration before CI integration is practical.
+  configuration before CI integration is practical. Stryker 9 requires Node 20+ and Vitest v2+.
 - **Istanbul instrumentation**: 20–40 % test runtime overhead; significant on large TypeScript suites.
-  `ts-jest` with Istanbul adds source-map resolution on top.
+  `ts-jest` with Istanbul adds source-map resolution on top. In **Vitest 3.2+**, use the V8 provider
+  with AST remapping instead — same accuracy as Istanbul at V8 speed, eliminating the overhead penalty.
 - **Per-file thresholds**: require ongoing maintenance as new TypeScript files are added; can block
   PRs until thresholds are explicitly configured for new modules.
 - **Stryker initial setup for TypeScript**: `@stryker-mutator/typescript-checker` + Jest/Vitest
   preset alignment typically requires 2–4 hours of initial configuration on a real-world codebase.
   TypeScript path aliases (`@/...`) must be configured in both `tsconfig.json` and Stryker config.
+- **Sharded coverage in CI**: parallel sharding requires a dedicated merge job (`vitest --merge-reports`)
+  and threshold checks only on the merged output — per-shard threshold checks produce false positives.
+- **Vitest 3.2 baseline reset**: upgrading to Vitest 3.2+ resets V8 branch coverage baselines
+  (AST remapping now detects more branches); treat as a one-time recalibration, not a test failure.
 
 ---
 
@@ -1618,16 +2115,21 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Stryker TypeScript checker | Official | https://stryker-mutator.io/docs/stryker-js/typescript-checker/ | TypeScript-specific mutant validation before test execution |
 | Stryker Vitest runner | Official | https://stryker-mutator.io/docs/stryker-js/vitest-runner/ | Vitest-specific Stryker runner for TypeScript/ESM projects |
 | Jest coverage configuration | Official | https://jestjs.io/docs/configuration#coveragethreshold-object | coverageThreshold schema with per-file and per-directory support |
-| Vitest coverage docs | Official | https://vitest.dev/guide/coverage.html | Threshold config, v8 vs istanbul, per-file thresholds, TypeScript support |
+| Vitest coverage docs | Official | https://vitest.dev/guide/coverage.html | Threshold config, V8 AST remapping (v3.2+), per-file thresholds, TypeScript support |
 | ts-jest coverage docs | Official | https://kulshekhar.github.io/ts-jest/docs/ | ts-jest with Istanbul coverage for Jest TypeScript projects |
 | c8 — V8 Native Coverage CLI | Official | https://github.com/bcoe/c8 | Lightweight V8 coverage CLI for Node.js test runner; no instrumentation overhead |
 | mutmut (Python) | Official | https://mutmut.readthedocs.io/ | Python mutation testing tool reference |
-| Pitest (Java) | Official | https://pitest.org/ | Java/JVM mutation testing; Maven/Gradle integration |
+| Pitest (Java) | Official | https://pitest.org/ | Java/JVM mutation testing; Maven/Gradle integration; incremental via historyInputLocation |
 | fast-check (property-based, TypeScript) | Community | https://fast-check.io/ | Complement to coverage: explores full input space; TypeScript-native |
 | fast-check documentation | Official | https://fast-check.io/docs/introduction/getting-started/ | Getting started with property-based testing in TypeScript |
 | Google Testing Blog — Code Coverage Best Practices | Community | https://testing.googleblog.com/2020/08/code-coverage-best-practices.html | Production-grade guidance from Google's test engineering team |
 | ISTQB CTFL 4.0 Syllabus | Official | https://www.istqb.org/certifications/certified-tester-foundation-level | Defines white-box coverage criteria including MC/DC |
 | Kent C. Dodds — Write Fewer, Longer Tests | Community | https://kentcdodds.com/blog/write-fewer-longer-tests | Argues against coverage-driven test fragmentation |
 | Codecov — Patch Coverage Docs | Official | https://docs.codecov.com/docs/patch-coverage | Coverage differential for PRs: test only new/changed lines |
-| Node.js built-in test runner | Official | https://nodejs.org/api/test.html | Native Node test runner with c8 coverage, no Jest/Vitest required |
+| Node.js built-in test runner | Official | https://nodejs.org/api/test.html | Native Node test runner with --experimental-test-coverage, programmatic thresholds via run() |
 | c8 — V8 coverage CLI (bcoe) | Official | https://github.com/bcoe/c8 | Lightweight V8 coverage wrapper for any Node test runner including ESM TypeScript |
+| Meta ACH: Mutation-Guided LLM Test Generation | Research | https://arxiv.org/abs/2501.12862 | arXiv:2501.12862 — selective mutant generation + LLM synthesis; 73 % engineer acceptance at Meta scale |
+| Jest 30 configuration docs | Official | https://jestjs.io/docs/configuration | Jest 30 (Oct 2025) reference; negative thresholds, moduleFileExtensions optimisation |
+| Stryker configuration reference | Official | https://stryker-mutator.io/docs/stryker-js/configuration/ | Full config reference: ignoreStatic, disableTypeChecks, coverageAnalysis, timeoutFactor, concurrency, testFiles |
+| Stryker Dashboard | Official | https://dashboard.stryker-mutator.io/ | Track mutation scores over time, generate badges, integrate with CI |
+| Stryker GitHub Releases | Official | https://github.com/stryker-mutator/stryker-js/releases | Release notes for Stryker 9.x: Node 20+ requirement, Vitest v2+, percentage-based concurrency |

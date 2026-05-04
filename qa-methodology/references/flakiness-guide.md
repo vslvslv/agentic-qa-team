@@ -1,5 +1,5 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 32 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 42 | score: 100/100 | date: 2026-05-03 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: synthesized from training knowledge — WebFetch blocked; WebSearch unavailable -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
@@ -27,6 +27,16 @@
 <!-- Iteration 30: Anti-patterns AP18–AP22: Bun globals, Effect test, floating point, streaming API, SW scope -->
 <!-- Iteration 31: Community lessons 24–30; extended Quick Reference table -->
 <!-- Iteration 32: Key Resources additions; final summary table extensions -->
+<!-- Iteration 33: Pattern 46 (Playwright testInfo.retry conditional cleanup); Pattern 47 (failure fingerprinting); AP26 (no failure normalization) -->
+<!-- Iteration 34: Pattern 48 (constraint-tightening); AP27 (serial mode misuse); Gotcha 31 (retry cascades) -->
+<!-- Iteration 35: Pattern 49 (AI-driven flakiness repair); Gotcha 32 (FlakyDoctor neuro-symbolic); AP28 (LLM repair without verification) -->
+<!-- Iteration 36: Pattern 50 (environment-segmented analysis); Gotcha 33 (CI runner arch drift ARM vs x64); AP29 (aggregated flakiness metrics) -->
+<!-- Iteration 37: Pattern 51 (test.describe.serial for stateful E2E); Gotcha 34 (worker discard cascade); AP30 (serial mode hiding shared state) -->
+<!-- Iteration 38: Pattern 52 (Playwright request interception ordering); Gotcha 35 (route handler registration timing) -->
+<!-- Iteration 39: Pattern 53 (infection model quarantine numeric limit); AP31 (orphaned quarantine without limit); Quick Reference additions -->
+<!-- Iteration 40: Pattern 54 (build-time clock call detection); AP32 (dynamic date in production code without injection) -->
+<!-- Iteration 41: Pattern 55 (deterministic resource pool size=1 technique); Gotcha 36 (connection pool exhaustion flakiness) -->
+<!-- Iteration 42: Final polish — ISTQB alignment additions; Key Resources (FlakyDoctor, @effect/vitest, Playwright serial); summary table row additions -->
 
 ---
 

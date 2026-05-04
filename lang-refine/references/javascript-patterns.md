@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 37 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: official | community | mixed | iteration: 39 | score: 100/100 | date: 2026-05-03 -->
 
 ## Core Philosophy
 
@@ -405,18 +405,22 @@ const londonTime = meeting.withTimeZone('Europe/London');
 
 Throwing strings or generic `Error` loses type information and makes catch blocks unable to distinguish error types. Extend `Error` for structured error handling. Use `cause` (ES2022) to preserve error chain context without losing stack traces.
 
+A key production distinction [community]: **operational errors** are expected scenarios (user not found, validation failure, rate-limit exceeded) that can be handled gracefully. **Programmer errors** are unexpected bugs (null dereference, logic flaw) that should restart the process — handling them risks the app running in a corrupted state. Flag this distinction explicitly in your error hierarchy.
+
 ```javascript
-// Custom error hierarchy
+// Custom error hierarchy with operational vs programmer error distinction
 class AppError extends Error {
-  constructor(message, options) {
+  constructor(message, options = {}) {
     super(message, options); // Forwards { cause } to built-in Error
     this.name = this.constructor.name;
+    // isOperational: true = expected; false = bug → restart the process
+    this.isOperational = options.isOperational ?? true;
   }
 }
 
 class NotFoundError extends AppError {
   constructor(resource, id) {
-    super(`${resource} with id=${id} not found`);
+    super(`${resource} with id=${id} not found`, { isOperational: true });
     this.resource = resource;
     this.id = id;
   }
@@ -424,7 +428,7 @@ class NotFoundError extends AppError {
 
 class ValidationError extends AppError {
   constructor(field, message) {
-    super(`Validation failed on '${field}': ${message}`);
+    super(`Validation failed on '${field}': ${message}`, { isOperational: true });
     this.field = field;
   }
 }
@@ -444,6 +448,21 @@ async function handleRequest(req, res) {
     throw err; // Unknown error — re-throw for global handler
   }
 }
+
+// Global last-resort handler — only safe to recover from operational errors
+process.on('uncaughtException', (err) => {
+  logger.fatal({ err }, 'uncaughtException');
+  if (!err.isOperational) {
+    // Programmer error: state may be corrupted — shut down and let process manager restart
+    process.exit(1);
+  }
+  // Operational error: log and continue (optional — many teams always exit for simplicity)
+});
+
+process.on('unhandledRejection', (reason) => {
+  // Treat all unhandled rejections as programmer errors — throw to trigger uncaughtException
+  throw reason;
+});
 ```
 
 ### Prototype Chain and Class Syntax
@@ -2601,6 +2620,57 @@ function verifyTokenSafe(provided, expected) {
 
 **33. Regex Without Timeout on User-Supplied Patterns** [community] — Running `new RegExp(userInput)` on untrusted patterns with backtracking (like `(a+)+$`) causes catastrophic backtracking (ReDoS — Regular Expression Denial of Service). WHY it causes problems: a single malicious pattern can pin a Node.js thread at 100% CPU for seconds or minutes, starving all other requests. Fix: validate user regex patterns against a safe subset before executing (no nested quantifiers, bounded lengths), or run them in a worker thread with a timeout that kills the thread if exceeded. Never execute untrusted regex in the main event loop.
 
+**34. The "Zalgo" Anti-Pattern — Inconsistent Sync/Async Callbacks** [community] — Writing a function that sometimes calls its callback synchronously and sometimes asynchronously produces non-deterministic behavior. WHY it causes problems: callers cannot reason about execution order; code that works in one code path silently breaks in another. The same function behaves differently depending on an internal condition (e.g., cache hit vs. miss), making it impossible to write correct calling code without reading the implementation. Fix: always be either consistently synchronous or consistently asynchronous. If unsure, `Promise.resolve(value).then(cb)` guarantees async delivery. Promises eliminate this problem entirely — a promise's `then` handler is always called asynchronously (in the next microtask), never synchronously, regardless of when the promise was settled.
+
+```javascript
+// BAD — "Zalgo": callback is synchronous on cache hit, async on miss
+function getUser(id, callback) {
+  if (cache.has(id)) {
+    callback(cache.get(id)); // synchronous!
+  } else {
+    db.find(id).then(user => {
+      cache.set(id, user);
+      callback(user);        // asynchronous!
+    });
+  }
+}
+
+// GOOD — always async (wraps sync result in resolved Promise)
+async function getUser(id) {
+  if (cache.has(id)) {
+    return cache.get(id);  // Promise.resolve() wrapping is automatic in async fn
+  }
+  const user = await db.find(id);
+  cache.set(id, user);
+  return user;
+}
+```
+
+**35. Not Using `EventEmitter.captureRejections` for Async Event Handlers** [community] — When you attach an `async` function as an event listener on a Node.js `EventEmitter`, any unhandled rejection inside that handler is NOT automatically forwarded to the emitter's `'error'` event. WHY it causes problems: the rejection becomes an unhandled promise rejection that crashes the process in Node.js ≥ 15, and the error bypasses all your emitter-level error handling. Fix: create emitters with `captureRejections: true`, which makes Node.js automatically route async handler rejections to the emitter's `'error'` event, keeping error handling in one place.
+
+```javascript
+import { EventEmitter } from 'events';
+
+// BAD — async handler rejections bypass the 'error' listener
+const emitter = new EventEmitter();
+emitter.on('data', async (payload) => {
+  const result = await processData(payload); // If this throws, it's an unhandled rejection
+});
+emitter.on('error', err => console.error('Caught:', err)); // NEVER called for async rejections
+
+// GOOD — captureRejections: true routes async rejections to 'error'
+const safeEmitter = new EventEmitter({ captureRejections: true });
+safeEmitter.on('data', async (payload) => {
+  const result = await processData(payload); // If this throws, goes to 'error' below
+});
+safeEmitter.on('error', err => console.error('Caught:', err)); // Called for async rejections too
+
+// OR set globally for all new emitters in the process:
+EventEmitter.captureRejections = true;
+```
+
+**36. Hardcoded Test Ports Causing Flaky CI** [community] — Tests that spawn HTTP servers on a fixed port (e.g., `app.listen(3000)`) fail with `EADDRINUSE` when multiple test processes run concurrently in CI (watch mode, parallel workers, or multiple jobs on the same machine). WHY it causes problems: flaky test failures that only occur under CI parallelism — the tests pass locally but fail randomly in pipelines. Fix: always bind to port `0` in tests (the OS assigns a free port), then read the actual port from `server.address().port` after the server starts.
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -2639,3 +2709,6 @@ function verifyTokenSafe(provided, expected) {
 | `===` to compare secret tokens/HMACs | Short-circuits on first differing char; timing leaks leading characters to attackers | Use `crypto.timingSafeEqual` (Node.js) for constant-time comparison |
 | `JSON.stringify` on objects with `BigInt` values | Throws `TypeError` at runtime; not caught at build time or by static analysis | Use a replacer: `JSON.stringify(v, (_, val) => typeof val === 'bigint' ? val.toString() : val)` |
 | `new RegExp(userInput)` without safeguards | ReDoS: backtracking patterns can pin the event loop at 100% CPU | Validate pattern safety or run in a worker thread with timeout |
+| Inconsistent sync/async callbacks ("Zalgo") | Non-deterministic execution order; calling code cannot reason about when side effects happen | Always be consistently async; use `async`/Promises which guarantee microtask delivery |
+| `async` handlers on `EventEmitter` without `captureRejections` | Async handler rejections bypass the emitter's `'error'` event; become unhandled rejections that crash the process | Use `new EventEmitter({ captureRejections: true })` or set `EventEmitter.captureRejections = true` |
+| Fixed port in tests (`app.listen(3000)`) | Port collisions under parallel CI workers or watch mode cause `EADDRINUSE` flakiness | Bind to port `0` in tests; read actual port from `server.address().port` after start |

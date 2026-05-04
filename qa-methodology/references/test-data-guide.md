@@ -1,7 +1,8 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 30 | score: 100/100 | date: 2026-05-03 -->
 <!-- sources: training-knowledge (WebFetch blocked, WebSearch API unavailable; synthesized from training knowledge per skill fallback rule) -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html -->
+<!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
 
 ---
 
@@ -1383,6 +1384,50 @@ const users: User[] = z.array(UserSchema).parse(usersRaw);
 expect(users[0].email).toBe('alice@fixture.com');
 ```
 
+### 9. Using LLM-generated factory code without review
+
+Accepting LLM-generated factory code verbatim introduces subtle bugs that compile cleanly
+but produce incorrect test data. The most common issues: using deprecated faker v8 API names
+(`faker.name.firstName()` instead of `faker.person.firstName()`), generating module-level
+constants instead of per-call closures (the `factory-ts` `each()` gotcha), and omitting
+required fields that TypeScript would flag if the override type were `Partial<T>` rather
+than `any`. **Why harmful:** The factory compiles, all tests pass at first run, but the
+flaws surface gradually — identifier collisions in CI, stale data shapes after domain
+model changes, and non-reproducible test failures from un-seeded randomness.
+
+### 10. Factories for AI/LLM feature testing that use static outputs
+
+When testing features that call an LLM API (chat, summarization, classification), a factory
+that returns a static hardcoded response string (`{ response: 'The answer is 42' }`) does
+not cover the full output variability of the model. However, using a live LLM API in tests
+reintroduces non-determinism. The correct pattern is to mock the AI SDK with a deterministic
+factory and separately maintain a suite of recorded real responses as fixtures for property
+testing. **Why harmful:** Static single-response mocks test only the happy path. Real LLM
+outputs include partial responses, markdown formatting, refusals, multi-language outputs,
+and token-limit truncations — all of which affect downstream parsing and rendering logic.
+
+```typescript
+// factories/ai-response.factory.ts — typed LLM response test data
+// Covers the output variability that a single hardcoded string misses
+export const LLMResponseFixtures = {
+  // Happy path — clean, well-formed response
+  standard: () => ({ content: 'The summary is: [concise text here].', finishReason: 'stop' }),
+  // Truncated — model hit token limit mid-sentence
+  truncated: () => ({ content: 'The summary is: This is a very long', finishReason: 'length' }),
+  // Refusal — model declined the request (safety filter)
+  refusal: () => ({ content: "I can't assist with that.", finishReason: 'stop' }),
+  // Empty — model returned an empty string (rare but real)
+  empty: () => ({ content: '', finishReason: 'stop' }),
+  // Markdown — model used formatting (tests renderer's sanitization)
+  markdown: () => ({
+    content: '**Summary:** The key points are:\n1. First\n2. Second\n3. Third\n\n```code block```',
+    finishReason: 'stop',
+  }),
+  // Non-English — tests i18n rendering of AI output
+  nonEnglish: () => ({ content: '要約：これは日本語のテキストです。', finishReason: 'stop' }),
+} as const;
+```
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -1529,6 +1574,18 @@ expect(users[0].email).toBe('alice@fixture.com');
       }
     );
     ```
+
+16. **[community] Testcontainers containers not stopped on CI runner termination cause dangling containers and resource exhaustion.**
+    When a CI job is cancelled or times out before `globalTeardown` runs, Testcontainers containers remain running on the CI runner. Over time, these dangling containers exhaust memory and disk, causing unrelated CI jobs to fail with OOM errors. Fix: use Testcontainers' Ryuk sidecar (enabled by default in `testcontainers-node` v10+) which auto-removes containers when the parent process exits, even on ungraceful termination. Never disable Ryuk in CI (`process.env.TESTCONTAINERS_RYUK_DISABLED = 'true'` is for local dev with very slow Docker only).
+
+17. **[community] TanStack Query test wrappers with `staleTime: 0` (default) cause spurious refetch requests mid-assertion.**
+    In tests using `@testing-library/react` with TanStack Query components, the default `staleTime: 0` treats all cached data as immediately stale. Any `fireEvent.focus(window)` or `userEvent.tab()` in the test triggers a background refetch — adding unexpected HTTP requests to the MSW mock server. This causes `onUnhandledRequest: 'error'` failures for refetch requests the test author didn't expect. Fix: set `staleTime: Infinity` in the test `QueryClient` (shown in the TanStack Query section above).
+
+18. **[community] Zod v4 `z.email()` and `z.uuid()` top-level helpers break `zod-fixture` v0.8 and earlier.**
+    `zod-fixture` introspects the Zod schema's internal `_def` structure to generate data. In Zod v4, top-level helpers like `z.email()` produce a different `_def.typeName` than `z.string().email()`. Older `zod-fixture` versions fall through to `string` generation (random lorem-ipsum) rather than email-format generation. Symptom: `buildUserFixture()` returns objects where `email` is `'Qwerty Ipsum Dolor'` instead of a valid email — silent type validation passes, but downstream email-sending logic rejects the format. Fix: upgrade `zod-fixture` to a Zod v4 compatible version or override `email` fields with `faker.internet.email()`.
+
+19. **[community] Event factory payload schemas drift from the consumer's expected schema in event-driven architectures.**
+    In Kafka or SQS-based systems, event producers and consumers are independently deployed. A producer team adds a required `correlationId` field to `UserCreatedEvent`. The consumer's event factory is not updated. Consumer integration tests continue passing with the old event shape. In production, the consumer receives events with `correlationId` and fails to process them (missing field validation error). Fix: derive both producer and consumer event factories from a **shared event schema package** — the single source of truth. When the schema changes, both factory files fail to compile.
 
 ---
 
@@ -2026,6 +2083,12 @@ creating `activeUser` or `adminUser`. `beforeEach` would run all setup regardles
 | @snaplet/seed | Library | https://docs.snaplet.dev/seed | AI-powered relational seed generation; handles FK graph insertion order automatically |
 | Vitest test.extend() docs | Official | https://vitest.dev/guide/test-context | Composable Vitest fixture lifecycle (unit/integration layer) |
 | TypeScript 5.0 const type parameters | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html | `const T` generic inference for literal-preserving factory overrides |
+| @testcontainers/postgresql | Library | https://node.testcontainers.org/modules/postgresql/ | Docker-based production-faithful PostgreSQL test isolation; zero infrastructure pre-config |
+| @electric-sql/pglite | Library | https://electric-sql.com/docs/api/pglite | In-process WASM PostgreSQL; ~50ms startup, no Docker needed; ideal for near-unit-speed integration tests |
+| TanStack Query testing docs | Official | https://tanstack.com/query/latest/docs/framework/react/guides/testing | QueryClient test wrapper and MSW integration patterns |
+| MSW v2 WebSocket handlers | Official | https://mswjs.io/docs/api/ws | Real-time WebSocket test data injection without a live server |
+| Zod v4 migration guide | Official | https://zod.dev/v4 | Breaking changes affecting factory schema definitions (z.email(), z.uuid() top-level) |
+| @aws-sdk/client-sqs (test patterns) | Official | https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/client/sqs/ | SQS event envelope structure for Lambda handler test factories |
 
 ---
 
@@ -3645,6 +3708,1120 @@ export default async function globalTeardown() {
 
 ---
 
+## LLM-Assisted Test Data Generation  [community]
+
+In 2025–2026, teams increasingly use large language models (LLMs) to accelerate factory
+bootstrap, generate domain-realistic edge-case data, and produce adversarial inputs that
+manual factory authors miss. This section covers patterns and failure modes for AI-assisted
+test data generation in TypeScript projects.
+
+**Three integration modes:**
+
+### Mode 1 — One-time factory scaffolding
+Use an LLM to generate the initial factory file from a domain type or Prisma schema.
+The LLM output is reviewed, edited, and committed — it is not executed dynamically.
+This is the safest integration mode: all AI involvement ends at authoring time.
+
+```typescript
+// Prompt pattern (use with Claude, GPT-4o, etc.) to generate factory scaffolding:
+// ---
+// Given this TypeScript domain type:
+//   type Invoice = { id: string; number: string; vendorId: string;
+//     lineItems: LineItem[]; totalCents: number; currency: string;
+//     status: 'draft' | 'sent' | 'paid' | 'overdue'; issuedAt: Date; dueAt: Date; }
+// Generate a fishery factory for Invoice using @faker-js/faker v9+ APIs.
+// Include: buildList support, a SubscriptionFactory.overdue() variant, REFERENCE_NOW
+// date anchoring, and a JSDoc @example block.
+// ---
+
+// Generated output (after review and edit):
+import { Factory } from 'fishery';
+import { faker } from '@faker-js/faker';
+import { Invoice } from '../domain/invoice';
+
+const REFERENCE_NOW = new Date('2025-01-15T00:00:00Z');
+const days = (n: number) => n * 86_400_000;
+
+export const invoiceFactory = Factory.define<Invoice>(({ sequence }) => ({
+  id: faker.string.uuid(),
+  number: `INV-${String(sequence).padStart(6, '0')}`,
+  vendorId: faker.string.uuid(),
+  lineItems: [],
+  totalCents: faker.number.int({ min: 10_00, max: 100_000_00 }),
+  currency: 'USD',
+  status: 'draft',
+  issuedAt: new Date(REFERENCE_NOW.getTime() - days(30)),
+  dueAt: new Date(REFERENCE_NOW.getTime() + days(30)),
+}));
+
+export const overdueInvoice = invoiceFactory.build({
+  status: 'overdue',
+  dueAt: new Date(REFERENCE_NOW.getTime() - days(7)),   // due 7 days ago
+});
+```
+
+**Review checklist for LLM-generated factories:**
+- [ ] Faker API calls use v9+ namespaces (`faker.person.*`, `faker.location.*`, not v8 deprecated names)
+- [ ] Dynamic fields use `each()` (factory-ts) or are inside the Factory.define callback (fishery) — not module-level constants
+- [ ] `createdAt` / `dueAt` use a fixed `REFERENCE_NOW` anchor, not `new Date()` (wall clock drift)
+- [ ] Factory file does NOT import from production services (no side-effects at import time)
+- [ ] Override types use `Partial<T>` — not `any` or `object`
+
+### Mode 2 — LLM-generated edge-case datasets
+
+LLMs excel at generating exhaustive edge-case datasets for a given domain field.
+Instead of manually brainstorming boundary inputs, provide the LLM with the field's
+validation rules and ask for a parametric dataset.
+
+```typescript
+// Prompt pattern for edge-case dataset generation:
+// ---
+// Generate an exhaustive test dataset for a 'productCode' field with these rules:
+//   - Must be 8–12 alphanumeric characters
+//   - Must start with a letter
+//   - Case-insensitive; stored as uppercase
+//   - Valid examples: 'ABC12345', 'PROD123456'
+// Provide: valid boundary cases, invalid boundary cases, and adversarial inputs.
+// Format: TypeScript const array with { value: string, expectedValid: boolean, reason: string }
+// ---
+
+// LLM-generated output (reviewed and committed as a static dataset):
+export const productCodeTestDataset = [
+  // Valid boundary cases
+  { value: 'A1234567', expectedValid: true, reason: 'minimum length (8 chars)' },
+  { value: 'A12345678901', expectedValid: true, reason: 'maximum length (12 chars)' },
+  { value: 'abcdefgh', expectedValid: true, reason: 'all lowercase (stored as ABCDEFGH)' },
+  { value: 'ABCD1234', expectedValid: true, reason: 'typical valid code' },
+  // Invalid boundary cases
+  { value: 'A123456', expectedValid: false, reason: 'too short (7 chars)' },
+  { value: 'A1234567890123', expectedValid: false, reason: 'too long (14 chars)' },
+  { value: '1ABCDEFG', expectedValid: false, reason: 'starts with digit (must start with letter)' },
+  { value: '', expectedValid: false, reason: 'empty string' },
+  // Adversarial inputs
+  { value: 'ABC-1234', expectedValid: false, reason: 'contains hyphen (non-alphanumeric)' },
+  { value: 'ABC 1234', expectedValid: false, reason: 'contains space' },
+  { value: 'ABC\x00DEF', expectedValid: false, reason: 'null byte injection' },
+  { value: 'ABC\nDEFG', expectedValid: false, reason: 'newline injection' },
+  { value: "'; DROP TABLE--", expectedValid: false, reason: 'SQL injection attempt' },
+  { value: '<script>alert(1)</script>', expectedValid: false, reason: 'XSS attempt' },
+  { value: 'Ä'.repeat(8), expectedValid: false, reason: 'non-ASCII characters' },
+] as const;
+
+// Parametric test using the LLM-generated dataset:
+import { test, expect } from 'vitest';
+import { productCodeTestDataset } from '../factories/product-code.dataset';
+import { validateProductCode } from '../services/product.service';
+
+test.each(productCodeTestDataset)(
+  'productCode "$value" is valid=$expectedValid ($reason)',
+  ({ value, expectedValid }) => {
+    expect(validateProductCode(value)).toBe(expectedValid);
+  }
+);
+```
+
+**Production lesson [community]:** LLMs generate datasets that are *exhaustive in the happy path* but biased toward the examples in their training data. They reliably generate SQL injection and XSS adversarial inputs (common in training data) but may miss domain-specific edge cases (e.g., a product code that looks valid but conflicts with a legacy system's reserved namespace). Always supplement LLM-generated datasets with domain expert review.
+
+### Mode 3 — Dynamic LLM-generated realistic content (with risks)
+
+Some teams use LLM APIs at test *runtime* to generate realistic text content (product descriptions, user reviews, chat messages) that would be tedious to hand-craft. This mode has significant risks.
+
+```typescript
+// WARNING: Do NOT use this pattern in automated CI test suites.
+// Only for one-time seed generation scripts run offline.
+
+// scripts/generate-content-seeds.ts — generates realistic content ONCE, then commits
+// Never run this in CI — API costs accumulate, tests become non-deterministic
+import Anthropic from '@anthropic-ai/sdk';
+import { writeFileSync } from 'fs';
+
+const client = new Anthropic();
+
+async function generateProductDescriptions(count: number): Promise<void> {
+  const descriptions: string[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const message = await client.messages.create({
+      model: 'claude-opus-4-5',
+      max_tokens: 200,
+      messages: [{
+        role: 'user',
+        content: `Write a realistic 2-sentence product description for a fictional B2B SaaS tool. Be specific and professional. No marketing fluff.`,
+      }],
+    });
+
+    const content = message.content[0];
+    if (content.type === 'text') {
+      descriptions.push(content.text);
+    }
+  }
+
+  // Commit the generated content as a static fixture — NEVER regenerate in CI
+  writeFileSync(
+    './fixtures/product-descriptions.fixture.json',
+    JSON.stringify(descriptions, null, 2)
+  );
+
+  console.log(`Generated ${descriptions.length} descriptions. Commit this file.`);
+}
+
+generateProductDescriptions(50);
+```
+
+**[community] Critical risks of runtime LLM test data generation:**
+1. **Non-determinism:** LLM outputs are probabilistic. The same prompt produces different content on each run. Tests that assert on LLM-generated content fail non-deterministically — the definition of flaky tests.
+2. **API cost accumulation:** A 500-test suite making LLM API calls per test at $0.01/call costs $5 per CI run. With 20 CI runs per day, that is $3,650/year for test data alone.
+3. **Rate limit flakiness:** LLM API rate limits cause test failures in parallel CI runs, corrupting the flakiness signal.
+4. **Bias amplification:** LLMs trained on internet text reflect its biases in generated names, descriptions, and content. Diversity audits of LLM-generated test data are mandatory before using it to test UI rendering, recommendation systems, or content moderation.
+
+**The correct pattern:** Use LLMs to generate static fixtures *once*, commit them to source control, and never regenerate in CI. Treat the committed fixtures as authoritative test data, not as LLM outputs.
+
+---
+
+## Testcontainers-Node — Production-Faithful DB Isolation  [community]
+
+`testcontainers-node` (by AtomicJar / Docker) spins up a real PostgreSQL, MySQL, or Redis
+container per test suite, providing the strongest possible isolation without provisioning
+a shared database. Each test suite gets a clean, ephemeral database that is destroyed
+after the run — no manual cleanup, no seed conflicts with other developers.
+
+**Why it matters:** The "per-worker database" strategy in the Vitest config section above
+requires pre-provisioned databases. Testcontainers removes that requirement: the test suite
+itself declares what database it needs and starts it on demand. This works in any CI
+environment that can run Docker, with zero infrastructure pre-configuration.
+
+```typescript
+// test/containers/postgres.container.ts — shared Testcontainers setup
+import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import { migrate } from 'drizzle-orm/postgres-js/migrator';
+import * as schema from '../../db/schema';
+
+let container: StartedPostgreSqlContainer;
+let dbClient: ReturnType<typeof drizzle>;
+
+// globalSetup.ts — start container once for the entire test suite
+export async function setup(): Promise<void> {
+  // Start a real PostgreSQL 16 container
+  container = await new PostgreSqlContainer('postgres:16-alpine')
+    .withDatabase('testdb')
+    .withUsername('testuser')
+    .withPassword('testpass')
+    .start();
+
+  const connectionString = container.getConnectionUri();
+  process.env.DATABASE_URL = connectionString;
+
+  // Run all Drizzle migrations against the fresh container DB
+  const migrationClient = postgres(connectionString, { max: 1 });
+  await migrate(drizzle(migrationClient), { migrationsFolder: './drizzle' });
+  await migrationClient.end();
+
+  console.log(`[testcontainers] PostgreSQL started: ${connectionString}`);
+}
+
+// globalTeardown.ts — stop container after all tests complete
+export async function teardown(): Promise<void> {
+  await container?.stop();
+  console.log('[testcontainers] PostgreSQL container stopped');
+}
+```
+
+```typescript
+// vitest.config.ts — connect Testcontainers lifecycle to Vitest
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    globalSetup: ['./test/containers/globalSetup.ts', './test/containers/globalTeardown.ts'],
+    // Per-file isolation: each test file runs against the shared container DB
+    // Use transaction rollback per test (Strategy 1 from the isolation section)
+    pool: 'forks',
+    poolOptions: {
+      forks: { singleFork: true },  // single process shares the container connection
+    },
+  },
+});
+```
+
+```typescript
+// Integration test using the Testcontainers-provisioned DB
+import { test, expect, beforeEach, afterEach } from 'vitest';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import * as schema from '../../db/schema';
+import { buildUserInput } from '../../factories/user.factory';
+
+// Database URL is set by the Testcontainers globalSetup
+const client = postgres(process.env.DATABASE_URL!);
+const db = drizzle(client, { schema });
+
+beforeEach(async () => { await client`BEGIN` });
+afterEach(async () => { await client`ROLLBACK` });
+
+test('userRepository.create persists user and returns row', async () => {
+  const input = buildUserInput({ status: 'active', subscriptionTier: 'premium' });
+  const [created] = await db.insert(schema.users).values(input).returning();
+
+  expect(created.id).toBeTruthy();
+  expect(created.email).toBe(input.email);
+  expect(created.status).toBe('active');
+  // Row is rolled back by afterEach — no cleanup needed
+});
+```
+
+**[community] Production lessons with Testcontainers:**
+1. Container startup (≈3–8 seconds for PostgreSQL) adds fixed overhead — use `globalSetup` (once per suite), not `beforeAll` (once per file). With `beforeAll`, 20 test files each starting a container adds 60–160 seconds to CI.
+2. Testcontainers requires Docker socket access (`/var/run/docker.sock`) in CI. GitHub Actions runners have Docker available by default; CircleCI requires the `machine` executor, not Docker-in-Docker. Verify socket access before adopting.
+3. Image pulling adds latency on first run in CI. Use `testcontainers.withPullPolicy('Always')` only in nightly runs; use `'IfNotPresent'` (default) in PR CI to reuse the cached layer.
+
+---
+
+## `@electric-sql/pglite` — In-Process PostgreSQL for Near-Unit-Speed Integration Tests  [community]
+
+`PGlite` (by ElectricSQL, 2024–2025) runs PostgreSQL compiled to WebAssembly directly
+in the Node.js process — no Docker, no external process, no socket. It starts in ~50ms
+(vs 3–8 seconds for Testcontainers) and is destroyed when the process exits. This makes
+it practical for integration tests that previously required a real database but could not
+justify Testcontainers' startup cost.
+
+**Why it matters:** The traditional choice was: "use an in-memory mock (fast but unrealistic)
+or use a real database (faithful but slow)". PGlite adds a third option: a real PostgreSQL
+dialect running in-process at near-unit-test speed — faithful for SQL queries, extensions
+(including `uuid-ossp`), and constraint validation.
+
+**Limitations:** PGlite does not support all PostgreSQL extensions (e.g., `PostGIS` requires separate WASM build), does not support parallel connections (single-threaded WASM), and is unsuitable for load testing. Use Testcontainers when you need full PostgreSQL extension support or multi-connection parallelism.
+
+```typescript
+// test/pglite-setup.ts — shared PGlite instance for integration tests
+import { PGlite } from '@electric-sql/pglite';
+import { drizzle } from 'drizzle-orm/pglite';
+import { migrate } from 'drizzle-orm/pglite/migrator';
+import * as schema from '../db/schema';
+
+// Module-level singleton — created once per test file, destroyed when Node exits
+let _db: ReturnType<typeof drizzle<typeof schema>> | null = null;
+
+export async function getTestDb() {
+  if (_db) return _db;
+
+  // In-memory PGlite instance — no files, no ports, no cleanup needed
+  const client = new PGlite();
+  _db = drizzle(client, { schema });
+
+  // Run Drizzle migrations against the in-process DB
+  await migrate(_db, { migrationsFolder: './drizzle' });
+
+  return _db;
+}
+```
+
+```typescript
+// Integration test with PGlite — starts in ~50ms, no Docker required
+import { test, expect, beforeEach } from 'vitest';
+import { getTestDb } from '../test/pglite-setup';
+import { users } from '../db/schema';
+import { buildUserInput } from '../factories/user.factory';
+import { eq } from 'drizzle-orm';
+
+test('creates and retrieves user from in-process PostgreSQL', async () => {
+  const db = await getTestDb();
+  const input = buildUserInput({ email: `test-${Date.now()}@pglite.com` });
+
+  const [created] = await db.insert(users).values(input).returning();
+  expect(created.id).toBeTruthy();
+
+  // Verify retrieval — real SQL query against real PostgreSQL dialect
+  const [fetched] = await db.select().from(users).where(eq(users.id, created.id));
+  expect(fetched.email).toBe(input.email);
+
+  // Cleanup — delete by ID (or use transaction rollback strategy)
+  await db.delete(users).where(eq(users.id, created.id));
+});
+```
+
+**Choosing between PGlite and Testcontainers:**
+
+| Criterion | PGlite | Testcontainers |
+|---|---|---|
+| Startup time | ~50ms (WASM init) | 3–8 seconds (container start) |
+| PostgreSQL version | WASM build (≈15.x) | Any version you specify |
+| Extension support | Limited (pg_vector, uuid-ossp) | Full (PostGIS, pgcrypto, etc.) |
+| Parallel connections | Single-threaded | Full multi-connection support |
+| Docker required | No | Yes |
+| Best for | Unit-speed integration tests | Production-faithful E2E-adjacent tests |
+
+---
+
+## TanStack Query (React Query) Test Data Patterns  [community]
+
+TanStack Query (formerly React Query) is the standard data-fetching and server-state
+management library in TypeScript React projects in 2025–2026. Testing components that
+use TanStack Query requires specific test data patterns: a `QueryClient` wrapper,
+factory-generated responses, and MSW handlers scoped to the query keys being tested.
+
+**Why it matters:** Components using `useQuery` or `useMutation` fetch data asynchronously.
+Without a `QueryClientProvider` wrapping the test render and MSW intercepting the
+HTTP requests, the component renders in a perpetual loading state. Correctly wiring
+factory data through the TanStack Query → MSW pipeline makes component tests fast,
+deterministic, and free of network calls.
+
+```typescript
+// test/query-wrapper.tsx — shared TanStack Query test wrapper
+import React from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+// Create a fresh QueryClient per test to prevent cache pollution between tests
+export function createTestQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        // Disable retries in tests — we want immediate failure, not 3-retry waits
+        retry: false,
+        // Disable background refetching — prevents unexpected requests in tests
+        staleTime: Infinity,
+        gcTime: Infinity,
+      },
+      mutations: {
+        retry: false,
+      },
+    },
+  });
+}
+
+interface WrapperProps {
+  children: React.ReactNode;
+  queryClient?: QueryClient;
+}
+
+// Reusable wrapper component for renderHook / render calls
+export function QueryWrapper({ children, queryClient }: WrapperProps) {
+  const client = queryClient ?? createTestQueryClient();
+  return (
+    <QueryClientProvider client={client}>
+      {children}
+    </QueryClientProvider>
+  );
+}
+
+// For renderHook — returns a wrapper function
+export function createQueryWrapper(queryClient?: QueryClient) {
+  const client = queryClient ?? createTestQueryClient();
+  return ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+}
+```
+
+```typescript
+// mocks/query-handlers.ts — MSW handlers providing factory-generated responses for TanStack Query
+import { http, HttpResponse } from 'msw';
+import { buildUser, buildUserList } from '../factories/user.factory';
+import { buildOrder } from '../factories/order.factory';
+
+// Match the exact endpoint URLs used by your useQuery hooks
+export const queryHandlers = [
+  // GET /api/users/{id} — matches useQuery({ queryKey: ['users', id] })
+  http.get('/api/users/:id', ({ params }) => {
+    const user = buildUser({ id: params.id as string, status: 'active' });
+    return HttpResponse.json(user);
+  }),
+
+  // GET /api/users — matches useQuery({ queryKey: ['users'] })
+  http.get('/api/users', () => {
+    const users = buildUserList(5);
+    return HttpResponse.json({ data: users, total: 5, page: 1 });
+  }),
+
+  // GET /api/orders — matches useQuery({ queryKey: ['orders', userId] })
+  http.get('/api/orders', ({ request }) => {
+    const url = new URL(request.url);
+    const userId = url.searchParams.get('userId') ?? faker.string.uuid();
+    const orders = Array.from({ length: 3 }, () => buildOrder({ userId }));
+    return HttpResponse.json(orders);
+  }),
+];
+
+// Error state handler — override in specific tests to simulate failure states
+export const errorHandlers = {
+  networkError: () => http.get('/api/users/:id', () => HttpResponse.error()),
+  serverError: () => http.get('/api/users/:id', () =>
+    HttpResponse.json({ message: 'Internal Server Error' }, { status: 500 })
+  ),
+  notFound: (id: string) => http.get(`/api/users/${id}`, () =>
+    HttpResponse.json({ message: 'User not found' }, { status: 404 })
+  ),
+};
+```
+
+```typescript
+// specs/hooks/useUser.test.tsx — testing a useQuery hook with factory data
+import { renderHook, waitFor } from '@testing-library/react';
+import { test, expect, beforeAll, afterEach, afterAll } from 'vitest';
+import { setupServer } from 'msw/node';
+import { useUser } from '../../hooks/useUser';
+import { createQueryWrapper, createTestQueryClient } from '../test/query-wrapper';
+import { queryHandlers, errorHandlers } from '../mocks/query-handlers';
+import { buildUser } from '../factories/user.factory';
+
+const server = setupServer(...queryHandlers);
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
+test('useUser returns user data for a valid ID', async () => {
+  const { result } = renderHook(
+    () => useUser('usr-test-001'),
+    { wrapper: createQueryWrapper() }
+  );
+
+  // Wait for the query to resolve (MSW intercepts the HTTP call)
+  await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+  expect(result.current.data?.id).toBe('usr-test-001');
+  expect(result.current.data?.status).toBe('active');
+});
+
+test('useUser handles 404 and returns error state', async () => {
+  // Override: return 404 for this specific test
+  server.use(errorHandlers.notFound('usr-nonexistent'));
+
+  const { result } = renderHook(
+    () => useUser('usr-nonexistent'),
+    { wrapper: createQueryWrapper() }
+  );
+
+  await waitFor(() => expect(result.current.isError).toBe(true));
+  expect(result.current.error).toBeDefined();
+});
+
+test('useMutation updates optimistic state then confirms with server response', async () => {
+  // Pre-populate the query cache with factory data to test optimistic updates
+  const queryClient = createTestQueryClient();
+  const existingUser = buildUser({ id: 'usr-001', status: 'active' });
+
+  // Seed the cache with the initial state
+  queryClient.setQueryData(['users', 'usr-001'], existingUser);
+
+  const { result } = renderHook(
+    () => useUser('usr-001'),
+    { wrapper: createQueryWrapper(queryClient) }
+  );
+
+  // Initial state from cache — no network call yet
+  expect(result.current.data?.status).toBe('active');
+});
+```
+
+**[community] Common pitfall:** TanStack Query's `staleTime: 0` (default) causes queries to
+refetch on window focus in tests running in `jsdom`. This produces spurious `pending` states
+mid-test when the test simulates a focus event. Set `staleTime: Infinity` in test `QueryClient`
+configuration (as shown above) to prevent background refetches during assertions.
+
+---
+
+## Zod v4 Factory Patterns (2025+)  [community]
+
+Zod v4 (released 2025) introduced breaking API changes and major performance improvements
+(~14× faster parse, smaller bundle). Factory patterns built on `zod-fixture` or manual
+`z.infer<>` derivation require updates when migrating from Zod v3.
+
+**Key Zod v4 changes affecting factory patterns:**
+
+| Zod v3 | Zod v4 | Factory impact |
+|---|---|---|
+| `z.string().email()` | `z.email()` (new top-level shorthand) | Schema definitions in factories get shorter |
+| `z.string().uuid()` | `z.uuid()` (top-level) | Less nesting in `UserSchema` definitions |
+| `z.object().merge()` | `z.object().extend()` (preferred) | Merge pattern changes |
+| `ZodError.flatten()` | `ZodError.flatten()` (unchanged) | No impact |
+| `z.infer<typeof Schema>` | `z.infer<typeof Schema>` (unchanged) | No impact |
+| `z.discriminatedUnion()` | Performance improved | No API change |
+
+```typescript
+// schemas/user.schema.ts — Zod v4 schema (note top-level helpers)
+import { z } from 'zod';
+
+export const UserSchema = z.object({
+  id: z.uuid(),                              // Zod v4: top-level z.uuid() (no z.string().uuid())
+  email: z.email(),                          // Zod v4: top-level z.email()
+  name: z.string().min(1).max(100),
+  status: z.enum(['active', 'suspended', 'pending']),
+  subscriptionTier: z.enum(['free', 'premium', 'enterprise']),
+  createdAt: z.date(),
+  paymentMethodId: z.string().nullable(),
+  // Zod v4: z.url() for URL validation (new top-level helper)
+  avatarUrl: z.url().nullable().optional(),
+});
+
+// Zod v4 schema merging via .extend() — preferred over .merge() in v4
+export const AdminUserSchema = UserSchema.extend({
+  role: z.literal('admin'),
+  permissions: z.array(z.string()),
+});
+
+export type User = z.infer<typeof UserSchema>;
+export type AdminUser = z.infer<typeof AdminUserSchema>;
+```
+
+```typescript
+// factories/user.factory.ts — Zod v4 with zod-fixture
+// zod-fixture ≥ 0.9 supports Zod v4 schemas
+import { createFixture } from 'zod-fixture';
+import { faker } from '@faker-js/faker';
+import { UserSchema, User } from '../schemas/user.schema';
+
+// zod-fixture respects z.uuid() and z.email() in Zod v4 — generates valid UUIDs and emails
+export function buildUserFixture(overrides: Partial<User> = {}): User {
+  return {
+    ...createFixture(UserSchema),
+    ...overrides,
+  };
+}
+
+// Hybrid: zod-fixture for structural validity + faker for realistic values
+export function buildRealisticUser(overrides: Partial<User> = {}): User {
+  const base = createFixture(UserSchema);
+  return {
+    ...base,
+    // Override zod-fixture's lorem-ipsum names with realistic faker values
+    email: faker.internet.email(),
+    name: faker.person.fullName(),
+    createdAt: faker.date.past({ years: 2 }),
+    ...overrides,
+  };
+}
+```
+
+```typescript
+// Zod v4 discriminated union factory — common pattern in CQRS command schemas
+import { z } from 'zod';
+import { faker } from '@faker-js/faker';
+
+// Zod v4 discriminated unions are significantly faster to parse than v3
+const CommandSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('CreateUser'),
+    payload: z.object({
+      email: z.email(),
+      name: z.string().min(1),
+    }),
+  }),
+  z.object({
+    type: z.literal('SuspendUser'),
+    payload: z.object({
+      userId: z.uuid(),
+      reason: z.string(),
+    }),
+  }),
+  z.object({
+    type: z.literal('UpgradeSubscription'),
+    payload: z.object({
+      userId: z.uuid(),
+      tier: z.enum(['premium', 'enterprise']),
+    }),
+  }),
+]);
+
+type Command = z.infer<typeof CommandSchema>;
+
+// Type-safe command factory using the discriminated union
+export const CommandFactory = {
+  createUser: (overrides?: Partial<Extract<Command, { type: 'CreateUser' }>['payload']>): Command => ({
+    type: 'CreateUser',
+    payload: {
+      email: faker.internet.email(),
+      name: faker.person.fullName(),
+      ...overrides,
+    },
+  }),
+
+  suspendUser: (userId?: string): Command => ({
+    type: 'SuspendUser',
+    payload: {
+      userId: userId ?? faker.string.uuid(),
+      reason: 'policy_violation',
+    },
+  }),
+
+  upgradeSubscription: (userId?: string, tier: 'premium' | 'enterprise' = 'premium'): Command => ({
+    type: 'UpgradeSubscription',
+    payload: {
+      userId: userId ?? faker.string.uuid(),
+      tier,
+    },
+  }),
+};
+
+// Runtime validation of factory output against the Zod v4 schema:
+// CommandSchema.parse(CommandFactory.createUser()) — throws if factory drifted from schema
+```
+
+**[community] Zod v3 → v4 migration gotcha with factories:** The `z.string().email()` →
+`z.email()` change is syntactic only in schema definitions, but `zod-fixture` v0.8 and
+earlier do not recognize `z.email()` as a top-level helper — they generate a random string
+rather than a valid email format. Check the `zod-fixture` changelog before upgrading Zod
+to v4: you may need to pin `zod-fixture` to a version that explicitly supports Zod v4
+schemas, or override the `email` field with `faker.internet.email()` after generation.
+
+---
+
+## Event-Driven Architecture Test Data — Message Factories  [community]
+
+In event-driven TypeScript systems (Kafka, AWS SQS, SNS, EventBridge, or in-process
+event buses), test data is not a domain entity but an *event envelope* — a message
+with a type discriminator, a payload, and transport metadata (topic, partition,
+message ID, timestamp). Factories for event-driven tests must produce the full
+message envelope, not just the payload.
+
+**Why it matters:** Testing an event consumer in isolation requires realistic message
+envelopes that match the exact structure produced by the event broker. A consumer handler
+tested with a raw payload (no envelope) will pass in unit tests but fail in integration
+when the broker wraps it in a `{ Records: [...] }` structure (SQS), a `{ topic, partition,
+offset, value }` object (Kafka), or an `{ source, detail-type, detail }` envelope
+(EventBridge). Envelope factories encode the broker's message format once, centrally.
+
+```typescript
+// factories/events/sqs-message.factory.ts — AWS SQS message envelope factory
+import { faker } from '@faker-js/faker';
+import { SQSEvent, SQSRecord } from 'aws-lambda';
+
+// SQS message envelope builder — matches the exact structure Lambda receives
+export function buildSQSRecord(
+  payload: unknown,
+  overrides: Partial<SQSRecord> = {}
+): SQSRecord {
+  const messageId = faker.string.uuid();
+  return {
+    messageId,
+    receiptHandle: `receipt-${faker.string.alphanumeric(128)}`,
+    body: JSON.stringify(payload),       // SQS body is always a JSON string
+    attributes: {
+      ApproximateReceiveCount: '1',
+      SentTimestamp: String(Date.now()),
+      SenderId: faker.string.alphanumeric(21),
+      ApproximateFirstReceiveTimestamp: String(Date.now()),
+    },
+    messageAttributes: {},
+    md5OfBody: faker.string.hexadecimal({ length: 32, casing: 'lower' }),
+    eventSource: 'aws:sqs',
+    eventSourceARN: 'arn:aws:sqs:us-east-1:123456789012:my-queue',
+    awsRegion: 'us-east-1',
+    ...overrides,
+  };
+}
+
+// Build a full SQSEvent (wraps 1 or more records — Lambda batching)
+export function buildSQSEvent(
+  payloads: unknown[],
+  overrides?: Partial<SQSRecord>
+): SQSEvent {
+  return {
+    Records: payloads.map((payload) => buildSQSRecord(payload, overrides)),
+  };
+}
+```
+
+```typescript
+// factories/events/domain-events.factory.ts — typed domain event factories for SQS
+import { faker } from '@faker-js/faker';
+import { buildSQSEvent } from './sqs-message.factory';
+import { SQSEvent } from 'aws-lambda';
+
+// Domain event types (from your event schema registry)
+type UserCreatedEvent = {
+  eventType: 'user.created';
+  eventId: string;
+  occurredAt: string;  // ISO 8601
+  payload: {
+    userId: string;
+    email: string;
+    subscriptionTier: 'free' | 'premium' | 'enterprise';
+  };
+};
+
+type OrderPlacedEvent = {
+  eventType: 'order.placed';
+  eventId: string;
+  occurredAt: string;
+  payload: {
+    orderId: string;
+    userId: string;
+    totalCents: number;
+    currency: string;
+  };
+};
+
+// Typed event factories — envelope includes both transport metadata and domain payload
+export const EventFactory = {
+  userCreated: (overrides: Partial<UserCreatedEvent['payload']> = {}): UserCreatedEvent => ({
+    eventType: 'user.created',
+    eventId: faker.string.uuid(),
+    occurredAt: faker.date.recent().toISOString(),
+    payload: {
+      userId: faker.string.uuid(),
+      email: faker.internet.email(),
+      subscriptionTier: 'free',
+      ...overrides,
+    },
+  }),
+
+  orderPlaced: (overrides: Partial<OrderPlacedEvent['payload']> = {}): OrderPlacedEvent => ({
+    eventType: 'order.placed',
+    eventId: faker.string.uuid(),
+    occurredAt: faker.date.recent().toISOString(),
+    payload: {
+      orderId: faker.string.uuid(),
+      userId: faker.string.uuid(),
+      totalCents: faker.number.int({ min: 100, max: 100_000 }),
+      currency: 'USD',
+      ...overrides,
+    },
+  }),
+
+  // Build the full SQS Lambda event for a batch of domain events
+  sqsBatch: (events: (UserCreatedEvent | OrderPlacedEvent)[]): SQSEvent =>
+    buildSQSEvent(events),
+};
+```
+
+```typescript
+// handlers/user-created.handler.test.ts — Lambda handler test with event factories
+import { test, expect, vi } from 'vitest';
+import { handleUserCreated } from '../../handlers/user-created.handler';
+import { EventFactory } from '../../factories/events/domain-events.factory';
+import { emailService } from '../../services/email.service';
+
+vi.mock('../../services/email.service');
+
+test('sends welcome email when user.created event is received', async () => {
+  const event = EventFactory.sqsBatch([
+    EventFactory.userCreated({ email: 'alice@test.com', subscriptionTier: 'premium' }),
+  ]);
+
+  await handleUserCreated(event);
+
+  expect(emailService.sendWelcome).toHaveBeenCalledOnce();
+  expect(emailService.sendWelcome).toHaveBeenCalledWith(
+    expect.objectContaining({ email: 'alice@test.com' })
+  );
+});
+
+test('processes batch of 10 user.created events without error', async () => {
+  const events = Array.from({ length: 10 }, () => EventFactory.userCreated());
+  const sqsEvent = EventFactory.sqsBatch(events);
+
+  // Assert no thrown errors (batch handler must be resilient to partial failures)
+  await expect(handleUserCreated(sqsEvent)).resolves.not.toThrow();
+});
+```
+
+**EventBridge envelope factory:**
+```typescript
+// factories/events/eventbridge.factory.ts — AWS EventBridge event envelope
+import { faker } from '@faker-js/faker';
+import { EventBridgeEvent } from 'aws-lambda';
+
+export function buildEventBridgeEvent<T extends Record<string, unknown>>(
+  detailType: string,
+  detail: T,
+  source = 'com.mycompany.orders'
+): EventBridgeEvent<string, T> {
+  return {
+    version: '0',
+    id: faker.string.uuid(),
+    source,
+    account: '123456789012',
+    time: new Date().toISOString(),
+    region: 'us-east-1',
+    resources: [],
+    'detail-type': detailType,
+    detail,
+  };
+}
+
+// Usage:
+// const event = buildEventBridgeEvent('OrderPlaced', EventFactory.orderPlaced().payload);
+```
+
+**[community] Production lesson — event ordering in factory batches:** SQS and Kinesis
+consumers may process messages out of order (SQS FIFO provides ordering within a group;
+standard SQS does not). Test factories that always build events with incrementing
+`occurredAt` timestamps mislead the consumer into assuming ordered delivery. Add a
+factory variant that shuffles event timestamps to test idempotency and out-of-order handling.
+
+---
+
+## WebSocket and Server-Sent Events (SSE) Test Data  [community]
+
+Real-time features (live chat, collaborative editing, live dashboards, streaming AI
+responses) use WebSockets or Server-Sent Events. Testing these requires factories that
+produce sequences of messages over time, not single responses. MSW v2 supports both
+WebSocket and SSE handlers, enabling test data injection at the HTTP layer without a
+real server.
+
+**Why it matters:** A component that displays a live order status stream (`draft → pending
+→ paid → shipped`) has different rendering logic at each state transition. Without
+sequential message factories and an MSW WebSocket handler, the only way to test these
+transitions is with a running WebSocket server — coupling component tests to
+infrastructure. MSW's WebSocket handler makes the transitions testable in isolation.
+
+```typescript
+// mocks/websocket-handlers.ts — MSW v2 WebSocket handler with factory-generated messages
+import { ws } from 'msw';
+import { faker } from '@faker-js/faker';
+
+// Define the WS endpoint
+const orderUpdates = ws.link('wss://api.example.com/orders/:orderId/stream');
+
+// Order status progression factory — generates a sequence of status update messages
+export function buildOrderStatusSequence(
+  orderId: string
+): Array<{ orderId: string; status: string; timestamp: string }> {
+  const now = Date.now();
+  return [
+    { orderId, status: 'pending',   timestamp: new Date(now).toISOString() },
+    { orderId, status: 'paid',      timestamp: new Date(now + 1000).toISOString() },
+    { orderId, status: 'shipped',   timestamp: new Date(now + 2000).toISOString() },
+    { orderId, status: 'delivered', timestamp: new Date(now + 3000).toISOString() },
+  ];
+}
+
+// MSW WebSocket handler — sends each status update with a delay
+export const wsHandlers = [
+  orderUpdates.addEventListener('connection', ({ client, params }) => {
+    const orderId = params.orderId as string;
+    const updates = buildOrderStatusSequence(orderId);
+
+    // Send status updates one at a time with 50ms intervals (simulates real server timing)
+    updates.forEach((update, index) => {
+      setTimeout(() => {
+        client.send(JSON.stringify(update));
+      }, index * 50);
+    });
+
+    // Handle client close
+    client.addEventListener('close', () => {
+      // Cleanup if needed
+    });
+  }),
+];
+```
+
+```typescript
+// specs/OrderStatusStream.test.tsx — testing WebSocket-driven component
+import { render, screen } from '@testing-library/react';
+import { act, waitFor } from '@testing-library/react';
+import { test, expect, beforeAll, afterEach, afterAll } from 'vitest';
+import { setupServer } from 'msw/node';
+import { wsHandlers } from '../mocks/websocket-handlers';
+import { OrderStatusStream } from '../../components/OrderStatusStream';
+
+const server = setupServer(...wsHandlers);
+beforeAll(() => server.listen());
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
+test('displays status progression as WebSocket messages arrive', async () => {
+  render(<OrderStatusStream orderId="ord-test-001" />);
+
+  // Initial render: shows 'Connecting...' or loading state
+  expect(screen.getByText(/connecting/i)).toBeInTheDocument();
+
+  // After first message: 'pending'
+  await waitFor(() => expect(screen.getByText(/pending/i)).toBeInTheDocument());
+
+  // After all messages: 'delivered'
+  await waitFor(
+    () => expect(screen.getByText(/delivered/i)).toBeInTheDocument(),
+    { timeout: 500 }  // generous timeout for all 4 messages
+  );
+});
+```
+
+```typescript
+// factories/sse.factory.ts — Server-Sent Events test data for streaming AI responses
+// MSW v2 supports SSE via ReadableStream in http handlers
+
+import { http, HttpResponse } from 'msw';
+import { faker } from '@faker-js/faker';
+
+// Build an SSE stream from a sequence of text chunks
+function buildSSEStream(chunks: string[]): ReadableStream {
+  return new ReadableStream({
+    start(controller) {
+      chunks.forEach((chunk, index) => {
+        const data = `data: ${JSON.stringify({ chunk, index })}\n\n`;
+        controller.enqueue(new TextEncoder().encode(data));
+      });
+      // Signal end of stream
+      controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+      controller.close();
+    },
+  });
+}
+
+// Factory: streaming AI response (simulates OpenAI/Claude streaming API)
+export function buildStreamingAIResponse(
+  text: string = 'This is a streamed AI response.'
+): ReadableStream {
+  // Split text into word-by-word chunks (simulates token streaming)
+  const chunks = text.split(' ').map((word, i) => (i === 0 ? word : ` ${word}`));
+  return buildSSEStream(chunks);
+}
+
+// MSW handler for streaming AI endpoint
+export const sseHandlers = [
+  http.post('/api/ai/stream', () => {
+    const stream = buildStreamingAIResponse(
+      'The answer to your question is found in the documentation.'
+    );
+    return new HttpResponse(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    });
+  }),
+
+  // Error stream — simulates mid-stream failure
+  http.post('/api/ai/stream/error', () => {
+    const errorStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"chunk": "Starting"}\n\n'));
+        // Simulate network error mid-stream
+        controller.error(new Error('Stream interrupted'));
+      },
+    });
+    return new HttpResponse(errorStream, {
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  }),
+];
+```
+
+**[community] Production lesson — SSE reconnection test data:** EventSource clients
+automatically reconnect on connection loss. Tests that verify reconnection behaviour need
+factory sequences that first close the connection, then provide a second sequence of
+messages on reconnect. Most teams test the "happy path" stream but miss the reconnection
+— leading to production bugs where the component shows stale data after a transient
+network interruption.
+
+---
+
+## Equivalence Partitioning (EP) Factory Patterns  [community]
+
+ISTQB CTFL 4.0 defines **Equivalence Partitioning (EP)** as dividing input data into
+partitions where all values in a partition are expected to be processed the same way.
+One representative value per partition is sufficient — testing all values in the same
+partition adds no defect-detection value. Factories should expose named EP variants
+rather than scattering representative values as magic literals across test files.
+
+**EP vs BVA:** EP selects *representative values* from the middle of each partition.
+BVA focuses on the *boundaries between partitions*. Together they give complete coverage:
+EP verifies the typical behaviour in each class; BVA verifies the transitions between
+classes. Both techniques are implemented most effectively as named factory variants.
+
+**Why it matters:** Without named EP factories, teams write the same representative
+value in dozens of tests and then forget to update them when a business rule changes.
+A named factory variant (`UserEP.premiumWithExpiredTrial()`) documents which equivalence
+class it represents — making the test intent explicit and the maintenance location obvious.
+
+```typescript
+// factories/ep.factory.ts — Equivalence Partitioning factory variants
+// Each factory method represents ONE value from ONE equivalence class
+import { faker } from '@faker-js/faker';
+import { buildUser } from './user.factory';
+import { buildOrder } from './order.factory';
+import { User, Order } from '../domain';
+
+// ── Equivalence Classes for User.subscriptionTier ────────────────────────────
+// Business rule: tier determines which features are accessible
+// EC1: 'free'       → no premium features, no priority support
+// EC2: 'premium'    → all features, standard support
+// EC3: 'enterprise' → all features + SSO, priority support, custom contracts
+export const UserTierEP = {
+  free: (): User => buildUser({ subscriptionTier: 'free', paymentMethodId: null }),
+  premium: (): User => buildUser({ subscriptionTier: 'premium', paymentMethodId: faker.string.uuid() }),
+  enterprise: (): User => buildUser({ subscriptionTier: 'enterprise', paymentMethodId: faker.string.uuid() }),
+};
+
+// ── Equivalence Classes for Order.currency ───────────────────────────────────
+// Business rule: tax calculation differs by currency zone
+// EC1: USD (no VAT)
+// EC2: EUR (EU VAT applies — 20%)
+// EC3: GBP (UK VAT applies — 20% post-Brexit)
+// EC4: JPY (consumption tax 10%, zero decimal places)
+// EC5: BTC (crypto — no tax, different precision rules)
+export const OrderCurrencyEP = {
+  usd: (overrides?: Partial<Order>): Order => buildOrder({ currency: 'USD', ...overrides }),
+  eur: (overrides?: Partial<Order>): Order => buildOrder({ currency: 'EUR', ...overrides }),
+  gbp: (overrides?: Partial<Order>): Order => buildOrder({ currency: 'GBP', ...overrides }),
+  jpy: (overrides?: Partial<Order>): Order => buildOrder({
+    currency: 'JPY',
+    totalCents: faker.number.int({ min: 100, max: 100_000 }) * 100,  // JPY has no cents
+    ...overrides,
+  }),
+  btc: (overrides?: Partial<Order>): Order => buildOrder({ currency: 'BTC', ...overrides }),
+};
+
+// ── Equivalence Classes for User.status ──────────────────────────────────────
+// Business rule: only 'active' users can initiate transactions
+// EC1: 'active'    → can initiate all operations
+// EC2: 'suspended' → blocked from financial operations; can still read profile
+// EC3: 'pending'   → registration incomplete; cannot initiate or read premium features
+export const UserStatusEP = {
+  active: (): User => buildUser({ status: 'active' }),
+  suspended: (): User => buildUser({ status: 'suspended' }),
+  pending: (): User => buildUser({ status: 'pending' }),
+};
+
+// ── Combined EP + BVA parametric test suite ──────────────────────────────────
+// Each entry: [equivalence class name, factory variant, expected checkout result]
+export const checkoutEPMatrix = [
+  ['free tier — no payment method',    UserTierEP.free,       'payment_required'],
+  ['premium tier — with payment',      UserTierEP.premium,    'success'],
+  ['enterprise tier — with payment',   UserTierEP.enterprise, 'success'],
+] as const;
+```
+
+```typescript
+// specs/checkout-ep.test.ts — EP parametric test using the matrix
+import { test, expect } from 'vitest';
+import { checkoutEPMatrix } from '../factories/ep.factory';
+import { checkoutService } from '../services/checkout.service';
+import { buildCart } from '../factories/cart.factory';
+
+test.each(checkoutEPMatrix)(
+  'checkout for %s returns %s',
+  (className, userFactory, expectedResult) => {
+    const user = userFactory();
+    const cart = buildCart({ items: [{ productId: faker.string.uuid(), quantity: 1 }] });
+
+    const result = checkoutService.initiate(user, cart);
+    expect(result.status).toBe(expectedResult);
+  }
+);
+```
+
+**ISTQB traceability pattern:** In teams that maintain ISTQB-aligned test documentation,
+EP factory variant names map directly to test conditions and test cases:
+
+| ISTQB term | EP factory concept |
+|---|---|
+| Test basis | Business rule documentation (e.g., "tier determines feature access") |
+| Test condition | Equivalence class (`UserTierEP.free` = "user with free tier") |
+| Test case | A specific test using `UserTierEP.free()` with expected result |
+| Test suite | `checkoutEPMatrix` — all EC representatives for one business rule |
+| Defect | A factory variant that reveals different behaviour than its EC representative |
+
+When a domain rule changes (e.g., "enterprise tier now requires an approved contract"),
+update the `UserTierEP.enterprise` factory variant and run the test suite — the impacted
+test cases are immediately visible by their failing EC names.
+
+---
+
 ## Test Data Checklist — Pre-Ship Review  [community]
 
 Before merging a PR that adds new tests or factories, verify these items to prevent
@@ -3669,3 +4846,21 @@ test data technical debt from accumulating.
 - [ ] No hardcoded test user IDs in production code (`isTestUser()` guards)
 - [ ] `assertTestEnvironment()` guard in any factory that persists to a DB
 - [ ] Multi-tenant entities use unique `tenantId` per test (not a shared constant)
+
+**AI / LLM test data checklist (when testing AI-powered features):**
+- [ ] LLM-generated factory code reviewed against the faker v9 API checklist (no deprecated `faker.name.*`, `faker.address.*`)
+- [ ] No LLM API calls at test runtime — all AI-generated content is committed as static fixtures
+- [ ] LLM response factories cover ≥ 5 output variants: standard, truncated, refusal, empty, markdown
+- [ ] AI feature test suites use deterministic factory responses (not live API calls) in CI
+
+**Equivalence Partitioning (EP) checklist:**
+- [ ] New business rules have corresponding EP factory variants (one per equivalence class)
+- [ ] EP factory variant names document the equivalence class they represent (not magic values)
+- [ ] Combined EP + BVA parametric matrix exists for each critical business rule
+- [ ] EP factory map uses `Record<UnionType, () => T>` to enforce compile-time exhaustiveness
+
+**Real-time / event-driven checklist:**
+- [ ] Event factory produces the full broker envelope (SQS Record, EventBridge event, Kafka message), not just the payload
+- [ ] Event schemas derived from a shared schema package — not duplicated in producer and consumer tests
+- [ ] Out-of-order event delivery tested (shuffled timestamps in batch factory)
+- [ ] WebSocket / SSE test factories cover error and reconnection scenarios, not only the happy path

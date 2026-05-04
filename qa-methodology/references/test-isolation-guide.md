@@ -1,9 +1,9 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 8 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 10 | score: 100/100 | date: 2026-05-03 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
-<!-- Sources: synthesized from training knowledge (WebFetch blocked, WebSearch unavailable) -->
-<!-- Primary references: martinfowler.com/bliki/UnitTest.html, xunitpatterns.com/Four Phase Test, -->
-<!--                     Google Testing Blog, Jest/Vitest docs, community production experience   -->
+<!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
+<!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
+<!--          Google Testing Blog, Jest/Vitest docs, community production experience               -->
 
 ---
 
@@ -29,7 +29,12 @@ this criterion.
 
 **T — Timely.** Tests should be written at the same time as (or before) the production code they
 cover. Tests written months after the fact often miss edge cases and reflect assumptions baked into
-the implementation rather than the original specification.
+the implementation rather than the original specification. "Timely" has a second meaning that is
+often overlooked: test *feedback* must also be timely. A unit test that takes 5 seconds gives
+feedback 100x slower than one that takes 50ms. If a developer runs a 10,000-test suite that takes
+20 minutes, feedback is no longer timely — they will stop running it on every change. Speed is an
+isolation property: slow tests are almost always slow because they violate the Independent or
+Repeatable properties (they depend on real I/O, real clocks, or real external services).
 
 ### 2. Arrange-Act-Assert (AAA)
 
@@ -806,11 +811,14 @@ parallel workers.
 | Google Testing Blog — Test Flakiness | Community | https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html | Production-scale data on flakiness causes from Google's CI |
 | Jest Docs — Timer Mocks | Official | https://jestjs.io/docs/timer-mocks | Authoritative reference for `useFakeTimers` isolation in Jest |
 | Vitest Docs — Mocking | Official | https://vitest.dev/guide/mocking | Vitest equivalents for Jest isolation APIs |
-| Martin Fowler — Non-Determinism in Tests | Official | https://martinfowler.com/articles/nonDeterminism.html | Deep analysis of why tests become non-deterministic |
-| Jest Docs — Configuration Reference | Official | https://jestjs.io/docs/configuration | Authoritative reference for `clearMocks`, `restoreMocks`, `resetMocks`, `randomize` |
+| Martin Fowler — Non-Determinism in Tests | Official | https://martinfowler.com/articles/nonDeterminism.html | Deep analysis of why tests become non-deterministic (5 root causes taxonomy) |
+| Jest Docs — Configuration Reference | Official | https://jestjs.io/docs/configuration | Authoritative reference for `clearMocks`, `restoreMocks`, `resetMocks`, `randomize`, `fakeTimers` |
 | ts-jest Docs | Official | https://kulshekhar.github.io/ts-jest/ | TypeScript transformer for Jest; covers ESM/CJS isolation tradeoffs |
 | Playwright — Authentication & Storage State | Official | https://playwright.dev/docs/auth | Per-worker browser storage isolation for E2E test suites |
 | ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative source for standardized testing terminology |
+| TypeScript 5.2 — Explicit Resource Management | Official | https://devblogs.microsoft.com/typescript/announcing-typescript-5-2/#using-declarations-and-explicit-resource-management | `using`/`await using` for automatic test resource disposal |
+| Vitest Docs — `test.sequential` | Official | https://vitest.dev/api/#test-sequential | Selective serialization within concurrent describe blocks |
+| Prisma Docs — Interactive Transactions | Official | https://www.prisma.io/docs/orm/prisma-client/queries/transactions#interactive-transactions | Correct rollback-capable transaction mode for integration test isolation |
 
 ---
 
@@ -831,6 +839,13 @@ parallel workers.
 | File system contamination | Tests share temp files, leave artifacts | `tmp` directory per test with `afterEach` cleanup | Same |
 | Redis/cache state leak | Tests read stale cached data from prior test | Flush or key-namespace per test with `afterEach` | Same |
 | React component state leak | Component state from one test affects next | Unmount via `cleanup()` (RTL) or recreate in `beforeEach` | Same |
+| Resource pool exhaustion | Nth test times out; `ENOMEM`; non-deterministic | `--detectOpenHandles`; pool size 1 in test config | Same |
+| Mock stub lost between tests | Test gets `undefined` from mock dependency | `resetMocks` removes stubs; re-stub in `beforeEach` | `resetMocks` in `vitest.config.ts` |
+| Async resource teardown | Server/connection not closed after test | TypeScript 5.2 `await using` with `AsyncDisposable` | Same |
+| Flaky quarantine accumulation | Graveyard of skipped tests; coverage drift | Tag with ticket + expiry date; CI lint for stale skips | Same |
+| Ordering in concurrent suite | Two tests must be sequential in parallel describe | Jest: no native equivalent; use separate describe | `test.sequential` in Vitest |
+| Prisma isolation | Data persists across tests with batch `$transaction` | Use interactive transaction + rollback trigger | Same |
+| Snapshot timestamp drift | Snapshot always fails after first run | `vi.useFakeTimers()` + `vi.setSystemTime()`; or `expect.any(String)` | Same |
 
 ---
 
@@ -937,6 +952,156 @@ describe('Counter', () => {
 });
 ```
 
+### Pattern 14: `resetMocks` vs `restoreMocks` vs `clearMocks` — choosing the right Jest config flag  [community]
+
+Jest exposes three subtly different isolation flags that teams consistently confuse. Getting the distinction wrong causes mock state to leak in ways that are hard to diagnose. Choose based on what you want to survive between tests.
+
+```typescript
+// jest.config.ts — annotated comparison of the three flags
+import type { Config } from 'jest';
+
+const config: Config = {
+  // clearMocks: true
+  //   Clears mock.calls, mock.instances, mock.results, and mock.contexts.
+  //   Does NOT reset mock implementations.
+  //   Result: mock.fn() still returns your stubbed value, but call history is wiped.
+  //   Use when: you want to assert fresh call counts each test but keep the stub behavior.
+  clearMocks: true,
+
+  // resetMocks: true
+  //   Resets all mock state AND removes implementations (mockReturnValue, mockImplementation).
+  //   The mock function becomes a plain jest.fn() that returns undefined.
+  //   Does NOT restore the original implementation (i.e., jest.spyOn originals stay replaced).
+  //   Use when: each test should set up its own stub; a "leftover" stub from a previous
+  //   test would be a bug.
+  resetMocks: true,
+
+  // restoreMocks: true
+  //   Does everything resetMocks does PLUS restores jest.spyOn() originals.
+  //   After each test, spied methods return to their real implementation.
+  //   Does NOT affect jest.fn() stubs created without spyOn (those have no original to restore).
+  //   Use when: you use jest.spyOn() to intercept real methods and want them restored
+  //   automatically — without this, spies persist across ALL tests in the file.
+  restoreMocks: true,
+
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+};
+
+export default config;
+
+// -------------------------------------------------------------------
+// Test demonstrating the difference
+// -------------------------------------------------------------------
+// File: order.service.test.ts
+
+import { OrderService } from './orderService';
+import { InventoryService } from './inventoryService';
+
+describe('clearMocks vs resetMocks vs restoreMocks', () => {
+  let inventory: jest.Mocked<InventoryService>;
+  let service: OrderService;
+
+  beforeEach(() => {
+    inventory = {
+      reserve: jest.fn().mockResolvedValue(true),  // stub returns true
+      release: jest.fn().mockResolvedValue(undefined),
+    } as jest.Mocked<InventoryService>;
+    service = new OrderService(inventory);
+  });
+
+  it('reserves stock on place order', async () => {
+    await service.placeOrder('sku-1', 2);
+
+    // With clearMocks: true — call count is fresh; stub still returns true
+    expect(inventory.reserve).toHaveBeenCalledTimes(1);
+    expect(inventory.reserve).toHaveBeenCalledWith('sku-1', 2);
+  });
+
+  it('returns false when reservation fails', async () => {
+    // With resetMocks: true — previous .mockResolvedValue(true) is gone;
+    // we MUST re-stub here or reserve() returns undefined
+    inventory.reserve.mockResolvedValue(false);
+
+    const ok = await service.placeOrder('sku-1', 2);
+
+    expect(ok).toBe(false);
+  });
+});
+```
+
+### Pattern 15: TypeScript 5.2 `using` / `await using` for automatic test resource disposal  [community]
+
+TypeScript 5.2's explicit resource management (`using` / `await using`) lets test helpers implement `[Symbol.dispose]()` and be automatically cleaned up when they go out of scope — removing the need for explicit `afterEach` teardown for local resources. This is particularly clean for port-bound servers and database connections.
+
+```typescript
+// testHelpers.ts — disposable test server helper
+import express, { Application } from 'express';
+import http from 'http';
+import supertest, { SuperTest, Test } from 'supertest';
+
+interface TestServer extends AsyncDisposable {
+  request: SuperTest<Test>;
+  port: number;
+}
+
+async function createTestServer(app: Application): Promise<TestServer> {
+  const server = http.createServer(app);
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, () => resolve()); // port 0 = OS-assigned free port
+  });
+
+  const address = server.address() as { port: number };
+
+  return {
+    request: supertest(server),
+    port: address.port,
+    // Called automatically when the `await using` block exits
+    [Symbol.asyncDispose]: async () => {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    },
+  };
+}
+
+// test file — no afterEach needed; server closes automatically at test end
+import { createUserRouter } from '../src/routes/userRouter';
+
+describe('UserRouter — using disposable test server', () => {
+  it('GET /api/users returns 200', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use('/api/users', createUserRouter());
+
+    // Server is created and auto-closed when this test ends (at the } below)
+    await using server = await createTestServer(app);
+
+    const res = await server.request.get('/api/users');
+
+    expect(res.status).toBe(200);
+    // No afterEach — server.close() fires automatically here
+  });
+
+  it('POST /api/users creates a user and returns 201', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use('/api/users', createUserRouter());
+
+    // Fresh server per test — complete isolation
+    await using server = await createTestServer(app);
+
+    const res = await server.request
+      .post('/api/users')
+      .send({ name: 'Alice', email: 'alice@example.com' });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toHaveProperty('id');
+  });
+});
+```
+
 ### Pattern 13: Redis/cache key namespacing for integration test isolation  [community]
 
 Integration tests that use a shared Redis instance must namespace keys by test run (or test ID)
@@ -986,6 +1151,121 @@ describe('CacheService integration', () => {
     const result = await cache.get('user:1');
 
     expect(result).toBeNull();
+  });
+});
+```
+
+### Pattern 16: Vitest `test.sequential` for enforcing order within a concurrent suite  [community]
+
+In Vitest, `describe.concurrent` runs all tests in the block in parallel. When most tests in a
+concurrent suite are truly independent but a small subset cannot be parallelized (e.g., two tests
+share a write-once external resource), annotate only those tests with `test.sequential` rather
+than making the entire describe block sequential.
+
+```typescript
+import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { SeedDatabase, teardownSeedDatabase } from './testHelpers';
+
+// Most tests run concurrently; sequential tests run after all concurrent ones finish
+describe.concurrent('UserService integration', () => {
+  let db: SeedDatabase;
+
+  beforeAll(async () => {
+    db = await SeedDatabase.connect();
+  });
+
+  afterAll(async () => {
+    await db.disconnect();
+  });
+
+  // These two tests can run in parallel — they only read data
+  test('finds a user by email', async () => {
+    const user = await db.userService.findByEmail('alice@example.com');
+    expect(user?.name).toBe('Alice');
+  });
+
+  test('finds all active users', async () => {
+    const users = await db.userService.findActive();
+    expect(users.length).toBeGreaterThan(0);
+  });
+
+  // These two tests modify state and must run in order — use test.sequential
+  // to serialize only them, not the entire describe block
+  test.sequential('creates a new user', async () => {
+    const user = await db.userService.create({ name: 'Dave', email: 'dave@example.com' });
+    expect(user.id).toBeDefined();
+  });
+
+  test.sequential('newly created user appears in active list', async () => {
+    // Depends on the create test above having run first
+    const users = await db.userService.findActive();
+    const names = users.map((u) => u.name);
+    expect(names).toContain('Dave');
+  });
+});
+```
+
+**WHY:** Making the full `describe` sequential to fix a two-test ordering requirement is the most
+common over-correction teams make when migrating from Jest (which runs tests serially by default)
+to Vitest (which defaults to concurrent). `test.sequential` isolates the serialization requirement
+to the tests that actually need it.
+
+### Pattern 17: Snapshot test isolation — replacing non-deterministic values before asserting  [community]
+
+Snapshot tests that include timestamps, UUIDs, or random values fail on every run because the
+snapshot captures the original non-deterministic value. Use `expect.any()` matchers or deterministic
+replacements to make snapshots stable without hiding real regressions.
+
+```typescript
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { buildOrderConfirmation } from './orderConfirmation';
+
+describe('buildOrderConfirmation snapshot', () => {
+  const FIXED_DATE = new Date('2026-05-03T12:00:00.000Z');
+
+  beforeEach(() => {
+    // Replace Date constructor so all `new Date()` calls inside the SUT
+    // return the fixed value — making the snapshot deterministic
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_DATE);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('matches snapshot with deterministic timestamp', () => {
+    const confirmation = buildOrderConfirmation({
+      orderId: 'ord_123',
+      userId: 'usr_456',
+      items: [{ sku: 'sku-1', qty: 2, price: 19.99 }],
+    });
+
+    // Snapshot is stable because the clock is frozen
+    expect(confirmation).toMatchInlineSnapshot(`
+      {
+        "confirmedAt": "2026-05-03T12:00:00.000Z",
+        "orderId": "ord_123",
+        "total": 39.98,
+        "userId": "usr_456",
+      }
+    `);
+  });
+
+  it('uses toMatchObject with expect.any for UUID-based ids when freezing is impractical', () => {
+    // Alternative: when you can't control UUID generation, use asymmetric matchers
+    const confirmation = buildOrderConfirmation({
+      orderId: 'ord_789',
+      userId: 'usr_101',
+      items: [{ sku: 'sku-2', qty: 1, price: 9.99 }],
+    });
+
+    expect(confirmation).toMatchObject({
+      orderId: 'ord_789',
+      total: 9.99,
+      // Non-deterministic fields use asymmetric matchers — still asserts the type
+      confirmedAt: expect.any(String),
+    });
   });
 });
 ```
@@ -1053,4 +1333,94 @@ describe('CacheService integration', () => {
     WHY: `isolateModules` creates a fresh module registry only for the callback's duration;
     modules loaded outside the callback are unaffected. This is the correct scalpel where
     `resetModules` is a sledgehammer.
+
+26. **Resource pool exhaustion as a hidden isolation failure.** [community]
+    Tests that open database connections, spawn child processes, or acquire thread pool workers
+    without releasing them in `afterEach` cause pool exhaustion — subsequent tests time out or
+    get `ENOMEM` errors that look like environment problems. The root cause is a missing teardown.
+    Diagnose with Jest's `--detectOpenHandles` flag, which lists all Node.js async handles that
+    were not closed when the test suite finished. WHY: pool exhaustion failures are
+    non-deterministic and order-dependent — the pool fills after N tests depending on whether
+    GC reclaimed previous handles. The symptom looks like a flaky environment, not a test bug.
+    Fix: configure pools to size 1 during tests so exhaustion fails immediately on the first
+    offending test rather than intermittently on the Nth.
+
+27. **`resetMocks: true` in Jest config removes all mock implementations, not just call history.** [community]
+    Teams that set `clearMocks: true` (clears call counts) are surprised when they upgrade to
+    `resetMocks: true` (also removes `.mockReturnValue()` implementations). After the reset,
+    all mock functions return `undefined` unless re-stubbed in `beforeEach`. The symptom: tests
+    that worked with `clearMocks` now return `undefined` from mocked dependencies and fail with
+    cryptic "cannot read property of undefined" errors. WHY: the three flags do progressively
+    more — `clearMocks` < `resetMocks` < `restoreMocks`. Read the Jest docs before changing
+    config-level mock handling to understand which state each flag resets.
+
+28. **Quarantine non-deterministic test cases with a time-bound, not indefinitely.** [community]
+    Fowler's quarantine strategy (tag the test as skip/known-flaky) is only safe when paired with
+    a time limit. Teams that skip flaky tests permanently accumulate a graveyard of disabled tests
+    that erode suite confidence. The correct pattern: tag the test with a quarantine ticket number
+    (`it.skip('[JIRA-1234] flaky: fix by 2026-06-01')`) and add a CI lint rule that fails the
+    build if any quarantined test is older than 30 days. WHY: without the expiry mechanism,
+    quarantine becomes permanent deletion — the test's coverage disappears and the underlying
+    defect (shared state, timing assumption, external dependency) is never fixed.
+
+29. **`fakeTimers: { enableGlobally: true }` in Jest config removes per-test `useFakeTimers()` boilerplate but hides timer restore failures.** [community]
+    Setting `fakeTimers: { enableGlobally: true }` in `jest.config.ts` applies fake timers to
+    every test in the suite without requiring `beforeEach(() => jest.useFakeTimers())`. This
+    is convenient but has two traps: (1) tests that call real async operations (e.g., `setTimeout`
+    from a library, `setImmediate` in a stream) break silently because global fake timers intercept
+    ALL timer calls, not just yours; (2) there is no per-test opt-out without explicitly calling
+    `jest.useRealTimers()` — teams forget to add this, creating partial-restore bugs. The safer
+    default: enable fake timers per test in `beforeEach` so the scope is intentional and visible.
+
+30. **Sociable unit tests are preferable to solitary tests for pure-logic chains — but only when all collaborators are fast and deterministic.** [community]
+    Martin Fowler's distinction between solitary (replace all collaborators with doubles) and
+    sociable (use real collaborators for pure-logic units) tests is frequently misapplied.
+    Teams apply sociable-style tests to collaborators that are NOT fast and deterministic —
+    for example, a utility function that calls `new Date()` or reads from a config singleton.
+    The result is non-repeatable tests that fail in specific timezones or environments.
+    WHY: sociable tests are safe only when the real collaborators satisfy the FIRST properties
+    themselves. If a collaborator violates any FIRST property (e.g., it's not Repeatable because
+    it reads a live environment variable), replace it with a double in solitary tests.
+
+31. **Vitest `test.sequential` restores ordering guarantees inside a concurrent `describe` block.** [community]
+    Vitest runs `describe` blocks in parallel by default. If a `describe` block contains
+    `test.concurrent` annotations, all tests in that block run in parallel. When you need
+    a subset of tests to run sequentially within an otherwise-concurrent describe (for example,
+    tests that share an expensive-to-initialize real service), use `test.sequential` on those
+    tests. This is safer than making the entire `describe` sequential, which would negate
+    parallelism benefits for the other tests. WHY: teams sometimes respond to concurrent-test
+    race conditions by marking the entire describe as `describe.sequential`, losing parallelism
+    benefits for all other unrelated tests. `test.sequential` is the scalpel.
+
+32. **Prisma `$transaction()` isolation in tests requires `InteractiveTransaction`, not the batch API.** [community]
+    Prisma exposes two transaction modes: (1) sequential operations batch API
+    (`prisma.$transaction([op1, op2])`) and (2) interactive transaction API
+    (`prisma.$transaction(async (tx) => { ... })`). For test isolation, only the interactive
+    mode provides a handle you can roll back. The batch API auto-commits each operation; there
+    is no way to roll back. Tests that use `prisma.$transaction([...])` for isolation will
+    silently commit data that persists across tests. The correct pattern:
+    ```typescript
+    beforeEach(async () => {
+      testTx = await prisma.$transaction(async (tx) => {
+        // Store tx handle; each test operation must use testTx, not prisma
+        testTxHandle = tx;
+        // This callback must never resolve until afterEach rolls back
+        await rollbackTrigger; // a Promise that resolves only in afterEach
+      }).catch(() => {}); // swallow expected rollback error
+    });
+    afterEach(() => resolveRollbackTrigger()); // triggers the above rollback
+    ```
+    WHY: developers familiar with TypeORM's `queryRunner.rollbackTransaction()` expect Prisma
+    to have an equivalent — but Prisma's interactive transaction only rolls back if the callback
+    throws. The trigger-based pattern above replicates the TypeORM pattern using Prisma's model.
+
+33. **Non-deterministic test failures from `Date.now()` in snapshot assertions.** [community]
+    Snapshot tests that include timestamps (from `new Date()` or `Date.now()`) will always fail
+    on the second run because the snapshot captures the original wall-clock value. The symptom:
+    a Jest snapshot that passes once, is committed, then always fails in CI because the timestamp
+    changes. Teams often update the snapshot to "fix" it, which obscures real regressions in the
+    same component. WHY: snapshot tests are an isolation tool — they catch unexpected changes.
+    When a snapshot includes non-deterministic values, every run becomes an expected diff, and
+    the snapshot loses its value. Fix: use `expect.any(Number)` or `expect.any(String)` for
+    timestamps in snapshots, or mock `Date` to a fixed value before the snapshot assertion.
 

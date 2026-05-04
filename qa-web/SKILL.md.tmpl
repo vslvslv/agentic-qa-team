@@ -153,6 +153,20 @@ _SEED_MODE="${QA_SEED_MODE:-clean}"
 echo "SEED_MODE: $_SEED_MODE"
 [ "$_SEED_MODE" = "chaos" ] && \
   echo "CHAOS_MODE: active — E2E tests running against chaos-seeded data; new failures may indicate data-handling regressions"
+
+# Shortest NL mode detection (BL-049)
+_SHORTEST_AVAILABLE=0
+command -v shortest >/dev/null 2>&1 && _SHORTEST_AVAILABLE=1
+grep -q '"shortest"' package.json 2>/dev/null && _SHORTEST_AVAILABLE=1
+_NL_TESTS_EXIST=0
+[ -f "tests.nl.md" ] && _NL_TESTS_EXIST=1
+echo "SHORTEST_AVAILABLE: $_SHORTEST_AVAILABLE"
+echo "NL_TESTS_EXIST: $_NL_TESTS_EXIST"
+
+# OTel traceparent injection detection (BL-055)
+_OTEL_AVAILABLE=0
+[ -n "$OTEL_EXPORTER_OTLP_ENDPOINT" ] && _OTEL_AVAILABLE=1
+echo "OTEL_AVAILABLE: $_OTEL_AVAILABLE"
 ```
 
 If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
@@ -291,11 +305,78 @@ projects: [
 
 If existing config already has a `projects` array: do NOT override it — just note which browsers are configured.
 
+### OTel Traceparent Injection (BL-055)
+
+If `_OTEL_AVAILABLE=1` (`OTEL_EXPORTER_OTLP_ENDPOINT` is set), add traceparent injection to
+the generated Playwright config and spec fixtures so every test-driven HTTP request carries a
+known trace ID — enabling correlation to backend Jaeger/Tempo traces on failure.
+
+Add to generated `playwright.config.ts` (near the top, before `export default`):
+
+```typescript
+// OTel SDK init — only when OTEL endpoint configured
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { Resource } from '@opentelemetry/resources';
+if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+  new NodeSDK({
+    resource: new Resource({ 'service.name': 'playwright-tests' }),
+    traceExporter: new OTLPTraceExporter(),
+  }).start();
+}
+```
+
+Add to generated spec files in the `test.beforeEach` block:
+
+```typescript
+test.beforeEach(async ({ page }) => {
+  if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    const traceId = crypto.randomUUID().replace(/-/g, '');
+    const spanId = Math.random().toString(16).slice(2, 18).padStart(16, '0');
+    const traceparent = `00-${traceId}-${spanId}-01`;
+    // Annotate test with trace ID for correlation on failure
+    test.info().annotations.push({ type: 'traceId', description: traceId });
+    await page.route('**/*', (route) =>
+      route.continue({ headers: { ...route.request().headers(), traceparent } })
+    );
+  }
+});
+```
+
+On test failure, include the `traceId` annotation in the Phase 4 report so the backend
+distributed trace can be retrieved from Jaeger/Tempo for root-cause analysis.
+
+### Natural Language Mode (BL-049)
+
+If `_SHORTEST_AVAILABLE=1` or `_NL_TESTS_EXIST=1`, generate a `<feature>.shortest.ts`
+file alongside standard Playwright specs. NL test descriptions are interpreted at runtime
+by Claude — no selector code is maintained by hand.
+
+**When to use:** tests authored in TCMS as acceptance criteria bullets, or when `tests.nl.md`
+exists with plain-English descriptions.
+
+```typescript
+// e2e/login.shortest.ts
+import { shortest } from '@antiwork/shortest';
+
+shortest('User can log in with valid credentials and reach the dashboard');
+shortest('User sees an error message with wrong password');
+shortest('User can log out and is redirected to the login page');
+```
+
+**Run**: `npx shortest` (interprets each string via Claude → Playwright execution → pass/fail).
+
+If `tests.nl.md` exists: parse each line as a `shortest()` call and generate the file.
+On failure: Claude receives the failing sentence + DOM snapshot → rewrite the intent
+description rather than a CSS selector.
+
+Note: `shortest` requires `ANTHROPIC_API_KEY` set in the environment.
+
 Then select and read the language-appropriate reference guide based on `_WEB_TOOL` and `_TARGET_LANG`:
 
 **Playwright — TypeScript** (when `_TARGET_LANG` is not `csharp`):
 > Reference: [Playwright patterns guide (TypeScript)](references/playwright-patterns.md)
-> Key patterns: POM + fixture injection · storageState auth (single/multi-role/API-based/worker-scoped) · IndexedDB in storageState (v1.51+) · OAuth + MFA + magic link auth · locator rank · web-first assertions · soft assertions · network mocking + HAR recording + network-cache · test sharding · visual regression · `expect.poll`/`toPass` · accessibility with axe-core · aria snapshots (`toMatchAriaSnapshot` + `locator.ariaSnapshot()` + `mode: 'ai'`) · test annotations/tagging · global setup via project deps · custom reporters (HTML `title` v1.53+) · multi-environment projects · custom matchers · keyboard/focus testing · browser storage manipulation · performance timing · mobile emulation · clock mocking · geolocation · test attachments · debug workflow · TypeScript config + ESLint · typed POM factory · WebSocket testing + `routeWebSocket` · pure API test suites · `addLocatorHandler` overlay dismissal · post-facto inspection APIs (`consoleMessages`/`pageErrors`/`requests`) · `locator.normalize()` · `locator.describe()` · Screencast API + `showActions()` · Docker deployment · auto-fixture suite scaling · `browser.bind()` multi-client · Playwright Test Agents (Planner/Generator/Healer v1.56+) · `launchPersistentContext` session reuse · `maxRedirects` APIRequestContext · `snapshotPath({ kind })` · cloud scaling (Currents/Moon/remote server) · breaking changes reference (v1.45–v1.59)
+> Key patterns: POM + fixture injection · storageState auth (single/multi-role/API-based/worker-scoped) · IndexedDB in storageState (v1.51+) · OAuth + MFA + magic link auth · locator rank · web-first assertions · soft assertions · network mocking + HAR recording + network-cache · test sharding · visual regression · `expect.poll`/`toPass` · accessibility with axe-core · aria snapshots (`toMatchAriaSnapshot` + `locator.ariaSnapshot()` + `mode: 'ai'`) · test annotations/tagging · global setup via project deps · custom reporters (HTML `title` v1.53+) · multi-environment projects · custom matchers · keyboard/focus testing · browser storage manipulation · performance timing · mobile emulation · clock mocking · geolocation · test attachments · debug workflow · TypeScript config + ESLint · typed POM factory · WebSocket testing + `routeWebSocket` · pure API test suites · `addLocatorHandler` overlay dismissal · post-facto inspection APIs (`consoleMessages`/`pageErrors`/`requests`) · `locator.normalize()` · `locator.describe()` · Screencast API + `showActions()` · Docker deployment · auto-fixture suite scaling · `browser.bind()` multi-client · Playwright Test Agents (Planner/Generator/Healer v1.56+) · `launchPersistentContext` session reuse · `maxRedirects` APIRequestContext · `snapshotPath({ kind })` · cloud scaling (Currents/Moon/remote server) · breaking changes reference (v1.45–v1.59) · `pressSequentially()` for autocomplete/OTP · `locator.all()` + `allTextContents()` · `filter({ hasNot, hasNotText })` exclusion · `toHaveCSS()` computed style assertions · `toBeInViewport({ ratio })` scroll visibility · `page.pdf()` PDF generation testing
 > Breaking changes: `page.accessibility` removed (v1.57) → use `toMatchAriaSnapshot` / axe-core · Chrome for Testing replaces Chromium builds (v1.57) · React 16/17 CT support removed (v1.57) · `@playwright/experimental-ct-svelte` removed (v1.59) · macOS 14 WebKit dropped (v1.59)
 
 **Playwright — C#** (when `_TARGET_LANG=csharp`):

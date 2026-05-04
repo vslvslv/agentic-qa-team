@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 11 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 21 | score: 100/100 | date: 2026-05-03 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis, checkly/playwright-examples, Playwright GitHub issues -->
 
 ---
 
@@ -336,6 +336,100 @@ await page.route('**/*', route => {
 
 > Blocking images and fonts in tests not focused on visuals can cut load times by 30–50%.
 > Use at context level (`browserContext.route()`) for popups. [community]
+
+---
+
+### GraphQL API Interception by Operation Name
+
+GraphQL endpoints share a single URL (`/graphql`), so URL-based route matching cannot distinguish between queries. Use the request body's `operationName` to target specific operations.
+
+```typescript
+// Mock a specific GraphQL query by operation name
+await page.route('**/graphql', async route => {
+  const body = route.request().postDataJSON() as { operationName?: string };
+
+  if (body?.operationName === 'GetUserProfile') {
+    // Return mock data for this specific query
+    await route.fulfill({
+      status:      200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        data: {
+          user: { id: '1', name: 'Alice Smith', role: 'admin' },
+        },
+      }),
+    });
+    return;
+  }
+
+  // Pass through all other GraphQL operations
+  await route.continue();
+});
+
+await page.goto('/profile');
+await expect(page.getByRole('heading', { name: 'Alice Smith' })).toBeVisible();
+
+// Test GraphQL error handling
+await page.route('**/graphql', async route => {
+  const body = route.request().postDataJSON() as { operationName?: string };
+
+  if (body?.operationName === 'CreateOrder') {
+    await route.fulfill({
+      status:      200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        data:   null,
+        errors: [{ message: 'Insufficient stock', extensions: { code: 'OUT_OF_STOCK' } }],
+      }),
+    });
+    return;
+  }
+  await route.continue();
+});
+
+await page.getByRole('button', { name: 'Place order' }).click();
+await expect(page.getByRole('alert')).toContainText('Insufficient stock');
+```
+
+**Assert on GraphQL request variables:**
+
+```typescript
+// Verify the correct variables were sent to the mutation
+test('update profile sends correct variables', async ({ page }) => {
+  let capturedVariables: Record<string, unknown> = {};
+
+  await page.route('**/graphql', async route => {
+    const { operationName, variables } = route.request().postDataJSON() as {
+      operationName: string;
+      variables: Record<string, unknown>;
+    };
+
+    if (operationName === 'UpdateProfile') {
+      capturedVariables = variables;
+      await route.fulfill({
+        status:      200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: { updateProfile: { success: true } } }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto('/profile/edit');
+  await page.getByLabel('Name').fill('Bob Jones');
+  await page.getByRole('button', { name: 'Save' }).click();
+
+  expect(capturedVariables).toMatchObject({ name: 'Bob Jones' });
+});
+```
+
+> Always pass through unmatched operations with `route.continue()` — if you `route.abort()`
+> or leave unmatched routes unhandled, other queries (auth, feature flags) will silently fail
+> and produce confusing UI states. [community]
+
+> Use `route.request().postDataJSON()` (not `postData()`) for GraphQL — it parses the JSON
+> body for you. `postData()` returns a raw string that requires manual `JSON.parse()`. [community]
 
 ---
 
@@ -709,6 +803,81 @@ Alternatively, if you don't need SW network interception, keep `serviceWorkers: 
 
 ---
 
+### 20. Date-dependent tests fail in CI due to timezone mismatch [community]
+**What:** Tests that assert on date-related UI (e.g., "Today", "Yesterday", relative timestamps, date picker defaults) pass locally but fail in CI — often with a one-day-off error.
+**WHY:** The developer's machine runs with a local timezone (e.g., `America/New_York` or `Europe/Berlin`), while the CI runner typically runs UTC or a different timezone. A test that creates a record at 11 PM local time may be "Today" locally but "Tomorrow" in UTC.
+**Fix:** Pin `TZ=UTC` in CI environment variables, and run local tests the same way with `TZ=UTC npx playwright test`. If your app serves timezone-aware users, test timezone-specific behavior in dedicated tests using `page.clock.setFixedTime()` with an explicit date.
+
+```yaml
+# .github/workflows/playwright.yml
+env:
+  TZ: UTC
+```
+
+```typescript
+// Use page.clock for time-zone-sensitive UI tests instead of relying on system time
+test('shows correct "Today" label', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2025-06-15T09:00:00Z')); // explicit UTC
+  await page.goto('/calendar');
+  await expect(page.locator('[data-date="2025-06-15"]')).toContainText('Today');
+});
+```
+
+### 21. TypeScript type errors in fixture files cause all tests to fail with cryptic syntax errors [community]
+**What:** After a refactor, all tests start failing with `SyntaxError: Cannot use import statement` or `TypeError: Cannot read properties of undefined` — even tests unrelated to the changed file.
+**WHY:** TypeScript type errors in shared fixture files propagate silently through the module system. When Playwright imports a fixture module that fails to compile, every test that depends on it fails with a JavaScript runtime error rather than a clear TypeScript type error.
+**Fix:** Add `tsc --noEmit` as a mandatory CI step before `playwright test`. It runs in 2–5 seconds and shows the exact file and line of the type error — preventing a CI run that wastes 10+ minutes before hitting the error.
+
+```yaml
+# .github/workflows/playwright.yml — type-check before test run
+- name: Type-check test files
+  run: npx tsc --noEmit -p e2e/tsconfig.json
+
+- name: Run Playwright tests
+  run: npx playwright test
+```
+
+> Add `tsc --noEmit` to your `package.json` scripts: `"test:e2e": "tsc --noEmit -p e2e/tsconfig.json && playwright test"`.
+> The two-second type check prevents the most confusing class of CI failures — "all tests broken" from a single type error in a shared fixture. [community]
+
+### 22. `locator.all()` returns empty array when called before content renders [community]
+**What:** `const items = await page.getByRole('listitem').all()` returns `[]`, causing a loop that silently skips all assertions — the test passes even though the page was empty.
+**WHY:** `locator.all()` takes a snapshot of the DOM **immediately** with no retry. If the list hasn't loaded yet, there are zero elements, and the `for...of` loop body never executes.
+**Fix:** Always await a web-first assertion confirming the content is present before calling `.all()`:
+
+```typescript
+// WRONG — calls all() before list has loaded
+const items = await page.getByRole('listitem').all();
+for (const item of items) {
+  await expect(item).toBeVisible(); // silently skipped if items === []
+}
+
+// CORRECT — assert minimum count first, then snapshot
+await expect(page.getByRole('listitem')).toHaveCount(5);
+const items = await page.getByRole('listitem').all();
+for (const item of items) {
+  await expect(item).toBeVisible();
+}
+```
+
+### 23. `toHaveCSS()` fails with hex colors — use RGB format [community]
+**What:** `await expect(button).toHaveCSS('color', '#2563eb')` fails even when the button clearly shows the correct blue color.
+**WHY:** Browsers normalize all color values to their computed RGB form internally. Playwright's `toHaveCSS()` retrieves the computed style, which is always `rgb(...)` or `rgba(...)` — never hex.
+**Fix:** Convert hex to RGB before passing to `toHaveCSS()`, or use a regex to avoid the format dependency altogether:
+
+```typescript
+// WRONG — hex is never the computed value
+await expect(button).toHaveCSS('color', '#2563eb');
+
+// CORRECT — use computed RGB
+await expect(button).toHaveCSS('color', 'rgb(37, 99, 235)');
+
+// ALSO CORRECT — regex avoids format dependency
+await expect(button).toHaveCSS('color', /rgb\(37,\s*99,\s*235\)/);
+```
+
+---
+
 ## Breaking Changes Reference (v1.45–v1.59)
 
 A summary of removals and behavioral changes that require action when upgrading.
@@ -749,6 +918,8 @@ A summary of removals and behavioral changes that require action when upgrading.
 | `captureGitInfo` | `false` | `{ commit: true }` | Links test failures to specific commits in HTML reports |
 | `updateSnapshots` | `'missing'` | `'changed'` | Only update snapshots that actually differ; protect stable baselines |
 | `tag` | omitted | `CI_ENVIRONMENT_NAME` | Label runs in reports to distinguish staging from prod smoke runs |
+| `TZ` env var | (local tz) | `TZ=UTC` | Pin timezone so date-dependent tests produce consistent results across regions |
+| `tsc --noEmit` | not run | run before test | Catch TypeScript type errors before wasting CI time executing tests |
 
 ### Installing browsers correctly in CI
 
@@ -759,6 +930,51 @@ npx playwright install chromium --with-deps
 # --with-deps installs OS-level system libraries (libatk, ffmpeg, etc.)
 # Omitting it causes silent browser crashes in headless environments
 ```
+
+### TypeScript pre-flight check in CI
+
+Run `tsc --noEmit` before `playwright test` to catch type errors and missing `await`s before wasting CI browser time. This is especially valuable in large suites where a single type error in a fixture module would fail every test.
+
+```yaml
+# .github/workflows/playwright.yml — TypeScript check before test run
+- name: Type-check
+  run: npx tsc --noEmit -p e2e/tsconfig.json
+
+- name: Run Playwright tests
+  run: npx playwright test
+```
+
+```bash
+# Local: run both steps in sequence
+npx tsc --noEmit -p e2e/tsconfig.json && npx playwright test
+```
+
+> TypeScript errors in shared fixtures cause ALL tests to fail with cryptic errors like
+> "SyntaxError: Cannot use import statement". `tsc --noEmit` catches these in 2–3 seconds
+> before browser launch. Add it as a required CI step, not just a pre-commit hook. [community]
+
+### Pin CI timezone to UTC
+
+Date-dependent tests (clock mocking, date filters, "today's appointments") may pass locally but fail in CI because the CI runner uses a different system timezone. Pin the timezone for determinism.
+
+```yaml
+# .github/workflows/playwright.yml — pin timezone to UTC
+env:
+  TZ: UTC
+
+# Or per-step:
+- name: Run Playwright tests
+  env:
+    TZ: UTC
+  run: npx playwright test
+```
+
+```bash
+# Local: run with UTC timezone to match CI behavior
+TZ=UTC npx playwright test
+```
+
+> Timezone-related flakiness appears as "test passes locally (developer's local tz) but fails in CI (UTC)" on tests involving date labels like "Today" or relative timestamps. Pin `TZ=UTC` in both CI and local test scripts for consistent behavior. [community]
 
 ### Running Playwright in Docker
 
@@ -966,6 +1182,15 @@ npx playwright test --grep-invert @flaky --retries=2
 | Using `page.accessibility` (removed v1.57) | `page.accessibility` API was fully removed in v1.57 | Use `expect(locator).toMatchAriaSnapshot()` for structural checks or `@axe-core/playwright` for WCAG scanning |
 | Assuming Docker base image uses Chromium browser binary | Since v1.57, headed mode uses `chrome` and headless uses `chrome-headless-shell` — not the old Chromium build | Rebuild Docker images after upgrading past v1.57; always pin `FROM mcr.microsoft.com/playwright:vX.Y.Z-noble` |
 | Using `@playwright/experimental-ct-react` with React 16/17 | Support for React 16/17 in CT was removed in v1.57 | Upgrade to React 18+ or use e2e tests for legacy components |
+| Omitting `TZ=UTC` in CI for date-dependent tests | System timezone differs between developer machine and CI runner, causing date labels ("Today", relative timestamps) to mismatch | Set `TZ: UTC` in CI env and run local tests with `TZ=UTC npx playwright test` |
+| Running `tsc --noEmit` only as a pre-commit hook | TypeScript errors in fixture files fail ALL tests with cryptic syntax errors instead of a clear type error | Run `tsc --noEmit -p e2e/tsconfig.json` as a mandatory CI step before `playwright test` |
+| Slow fixture setup consuming the test's timeout budget | Worker-scoped migrations taking 30s cause "Test timeout of 30000ms exceeded" in the test body | Set `timeout: N` in the fixture options to give setup its own independent time budget |
+| `{ box: true }` on actively debugged fixtures | Hides all internal steps in the HTML report, making failures impossible to diagnose via report alone | Reserve `{ box: true }` for stable utility fixtures; remove it when actively investigating fixture failures |
+| `ignoreHTTPSErrors: true` unconditionally | Suppresses real certificate errors in production smoke tests, masking TLS misconfigurations | Gate on environment: `ignoreHTTPSErrors: process.env.TEST_ENV === 'staging'` |
+| `--no-deps` in CI | Silently skips auth/DB setup projects, causing false passes when test data is missing | Use `--no-deps` only locally for fast iteration; always run full dependency chain in CI |
+| `locator.all()` before content loads | Snapshots empty DOM; `for...of` body never runs; test passes vacuously | Always `await expect(locator).toHaveCount(n)` before calling `.all()` |
+| `toHaveCSS('color', '#2563eb')` | Browsers compute colors as `rgb(...)`; hex never matches | Use `rgb(37, 99, 235)` or a regex with `toHaveCSS()` |
+| `locator.fill()` on autocomplete / masked inputs | Sets value atomically without firing individual key events; autocomplete never triggers | Use `locator.pressSequentially()` for inputs that need keystroke events |
 
 ---
 
@@ -1052,6 +1277,9 @@ npx playwright test --grep-invert @flaky --retries=2
 | `route.abort()` | Block the request entirely | Remove tracking pixels, large assets |
 | `route.fetch()` then `route.fulfill()` | Fetch real response then modify it | Feature flag injection, response patching |
 | `route.continue()` | Pass request through with optional header/body override | Inject auth headers on outbound requests |
+| `route.fallback()` | Pass to the next matching route handler | Layered mocking (fixture base + test override) |
+| `page.unroute(url, handler)` | Remove a specific route handler | Clean up targeted mocks mid-test |
+| `page.unrouteAll()` | Remove all route handlers on the page | Post-test cleanup for shared page fixtures |
 | `page.waitForRequest(url)` | Wait for outgoing request | Verify API calls are made |
 | `page.waitForResponse(url)` | Wait for incoming response | Verify API responses are handled |
 | `request.existingResponse()` | Get response without blocking — returns null if not yet received (v1.59+) | Non-blocking response inspection |
@@ -1074,8 +1302,10 @@ npx playwright test --grep-invert @flaky --retries=2
 | `{ scope: 'worker' }` | Share fixture across all tests in a worker | Expensive shared resources (DB, server) |
 | `{ auto: true }` | Run fixture for every test automatically | Universal setup like global logging |
 | `{ box: true }` | Hide fixture steps from test report | Reduce report noise for helper fixtures |
+| `{ timeout: N }` | Override fixture-level timeout (ms) | Slow DB or server setup that exceeds test timeout |
 | `locator.describe(label)` | Annotate locator with human-readable name (v1.52+) | Trace/report readability |
 | `testInfo.snapshotPath(name, { kind })` | Route snapshot to kind-specific directory (v1.53+) | Separate visual/aria/text baselines |
+| `testInfo.outputPath(name)` | Generate CI-friendly unique artifact path | Write files (logs, dumps) in test result dir |
 
 ---
 
@@ -1692,6 +1922,119 @@ test('touch scroll works on product list', async ({ page }) => {
 
 ---
 
+### Browser Emulation — Color Scheme, Locale, Reduced Motion, and JavaScript
+
+Test accessibility preferences, internationalization, and degraded-JS scenarios using browser context emulation options.
+
+**Dark mode (`colorScheme: 'dark'`):**
+
+```typescript
+// playwright.config.ts — test project for dark mode
+{
+  name: 'dark-mode',
+  use: {
+    ...devices['Desktop Chrome'],
+    colorScheme: 'dark',
+  },
+}
+
+// e2e/specs/theme.spec.ts — verify dark mode CSS applies
+test('dashboard renders in dark mode', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.goto('/dashboard');
+  const bg = await page.evaluate(() =>
+    getComputedStyle(document.body).backgroundColor
+  );
+  // Dark background applied via @media (prefers-color-scheme: dark)
+  expect(bg).toBe('rgb(18, 18, 18)');
+  await expect(page).toHaveScreenshot('dashboard-dark.png');
+});
+```
+
+**Reduced motion for accessibility testing:**
+
+```typescript
+// Skip animations for tests that assert on end-state, not animation
+test('modal opens without animation in reduced-motion mode', async ({ browser }) => {
+  const context = await browser.newContext({ reducedMotion: 'reduce' });
+  const page    = await context.newPage();
+  await page.goto('/dashboard');
+  await page.getByRole('button', { name: 'Open settings' }).click();
+  // Modal appears instantly — no transition delay to wait for
+  await expect(page.getByRole('dialog')).toBeVisible();
+  const animDuration = await page.evaluate(
+    () => getComputedStyle(document.querySelector('[role="dialog"]')!).animationDuration
+  );
+  expect(animDuration).toBe('0s');  // animation disabled by prefers-reduced-motion
+  await context.close();
+});
+```
+
+**Locale and timezone — testing i18n and date formatting:**
+
+```typescript
+// Test date format for German locale (DD.MM.YYYY)
+test('shows dates in German format', async ({ browser }) => {
+  const context = await browser.newContext({
+    locale:     'de-DE',
+    timezoneId: 'Europe/Berlin',
+  });
+  const page = await context.newPage();
+  await page.goto('/invoices');
+  // German locale formats dates as "15.06.2025" not "06/15/2025"
+  await expect(page.getByTestId('invoice-date')).toHaveText(/\d{2}\.\d{2}\.\d{4}/);
+  await context.close();
+});
+
+// playwright.config.ts — dedicated i18n project
+{
+  name: 'de-DE',
+  use: {
+    ...devices['Desktop Chrome'],
+    locale:     'de-DE',
+    timezoneId: 'Europe/Berlin',
+  },
+}
+```
+
+> `timezoneId` controls the browser's timezone (affects `Date` formatting in the page).
+> `TZ` env var controls the Node.js test runner's timezone (affects `new Date()` in test code).
+> Both are needed for full timezone isolation. [community]
+
+**High-contrast mode (`forcedColors: 'active'`):**
+
+```typescript
+test('high-contrast mode renders correctly', async ({ browser }) => {
+  const context = await browser.newContext({ forcedColors: 'active' });
+  const page    = await context.newPage();
+  await page.goto('/');
+  await expect(page).toHaveScreenshot('homepage-high-contrast.png');
+  await context.close();
+});
+```
+
+**Testing with JavaScript disabled (progressive enhancement):**
+
+```typescript
+// Verify the page is usable without JavaScript (server-rendered fallback)
+test('form works without JavaScript', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page    = await context.newPage();
+  await page.goto('/contact');
+  await page.getByLabel('Name').fill('Alice');
+  await page.getByLabel('Email').fill('alice@example.com');
+  await page.getByRole('button', { name: 'Submit' }).click();
+  await expect(page.getByText('Message sent')).toBeVisible();
+  await context.close();
+});
+```
+
+> `javaScriptEnabled: false` tests server-rendered fallback for forms and navigation.
+> If your app is a pure SPA, this test will show a blank page — which is itself a finding:
+> your app has no graceful degradation. [community]
+
+---
+
 ### Clock and Time Mocking
 
 Control `Date.now()`, `setTimeout`, and `setInterval` to test time-dependent logic without waiting.
@@ -2035,6 +2378,39 @@ test('handles server disconnection gracefully', async ({ page }) => {
   await expect(page.getByText('Connected')).toBeVisible();
   await expect(page.getByText('Reconnecting...')).toBeVisible({ timeout: 3_000 });
 });
+
+// Intercept and modify messages between page and real server
+// Useful for injecting test messages or blocking specific message types
+test('filters out spam messages from live feed', async ({ page }) => {
+  await page.routeWebSocket('wss://ws.example.com/feed', ws => {
+    const server = ws.connectToServer();  // proxy to real server
+    server.onMessage(message => {
+      const data = JSON.parse(message as string);
+      if (data.type !== 'spam') {
+        ws.send(message);  // only forward non-spam messages to the page
+      }
+    });
+    ws.onMessage(message => server.send(message));  // forward page→server messages unchanged
+  });
+  await page.goto('/live-feed');
+  await expect(page.getByText('spam message')).toBeHidden();
+});
+
+// Inject a test event into an otherwise real WebSocket stream
+test('notification badge updates on server message', async ({ page }) => {
+  let serverWs: import('@playwright/test').WebSocketRoute;
+  await page.routeWebSocket('wss://ws.example.com/notifications', ws => {
+    serverWs = ws.connectToServer();
+    serverWs.onMessage(msg => ws.send(msg));
+    ws.onMessage(msg => serverWs.send(msg));
+  });
+  await page.goto('/dashboard');
+  await expect(page.getByTestId('notification-badge')).toHaveText('0');
+
+  // Inject a fake server notification — simulates server push without needing real event
+  serverWs!.send(JSON.stringify({ type: 'notification', count: 5 }));
+  await expect(page.getByTestId('notification-badge')).toHaveText('5');
+});
 ```
 
 > `page.routeWebSocket()` was introduced in Playwright 1.48. For earlier versions, use
@@ -2045,6 +2421,113 @@ test('handles server disconnection gracefully', async ({ page }) => {
 ### Request Context for Multi-Step API Tests
 
 Use `request` fixture for pure API tests (no browser) within the same test suite.
+
+---
+
+### Multi-Context Collaborative Testing — Simulating Multiple Users
+
+Test features that require two or more users simultaneously (chat, comments, collaborative editing, permission changes) by creating multiple browser contexts in one test.
+
+```typescript
+// e2e/specs/chat.spec.ts — two users in the same chat room
+test('messages appear in real-time for both users', async ({ browser }) => {
+  // Each context gets its own cookies, localStorage, and session
+  const aliceContext = await browser.newContext({
+    storageState: 'e2e/.auth/alice.json',
+  });
+  const bobContext = await browser.newContext({
+    storageState: 'e2e/.auth/bob.json',
+  });
+
+  const alicePage = await aliceContext.newPage();
+  const bobPage   = await bobContext.newPage();
+
+  // Both navigate to the same chat room
+  await Promise.all([
+    alicePage.goto('/chat/room-1'),
+    bobPage.goto('/chat/room-1'),
+  ]);
+
+  // Alice sends a message
+  await alicePage.getByLabel('Message').fill('Hello Bob!');
+  await alicePage.getByRole('button', { name: 'Send' }).click();
+
+  // Bob sees Alice's message without refreshing
+  await expect(bobPage.getByText('Hello Bob!')).toBeVisible({ timeout: 5_000 });
+
+  // Bob replies
+  await bobPage.getByLabel('Message').fill('Hi Alice!');
+  await bobPage.getByRole('button', { name: 'Send' }).click();
+  await expect(alicePage.getByText('Hi Alice!')).toBeVisible({ timeout: 5_000 });
+
+  await Promise.all([aliceContext.close(), bobContext.close()]);
+});
+
+// e2e/specs/permissions.spec.ts — admin changes role; viewer sees updated UI
+test('role change takes effect without page refresh', async ({ browser }) => {
+  const adminContext  = await browser.newContext({ storageState: 'e2e/.auth/admin.json' });
+  const viewerContext = await browser.newContext({ storageState: 'e2e/.auth/viewer.json' });
+  const adminPage  = await adminContext.newPage();
+  const viewerPage = await viewerContext.newPage();
+
+  await viewerPage.goto('/documents');
+  await expect(viewerPage.getByRole('button', { name: 'Edit' })).toBeHidden();
+
+  // Admin promotes viewer to editor
+  await adminPage.goto('/admin/users');
+  await adminPage.getByRole('row', { name: 'viewer@example.com' })
+    .getByRole('button', { name: 'Promote' }).click();
+  await expect(adminPage.getByText('Role updated')).toBeVisible();
+
+  // Viewer's page should now show the edit button (real-time via WebSocket)
+  await expect(viewerPage.getByRole('button', { name: 'Edit' })).toBeVisible({ timeout: 5_000 });
+
+  await Promise.all([adminContext.close(), viewerContext.close()]);
+});
+```
+
+**Multi-context fixture for collaborative tests:**
+
+```typescript
+// e2e/fixtures/multi-user.ts — reusable two-user fixture
+import { test as base, type BrowserContext } from '@playwright/test';
+import path from 'node:path';
+
+type UserContexts = {
+  alice: BrowserContext;
+  bob:   BrowserContext;
+};
+
+export const test = base.extend<UserContexts>({
+  alice: async ({ browser }, use) => {
+    const ctx = await browser.newContext({
+      storageState: path.join(__dirname, '../.auth/alice.json'),
+    });
+    await use(ctx);
+    await ctx.close();
+  },
+  bob: async ({ browser }, use) => {
+    const ctx = await browser.newContext({
+      storageState: path.join(__dirname, '../.auth/bob.json'),
+    });
+    await use(ctx);
+    await ctx.close();
+  },
+});
+
+// e2e/specs/collaborative.spec.ts
+import { test, expect } from '../fixtures/multi-user';
+
+test('both users see document edits', async ({ alice, bob }) => {
+  const alicePage = await alice.newPage();
+  const bobPage   = await bob.newPage();
+  // ... test collaborative editing
+});
+```
+
+> Multi-context tests are inherently slower than single-context tests because they spawn
+> two browser contexts per test. Keep them focused on the specific collaborative behavior
+> being tested. Extract shared setup into a fixture to avoid duplication. [community]
 
 ```typescript
 import { test, expect } from '@playwright/test';
@@ -2086,6 +2569,73 @@ test.describe('Users API', () => {
 ### HAR Recording for Offline / Reproducible Tests
 
 Record real network traffic to a HAR file, then replay it to run tests without a live backend. Ideal for flaky external APIs.
+
+---
+
+### Route Fallback and Route Cleanup
+
+**`route.fallback()`** — pass a route to the next matching handler instead of aborting or fulfilling it. Essential when multiple route handlers are registered (e.g., a base fixture registers one, and a test adds a more specific one).
+
+```typescript
+// Layered routing: fixture registers a broad mock; test adds a specific override
+// Base fixture mock (handles all API requests with default mocks)
+await page.route('**/api/**', async route => {
+  // Default: return empty success response for any unspecified endpoint
+  await route.fulfill({ status: 200, body: '{}' });
+});
+
+// Test-specific override for /api/products — more specific handler runs first
+await page.route('**/api/products', async route => {
+  // Mock just the products endpoint
+  await route.fulfill({
+    status: 200,
+    body: JSON.stringify({ items: [{ id: 1, name: 'Widget' }] }),
+  });
+  // NOTE: if this handler didn't exist, the '**/api/**' handler above would fire
+});
+
+// route.fallback() — delegate to the next matching handler
+// Useful when you want to log/inspect but not intercept:
+await page.route('**/api/**', async route => {
+  console.log(`[DEBUG] API call: ${route.request().url()}`);
+  await route.fallback();  // let the next handler (or real network) handle it
+});
+```
+
+**`page.unrouteAll()` — clean up ALL route handlers at once:**
+
+```typescript
+// After a test that sets up many routes, clear them all
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  // behavior: 'wait' (default) — waits for pending handlers to complete
+  // behavior: 'ignoreErrors' — clears immediately, ignores in-flight handler errors
+});
+```
+
+**`page.unroute(url, handler)` — remove a specific handler:**
+
+```typescript
+const mockHandler = async (route: import('@playwright/test').Route) => {
+  await route.fulfill({ status: 429, body: 'Rate limited' });
+};
+
+// Register mock
+await page.route('**/api/search', mockHandler);
+
+// ... test the rate-limited state ...
+
+// Remove just this handler — other route handlers remain active
+await page.unroute('**/api/search', mockHandler);
+
+// Now /api/search requests pass through to the real network
+```
+
+> Routes registered via `page.route()` persist for the lifetime of the page — they don't
+> automatically clean up between tests. If your test registers a route and the next test
+> on the same page doesn't expect it, the mock bleeds through. Use `page.unrouteAll()` in
+> `afterEach` for shared page fixtures, or prefer test-scoped pages (the default) where each
+> test gets a fresh page with no inherited routes. [community]
 
 ```typescript
 // Step 1: Record — run once to capture network traffic
@@ -2236,6 +2786,90 @@ export const test = base.extend({
 
 ---
 
+### `{ box: true }` — Reduce Fixture Noise in Reports
+
+Use `{ box: true }` on utility fixtures that are called from every test but add no diagnostic value to the HTML report. Boxed fixtures show as a single collapsed step rather than expanding all their internal steps.
+
+```typescript
+// e2e/fixtures/auth.ts — boxed fixture: report shows "auth" not all inner steps
+import { test as base } from '@playwright/test';
+import path from 'path';
+
+type AuthFixtures = { authenticatedPage: import('@playwright/test').Page };
+
+export const test = base.extend<AuthFixtures>({
+  authenticatedPage: [async ({ browser }, use) => {
+    const context = await browser.newContext({
+      storageState: path.join(__dirname, '../.auth/user.json'),
+    });
+    const page = await context.newPage();
+    await use(page);
+    await context.close();
+  }, { box: true }],  // hides internal steps from HTML report; reduces noise
+});
+
+// Without { box: true }: report shows "browser.newContext()", "browser.newPage()", etc.
+// With { box: true }:    report shows a single "authenticatedPage" step — cleaner
+```
+
+**When to use `{ box: true }`:**
+- Fixtures that run for every test but are not interesting to debug (auth setup, theme injection)
+- Fixtures with many internal steps that clutter the report for passing tests
+- Third-party integration fixtures where internal details are irrelevant to your tests
+
+> `{ box: true }` is purely cosmetic — it does not change execution behavior. The fixture still runs identically; only its report representation changes. Do NOT use it on fixtures you actively need to debug. [community]
+
+---
+
+### Fixture Timeout Configuration
+
+Slow fixture setup (database migrations, server starts) can consume the test's total timeout budget before the test body even runs. Set an explicit `timeout` on slow fixtures to give them extra time without extending the global test timeout.
+
+```typescript
+// e2e/fixtures/db.ts — give slow DB fixture its own timeout budget
+import { test as base } from '@playwright/test';
+
+export const test = base.extend<{}, { dbMigration: void }>({
+  dbMigration: [async ({ request }, use) => {
+    // This migration takes 20–40 seconds on a cold CI runner
+    const res = await request.post('/api/test/migrate', {
+      data: { fresh: true },
+    });
+    if (!res.ok()) throw new Error(`Migration failed: ${res.status()}`);
+    await use();
+    await request.post('/api/test/rollback');
+  }, {
+    scope:   'worker',
+    auto:    true,
+    timeout: 60_000,  // 60s fixture timeout, independent of the 30s test timeout
+  }],
+});
+```
+
+**Timeout interaction rules:**
+- The fixture `timeout` is the max time for setup + `await use()` + teardown combined.
+- If the fixture `timeout` exceeds the test `timeout`, Playwright uses the test `timeout` as the effective cap.
+- Set `timeout: 0` to disable the fixture timeout entirely (use with caution — hangs won't abort).
+- The fixture timeout does NOT extend the test's assertion timeout (`expect.timeout`).
+
+```typescript
+// playwright.config.ts — give all worker fixtures extra time via global setting
+export default defineConfig({
+  timeout:        30_000,  // test assertion budget
+  use: {
+    actionTimeout: 10_000, // per-action (click/fill) timeout
+  },
+  // Note: per-fixture timeout overrides are set in test.extend(), not here
+});
+```
+
+> A common CI failure is "Test timeout of 30000ms exceeded" where the test body runs
+> fine locally but times out in CI because the `beforeAll` fixture migration takes 25s.
+> Adding `timeout: 60_000` to the fixture gives it its own budget without bloating every
+> test's global timeout. [community]
+
+---
+
 ### Advanced Interaction Patterns
 
 
@@ -2295,8 +2929,122 @@ await frame.getByLabel('Card number').fill('4111111111111111');
 await frame.getByRole('button', { name: 'Pay' }).click();
 ```
 
+**Drag-and-drop:**
+```typescript
+// Basic drag — locator-to-locator
+await page.getByRole('listitem', { name: 'Task A' })
+  .dragTo(page.getByRole('listitem', { name: 'Done column' }));
+
+// Advanced drag with custom source/target positions and interpolated steps
+// Use steps > 1 when the drag handler listens for mousemove events (e.g., Sortable.js, react-dnd)
+await page.getByTestId('card-1').dragTo(page.getByTestId('column-done'), {
+  sourcePosition: { x: 50, y: 10 },  // click point within source element
+  targetPosition: { x: 150, y: 50 }, // drop point within target element
+  steps:          10,                 // emit 10 intermediate mousemove events
+});
+
+// Low-level pointer events — for drag handlers that require specific event sequences
+await page.getByTestId('draggable').hover();
+await page.mouse.down();
+await page.mouse.move(300, 400, { steps: 5 });
+await page.mouse.up();
+```
+
+> Use `steps > 1` (or the `steps` option on `dragTo`) when a drag-and-drop widget requires
+> multiple `mousemove` events to update its internal state. Without intermediate steps, the
+> drop target may not register the drag correctly. Test with `steps: 5` as a starting point
+> and increase if the drop still fails. [community]
+
+> Drag-and-drop tests are among the most browser-specific tests. Use `test.skip(browserName !== 'chromium', '...')` for drag tests that rely on Chromium-specific pointer event behavior. [community]
+
 > Register dialog handlers with `page.once()` for one-shot dialogs and `page.on()` for recurring
 > dialogs. Never register both — duplicate handlers cause double-accept/dismiss bugs. [community]
+
+---
+
+### `page.exposeFunction()` and `page.evaluate()` — Cross-Boundary Testing
+
+Use `exposeFunction()` to make Node.js functions available inside the browser page, and `evaluate()` to run code in the browser context and return the result to your test.
+
+**`exposeFunction()` use cases:**
+
+```typescript
+// 1. Expose a server-side crypto function to test client-side hash comparisons
+import crypto from 'node:crypto';
+
+test('displays correct hash', async ({ page }) => {
+  await page.exposeFunction('sha256', (text: string) =>
+    crypto.createHash('sha256').update(text).digest('hex')
+  );
+
+  await page.goto('/profile');
+  // The page can now call window.sha256() — e.g., from an onclick handler
+  const displayedHash = await page.locator('[data-testid="hash"]').textContent();
+  const expectedHash  = await page.evaluate(() =>
+    (window as any).sha256('expected-input')
+  );
+  expect(displayedHash).toBe(expectedHash);
+});
+
+// 2. Record calls from app code back to the test
+test('records analytics events', async ({ page }) => {
+  const events: string[] = [];
+  await page.exposeFunction('__recordAnalytics', (event: string) => {
+    events.push(event);
+  });
+
+  await page.addInitScript(() => {
+    // Intercept analytics calls before page scripts load
+    (window as any).__analytics_send = (event: string) => {
+      (window as any).__recordAnalytics(event);
+    };
+  });
+
+  await page.goto('/dashboard');
+  await page.getByRole('button', { name: 'Export' }).click();
+  expect(events).toContain('export_clicked');
+});
+```
+
+**`page.evaluate()` for browser state inspection:**
+
+```typescript
+// Inspect non-serializable browser state (LocalStorage, window vars, DOM)
+test('feature flag is active', async ({ page }) => {
+  await page.goto('/app');
+  const flags = await page.evaluate(() => ({
+    betaFeature:    !!(window as any).__FEATURES__?.betaFeature,
+    userId:         localStorage.getItem('userId'),
+    sessionActive:  document.cookie.includes('session='),
+  }));
+  expect(flags.betaFeature).toBe(true);
+  expect(flags.userId).toBeTruthy();
+});
+
+// Pass arguments to avoid string interpolation (prevents XSS-style injection in tests)
+test('computes correct discount', async ({ page }) => {
+  const price    = 100;
+  const discount = 0.2;
+  const result = await page.evaluate(
+    ([p, d]) => (p * (1 - d)).toFixed(2),
+    [price, discount] as [number, number]
+  );
+  expect(result).toBe('80.00');
+});
+
+// Use evaluateHandle() for non-serializable return values
+test('modifies DOM element directly', async ({ page }) => {
+  await page.goto('/');
+  const bodyHandle = await page.evaluateHandle(() => document.body);
+  const classList  = await page.evaluate(body => [...body.classList], bodyHandle);
+  expect(classList).toContain('app-loaded');
+  await bodyHandle.dispose(); // always dispose handles to avoid memory leaks
+});
+```
+
+> Pass arguments to `evaluate()` as the second parameter — never interpolate them into the
+> function string. String interpolation breaks with special characters and is harder to type-check.
+> Use `evaluateHandle()` for DOM elements and dispose the handle when done. [community]
 
 ---
 
@@ -2688,6 +3436,75 @@ test('checkout flow with conditional steps', async ({ page }) => {
   });
 });
 ```
+
+**`{ box: true }` on steps — clean stack traces in Page Objects:**
+
+When a step throws, by default the error points to the line inside the step body. With `{ box: true }`, the error points to the call site (where the step was called from) — which is usually more useful when the step is a helper function called from many tests.
+
+```typescript
+// e2e/pages/CheckoutPage.ts — box: true makes errors point to the test, not the POM internals
+export class CheckoutPage {
+  constructor(private readonly page: Page) {}
+
+  async fillPaymentDetails(card: { number: string; expiry: string; cvv: string }) {
+    return test.step('fill payment details', async () => {
+      const frame = this.page.frameLocator('iframe[title="Payment"]');
+      await frame.getByLabel('Card number').fill(card.number);
+      await frame.getByLabel('Expiry').fill(card.expiry);
+      await frame.getByLabel('CVV').fill(card.cvv);
+    }, { box: true });  // Error: "at CheckoutPage.fillPaymentDetails" not "at frame.getByLabel"
+  }
+}
+```
+
+**`@step` decorator for Page Object methods** — automatically wraps every method in a named test step for trace readability:
+
+```typescript
+// e2e/utils/step-decorator.ts — reusable @step decorator
+import { test } from '@playwright/test';
+
+export function step(target: Function, context: ClassMethodDecoratorContext) {
+  return function (this: unknown, ...args: unknown[]) {
+    const stepName = `${(this as any).constructor?.name}.${String(context.name)}`;
+    return test.step(stepName, () => target.call(this, ...args), { box: true });
+  };
+}
+
+// e2e/pages/LoginPage.ts — every @step method shows in trace
+import { step } from '../utils/step-decorator';
+import { type Page, type Locator } from '@playwright/test';
+
+export class LoginPage {
+  readonly emailInput:    Locator;
+  readonly passwordInput: Locator;
+  readonly submitButton:  Locator;
+
+  constructor(private readonly page: Page) {
+    this.emailInput    = page.getByLabel(/email/i);
+    this.passwordInput = page.getByLabel(/password/i);
+    this.submitButton  = page.getByRole('button', { name: /sign in/i });
+  }
+
+  @step
+  async goto() {
+    await this.page.goto('/login');
+  }
+
+  @step
+  async login(email: string, password: string) {
+    await this.emailInput.fill(email);
+    await this.passwordInput.fill(password);
+    await this.submitButton.click();
+  }
+}
+// Trace shows: "LoginPage.goto", "LoginPage.login" — not raw Playwright actions
+```
+
+> The `@step` decorator requires TypeScript 5.0+ (Stage 3 decorators) and `experimentalDecorators: false`
+> in `tsconfig.json` (use the new non-experimental decorator syntax). The `{ box: true }` option
+> makes errors point to the test's call to `login()` rather than the line inside `login()` that failed — much easier to diagnose. [community]
+
+> The decorator pattern eliminates the boilerplate of wrapping every POM method in `test.step()` manually. Add it to any method you want to see in traces and reports. [community]
 
 ---
 
@@ -3460,6 +4277,123 @@ export default defineConfig({
 
 Supply client-side certificates for services that require mutual TLS (mTLS) authentication. Configured globally in `playwright.config.ts` or per-context for targeted use.
 
+---
+
+### HTTP Basic Auth, Custom Headers, and Proxy Configuration
+
+Common configuration-level network options that apply to all pages in every test.
+
+**HTTP Basic Authentication** — for internal tools or staging environments behind Basic Auth:
+
+```typescript
+// playwright.config.ts — global HTTP Basic Auth
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  use: {
+    httpCredentials: {
+      username: process.env.STAGING_USER!,
+      password: process.env.STAGING_PASS!,
+    },
+  },
+});
+
+// Per-context override for tests requiring different credentials
+test('accesses admin endpoint', async ({ browser }) => {
+  const context = await browser.newContext({
+    httpCredentials: { username: 'admin', password: process.env.ADMIN_PASS! },
+  });
+  const page = await context.newPage();
+  await page.goto('/admin');
+  await expect(page.getByRole('heading', { name: 'Admin' })).toBeVisible();
+  await context.close();
+});
+```
+
+> `httpCredentials` handles standard HTTP 401 Basic Auth challenges — not app-level login forms.
+> Use `storageState` for app-level authentication. [community]
+
+**`extraHTTPHeaders` for API token injection** — authenticate all browser requests with a static token without a login flow:
+
+```typescript
+// playwright.config.ts — inject auth header for all requests
+export default defineConfig({
+  use: {
+    extraHTTPHeaders: {
+      Authorization: `Bearer ${process.env.E2E_API_TOKEN}`,
+      'X-Test-Environment': 'playwright',  // useful for server-side filtering
+    },
+  },
+});
+
+// Per-test override when a specific test needs a different token
+test('viewer cannot access admin endpoint', async ({ browser }) => {
+  const context = await browser.newContext({
+    extraHTTPHeaders: {
+      Authorization: `Bearer ${process.env.VIEWER_TOKEN}`,
+    },
+  });
+  const page = await context.newPage();
+  await page.goto('/admin/settings');
+  await expect(page.getByText('Access denied')).toBeVisible();
+  await context.close();
+});
+```
+
+**Self-signed certificates (`ignoreHTTPSErrors`)** — for staging environments using self-signed TLS:
+
+```typescript
+// playwright.config.ts — bypass cert validation for staging
+export default defineConfig({
+  use: {
+    // Only for environments using self-signed certs (staging, local HTTPS dev server)
+    ignoreHTTPSErrors: process.env.TEST_ENV === 'staging',
+  },
+});
+```
+
+> Never set `ignoreHTTPSErrors: true` unconditionally in production test configs. Gate it on
+> the environment — it should only apply to known-self-signed staging environments. [community]
+
+**Corporate proxy** — required when CI runners are behind a proxy for external requests:
+
+```typescript
+// playwright.config.ts — proxy configuration for CI runners
+export default defineConfig({
+  use: {
+    proxy: process.env.HTTP_PROXY
+      ? {
+          server:  process.env.HTTP_PROXY,
+          bypass:  process.env.NO_PROXY ?? 'localhost,127.0.0.1',
+        }
+      : undefined,
+  },
+});
+```
+
+> Use environment variables for proxy config so the same `playwright.config.ts` works both locally
+> (where no proxy is needed) and on corporate CI runners (where all outbound traffic routes
+> through a proxy). [community]
+
+**`--no-deps` CLI flag** — run a specific project without triggering its setup dependencies:
+
+```bash
+# Normal run: setup runs first, then chromium tests
+npx playwright test --project=chromium
+
+# Skip setup (e.g., DB was already seeded manually): run chromium tests directly
+npx playwright test --project=chromium --no-deps
+
+# Useful when:
+# - Debugging a specific test against an already-seeded database
+# - Running only visual tests without re-triggering the auth setup project
+# - Iterating quickly on a test file where setup is irrelevant
+```
+
+> `--no-deps` is a development-time tool, not a CI shortcut. On CI, always run with full
+> dependencies to ensure the environment state is correct. Silently skipping setup in CI
+> leads to false passes when the test relies on data seeded by the skipped project. [community]
+
 ```typescript
 // playwright.config.ts — global mTLS certificate
 import { defineConfig } from '@playwright/test';
@@ -3520,6 +4454,106 @@ test('API endpoint requires mTLS', async ({ playwright }) => {
 ### Test Data Factory Pattern
 
 Use a factory module to generate unique, type-safe test data objects. Centralizing data construction eliminates scattered hard-coded strings, makes parallel-safe unique identifiers automatic, and allows easy per-test customization via overrides.
+
+---
+
+### Data-Driven Tests and Parameterized Projects
+
+**`forEach`-based parametrized tests** — run the same test logic against multiple inputs:
+
+```typescript
+// e2e/specs/greetings.spec.ts — data-driven with named test variations
+const testCases = [
+  { locale: 'en-US', greeting: 'Hello', url: '/en' },
+  { locale: 'de-DE', greeting: 'Hallo', url: '/de' },
+  { locale: 'fr-FR', greeting: 'Bonjour', url: '/fr' },
+] as const;
+
+testCases.forEach(({ locale, greeting, url }) => {
+  test(`shows correct greeting for ${locale}`, async ({ page }) => {
+    await page.goto(url);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(greeting);
+  });
+});
+```
+
+**Loading test data from external JSON fixtures:**
+
+```typescript
+// e2e/fixtures/checkout-cases.json
+// [{ "product": "Widget", "qty": 2, "total": "19.98" }, ...]
+
+// e2e/specs/checkout.spec.ts
+import fs   from 'node:fs';
+import path from 'node:path';
+
+const cases = JSON.parse(
+  fs.readFileSync(path.join(__dirname, '../fixtures/checkout-cases.json'), 'utf8')
+) as Array<{ product: string; qty: number; total: string }>;
+
+test.describe('Checkout totals', () => {
+  cases.forEach(({ product, qty, total }) => {
+    test(`${product} × ${qty} = ${total}`, async ({ page }) => {
+      await page.goto(`/products/${product.toLowerCase()}`);
+      await page.getByLabel('Quantity').fill(String(qty));
+      await page.getByRole('button', { name: 'Add to cart' }).click();
+      await page.goto('/cart');
+      await expect(page.getByTestId('cart-total')).toHaveText(total);
+    });
+  });
+});
+```
+
+**Parameterized fixture options via `projects`** — run the same suite with different user roles or environments:
+
+```typescript
+// e2e/fixtures/options.ts — declare a typed custom option
+import { test as base } from '@playwright/test';
+
+export type TestOptions = {
+  userRole: 'admin' | 'viewer' | 'editor';
+};
+
+export const test = base.extend<TestOptions>({
+  userRole: ['viewer', { option: true }],  // default; overridden per project
+});
+
+// playwright.config.ts — three projects, each with a different role
+import { defineConfig } from '@playwright/test';
+import { TestOptions } from './e2e/fixtures/options';
+
+export default defineConfig<TestOptions>({
+  projects: [
+    {
+      name: 'admin-tests',
+      use: { userRole: 'admin' },
+      testMatch: /specs\/.*\.spec\.ts/,
+    },
+    {
+      name: 'viewer-tests',
+      use: { userRole: 'viewer' },
+      testMatch: /specs\/.*\.spec\.ts/,
+    },
+  ],
+});
+
+// e2e/specs/permissions.spec.ts — test uses the injected role
+import { test, expect } from '../fixtures/options';
+
+test('delete button visibility depends on role', async ({ page, userRole }) => {
+  await page.goto('/items');
+  const deleteBtn = page.getByRole('button', { name: 'Delete' });
+  if (userRole === 'admin') {
+    await expect(deleteBtn).toBeVisible();
+  } else {
+    await expect(deleteBtn).toBeHidden();
+  }
+});
+```
+
+> The `{ option: true }` flag marks a fixture as a project-level configuration option rather
+> than a regular fixture. This lets `playwright.config.ts` set it in `use: {}`, whereas
+> regular fixtures can only be overridden with `test.use()`. [community]
 
 ```typescript
 // e2e/factories/user.factory.ts
@@ -3865,6 +4899,248 @@ test('dashboard visual and aria snapshots', async ({ page }, testInfo) => {
 
 ---
 
+### `locator.pressSequentially()` — Typeahead and Autocomplete Testing
+
+`locator.fill()` sets the full value atomically (bypasses `input` events if the control uses them for filtering). Use `locator.pressSequentially()` when the field needs character-by-character `keydown`/`keypress`/`keyup` events — e.g., autocomplete dropdowns, masked inputs, or OTP fields.
+
+```typescript
+// e2e/specs/autocomplete.spec.ts
+import { test, expect } from '../fixtures/pages';
+
+test('autocomplete shows matching suggestions', async ({ page }) => {
+  await page.goto('/search');
+
+  const searchBox = page.getByRole('combobox', { name: 'Search' });
+
+  // Type character-by-character to trigger autocomplete events
+  await searchBox.pressSequentially('Pla', { delay: 50 });  // 50 ms between keystrokes
+
+  const suggestions = page.getByRole('option');
+  await expect(suggestions).toHaveCount.greaterThan(0);
+  await expect(suggestions.first()).toContainText('Playwright');
+  await suggestions.first().click();
+
+  await expect(searchBox).toHaveValue('Playwright');
+});
+
+test('OTP field accepts digit-by-digit entry', async ({ page }) => {
+  await page.goto('/verify');
+
+  const otpField = page.getByLabel('One-time code');
+
+  // OTP fields often listen to keydown to advance focus — fill() won't trigger this
+  await otpField.pressSequentially('123456');
+  await expect(page.getByRole('button', { name: 'Verify' })).toBeEnabled();
+});
+```
+
+```typescript
+// When to use pressSequentially vs fill:
+// ┌──────────────────────────────────────────────┬────────────────┬─────────────────────┐
+// │ Scenario                                      │ fill()         │ pressSequentially() │
+// ├──────────────────────────────────────────────┼────────────────┼─────────────────────┤
+// │ Simple text input (no event listeners)        │ ✓ preferred    │ unnecessary         │
+// │ Autocomplete that filters on each character   │ ✗ may not fire │ ✓ required          │
+// │ Masked input (phone, credit card)             │ ✗ sets raw val │ ✓ triggers masking  │
+// │ OTP / split digit fields                      │ ✗              │ ✓ required          │
+// └──────────────────────────────────────────────┴────────────────┴─────────────────────┘
+```
+
+> Use `{ delay: 50 }` with `pressSequentially()` when the application debounces input events. Without a delay the keystrokes arrive faster than the debounce window and the autocomplete never fires. 50 ms is a safe default; match your app's debounce setting. [community]
+
+> `locator.clear()` clears the current value of an input without typing. Prefer it over `fill('')` when the field has a `change` event listener that should fire on clearing but not on every keystroke. [community]
+
+---
+
+### `locator.all()` — Iterate Over a Dynamic Set of Matches
+
+`locator.all()` returns a JavaScript `Promise<Locator[]>` — a snapshot of all elements currently matching the locator. Use it when you need to iterate over an unknown number of elements and perform per-element assertions or actions. Unlike `locator.nth()`, it does not retry; resolve it after the list is stable.
+
+```typescript
+test('all table rows have a status badge', async ({ page }) => {
+  await page.goto('/orders');
+  await expect(page.getByRole('table')).toBeVisible(); // wait for table to render
+
+  const rows = await page.getByRole('row').all();      // snapshot — call after list is stable
+  // Skip header row (index 0)
+  for (const row of rows.slice(1)) {
+    await expect(row.getByRole('cell').nth(3)).toContainText(/active|pending|closed/i);
+  }
+});
+```
+
+```typescript
+test('collect all error messages from a multi-field form', async ({ page }) => {
+  await page.goto('/signup');
+  await page.getByRole('button', { name: 'Create account' }).click();
+
+  const errors = await page.getByRole('alert').all();
+  expect(errors.length).toBeGreaterThan(0);
+
+  const errorTexts = await Promise.all(errors.map(e => e.textContent()));
+  expect(errorTexts).toContain('Email is required');
+  expect(errorTexts).toContain('Password is required');
+});
+```
+
+```typescript
+// allTextContents() and allInnerTexts() — shorthand when you only need the text values
+const tagTexts = await page.getByRole('listitem').allTextContents();
+expect(tagTexts).toEqual(expect.arrayContaining(['TypeScript', 'Playwright']));
+```
+
+> `locator.all()` does **not** wait for elements to appear. Call it only after a web-first assertion (`toBeVisible`, `toHaveCount`) confirms the list is fully rendered. Using `all()` on an empty DOM returns `[]` immediately with no retry. [community]
+
+---
+
+### `locator.filter({ hasNot, hasNotText })` — Exclusion Filtering
+
+`filter()` accepts `hasNot` and `hasNotText` in addition to `has` and `hasText`, letting you exclude elements from a match set without chaining multiple locators.
+
+```typescript
+test('only incomplete tasks are shown in active view', async ({ page }) => {
+  await page.goto('/tasks?filter=active');
+
+  // All list items that do NOT contain a completed checkbox
+  const incompleteTasks = page.getByRole('listitem').filter({
+    hasNot: page.getByRole('checkbox', { checked: true }),
+  });
+  // Every visible task should be incomplete
+  await expect(incompleteTasks).toHaveCount(await page.getByRole('listitem').count());
+});
+```
+
+```typescript
+test('dashboard cards exclude archived items', async ({ page }) => {
+  await page.goto('/dashboard');
+
+  const activeCards = page
+    .getByRole('article')
+    .filter({ hasNotText: 'Archived' });  // exclude cards showing "Archived" label
+
+  for (const card of await activeCards.all()) {
+    await expect(card).not.toContainText('Archived');
+  }
+});
+```
+
+```typescript
+// Combine has + hasNot to target a precise subset
+const urgentNotAssigned = page
+  .getByRole('listitem')
+  .filter({ hasText: 'Urgent' })
+  .filter({ hasNot: page.getByRole('img', { name: /avatar/ }) });
+```
+
+> `hasNot` takes a locator (element exists check). `hasNotText` takes a string or regex (text content check). Both are the logical inverses of their positive counterparts and compose naturally in chains. [community]
+
+---
+
+### `toHaveCSS()` and `toBeInViewport()` — Style and Visibility Assertions
+
+Two web-first assertions that cover common gaps: verifying computed CSS properties and checking whether an element is currently scrolled into the viewport.
+
+```typescript
+// toHaveCSS — assert computed CSS property/value pairs
+test('primary button uses brand color', async ({ page }) => {
+  await page.goto('/');
+  const button = page.getByRole('button', { name: 'Get started' });
+
+  // Asserts the computed style value (not inline style attribute)
+  await expect(button).toHaveCSS('background-color', 'rgb(37, 99, 235)');
+  await expect(button).toHaveCSS('border-radius', /[0-9]+px/);
+});
+
+test('error message is visible with correct color', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByLabel(/email/i).fill('bad@example.com');
+  await page.getByLabel(/password/i).fill('wrong');
+  await page.getByRole('button', { name: /sign in/i }).click();
+
+  const alert = page.getByRole('alert');
+  await expect(alert).toBeVisible();
+  await expect(alert).toHaveCSS('color', 'rgb(220, 38, 38)');  // red-600
+});
+```
+
+```typescript
+// toBeInViewport — assert that element is visible within the scroll area
+test('back-to-top button appears after scrolling down', async ({ page }) => {
+  await page.goto('/long-page');
+
+  const backToTop = page.getByRole('button', { name: 'Back to top' });
+  await expect(backToTop).not.toBeInViewport();
+
+  await page.keyboard.press('End');  // scroll to bottom
+
+  await expect(backToTop).toBeInViewport();
+});
+
+test('sticky header remains in viewport while scrolling', async ({ page }) => {
+  await page.goto('/');
+  const header = page.getByRole('banner');
+
+  await expect(header).toBeInViewport();
+  await page.evaluate(() => window.scrollBy(0, 1000));
+  await expect(header).toBeInViewport();  // sticky — should still be visible
+});
+```
+
+> `toHaveCSS()` checks the **computed** CSS value, not the inline `style` attribute. RGB notation is the most reliable form — browsers normalize hex (`#2563eb`) to `rgb(37, 99, 235)`. Use `toHaveAttribute('style', /.../)` instead when checking raw inline styles. [community]
+
+> `toBeInViewport({ ratio: 0.5 })` accepts an optional `ratio` parameter (0–1) specifying what fraction of the element must be in the viewport for the assertion to pass. Useful for large elements that extend beyond the screen. [community]
+
+---
+
+### `page.pdf()` — PDF Generation Testing
+
+Test that `page.pdf()` produces a valid PDF (correct size, non-empty) for print-to-PDF workflows — invoices, reports, export features. Only works in Chromium headless.
+
+```typescript
+// e2e/specs/invoice-export.spec.ts
+import { test, expect } from '../fixtures/pages';
+import fs from 'fs';
+
+test('invoice export produces a valid PDF', async ({ page }) => {
+  await page.goto('/invoices/INV-2025-001');
+  await expect(page.getByRole('heading', { name: 'Invoice INV-2025-001' })).toBeVisible();
+
+  const pdfBuffer = await page.pdf({
+    format:          'A4',
+    printBackground: true,  // include background colors/images (CSS print media)
+    margin:          { top: '20mm', right: '15mm', bottom: '20mm', left: '15mm' },
+  });
+
+  // Basic validity check — PDF files start with %PDF-
+  expect(pdfBuffer.length).toBeGreaterThan(1000);
+  expect(pdfBuffer.subarray(0, 5).toString()).toBe('%PDF-');
+
+  // Optionally save for manual inspection on failure
+  const outPath = `test-results/invoice-${Date.now()}.pdf`;
+  fs.writeFileSync(outPath, pdfBuffer);
+});
+```
+
+```typescript
+// Test the print stylesheet separately before generating PDF
+test('invoice print layout hides navigation', async ({ page }) => {
+  await page.goto('/invoices/INV-2025-001');
+
+  // Apply print media query — easier to assert UI than parsing the PDF binary
+  await page.emulateMedia({ media: 'print' });
+
+  await expect(page.getByRole('navigation')).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Invoice' })).toBeVisible();
+  await expect(page.getByText('Total due:')).toBeVisible();
+});
+```
+
+> `page.pdf()` is only available in Chromium; skip on Firefox and WebKit projects:
+> `test.skip(browserName !== 'chromium', 'PDF generation is Chromium-only')`.
+> Test the print **layout** (CSS `@media print`) with `page.emulateMedia({ media: 'print' })` in all browsers; generate the actual PDF only in Chromium. [community]
+
+---
+
 ### `maxRedirects` for API Request Context (v1.52+)
 
 Control how many HTTP redirects `APIRequestContext` follows automatically. Useful when testing redirect chains or when you need to assert on intermediate redirect responses.
@@ -4041,6 +5317,8 @@ frameLocator.owner()                           // FrameLocator → iframe Locato
 // Actions
 await locator.click();
 await locator.fill('value');
+await locator.pressSequentially('value', { delay: 50 }); // keystroke-by-keystroke (autocomplete/OTP)
+await locator.clear();                                    // clear without typing
 await locator.selectOption('option');
 await locator.check();
 await locator.hover();
@@ -4059,13 +5337,22 @@ await expect(locator).toHaveCount(3);
 await expect(locator).toContainClass('active');         // partial class check (v1.52+)
 await expect(locator).toHaveAccessibleErrorMessage('Required');  // aria-errormessage (v1.52+)
 await expect(locator).toMatchAriaSnapshot('- button: Submit');   // aria tree (v1.49+)
+await expect(locator).toHaveCSS('color', 'rgb(37, 99, 235)');   // computed CSS value
+await expect(locator).toBeInViewport();                          // element is scrolled into view
+await expect(locator).toBeInViewport({ ratio: 0.5 });           // at least 50% visible
 await expect(page).toHaveURL(/pattern/);
 await expect(page).toHaveTitle(/pattern/);
 
 // Scoping / filtering
 page.getByRole('dialog').getByRole('button', { name: 'Close' })
 page.getByRole('listitem').filter({ hasText: 'Buy milk' })
+page.getByRole('listitem').filter({ hasNot: page.getByRole('checkbox', { checked: true }) })
+page.getByRole('listitem').filter({ hasNotText: 'Archived' })
 page.getByRole('row').nth(1)
+
+// Iterate over all matching elements (snapshot — call after list is stable)
+const items = await page.getByRole('listitem').all();
+const texts = await page.getByRole('listitem').allTextContents();
 
 // Soft and configured assertions
 const softExpect = expect.configure({ soft: true });

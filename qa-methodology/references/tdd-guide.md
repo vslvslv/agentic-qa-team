@@ -1,6 +1,6 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 10 | score: 100/100 | date: 2026-05-03 -->
-<!-- sources: training-knowledge (WebSearch/WebFetch unavailable) | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 12 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md | ISTQB CTFL 4.0 terminology applied -->
 
 ## Core Principles
 
@@ -1256,6 +1256,10 @@ describe('calculateTotal (property-based)', () => {
 
 17. **[community] Overloaded function signatures require multiple test cases per overload.** TypeScript function overloads are a common source of under-tested code. If a function has three overload signatures, each overload is a separate test condition requiring its own test case. Teams that write one test case per function often miss the boundary between overload resolution paths. In TDD, each overload should be a separate Red test case — the overload definition emerges from the test cases, not the other way around.
 
+18. **[community] "Test Cancer" — the test suite grows unmaintainable and resists change.** Martin Fowler identifies "Test Cancer" as a production failure mode where a test suite becomes so rigid and tightly coupled to implementation details that it prevents refactoring instead of enabling it. The symptoms: every rename requires dozens of test updates; test code is longer and more complex than production code; developers fear changing tests more than they fear changing implementation. The root cause is writing test cases that assert _how_ rather than _what_ — checking method call counts on mocks instead of observable domain outcomes. Prevention: use typed in-memory fakes instead of mocks, assert on state not interactions, and treat the refactor phase as mandatory (not optional) at each TDD cycle. When Test Cancer is diagnosed, the most effective treatment is deleting mock-heavy unit test suites and re-growing them via TDD with fakes, using only acceptance tests as the safety net during the transition.
+
+19. **[community] `--noCheck` in TDD CI pipelines decouples type safety from test speed.** TypeScript 5.7's `--noCheck` flag enables separating the CI "type-check" job from the "build + test" job. TDD teams benefit by running the fast Vitest unit test suite (via esbuild, no full tsc compile) in parallel with `tsc --noEmit` for type checking. Neither job blocks the other, and the TDD feedback loop stays sub-60s even in large monorepos. Warning: using `--noCheck` in local development defeats TypeScript's purpose — restrict it to CI parallelisation only.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -1886,6 +1890,182 @@ export function validate<T extends Record<string, unknown>>(
 
 ---
 
+### TDD with Inferred Type Predicates (TypeScript 5.5+) [community]
+
+TypeScript 5.5 automatically infers type predicates for simple filtering functions, removing the need for manual `value is T` annotations on filter callbacks and single-return boolean helpers. TDD can drive the design of these predicates: write the test case first to define the expected narrowing behavior, then let TypeScript 5.5 infer the predicate.
+
+```typescript
+// TDD-driven design of a domain filter — TypeScript 5.5+ infers the predicate
+// domain-filters.test.ts
+import { describe, it, expect } from 'vitest';
+import { isPaidOrder, isActiveUser } from './domain-filters.js';
+
+interface Order { id: string; status: 'pending' | 'paid' | 'cancelled'; total: number; }
+interface User  { id: string; active: boolean; role: 'admin' | 'member'; }
+
+// Test case 1: RED — isPaidOrder narrows Order[] to paid orders only
+describe('isPaidOrder', () => {
+  it('includes only paid orders', () => {
+    const orders: Order[] = [
+      { id: 'o1', status: 'paid',      total: 100 },
+      { id: 'o2', status: 'pending',   total:  50 },
+      { id: 'o3', status: 'cancelled', total:   0 },
+    ];
+    const paid = orders.filter(isPaidOrder);
+    expect(paid).toHaveLength(1);
+    expect(paid[0].id).toBe('o1');
+    // TypeScript 5.5 infers: paid is Order[] (narrowed to status === 'paid')
+  });
+});
+
+// Test case 2: RED — isActiveUser narrows User[] to active users
+describe('isActiveUser', () => {
+  it('excludes inactive users', () => {
+    const users: User[] = [
+      { id: 'u1', active: true,  role: 'admin' },
+      { id: 'u2', active: false, role: 'member' },
+    ];
+    const active = users.filter(isActiveUser);
+    expect(active).toHaveLength(1);
+    expect(active[0].id).toBe('u1');
+  });
+});
+
+// GREEN: functions typed against domain interfaces — TS 5.5 infers predicates automatically
+// domain-filters.ts
+export const isPaidOrder   = (o: Order) => o.status === 'paid';
+export const isActiveUser  = (u: User)  => u.active === true;
+// TypeScript 5.5 infers:
+//   isPaidOrder:  (o: Order) => o is Order & { status: 'paid' }
+//   isActiveUser: (u: User)  => u is User  & { active: true }
+// No manual `: o is X` annotation needed — test case forces the correct predicate shape.
+
+// REFACTOR: document the inference explicitly for IDEs and code reviewers
+// who may not be on TypeScript 5.5+:
+export type PaidOrder   = Order & { status: 'paid' };
+export type ActiveUser  = User  & { active: true };
+
+// Usage in domain logic — narrowed type flows through:
+function processPayments(orders: Order[]): PaidOrder[] {
+  return orders.filter(isPaidOrder);
+  // Without TS 5.5, this would return Order[] — losing the status narrowing.
+}
+```
+
+**Why this matters for TDD:** Before TypeScript 5.5, writing a test case that asserted `paid[0].status === 'paid'` required either a manual type predicate annotation or an `as` cast. TypeScript 5.5's inferred predicates mean that TDD-driven filter functions automatically produce narrowed types at the call site — the test case defines the filter behaviour, and TypeScript generates the type-level guarantee for free.
+
+**[community] Projects still on TypeScript 4.x lose inferred predicates — the test case `expect(paid[0].status).toBe('paid')` still passes, but `paid` remains typed as `Order[]`, not `PaidOrder[]`. The TDD test case should include an explicit TypeScript typecheck to catch this: `const _typed: PaidOrder[] = orders.filter(isPaidOrder);` — this line fails to compile on TypeScript 4.x without a manual predicate annotation, making the TypeScript version requirement explicit.
+
+### TDD with the `satisfies` Operator — Shape Validation in Test Assertions [community]
+
+TypeScript 4.9's `satisfies` operator validates an expression against a type without widening it. In TDD test cases, `satisfies` provides a sharper assertion pattern than `as` casts or explicit type annotations: it proves the test object matches the interface while preserving literal types for further assertions.
+
+```typescript
+// TDD test case using satisfies for typed fixture construction
+// order-service.test.ts
+import { describe, it, expect } from 'vitest';
+import { OrderService } from './OrderService.js';
+import { InMemoryOrderRepository } from './test-doubles/InMemoryOrderRepository.js';
+
+// satisfies validates the fixture satisfies the interface — no widening, no cast needed
+const testOrder = {
+  id: 'ORD-001',
+  status: 'pending',
+  items: [{ sku: 'WIDGET-A', price: 49.99, qty: 2 }],
+  customerId: 'CUST-123',
+} satisfies Parameters<typeof InMemoryOrderRepository.prototype.save>[0];
+// TypeScript: testOrder.status is 'pending' (literal), not string (widened)
+// If the Order interface changes (e.g., adds required `currency` field),
+// TypeScript errors here at the fixture definition — not at a test assertion buried deep.
+
+describe('OrderService.calculateTotal', () => {
+  // Test case 1: RED — total is sum of price × qty
+  it('returns sum of all item totals', async () => {
+    const repo = new InMemoryOrderRepository([testOrder]);
+    const service = new OrderService(repo);
+
+    const total = await service.calculateTotal('ORD-001');
+
+    expect(total).toBe(99.98); // 49.99 × 2
+  });
+
+  // Test case 2: RED — satisfies preserves literal status for domain assertions
+  it('throws when order is not pending', async () => {
+    const cancelledOrder = { ...testOrder, id: 'ORD-002', status: 'cancelled' as const }
+      satisfies typeof testOrder;
+    const repo = new InMemoryOrderRepository([cancelledOrder]);
+    const service = new OrderService(repo);
+
+    await expect(service.calculateTotal('ORD-002')).rejects.toThrow('Order is not pending');
+  });
+});
+```
+
+**Why `satisfies` improves TDD fixtures:** When fixtures are created with `const fixture: SomeType = {...}`, TypeScript widens literal values to their base types (`status: 'pending'` becomes `string`). This means assertions like `expect(result.status).toBe('pending')` lose type precision — TypeScript treats `result.status` as `string`, not `'pending'`. With `satisfies`, the literal types are preserved, making conditional assertions after narrowing (e.g., `if (result.status === 'pending')`) type-safe without casts.
+
+**[community] Test fixture drift is a silent TDD maintenance cost.** When a domain interface gains a required field, fixtures declared as `const f: Interface = {...}` immediately error — which is the correct behavior. However, teams that use `as Interface` casts for fixtures silently accept incomplete objects, and the test cases pass while the production type contract is violated. Using `satisfies` instead of `as` on fixtures provides the same shape validation as an explicit type annotation, without allowing `as`-style escape hatching.
+
+### TDD with Iterator Helpers (TypeScript 5.6+) — Lazy Pipelines in Domain Logic [community]
+
+TypeScript 5.6 added built-in types for ECMAScript iterator helpers (`map`, `filter`, `take`, `flatMap`, `reduce` on `Iterator<T>`). TDD drives the design of lazy pipelines by specifying the expected output of each pipeline step before the implementation exists.
+
+```typescript
+// TDD for a lazy report pipeline using iterator helpers
+// report-pipeline.test.ts
+import { describe, it, expect } from 'vitest';
+import { buildRevenueReport } from './report-pipeline.js';
+
+interface Transaction { id: string; amount: number; status: 'settled' | 'pending' | 'failed'; }
+
+// Test data — inline, no fixture file needed (small, self-documenting)
+const transactions: Transaction[] = [
+  { id: 't1', amount: 100, status: 'settled' },
+  { id: 't2', amount:  50, status: 'pending' },
+  { id: 't3', amount: 200, status: 'settled' },
+  { id: 't4', amount:  75, status: 'failed'  },
+  { id: 't5', amount: 150, status: 'settled' },
+];
+
+// Test case 1: RED — settled transactions are included, others excluded
+describe('buildRevenueReport', () => {
+  it('sums settled transactions only', () => {
+    const report = buildRevenueReport(transactions);
+    expect(report.total).toBe(450); // 100 + 200 + 150
+    expect(report.count).toBe(3);
+  });
+
+  // Test case 2: RED — pipeline is lazy (does not materialise all items)
+  it('handles a very large iterable without allocating an intermediate array', () => {
+    function* largeSource(): Generator<Transaction> {
+      for (let i = 0; i < 1_000_000; i++) {
+        yield { id: `t${i}`, amount: i % 100, status: i % 3 === 0 ? 'settled' : 'pending' };
+      }
+    }
+    // If this crashes with OOM, the implementation materialises eagerly — TDD catches it
+    const report = buildRevenueReport(largeSource());
+    expect(report.total).toBeGreaterThan(0);
+    expect(report.count).toBeGreaterThan(0);
+  });
+});
+
+// GREEN: iterator helpers produce a lazy pipeline — no intermediate array
+// report-pipeline.ts (requires Node 22+ or modern browser runtime)
+interface RevenueReport { total: number; count: number; }
+
+export function buildRevenueReport(source: Iterable<Transaction>): RevenueReport {
+  return Iterator.from(source)
+    .filter((t: Transaction) => t.status === 'settled')
+    .reduce<RevenueReport>(
+      (acc, t) => ({ total: acc.total + t.amount, count: acc.count + 1 }),
+      { total: 0, count: 0 }
+    );
+}
+// Requires lib: ["ES2025"] or "esnext" in tsconfig.json
+// The test case for the large source proves laziness — no intermediate array allocated.
+```
+
+**[community] Iterator helpers require Node 22+ or a polyfill.** Teams adopting TypeScript 5.6 iterator helper types should verify their Node.js version in CI (`engines` field in `package.json`). A TDD test case that exercises a large lazy source (`1_000_000` items) will crash with `Iterator.from is not a function` on Node < 22 — this is a useful runtime compatibility signal to catch early in the TDD cycle.
+
 ### TDD Pacing Metrics and CI Integration [community]
 
 Tracking TDD health over time requires instrumenting the test suite with pacing metrics. Without measurement, TDD discipline erodes silently.
@@ -1988,3 +2168,6 @@ jobs:
 | ISTQB CTFL 4.0 Syllabus | Certification | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology reference for test case, test suite, test level, defect, test basis |
 | Vitest — official docs | Docs | https://vitest.dev/ | Primary Vite-native test runner for TypeScript projects; watch mode, coverage, snapshot support |
 | Stryker Mutator | Docs | https://stryker-mutator.io/ | TypeScript mutation testing — measures TDD effectiveness beyond line coverage |
+| Martin Fowler — Testing Guide | Article | https://martinfowler.com/testing/ | Production patterns, Test Cancer failure mode, self-testing code principles |
+| TypeScript 5.5 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html | Inferred type predicates — TDD-friendly filter functions with automatic narrowing |
+| TypeScript 5.7 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-7.html | `--noCheck` flag for CI parallelisation of type-check vs test jobs |
