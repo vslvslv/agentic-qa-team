@@ -186,7 +186,7 @@ Add a contract testing layer: use the project's OpenAPI spec as the baseline, ge
 
 ---
 
-#### BL-011 — Meta-QA: Agentic Red-Teaming of QA Skills `[L]`
+#### BL-011 — Meta-QA: Agentic Red-Teaming of QA Skills `[L]` ✅ **Implemented v1.15.0.0**
 **Source:** [langwatch/scenario](https://github.com/langwatch/scenario)
 **Target skills:** `qa-refine`, `qa-methodology-refine`
 **Description:**
@@ -702,7 +702,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-050 — Epic → Playwright Auditable Pipeline `[L]`
+#### BL-050 — Epic → Playwright Auditable Pipeline `[L]` ✅ **Implemented v1.15.0.0**
 **Source:** [YiboLi1986/AIDRIVENTESTPROCESSAUTOMATION](https://github.com/YiboLi1986/AIDRIVENTESTPROCESSAUTOMATION)
 **Target skills:** `qa-manager`
 **Description:** Full Epic → Features → User Stories → Test Plan → Test Cases → Playwright skeletons pipeline. Every stage produces a versioned JSON artifact with human-in-the-loop confirmation before the next stage runs. Provides permanent audit trail from JIRA Epic to running test.
@@ -715,7 +715,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ---
 
-#### BL-051 — Figma Design → Test Cases at Sprint Kickoff `[S]`
+#### BL-051 — Figma Design → Test Cases at Sprint Kickoff `[S]` ✅ **Implemented v1.15.0.0**
 **Source:** [bhanusdet/CaseVector-AI-effortless-test-case-generation](https://github.com/bhanusdet/CaseVector-AI-effortless-test-case-generation) — 13 stars
 **Target skills:** `qa-manager`
 **Description:** At sprint kickoff, fetch Figma frame URLs from JIRA ticket descriptions, run multimodal AI analysis (OCR + CV on design screenshots), and produce test case drafts in the TCMS before implementation starts. Creates a "test-first from design" workflow.

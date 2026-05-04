@@ -232,3 +232,5 @@ echo "  /qa-audit              — Test methodology audit (pyramid, isolation, f
 echo "  /qa-refine             — Generate tool-specific best-practice guides"
 echo "  /qa-methodology-refine — Generate methodology best-practice guides"
 echo "  /lang-refine           — Generate language best-practice guides"
+echo "  /qa-meta-eval          — Adversarial red-teaming eval of QA skill outputs"
+echo "  /qa-manager            — Epic → Playwright pipeline / Figma → TCMS test cases"

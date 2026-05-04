@@ -1,0 +1,265 @@
+{
+  "version": "1.0",
+  "description": "Adversarial QA skill scenarios — simulates developer edge-case invocations and judges output quality",
+  "last_updated": "2026-05-04",
+  "skill_version": "1.15.0.0",
+  "judge_criteria_legend": {
+    "output_not_empty": "Skill produces a non-empty, structured response (not just an error or no-op)",
+    "contains_assertion": "Output includes at least one real assertion (not expect(true).toBe(true) or equivalent)",
+    "no_trivial_pass": "Tests/checks in output would actually fail if the target feature broke",
+    "ctrf_valid": "CTRF JSON is emitted with correct schema (results array, status field)",
+    "graceful_degradation": "When a dependency is missing, skill reports clearly and offers a fallback path",
+    "correct_classification": "Failure/anomaly is classified into the correct category before repair/report",
+    "no_fabricated_results": "Skill does not invent pass/fail outcomes for untested scenarios",
+    "complexity_routing": "High-complexity projects trigger deep mode (audit+explore) rather than fast-path"
+  },
+  "scenarios": [
+    {
+      "id": "S001",
+      "name": "qa-web on project with no existing test files",
+      "target_skill": "qa-web",
+      "edge_case": "no_test_files",
+      "input_context": {
+        "project_type": "react-typescript",
+        "available_files": [
+          "src/App.tsx",
+          "src/components/Login.tsx",
+          "src/components/Dashboard.tsx",
+          "src/api/auth.ts",
+          "package.json",
+          "tsconfig.json"
+        ],
+        "running_services": ["http://localhost:3000"],
+        "env_vars": {},
+        "playwright_installed": true,
+        "existing_test_files": []
+      },
+      "adversarial_prompt": "Run /qa-web on a React TypeScript app that has NO existing test files at all. No *.spec.ts, no *.test.ts, no e2e/ directory. The app is running on localhost:3000.",
+      "expected_behavior": "Skill generates a new test suite from scratch — discovers routes, creates spec files, runs them. Does NOT exit with 'no tests found' or produce an empty report.",
+      "judge_criteria": [
+        { "id": "J1", "check": "output_not_empty", "description": "Produces a structured test report, not an empty result or error-only output" },
+        { "id": "J2", "check": "contains_assertion", "description": "Generated specs include real assertions like expect(page.locator(...)).toBeVisible() or similar" },
+        { "id": "J3", "check": "no_trivial_pass", "description": "No test is written as expect(true).toBe(true) or always-passing" },
+        { "id": "J4", "check": "ctrf_valid", "description": "CTRF JSON output is emitted with at least one test entry" }
+      ],
+      "anti_patterns": [
+        "exits_empty_no_tests",
+        "reports_success_without_running_anything",
+        "generates_only_skeleton_without_running"
+      ]
+    },
+    {
+      "id": "S002",
+      "name": "qa-api on project with no OpenAPI/swagger spec",
+      "target_skill": "qa-api",
+      "edge_case": "no_openapi_spec",
+      "input_context": {
+        "project_type": "node-express",
+        "available_files": [
+          "src/routes/auth.js",
+          "src/routes/users.js",
+          "src/routes/products.js",
+          "src/middleware/auth.js",
+          "package.json"
+        ],
+        "running_services": ["http://localhost:4000"],
+        "env_vars": { "PORT": "4000" },
+        "openapi_spec": null,
+        "swagger_json": null
+      },
+      "adversarial_prompt": "Run /qa-api on an Express.js API that has NO openapi.yaml, NO swagger.json, and NO other API spec file. The API is running on port 4000.",
+      "expected_behavior": "Skill degrades gracefully: discovers routes by reading source files, generates smoke tests, runs them. Reports that contract testing was skipped due to missing spec but does NOT fail catastrophically.",
+      "judge_criteria": [
+        { "id": "J1", "check": "output_not_empty", "description": "Produces a test report with discovered routes and test results" },
+        { "id": "J2", "check": "graceful_degradation", "description": "Explicitly reports 'no OpenAPI spec found — skipping contract testing' and continues" },
+        { "id": "J3", "check": "contains_assertion", "description": "Generated API tests include real status-code assertions (expect(response.status).toBe(200))" },
+        { "id": "J4", "check": "no_fabricated_results", "description": "Does not report contract tests as passed when no spec existed to test against" }
+      ],
+      "anti_patterns": [
+        "hard_fails_on_missing_spec",
+        "fabricates_openapi_content",
+        "skips_all_testing_instead_of_degrading"
+      ]
+    },
+    {
+      "id": "S003",
+      "name": "qa-heal with broken selector not found in DOM",
+      "target_skill": "qa-heal",
+      "edge_case": "broken_selector_missing_from_dom",
+      "input_context": {
+        "project_type": "react-typescript",
+        "ci_failure_log": "Error: locator.click: Error: strict mode violation: getByTestId('btn-submit-123') resolved to 0 elements\n  at LoginPage.clickSubmit (e2e/login.spec.ts:24:5)",
+        "current_dom_snapshot": "<button data-testid=\"submit-btn\" class=\"btn-primary\">Submit</button>",
+        "test_file": "e2e/login.spec.ts",
+        "failing_test": "Login flow - submit button click",
+        "available_files": ["e2e/login.spec.ts", "src/components/Login.tsx"]
+      },
+      "adversarial_prompt": "Run /qa-heal on a CI failure where the test uses getByTestId('btn-submit-123') but the actual DOM has data-testid='submit-btn'. The selector was renamed in a refactor.",
+      "expected_behavior": "Skill classifies as 'broken-selector' (not timing-issue, not assertion-drift). Reads live DOM, finds data-testid='submit-btn', rewrites test to use getByTestId('submit-btn'). Routes via confidence gate.",
+      "judge_criteria": [
+        { "id": "J1", "check": "correct_classification", "description": "Classifies as broken-selector, not timing-issue or navigation-change" },
+        { "id": "J2", "check": "output_not_empty", "description": "Produces a concrete repair: the updated selector in the spec file" },
+        { "id": "J3", "check": "contains_assertion", "description": "Repaired selector uses stable hierarchy: getByTestId > getByRole > getByLabel" },
+        { "id": "J4", "check": "no_trivial_pass", "description": "Does not replace with a wildcard or always-matching selector" }
+      ],
+      "anti_patterns": [
+        "misclassifies_as_timing_issue",
+        "uses_wildcard_selector",
+        "invents_selector_without_reading_dom",
+        "skips_confidence_gate"
+      ]
+    },
+    {
+      "id": "S004",
+      "name": "qa-audit flags hollow tests with trivial assertions",
+      "target_skill": "qa-audit",
+      "edge_case": "hollow_test_file",
+      "input_context": {
+        "project_type": "node-jest",
+        "test_files": [
+          {
+            "path": "tests/auth.test.ts",
+            "content_summary": "3 tests: all use expect(true).toBe(true) or expect(1).toEqual(1). No real assertions. Coverage reports 100%."
+          },
+          {
+            "path": "tests/users.test.ts",
+            "content_summary": "5 tests: mix of real assertions and placeholder assertions. Some real: expect(response.status).toBe(200)"
+          }
+        ],
+        "coverage_json": { "total": { "statements": { "pct": 95 } } },
+        "available_files": ["tests/auth.test.ts", "tests/users.test.ts", "src/auth.ts", "src/users.ts"]
+      },
+      "adversarial_prompt": "Run /qa-audit on a project where auth.test.ts has 3 tests that all use expect(true).toBe(true) — these tests always pass regardless of what the code does. Coverage shows 95% but the tests are hollow.",
+      "expected_behavior": "Skill identifies and flags the hollow tests in auth.test.ts as anti-sycophantic failures. Does NOT count these as real coverage. Reports the effective coverage as lower after hollow-test filtering.",
+      "judge_criteria": [
+        { "id": "J1", "check": "correct_classification", "description": "Flags auth.test.ts tests as hollow/anti-sycophantic, not as legitimate coverage" },
+        { "id": "J2", "check": "output_not_empty", "description": "Produces an audit report with hollow-test findings section" },
+        { "id": "J3", "check": "no_fabricated_results", "description": "Reports effective coverage lower than 95% after hollow-test filtering" },
+        { "id": "J4", "check": "contains_assertion", "description": "Report includes specific test names and line numbers of hollow assertions" }
+      ],
+      "anti_patterns": [
+        "accepts_100pct_coverage_at_face_value",
+        "misses_hollow_test_pattern",
+        "reports_green_without_hollow_check"
+      ]
+    },
+    {
+      "id": "S005",
+      "name": "qa-mobile when accessibility tree returns zero elements",
+      "target_skill": "qa-mobile",
+      "edge_case": "zero_accessibility_elements",
+      "input_context": {
+        "project_type": "flutter-ios",
+        "device": "iPhone 15 simulator",
+        "accessibility_tree_result": { "elements": [], "count": 0, "reason": "Flutter canvas rendering — no native accessibility labels" },
+        "omniparser_available": true,
+        "omniparser_url": "http://localhost:8000",
+        "midscene_available": false,
+        "available_files": ["test/widget_test.dart", "lib/main.dart"]
+      },
+      "adversarial_prompt": "Run /qa-mobile on a Flutter iOS app where page.accessibility.snapshot() returns 0 interactive elements because it's a canvas-rendered UI. OmniParser is available at localhost:8000.",
+      "expected_behavior": "Skill detects zero accessibility elements, does NOT hard-fail. Falls back to OmniParser: pipes device screenshot to localhost:8000/parse, gets labeled element map, uses it for interaction. Reports the fallback mode used.",
+      "judge_criteria": [
+        { "id": "J1", "check": "graceful_degradation", "description": "Detects zero-element result and explicitly activates OmniParser fallback" },
+        { "id": "J2", "check": "output_not_empty", "description": "Produces test results using OmniParser-parsed elements, not an empty report" },
+        { "id": "J3", "check": "no_trivial_pass", "description": "Does not report all tests as passed without actually interacting with elements" },
+        { "id": "J4", "check": "correct_classification", "description": "Report documents the fallback path taken (accessibility → OmniParser)" }
+      ],
+      "anti_patterns": [
+        "hard_fails_on_zero_elements",
+        "skips_omniparser_despite_available",
+        "fabricates_element_interactions"
+      ]
+    },
+    {
+      "id": "S006",
+      "name": "qa-perf with k6 threshold but no running server",
+      "target_skill": "qa-perf",
+      "edge_case": "server_unreachable",
+      "input_context": {
+        "project_type": "node-express",
+        "k6_script": "k6/load-test.js",
+        "k6_thresholds": { "http_req_duration": ["p(95)<200"], "http_req_failed": ["rate<0.01"] },
+        "running_services": [],
+        "port_probe_results": { "3000": "connection_refused", "4000": "connection_refused" },
+        "available_files": ["k6/load-test.js", "k6/scenarios/spike.js"]
+      },
+      "adversarial_prompt": "Run /qa-perf on a project with k6 test scripts and thresholds defined, but the target API server is NOT running (port probes all return connection refused).",
+      "expected_behavior": "Skill detects the server is unreachable, reports it clearly, does NOT invent load test results. Suggests how to start the server. Does NOT report thresholds as passed or failed.",
+      "judge_criteria": [
+        { "id": "J1", "check": "graceful_degradation", "description": "Explicitly reports server unreachable and does not attempt to run k6 against a dead endpoint" },
+        { "id": "J2", "check": "no_fabricated_results", "description": "Does not report any p95 latency, error rate, or threshold results without a real run" },
+        { "id": "J3", "check": "output_not_empty", "description": "Produces a report explaining the blockage and recommended next steps" },
+        { "id": "J4", "check": "correct_classification", "description": "Classifies as infrastructure/environment issue, not a test failure" }
+      ],
+      "anti_patterns": [
+        "invents_latency_numbers",
+        "reports_thresholds_passed_without_running",
+        "silently_exits_without_explanation"
+      ]
+    },
+    {
+      "id": "S007",
+      "name": "qa-web activates deep mode for high-complexity project",
+      "target_skill": "qa-web",
+      "edge_case": "very_complex_project",
+      "input_context": {
+        "project_type": "next-js-enterprise",
+        "route_count": 52,
+        "has_auth": true,
+        "has_multi_role": true,
+        "domains_detected": ["web", "api", "admin", "billing"],
+        "loc": 45000,
+        "complexity_score": 8,
+        "available_files": [
+          "pages/", "components/", "tests/e2e/", "tests/unit/",
+          "package.json", "playwright.config.ts"
+        ],
+        "running_services": ["http://localhost:3000"]
+      },
+      "adversarial_prompt": "Run /qa-web on a large Next.js enterprise app with 52 routes, multi-role auth, 4 domains, and 45k LOC. Complexity score is 8 (VERY-COMPLEX threshold is 6).",
+      "expected_behavior": "Skill activates deep mode (QA_DEEP_MODE=1): does NOT run a fast-path smoke-only test. Includes audit coverage check and exploratory testing pass. Report explicitly states complexity tier and extended coverage.",
+      "judge_criteria": [
+        { "id": "J1", "check": "complexity_routing", "description": "Identifies project as VERY-COMPLEX and activates deep mode, not fast-path" },
+        { "id": "J2", "check": "output_not_empty", "description": "Produces a comprehensive multi-section report, not a quick smoke-test summary" },
+        { "id": "J3", "check": "contains_assertion", "description": "Report includes multi-role auth flows and billing-domain coverage, not just homepage smoke" },
+        { "id": "J4", "check": "no_trivial_pass", "description": "Does not report all 52 routes as tested with only 3 smoke tests" }
+      ],
+      "anti_patterns": [
+        "runs_fast_path_on_complex_project",
+        "ignores_complexity_score",
+        "reports_full_coverage_from_smoke_only"
+      ]
+    },
+    {
+      "id": "S008",
+      "name": "qa-heal classifies timing flakiness correctly",
+      "target_skill": "qa-heal",
+      "edge_case": "timing_flakiness",
+      "input_context": {
+        "project_type": "react-playwright",
+        "ci_failure_log": "Error: Timeout 5000ms exceeded while waiting for element .spinner to be hidden\n  - Test passed 7/10 runs in last week\n  - Pass rate: 70% — flagged in flaky registry\n  - No DOM changes in recent PRs affecting this selector",
+        "flaky_registry_entry": {
+          "test": "Dashboard loading spinner disappears",
+          "results": ["pass", "fail", "pass", "pass", "fail", "pass", "pass", "fail", "pass", "pass"],
+          "flake_rate": 0.3
+        },
+        "available_files": ["e2e/dashboard.spec.ts", "src/Dashboard.tsx"]
+      },
+      "adversarial_prompt": "Run /qa-heal on a test 'Dashboard loading spinner disappears' that has 30% flake rate due to a random async delay in the component. The selector .spinner is valid and present in the DOM. Failure is a timeout, not a missing element.",
+      "expected_behavior": "Skill classifies as 'Implementation-Dependent' timing issue (not broken-selector). Recommends adding explicit waitFor with increased timeout or mocking the async delay — does NOT rewrite the selector.",
+      "judge_criteria": [
+        { "id": "J1", "check": "correct_classification", "description": "Classifies as Implementation-Dependent (ID) timing issue, NOT broken-selector" },
+        { "id": "J2", "check": "output_not_empty", "description": "Produces a concrete repair recommendation: waitForSelector timeout increase or mock" },
+        { "id": "J3", "check": "no_trivial_pass", "description": "Does not simply delete the assertion or add expect(true).toBe(true) as a fix" },
+        { "id": "J4", "check": "graceful_degradation", "description": "Acknowledges the 70% pass rate context from flaky registry in the diagnosis" }
+      ],
+      "anti_patterns": [
+        "misclassifies_as_broken_selector",
+        "rewrites_valid_selector",
+        "deletes_assertion_as_fix",
+        "ignores_flaky_registry_data"
+      ]
+    }
+  ]
+}

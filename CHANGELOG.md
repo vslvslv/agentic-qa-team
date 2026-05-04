@@ -5,6 +5,31 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.15.0.0 — 2026-05-04 — qa-meta-eval + qa-manager (BL-011, BL-050, BL-051)
+
+### qa-meta-eval (new skill — BL-011)
+- Adversarial red-teaming of QA skills: 8 scenarios × UserSimulatorAgent + JudgeAgent
+- Scenarios cover: no-test-files (qa-web), no-OpenAPI-spec (qa-api), broken-selector (qa-heal),
+  hollow-tests (qa-audit), zero-a11y-elements (qa-mobile), server-unreachable (qa-perf),
+  high-complexity routing (qa-web), timing-flakiness classification (qa-heal)
+- Phase 4 report: per-skill pass rate table; flags skills below 80% with anti-pattern breakdown
+- CTRF output; `QA_META_TARGET=<skill>` env var scopes run to one target skill
+- Scenarios defined in `qa-refine-workspace/meta-evals/scenarios.json` (versioned)
+
+### qa-manager (new skill — BL-050 + BL-051)
+- Mode A (Epic → Playwright, BL-050): JIRA Epic → Features → User Stories → Test Plan →
+  Playwright spec skeletons with `// TC-{id}` + `// Story: {key}` traceability comments;
+  versioned JSON artifacts at every stage (`test-specs/01_epic_*.confirmed.v1.json`, etc.);
+  AskUserQuestion confirmation gates; final traceability matrix JSON
+- Mode B (Figma → Test Cases, BL-051): parses Figma URLs from JIRA sprint ticket bodies;
+  fetches frame PNGs via Figma API (`/v1/images/{fileKey}`); Claude vision analysis → structured
+  test cases (Title, Preconditions, Steps, Expected Result, Priority); pushes to TestRail or
+  Xray TCMS; markdown fallback when TCMS not configured
+- Env vars: `JIRA_URL`, `JIRA_TOKEN`, `FIGMA_TOKEN`, `TESTRAIL_URL`/`XRAY_URL`, `JIRA_EPIC_ID`
+- Both modes degrade gracefully when integrations are unavailable (manual-input fallback)
+
+---
+
 ## v1.14.0.0 — 2026-05-04 — [M] batch: observability RCA, contract testing, chaos, VLM mobile, DOM metrics, offline CI
 
 ### qa-observability (new skill — BL-057)
