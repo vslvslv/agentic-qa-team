@@ -1,7 +1,7 @@
 # qa-agentic-team — Enhancement Backlog
 
 > Research-driven backlog of ideas from similar repositories and AI testing tools.
-> Last updated: 2026-05-05 (round 4 research added — 33 new items: AI/LLM testing, security gates, property-based, reporting)
+> Last updated: 2026-05-05 (round 5 research added — 34 new items: events/WS, IaC, DB, i18n, DX, compliance, cloud, synthetic monitoring, gRPC, temporal, combinatorial)
 
 ---
 
@@ -1359,6 +1359,320 @@ Verifies SLSA provenance attestations for all build artifacts and third-party de
 - [Codium-ai/pr-agent](https://github.com/Codium-ai/pr-agent)
 - [google/oss-fuzz-gen](https://github.com/google/oss-fuzz-gen)
 - [web-arena-x/webarena](https://github.com/web-arena-x/webarena)
+
+---
+
+## Round 5 Backlog — Events, IaC, DB, i18n, DX, Compliance, Cloud, gRPC, Temporal, Combinatorial
+
+### 🔴 P1 — High Impact, Low Effort
+
+#### BL-099 — Environment Parity Checker `[S]`
+**Source:** 12-factor app + [dotenv-linter](https://github.com/dotenv-linter/dotenv-linter) (1.8k stars) + Netflix chaos eng blog
+**Target skill:** new `qa-env-parity`
+**Description:**
+Compares declared config (env vars, feature flags, secrets, Kubernetes manifests) across dev/staging/prod environments to detect silent drift that causes "works in staging" failures. Generates a structured drift report and flags missing or mismatched keys. Environment drift is a top cause of production incidents not addressable by any existing skill.
+
+---
+
+#### BL-100 — Geo & Timezone Simulation Suite `[S]`
+**Source:** Playwright `page.emulateTimezone()` + `browser.newContext({ geolocation })` APIs; Booking.com engineering blog
+**Target skill:** `qa-web` enhancement or new `qa-geo`
+**Description:**
+Parameterizes Playwright tests across multiple time zones and geo-locations, catching date/time arithmetic bugs, DST boundary transitions, and geo-gated feature inconsistencies. Small wrapper around Playwright's built-in CDP APIs. Timezone/DST bugs are perennial and invisible to the current team.
+
+---
+
+#### BL-101 — Eval-Driven Development Gate `[S]`
+**Source:** [greynewell/evaldriven.org](https://github.com/greynewell/evaldriven.org) + [greynewell/matchspec](https://github.com/greynewell/matchspec) + Anthropic eval-first guidance
+**Target skill:** new `qa-eval-gate`
+**Description:**
+Enforces that every AI feature shipped has a passing eval harness before the PR merges. Reads the repo's `evals/` or `tests/evals/` directory, runs all evals, scores results, and blocks CI if pass-rate drops below a configurable threshold. Complements the existing LLM eval skills (deepeval, promptfoo) with a CI gating mechanic.
+
+---
+
+#### BL-102 — Natural-Language Code Property Assertions `[S]`
+**Source:** [kdunee/intentguard](https://github.com/kdunee/intentguard) (35 stars) + LLM-as-judge eval pattern
+**Target skill:** new `qa-intent-assert`
+**Description:**
+Lets developers write test assertions in plain English (`"This function must never return a negative balance"`), evaluated at CI time by an LLM judge. Reads `*.intent.yaml` files from the repo and emits pass/fail CTRF. Catches semantic intent violations that unit tests miss — a novel assertion paradigm not covered by any existing skill.
+
+---
+
+#### BL-103 — Test Smell & Anti-Pattern Linter `[S]`
+**Source:** [goldbergyoni/javascript-testing-best-practices](https://github.com/goldbergyoni/javascript-testing-best-practices) (24.6k stars) + tsestmell / JUnit anti-pattern literature
+**Target skill:** new `qa-test-lint`
+**Description:**
+Statically scans test files for known test smells: assertion-free tests, magic numbers, excessive mocking, test logic in production code, `sleep()` calls, improper teardown, and copy-paste test bodies. Produces a prioritized fix list with inline code suggestions. Complements qa-refine (tool coverage) with test health analysis.
+
+---
+
+#### BL-104 — Test Order Dependency Detector `[S]`
+**Source:** [pytest-randomly](https://github.com/pytest-dev/pytest-randomly) (615 stars) + `jest --randomize` (Jest 29+) + [pytest-testmon](https://github.com/tarpas/pytest-testmon) (843 stars)
+**Target skill:** new `qa-test-order`
+**Description:**
+Repeatedly runs the test suite in randomized order and identifies tests that only pass when run after specific other tests — a sign of shared global state leakage. Generates a dependency graph and recommends isolation fixes. Distinct from network/timing flakiness covered by existing flaky-test items.
+
+---
+
+#### BL-105 — Test Documentation Generator `[S]`
+**Source:** [Wytamma/write-the](https://github.com/Wytamma/write-the) (121 stars) + [AutomateThePlanet/Spectra](https://github.com/AutomateThePlanet/Spectra)
+**Target skill:** new `qa-test-docs`
+**Description:**
+Reads existing test files and generates human-readable Markdown summaries of what each suite covers, why, and what business rules it guards. Uses an LLM to infer intent from test names, assertions, and comments. High value for compliance audits, sprint reviews, and onboarding. No existing skill addresses the tests→documentation direction.
+
+---
+
+#### BL-106 — SCA / Dependency Vulnerability Gate `[S]`
+**Source:** [anchore/grype](https://github.com/anchore/grype) (9.1k stars) + [anchore/syft](https://github.com/anchore/syft) (6.5k stars)
+**Target skill:** new `qa-sca`
+**Description:**
+Generates an SBOM via Syft, then scans all direct/transitive dependencies for CVEs and license violations (GPL contamination, copyleft in commercial code) via Grype. Compares against the previous SBOM to surface only new findings per PR. Mandatory for SOC 2/ISO 27001; distinct from trufflehog (secrets) and ZAP (DAST).
+
+---
+
+#### BL-107 — Deep Link & Universal Link Validator `[S]`
+**Source:** Branch.io testing patterns + Apple/Google universal links documentation
+**Target skill:** `qa-mobile` enhancement or new `qa-deeplinks`
+**Description:**
+Enumerates all declared deep links and universal links from `apple-app-site-association`, `assetlinks.json`, and app manifest entries, then generates tests that fire each URI scheme path and assert the correct screen or fallback is reached — both in-app and cold-start. Deep links are critical for mobile SEO and attribution but entirely untested by existing qa-mobile.
+
+---
+
+### 🟡 P2 — Medium Effort / Significant Capability
+
+#### BL-108 — AsyncAPI Event Contract Testing `[M]`
+**Source:** [AsyncAPI Initiative](https://github.com/asyncapi/asyncapi) (15k+ stars) + Confluent/Shopify event testing practices
+**Target skill:** new `qa-events`
+**Description:**
+Validates that event producers and consumers conform to AsyncAPI specs, catching schema drift in Kafka, RabbitMQ, and SNS/SQS channels before production. Generates consumer tests from `asyncapi.yml` definitions and diffs schemas against a registry. A single skill closes the entire messaging testing gap — event-driven architectures have zero coverage in the current team.
+
+---
+
+#### BL-109 — WebSocket Scenario Testing `[M]`
+**Source:** [hoppscotch/hoppscotch](https://github.com/hoppscotch/hoppscotch) (79k stars) + Playwright `page.on('websocket')` API
+**Target skill:** new `qa-ws`
+**Description:**
+Generates and replays multi-message WebSocket conversation sequences, asserting on message order, payload schemas, and connection lifecycle (open/ping/close/reconnect). Uses Playwright's built-in WebSocket interceptor. WebSocket flows (chat, live dashboards, trading feeds) are entirely untested by the existing web/API skills which target HTTP.
+
+---
+
+#### BL-110 — IaC Security Policy Gate `[M]`
+**Source:** [bridgecrewio/checkov](https://github.com/bridgecrewio/checkov) (7.3k stars) + [aquasecurity/tfsec](https://github.com/aquasecurity/tfsec) (6.7k stars)
+**Target skill:** new `qa-iac`
+**Description:**
+Runs Checkov and/or tfsec against Terraform/Pulumi/CDK files, maps findings to NIST/CIS benchmarks, and surfaces them as structured CI failures with auto-suggested remediations. Wraps multi-tool output into a unified CTRF report. IaC security is a growing CI category not touched by qa-security (which targets running apps, not config files).
+
+---
+
+#### BL-111 — DB Migration Backward-Compatibility Validator `[M]`
+**Source:** [flyway/flyway](https://github.com/flyway/flyway) (8.4k stars) + Prisma Migrate + Stripe "Safe Migrations at Scale" (2023)
+**Target skill:** new `qa-migrations`
+**Description:**
+For each new migration file, verifies: (a) the migration is reversible (down runs cleanly), (b) existing ORM models still typecheck against the post-migration schema, (c) no column renames/drops silently break running app code. Uses Prisma introspect / `pg_dump` diff or Flyway dry-run. DB migrations are the most common cause of zero-downtime deployment failures.
+
+---
+
+#### BL-112 — DB Constraint & Invariant Testing `[M]`
+**Source:** great-expectations (in backlog) extended to relational constraints + Airbnb "Testing Data at Airbnb" (2022)
+**Target skill:** `qa-data` enhancement or new `qa-db-invariants`
+**Description:**
+Uses an LLM to read the entity-relationship schema, then generates property-based tests probing database constraints (unique, FK, CHECK) with boundary values and concurrent writes. Exposes race conditions and missing constraints before prod. Extends qa-seed's data generation focus into active verification of schema correctness.
+
+---
+
+#### BL-113 — i18n / l10n Regression Suite `[M]`
+**Source:** [lokalise/i18n-ally](https://github.com/lokalise/i18n-ally) (4k stars) + Airbnb i18n testing practices
+**Target skill:** new `qa-i18n`
+**Description:**
+Generates a matrix of locale-specific Playwright tests verifying: translated strings are not truncated or overflowed, date/number/currency formats are locale-correct, RTL layouts render properly, and no hardcoded English strings exist in the rendered DOM. LLM cross-checks translation completeness. Localization bugs are invisible to all existing skills.
+
+---
+
+#### BL-114 — Screen Reader / Assistive Tech Testing `[M]`
+**Source:** [guidepup/guidepup](https://github.com/guidepup/guidepup) (524 stars) + [guidepup/guidepup-playwright](https://github.com/guidepup/guidepup-playwright) (76 stars)
+**Target skill:** `qa-a11y` enhancement or new `qa-a11y-sr`
+**Description:**
+Drives VoiceOver/NVDA via Guidepup to execute real keyboard navigation and screen-reader announcement tests, verifying ARIA labels, focus order, and live-region announcements — beyond what axe-core static analysis catches. True screen-reader runtime testing is a distinct and deeper compliance tier (WCAG 2.2 Level AA mandate).
+
+---
+
+#### BL-115 — AI Agent Regression Test Recorder `[M]`
+**Source:** [tomerhakak/agentprobe](https://github.com/tomerhakak/agentprobe) (35+ assertions, prompt-injection fuzzing, cost tracking) + langwatch/scenario
+**Target skill:** new `qa-agent-record`
+**Description:**
+Records an AI agent's tool-call sequence and response for a set of golden prompts, then replays them on each commit to detect behavioral regressions (unexpected tool calls, changed outputs, cost spikes). Distinct from the trajectory-regression backlog item — covers the tool-calling layer (with infrastructure side-effects), a more dangerous regression surface.
+
+---
+
+#### BL-116 — RAG / Chatbot Contract Testing `[M]`
+**Source:** [Addepto/contextcheck](https://github.com/Addepto/contextcheck) (95 stars) + [Basaltlabs-app/Gauntlet](https://github.com/Basaltlabs-app/Gauntlet) (231 behavioral probes)
+**Target skill:** new `qa-rag` (distinct from BL-078 qa-rag-eval)
+**Description:**
+Runs a YAML-defined test suite against RAG pipelines: checks retrieved chunk relevance, response grounding (no hallucinations), latency SLAs, and multi-turn context preservation. Structural contract testing (schema + latency + grounding assertions) distinct from BL-078 (metric scoring/evaluation pipelines).
+
+---
+
+#### BL-117 — Dead Test Detector `[M]`
+**Source:** [shipmonk-rnd/dead-code-detector](https://github.com/shipmonk-rnd/dead-code-detector) (461 stars) + Jest/Vitest unused coverage patterns
+**Target skill:** new `qa-dead-tests`
+**Description:**
+Finds test files and cases that are never executed in CI: orphaned specs, permanently skipped suites, tests that import deleted modules. Uses git history + coverage data + static import analysis to rank by "last green run" date and flag for deletion or resurrection. Improves CI speed and signal-to-noise directly.
+
+---
+
+#### BL-118 — Privacy & Consent Flow Validator `[M]`
+**Source:** Playwright network interception + GDPR Articles 6/7 + [najeh-halawani/Automated-Web-Tracking-Detection](https://github.com/najeh-halawani/Automated-Web-Tracking-Detection-and-Privacy-Compliance-Analyzer)
+**Target skill:** new `qa-privacy`
+**Description:**
+Crawls the app in accept/reject/no-cookie modes, capturing all network requests and localStorage writes, and asserts that: no tracking pixels fire before consent, opt-out removes cookies within the regulatory timeframe, and privacy policy links are reachable. Maps findings to GDPR Articles 6 and 7. Distinct from qa-security (OWASP vulnerabilities) — a compliance domain.
+
+---
+
+#### BL-119 — Auth Edge-Case Suite Generator `[M]`
+**Source:** [antiwork/shortest](https://github.com/antiwork/shortest) (5.6k stars) + Auth0/Okta security hardening guides
+**Target skill:** `qa-security` enhancement or new `qa-auth-edges`
+**Description:**
+Given an app's auth configuration (OAuth2, OIDC, SAML, passkeys, MFA), generates adversarial E2E tests: token expiry during session, refresh token rotation, simultaneous sessions, account-linking collisions, and MFA bypass attempts. Uses Playwright against a real or mock IdP. Auth flows are OWASP top-10; existing qa-security is DAST-focused and does not generate scenario-level auth tests.
+
+---
+
+#### BL-120 — Cloud Service Emulation Testing `[M]`
+**Source:** [faiscadev/fakecloud](https://github.com/faiscadev/fakecloud) (276 stars, 33 AWS services, zero auth) + [localstack/localstack](https://github.com/localstack/localstack) (55k stars)
+**Target skill:** new `qa-cloud-local`
+**Description:**
+Wires up FakeCloud or LocalStack as a drop-in for cloud dependencies, then generates integration tests exercising S3/SQS/DynamoDB/Lambda interactions without cloud costs or credentials. Complements the Testcontainers item (databases) for cloud services — bridges the gap between unit tests and full E2E staging.
+
+---
+
+#### BL-121 — Monitoring Alert Validation `[M]`
+**Source:** Netflix Chaos Engineering blog ("alert correctness testing") + [grafana/grizzly](https://github.com/grafana/grizzly) (488 stars)
+**Target skill:** new `qa-alerts`
+**Description:**
+Deploys synthetic load and fault conditions against a staging environment, then asserts that the expected Datadog/Grafana/CloudWatch alerts fire (and no spurious alerts fire). Prevents "silent failure" deployments where alerts are broken or mis-thresholded. Existing qa-observability captures traces/logs but does not validate the alerting pipeline itself.
+
+---
+
+#### BL-122 — Synthetic Production Monitor Generator `[M]`
+**Source:** [checkly/checkly-cli](https://github.com/checkly/checkly-cli) (1.1k stars) + Shopify/Stripe synthetic monitoring patterns
+**Target skill:** new `qa-synthetic`
+**Description:**
+Converts existing Playwright E2E tests into scheduled synthetic monitors that run against production on a cron schedule, alerting on regression. Injects `X-Synthetic-Monitor: true` headers so traffic is filterable in analytics. Generates monitor config for Checkly, k6 Cloud, or self-hosted runner. Bridges CI tests and production monitoring — no existing skill converts tests to monitors.
+
+---
+
+#### BL-123 — Chaos-Informed Test Scenario Writer `[M]`
+**Source:** [litmuschaos/litmus](https://github.com/litmuschaos/litmus) (4.4k stars) + Netflix "Chaos Engineering" book
+**Target skill:** `qa-perf` enhancement or new `qa-chaos-scenarios`
+**Description:**
+Reads LitmusChaos/Chaos Monkey experiment definitions and auto-generates application-level integration tests that verify the system's stated resilience hypotheses (e.g., "if pod X is killed, circuit breaker activates within 200ms and user sees graceful degradation"). Distinct from the LitmusChaos backlog item which injects chaos but doesn't generate verification tests.
+
+---
+
+#### BL-124 — PWA & Service Worker Audit `[M]`
+**Source:** Lighthouse PWA audit criteria + Playwright offline API + Google PWA checklist (web.dev)
+**Target skill:** `qa-web` enhancement or new `qa-pwa`
+**Description:**
+Tests offline behavior, cache-first strategies, background sync, push notification permissions, and install prompt flow using Playwright's `page.context().setOffline()`. Verifies the app degrades gracefully vs. throwing uncaught errors. PWA correctness (especially offline and background sync) is invisible to standard E2E tests that assume network availability.
+
+---
+
+#### BL-125 — Temporal / Time-Travel Test Suite `[M]`
+**Source:** [@sinonjs/fake-timers](https://github.com/sinonjs/fake-timers) (1.1k stars) + [jest-date-mock](https://github.com/hustcc/jest-date-mock) (230 stars) + Stripe billing test infrastructure
+**Target skill:** new `qa-temporal`
+**Description:**
+Intercepts `Date.now()`, `new Date()`, `setTimeout`, and database timestamps to freeze or fast-forward time in tests, generating scenarios for: subscription expiry, trial-period transitions, DST boundary crossings, leap-year edge cases, and scheduled job execution. Time-dependent bugs are among the hardest to reproduce; no existing skill addresses deterministic time control.
+
+---
+
+#### BL-126 — gRPC & Protobuf Contract Testing `[M]`
+**Source:** [bojand/ghz](https://github.com/bojand/ghz) (4.2k stars) + [specmatic/specmatic](https://github.com/specmatic/specmatic) (371 stars, Pact-style for gRPC)
+**Target skill:** `qa-api` enhancement or new `qa-grpc`
+**Description:**
+Generates tests from `.proto` service definitions, validates server/client contract compliance, fuzzes message fields with boundary values, and checks backward compatibility when protos evolve (field additions, deprecations). Uses `grpc_cli` or ghz. gRPC is the dominant internal service protocol at scale but absent from the API testing skill set.
+
+---
+
+#### BL-127 — Combinatorial / Pairwise Test Matrix Generator `[M]`
+**Source:** NIST ACTS tool + [TestCreator/GenPairs](https://github.com/TestCreator/GenPairs) + Kuhn et al. combinatorial testing research
+**Target skill:** new `qa-combinatorial`
+**Description:**
+Given feature flags, configuration parameters, or input dimensions, generates a minimum pairwise-covering test matrix (IPOG algorithm) and emits Playwright/pytest test cases. Ensures all 2-way interactions are covered with far fewer tests than full factorial. Particularly valuable for apps with many feature flags — a novel test-design technique not represented anywhere in the current backlog.
+
+---
+
+### 🔵 P3 — Research / Evaluate Further
+
+#### BL-128 — Desktop GUI Testing via AI Vision `[L]`
+**Source:** [YV17labs/GhostDesk](https://github.com/YV17labs/GhostDesk) (45 stars, Docker-based full desktop for AI) + [mesomya/electron-driver](https://github.com/mesomya/electron-driver) (MCP-powered)
+**Target skill:** new `qa-desktop`
+**Description:**
+Uses an LLM-vision agent to interact with Electron, Tauri, or native desktop apps from natural-language specs and screenshots — no accessibility tree required. Captures before/after screenshots for visual diffing. Shares qa-visual diffing infrastructure. Desktop/Electron apps are entirely unaddressed by the current team.
+
+---
+
+#### BL-129 — Conversational Voice Agent Testing `[L]`
+**Source:** [sherurox/CallQA](https://github.com/sherurox/CallQA-Automated-Voice-Testing-for-Conversational-Phone-Agents) + Twilio voice bot testing docs + Rasa/Amazon Connect patterns
+**Target skill:** new `qa-voice`
+**Description:**
+Makes outbound calls (or simulates them via TTS/ASR pipelines) to voice AI agents, runs through scripted call scenarios, transcribes responses, and asserts on intent recognition, sentiment, and call flow completion. Voice AI is an exploding deployment surface entirely absent from the current team.
+
+---
+
+#### BL-130 — Metamorphic Testing Oracles `[L]`
+**Source:** Tsong Yueh Chen metamorphic testing research + Amazon Alexa NLU testing + [Alkhwarizm/metamorphic-testing-tool](https://github.com/Alkhwarizm/metamorphic-testing-tool)
+**Target skill:** new `qa-metamorphic`
+**Description:**
+For functions/endpoints where correct output is unknown a priori (ML models, search ranking, recommenders), defines metamorphic relations (e.g., "adding an item should not decrease relevance score") and generates tests verifying those relations hold across input mutations. Addresses the "oracle problem" for AI/ML endpoints where ground truth is unavailable.
+
+---
+
+#### BL-131 — LLM-Powered Trace-to-Test Generator `[L]`
+**Source:** [Arijit06/TraceAssert](https://github.com/Arijit06/TraceAssert) — LangGraph agent auto-generating tests from production OTel traces
+**Target skill:** `qa-observability` enhancement or new `qa-trace-to-test`
+**Description:**
+Reads sampled slow/error OTel traces from production and uses an LLM to synthesize regression tests that reproduce the exact request flow, including downstream service calls. Tracetest (in existing backlog) validates existing traces — this *generates new tests* from them. Produces battle-hardened regression tests from actual production failure paths.
+
+---
+
+#### BL-132 — Multi-Platform NL Test Runner `[L]`
+**Source:** [ai-dashboad/flutter-skill](https://github.com/ai-dashboad/flutter-skill) (228 stars, 253 MCP tools, 10 platforms, NL-driven)
+**Target skill:** `qa-team` enhancement or new `qa-multiplatform`
+**Description:**
+Dispatches natural-language test specs to platform-specific execution agents (web via Playwright, mobile via Appium/Detox, Electron via electron-driver, Flutter, React Native) from a single unified spec file routed by `platform:` tag. Unifies qa-web, qa-mobile, and the proposed qa-desktop under a single spec language for multi-surface apps.
+
+---
+
+## Round 5 Sources (2026-05-05)
+
+- [asyncapi/asyncapi](https://github.com/asyncapi/asyncapi)
+- [hoppscotch/hoppscotch](https://github.com/hoppscotch/hoppscotch)
+- [bridgecrewio/checkov](https://github.com/bridgecrewio/checkov)
+- [aquasecurity/tfsec](https://github.com/aquasecurity/tfsec)
+- [flyway/flyway](https://github.com/flyway/flyway)
+- [lokalise/i18n-ally](https://github.com/lokalise/i18n-ally)
+- [guidepup/guidepup](https://github.com/guidepup/guidepup)
+- [tomerhakak/agentprobe](https://github.com/tomerhakak/agentprobe)
+- [greynewell/evaldriven.org](https://github.com/greynewell/evaldriven.org)
+- [kdunee/intentguard](https://github.com/kdunee/intentguard)
+- [Addepto/contextcheck](https://github.com/Addepto/contextcheck)
+- [goldbergyoni/javascript-testing-best-practices](https://github.com/goldbergyoni/javascript-testing-best-practices)
+- [shipmonk-rnd/dead-code-detector](https://github.com/shipmonk-rnd/dead-code-detector)
+- [anchore/grype](https://github.com/anchore/grype)
+- [anchore/syft](https://github.com/anchore/syft)
+- [faiscadev/fakecloud](https://github.com/faiscadev/fakecloud)
+- [grafana/grizzly](https://github.com/grafana/grizzly)
+- [checkly/checkly-cli](https://github.com/checkly/checkly-cli)
+- [litmuschaos/litmus](https://github.com/litmuschaos/litmus)
+- [bojand/ghz](https://github.com/bojand/ghz)
+- [specmatic/specmatic](https://github.com/specmatic/specmatic)
+- [sinonjs/fake-timers](https://github.com/sinonjs/fake-timers)
+- [pytest-dev/pytest-randomly](https://github.com/pytest-dev/pytest-randomly)
+- [YV17labs/GhostDesk](https://github.com/YV17labs/GhostDesk)
+- [Arijit06/TraceAssert](https://github.com/Arijit06/TraceAssert)
+- [ai-dashboad/flutter-skill](https://github.com/ai-dashboad/flutter-skill)
+- [Wytamma/write-the](https://github.com/Wytamma/write-the)
+- [dotenv-linter/dotenv-linter](https://github.com/dotenv-linter/dotenv-linter)
+- [antiwork/shortest](https://github.com/antiwork/shortest)
 
 ---
 
