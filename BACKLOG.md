@@ -1,7 +1,7 @@
 # qa-agentic-team — Enhancement Backlog
 
 > Research-driven backlog of ideas from similar repositories and AI testing tools.
-> Last updated: 2026-05-03 (round 3 research added — 10 agents, 50+ new items)
+> Last updated: 2026-05-05 (round 4 research added — 33 new items: AI/LLM testing, security gates, property-based, reporting)
 
 ---
 
@@ -1046,6 +1046,319 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 - [CopilotKit/aimock](https://github.com/CopilotKit/aimock) (570 stars)
 - [dotenvx/dotenvx](https://github.com/dotenvx/dotenvx)
 - [GitHub ai-testing topic](https://github.com/topics/ai-testing)
+- [browserbase/stagehand](https://github.com/browserbase/stagehand) (22.5k stars) — NL browser automation with action caching + auto-reheal; accessibility-tree-based interactions
+- [codeintegrity-ai/mutahunter](https://github.com/codeintegrity-ai/mutahunter) — LLM-generated semantic mutations; mutation score + surviving mutants report
+- [NVIDIA/garak](https://github.com/NVIDIA/garak) — LLM vulnerability scanner; 50+ probes (jailbreak, data leak, DAN, encoding tricks)
+- [LLAMATOR-Core/llamator](https://github.com/LLAMATOR-Core/llamator) — OWASP-LLM-aligned adversarial test battery for chatbot/LLM APIs
+- [confident-ai/deepeval](https://github.com/confident-ai/deepeval) — RAG/LLM eval metrics: faithfulness, relevancy, hallucination; LLM-as-judge CI gate
+- [promptfoo/promptfoo](https://github.com/promptfoo/promptfoo) — Prompt regression: YAML config → multi-model × multi-prompt comparison vs baseline
+- [invariantlabs-ai/invariant](https://github.com/invariantlabs-ai/invariant) — Guardrail policy assertions for AI agents; rule-based pass/fail on tool call sequences
+- [dubzzz/fast-check](https://github.com/dubzzz/fast-check) — Property-based testing: arbitrary generators + shrinking for JS/TS
+- [trufflesecurity/trufflehog](https://github.com/trufflesecurity/trufflehog) — Secrets scanning across git history; live API validation to distinguish active credentials
+- [great-expectations/great_expectations](https://github.com/great-expectations/great_expectations) (11.5k stars) — Data quality expectations: schema, null rates, distributions, drift detection
+- [slsa-framework/slsa-github-generator](https://github.com/slsa-framework/slsa-github-generator) — SLSA L3 provenance for npm/Docker artifacts; supply chain attestation CI gate
+- [langfuse/langfuse](https://github.com/langfuse/langfuse) — LLM observability + online evaluation; production response quality monitoring
+- [whylabs/langkit](https://github.com/whylabs/langkit) — LLM output telemetry: toxicity, sentiment drift, refusal rate, injection detection
+- [agentops-ai/agentops](https://github.com/agentops-ai/agentops) — AI agent observability: token cost, latency, tool call tracing per run
+- [Giskard-AI/giskard-oss](https://github.com/Giskard-AI/giskard-oss) — ML model vulnerability scanner + multi-turn red-team probing; OWASP-LLM aligned
+- [jacopotagliabue/reclist](https://github.com/jacopotagliabue/reclist) — Behavioral slice testing for recommenders: per-slice accuracy, fairness invariants
+- [mattzcarey/shippie](https://github.com/mattzcarey/shippie) (2.4k stars) — AI PR code review: secrets, edge cases, missing test coverage, LLM security issues
+- [Codium-ai/pr-agent](https://github.com/Codium-ai/pr-agent) — LLM-powered PR review + coverage analysis; SARIF output for CI integration
+- [google/oss-fuzz-gen](https://github.com/google/oss-fuzz-gen) — LLM-generated libFuzzer/AFL harnesses; ClusterFuzzLite integration
+- [web-arena-x/webarena](https://github.com/web-arena-x/webarena) — AI agent trajectory benchmarking; task batteries for web agent evaluation
+
+---
+
+## Round 4 Backlog — AI/LLM Testing, Security Gates, Property-Based, Reporting
+
+### 🔴 P1 — High Impact, Low Effort
+
+#### BL-067 — Secrets Scanning Gate `[S]`
+**Source:** [trufflesecurity/trufflehog](https://github.com/trufflesecurity/trufflehog)
+**Target skill:** new `qa-secrets`
+**Description:**
+Runs TruffleHog across the full git history and staged diff, validating detected credentials against live APIs to distinguish verified (active) secrets from unverified false positives. Blocks commit/merge if verified secrets are found. Reports secret type, file, and line for each finding. Complementary to qa-security (DAST) — this is a static, pre-merge gate.
+
+---
+
+#### BL-068 — Accessibility Regression Diffing `[S]`
+**Source:** Lost Pixel / Argos baseline-diff pattern applied to axe-core data
+**Target skill:** `qa-a11y` enhancement
+**Description:**
+Stores an axe-core violation baseline per page after each run and diffs on the next CI run — surfacing only *newly introduced* violations rather than the full list every time. Prevents the "fix one violation, ship three new ones" pattern that makes a11y CI alerts noisy. Mirrors the visual regression baseline approach already used in qa-visual.
+
+---
+
+#### BL-069 — Test Coverage Delta Gate `[S]`
+**Source:** Codecov CI gate pattern + deepeval coverage enforcement
+**Target skill:** new `qa-coverage-gate`
+**Description:**
+After test runs, computes per-file coverage delta between base branch and PR branch using the project's existing coverage tooling (Jest/pytest/go test/dotnet). Blocks merge if changed files drop below a configurable threshold. Generates LLM-suggested test stubs for the uncovered lines alongside the CTRF block report.
+
+---
+
+#### BL-070 — Unified QA Dashboard / Sprint Report `[S]`
+**Source:** ctrf-io ecosystem (already used) + cross-skill aggregation pattern
+**Target skill:** new `qa-report`
+**Description:**
+Aggregates CTRF output from all qa-* skills run in a CI pipeline or sprint, producing a single executive HTML/Markdown report: pass/fail trend by skill, flakiness index, coverage delta, performance budget adherence, and an LLM-generated "top 3 risk areas" narrative. Posts as a PR comment or Slack/Teams message via existing CTRF reporters.
+
+---
+
+#### BL-071 — Test Cost Tracking & Budget Gate `[S]`
+**Source:** [agentops-ai/agentops](https://github.com/agentops-ai/agentops) + deepeval cost tracking
+**Target skill:** new `qa-cost`
+**Description:**
+Instruments all AI API calls made during QA runs (qa-visual, qa-explore, qa-simulate, etc.) using token-count hooks, aggregates total cost per skill and per PR, and can block CI if a run exceeds a configured budget. Provides a cost breakdown report alongside CTRF output — financial observability alongside functional observability.
+
+---
+
+#### BL-072 — CI Build Intelligence from OTel Traces `[S]`
+**Source:** Honeycomb buildevents (already integrated) + AgentOps analysis pattern
+**Target skill:** new `qa-ci-trace`
+**Description:**
+Analyzes the OTel build trace data (already emitted via Honeycomb buildevents) to identify: slowest test stages, flappy infrastructure steps, parallelism opportunities, and recurring failure patterns across the last N runs. Produces an actionable CI optimization report as a Markdown artifact. Closes the observability loop on the test infrastructure itself, not just the application.
+
+---
+
+#### BL-073 — Natural Language Spec-to-Test Generation `[S]`
+**Source:** [antiwork/shortest](https://github.com/antiwork/shortest) + [Addepto/contextcheck](https://github.com/Addepto/contextcheck)
+**Target skill:** new `qa-spec-to-test`
+**Description:**
+Reads product spec documents (Markdown PRDs, Confluence exports, plain text) and uses an LLM to extract testable acceptance criteria, generating a structured YAML test plan that can be handed to the existing qa-team skill battery for execution. Lower-friction alternative to qa-manager Mode A — no JIRA/Figma integration required.
+
+---
+
+#### BL-074 — Multi-Model Functional Assertion Consensus `[S]`
+**Source:** [bug0inc/passmark](https://github.com/bug0inc/passmark)
+**Target skill:** `qa-explore` + `qa-simulate` enhancement
+**Description:**
+Extends the existing multi-model visual consensus (already implemented for screenshots) to cover *functional* browser assertions: "did the checkout flow complete correctly?" judged by Claude and Gemini independently, with a third model arbitrating disagreements. Reduces false positives in exploratory and simulate runs without selector dependency.
+
+---
+
+### 🟡 P2 — Medium Effort / Significant Capability
+
+#### BL-075 — LLM Mutation Testing `[M]`
+**Source:** [codeintegrity-ai/mutahunter](https://github.com/codeintegrity-ai/mutahunter)
+**Target skill:** new `qa-mutate`
+**Description:**
+Uses an LLM to generate semantically meaningful code mutations (beyond rule-based operator sets) then runs the existing test suite against each mutant to score fault-detection effectiveness. Produces a mutation score, list of surviving mutants (pointing to undertested logic), and suggested test additions. Language-agnostic; emits CTRF-compatible report.
+- Complements qa-audit (which evaluates test quality heuristically) with a rigorous empirical measure
+
+---
+
+#### BL-076 — LLM Red-Teaming / Jailbreak Scan `[M]`
+**Source:** [NVIDIA/garak](https://github.com/NVIDIA/garak) + [LLAMATOR-Core/llamator](https://github.com/LLAMATOR-Core/llamator)
+**Target skill:** new `qa-llm-redteam`
+**Description:**
+Runs a structured battery of adversarial probes (prompt injection, jailbreaks, data leakage, hallucination snowballing, DAN-style attacks, encoding tricks) against an LLM API endpoint or chatbot surface deployed in the target application. Produces an OWASP-LLM-aligned vulnerability report with severity ratings. Distinct from qa-security (web-surface DAST) and qa-meta-eval (skill harness eval).
+
+---
+
+#### BL-077 — Promptfoo Prompt Regression `[M]`
+**Source:** [promptfoo/promptfoo](https://github.com/promptfoo/promptfoo)
+**Target skill:** new `qa-prompt-regression`
+**Description:**
+Reads a prompt config YAML listing prompt variants, models, and expected output assertions (exact match, regex, semantic similarity, LLM judge). Runs all combinations and compares results against a stored golden baseline, flagging regressions when model behavior changes across releases or model upgrades. Ships prompts as code with the same regression safety net as traditional code.
+
+---
+
+#### BL-078 — RAG / Chatbot Eval Pipeline `[M]`
+**Source:** [confident-ai/deepeval](https://github.com/confident-ai/deepeval) + [Addepto/contextcheck](https://github.com/Addepto/contextcheck)
+**Target skill:** new `qa-rag-eval`
+**Description:**
+Given a set of question-answer pairs and retrieval context, evaluates a RAG or chatbot endpoint for answer relevancy, faithfulness, contextual precision, and hallucination rate using LLM-as-judge metrics. Generates a structured eval report and can block CI if hallucination rate exceeds a configured threshold. Emits CTRF with per-metric pass/fail assertions.
+
+---
+
+#### BL-079 — AI Agent Guardrail Policy Testing `[M]`
+**Source:** [invariantlabs-ai/invariant](https://github.com/invariantlabs-ai/invariant)
+**Target skill:** new `qa-guardrails`
+**Description:**
+Exercises an AI agent under test by feeding it adversarial multi-step scenarios designed to trigger guardrail violations (unauthorized tool calls, data exfiltration patterns, prompt injection chains). Uses Invariant-style rule assertions to verify the agent rejects or escalates each unsafe scenario. Generates a pass/fail CTRF report per rule.
+- Complements qa-llm-redteam (attack discovery) with structured *policy assertion testing* (guardrail correctness)
+
+---
+
+#### BL-080 — Multi-Turn Conversation Red-Team `[M]`
+**Source:** [langwatch/scenario](https://github.com/langwatch/scenario) RedTeamAgent + [Giskard-AI/giskard-oss](https://github.com/Giskard-AI/giskard-oss)
+**Target skill:** `qa-llm-redteam` Mode B or standalone `qa-redteam-conv`
+**Description:**
+Extends single-turn LLM red-teaming with multi-turn scenarios: an adversarial UserSimulator sends increasingly manipulative messages across a session to test whether guardrails hold under accumulated context pressure (session-level injection, context poisoning, gradual jailbreak escalation). Single-turn and multi-turn escalation are fundamentally different attack surfaces.
+
+---
+
+#### BL-081 — Scenario-Based Agent Conversation Testing `[M]`
+**Source:** [langwatch/scenario](https://github.com/langwatch/scenario) (871 stars)
+**Target skill:** new `qa-scenario`
+**Description:**
+Defines multi-turn conversation scenarios (YAML or code) with a UserSimulator generating messages until a goal state or max turns is reached; a JudgeAgent evaluates the agent under test at configurable checkpoints. Supports scripted and autopilot modes. Distinct from qa-simulate (UI journeys) — targets *conversational AI agents* (chatbots, copilots, support agents).
+
+---
+
+#### BL-082 — Property-Based API Fuzz Testing `[M]`
+**Source:** [dubzzz/fast-check](https://github.com/dubzzz/fast-check) + Hypothesis (Python)
+**Target skill:** `qa-api` enhancement or new `qa-fuzz`
+**Description:**
+Uses fast-check (JS/TS) or Hypothesis (Python) to generate random, adversarial, and edge-case inputs against API endpoints with automatic shrinking to the minimal reproducing example. Catches integer overflows, injection points, and boundary failures not modeled in schema — complements contract testing with property-based exploration.
+
+---
+
+#### BL-083 — AI Code Review PR Gate `[M]`
+**Source:** [mattzcarey/shippie](https://github.com/mattzcarey/shippie) (2.4k stars) + [Codium-ai/pr-agent](https://github.com/Codium-ai/pr-agent)
+**Target skill:** new `qa-code-review`
+**Description:**
+On every PR diff, runs an LLM-powered review flagging: exposed secrets, unhandled edge cases, performance anti-patterns, missing test coverage for changed logic, and prompt injection in code. Blocks merge on high-severity findings. Outputs SARIF + CTRF report. Fills the static/diff-time gap not covered by runtime testing skills.
+
+---
+
+#### BL-084 — Data Quality Expectations Gate `[M]`
+**Source:** [great-expectations/great_expectations](https://github.com/great-expectations/great_expectations) (11.5k stars)
+**Target skill:** new `qa-data`
+**Description:**
+Reads Great Expectations suite YAMLs (or generates them from data samples) and validates data pipelines, test fixtures, or database states against typed expectations (row counts, column distributions, null rates, schema conformance). Flags data drift that could cause production regressions. Extends qa-seed (seeding) with correctness validation.
+
+---
+
+#### BL-085 — Production Trace Shadow Testing `[M]`
+**Source:** GoReplay (already integrated) + OTel semantic diffing pattern from langfuse
+**Target skill:** `qa-observability` enhancement or new `qa-shadow`
+**Description:**
+Captures a sample of live production requests (via GoReplay or OTel span tails), replays them against a staging/canary deployment, and compares response semantics (status codes, shape, latency P99) against the production baseline. Surfaces divergences before full traffic cut-over. Extends the existing GoReplay integration with semantic diff.
+
+---
+
+#### BL-086 — Test Flakiness Root-Cause Analysis `[M]`
+**Source:** CTRF flaky registry (already built) + qa-observability + git blame pattern
+**Target skill:** new `qa-flaky-rca`
+**Description:**
+Given a CTRF report showing flaky tests (tracked by the flaky registry), uses LLM analysis of test logs, git blame on affected files, and OTel traces from flaky runs to generate a ranked list of likely root causes with remediation suggestions. Goes beyond flagging *which* tests are flaky to diagnosing *why*. Distinct from qa-heal (broken selectors) — targets timing/state/infrastructure flakiness.
+
+---
+
+#### BL-087 — Ephemeral Preview Environment QA Gate `[M]`
+**Source:** LambdaTest AI-native quality validation + Stagehand CI integration pattern
+**Target skill:** new `qa-preview`
+**Description:**
+On PR open, orchestrates spinning up an ephemeral deployment (via existing deploy config), running the full qa-team suite against it, posting a consolidated QA report as a PR comment, and tearing down on PR close. Owns the full preview environment lifecycle — the orchestration glue between preview deploy workflows and the QA skill battery.
+
+---
+
+#### BL-088 — Service Dependency Smoke Test `[S]`
+**Source:** [SwissLife-OSS/squadron](https://github.com/SwissLife-OSS/squadron) + Testcontainers (already integrated)
+**Target skill:** new `qa-deps`
+**Description:**
+Uses Testcontainers to spin up all declared service dependencies (from docker-compose or test-env.yml), runs lightweight smoke tests verifying each service is healthy and correctly wired (DB migrations applied, queue reachable, cache responsive), then tears down. Catches infrastructure drift before full integration tests run. Distinct from per-agent isolation already in qa-team.
+
+---
+
+#### BL-089 — GraphQL Schema Testing `[M]`
+**Source:** [schemathesis/schemathesis](https://github.com/schemathesis/schemathesis) GraphQL support
+**Target skill:** `qa-api` enhancement or new `qa-graphql`
+**Description:**
+Given a GraphQL schema, generates and executes tests covering: query/mutation correctness, deprecation warnings, N+1 detection via query complexity scoring, field-level null safety, and breaking-change detection between branches. Flags breaking changes as CI blockers. Fills the gap between REST contract testing (already covered) and GraphQL's distinct concerns.
+
+---
+
+#### BL-090 — Schema-Driven E2E Test Generation `[M]`
+**Source:** MeterSphere AI test generation + Stagehand + OpenAPI→Playwright pattern
+**Target skill:** `qa-web` enhancement or new `qa-generate`
+**Description:**
+Reads the project's OpenAPI/GraphQL schema and uses an LLM to generate a Playwright E2E test suite covering user-facing flows implied by the API surface, storing tests under version control for human review. Targets UI flows exercising the API indirectly — complementary to qa-manager Mode A (JIRA-driven) with a purely technical, schema-driven route.
+
+---
+
+#### BL-091 — LLM Output Production Monitoring `[M]`
+**Source:** [whylabs/langkit](https://github.com/whylabs/langkit) + [comet-ml/opik](https://github.com/comet-ml/opik)
+**Target skill:** new `qa-llm-monitor`
+**Description:**
+Instruments production LLM calls (via SDK wrapper or proxy) to collect response quality metrics: toxicity score, sentiment drift, refusal rate, prompt injection detection, response length trends. Fires alerts when metrics cross configured thresholds. Analogous to qa-observability for OTel traces but focused on LLM output content quality in production.
+
+---
+
+### 🔵 P3 — Research / Evaluate Further
+
+#### BL-092 — Smart Test Selection / Impact Analysis `[L]`
+**Source:** Buildkite Test Engine + Meta just-in-time testing approach (InfoQ 2025)
+**Target skill:** new `qa-impact`
+**Description:**
+Analyzes the PR diff to determine which source modules changed, maps them to corresponding test files via import graph traversal and heuristic coverage data, and produces a minimized test-run plan. Can reduce CI runtime by 40-80% on large test suites. High value but requires deep language-specific static analysis integration.
+
+---
+
+#### BL-093 — AI Agent Trajectory Regression Testing `[M]`
+**Source:** [web-arena-x/webarena](https://github.com/web-arena-x/webarena) + LangChain Trajectory pattern
+**Target skill:** new `qa-trajectory`
+**Description:**
+Captures the sequence of tool calls an LLM agent makes during a task ("trajectory"), stores it as a golden file, and asserts on subsequent runs that the agent follows the expected reasoning path (exact, wildcard, or unordered). Flags efficiency regressions where a model version makes more tool calls for the same result. Relevant to teams shipping AI-powered features.
+
+---
+
+#### BL-094 — Behavioral Slice Testing for ML/Recommenders `[M]`
+**Source:** [jacopotagliabue/reclist](https://github.com/jacopotagliabue/reclist) (473 stars)
+**Target skill:** new `qa-behavioral`
+**Description:**
+Defines sliced behavioral invariants for ML model outputs (e.g., "accuracy on new users must not be more than 5% below accuracy on returning users"). Runs assertions across data slices and generates a metric report per slice. Relevant to teams shipping recommendation engines, search ranking, or ML-backed features where aggregate metrics mask systematic regressions.
+
+---
+
+#### BL-095 — LLM Fuzz Harness Generation `[L]`
+**Source:** [google/oss-fuzz-gen](https://github.com/google/oss-fuzz-gen)
+**Target skill:** new `qa-oss-fuzz-gen`
+**Description:**
+Given the project's source tree, uses an LLM to auto-generate libFuzzer/AFL harnesses for C/C++/Rust/Go entry points. Submits harnesses to ClusterFuzzLite and reports coverage delta and crashes found. Relevant to projects with native modules, WebAssembly, or security-sensitive parsing code. Complementary to qa-security (DAST, not protocol-level fuzzing).
+
+---
+
+#### BL-096 — Agent Benchmark Scoring `[L]`
+**Source:** [AgentBench](https://github.com/AgentBench/agentbench)
+**Target skill:** new `qa-benchmark-agent`
+**Description:**
+Runs the project's AI agent(s) through a standardized task battery using a three-layer scoring rubric: structural (output exists?), metric (tool call count, error rate), and behavioral (tool choice appropriateness, error recovery). Produces a comparative score across agent configurations. Supports model upgrade decisions ("can we switch Sonnet → Haiku for this agent?").
+
+---
+
+#### BL-097 — Property-Based UI Testing `[M]`
+**Source:** [dubzzz/fast-check](https://github.com/dubzzz/fast-check) + Playwright integration
+**Target skill:** `qa-explore` enhancement or new `qa-ui-fuzz`
+**Description:**
+Generates random but valid user action sequences using property-based arbitraries: random form values, random navigation paths, random click sequences with invariant assertions ("cart total is always non-negative"). Uses algorithmic shrinking to find minimal reproducing sequences. Distinct from qa-explore (AI-driven) — catches different bug classes with deterministic reproducibility.
+
+---
+
+#### BL-098 — SLSA Supply Chain Provenance Gate `[S]`
+**Source:** [slsa-framework/slsa-github-generator](https://github.com/slsa-framework/slsa-github-generator)
+**Target skill:** new `qa-slsa`
+**Description:**
+Verifies SLSA provenance attestations for all build artifacts and third-party dependencies before release. Checks that build provenance chains to a trusted, non-tampered CI environment; flags unsigned or unverified artifacts. Integrates with the existing GitHub Actions workflow. Extends qa-security with supply-chain integrity verification.
+
+---
+
+## Round 4 Sources (2026-05-05)
+
+- [langwatch/scenario](https://github.com/langwatch/scenario)
+- [bug0inc/passmark](https://github.com/bug0inc/passmark)
+- [browserbase/stagehand](https://github.com/browserbase/stagehand)
+- [codeintegrity-ai/mutahunter](https://github.com/codeintegrity-ai/mutahunter)
+- [NVIDIA/garak](https://github.com/NVIDIA/garak)
+- [LLAMATOR-Core/llamator](https://github.com/LLAMATOR-Core/llamator)
+- [confident-ai/deepeval](https://github.com/confident-ai/deepeval)
+- [promptfoo/promptfoo](https://github.com/promptfoo/promptfoo)
+- [invariantlabs-ai/invariant](https://github.com/invariantlabs-ai/invariant)
+- [dubzzz/fast-check](https://github.com/dubzzz/fast-check)
+- [trufflesecurity/trufflehog](https://github.com/trufflesecurity/trufflehog)
+- [great-expectations/great_expectations](https://github.com/great-expectations/great_expectations)
+- [slsa-framework/slsa-github-generator](https://github.com/slsa-framework/slsa-github-generator)
+- [langfuse/langfuse](https://github.com/langfuse/langfuse)
+- [whylabs/langkit](https://github.com/whylabs/langkit)
+- [agentops-ai/agentops](https://github.com/agentops-ai/agentops)
+- [Giskard-AI/giskard-oss](https://github.com/Giskard-AI/giskard-oss)
+- [jacopotagliabue/reclist](https://github.com/jacopotagliabue/reclist)
+- [mattzcarey/shippie](https://github.com/mattzcarey/shippie)
+- [Codium-ai/pr-agent](https://github.com/Codium-ai/pr-agent)
+- [google/oss-fuzz-gen](https://github.com/google/oss-fuzz-gen)
+- [web-arena-x/webarena](https://github.com/web-arena-x/webarena)
 
 ---
 
