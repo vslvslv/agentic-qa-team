@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 21 | score: 100/100 | date: 2026-05-03 -->
-<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis, checkly/playwright-examples, Playwright GitHub issues -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 22 | score: 100/100 | date: 2026-05-04 -->
+<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage -->
 
 ---
 
@@ -5404,3 +5404,107 @@ const better = page.locator('.submit-button').normalize();  // → getByRole('bu
 const aiTree = await page.ariaSnapshot({ mode: 'ai' });   // full-page, compact for LLMs
 const aiNav  = await page.getByRole('navigation').ariaSnapshot({ mode: 'ai' });
 ```
+
+---
+
+## Codegen & Test Recording
+
+### Using `npx playwright codegen` (CLI Inspector)
+
+Playwright's built-in codegen tool records browser interactions and emits TypeScript test code. Use it for bootstrap — always review and refine the output. The inspector prioritizes `getByRole`, `getByLabel`, and `getByTestId` locators automatically.
+
+```bash
+# Start a recording session against localhost:3000
+npx playwright codegen http://localhost:3000
+
+# Start with an authenticated state already loaded
+npx playwright codegen --load-storage=e2e/.auth/user.json http://localhost:3000
+
+# Specify viewport to match your test configuration
+npx playwright codegen --viewport-size=1280,720 http://localhost:3000
+
+# Generate code in a specific language (Java, Python, C# also supported)
+npx playwright codegen --target=playwright-test http://localhost:3000
+```
+
+**VS Code extension:** The Playwright VS Code extension adds a "Record new" button that inserts generated code at the cursor position in the currently open spec file — more ergonomic than CLI for incremental recording.
+
+**Codegen limits — where human review is required:**
+- Custom page route interceptions (`page.route(...)`) are not recorded; add them manually.
+- Assertion toolbar lets you insert `expect` calls for visibility, text, and value — use it during recording.
+- Dynamic values (timestamps, generated IDs) need to be replaced with regex matchers or test fixtures.
+- As of Chrome 136+, the default user data directory cannot be used for codegen; always use `--load-storage` or a fresh profile. [community]
+
+```typescript
+// Example of generated code after manual refinement — original codegen uses getByRole by default
+// Original generated (kept as-is — already good practice):
+await page.getByRole('button', { name: 'Add to cart' }).click();
+await expect(page.getByRole('alert')).toHaveText('Item added');
+
+// Refine dynamic values (codegen captures exact strings — swap for regex where needed):
+// Before: await expect(page.locator('.order-id')).toHaveText('ORD-1234567');
+// After:
+await expect(page.locator('[data-testid="order-id"]')).toHaveText(/^ORD-\d+$/);
+```
+
+> **[community]** WHY: Teams that run codegen recordings directly without refinement accumulate brittle hardcoded text strings. The recorder captures the exact text visible at recording time — prices, dates, usernames. These become instant failures in environments with different test data or in multi-locale setups. Treat codegen output as a scaffold: roles and labels are keepers, exact text content usually is not.
+
+---
+
+## E2E Coverage with `vite-plugin-istanbul`  [community]
+
+Playwright tests do not collect code coverage by default because the browser runtime is separate from the test runner. Use `vite-plugin-istanbul` to instrument the app bundle, then collect coverage in `page.coverage` or via the Istanbul global.
+
+```typescript
+// vite.config.ts — instrument for coverage (only in test builds)
+import istanbul from 'vite-plugin-istanbul';
+
+export default defineConfig({
+  plugins: [
+    istanbul({
+      include: 'src/*',
+      exclude: ['node_modules', 'test/'],
+      extension: ['.js', '.ts', '.tsx'],
+      requireEnv: false,
+      forceBuildInstrument: process.env.E2E_COVERAGE === 'true',
+    }),
+  ],
+});
+```
+
+```typescript
+// e2e/fixtures/coverage.ts — collect and merge coverage per test
+import { test as base } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
+
+export const test = base.extend<{}, { coverageDir: string }>({
+  coverageDir: [async ({}, use) => {
+    const dir = path.join(process.cwd(), '.nyc_output');
+    fs.mkdirSync(dir, { recursive: true });
+    await use(dir);
+  }, { scope: 'worker' }],
+});
+
+// In your test, collect coverage after each scenario:
+// const coverage = await page.evaluate(() => (window as any).__coverage__);
+// fs.writeFileSync(path.join(coverageDir, `${testInfo.testId}.json`), JSON.stringify(coverage));
+```
+
+```bash
+# Run with coverage instrumentation enabled
+E2E_COVERAGE=true npx playwright test
+
+# Merge coverage reports and generate HTML
+npx nyc report --reporter=html --reporter=lcov
+
+# View coverage
+open coverage/index.html
+```
+
+> **[community]** WHY: E2E coverage reveals untested code paths that unit tests miss — especially dead feature flags, legacy fallback paths, and error-handling branches that only trigger under real user flows. Teams using Playwright + Istanbul report finding 15–30% of code paths only exercised by E2E tests. The `mxschmitt/playwright-test-coverage` repo provides a ready-made setup. [community]
+
+**Gotchas:**
+- Istanbul instrumentation increases bundle size significantly; only enable in `E2E_COVERAGE=true` builds, never in production.
+- Coverage data lives in `window.__coverage__` — collect it in `afterEach` before navigation clears the page context.
+- `page.coverage` (Chrome DevTools Protocol) collects V8 coverage and works without instrumentation, but reports line-level coverage without branch data. Use Istanbul for branch coverage. [community]

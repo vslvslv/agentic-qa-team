@@ -185,6 +185,7 @@ prior work rather than duplicate it.
 | Appium | Python | `qa-mobile/references/appium-patterns-python.md` |
 | Appium | C# | `qa-mobile/references/appium-patterns-csharp.md` |
 | Maestro | YAML | `qa-mobile/references/maestro-patterns.md` |
+| Vitest | TypeScript | `qa-web/references/vitest-patterns.md` |
 | API testing | TypeScript | `qa-api/references/api-patterns-typescript.md` |
 | API testing | Java | `qa-api/references/api-patterns-java.md` |
 | API testing | Python | `qa-api/references/api-patterns-python.md` |
@@ -201,9 +202,17 @@ prior work rather than duplicate it.
 | C# | `https://playwright.dev/dotnet/docs/` |
 
 Pages to fetch (append to base URL):
-`best-practices`, `pom`, `locators`, `test-fixtures`, `test-assertions`, `api-testing`, `network`, `auth`, `release-notes`, `test-retries`, `trace-viewer`, `test-components`
+`best-practices`, `pom`, `locators`, `test-fixtures`, `test-assertions`, `api-testing`, `network`, `auth`, `release-notes`, `test-retries`, `trace-viewer-intro`, `test-components`, `test-reporters`, `codegen`, `test-global-setup-teardown`, `test-parallel`, `test-sharding`, `accessibility-testing`
 
-**See also:** `qa-web/references/playwright-patterns.md` (TypeScript) and `qa-web/references/playwright-patterns-csharp.md` (C#) — see reference files table above.
+**See also:** `qa-web/references/playwright-patterns.md` (TypeScript), `qa-web/references/playwright-patterns-csharp.md` (C#), and `qa-web/references/vitest-patterns.md` (Vitest/TypeScript) — see reference files table above.
+
+**Vitest (TypeScript only):**
+- `https://vitest.dev/guide/` — configuration, mocking, coverage, in-source testing
+- `https://vitest.dev/guide/coverage` — V8 vs Istanbul coverage providers
+- `https://vitest.dev/guide/workspace` — monorepo workspace setup
+- `https://github.com/vitest-dev/vitest` — community examples and issues
+
+**See also:** `qa-web/references/vitest-patterns.md` (TypeScript) — 7 community gotchas including `vi.mock` hoisting, jsdom environment overhead, globals TypeScript config, fake timer `Date` behavior, snapshot line endings, ES module spying, and V8 vs Istanbul branch coverage.
 
 **k6 (JS only):**
 - `https://grafana.com/docs/k6/latest/using-k6/best-practices/`
@@ -214,6 +223,11 @@ Pages to fetch (append to base URL):
 - `https://grafana.com/docs/k6/latest/javascript-api/k6-secrets/`  (v1.4+ secrets management)
 - `https://grafana.com/docs/k6/latest/javascript-api/k6-browser/`   (browser module getBy* locators)
 - `https://grafana.com/docs/k6/latest/set-up/upgrade-to-k6-v2/`    (v2.0.0 migration guide)
+- `https://grafana.com/docs/k6/latest/using-k6-browser/`           (browser module overview; Web Vitals)
+- `https://grafana.com/docs/k6/latest/testing-guides/`             (test type hub: smoke/load/stress/soak/spike/breakpoint)
+- `https://grafana.com/docs/k6/latest/using-k6/protocols/grpc/`    (gRPC unary + streaming + reflection)
+- `https://grafana.com/docs/k6/latest/results-output/`             (summary, real-time, JSON/InfluxDB/cloud)
+- `https://grafana.com/docs/k6/latest/using-k6/modules/`           (module types, Webpack bundling, TS native support)
 <!-- See also: qa-perf/references/k6-patterns.md — verified against k6 v1.7.1; v2.0.0-rc1 breaking changes documented including: externally-controlled executor removed, CLI commands removed, browser_web_vital_fid → browser_web_vital_inp, options.ext.loadimpact → options.cloud, --no-summary → --summary-mode=disabled -->
 
 **Detox (JS only):**
@@ -247,8 +261,9 @@ Pages to fetch (append to base URL):
 - `https://docs.cypress.io/api/commands/selectfile`
 - `https://docs.cypress.io/guides/end-to-end-testing/testing-strategies`
 - `https://docs.cypress.io/guides/component-testing/overview`
+- `https://docs.cypress.io/guides/cloud/introduction`   (Smart Orchestration, parallel CI, MCP integration)
 
-**See also:** `qa-web/references/cypress-patterns.md` (TypeScript/JavaScript) — 66 patterns including Shadow DOM, GraphQL intercept, CDP throttling, cy.all(), WebKit testing, Smart Orchestration, and 35 [community] gotchas
+**See also:** `qa-web/references/cypress-patterns.md` (TypeScript/JavaScript) — 66+ patterns including Shadow DOM, GraphQL intercept, CDP throttling, cy.all(), WebKit testing, Smart Orchestration, Cypress Cloud MCP integration, and 35+ [community] gotchas
 
 **Selenium — language-independent docs (fetch for all `TARGET_LANG`):**
 - `https://www.selenium.dev/documentation/webdriver/`

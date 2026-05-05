@@ -9,10 +9,10 @@ before falling back to hardcoded URLs (catalog-first integration).
 
 | Domain | File | Entries | Last Updated |
 |--------|------|---------|--------------|
-| QA Tools | [qa-tools.md](qa-tools.md) | 86 | 2026-05-04 |
-| QA Methodology | [qa-methodology.md](qa-methodology.md) | 26 | 2026-05-04 |
-| Languages | [languages.md](languages.md) | 33 | 2026-05-04 |
-| Security, A11y & AI Testing | [security-a11y-ai.md](security-a11y-ai.md) | 43 | 2026-05-04 |
+| QA Tools | [qa-tools.md](qa-tools.md) | 101 | 2026-05-04 |
+| QA Methodology | [qa-methodology.md](qa-methodology.md) | 29 | 2026-05-04 |
+| Languages | [languages.md](languages.md) | 52 | 2026-05-04 |
+| Security, A11y & AI Testing | [security-a11y-ai.md](security-a11y-ai.md) | 48 | 2026-05-04 |
 
 ## Usage by Refine Skills
 

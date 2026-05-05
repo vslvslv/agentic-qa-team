@@ -1,5 +1,5 @@
 # Learning Sources: QA Tools
-<!-- updated: 2026-05-04 | entries: 86 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-04 | entries: 101 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobile`
 
@@ -46,6 +46,17 @@ Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobi
 | k6 Browser Module | https://grafana.com/docs/k6/latest/using-k6-browser/ | official-docs | k6 / browser | 2026-05-04 | ⭐ Browser automation built into k6; Web Vitals metrics |
 | Vitest Docs | https://vitest.dev/guide/ | official-docs | Vitest / TypeScript | 2026-05-04 | ⭐ Vite-native test runner; Jest-compatible, 16.5k stars |
 | Robot Framework User Guide | https://robotframework.org/robotframework/latest/RobotFrameworkUserGuide.html | official-docs | Robot Framework | 2026-05-04 | ⭐ Keyword-driven / BDD / RPA; 11.6k stars |
+| Playwright Test Generator | https://playwright.dev/docs/codegen | official-docs | Playwright | 2026-05-04 | ⭐ Record-and-replay codegen via VS Code and CLI inspector |
+| Playwright Page Object Models | https://playwright.dev/docs/pom | official-docs | Playwright | 2026-05-04 | ⭐ POM pattern — higher-level API, centralised selectors |
+| Playwright Parallelism | https://playwright.dev/docs/test-parallel | official-docs | Playwright | 2026-05-04 | ⭐ Worker config, fullyParallel, serial mode, workerIndex |
+| Playwright Test Sharding | https://playwright.dev/docs/test-sharding | official-docs | Playwright | 2026-05-04 | ⭐ Shard across machines; blob reporter + merge-reports |
+| Playwright Global Setup/Teardown | https://playwright.dev/docs/test-global-setup-teardown | official-docs | Playwright | 2026-05-04 | ⭐ Project dependencies pattern (recommended) vs globalSetup |
+| Playwright Accessibility Testing | https://playwright.dev/docs/accessibility-testing | official-docs | Playwright / a11y | 2026-05-04 | ⭐ axe-core integration; WCAG 2.1 AA scanning in tests |
+| k6 Testing Guides | https://grafana.com/docs/k6/latest/testing-guides/ | official-docs | k6 | 2026-05-04 | ⭐ Hub: load types, distributed testing, synthetic monitoring |
+| k6 gRPC Protocol | https://grafana.com/docs/k6/latest/using-k6/protocols/grpc/ | official-docs | k6 / gRPC | 2026-05-04 | ⭐ Unary + streaming; reflection; health-check protocol |
+| k6 Results Output | https://grafana.com/docs/k6/latest/results-output/ | official-docs | k6 | 2026-05-04 | ⭐ Summary vs real-time metrics; JSON/InfluxDB/cloud outputs |
+| k6 Modules | https://grafana.com/docs/k6/latest/using-k6/modules/ | official-docs | k6 | 2026-05-04 | ⭐ Built-in, local, remote; Webpack bundle for Node.js deps |
+| Cypress Cloud | https://docs.cypress.io/guides/cloud/introduction | official-docs | Cypress | 2026-05-04 | ⭐ Smart Orchestration, parallel CI, MCP integration for AI tools |
 
 ---
 
@@ -102,3 +113,7 @@ Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobi
 | testcontainers/testcontainers-java | https://github.com/testcontainers/testcontainers-java | github-repo | Test environments / Java | 2026-05-04 | 🌟 8.6k stars — JUnit Docker integration testing |
 | robotframework/robotframework | https://github.com/robotframework/robotframework | github-repo | Robot Framework | 2026-05-04 | 🌟 11.6k stars — keyword-driven acceptance testing |
 | pactumjs/pactum | https://github.com/pactumjs/pactum | github-repo | API testing / Node | 2026-05-04 | 612 stars — REST API testing for all pyramid levels |
+| goldbergyoni/javascript-testing-best-practices | https://github.com/goldbergyoni/javascript-testing-best-practices | github-repo | JavaScript / Node | 2026-05-04 | 🌟 24.6k stars — 50+ best practices, lean testing guide |
+| mawrkus/js-unit-testing-guide | https://github.com/mawrkus/js-unit-testing-guide | github-repo | JavaScript | 2026-05-04 | 2k stars — AAA pattern, TDD, DI, Jest examples |
+| TheJambo/awesome-testing | https://github.com/TheJambo/awesome-testing | github-repo | All / curation | 2026-05-04 | 2.3k stars — curated list: API, security, visual, perf, a11y |
+| mxschmitt/playwright-test-coverage | https://github.com/mxschmitt/playwright-test-coverage | github-repo | Playwright / coverage | 2026-05-04 | vite-plugin-istanbul E2E coverage; HTML/LCOV reports |

@@ -1,5 +1,12 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 22 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: official | community | mixed | iteration: 23 | score: 100/100 | date: 2026-05-04 -->
+<!-- iteration trace (latest):
+     Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
+       immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
+       Frameworks overview (MSTest/NUnit/xUnit/TUnit, VSTest vs MTP) — sourced from
+       learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/record and
+       learn.microsoft.com/dotnet/core/testing/
+-->
 
 ## Core Philosophy
 
@@ -183,38 +190,207 @@ public void UpdateProfile(UserProfile profile, string newBio)
 }
 ```
 
-### Records — Immutable Value Objects
+### Records — Immutable Value Objects (Deep Dive)
 
 Records provide concise syntax for immutable data types with value equality, built-in `ToString`, and nondestructive mutation via `with`. Use `record class` for reference types with value semantics (DTOs, query results, domain events). Use `record struct` for small, stack-allocated value types.
 
+**Two declaration syntaxes:**
+
 ```csharp
-// Positional record — compiler generates constructor, properties, Equals, GetHashCode, ToString
-public record Address(string Street, string City, string PostalCode);
+// Positional syntax — compiler generates: public init-only properties, primary constructor,
+// Equals/GetHashCode/ToString, Deconstruct method
+public record Person(string FirstName, string LastName);
 
-// Nondestructive mutation with 'with' expression
-public record Order(int Id, string Status, Address DeliveryAddress);
+// Nominal syntax — explicit properties; use when you need different access modifiers
+public record Person
+{
+    public required string FirstName { get; init; }
+    public required string LastName  { get; init; }
+}
 
-var original = new Order(1, "Pending", new Address("123 Main St", "Seattle", "98101"));
-var updated = original with { Status = "Shipped" };
+// record struct — value type (stack-allocated, no GC pressure)
+public readonly record struct Point(double X, double Y);
 
-Console.WriteLine(original.Status);     // Pending
-Console.WriteLine(updated.Status);      // Shipped
-Console.WriteLine(original == updated); // False — value equality compares all properties
+// record struct (mutable variant — NOT readonly)
+public record struct DataMeasurement(DateTime TakenAt, double Measurement);
+```
 
-// Record with computed property — compute on access, not initialization
+**Value equality — by content, not by reference:**
+
+```csharp
+public record Person(string FirstName, string LastName);
+
+var p1 = new Person("Nancy", "Davolio");
+var p2 = new Person("Nancy", "Davolio");
+
+Console.WriteLine(p1 == p2);              // True — value equality
+Console.WriteLine(ReferenceEquals(p1, p2)); // False — different objects
+
+// WARNING: value equality is shallow — reference-type fields compare references
+var phoneNumbers = new string[1] { "555-1234" };
+var pa = new Person("Alice", "Smith") { /* can't add array here in positional */ };
+// (Use nominal syntax to add array fields)
+```
+
+**Nondestructive mutation with `with`:**
+
+```csharp
+public record Order(int Id, string Status, string Region);
+
+var original = new Order(1, "Pending", "West");
+var shipped  = original with { Status = "Shipped" };   // Creates a NEW instance
+var rerouted = original with { Status = "Shipped", Region = "East" };
+
+Console.WriteLine(original.Status);         // Pending — original unchanged
+Console.WriteLine(shipped.Status);          // Shipped
+Console.WriteLine(original == shipped);     // False
+Console.WriteLine(original == rerouted);    // False
+
+// IMPORTANT: Computed properties must use => (expression-bodied), NOT = (field init)
+// With '=', the value is computed at construction time and cached — WRONG after 'with':
+public record BadCircle(double Radius)
+{
+    public double Area { get; } = Math.PI * Radius * Radius;  // WRONG: stale after 'with'
+}
+
 public record Circle(double Radius)
 {
-    // Correct: re-computed on each access after 'with' mutation
-    public double Area => Math.PI * Radius * Radius;
-    // Wrong: = Math.PI * Radius * Radius — cached at init, stale after 'with'
+    public double Area => Math.PI * Radius * Radius;  // CORRECT: recomputed on access
 }
 
-// Record struct for value type (stack-allocated, no heap pressure)
-public readonly record struct Point(double X, double Y)
+var c1 = new Circle(3);
+var c2 = c1 with { Radius = 4 };
+Console.WriteLine(c2.Area);  // 50.26... — correct (Circle)
+```
+
+**Records with inheritance:**
+
+```csharp
+// Records can only inherit from other records (not classes)
+public abstract record Vehicle(string Make, string Model);
+public record Car(string Make, string Model, int Doors) : Vehicle(Make, Model);
+public record Truck(string Make, string Model, double PayloadTons) : Vehicle(Make, Model);
+
+// Value equality checks RUNTIME TYPE — two different record types are never equal
+Vehicle car   = new Car("Toyota", "Camry", 4);
+Vehicle truck = new Truck("Toyota", "Tacoma", 1.5);
+Console.WriteLine(car == truck);  // False — different runtime types
+
+var car2 = new Car("Toyota", "Camry", 4);
+Console.WriteLine(car == car2);   // True — same type and values
+
+// Deconstruct uses compile-time type (cast to derived type for all params)
+var (make, model) = car;           // Only Vehicle params (compile-time type)
+var (make2, model2, doors) = (Car)car;  // All Car params
+```
+
+**Shallow immutability — arrays and collections can still be mutated:**
+
+```csharp
+public record Person(string FirstName, string LastName, string[] PhoneNumbers);
+
+var person = new Person("Alice", "Smith", new[] { "555-1234" });
+person.PhoneNumbers[0] = "555-9999";  // This WORKS — array contents are mutable!
+// The reference to the array is init-only, not the array's contents.
+
+// Fix: use immutable collection types
+public record SafePerson(string FirstName, string LastName, IReadOnlyList<string> PhoneNumbers);
+// Or: System.Collections.Immutable.ImmutableArray<string>
+```
+
+**When NOT to use records — EF Core entity types:**
+
+```csharp
+// DO NOT use records as EF Core entity types.
+// EF Core requires reference equality to track entity identity (same DB row = same object).
+// Records use value equality — EF Core cannot distinguish two instances with identical values,
+// causing incorrect change tracking, duplicate inserts, and data corruption.
+
+// Use regular classes for EF Core entities:
+public class OrderEntity       // class — reference equality
 {
-    public double Distance => Math.Sqrt(X * X + Y * Y);
+    public int Id { get; set; }
+    public string Status { get; set; } = "";
+}
+
+// Use records for query result projections (read-only DTOs — no EF tracking):
+public record OrderDto(int Id, string Status, decimal Total);
+```
+
+### .NET Testing Frameworks Overview
+
+.NET supports four major test frameworks, each with slightly different philosophy and setup. All are compatible with `dotnet test` on the CLI.
+
+**Framework comparison:**
+
+| Framework | Philosophy | Key attributes | Platform support |
+|---|---|---|---|
+| **xUnit.net** | Modern; no setup/teardown in base class; constructor injection for fixtures | `[Fact]`, `[Theory]`, `[InlineData]` | VSTest + MTP |
+| **NUnit** | Port of JUnit; rich built-in assertions; flexible fixture model | `[Test]`, `[TestCase]`, `[SetUp]`, `[TearDown]` | VSTest + MTP |
+| **MSTest** | Microsoft's built-in; IDE integration; V2 fully open-source | `[TestMethod]`, `[DataRow]`, `[TestInitialize]` | VSTest + MTP |
+| **TUnit** | Built entirely on MTP; async-native; no VSTest dependency | `[Test]`, `[Arguments]`, `[DataSourceDriven]` | MTP only |
+
+**VSTest vs Microsoft Testing Platform (MTP):**
+- **VSTest** — the classic test host used by VS 2019 and earlier; well established, broad support.
+- **MTP (Microsoft.Testing.Platform)** — the modern replacement; faster startup, better parallelism, unified protocol. xUnit v3, NUnit, and MSTest all support MTP as of 2024–2025.
+- For new projects, prefer frameworks that support MTP (xUnit v3 recommended by the community; MSTest V3 for Microsoft-first teams).
+
+**Minimal xUnit setup:**
+
+```csharp
+// Install: dotnet add package xunit xunit.runner.visualstudio
+// MyFeature.Tests/CalculatorTests.cs
+using Xunit;
+
+public class CalculatorTests
+{
+    [Fact]
+    public void Add_TwoNumbers_ReturnsSum()
+    {
+        var calc = new Calculator();
+        var result = calc.Add(2, 3);
+        Assert.Equal(5, result);
+    }
+
+    [Theory]
+    [InlineData(2, 3, 5)]
+    [InlineData(-1, 1, 0)]
+    [InlineData(0, 0, 0)]
+    public void Add_VariousInputs_ReturnsCorrectSum(int a, int b, int expected)
+    {
+        var calc = new Calculator();
+        Assert.Equal(expected, calc.Add(a, b));
+    }
 }
 ```
+
+**ASP.NET Core integration testing (xUnit + WebApplicationFactory):**
+
+```csharp
+using Microsoft.AspNetCore.Mvc.Testing;
+using System.Net;
+using Xunit;
+
+public class OrdersApiTests : IClassFixture<WebApplicationFactory<Program>>
+{
+    private readonly HttpClient _client;
+
+    public OrdersApiTests(WebApplicationFactory<Program> factory)
+    {
+        // Creates an in-memory test server — no port allocation needed
+        _client = factory.CreateClient();
+    }
+
+    [Fact]
+    public async Task GetOrders_ReturnsOk()
+    {
+        var response = await _client.GetAsync("/api/orders");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+}
+```
+
+---
 
 ### Primary Constructors
 
@@ -2037,3 +2213,6 @@ var summaries = await _db.Orders
 | `ContinueWith` for sequential async | Nested lambdas, `AggregateException` wrapping, unobserved faults | Use `async`/`await` for all sequential async chains |
 | `&` / `|` in boolean guards | Both sides always evaluated; NRE when left side is null | Use `&&` / `||` for short-circuit boolean evaluation |
 | Regex compiled at runtime inside a method | New `Regex` object allocated on every call; parsing overhead per invocation | Use `[GeneratedRegex]` attribute with partial method for compile-time regex |
+| Records used as EF Core entity types | EF Core needs reference equality to track entity identity; records use value equality, causing duplicate inserts/corrupt change tracking | Use regular classes for EF entities; use records only for read-only DTOs/projections |
+| Mutable collection property on a record | Array/list contents can be mutated from outside — shallow immutability broken | Use `IReadOnlyList<T>` or `ImmutableArray<T>` for collection properties on records |
+| `new()` on a `record struct` positional type | Positional record structs auto-generate a `Deconstruct` — mixing positional and `new()` is fine, but forgetting `readonly` on the struct allows unintended mutation via boxing | Prefer `readonly record struct` for stack-allocated value objects |

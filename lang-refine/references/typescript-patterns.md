@@ -1,5 +1,12 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: official | community | mixed | iteration: 21 | score: 100/100 | date: 2026-05-04 -->
+<!-- iteration trace (latest):
+     Iter 21 (2026-05-04): added Type Narrowing Deep-Dive (all 9 techniques from official narrowing docs),
+       Conditional Types section (extends ternary, infer keyword, distributive types, built-in utilities),
+       Declaration Files & Merging section, and expanded TSConfig reference table — sourced from
+       typescriptlang.org/docs/handbook/2/narrowing.html, conditional-types.html,
+       declaration-files/deep-dive.html, and typescriptlang.org/tsconfig/
+-->
 
 ## Core Philosophy
 
@@ -340,59 +347,245 @@ default:
 
 ---
 
-### Type Narrowing Techniques — Full Toolkit
+### Type Narrowing — Full Toolkit
 
-TypeScript's narrowing system automatically tracks type constraints through control flow. Understanding all narrowing techniques lets you avoid unsafe `as` casts.
+TypeScript's narrowing system automatically tracks type constraints through control flow using nine distinct narrowing techniques. Understanding them all lets you avoid unsafe `as` casts.
 
+| Technique | Syntax | What it narrows |
+|---|---|---|
+| `typeof` | `typeof x === "string"` | Primitive types (`string`, `number`, `boolean`, `bigint`, `symbol`, `undefined`, `object`, `function`) |
+| Truthiness | `if (x)` | Removes `null`, `undefined`, `0`, `""`, `NaN`, `0n` |
+| Equality | `x === y` | Narrows to common type; `==` also removes both `null` and `undefined` |
+| `in` operator | `"prop" in obj` | Property presence (optional props appear in both branches) |
+| `instanceof` | `x instanceof Date` | Prototype chain / constructor check |
+| Assignment | `x = "hello"` | Narrows observed type after assignment |
+| Control flow | Reachability analysis | Automatic — TypeScript infers through if/else/switch/return |
+| Type predicates | `(x: T): x is S` | Custom user-defined type guard via `is` keyword |
+| Discriminated unions | `kind: "circle"` | Literal discriminant property + union |
+
+**`typeof` gotcha — `typeof null === "object"`:**
 ```typescript
-type Payload =
-  | string
-  | number
-  | null
-  | { type: 'user'; id: string }
-  | { type: 'product'; sku: string };
-
-function processPayload(payload: Payload): string {
-  // typeof narrowing
-  if (typeof payload === 'string') return payload.toUpperCase();
-  if (typeof payload === 'number') return payload.toFixed(2);
-
-  // null check (equality narrowing)
-  if (payload === null) return '(null)';
-
-  // 'in' operator narrowing — checks property existence
-  if ('id' in payload) return `User: ${payload.id}`;
-
-  // Discriminant narrowing via literal property
-  switch (payload.type) {
-    case 'product': return `SKU: ${payload.sku}`;
-  }
-
-  // TypeScript knows this is unreachable
-  const _never: never = payload;
-  return _never;
-}
-
-// instanceof narrowing for class hierarchies
-class ApiError extends Error {
-  constructor(public readonly status: number, message: string) {
-    super(message);
+function printAll(strs: string | string[] | null) {
+  if (typeof strs === "object") {
+    // strs is still string[] | null — typeof null === "object" in JS!
+    for (const s of strs) {  // Error: strs is possibly null
+      console.log(s);
+    }
   }
 }
+// Fix: combine typeof with null check
+if (strs !== null && typeof strs === "object") { ... }
+```
 
-function handleError(err: unknown): string {
-  if (err instanceof ApiError) return `API ${err.status}: ${err.message}`;
-  if (err instanceof Error)    return `Error: ${err.message}`;
-  return `Unknown: ${String(err)}`;
+**Truthiness narrowing — empty string is falsy:**
+```typescript
+// ANTI-PATTERN: filters out empty string ''
+function processStr(s: string | null) {
+  if (s) { /* '' never reaches here */ }
+}
+// FIX: explicit null check
+function processStr(s: string | null) {
+  if (s !== null) { /* '' is handled correctly */ }
+}
+```
+
+**`in` operator with optional properties:**
+```typescript
+type Fish  = { swim: () => void };
+type Bird  = { fly: () => void };
+type Human = { swim?: () => void; fly?: () => void };
+
+function move(animal: Fish | Bird | Human) {
+  if ("swim" in animal) {
+    animal; // Fish | Human (both have swim — optional counts)
+  } else {
+    animal; // Bird | Human
+  }
+}
+```
+
+**User-defined type predicates (`is` keyword):**
+```typescript
+function isFish(pet: Fish | Bird): pet is Fish {
+  return (pet as Fish).swim !== undefined;
 }
 
-// Truthiness narrowing + assignment narrowing
-function processName(name: string | null | undefined): string {
-  // Truthiness: eliminates null and undefined (but also '' and 0)
-  if (!name) return 'Anonymous';
-  // Here name is string (non-empty due to truthiness)
-  return name.trim();
+// Type predicate enables typed filter — array method returns Fish[]
+const zoo: (Fish | Bird)[] = [getSmallPet(), getSmallPet()];
+const fishOnly: Fish[] = zoo.filter(isFish);
+
+// Inline predicate in filter
+const underWater: Fish[] = zoo.filter((pet): pet is Fish => {
+  return "swim" in pet;
+});
+```
+
+**`never` exhaustiveness in discriminated unions:**
+```typescript
+interface Circle   { kind: 'circle';   radius: number; }
+interface Square   { kind: 'square';   side: number; }
+interface Triangle { kind: 'triangle'; base: number; height: number; }
+
+type Shape = Circle | Square | Triangle;
+
+function area(shape: Shape): number {
+  switch (shape.kind) {
+    case 'circle':   return Math.PI * shape.radius ** 2;
+    case 'square':   return shape.side ** 2;
+    case 'triangle': return 0.5 * shape.base * shape.height;
+    default: {
+      // TypeScript error if a new Shape variant is added without handling it
+      const _exhaustive: never = shape;
+      throw new Error(`Unhandled shape: ${JSON.stringify(_exhaustive)}`);
+    }
+  }
 }
+```
+
+---
+
+### Conditional Types
+
+Conditional types use an extends ternary to select types based on type relationships. They are the basis for many of TypeScript's built-in utility types.
+
+**Basic syntax:**
+```typescript
+// SomeType extends OtherType ? TrueType : FalseType
+type IsString<T> = T extends string ? true : false;
+type A = IsString<string>;  // true
+type B = IsString<number>;  // false
+```
+
+**`infer` keyword — extract types from the condition:**
+```typescript
+// Extract element type from array
+type Flatten<T> = T extends Array<infer Item> ? Item : T;
+type Str = Flatten<string[]>;  // string
+type Num = Flatten<number>;    // number
+
+// Extract return type from function
+type ReturnOf<T> = T extends (...args: never[]) => infer R ? R : never;
+type R = ReturnOf<() => Promise<User>>;  // Promise<User>
+
+// Extract the awaited value (equivalent to built-in Awaited<T>)
+type Resolved<T> = T extends Promise<infer U> ? U : T;
+type S = Resolved<Promise<string>>;  // string
+type N = Resolved<number>;           // number (passthrough)
+```
+
+**Distributive conditional types — distribution over unions:**
+```typescript
+// When T is a naked (unwrapped) type param, distributes over every union member
+type ToArray<T> = T extends any ? T[] : never;
+type StrArrOrNumArr = ToArray<string | number>;
+// → string[] | number[]  (distributed: ToArray<string> | ToArray<number>)
+
+// PREVENT distribution by wrapping in square brackets:
+type ToArrayNonDist<T> = [T] extends [any] ? T[] : never;
+type ArrOfStrOrNum = ToArrayNonDist<string | number>;
+// → (string | number)[]  (single array type, not distributed)
+```
+
+**Built-in conditional utility types:**
+```typescript
+// Exclude — remove U from T
+type Status = 'active' | 'inactive' | 'deleted';
+type LiveStatus = Exclude<Status, 'deleted'>;  // 'active' | 'inactive'
+
+// Extract — keep only what extends U
+type StringsOnly = Extract<string | number | boolean, string>;  // string
+
+// NonNullable — remove null and undefined
+type Safe = NonNullable<string | null | undefined>;  // string
+
+// ReturnType, Parameters — reflect function signatures
+function greet(name: string, times: number): string { return ''; }
+type GreetReturn = ReturnType<typeof greet>;     // string
+type GreetParams = Parameters<typeof greet>;     // [string, number]
+
+// InstanceType — extract class instance type
+class User { constructor(public name: string) {} }
+type UserInstance = InstanceType<typeof User>;   // User
+```
+
+**Practical use — replace function overloads:**
+```typescript
+// Without conditional types — three overloads needed
+function createLabel(id: number): IdLabel;
+function createLabel(name: string): NameLabel;
+function createLabel(idOrName: number | string): IdLabel | NameLabel { /* */ }
+
+// With conditional types — single generic signature
+type NameOrId<T extends number | string> = T extends number ? IdLabel : NameLabel;
+function createLabel<T extends number | string>(idOrName: T): NameOrId<T> {
+  // implementation
+}
+```
+
+---
+
+### Declaration Files & Declaration Merging
+
+A declaration file (`.d.ts`) describes the shape of existing JavaScript code to TypeScript. Understanding the types/values/namespaces distinction and merging rules is essential for writing accurate `.d.ts` files and augmenting third-party types.
+
+**Three declaration categories:**
+
+| Category | Created by |
+|---|---|
+| **Type** | `type`, `interface`, `class`, `enum`, import referring to a type |
+| **Value** | `let`/`const`/`var`, function, class, enum, import referring to a value |
+| **Namespace** | `namespace`, module with exports |
+
+The same name can mean all three: a `class Foo` creates both a type (the instance shape) and a value (the constructor). An `enum E` creates a type and a value.
+
+**Interface merging — augmenting third-party types:**
+```typescript
+// Extend an existing interface in a third-party library
+// In your project's types: globals.d.ts
+interface Window {
+  myAnalytics: AnalyticsClient;  // Merges with lib.dom.d.ts Window
+}
+
+// Multiple declarations merge automatically — order doesn't matter
+interface Foo { x: number; }
+interface Foo { y: number; }
+const f: Foo = { x: 1, y: 2 };  // Both members required
+```
+
+**Declaration merging of class + namespace (static members):**
+```typescript
+class Moment {
+  static now(): number { return Date.now(); }
+}
+namespace Moment {
+  export type Duration = { value: number; unit: 'ms' | 's' | 'm' }
+  export function fromDuration(d: Duration): Moment { /* */ return new Moment(); }
+}
+
+const d: Moment.Duration = { value: 30, unit: 's' };
+const m = Moment.fromDuration(d);  // Static method via namespace merge
+```
+
+**Module augmentation — adding types to external packages:**
+```typescript
+// Augment an npm package's types in your project
+// File: src/types/express.d.ts
+import 'express';
+
+declare module 'express' {
+  interface Request {
+    user?: { id: string; role: 'admin' | 'user' };
+  }
+}
+```
+
+**`type` aliases cannot be merged** — use `interface` when augmentation is needed:
+```typescript
+type Status = 'active';
+type Status = 'inactive';  // ERROR: Duplicate identifier 'Status'
+
+interface Config { debug: boolean; }
+interface Config { timeout: number; }  // OK — merges to { debug, timeout }
 ```
 
 ---
@@ -1787,7 +1980,32 @@ Key new defaults explained:
 
 ---
 
-## Testing Patterns with TypeScript
+### TSConfig Module & Target Selection
+
+Choosing the wrong `module`/`moduleResolution` pair is the most common tsconfig misconfiguration. Always keep them in sync.
+
+| Project type | `module` | `moduleResolution` | `target` |
+|---|---|---|---|
+| Node.js 16+ (ESM) | `nodenext` | `nodenext` | `ES2022` |
+| Node.js with bundler | `preserve` | `bundler` | `ES2020`+ |
+| Legacy CommonJS | `commonjs` | `node10` | `ES2017`+ |
+| Browser SPA (bundler) | `preserve` | `bundler` | `ES2020`+ |
+| Library (dual CJS+ESM) | `nodenext` | `nodenext` | `ES2020` |
+
+**`nodenext` key behaviour:** automatically selects CJS or ESM output based on the file extension (`.cjs`/`.mjs`) and the `"type"` field in `package.json`. Relative imports in ESM must include the `.js` extension even when the source is `.ts`.
+
+**Commonly misconfigured options and consequences:**
+
+| Misconfiguration | Consequence | Fix |
+|---|---|---|
+| `"module": "commonjs"` + `"moduleResolution": "node16"` | Mismatched pair — resolution errors on ESM-only packages | Keep module/moduleResolution in sync |
+| `"declaration": false` in a library | Consumers receive no type information; IDE shows `any` | Set `"declaration": true` and `"declarationMap": true` |
+| `"rootDir"` set but files outside it included | Build failure: file not under rootDir | Use `"composite": true` or adjust `include` |
+| `"skipLibCheck": false` | Much slower type-checking; fails on bad third-party `.d.ts` files | Use `"skipLibCheck": true` in app projects |
+| Missing `"noUnusedLocals"`/`"noUnusedParameters"` | Dead code accumulates silently | Add both flags to catch cleanup opportunities |
+| `"noPropertyAccessFromIndexSignature": false` | Dot notation allowed on index signatures — hides typos | Enable to enforce bracket notation for dynamic keys |
+
+---
 
 ### Type-Safe Mocks with `vi.mocked` / `jest.mocked`
 

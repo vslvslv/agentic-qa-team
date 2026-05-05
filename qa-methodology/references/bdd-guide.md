@@ -1,6 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 20 | score: 100/100 | date: 2026-05-03 | sources: training-knowledge -->
-<!-- WebFetch and WebSearch unavailable; synthesized from training knowledge + TypeScript patterns reference -->
+<!-- lang: TypeScript | topic: bdd | iteration: 21 | score: 100/100 | date: 2026-05-04 | sources: training-knowledge -->
+<!-- WebFetch and WebSearch unavailable; synthesized from training knowledge + TypeScript patterns reference | new: pytest plugin writing guide -->
 
 ## Core Principles
 
@@ -2221,6 +2221,7 @@ if (result.wipPercentage > 10) process.exit(1); // Fail CI if @wip > 10%
 - [SpecFlow documentation](https://docs.specflow.org/) — C# BDD framework
 - [Behave documentation](https://behave.readthedocs.io/) — Python BDD framework
 - [pytest-bdd documentation](https://pytest-bdd.readthedocs.io/) — Python BDD with pytest integration (recommended for pytest teams)
+- [pytest plugin writing guide](https://docs.pytest.org/en/stable/how-to/writing_plugins.html) — conftest.py hooks, entry-point distribution via `pytest11`, and `pytester` for testing plugins; essential for teams building shared BDD step libraries across projects
 - [Allure Framework](https://allurereport.org/) — rich reporting for Cucumber suites
 - [Pact documentation](https://docs.pact.io/) — consumer-driven contract testing for service boundaries
 - [@axe-core/playwright](https://github.com/dequelabs/axe-core-npm/tree/develop/packages/playwright) — axe-core integration for Playwright-based BDD

@@ -1,6 +1,6 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 14 | score: 100/100 | date: 2026-05-03 -->
-<!-- sources: training knowledge (WebFetch/WebSearch unavailable) | official: docs.pact.io, pact-foundation/pact-js | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 15 | score: 100/100 | date: 2026-05-04 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana | community: production lessons -->
 
 ## Terminology (ISTQB CTFL 4.0 alignment)
 
@@ -1259,6 +1259,29 @@ jobs:
 4. **Add message pacts only after HTTP pacts are stable** — async contracts have higher state-handler complexity.
 5. **Adopt WIP/pending pacts from day 1** to avoid blocking provider CI when consumers publish new interactions ahead of provider implementation.
 
+### Pact Nirvana — 7-Level CI/CD Maturity Roadmap
+
+The [Pact Nirvana](https://docs.pact.io/pact_nirvana) guide is the official Pact progression roadmap. The end goal is **independent deployability**: any service can be deployed at any time with confidence that it will work correctly with every other service, without requiring a shared end-to-end test environment.
+
+| Level | Name | What you achieve |
+|---|---|---|
+| 1 | **Get Prepared** | Teams understand Pact concepts (consumer, provider, pact file, Broker) and have buy-in from at least one consumer+provider pair |
+| 2 | **Talk** | Consumer and provider teams have aligned on a shared workflow — who writes interactions, who publishes verification results, naming conventions |
+| 3 | **Bronze** | A single consumer-provider contract test runs locally and generates a pact file — no Broker, no CI, manual execution only |
+| 4 | **Silver** | The pact file is published to a Pact Broker; provider verification is triggered manually and results are published back — the Broker's compatibility matrix is populated |
+| 5 | **Gold** | Consumer CI publishes pacts on every PR build; provider CI runs verification on every build; the Broker's network map reflects the live state of all services |
+| 6 | **Platinum** | `can-i-deploy` is the deployment gate — no service is deployed to any environment without a passing `can-i-deploy` check using branch tagging and environment tracking (`record-deployment`) |
+| 7 | **Diamond** | Contract testing gates production deployments; `record-deployment` is automated; the Pact Broker is the single source of truth for cross-service compatibility across all environments |
+
+**Progression guidance:**
+
+- Levels 1–2 are organizational, not technical — skipping team alignment is the #1 reason Pact adoption stalls at Bronze.
+- Level 3 (Bronze) is achievable in a single afternoon with one developer.
+- The biggest value jump is Level 5 → Level 6: `can-i-deploy` turns the Broker from a reporting tool into an active deployment gate.
+- Many teams operate at Silver or Gold indefinitely and still derive substantial value. Diamond is aspirational for most — aim for Platinum as the production-ready target.
+
+> [community] Teams that try to skip from Bronze to Platinum in one sprint consistently fail. The Pact Nirvana roadmap is sequential by design: each level builds trust in the infrastructure before adding more automation. A team that reaches Gold (CI automation) and stabilizes for one sprint before adding `can-i-deploy` has much higher long-term adoption than a team that rushes to Diamond.
+
 ### Bi-Directional Contract Testing (PactFlow)
 
 PactFlow's bi-directional contract testing allows providers to upload an OpenAPI spec and consumers to upload a Pact file; PactFlow performs automated cross-validation without running any code. Useful when:
@@ -1966,6 +1989,7 @@ Understanding which Pact specification version your pact files use affects compa
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
 | Pact Docs | Official | https://docs.pact.io/ | Full reference for all Pact concepts |
+| Pact Nirvana | Official | https://docs.pact.io/pact_nirvana | 7-level CI/CD maturity roadmap — Bronze → Diamond independent deployability |
 | @pact-foundation/pact | npm | https://www.npmjs.com/package/@pact-foundation/pact | TypeScript/Node.js library |
 | @pact-foundation/pact-cli | npm | https://www.npmjs.com/package/@pact-foundation/pact-cli | Pact Broker CLI for publishing and can-i-deploy |
 | Pact JS GitHub | Repo | https://github.com/pact-foundation/pact-js | Examples, changelog, issue tracker |

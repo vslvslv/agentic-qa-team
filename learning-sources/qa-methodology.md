@@ -1,5 +1,5 @@
 # Learning Sources: QA Methodology
-<!-- updated: 2026-05-04 | entries: 26 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-04 | entries: 29 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 
@@ -33,6 +33,7 @@ Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 | Tracetest Docs | https://docs.tracetest.io/ | official-docs | ci-cd-testing | 2026-05-03 | Distributed trace-based testing |
 | Trunk — Flaky Tests | https://trunk.io/flaky-tests | official-docs | flakiness | 2026-05-03 | Flaky test detection + quarantine SaaS |
 | PactFlow Blog | https://pactflow.io/blog/ | blog | contract-testing | 2026-05-03 | Contract testing patterns + PactFlow AI beta |
+| How They Test | https://abhivaikar.github.io/howtheytest/ | blog | all | 2026-05-04 | 📰 108 companies, 797 resources on real-world testing cultures |
 
 ---
 
@@ -56,3 +57,5 @@ Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 | kubeshop/tracetest | https://github.com/kubeshop/tracetest | github-repo | ci-cd-testing | 2026-05-03 | Trace-based test assertions |
 | cucumber/cucumber-js | https://github.com/cucumber/cucumber-js | github-repo | bdd | 2026-05-04 | 🌟 5.3k stars — official JS Cucumber for Gherkin execution |
 | pact-foundation/pact_broker | https://github.com/pact-foundation/pact_broker | github-repo | contract-testing | 2026-05-04 | 742 stars — OSS contract registry; share + verify pacts |
+| pytest plugin writing | https://docs.pytest.org/en/stable/how-to/writing_plugins.html | official-docs | test-framework | 2026-05-04 | ⭐ conftest.py hooks, entry-point distribution, pytester |
+| Pact Nirvana | https://docs.pact.io/pact_nirvana | official-docs | contract-testing | 2026-05-04 | ⭐ 7-level CI/CD maturity roadmap for consumer-driven contracts |

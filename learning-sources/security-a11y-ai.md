@@ -1,5 +1,5 @@
 # Learning Sources: Security, Accessibility & AI/Agent Testing
-<!-- updated: 2026-05-04 | entries: 43 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-04 | entries: 48 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skills
 
@@ -22,6 +22,10 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | trufflesecurity/trufflehog | https://github.com/trufflesecurity/trufflehog | github-repo | secrets scanning | 2026-05-04 | 🌟 26k stars — 800+ secret types, active credential verification |
 | semgrep/semgrep | https://github.com/semgrep/semgrep | github-repo | static analysis / SAST | 2026-05-04 | 🌟 15k stars — fast multi-language SAST with 30+ languages |
 | dependency-check/DependencyCheck | https://github.com/dependency-check/DependencyCheck | github-repo | SCA / CVE scanning | 2026-05-04 | 🌟 7.5k stars — OWASP SCA; detects known CVEs in dependencies |
+| OWASP/wstg | https://github.com/OWASP/wstg | github-repo | security testing | 2026-05-04 | 🌟 9.2k stars — Web Security Testing Guide v5.0 in progress |
+| juice-shop/juice-shop | https://github.com/juice-shop/juice-shop | github-repo | security training | 2026-05-04 | 🌟 13.1k stars — deliberately vulnerable app; 112 challenges |
+| google/oss-fuzz | https://github.com/google/oss-fuzz | github-repo | fuzzing | 2026-05-04 | 🌟 12.2k stars — continuous fuzzing for OSS; 13k+ CVEs found |
+| OWASP Mobile App Security | https://owasp.org/www-project-mobile-app-security/ | official-docs | mobile security | 2026-05-04 | ⭐ MASVS + MASTG + MASWE; mobile security standard |
 
 ---
 
@@ -38,6 +42,7 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | Pa11y | https://pa11y.org/ | official-docs | accessibility | 2026-05-03 | Automated a11y scanning |
 | architzero/Aura-accessibility-scanner | https://github.com/architzero/Aura-accessibility-scanner | github-repo | accessibility | 2026-05-03 | AI-generated alt text + axe violations |
 | Farhod75/ai-a11y-testing | https://github.com/Farhod75/ai-a11y-testing | github-repo | accessibility | 2026-05-03 | AI-assisted accessibility testing patterns |
+| microsoft/accessibility-insights-web | https://github.com/microsoft/accessibility-insights-web | github-repo | accessibility | 2026-05-04 | 899 stars — MS Chrome/Edge extension for WCAG 2.1 AA assessment |
 
 ---
 

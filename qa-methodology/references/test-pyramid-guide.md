@@ -1,6 +1,6 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 30 | score: 100/100 | date: 2026-05-03 -->
-<!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03) -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 31 | score: 100/100 | date: 2026-05-04 -->
+<!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog -->
 
@@ -1039,3 +1039,4 @@ The pyramid assumes: (1) test cases can be written and run independently, (2) un
 | fishery | Tool | https://github.com/thoughtbot/fishery | Type-safe test data factory library for TypeScript; compile-time errors when factory misses required interface fields |
 | @faker-js/faker | Tool | https://fakerjs.dev/ | Realistic TypeScript test data generation; used with fishery for typed factories |
 | Playwright Component Testing | Tool | https://playwright.dev/docs/test-components | Integration-level browser component testing; covers browser APIs jsdom cannot emulate; `@playwright/experimental-ct-react` |
+| How They Test | Community | https://abhivaikar.github.io/howtheytest/ | 108 companies, 797 resources — real-world test pyramid ratios, strategies, and culture from production engineering orgs |

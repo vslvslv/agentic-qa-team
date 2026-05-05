@@ -1,5 +1,6 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 30 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 31 | score: 100/100 | date: 2026-05-04 -->
+<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction -->
 
 ## Core Principles
 
@@ -5214,3 +5215,44 @@ it('asserts that a new tab URL was requested without navigating', () => {
 | `cy.window().its('nested.prop').should(...)` | Retrying nested window property read | Deep window state polling that `.then()` can't retry |
 | `experimentalModifyObstructiveThirdPartyCode: true` | Rewrite third-party CSP/XFO headers for Cypress | Required for `cy.origin()` on strict SSO providers (Okta, Azure AD) |
 | `Emulation.clearGeolocationOverride` via CDP | Remove active geolocation override | Reset GPS state in `afterEach` when `testIsolation: false` |
+
+---
+
+## Cypress Cloud MCP Integration  [community]
+
+Cypress Cloud v2 (2026) introduced a Model Context Protocol (MCP) server that exposes test run results, flakiness data, and stack traces directly to AI coding assistants (Claude, Cursor, GitHub Copilot).
+
+**What the MCP server enables:**
+- Query test run results by branch, spec, or status without leaving your IDE
+- Ask "which tests are flaky this sprint?" and get structured data back
+- Paste stack traces into Claude with context from the Cloud run timeline
+- Audit accessibility and visual regression failures inline with AI assistance
+
+**Setup:**
+
+```json
+// .vscode/settings.json or mcp-config in your AI tool
+{
+  "mcpServers": {
+    "cypress-cloud": {
+      "command": "npx",
+      "args": ["@cypress/mcp-server"],
+      "env": {
+        "CYPRESS_API_KEY": "${env:CYPRESS_API_KEY}",
+        "CYPRESS_PROJECT_ID": "${env:CYPRESS_PROJECT_ID}"
+      }
+    }
+  }
+}
+```
+
+```typescript
+// Example queries the MCP enables:
+// "Show me all failing tests on branch feature/checkout for the last 3 runs"
+// "Which tests have been marked flaky more than 3 times this week?"
+// "Explain this stack trace: [paste from Cloud dashboard]"
+```
+
+**Recorded run flag required:** MCP access requires your tests to be recorded to Cypress Cloud (`--record --key $CYPRESS_RECORD_KEY`). Tests run without `--record` are not indexed by the Cloud and are invisible to the MCP server.
+
+> **[community]** WHY: The AI-assisted workflow closes the loop between CI failures and developer context. Previously, a failing CI run meant: copy URL, open Cloud dashboard, click into the failing test, copy the stack trace, switch to IDE, open a chat window. With the MCP server, the AI assistant queries the Cloud directly — the developer never leaves the editor. This is especially powerful for debugging flaky tests where cross-run pattern analysis (which the MCP can perform) is more useful than single-run inspection.

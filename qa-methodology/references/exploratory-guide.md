@@ -1,6 +1,6 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 33 | score: 100/100 | date: 2026-05-03 | sources: training-knowledge -->
-<!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 34 | score: 100/100 | date: 2026-05-04 | sources: training-knowledge -->
+<!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
      - Iter 12: charter schema validator TypeScript example; ISTQB experience-based technique comparison; known adoption cost table; risk-trigger CI/CD TypeScript example; 2 new community lessons (#29 async teams, #30 risk-triggered scheduling); 2 new anti-patterns (AI charters, end-of-sprint batching)
@@ -2117,6 +2117,7 @@ export function debriefToIssues(
 | Explore It! — GitHub sample code | GitHub | https://github.com/ElisabethHendrickson/explore-it | Companion code and charter examples from the Hendrickson book |
 | ISTQB CTFL 4.0 Syllabus | Certification syllabus | https://www.istqb.org/certifications/certified-tester-foundation-level | Standardized terminology; Chapter 4 covers experience-based techniques including exploratory testing |
 | Google Testing Blog | Blog | https://testing.googleblog.com/ | Production-scale QA lessons including exploratory testing at large-system scale; search "exploratory" for relevant posts |
+| How They Test | Community | https://abhivaikar.github.io/howtheytest/ | 108 companies, 797 resources — real-world exploratory testing cultures; includes Trivago's exploratory practice and session-based approaches from production orgs |
 
 ---
 

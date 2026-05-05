@@ -1,5 +1,5 @@
 # Learning Sources: Programming Languages
-<!-- updated: 2026-05-04 | entries: 33 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-04 | entries: 52 | skill-version: 1.12.0.0 -->
 
 Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 
@@ -13,6 +13,10 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | TypeScript Handbook — Generics | https://www.typescriptlang.org/docs/handbook/2/generics.html | official-docs | TypeScript | 2026-05-03 | ⭐ |
 | TypeScript Do's & Don'ts | https://www.typescriptlang.org/docs/handbook/declaration-files/do-s-and-don-ts.html | official-docs | TypeScript | 2026-05-03 | ⭐ |
 | Google TypeScript Style Guide | https://google.github.io/styleguide/tsguide.html | official-docs | TypeScript | 2026-05-03 | ⭐ |
+| TypeScript Narrowing | https://www.typescriptlang.org/docs/handbook/2/narrowing.html | official-docs | TypeScript | 2026-05-04 | ⭐ typeof/in/instanceof guards, discriminated unions, never |
+| TypeScript Conditional Types | https://www.typescriptlang.org/docs/handbook/2/conditional-types.html | official-docs | TypeScript | 2026-05-04 | ⭐ extends ternary, infer keyword, distributive types |
+| TypeScript Declaration Files Deep Dive | https://www.typescriptlang.org/docs/handbook/declaration-files/deep-dive.html | official-docs | TypeScript | 2026-05-04 | ⭐ Types vs values vs namespaces; declaration merging |
+| TypeScript TSConfig Reference | https://www.typescriptlang.org/tsconfig/ | official-docs | TypeScript | 2026-05-04 | ⭐ All compiler options with examples and defaults |
 | MDN — JavaScript Promises | https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Using_promises | official-docs | JavaScript | 2026-05-03 | ⭐ |
 | MDN — JavaScript Closures | https://developer.mozilla.org/en-US/docs/Web/JavaScript/Closures | official-docs | JavaScript | 2026-05-03 | ⭐ |
 | Node.js Guides | https://nodejs.org/en/docs/guides/ | official-docs | JavaScript/Node | 2026-05-03 | ⭐ |
@@ -23,12 +27,16 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | Python PEP 20 (Zen) | https://peps.python.org/pep-0020/ | official-docs | Python | 2026-05-03 | ⭐ |
 | Python Typing | https://docs.python.org/3/library/typing.html | official-docs | Python | 2026-05-03 | ⭐ |
 | Python Dataclasses | https://docs.python.org/3/library/dataclasses.html | official-docs | Python | 2026-05-03 | ⭐ |
+| Python unittest.mock | https://docs.python.org/3/library/unittest.mock.html | official-docs | Python | 2026-05-04 | ⭐ Mock/MagicMock/patch; assertion introspection; AsyncMock |
 | C# Coding Conventions | https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/coding-style/coding-conventions | official-docs | C# | 2026-05-03 | ⭐ |
 | .NET Design Guidelines | https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/ | official-docs | C# | 2026-05-03 | ⭐ |
 | C# Async/Await | https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/ | official-docs | C# | 2026-05-03 | ⭐ |
+| C# Records | https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record | official-docs | C# | 2026-05-04 | ⭐ Value equality, with-expressions, positional params, inheritance |
+| Testing in .NET | https://learn.microsoft.com/en-us/dotnet/core/testing/ | official-docs | C# / .NET | 2026-05-04 | ⭐ MSTest, NUnit, xUnit, TUnit overview; VSTest vs MTP |
 | Kotlin Coding Conventions | https://kotlinlang.org/docs/coding-conventions.html | official-docs | Kotlin | 2026-05-03 | ⭐ |
 | Kotlin Idioms | https://kotlinlang.org/docs/idioms.html | official-docs | Kotlin | 2026-05-03 | ⭐ |
 | Kotlin Coroutines Guide | https://kotlinlang.org/docs/coroutines-guide.html | official-docs | Kotlin | 2026-05-03 | ⭐ |
+| Kotlin Flow | https://kotlinlang.org/docs/flow.html | official-docs | Kotlin | 2026-05-04 | ⭐ Cold async streams, operators, backpressure, channels |
 | Ruby Style Guide | https://rubystyle.guide/ | official-docs | Ruby | 2026-05-03 | ⭐ |
 | Ruby Enumerable | https://ruby-doc.org/core/Enumerable.html | official-docs | Ruby | 2026-05-03 | ⭐ |
 | Google Shell Style Guide | https://google.github.io/styleguide/shellguide.html | official-docs | Bash | 2026-05-03 | ⭐ |

@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 29 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: mixed (official + community) | iteration: 30 | score: 100/100 | date: 2026-05-04 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -33,6 +33,7 @@
      Iter 27 (run2 iter 10 — FINAL): 100/100 (+0) — added functools.reduce/pipeline patterns, fixed Literal section header, expanded anti-pattern table with 9 new rows
      [lang-refine run3] Iter 28 (run3 iter 1): 100/100 (+0) — added @override/@final decorators, `type` alias statement (PEP 695), ReadOnly TypedDict (Python 3.13), TypeIs vs TypeGuard distinction, AnyStr deprecation; added community gotchas #23 (runtime_checkable in hot paths) and #24 (missing @override)
      Iter 29 (run3 iter 2): 100/100 (+0) — added logging best practices vs print(), pprint/reprlib idioms, src-layout packaging guidance; community gotcha #25 (print() in production) and #26 (logging misconfiguration)
+     Iter 30 (2026-05-04): 100/100 (+0) — added unittest.mock deep-dive (Mock vs MagicMock, patch() patterns, AsyncMock, spec/spec_set, assertion introspection) and community gotcha #27 (patching in wrong namespace) sourced from docs.python.org/3/library/unittest.mock.html
 -->
 
 ## Core Philosophy
@@ -1425,6 +1426,177 @@ headers = CaseInsensitiveDict({"Content-Type": "application/json", "Accept": "*/
 print(headers["content-type"])    # "application/json"
 print(headers["ACCEPT"])          # "*/*"
 print(len(headers))               # 2
+```
+
+---
+
+### `unittest.mock` — Mock, MagicMock, patch, and AsyncMock
+
+`unittest.mock` is Python's built-in mocking library. Understanding the difference between `Mock` and `MagicMock`, the correct patch target, and how to use `AsyncMock` prevents the most common testing bugs.
+
+**`Mock` vs `MagicMock`:**
+
+| Feature | `Mock` | `MagicMock` |
+|---|---|---|
+| Magic methods (`__str__`, `__len__`, `__iter__`, etc.) | Manual setup required | Pre-configured automatically |
+| Use for | Simple callable/attribute mocking | Objects that implement Python protocols |
+| Performance | Slightly faster | Slightly slower |
+
+```python
+from unittest.mock import Mock, MagicMock
+
+# Mock: must set magic methods manually
+mock = Mock()
+mock.__str__ = Mock(return_value="custom")
+str(mock)  # "custom"
+
+# MagicMock: magic methods pre-configured
+magic_mock = MagicMock()
+magic_mock.__str__.return_value = "foobarbaz"
+str(magic_mock)  # "foobarbaz"
+
+# MagicMock supports protocol operations out of the box
+m = MagicMock()
+m[3] = "fish"
+m.__setitem__.assert_called_with(3, "fish")
+```
+
+**`patch()` — replace objects where they are *looked up*, not where they are *defined*:**
+
+```python
+# a.py
+class SomeClass:
+    def method(self): return "real"
+
+# b.py
+from a import SomeClass
+
+def some_function():
+    return SomeClass().method()
+
+# tests/test_b.py
+from unittest.mock import patch
+
+# WRONG: patches a.SomeClass, but b.py already has its own reference
+@patch("a.SomeClass")
+def test_wrong(mock_class):
+    some_function()  # Uses original SomeClass — mock not applied
+
+# CORRECT: patch where it is looked up (b.SomeClass)
+@patch("b.SomeClass")
+def test_correct(mock_class):
+    result = some_function()
+    mock_class.assert_called_once()
+```
+
+**`patch()` as decorator, context manager, and `patch.object`:**
+
+```python
+import unittest
+from unittest.mock import patch, MagicMock, call
+
+# Decorator — argument order matches bottom-up decorator stacking
+@patch("module.ClassB")
+@patch("module.ClassA")
+def test_stacked(MockA, MockB):  # bottom decorator first in signature
+    module.ClassA()
+    module.ClassB()
+    MockA.assert_called_once()
+    MockB.assert_called_once()
+
+# Context manager — useful when patch.stop() timing matters
+with patch("module.ClassName") as mock_cls:
+    module.ClassName()
+    mock_cls.assert_called_once()
+
+# patch.object — patches a method on an instance or class directly
+class Service:
+    def fetch(self): return "real"
+
+with patch.object(Service, "fetch", return_value="mocked") as mock_fetch:
+    svc = Service()
+    result = svc.fetch()
+    mock_fetch.assert_called_once_with()
+
+# In a TestCase: use addCleanup to guarantee restore even on setUp failure
+class MyTest(unittest.TestCase):
+    def setUp(self):
+        patcher = patch("module.dependency")
+        self.mock_dep = patcher.start()
+        self.addCleanup(patcher.stop)  # runs even if setUp raises
+```
+
+**Mock assertion methods:**
+
+```python
+from unittest.mock import Mock
+
+m = Mock(return_value=None)
+m("foo", bar="baz")
+m("foo", bar="baz")
+
+m.assert_called()                        # called at least once
+m.assert_called_with("foo", bar="baz")  # last call matches
+# m.assert_called_once_with(...)        # exactly once + args
+
+m("other")
+m.assert_any_call("foo", bar="baz")     # ever called with these args
+
+# Tracking call history
+print(m.call_count)         # 3
+print(m.call_args)          # call('other')
+print(m.call_args_list)     # [call('foo', bar='baz'), call('foo', bar='baz'), call('other')]
+print(m.call_args.args)     # ('other',)
+print(m.call_args.kwargs)   # {}
+
+m.reset_mock()
+m.assert_not_called()
+```
+
+**`AsyncMock` for coroutines:**
+
+```python
+import asyncio
+from unittest.mock import AsyncMock
+
+async_mock = AsyncMock(return_value={"id": 1, "name": "Alice"})
+
+async def main():
+    result = await async_mock("user_id_1")
+    return result
+
+result = asyncio.run(main())
+print(result)  # {'id': 1, 'name': 'Alice'}
+
+# AsyncMock has await-specific assertions
+async_mock.assert_awaited()
+async_mock.assert_awaited_once_with("user_id_1")
+print(async_mock.await_count)   # 1
+print(async_mock.await_args)    # call('user_id_1')
+```
+
+**`spec` and `spec_set` — prevent mocking non-existent attributes:**
+
+```python
+from unittest.mock import Mock, create_autospec
+
+class UserService:
+    def get_user(self, user_id: int) -> dict: ...
+    def create_user(self, name: str, email: str) -> dict: ...
+
+# spec: attributes not on UserService raise AttributeError
+mock_service = Mock(spec=UserService)
+mock_service.get_user(42)         # OK
+# mock_service.nonexistent_method()  # AttributeError
+
+# spec_set: also prevents setting new attributes
+strict_mock = Mock(spec_set=UserService)
+# strict_mock.new_attr = "value"  # AttributeError
+
+# create_autospec: recursively specs all return values too (recommended)
+auto_mock = create_autospec(UserService, instance=True)
+auto_mock.get_user.return_value = {"id": 42, "name": "Alice"}
+result = auto_mock.get_user(42)
 ```
 
 ---
@@ -3759,3 +3931,7 @@ class MyProcessor(BaseProcessor):
 | `print()` in production code | No log level, no filtering, leaks to stdout collectors | Use `logging.getLogger(__name__)` and log levels |
 | `logging.basicConfig()` in library code | Pollutes root logger for all downstream users | Only add `NullHandler` in libraries; let applications configure |
 | `print(pprint.pformat(x))` for debug | Redundant; use `pprint.pprint()` directly or log via `log.debug("%s", pprint.pformat(x))` | `pprint.pprint()` or `reprlib.repr()` for truncated output |
+| `@patch("a.SomeClass")` when code uses `from a import SomeClass` | Patches the origin module, not the reference in the module under test | Patch where the name is looked up: `@patch("b.SomeClass")` |
+| `Mock()` instead of `MagicMock()` for protocol objects | Magic methods not pre-configured; `str()`, `len()`, `iter()` fail | Use `MagicMock()` for objects that implement Python protocols |
+| `mock.assert_called_with(x)` after multiple calls | Only checks the *last* call — earlier calls may have been different | Use `mock.assert_any_call(x)` to check whether any call matched |
+| Not using `spec=` or `create_autospec()` | Mock silently accepts nonexistent attributes; typos go undetected | Use `Mock(spec=SomeClass)` or `create_autospec(SomeClass, instance=True)` |

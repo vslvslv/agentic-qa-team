@@ -1,5 +1,11 @@
 # Kotlin Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 0 | score: 100/100 | date: 2026-04-26 -->
+<!-- sources: official | community | mixed | iteration: 1 | score: 100/100 | date: 2026-05-04 -->
+<!-- iteration trace:
+     Iter 0: 100/100 — initial draft (2026-04-26)
+     Iter 1 (2026-05-04): added Kotlin Flow deep-dive (cold streams, builders, operators, backpressure,
+       exception handling, flowOn, StateFlow/SharedFlow, cancellation, anti-patterns) sourced from
+       kotlinlang.org/docs/flow.html; added Flow-related gotchas and anti-pattern rows
+-->
 
 ## Core Philosophy
 
@@ -255,6 +261,230 @@ For Java interop, annotate companion members with `@JvmStatic` to expose them as
 
 ---
 
+### Kotlin Flow — Cold Async Streams
+
+`Flow<T>` is a cold, asynchronous stream that emits multiple values sequentially and cooperates with coroutine cancellation. Unlike a `suspend` function (one value) or `Sequence` (blocking), Flow is non-blocking and lazy — it does not start until `collect` is called, and each `collect` starts the stream fresh.
+
+| Approach | Values | Blocking | Lazy | Use case |
+|---|---|---|---|---|
+| Regular function | Multiple (list) | Yes (eager) | No | Small, in-memory results |
+| `Sequence` | Multiple | Yes (CPU) | Yes | CPU-bound iteration |
+| `suspend` function | Single | No | Yes | Single async result |
+| `Flow` | Multiple | No | Yes | Async event/data streams |
+
+**Flow builders:**
+
+```kotlin
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.*
+
+// flow { } — primary builder; body can suspend; values emitted with emit()
+fun countDown(from: Int): Flow<Int> = flow {
+    for (i in from downTo 1) {
+        delay(100)
+        emit(i)
+    }
+}
+
+// flowOf() — wrap a fixed set of values
+val letters: Flow<String> = flowOf("a", "b", "c")
+
+// .asFlow() — convert any Iterable or Sequence
+val numbers: Flow<Int> = (1..5).asFlow()
+```
+
+**Intermediate operators (lazy — return a new Flow):**
+
+```kotlin
+// map, filter, transform, take
+(1..10).asFlow()
+    .filter { it % 2 == 0 }
+    .map { it * it }
+    .take(3)
+    .collect { println(it) }  // 4, 16, 36
+
+// transform — general; can emit 0, 1, or N times per input
+(1..3).asFlow()
+    .transform { n ->
+        emit("start $n")
+        delay(50)
+        emit("end $n")
+    }
+    .collect { println(it) }
+
+// zip — pair corresponding values from two flows (stops at shorter)
+val nums  = (1..3).asFlow()
+val names = flowOf("one", "two", "three")
+nums.zip(names) { n, s -> "$n=$s" }
+    .collect { println(it) }  // "1=one", "2=two", "3=three"
+
+// combine — emit whenever *either* flow emits, pairing with latest from the other
+val a = (1..3).asFlow().onEach { delay(300) }
+val b = flowOf("x", "y", "z").onEach { delay(400) }
+a.combine(b) { n, s -> "$n+$s" }.collect { println(it) }
+```
+
+**Flattening (flow of flows):**
+
+```kotlin
+// flatMapConcat — sequential: finish inner flow before next outer value
+// flatMapMerge  — concurrent: collect all inner flows in parallel  
+// flatMapLatest — cancel previous inner flow when outer emits a new value
+
+// flatMapLatest is ideal for search-as-you-type:
+fun searchResults(query: String): Flow<List<Result>> = flow { /* db query */ emit(emptyList()) }
+
+queryFlow                              // user typing emits queries
+    .debounce(300)                     // wait for pause
+    .flatMapLatest { query ->          // cancel previous search
+        searchResults(query)
+    }
+    .collect { updateUI(it) }
+```
+
+**Terminal operators (suspend, start collection):**
+
+```kotlin
+val nums = (1..5).asFlow()
+
+// collect — most common; processes each value
+nums.collect { println(it) }
+
+// toList / toSet — materialise to a collection
+val list: List<Int> = nums.toList()
+
+// first / single — get one value
+val first = nums.first()                    // 1
+val only  = flowOf(42).single()             // 42
+
+// reduce / fold — aggregate
+val sum = nums.reduce { acc, n -> acc + n } // 15
+val sumFrom10 = nums.fold(10) { acc, n -> acc + n } // 25
+```
+
+**Backpressure — handling a slow collector:**
+
+```kotlin
+// Problem: emitter is fast, collector is slow → sequential bottleneck
+fun fastEmitter(): Flow<Int> = flow {
+    for (i in 1..5) { emit(i); delay(100) }   // emits every 100ms
+}
+
+// buffer(): run emitter and collector in separate coroutines (ring buffer)
+fastEmitter()
+    .buffer()        // emitter runs ahead; collector processes at its own pace
+    .collect { delay(300); println(it) }   // ~1300ms instead of 2000ms
+
+// conflate(): skip intermediate values — keep only the latest
+fastEmitter()
+    .conflate()      // 1, 3, 5 (2 and 4 skipped because collector was busy)
+    .collect { delay(300); println(it) }
+
+// collectLatest { }: cancel the current block when a new value arrives
+fastEmitter()
+    .collectLatest { value ->
+        println("Starting $value")
+        delay(300)              // cancelled if next value arrives before 300ms
+        println("Done $value")  // only prints for the last value
+    }
+```
+
+**Exception handling:**
+
+```kotlin
+// catch operator: catches upstream exceptions; can emit a fallback value
+flowOf(1, 2, 3)
+    .map { if (it == 2) throw RuntimeException("bad value") else it }
+    .catch { e -> emit(-1) }   // emit fallback; downstream continues
+    .collect { println(it) }   // 1, -1, 3... wait: catch only covers upstream
+
+// onCompletion: always-runs callback; knows if completed normally or with error
+flowOf(1, 2, 3)
+    .onCompletion { cause ->
+        if (cause != null) println("Flow failed: $cause")
+        else               println("Flow completed")
+    }
+    .collect { println(it) }
+
+// Declare all exception handling BEFORE collect (exception transparency rule)
+// The catch operator does NOT catch exceptions thrown in the collect block:
+flowOf(1)
+    .catch { println("Won't catch collect errors") }
+    .collect { throw RuntimeException("in collect") }  // crashes
+// Fix: move logic to onEach before catch, then use parameterless .collect()
+flowOf(1)
+    .onEach { if (it > 0) throw RuntimeException("in onEach") }
+    .catch { println("Caught: $it") }   // now this works
+    .collect()                           // parameterless
+```
+
+**`flowOn` — change the dispatcher of upstream emissions:**
+
+```kotlin
+// WRONG: withContext inside flow {} throws IllegalStateException
+fun badFlow(): Flow<Int> = flow {
+    withContext(Dispatchers.IO) { emit(fetchFromDb()) }  // ERROR
+}
+
+// CORRECT: flowOn shifts upstream to the specified dispatcher
+fun goodFlow(): Flow<Int> = flow {
+    emit(fetchFromDb())          // runs on IO (set below)
+}.flowOn(Dispatchers.IO)         // collect runs on caller's dispatcher
+
+// The operator creates a buffer between dispatchers automatically
+goodFlow().collect { value ->    // this runs on the Main / calling dispatcher
+    updateUI(value)
+}
+```
+
+**`StateFlow` and `SharedFlow` — hot flows:**
+
+```kotlin
+import kotlinx.coroutines.flow.*
+
+// StateFlow: always has a current value; replays it to new collectors (hot)
+class CounterViewModel : ViewModel() {
+    private val _count = MutableStateFlow(0)
+    val count: StateFlow<Int> = _count.asStateFlow()   // read-only public face
+
+    fun increment() { _count.value++ }
+}
+
+// SharedFlow: configurable replay and buffer; for one-off events
+class EventBus {
+    private val _events = MutableSharedFlow<String>(
+        replay = 0,         // don't replay to late subscribers
+        extraBufferCapacity = 64
+    )
+    val events: SharedFlow<String> = _events.asSharedFlow()
+
+    suspend fun publish(event: String) { _events.emit(event) }
+}
+```
+
+**Flow cancellation:**
+
+```kotlin
+// Flow is automatically cancelled when its collecting coroutine is cancelled
+val job = launch {
+    (1..10).asFlow()
+        .onEach { delay(200) }
+        .collect { println("Collected $it") }
+}
+delay(500)
+job.cancel()   // cancels collection cleanly after ~2-3 values
+
+// .cancellable(): add cooperative cancellation checks to flows that don't suspend
+(1..Int.MAX_VALUE).asFlow()
+    .cancellable()   // checks cancellation on each emission
+    .collect { value ->
+        if (value == 5) cancel()
+        println(value)
+    }
+```
+
+---
+
 ## Language Idioms
 
 These are Kotlin-specific features — not just patterns in Kotlin clothing — that make code more expressive.
@@ -354,6 +584,12 @@ class Config {
 
 **`withContext` Inside `flow { }` Builder** [community] — Switching dispatchers inside a `flow { }` block with `withContext` throws `IllegalStateException: Flow invariant is violated`. WHY it causes problems: the Flow API requires emissions to come from a single coroutine context to guarantee sequential ordering. Fix: use `flowOn(Dispatchers.IO)` at the end of the flow chain to run upstream emissions on a different dispatcher transparently.
 
+**Collecting a `StateFlow` without `lifecycleScope`/`repeatOnLifecycle`** [community] — Launching `viewModelScope.launch { stateFlow.collect { } }` in an Android Activity/Fragment leaks the coroutine when the app goes to the background. WHY it causes problems: the coroutine keeps receiving updates and doing UI work while the screen is off, wasting resources and causing crashes. Fix: use `lifecycleScope.launch { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { stateFlow.collect { } } }` to automatically stop collection when the UI is in the background.
+
+**`flow { }` being collected multiple times without realising it** [community] — Unlike `StateFlow`, a regular `Flow` is cold — each `collect` call restarts the entire chain from scratch, including any network requests or database queries inside. WHY it causes problems: calling `flowOf(...).count()` then `.first()` hits the database twice. Fix: use `stateIn()` to share a single upstream execution across multiple collectors, or materialise to a list when the data is needed more than once.
+
+**`conflate()` instead of `collectLatest { }` for UI updates** [community] — Using `conflate()` drops intermediate values but still runs the collector block for the first value before accepting the next. `collectLatest` cancels the current block and immediately restarts it for the new value — which is usually what UI update code needs. WHY it causes problems: with `conflate()`, if a slow render finishes, it picks up the value that was buffered, not necessarily the latest. Fix: use `collectLatest { updateUI(it) }` for UI rendering; use `conflate()` for stateless processing where dropping intermediate values is intentional.
+
 **Data Class With Mutable Properties** [community] — Declaring a `data class` with `var` properties and then storing instances in a `HashSet` or as `HashMap` keys causes silent corruption. WHY it causes problems: `hashCode()` is computed from the current property values; mutating a property after insertion changes the hash code, making the entry unreachable and uncollectable. Fix: keep `data class` properties `val`-only; if mutation is genuinely needed, use a regular class and implement `equals`/`hashCode` manually with an immutable identity key.
 
 **Sealed Class `else` in Multiplatform `when`** [community] — In Kotlin Multiplatform, if a sealed class is an `expect` declaration, the compiler cannot verify exhaustiveness in common code because platform-specific `actual` implementations can add subclasses. WHY it causes problems: adding a new platform-specific subclass silently falls through without the `else` branch at runtime. Fix: always add an `else` branch in common-code `when` expressions on `expect sealed` classes.
@@ -373,6 +609,9 @@ class Config {
 | `GlobalScope.launch` | Leaks coroutines past component lifecycle | Use `viewModelScope`, `lifecycleScope`, or a custom scoped `CoroutineScope` |
 | `runBlocking` in service code | Blocks thread, starves thread pools | Make call sites `suspend`; use `coroutineScope { }` for structured child coroutines |
 | `withContext` inside `flow { }` | Throws `IllegalStateException` at runtime | Use `.flowOn(Dispatcher)` on the flow chain |
+| Collecting a `Flow` multiple times from different collectors | Cold flow restarts from scratch each time (DB hit per collector) | Convert to hot flow with `.stateIn(scope, ...)` or `.shareIn(scope, ...)` |
+| `conflate()` for UI rendering | Drops intermediate values but finishes slow collector block first | Use `collectLatest { }` to cancel-and-restart on every new value |
+| `flow { }` collect without cancellation in Android | Coroutine keeps running in background, wasting resources | Use `repeatOnLifecycle(Lifecycle.State.STARTED)` to auto-stop on background |
 | Mutable `var` in `data class` | Keys in sets/maps silently break after mutation | Use `val` properties; implement `equals`/`hashCode` with immutable key if mutation needed |
 | Utility class (`StringUtils`, `ObjectHelper`) | Forces static call style; hard to extend | Use extension functions on the relevant type |
 | Overloaded constructors instead of defaults | Combinatorial explosion of overloads | Use default parameter values and named arguments |

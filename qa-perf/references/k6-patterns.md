@@ -1,7 +1,8 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 21 | score: 100/100 | date: 2026-05-04 -->
+<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/ -->
 
-> Generated from official k6 documentation and community sources on 2026-05-03. Verified against k6 v1.7.1 (latest stable; security patch for CVE-2026-33186 in gRPC); k6 v2.0.0-rc1 breaking changes documented below. Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-04. Verified against k6 v1.7.1 (latest stable; security patch for CVE-2026-33186 in gRPC); k6 v2.0.0-rc1 breaking changes documented below. Re-run `/qa-refine k6` to refresh.
 
 > **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section.
 
@@ -5273,5 +5274,89 @@ v1.6 and are forward-compatible with v2.0:
 > **Note on `k6/crypto` deprecation (v1.6+):** The docs explicitly mark `k6/crypto` as deprecated
 > in favor of the standard WebCrypto API (`crypto.subtle`). Existing `k6/crypto` code continues
 > to work but will not receive new features. Migrate new cryptographic patterns to `crypto.subtle`.
+
+---
+
+## k6 Module System
+
+k6 supports four module categories. Understanding each prevents `require is not defined` and resolution errors that don't surface until CI runs.
+
+| Module Type | Import syntax | Notes |
+|-------------|--------------|-------|
+| **Built-in** | `import http from 'k6/http'` | Core k6 APIs; always available |
+| **Local** | `import { helper } from './helpers.js'` | Relative paths; file extension required (no Node.js resolution) |
+| **Remote** | `import { textSummary } from 'https://jslib.k6.io/k6-summary/0.0.2/index.js'` | Downloaded at run start; pin version in URL |
+| **Extension** | `import redis from 'k6/x/redis'` | Go-based xk6 builds; requires custom binary |
+
+### Using npm packages in k6 (Webpack/esbuild bundling)
+
+k6 does not support Node.js module resolution natively. To use npm packages, bundle with Webpack or esbuild first:
+
+```javascript
+// webpack.config.js — bundle npm packages for k6
+const path = require('path');
+
+module.exports = {
+  mode: 'production',
+  entry: {
+    load: './k6/scripts/load.js',
+  },
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: '[name].bundle.js',
+    libraryTarget: 'commonjs',
+  },
+  target: 'web',                    // k6 uses a browser-like global scope, not Node
+  externals: /^k6(\/.*)?$/,         // exclude all k6 built-ins from the bundle
+};
+```
+
+```bash
+# Bundle and run
+npx webpack --config webpack.config.js
+k6 run dist/load.bundle.js
+```
+
+**Native TypeScript (k6 v0.57+):** k6 now runs `.ts` files directly via its built-in TypeScript transpiler. No bundler is required unless you need npm packages.
+
+```javascript
+// k6/scripts/load.ts — runs directly with k6 run k6/scripts/load.ts
+import http from 'k6/http';
+import { check } from 'k6';
+
+export const options = { vus: 10, duration: '30s' };
+
+export default function (): void {
+  const res = http.get(`${__ENV.BASE_URL}/api/health`);
+  check(res, { 'status 200': (r) => r.status === 200 });
+}
+```
+
+**Remote module pinning:** Always pin remote jslib URLs to a specific version tag. The `latest` alias at jslib.k6.io is not guaranteed stable across k6 upgrades. [community]
+
+```javascript
+// Pinned (safe):
+import { textSummary } from 'https://jslib.k6.io/k6-summary/0.0.2/index.js';
+// Unpinned (risk of breaking change on next run):
+// import { textSummary } from 'https://jslib.k6.io/k6-summary/latest/index.js';
+```
+
+---
+
+## k6 Testing Guides Navigation
+
+The Grafana k6 Testing Guides hub (`grafana.com/docs/k6/latest/testing-guides/`) organizes recommended approaches by test goal. Use this as a decision map when authoring new scripts:
+
+| Goal | Test Type | k6 executor | Grafana guide |
+|------|-----------|------------|---------------|
+| Baseline performance | **Smoke test** | `constant-vus` (1–5 VUs) | [Smoke testing](https://grafana.com/docs/k6/latest/testing-guides/test-types/smoke-testing/) |
+| Sustained load | **Load test** | `ramping-vus` or `constant-arrival-rate` | [Load testing](https://grafana.com/docs/k6/latest/testing-guides/test-types/load-testing/) |
+| Breaking point | **Stress test** | `ramping-arrival-rate` | [Stress testing](https://grafana.com/docs/k6/latest/testing-guides/test-types/stress-testing/) |
+| Sustained stress | **Soak test** | `constant-arrival-rate` (long duration) | [Soak testing](https://grafana.com/docs/k6/latest/testing-guides/test-types/soak-testing/) |
+| Sudden spike | **Spike test** | `ramping-vus` (steep ramp) | [Spike testing](https://grafana.com/docs/k6/latest/testing-guides/test-types/spike-testing/) |
+| Breakeven throughput | **Breakpoint test** | `ramping-arrival-rate` + `abortOnFail` | [Breakpoint testing](https://grafana.com/docs/k6/latest/testing-guides/test-types/breakpoint-testing/) |
+| Real user monitoring | **Synthetic monitoring** | Grafana Cloud Synthetic Monitoring | [Synthetic monitoring](https://grafana.com/docs/k6/latest/testing-guides/synthetic-monitoring/) |
+
+> **[community]** WHY teams reach for load tests when they need smoke tests: the default `k6 run` docs example uses `vus: 10` and `duration: '30s'` — a load test, not a smoke test. New k6 users copy this and report "load tests pass in CI". In reality they're running no assertions, no thresholds, and 10 VUs against a dev server. A proper smoke test uses 1–3 VUs, explicit `check()` calls, and `thresholds: { checks: ['rate>0.99'] }`. Add a smoke test as a pre-requisite job before load tests in CI.
 
 

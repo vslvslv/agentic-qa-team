@@ -1,6 +1,6 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 42 | score: 100/100 | date: 2026-05-03 -->
-<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 43 | score: 100/100 | date: 2026-05-04 -->
+<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
 <!-- sources: synthesized from training knowledge — WebFetch blocked; WebSearch unavailable -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
 <!-- Iterations 3–12: cross-shard detection; ISTQB CTFL 4.0 terminology; memory/resource exhaustion; snapshot flakiness; -->
@@ -2730,6 +2730,7 @@ Teams that successfully reduce flakiness long-term consistently have:
 | Chromatic pauseAnimationAtEnd | Official | https://www.chromatic.com/docs/delay/ | Freeze animations for stable visual regression snapshots |
 | @octokit/rest | Community | https://octokit.github.io/rest.js/v20 | GitHub API for automated quarantine review issue creation |
 | @pact-foundation/pact | Official | https://docs.pact.io/implementation_guides/javascript | Consumer-driven contract testing — provider state handler patterns |
+| How They Test | Community | https://abhivaikar.github.io/howtheytest/ | 108 companies — flaky test management patterns from Automattic, Reddit, Slack, Mattermost, and others who publish production flakiness experiences |
 | ISTQB CTFL 4.0 Syllabus | Official | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology: test case, test level, defect, test suite |
 | eslint-plugin-jest | Community | https://github.com/jest-community/eslint-plugin-jest | ESLint rules: `valid-expect`, `no-conditional-expect`, `no-floating-promises` |
 | TanStack Query Testing | Official | https://tanstack.com/query/latest/docs/framework/react/guides/testing | Per-test QueryClient isolation, disable retry and staleTime |

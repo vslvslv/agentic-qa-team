@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 22 | score: 100/100 | date: 2026-05-03 -->
-<!-- sources: training knowledge + iterative refinement pass -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 23 | score: 100/100 | date: 2026-05-04 -->
+<!-- sources: training knowledge + iterative refinement pass | new: docs.pact.io/pact_nirvana (Pact Nirvana CI/CD maturity) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -3223,6 +3223,8 @@ jobs:
 
 > [community] TypeScript's type system provides a structural check on Pact response bodies that plain JavaScript cannot: if the `UserApiClient.getUser()` return type is `Promise<User>` and the Pact response body has a different shape, `tsc` will flag the mismatch before the test even runs. Teams using typed Pact consumers catch contract drift at compile time rather than at pact verification time — reducing the time to detect API incompatibilities from "next provider deploy" to "next commit".
 
+> [community] The [Pact Nirvana](https://docs.pact.io/pact_nirvana) 7-level maturity roadmap maps directly onto CI/CD pipeline maturity. Levels 5–7 are pure CI concerns: Level 5 = consumer publishes pacts in CI on every PR + provider verifies in CI on every build; Level 6 = `can-i-deploy` is a required merge gate before every deployment (Platinum); Level 7 = `record-deployment` is automated in each production deploy pipeline (Diamond). Teams at Level 4 (Silver — manual Broker interactions) routinely report that adding CI automation (Level 5) halves the time they spend debugging cross-service breakages.
+
 | Shards | Relative speedup | Cost | Recommendation |
 |---|---|---|---|
 | 1 (no sharding) | 1× | $1× | Baseline |
@@ -4247,6 +4249,7 @@ jobs:
 | MSW (Mock Service Worker) docs | Official docs | https://mswjs.io/docs/ | Type-safe API mocking for Node.js and browser tests |
 | @testing-library docs | Official docs | https://testing-library.com/docs/ | Component testing patterns for React/Vue/Angular |
 | Pact Foundation — JavaScript/TypeScript | Official docs | https://docs.pact.io/implementation_guides/javascript | Consumer-driven contract testing in TypeScript |
+| Pact Nirvana | Official guide | https://docs.pact.io/pact_nirvana | 7-level CI/CD maturity roadmap for contract-testing pipeline integration |
 | davelosert/vitest-coverage-report-action | Community | https://github.com/davelosert/vitest-coverage-report-action | Vitest coverage PR comment action |
 | TypeScript strict mode flags | Official docs | https://www.typescriptlang.org/tsconfig#strict | Reference for incremental strict adoption |
 | Bun test runner docs | Official docs | https://bun.sh/docs/cli/test | Bun native test runner for TypeScript |
