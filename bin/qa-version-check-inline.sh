@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 _TMP="${TEMP:-${TMP:-/tmp}}"
 _SKILL_DIR="${CLAUDE_SKILL_DIR:-$(dirname "$0")/..}"
-_QA_ROOT=$(dirname "$_SKILL_DIR" 2>/dev/null)
+# Resolve symlinks so short-names installs (~/.claude/skills/qa-team -> repo/qa-team)
+# yield the repo root from `dirname`, not ~/.claude/skills.
+_RESOLVED_SKILL_DIR=$(realpath "$_SKILL_DIR" 2>/dev/null \
+  || readlink -f "$_SKILL_DIR" 2>/dev/null \
+  || echo "$_SKILL_DIR")
+_QA_ROOT=$(dirname "$_RESOLVED_SKILL_DIR" 2>/dev/null)
+# Fallback for namespaced install (single symlink at ~/.claude/skills/qa-agentic-team).
 [ ! -f "$_QA_ROOT/VERSION" ] && _QA_ROOT=$(readlink ~/.claude/skills/qa-agentic-team 2>/dev/null) || true
 _QA_VER=$( [ -n "$_QA_ROOT" ] && bash "$_QA_ROOT/bin/qa-team-update-check" 2>/dev/null \
   || echo "UPDATE_CHECK_FAILED: not found" )
