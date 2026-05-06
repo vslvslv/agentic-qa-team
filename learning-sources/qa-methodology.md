@@ -1,5 +1,5 @@
 # Learning Sources: QA Methodology
-<!-- updated: 2026-05-04 | entries: 29 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-06 | entries: 33 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 
@@ -59,3 +59,7 @@ Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 | pact-foundation/pact_broker | https://github.com/pact-foundation/pact_broker | github-repo | contract-testing | 2026-05-04 | 742 stars — OSS contract registry; share + verify pacts |
 | pytest plugin writing | https://docs.pytest.org/en/stable/how-to/writing_plugins.html | official-docs | test-framework | 2026-05-04 | ⭐ conftest.py hooks, entry-point distribution, pytester |
 | Pact Nirvana | https://docs.pact.io/pact_nirvana | official-docs | contract-testing | 2026-05-04 | ⭐ 7-level CI/CD maturity roadmap for consumer-driven contracts |
+| Martin Fowler — Practical Test Pyramid | https://martinfowler.com/articles/practical-test-pyramid.html | blog | test-pyramid | 2026-05-06 | 🌟 Definitive long-form guide: unit→integration→E2E, redundancy avoidance |
+| Pact University | https://docs.pact.io/university | official-docs | contract-testing | 2026-05-06 | ⭐ Free workshops: Pact fundamentals, Message Pact, plugin dev; MIT licensed |
+| Pact Broker — Sharing Pacts | https://docs.pact.io/getting_started/sharing_pacts | official-docs | contract-testing | 2026-05-06 | ⭐ CI/CD decoupling pattern; webhooks, network graph, multi-language publish |
+| Cucumber 10-Minute Tutorial | https://cucumber.io/docs/guides/10-minute-tutorial/ | official-docs | bdd | 2026-05-06 | ⭐ End-to-end BDD walkthrough: Gherkin→step defs→scenario outlines; Example Mapping |

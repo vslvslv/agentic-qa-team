@@ -1,5 +1,5 @@
 # Learning Sources: Security, Accessibility & AI/Agent Testing
-<!-- updated: 2026-05-04 | entries: 48 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-06 | entries: 53 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skills
 
@@ -26,6 +26,10 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | juice-shop/juice-shop | https://github.com/juice-shop/juice-shop | github-repo | security training | 2026-05-04 | 🌟 13.1k stars — deliberately vulnerable app; 112 challenges |
 | google/oss-fuzz | https://github.com/google/oss-fuzz | github-repo | fuzzing | 2026-05-04 | 🌟 12.2k stars — continuous fuzzing for OSS; 13k+ CVEs found |
 | OWASP Mobile App Security | https://owasp.org/www-project-mobile-app-security/ | official-docs | mobile security | 2026-05-04 | ⭐ MASVS + MASTG + MASWE; mobile security standard |
+| OWASP ASVS | https://owasp.org/www-project-application-security-verification-standard/ | official-docs | web app security | 2026-05-06 | ⭐ 📄 Flagship — v5.0 (May 2025); web app security verification requirements |
+| OWASP LLM Verification Standard | https://owasp.org/www-project-llm-verification-standard/ | official-docs | AI/LLM security | 2026-05-06 | 📄 v0.1 — 7 objectives: LLM-specific design, training, ops, monitoring security |
+| aquasecurity/trivy | https://github.com/aquasecurity/trivy | github-repo | container / SCA security | 2026-05-06 | 🌟 34.9k stars — CVEs, IaC misconfig, secrets, SBOM; containers, K8s, git repos |
+| gitleaks/gitleaks | https://github.com/gitleaks/gitleaks | github-repo | secrets scanning | 2026-05-06 | 🌟 26.6k stars — regex+entropy detection; pre-commit hook, GH Action, SARIF output |
 
 ---
 
@@ -71,3 +75,4 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | confident-ai/deepeval | https://github.com/confident-ai/deepeval | github-repo | LLM evaluation | 2026-05-04 | 🌟 15.1k stars — pytest-like LLM eval: RAG, agents, multimodal |
 | promptfoo/promptfoo | https://github.com/promptfoo/promptfoo | github-repo | LLM red-teaming | 2026-05-04 | 🌟 20.8k stars — LLM eval + automated red-teaming CLI |
 | openai/evals | https://github.com/openai/evals | github-repo | LLM benchmarks | 2026-05-04 | 🌟 18.4k stars — open-source LLM benchmark registry |
+| agentops-ai/agentops | https://github.com/agentops-ai/agentops | github-repo | AI agent monitoring | 2026-05-06 | 🌟 5.5k stars — observability for AI agents: session replay, LLM cost tracking, multi-agent graphs |

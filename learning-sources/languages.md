@@ -1,5 +1,5 @@
 # Learning Sources: Programming Languages
-<!-- updated: 2026-05-04 | entries: 52 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-06 | entries: 58 | skill-version: 1.12.0.0 -->
 
 Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 
@@ -45,6 +45,8 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | Rust — Writing Automated Tests | https://doc.rust-lang.org/book/ch11-00-testing.html | official-docs | Rust | 2026-05-04 | ⭐ Official Rust book ch.11; unit + integration tests |
 | pytest How-to Guides | https://docs.pytest.org/en/stable/how-to/index.html | official-docs | Python | 2026-05-04 | ⭐ Fixtures, parametrize, mocking, plugins |
 | pytest Fixtures Reference | https://docs.pytest.org/en/stable/reference/fixtures.html | official-docs | Python | 2026-05-04 | ⭐ Built-in fixtures, scopes, conftest patterns |
+| Python PEP 484 — Type Hints | https://peps.python.org/pep-0484/ | official-docs | Python | 2026-05-06 | ⭐ Foundational type-hint spec: Generic, Union, Optional, TypeVar, Callable, stubs |
+| pytest Good Integration Practices | https://docs.pytest.org/en/stable/explanation/goodpractices.html | official-docs | Python | 2026-05-06 | ⭐ src layout, importlib mode, venv setup, tox, test discovery conventions |
 
 ---
 
@@ -63,6 +65,10 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | alebcay/awesome-shell | https://github.com/alebcay/awesome-shell | github-repo | Bash | 2026-05-03 | 🌟 Curated list |
 | stoeffel/awesome-fp-js | https://github.com/stoeffel/awesome-fp-js | github-repo | Functional / JS | 2026-05-03 | 🌟 FP patterns in JS |
 | stretchr/testify | https://github.com/stretchr/testify | github-repo | Go | 2026-05-04 | 🌟 26k stars — Go assertions, mocks, and test suites |
+| tc39/proposals | https://github.com/tc39/proposals | github-repo | JavaScript / ECMAScript | 2026-05-06 | Active JS/ECMAScript proposals Stage 0–3; Test262 flags, meeting notes |
+| biomejs/biome | https://github.com/biomejs/biome | github-repo | JavaScript / TypeScript | 2026-05-06 | 🌟 24.6k stars — unified formatter + linter; 97% Prettier compat, 450+ rules, no Node required |
+| oxc-project/oxc | https://github.com/oxc-project/oxc | github-repo | JavaScript / TypeScript | 2026-05-06 | 🌟 21k stars — Rust-based JS/TS parser, oxlint, oxfmt, transformer, minifier |
+| jestjs/jest | https://github.com/jestjs/jest | github-repo | JavaScript / Node | 2026-05-06 | 🌟 45.3k stars — snapshot testing, watch mode, broad babel/webpack/TS compat |
 
 ---
 

@@ -1,5 +1,5 @@
 # Learning Sources: QA Tools
-<!-- updated: 2026-05-04 | entries: 101 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-06 | entries: 114 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobile`
 
@@ -57,6 +57,16 @@ Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobi
 | k6 Results Output | https://grafana.com/docs/k6/latest/results-output/ | official-docs | k6 | 2026-05-04 | ⭐ Summary vs real-time metrics; JSON/InfluxDB/cloud outputs |
 | k6 Modules | https://grafana.com/docs/k6/latest/using-k6/modules/ | official-docs | k6 | 2026-05-04 | ⭐ Built-in, local, remote; Webpack bundle for Node.js deps |
 | Cypress Cloud | https://docs.cypress.io/guides/cloud/introduction | official-docs | Cypress | 2026-05-04 | ⭐ Smart Orchestration, parallel CI, MCP integration for AI tools |
+| Playwright Clock | https://playwright.dev/docs/clock | official-docs | Playwright | 2026-05-06 | ⭐ Time manipulation API — setFixedTime, fastForward, pauseAt for timeout/scheduler testing |
+| Playwright Mock APIs | https://playwright.dev/docs/mock | official-docs | Playwright | 2026-05-06 | ⭐ Intercept + mock HTTP/XHR, HAR record-replay, WebSocket mocking |
+| Playwright Network | https://playwright.dev/docs/network | official-docs | Playwright | 2026-05-06 | ⭐ Full network layer: route intercept, modify req/resp, proxy, WebSocket inspection |
+| Playwright Locators | https://playwright.dev/docs/locators | official-docs | Playwright | 2026-05-06 | ⭐ getByRole/Text/Label/TestId; .filter/.and/.or; Shadow DOM; strict mode |
+| Playwright Actions | https://playwright.dev/docs/input | official-docs | Playwright | 2026-05-06 | ⭐ fill, click, keyboard, file upload, drag-and-drop, scroll — actionability auto-wait |
+| Playwright Navigations | https://playwright.dev/docs/navigations | official-docs | Playwright | 2026-05-06 | ⭐ goto, waitForURL, hydration pitfalls, navigation lifecycle |
+| Playwright Screenshots | https://playwright.dev/docs/screenshots | official-docs | Playwright | 2026-05-06 | ⭐ Full-page, element, buffer captures; pixel comparison integration |
+| Playwright Videos | https://playwright.dev/docs/videos | official-docs | Playwright | 2026-05-06 | ⭐ retain-on-failure, on-first-retry modes; annotated playback |
+| k6 Extensions | https://grafana.com/docs/k6/latest/extensions/ | official-docs | k6 | 2026-05-06 | ⭐ JS, output, secret-source, subcommand extension categories |
+| k6 Environment Variables | https://grafana.com/docs/k6/latest/using-k6/environment-variables/ | official-docs | k6 | 2026-05-06 | ⭐ __ENV object, -e flag, K6_ prefix config, security considerations |
 
 ---
 
@@ -117,3 +127,6 @@ Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobi
 | mawrkus/js-unit-testing-guide | https://github.com/mawrkus/js-unit-testing-guide | github-repo | JavaScript | 2026-05-04 | 2k stars — AAA pattern, TDD, DI, Jest examples |
 | TheJambo/awesome-testing | https://github.com/TheJambo/awesome-testing | github-repo | All / curation | 2026-05-04 | 2.3k stars — curated list: API, security, visual, perf, a11y |
 | mxschmitt/playwright-test-coverage | https://github.com/mxschmitt/playwright-test-coverage | github-repo | Playwright / coverage | 2026-05-04 | vite-plugin-istanbul E2E coverage; HTML/LCOV reports |
+| grafana/k6-operator | https://github.com/grafana/k6-operator | github-repo | k6 / Kubernetes | 2026-05-06 | 772 stars — Kubernetes operator for distributed k6 test runs; PrivateLoadZone CRD |
+| karatelabs/karate | https://github.com/karatelabs/karate | github-repo | API / UI / Perf testing | 2026-05-06 | 🌟 8.9k stars — unified API test, mock, perf, and UI automation in one DSL; v2.0.7 |
+| jestjs/jest | https://github.com/jestjs/jest | github-repo | JavaScript / Node | 2026-05-06 | 🌟 45.3k stars — snapshot testing, watch mode, broad babel/webpack/TS compat |

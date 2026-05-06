@@ -5,6 +5,14 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.15.0.1 — 2026-05-06 — nightly learning-sources catalog update
+
+### learning-sources
+- +28 new sources: 13 QA tools (Playwright clock/mock/network/locators/actions/nav/screenshots/videos, k6 extensions/env vars, k6-operator, Karate, Jest), 6 languages (PEP 484, pytest good practices, TC39 proposals, Biome, Oxc, Jest), 4 methodology (Fowler Practical Test Pyramid, Pact University, Pact Broker sharing, Cucumber tutorial), 5 security/a11y/AI (OWASP ASVS v5, OWASP LLM VS, Trivy, Gitleaks, AgentOps)
+- 0 stale entries flagged — all 258 catalog entries current
+
+---
+
 ## v1.15.0.0 — 2026-05-04 — qa-meta-eval + qa-manager (BL-011, BL-050, BL-051)
 
 ### qa-meta-eval (new skill — BL-011)
