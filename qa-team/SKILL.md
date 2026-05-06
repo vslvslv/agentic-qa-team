@@ -225,6 +225,11 @@ Use `AskUserQuestion` to confirm which agents to run. Default to auto-detecting 
 - **qa-seed**: auto-include when `_SEED_SCHEMA != "none"` AND `TEST_DATABASE_URL` or `DATABASE_URL` is set
 - **qa-component**: auto-include when `_COMP_TOOL` contains `storybook`
 - **qa-simulate**: not auto-included; requires explicit user selection or `QA_SIMULATE=1` env var
+- **qa-secrets**: auto-include always (secrets scan is always relevant; skips gracefully if trufflehog absent)
+- **qa-sca**: auto-include when `_MANIFEST_TYPE != "unknown"` (package manifest detected)
+- **qa-geo**: auto-include when `_WEB_TOOL != "none"` AND `WEB_URL` is set
+- **qa-deps**: auto-include when `_DOCKER_AVAILABLE=1` AND a compose file is found
+- **qa-deeplinks**: not auto-included; requires explicit user selection or `QA_DEEPLINKS=1` env var
 
 Present detected domains and ask for confirmation. Allow overriding.
 
@@ -445,6 +450,11 @@ Sub-agents to spawn (skip domains not in Phase 0 selection):
 - `/qa-seed`      → `$_TMP/qa-seed-report.md`       (when `_SEED_SCHEMA != "none"` and DB_URL set)
 - `/qa-component` → `$_TMP/qa-component-report.md`  (when `_COMP_TOOL` contains `storybook`)
 - `/qa-simulate`  → `$_TMP/qa-simulate-report.md`   (when `QA_SIMULATE=1` or explicitly selected)
+- `/qa-secrets`   → `$_TMP/qa-secrets-report.md`    (always; graceful skip if trufflehog absent)
+- `/qa-sca`       → `$_TMP/qa-sca-report.md`        (when `_MANIFEST_TYPE != "unknown"`)
+- `/qa-geo`       → `$_TMP/qa-geo-report.md`        (when web app detected and `WEB_URL` set)
+- `/qa-deps`      → `$_TMP/qa-deps-report.md`       (when docker and compose file present)
+- `/qa-deeplinks` → `$_TMP/qa-deeplinks-report.md`  (when `QA_DEEPLINKS=1` or explicitly selected)
 
 Wait for all sub-agents to complete before proceeding.
 
@@ -453,7 +463,7 @@ Wait for all sub-agents to complete before proceeding.
 Read each sub-agent's report and merge into a single quality scorecard:
 
 ```bash
-for domain in web api mobile perf visual audit a11y heal explore security seed component simulate; do
+for domain in web api mobile perf visual audit a11y heal explore security seed component simulate secrets sca geo deps deeplinks; do
   f="$_TMP/qa-$domain-report.md"
   [ -f "$f" ] && echo "=== $domain ===" && cat "$f" || echo "=== $domain: not run ==="
 done

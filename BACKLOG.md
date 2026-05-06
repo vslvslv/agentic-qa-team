@@ -1073,7 +1073,7 @@ Given a feature description (e.g., "checkout flow"), a `UserSimulatorAgent` gene
 
 ### 🔴 P1 — High Impact, Low Effort
 
-#### BL-067 — Secrets Scanning Gate `[S]`
+#### BL-067 — Secrets Scanning Gate `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [trufflesecurity/trufflehog](https://github.com/trufflesecurity/trufflehog)
 **Target skill:** new `qa-secrets`
 **Description:**
@@ -1081,7 +1081,7 @@ Runs TruffleHog across the full git history and staged diff, validating detected
 
 ---
 
-#### BL-068 — Accessibility Regression Diffing `[S]`
+#### BL-068 — Accessibility Regression Diffing `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** Lost Pixel / Argos baseline-diff pattern applied to axe-core data
 **Target skill:** `qa-a11y` enhancement
 **Description:**
@@ -1089,7 +1089,7 @@ Stores an axe-core violation baseline per page after each run and diffs on the n
 
 ---
 
-#### BL-069 — Test Coverage Delta Gate `[S]`
+#### BL-069 — Test Coverage Delta Gate `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** Codecov CI gate pattern + deepeval coverage enforcement
 **Target skill:** new `qa-coverage-gate`
 **Description:**
@@ -1097,7 +1097,7 @@ After test runs, computes per-file coverage delta between base branch and PR bra
 
 ---
 
-#### BL-070 — Unified QA Dashboard / Sprint Report `[S]`
+#### BL-070 — Unified QA Dashboard / Sprint Report `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** ctrf-io ecosystem (already used) + cross-skill aggregation pattern
 **Target skill:** new `qa-report`
 **Description:**
@@ -1105,7 +1105,7 @@ Aggregates CTRF output from all qa-* skills run in a CI pipeline or sprint, prod
 
 ---
 
-#### BL-071 — Test Cost Tracking & Budget Gate `[S]`
+#### BL-071 — Test Cost Tracking & Budget Gate `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [agentops-ai/agentops](https://github.com/agentops-ai/agentops) + deepeval cost tracking
 **Target skill:** new `qa-cost`
 **Description:**
@@ -1113,7 +1113,7 @@ Instruments all AI API calls made during QA runs (qa-visual, qa-explore, qa-simu
 
 ---
 
-#### BL-072 — CI Build Intelligence from OTel Traces `[S]`
+#### BL-072 — CI Build Intelligence from OTel Traces `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** Honeycomb buildevents (already integrated) + AgentOps analysis pattern
 **Target skill:** new `qa-ci-trace`
 **Description:**
@@ -1121,7 +1121,7 @@ Analyzes the OTel build trace data (already emitted via Honeycomb buildevents) t
 
 ---
 
-#### BL-073 — Natural Language Spec-to-Test Generation `[S]`
+#### BL-073 — Natural Language Spec-to-Test Generation `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [antiwork/shortest](https://github.com/antiwork/shortest) + [Addepto/contextcheck](https://github.com/Addepto/contextcheck)
 **Target skill:** new `qa-spec-to-test`
 **Description:**
@@ -1129,7 +1129,7 @@ Reads product spec documents (Markdown PRDs, Confluence exports, plain text) and
 
 ---
 
-#### BL-074 — Multi-Model Functional Assertion Consensus `[S]`
+#### BL-074 — Multi-Model Functional Assertion Consensus `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [bug0inc/passmark](https://github.com/bug0inc/passmark)
 **Target skill:** `qa-explore` + `qa-simulate` enhancement
 **Description:**
@@ -1245,7 +1245,7 @@ On PR open, orchestrates spinning up an ephemeral deployment (via existing deplo
 
 ---
 
-#### BL-088 — Service Dependency Smoke Test `[S]`
+#### BL-088 — Service Dependency Smoke Test `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [SwissLife-OSS/squadron](https://github.com/SwissLife-OSS/squadron) + Testcontainers (already integrated)
 **Target skill:** new `qa-deps`
 **Description:**
@@ -1327,7 +1327,7 @@ Generates random but valid user action sequences using property-based arbitrarie
 
 ---
 
-#### BL-098 — SLSA Supply Chain Provenance Gate `[S]`
+#### BL-098 — SLSA Supply Chain Provenance Gate `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [slsa-framework/slsa-github-generator](https://github.com/slsa-framework/slsa-github-generator)
 **Target skill:** new `qa-slsa`
 **Description:**
@@ -1366,7 +1366,7 @@ Verifies SLSA provenance attestations for all build artifacts and third-party de
 
 ### 🔴 P1 — High Impact, Low Effort
 
-#### BL-099 — Environment Parity Checker `[S]`
+#### BL-099 — Environment Parity Checker `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** 12-factor app + [dotenv-linter](https://github.com/dotenv-linter/dotenv-linter) (1.8k stars) + Netflix chaos eng blog
 **Target skill:** new `qa-env-parity`
 **Description:**
@@ -1374,7 +1374,7 @@ Compares declared config (env vars, feature flags, secrets, Kubernetes manifests
 
 ---
 
-#### BL-100 — Geo & Timezone Simulation Suite `[S]`
+#### BL-100 — Geo & Timezone Simulation Suite `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** Playwright `page.emulateTimezone()` + `browser.newContext({ geolocation })` APIs; Booking.com engineering blog
 **Target skill:** `qa-web` enhancement or new `qa-geo`
 **Description:**
@@ -1382,7 +1382,7 @@ Parameterizes Playwright tests across multiple time zones and geo-locations, cat
 
 ---
 
-#### BL-101 — Eval-Driven Development Gate `[S]`
+#### BL-101 — Eval-Driven Development Gate `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [greynewell/evaldriven.org](https://github.com/greynewell/evaldriven.org) + [greynewell/matchspec](https://github.com/greynewell/matchspec) + Anthropic eval-first guidance
 **Target skill:** new `qa-eval-gate`
 **Description:**
@@ -1390,7 +1390,7 @@ Enforces that every AI feature shipped has a passing eval harness before the PR 
 
 ---
 
-#### BL-102 — Natural-Language Code Property Assertions `[S]`
+#### BL-102 — Natural-Language Code Property Assertions `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [kdunee/intentguard](https://github.com/kdunee/intentguard) (35 stars) + LLM-as-judge eval pattern
 **Target skill:** new `qa-intent-assert`
 **Description:**
@@ -1398,7 +1398,7 @@ Lets developers write test assertions in plain English (`"This function must nev
 
 ---
 
-#### BL-103 — Test Smell & Anti-Pattern Linter `[S]`
+#### BL-103 — Test Smell & Anti-Pattern Linter `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [goldbergyoni/javascript-testing-best-practices](https://github.com/goldbergyoni/javascript-testing-best-practices) (24.6k stars) + tsestmell / JUnit anti-pattern literature
 **Target skill:** new `qa-test-lint`
 **Description:**
@@ -1406,7 +1406,7 @@ Statically scans test files for known test smells: assertion-free tests, magic n
 
 ---
 
-#### BL-104 — Test Order Dependency Detector `[S]`
+#### BL-104 — Test Order Dependency Detector `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [pytest-randomly](https://github.com/pytest-dev/pytest-randomly) (615 stars) + `jest --randomize` (Jest 29+) + [pytest-testmon](https://github.com/tarpas/pytest-testmon) (843 stars)
 **Target skill:** new `qa-test-order`
 **Description:**
@@ -1414,7 +1414,7 @@ Repeatedly runs the test suite in randomized order and identifies tests that onl
 
 ---
 
-#### BL-105 — Test Documentation Generator `[S]`
+#### BL-105 — Test Documentation Generator `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [Wytamma/write-the](https://github.com/Wytamma/write-the) (121 stars) + [AutomateThePlanet/Spectra](https://github.com/AutomateThePlanet/Spectra)
 **Target skill:** new `qa-test-docs`
 **Description:**
@@ -1422,7 +1422,7 @@ Reads existing test files and generates human-readable Markdown summaries of wha
 
 ---
 
-#### BL-106 — SCA / Dependency Vulnerability Gate `[S]`
+#### BL-106 — SCA / Dependency Vulnerability Gate `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** [anchore/grype](https://github.com/anchore/grype) (9.1k stars) + [anchore/syft](https://github.com/anchore/syft) (6.5k stars)
 **Target skill:** new `qa-sca`
 **Description:**
@@ -1430,7 +1430,7 @@ Generates an SBOM via Syft, then scans all direct/transitive dependencies for CV
 
 ---
 
-#### BL-107 — Deep Link & Universal Link Validator `[S]`
+#### BL-107 — Deep Link & Universal Link Validator `[S]` ✅ **Implemented v1.16.0.0**
 **Source:** Branch.io testing patterns + Apple/Google universal links documentation
 **Target skill:** `qa-mobile` enhancement or new `qa-deeplinks`
 **Description:**

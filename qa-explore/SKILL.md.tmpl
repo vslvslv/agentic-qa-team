@@ -67,6 +67,11 @@ _MAX_PAGES="${QA_EXPLORE_MAX_PAGES:-20}"
 echo "EXPLORE_AGENTS: $_EXPLORE_AGENTS"
 echo "MAX_PAGES_PER_AGENT: $_MAX_PAGES"
 
+_CONSENSUS_MODE="${CONSENSUS_MODE:-0}"
+[ -n "$GEMINI_API_KEY" ] && _CONSENSUS_MODE=1 || true
+echo "CONSENSUS_MODE: $_CONSENSUS_MODE"
+echo "GEMINI_API_KEY_SET: $([ -n "$GEMINI_API_KEY" ] && echo 1 || echo 0)"
+
 # Detect seed routes from common framework patterns
 echo "--- SEED ROUTES ---"
 find . \( -path "*/pages/*.tsx" -o -path "*/pages/*.ts" -o -path "*/pages/*.jsx" \) \
@@ -177,7 +182,27 @@ Identify routes from the seed list that were never visited (coverage gap):
 # Compare seed list against visited URLs
 ```
 
-## Phase 4 — CTRF Output
+## Phase 4 — Multi-Model Assertion Consensus (CONSENSUS_MODE=1)
+
+When `CONSENSUS_MODE=1` (auto-enabled when `GEMINI_API_KEY` is set):
+
+For each functional finding from Phase 3 that is marked as a potential FAIL (HTTP 4xx/5xx, console error, form error, or error page):
+
+1. **Claude assertion**: Evaluate the finding against the app's expected behaviour — return `PASS`, `FAIL`, or `UNCERTAIN` with a confidence score (0-1) and one-sentence rationale.
+
+2. **Gemini assertion** (via `curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$GEMINI_API_KEY"`): Send the same finding + relevant page context. Parse the response for a verdict (`PASS`, `FAIL`, or `UNCERTAIN`).
+
+3. **Arbitration**: A third Claude call receives both verdicts + rationales and applies these rules:
+   - Both PASS → mark finding as PASS (likely false positive)
+   - Both FAIL → mark finding as FAIL (confirmed bug)
+   - Split decision → UNCERTAIN; escalate to report with both opinions
+   - Either UNCERTAIN → defer to the other model's verdict if its confidence > 0.7
+
+4. Apply final verdicts: only FAIL findings with majority vote (both models or arbitration decision = FAIL) count as test failures in CTRF output.
+
+When `CONSENSUS_MODE=0` (default, no `GEMINI_API_KEY`), all suspected-FAIL findings from exploration are reported as-is without consensus arbitration.
+
+## Phase 5 — CTRF Output
 
 ```python
 python3 - << 'PYEOF'
@@ -232,7 +257,7 @@ print(f'CTRF_WRITTEN: {out}')
 PYEOF
 ```
 
-## Phase 5 — Report
+## Phase 6 — Report
 
 Write `$_TMP/qa-explore-report.md`:
 
@@ -287,6 +312,9 @@ Write `$_TMP/qa-explore-report.md`:
 - **Realistic dummy data only** — never inject SQL, scripts, or suspicious payloads in forms
 - **Respect rate limits** — add 100ms delay between page requests; do not flood the server
 - **Dedup across agents** — the same error on the same page is one finding, not N
+- `CONSENSUS_MODE=1` enables multi-model Claude+Gemini consensus for functional assertions (requires `GEMINI_API_KEY`)
+- Auto-enabled when `GEMINI_API_KEY` is set in environment; set `CONSENSUS_MODE=0` to disable even when key is present
+- Split verdicts are escalated as UNCERTAIN in the report; only majority-FAIL findings count as test failures in CTRF
 
 ## Agent Memory
 

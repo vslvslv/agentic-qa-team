@@ -73,6 +73,14 @@ ls playwright.config.ts playwright.config.js playwright.config.mts 2>/dev/null |
 echo "--- AXE-CORE ---"
 ls node_modules/@axe-core/playwright 2>/dev/null && echo "AXE_PRESENT: yes" || echo "AXE_PRESENT: no"
 
+# Baseline diff configuration
+_A11Y_BASELINE_MODE="${A11Y_BASELINE_MODE:-diff}"
+_A11Y_BASELINE_DIR="${A11Y_BASELINE_DIR:-./a11y-baselines}"
+_BASELINE_FILE="$_A11Y_BASELINE_DIR/baseline-$_BRANCH.json"
+[ -f "$_BASELINE_FILE" ] && echo "A11Y_BASELINE_EXISTS: 1" || echo "A11Y_BASELINE_EXISTS: 0"
+echo "A11Y_BASELINE_MODE: $_A11Y_BASELINE_MODE"
+echo "A11Y_BASELINE_DIR: $_A11Y_BASELINE_DIR"
+
 # Load methodology context
 echo "--- METHODOLOGY CONTEXT ---"
 ls qa-methodology/references/accessibility-guide.md 2>/dev/null && \
@@ -321,7 +329,38 @@ print(f"CLASSIFIED_WRITTEN: {out}")
 PYEOF
 ```
 
-## Phase 4 — AI Alt Text Generation
+## Phase 4 — Baseline Diff (A11Y_BASELINE_MODE=diff)
+
+After collecting axe violations from Phase 3:
+
+1. Save current violations as baseline:
+   ```bash
+   mkdir -p "$_A11Y_BASELINE_DIR"
+   # Write current violations JSON to baseline file (overwrite with latest run)
+   python3 -c "
+   import json, os, sys
+   tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+   raw = json.load(open(os.path.join(tmp, 'a11y-classified.json'), encoding='utf-8'))
+   baseline_dir = os.environ.get('_A11Y_BASELINE_DIR', './a11y-baselines')
+   branch = os.environ.get('_BRANCH', 'unknown')
+   out = os.path.join(baseline_dir, f'baseline-{branch}.json')
+   json.dump(raw, open(out, 'w', encoding='utf-8'), indent=2)
+   print(f'BASELINE_WRITTEN: {out}')
+   " 2>/dev/null || true
+   ```
+
+2. If `A11Y_BASELINE_MODE=diff` and a prior baseline existed (`A11Y_BASELINE_EXISTS: 1`):
+   - Load the prior baseline JSON (saved before step 1 overwrote it — read it before running the bash above, or keep a copy)
+   - Compare violations by rule+target fingerprint: `{ ruleId: v.rule, target: v.element }`
+   - Filter the violations list to only NEW violations not present in the prior baseline
+   - Add a note to the report: "N new violations found (M existing violations suppressed from diff)"
+   - Only new violations count as failures in CTRF output
+
+3. If `A11Y_BASELINE_MODE=full` or no prior baseline existed (`A11Y_BASELINE_EXISTS: 0`): show all violations as normal with no filtering.
+
+The baseline file path: `$_A11Y_BASELINE_DIR/baseline-{branch}.json`. Commit the baseline directory to track regressions per branch across CI runs.
+
+## Phase 5 — AI Alt Text Generation
 
 For each image violation identified in Phase 3 (`image_violations` list):
 
@@ -364,7 +403,7 @@ For each image violation identified in Phase 3 (`image_violations` list):
 
 If no images with missing alt text found, skip this phase and note "No image alt violations found."
 
-## Phase 5 — Report
+## Phase 6 — Report
 
 ```python
 python3 - << 'PYEOF'
@@ -519,8 +558,10 @@ PYEOF
 - **AI alt text is a suggestion** — generated alt text must be reviewed by a human before committing
 - **Up to 10 pages** — prioritize critical paths; don't try to audit every route in one run
 - **Incomplete ≠ violation** — axe `incomplete` items need manual review; flag them but do not count as violations
-- **Skip Phase 4 if no image violations** — do not call vision API unless `image_violations` is non-empty
+- **Skip Phase 5 if no image violations** — do not call vision API unless `image_violations` is non-empty
 - **Report even with 0 violations** — a clean report is valuable; write it with status ✅
+- `A11Y_BASELINE_MODE=full` shows all violations; `diff` (default) shows only new ones vs last run
+- `A11Y_BASELINE_DIR` (default `./a11y-baselines/`) stores per-branch baseline JSON files; commit this directory to track regressions per branch
 
 ## Agent Memory
 

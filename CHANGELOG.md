@@ -5,6 +5,41 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.0 — 2026-05-06 — 17 new skills + 2 enhancements (BL-067..BL-107)
+
+### New skills
+
+- **qa-secrets** (BL-067) — TruffleHog git history + staged diff secrets scanner; verified secrets = FAIL; unverified = warn; regex fallback when trufflehog absent
+- **qa-sca** (BL-106) — Syft SBOM (CycloneDX) + Grype CVE scan + license compliance; delta vs previous SBOM to surface only new findings
+- **qa-slsa** (BL-098) — SLSA provenance attestation verification via `gh attestation verify` + `slsa-verifier`; tampered artifacts = hard FAIL
+- **qa-env-parity** (BL-099) — Env var drift detection across dev/staging/prod .env files; LLM classifies required-missing / expected-drift / stale-orphaned
+- **qa-test-lint** (BL-103) — Static test smell scanner: sleep(), assertion-free, permanent skips, empty describes, console.log, magic numbers, duplicate bodies
+- **qa-test-order** (BL-104) — Randomized test order runner (jest --randomize, pytest-randomly, go test -shuffle) to detect order-dependent state leakage
+- **qa-test-docs** (BL-105) — LLM reads test files grouped by domain → human-readable Markdown docs with business rules, edge cases, and coverage gaps
+- **qa-coverage-gate** (BL-069) — Per-file coverage delta gate vs base branch; LLM stub suggestions for uncovered lines on files below threshold
+- **qa-report** (BL-070) — Aggregates all CTRF files → unified sprint/PR dashboard with LLM top-3 risk narrative and flaky registry enrichment
+- **qa-cost** (BL-071) — Token cost tracking across QA runs using CTRF metadata; optional CI budget gate (`QA_COST_BUDGET`)
+- **qa-eval-gate** (BL-101) — CI gate: discovers evals/ dir, runs promptfoo/deepeval/custom evals, blocks if pass-rate < `EVAL_PASS_THRESHOLD` (default 0.8)
+- **qa-intent-assert** (BL-102) — NL code property assertions via `*.intent.yaml` files; LLM judge evaluates each assertion against target code
+- **qa-geo** (BL-100) — Playwright timezone + geolocation simulation matrix (4 timezones × N pages); catches date/locale formatting bugs and geo-gated regressions
+- **qa-deeplinks** (BL-107) — Deep link / universal link validator; parses AASA, assetlinks.json, AndroidManifest; tests cold-start + in-app via xcrun/adb/Playwright
+- **qa-deps** (BL-088) — Docker Compose service dependency smoke test; type-aware health checks (pg_isready, redis-cli ping, kafka topics, HTTP /health); teardown on exit
+- **qa-ci-trace** (BL-072) — OTel/Honeycomb build trace analysis → ranked CI optimization recommendations (slowest steps, parallelism gaps, cache misses)
+- **qa-spec-to-test** (BL-073) — Markdown PRD/spec → YAML test plan → optional Playwright skeleton .spec.ts files; tags scenarios P1/P2/P3 by priority language
+
+### Enhancements
+
+- **qa-a11y** (BL-068) — Added `A11Y_BASELINE_MODE` (full|diff, default diff): saves per-branch baseline JSON; diff mode suppresses existing violations, surfacing only new regressions
+- **qa-explore** (BL-074) — Added `CONSENSUS_MODE`: when `GEMINI_API_KEY` set, functional assertion findings are validated by Claude + Gemini with a third-Claude arbitration; only majority-FAIL findings count
+
+### Infrastructure
+
+- `qa-team/SKILL.md.tmpl`: added qa-secrets, qa-sca, qa-geo, qa-deps to auto-dispatch; qa-deeplinks added as opt-in (`QA_DEEPLINKS=1`)
+- `bin/setup`: added 17 new `/qa-*` command descriptions to available commands footer
+- `.claude/agents/`: 17 new agent files created
+
+---
+
 ## v1.15.0.1 — 2026-05-06 — nightly learning-sources catalog update
 
 ### learning-sources
