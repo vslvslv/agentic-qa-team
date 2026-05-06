@@ -33,6 +33,51 @@ A suite of Claude Code skills that give any project an autonomous QA team. One c
 
 ---
 
+## Security & supply-chain skills
+
+| Command | What it does |
+|---------|--------------|
+| `/qa-secrets` | Secrets scanning — TruffleHog git history + staged diff; verified secrets = FAIL |
+| `/qa-sca` | Software composition analysis — Syft SBOM + Grype CVE + license compliance; delta mode |
+| `/qa-slsa` | SLSA provenance attestation — verifies build artifacts via `gh attestation verify` |
+| `/qa-env-parity` | Env var drift — detects required-missing / stale-orphaned keys across dev/staging/prod |
+
+---
+
+## Test quality DX skills
+
+| Command | What it does |
+|---------|--------------|
+| `/qa-test-lint` | Static test smell scanner — sleep(), assertion-free, permanent skips, magic numbers |
+| `/qa-test-order` | Randomized test order — detects order-dependent failures (shared global state) |
+| `/qa-test-docs` | Test documentation generator — LLM reads test files → human-readable Markdown docs |
+| `/qa-coverage-gate` | Per-file coverage delta gate; LLM stub suggestions for uncovered lines |
+
+---
+
+## Reporting & AI gate skills
+
+| Command | What it does |
+|---------|--------------|
+| `/qa-report` | Unified QA dashboard — aggregates all CTRF files → sprint/PR report with LLM risk narrative |
+| `/qa-cost` | Token cost tracking across QA runs; optional CI budget gate |
+| `/qa-eval-gate` | Eval-driven CI gate — evals/ pass-rate must meet threshold before merge |
+| `/qa-intent-assert` | NL code property assertions — `*.intent.yaml` evaluated by LLM judge |
+
+---
+
+## Web / mobile / infra skills
+
+| Command | What it does |
+|---------|--------------|
+| `/qa-geo` | Playwright timezone + geolocation simulation matrix — catches locale/DST bugs |
+| `/qa-deeplinks` | Deep link validator — parses AASA, assetlinks.json, AndroidManifest; cold-start + in-app |
+| `/qa-deps` | Service dependency smoke test — docker-compose health checks before integration tests |
+| `/qa-ci-trace` | CI build trace analysis (OTel/Honeycomb) → ranked optimization recommendations |
+| `/qa-spec-to-test` | Markdown PRD/spec → YAML test plan → Playwright skeleton spec files |
+
+---
+
 ## Install
 
 ```bash

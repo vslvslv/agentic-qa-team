@@ -1,6 +1,6 @@
 # Skills Overview
 
-All 21 skills grouped by category. Each runs as a Claude Code slash command and/or as a sub-agent spawned by `/qa-team`.
+All 38 skills grouped by category. Each runs as a Claude Code slash command and/or as a sub-agent spawned by `/qa-team`.
 
 ---
 
@@ -88,12 +88,13 @@ Three-layer visual pipeline with AI consensus and cost-efficient DOM metrics.
 ---
 
 ### `/qa-a11y` — Accessibility Testing
-WCAG 2.1 AA audit with AI-generated remediation.
+WCAG 2.1 AA audit with AI-generated remediation and per-branch baseline diffing.
 
 - **Phase 1**: `@axe-core/playwright` — 35% of WCAG 2.1 AA issues, zero false positives
 - **Phase 2**: Claude semantic layer — POUR-grouped impact statements + fix suggestions from page screenshot
 - **Phase 3**: AI-generated alt text candidates for images with missing/empty alt attributes
-- **Env**: `WEB_URL`, `A11Y_WCAG_LEVEL` (A/AA/AAA), `A11Y_PAGES` (comma-separated paths)
+- **Baseline diff**: saves violations as per-branch JSON; `A11Y_BASELINE_MODE=diff` (default) surfaces only new regressions vs prior run; `full` shows all
+- **Env**: `WEB_URL`, `A11Y_WCAG_LEVEL` (A/AA/AAA), `A11Y_PAGES`, `A11Y_BASELINE_MODE`, `A11Y_BASELINE_DIR`
 
 ---
 
@@ -114,8 +115,9 @@ Parallel freeform smoke testing — no test scripts required.
 
 - Spawns N agents (configurable) to autonomously explore the running app
 - Surfaces: 404s, JS console errors, broken links, unexpected redirects, accessibility violations
+- **Multi-model consensus**: when `GEMINI_API_KEY` set, functional assertion findings validated by Claude + Gemini; third-Claude arbitration resolves disagreements; only majority-FAIL verdicts count
 - Useful as a post-deploy smoke check or when no test scripts exist yet
-- **Env**: `WEB_URL`, `QA_EXPLORE_AGENTS` (parallel agent count), `QA_EXPLORE_MAX_PAGES`
+- **Env**: `WEB_URL`, `QA_EXPLORE_AGENTS` (parallel agent count), `QA_EXPLORE_MAX_PAGES`, `CONSENSUS_MODE`, `GEMINI_API_KEY`
 
 ---
 
@@ -223,3 +225,183 @@ These skills research the web and update the reference guides consumed by the te
 | `/qa-methodology-refine` | `qa-methodology/references/` | ISTQB, research papers, OWASP, W3C |
 | `/lang-refine` | `lang-refine/references/` | Language docs, style guides, design pattern repos |
 | `/learning-sources-refinement` | `learning-sources/` catalog | Searches for new official docs, GitHub repos, blogs across 4 domains |
+
+---
+
+## Security & supply-chain skills
+
+### `/qa-secrets` — Secrets Scanning
+TruffleHog-based secrets gate that scans git history and staged diffs.
+
+- **Scan modes**: `TRUFFLEHOG_MODE=history|staged|both` (default: both)
+- **Classification**: verified secrets (live API validation) → FAIL; unverified → warn only
+- **Redaction**: all secret values redacted to first-4 + last-4 chars in output
+- **Fallback**: pattern-based regex scan (AKIA*, ghp_*, sk_live_*, xoxb-*) when trufflehog not installed
+- **Env**: `TRUFFLEHOG_MODE`, `SECRETS_FAIL_ON_VERIFIED` (default 1)
+
+---
+
+### `/qa-sca` — Software Composition Analysis
+Syft SBOM generation + Grype CVE scanning + license compliance gate.
+
+- **SBOM**: generates CycloneDX JSON via Syft; fallback to `npm list --json` / `pip list`
+- **CVE scan**: Grype against the SBOM; classifies Critical/High/Medium/Low
+- **License gate**: flags components matching `SCA_LICENSE_DENY_LIST` (default: GPL-2.0, GPL-3.0, AGPL-3.0)
+- **Delta mode**: diffs against previous SBOM (`$TMP/qa-sca-sbom-prev.json`) — only new findings reported
+- **Env**: `SCA_FAIL_ON_CRITICAL` (default 1), `SCA_LICENSE_DENY_LIST`
+
+---
+
+### `/qa-slsa` — SLSA Provenance Verification
+Verifies build artifact attestations chain to a trusted CI environment.
+
+- Discovers artifacts: `dist/*.tgz`, Docker images, release binaries via `gh release list`
+- Verifies via `gh attestation verify` then falls back to `slsa-verifier verify-artifact`
+- Missing attestation → `skipped` (warn); tampered/failed verification → `failed` (hard gate)
+- **Env**: `SLSA_MIN_LEVEL` (default 2)
+
+---
+
+### `/qa-env-parity` — Environment Parity Checker
+Detects configuration drift across dev/staging/prod environment files.
+
+- Parses all `.env*` files; extracts key sets per environment (values never stored)
+- LLM classifies each gap: `required-missing`, `expected-drift`, `value-mismatch`, `stale-orphaned`
+- `.env.example` treated as authoritative required-key inventory
+- **Env**: `PARITY_ENVIRONMENTS` (default "development,staging,production"), `PARITY_REQUIRED_KEYS`
+
+---
+
+## Test quality DX skills
+
+### `/qa-test-lint` — Test Smell Linter
+Static scanner for test anti-patterns with LLM-generated fix suggestions.
+
+- **Smells detected**: `sleep()`/hardcoded waits, assertion-free tests, permanent skips (`describe.skip`, `pytest.mark.skip`), empty describe blocks, `console.log` leakage, magic numbers, duplicate test bodies, overly-broad assertions (`.toBe(true)`)
+- LLM assigns severity (error/warn), category (correctness/maintainability/reliability), and inline fix suggestion
+- **Env**: `TEST_LINT_SEVERITY` (error=all block CI; warn=default; only sleep+assertion-free block)
+
+---
+
+### `/qa-test-order` — Test Order Dependency Detector
+Runs the test suite N times with different random seeds to detect order-dependent failures.
+
+- **Runners**: Jest `--randomize --randomizeOrderSeed=N`, Vitest `--sequence.shuffle`, pytest `pytest-randomly`, Go `go test -shuffle=on`
+- Identifies tests that pass in baseline but fail in some orderings → shared global state leak
+- LLM generates `beforeEach`/`afterEach` isolation fix suggestions per dependency
+- **Env**: `TEST_ORDER_RUNS` (default 3), `TEST_ORDER_TIMEOUT` (default 300s)
+
+---
+
+### `/qa-test-docs` — Test Documentation Generator
+Reads test files and generates human-readable Markdown documentation per feature domain.
+
+- Clusters test files by parent directory / feature name
+- LLM generates per-cluster doc: what is tested, business rules guarded, edge cases, notable gaps
+- Writes `{domain}-tests.md` per cluster + `index.md`
+- Output suitable for compliance audits, sprint reviews, onboarding
+- **Env**: `TEST_DOCS_OUTPUT` (default `./test-docs/`), `TEST_DOCS_FORMAT` (markdown|confluence)
+
+---
+
+### `/qa-coverage-gate` — Coverage Delta Gate
+Runs coverage tooling and gates CI on per-file delta vs base branch.
+
+- Only gates on files changed in the PR (not entire codebase)
+- **Runners**: Jest/Vitest `--coverage`, pytest-cov, `go test -coverprofile`, dotnet coverage
+- LLM generates test stub suggestions for uncovered line ranges in files below threshold
+- **Env**: `COVERAGE_THRESHOLD` (default 80%), `COVERAGE_COMPARE_BRANCH` (default main), `COVERAGE_GENERATE_STUBS` (default 1)
+
+---
+
+## Reporting & AI gate skills
+
+### `/qa-report` — Unified QA Dashboard
+Aggregates all CTRF files from a CI run or sprint into a single executive report.
+
+- Loads all `$TMP/qa-*-ctrf.json` files; enriches with flaky-registry and coverage delta
+- LLM generates "Top 3 Risk Areas" narrative from aggregated failure data
+- **Env**: `REPORT_FORMAT` (markdown|html), `REPORT_PERIOD` (pr|sprint|nightly), `REPORT_OUTPUT`
+
+---
+
+### `/qa-cost` — Token Cost Tracker
+Reads CTRF token metadata and computes per-skill AI API cost.
+
+- Model pricing map: claude-sonnet-4-6 $3/$15 per MTok in/out; claude-haiku-4-5 $0.80/$4; claude-opus-4-7 $15/$75
+- Estimation fallback when CTRF lacks token metadata
+- Optional CI budget gate — fails if total run cost exceeds `QA_COST_BUDGET`
+- **Env**: `QA_COST_BUDGET` (USD, optional), `QA_COST_MODEL` (default claude-sonnet-4-6)
+
+---
+
+### `/qa-eval-gate` — Eval-Driven CI Gate
+Enforces that AI features have passing evaluation harnesses before merging.
+
+- Discovers `evals/`, `tests/evals/`, or `src/evals/` directories
+- **Runners**: promptfoo, deepeval, or custom `*.eval.ts`/`*.eval.py`/`*.eval.yaml` files
+- Missing evals → WARN (not FAIL) — project may not yet have AI features
+- **Env**: `EVAL_PASS_THRESHOLD` (default 0.8), `EVAL_FAIL_FAST` (default 0), `ANTHROPIC_API_KEY`
+
+---
+
+### `/qa-intent-assert` — NL Code Property Assertions
+Evaluates plain-English code properties defined in `*.intent.yaml` files via LLM judge.
+
+- Assertion format: `{ assertion: "This function must never return negative balance", target: "src/billing.ts:calculateBalance" }`
+- LLM judge returns PASS / FAIL / UNCERTAIN with one-sentence rationale
+- UNCERTAIN = judge could not determine from code alone; refine assertion for clarity
+- **Env**: `INTENT_STRICT` (0=warn, 1=fail on violation), `INTENT_DIR`
+
+---
+
+## Web / mobile / infra skills
+
+### `/qa-geo` — Geo & Timezone Simulation
+Playwright matrix across timezones and geolocations to catch locale and DST bugs.
+
+- Default matrix: America/New_York (en-US), Europe/London (en-GB), Asia/Tokyo (ja-JP), Australia/Sydney (en-AU)
+- Uses `browser.newContext({ timezoneId, locale, geolocation })` per test
+- Catches: date/time arithmetic bugs, DST boundary failures, locale number/currency formatting errors, geo-gated feature regressions
+- **Env**: `WEB_URL`, `QA_TIMEZONES` (comma-separated), `QA_GEO_PAGES` (paths), `QA_GEOLOCATIONS`
+
+---
+
+### `/qa-deeplinks` — Deep Link Validator
+Enumerates and tests all declared deep links and universal links.
+
+- Parses: `apple-app-site-association` (AASA), `assetlinks.json`, `AndroidManifest.xml` intent filters, `app.json`/Expo config
+- Tests: cold-start via `xcrun simctl openurl` (iOS) or `adb shell am start` (Android); in-app routing via Playwright (web)
+- AASA paths returning 404 on web = FAIL even if app routing works
+- **Env**: `PLATFORM` (ios|android|web), `APP_BUNDLE_ID`, `DEVICE_ID`
+
+---
+
+### `/qa-deps` — Service Dependency Smoke Test
+Spins up docker-compose services and runs type-aware health checks before integration tests.
+
+- Discovers compose file: `docker-compose.yml`, `test-env.yml`, `compose.yml`, etc.
+- **Health checks by type**: postgres → `pg_isready`, redis → `redis-cli ping`, kafka → topic list, rabbitmq → `rabbitmqctl status`, HTTP → `curl /health`
+- Retries every 2s up to `DEPS_TIMEOUT`; port mapping via `docker compose port` (not hardcoded)
+- **Env**: `DEPS_TIMEOUT` (default 30s), `DEPS_KEEP_RUNNING` (default 0 — teardown after run)
+
+---
+
+### `/qa-ci-trace` — CI Build Intelligence
+Analyzes OTel build traces to produce ranked CI optimization recommendations.
+
+- **Sources**: Honeycomb API (`BUILDEVENTS_APIKEY` + `HONEYCOMB_TEAM` + `HONEYCOMB_DATASET`), local `*.otlp.json` files, GitHub Actions run history
+- LLM identifies: slowest steps (P95), high-failure-rate stages (> 20%), sequential bottlenecks, cache inefficiency
+- All CTRF test cases are passed — purely advisory (no hard gate)
+- **Env**: `BUILDEVENTS_APIKEY`, `CI_TRACE_LOOKBACK` (default 10 runs), `HONEYCOMB_DATASET`
+
+---
+
+### `/qa-spec-to-test` — Spec-to-Test Generator
+Converts Markdown PRD/spec documents into YAML test plans and Playwright skeletons.
+
+- Auto-discovers `PRD*.md`, `SPEC*.md`, `requirements*.md`, `docs/`, `specs/` directories
+- Extracts acceptance criteria; tags each scenario P1 (MUST/SHALL), P2 (SHOULD), P3 (MAY)
+- Writes `test-plan-{feature}-{date}.yaml` with scenario id, steps, expected outcomes
+- Optionally generates Playwright skeleton `.spec.ts` for P1 scenarios
+- **Env**: `QA_SPEC_FILES` (comma-separated override), `SPEC_OUTPUT` (default `./test-specs/`), `SPEC_GEN_PLAYWRIGHT` (default 1)
