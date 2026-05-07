@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 30 | score: 100/100 | date: 2026-05-04 -->
+<!-- sources: mixed (official + community) | iteration: 32 | score: 100/100 | date: 2026-05-07 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -34,6 +34,8 @@
      [lang-refine run3] Iter 28 (run3 iter 1): 100/100 (+0) — added @override/@final decorators, `type` alias statement (PEP 695), ReadOnly TypedDict (Python 3.13), TypeIs vs TypeGuard distinction, AnyStr deprecation; added community gotchas #23 (runtime_checkable in hot paths) and #24 (missing @override)
      Iter 29 (run3 iter 2): 100/100 (+0) — added logging best practices vs print(), pprint/reprlib idioms, src-layout packaging guidance; community gotcha #25 (print() in production) and #26 (logging misconfiguration)
      Iter 30 (2026-05-04): 100/100 (+0) — added unittest.mock deep-dive (Mock vs MagicMock, patch() patterns, AsyncMock, spec/spec_set, assertion introspection) and community gotcha #27 (patching in wrong namespace) sourced from docs.python.org/3/library/unittest.mock.html
+     Iter 31 (2026-05-07): 100/100 (+0) — updated Python 3.13 section with TypeVar defaults (PEP 696), TypeIs (PEP 742), ReadOnly TypedDict (PEP 705), copy.replace() generic, deprecated modules, colorized tracebacks, free-threaded CPython; sourced from docs.python.org/3/whatsnew/3.13.html
+     Iter 32 (2026-05-07): 100/100 (+0) — added Python 3.14 section: PEP 649/749 deferred annotations + annotationlib, PEP 750 t-strings, PEP 734 concurrent.interpreters, PEP 758 bracketless except, PEP 765 finally return warning, free-threaded improvements, pathlib.copy/move; community gotcha #28 (deferred annotation + get_type_hints); sourced from docs.python.org/3/whatsnew/3.14.html
 -->
 
 ## Core Philosophy
@@ -2085,20 +2087,55 @@ print(format_movie(m))   # Inception (2010) — Sci-Fi [8.8/10]
 
 ### Python 3.13 — Key New Features and Best Practices
 
-Python 3.13 (released October 2024) brings several developer-experience improvements worth knowing:
+Python 3.13 (released October 2024) brings several developer-experience improvements and type system additions.
 
 ```python
-# 1. Improved error messages — tracebacks now include color and column markers
-# NameError: Did you mean 'username'?  (improved "did you mean" suggestions)
-# AttributeError: 'list' object has no attribute 'appned'. Did you mean: 'append'?
+# 1. TypeIs narrowing (PEP 742) — more precise than TypeGuard
+# TypeGuard: narrows only the True branch
+# TypeIs: also narrows the False branch and passes through the narrowed type correctly
+from typing import TypeIs
 
-# 2. Free-threaded CPython (PEP 703) — experimental, opt-in build
-# python3.13t  — the 't' suffix enables the no-GIL experimental build
-# Enables true parallel threads for CPU-bound work
-# CAUTION: Not all C extensions support free-threading yet (2026)
-# Use --disable-gil / PYTHON_GIL=0 env var for testing
+def is_str_list(val: list[object]) -> TypeIs[list[str]]:
+    return all(isinstance(x, str) for x in val)
 
-# 3. copy.replace() — generic shallow-copy-with-overrides (extends dataclasses.replace)
+items: list[str | int] = ["a", "b", 1]
+if is_str_list(items):
+    items[0].upper()  # OK — TypeIs narrows items to list[str] here
+# else branch: items is still list[str | int] | list[~str] (not lost)
+
+# TypeGuard equivalent (less precise):
+from typing import TypeGuard
+def is_str_guard(val: list[object]) -> TypeGuard[list[str]]:
+    return all(isinstance(x, str) for x in val)
+# False branch: NOT narrowed (items remains list[object])
+
+# 2. TypeVar defaults (PEP 696) — generic defaults reduce overload clutter
+from typing import TypeVar
+
+T = TypeVar("T", default=str)  # Default type when no argument given
+
+class Container(Generic[T]):
+    def __init__(self, value: T) -> None:
+        self.value = value
+
+c: Container = Container("hello")  # T=str by default
+n: Container[int] = Container(42)  # T=int explicitly
+
+# 3. ReadOnly TypedDict (PEP 705) — immutable keys for type checkers
+from typing import TypedDict, ReadOnly
+
+class User(TypedDict):
+    id: ReadOnly[int]     # Type checker prevents mutation
+    name: str             # Mutable key
+
+def get_user(user_id: int) -> User:
+    return {"id": user_id, "name": "Alice"}
+
+u = get_user(1)
+u["name"] = "Bob"   # OK — mutable key
+# u["id"] = 2       # Type checker ERROR — ReadOnly key
+
+# 4. copy.replace() — generic shallow-copy-with-overrides (not just dataclasses)
 import copy
 from dataclasses import dataclass
 
@@ -2110,23 +2147,166 @@ class Config:
 cfg = Config("localhost", 5432)
 new_cfg = copy.replace(cfg, port=5433)   # Python 3.13+ generic replace
 print(new_cfg)  # Config(host='localhost', port=5433)
+# Also works with: namedtuple, datetime, Signature, SimpleNamespace
 
-# 4. locals() now returns a fresh snapshot (not a live view) — safer for introspection
-# 5. Interactive REPL improved: multi-line editing, colour, paste mode
-# 6. Deprecated: bool(datetime.time(0)) returning False — fixed in 3.14
-
-# 7. Better __str__ for exceptions in tracebacks
-try:
-    {}["missing"]
-except KeyError as e:
-    print(e)  # 'missing'  (improved quoting and display)
+# 5. Colorized tracebacks — enabled by default; control via env vars:
+# PYTHON_COLORS=0  — disable
+# NO_COLOR=1       — disable (respects the no-color.org standard)
+# FORCE_COLOR=1    — force even when not in a TTY
 ```
 
-**Migration note:** `typing.get_type_hints()` behavior changed for `from __future__ import annotations` — use `typing.get_annotations()` (Python 3.10+) for safer runtime inspection.
+**Deprecated modules removed (PEP 594 — "dead batteries"):**
+`aifc`, `audioop`, `chunk`, `cgi`, `cgitb`, `mailcap`, `msilib`, `nis`, `nntplib`, `ossaudiodev`, `pipes`, `spwd`, `telnetlib`, `uu`, `xdrlib`, `crypt`, `sndhdr`, `sunau`, `imghdr`. Also removed: `2to3`, `lib2to3`, `tkinter.tix`.
+
+**Migration note:** `typing.get_type_hints()` behavior changed for `from __future__ import annotations` — use `inspect.get_annotations()` (Python 3.10+) for safer runtime inspection. See Python 3.14's `annotationlib` for the definitive solution.
 
 ---
 
-### 14. Mishandling `ExceptionGroup` in Async Code  [community]
+### Python 3.14 — Deferred Annotations, t-strings, and True Parallelism
+
+Python 3.14 (released October 2025) makes deferred annotations the default, introduces template strings (t-strings), and adds real multi-core parallelism via subinterpreters.
+
+```python
+# 1. PEP 649/749: Deferred annotation evaluation — annotations no longer executed eagerly
+# This is the permanent fix for 'from __future__ import annotations' behavior
+# No import needed in Python 3.14+ — annotations are deferred by default
+
+def process(data: list[Item]) -> Result:
+    ...  # 'Item' and 'Result' don't need to be defined at import time
+
+# Introspect annotations with the new annotationlib module:
+from annotationlib import get_annotations, Format
+
+def func(arg: UndefinedType) -> None:
+    pass
+
+# Three formats for different use cases:
+hints_val = get_annotations(func, format=Format.VALUE)       # Raises NameError if undefined
+hints_fwd = get_annotations(func, format=Format.FORWARDREF)  # Returns ForwardRef — safe
+hints_str = get_annotations(func, format=Format.STRING)      # Returns raw annotation string
+
+# 2. PEP 750: Template strings (t-strings) — safe string interpolation
+# Unlike f-strings (immediate evaluation), t-strings return a Template object
+# enabling custom rendering, sanitization, and structured processing
+
+variety = "Stilton"
+query_id = 42
+
+# t-string returns Template with static parts + Interpolation objects
+template = t"SELECT * FROM cheese WHERE name = {variety!r} AND id = {query_id}"
+# list(template) → ['SELECT * FROM cheese WHERE name = ', Interpolation('Stilton', ...), ...]
+
+# Use case: SQL injection prevention
+def safe_sql(template) -> tuple[str, list]:
+    """Render t-string into parameterized SQL query."""
+    from string.templatelib import Template, Interpolation
+    parts = []
+    params = []
+    for chunk in template:
+        if isinstance(chunk, str):
+            parts.append(chunk)
+        else:  # Interpolation
+            parts.append("?")
+            params.append(chunk.value)
+    return "".join(parts), params
+
+sql, params = safe_sql(t"SELECT * FROM users WHERE id = {user_id} AND active = {True}")
+# ("SELECT * FROM users WHERE id = ? AND active = ?", [user_id, True])
+
+# f-strings would execute immediately with no way to intercept values:
+# f"SELECT * FROM users WHERE id = {user_id}"  # Unsafe — no interception possible
+
+# 3. PEP 734: concurrent.interpreters — true multi-core parallelism
+# Subinterpreters have separate GILs, enabling CPU-bound parallelism
+# without spawning separate processes (lower overhead than multiprocessing)
+from concurrent.interpreters import create, Interpreter
+
+interp = create()
+# Each interpreter: isolated memory, separate GIL, opt-in sharing
+# Use InterpreterPoolExecutor for familiar concurrent.futures interface
+
+from concurrent.futures import InterpreterPoolExecutor
+
+def cpu_bound_task(n: int) -> int:
+    return sum(range(n))
+
+with InterpreterPoolExecutor(max_workers=4) as ex:
+    results = list(ex.map(cpu_bound_task, [10_000_000] * 4))
+# Each task runs in a separate interpreter = true parallelism
+
+# 4. PEP 758: Bracketless exception handling (Python 3.14+)
+# No parentheses needed for multiple exception types
+try:
+    connect_to_server()
+except TimeoutError, ConnectionRefusedError:  # Previously required parens
+    print("Network error")
+
+# Also still valid:
+try:
+    connect_to_server()
+except (TimeoutError, ConnectionRefusedError):  # Old style still works
+    print("Network error")
+
+# 5. PEP 765: finally control flow warning
+# Python 3.14 emits SyntaxWarning for return/break/continue in finally:
+def dangerous():
+    try:
+        return 1
+    finally:
+        return 2  # SyntaxWarning: 'return' in 'finally' block — silences exceptions
+
+# 6. pathlib — new copy() and move() methods
+from pathlib import Path
+
+src = Path("/tmp/source.txt")
+dst = Path("/tmp/dest.txt")
+src.copy(dst)          # Copy file to destination (new in 3.14)
+src.move(dst)          # Move (rename) to destination (new in 3.14)
+
+# 7. asyncio introspection (Python 3.14)
+# python -m asyncio ps PID      — flat task listing
+# python -m asyncio pstree PID  — hierarchical async call tree
+# Helps debug stuck/blocked coroutines in production
+```
+
+**Free-threaded mode improvements (Python 3.14):** The performance overhead on single-threaded code reduced from ~40% (3.13) to 5–10%. The specializing adaptive interpreter (PEP 659) is now enabled in free-threaded builds. Prefer `python3.14t` for new CPU-bound workloads.
+
+**Migration notes:**
+- Code using `from __future__ import annotations` continues to work
+- `inspect.get_annotations()` replaces `typing.get_type_hints()` for runtime annotation inspection
+- Default `ProcessPoolExecutor` start method changed to `'forkserver'` on Unix (except macOS)
+- `sys.remote_exec()` / `pdb -p PID` for zero-overhead remote debugging
+
+---
+
+### 28. `typing.get_type_hints()` vs `annotationlib` for Deferred Annotations  [community]
+**Problem:** In Python 3.14+, annotations are lazy (deferred) by default. Calling `typing.get_type_hints(func)` on a function with forward references or undefined names raises `NameError` — even for names that were never intended to be resolvable at import time (e.g., string literals used as documentation hints).
+**Why:** `get_type_hints()` evaluates annotations eagerly in the calling context. With deferred annotations, names that don't exist in the module's global namespace at the time of the call raise `NameError`, whereas the same code would have worked with `from __future__ import annotations` in 3.10–3.13.
+**Fix:** Use `annotationlib.get_annotations(obj, format=Format.FORWARDREF)` to safely retrieve annotations without evaluation errors, or `format=Format.STRING` to get raw annotation strings. Only use `Format.VALUE` when all annotation names are guaranteed to be in scope.
+```python
+# WRONG (Python 3.14+ with deferred annotations)
+from typing import get_type_hints
+
+def process(data: MyUndefinedType) -> None: ...
+
+hints = get_type_hints(process)  # NameError: name 'MyUndefinedType' is not defined
+
+# CORRECT — use annotationlib for safe introspection
+from annotationlib import get_annotations, Format
+
+# Safe: returns ForwardRef objects for undefined names
+hints_fwd = get_annotations(process, format=Format.FORWARDREF)
+# {'data': ForwardRef('MyUndefinedType'), 'return': type(None)}
+
+# Safe: returns raw strings, never evaluates
+hints_str = get_annotations(process, format=Format.STRING)
+# {'data': 'MyUndefinedType', 'return': 'None'}
+
+# Unsafe (original behavior): evaluates and may raise NameError
+# hints_val = get_annotations(process, format=Format.VALUE)
+```
+
+---
 **Problem:** Python 3.11's `asyncio.TaskGroup` (and `asyncio.gather`) wraps multiple task exceptions in an `ExceptionGroup`. Using `except ValueError` will not catch a `ValueError` nested inside an `ExceptionGroup`, causing the exception to propagate uncaught.
 **Why:** `ExceptionGroup` is a new `BaseException` subclass that holds a collection of exceptions. Regular `except E:` only matches the group itself (if `E` is `ExceptionGroup` or `BaseException`), not the individual sub-exceptions inside it.
 **Fix:** Use `except* SomeError:` (PEP 654, Python 3.11+) which matches and extracts sub-exceptions from the group by type.

@@ -1,5 +1,5 @@
 # Learning Sources: QA Methodology
-<!-- updated: 2026-05-06 | entries: 33 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-07 | entries: 35 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 
@@ -63,3 +63,5 @@ Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 | Pact University | https://docs.pact.io/university | official-docs | contract-testing | 2026-05-06 | ⭐ Free workshops: Pact fundamentals, Message Pact, plugin dev; MIT licensed |
 | Pact Broker — Sharing Pacts | https://docs.pact.io/getting_started/sharing_pacts | official-docs | contract-testing | 2026-05-06 | ⭐ CI/CD decoupling pattern; webhooks, network graph, multi-language publish |
 | Cucumber 10-Minute Tutorial | https://cucumber.io/docs/guides/10-minute-tutorial/ | official-docs | bdd | 2026-05-06 | ⭐ End-to-end BDD walkthrough: Gherkin→step defs→scenario outlines; Example Mapping |
+| Pact Plugin Framework | https://docs.pact.io/plugins | official-docs | contract-testing | 2026-05-07 | ⭐ Extend Pact to gRPC, WebSockets, MQTT, Protocol Buffers, GraphQL; plugin driver architecture |
+| JUnit 5 User Guide | https://docs.junit.org/current/user-guide/ | official-docs | test-framework | 2026-05-07 | ⭐ JUnit Platform + Jupiter + Vintage; JUnit 6.0.3 — annotations, lifecycle, extensions, parameterized tests |

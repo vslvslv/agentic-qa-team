@@ -1,10 +1,18 @@
 # Kotlin Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 1 | score: 100/100 | date: 2026-05-04 -->
+<!-- sources: official | community | mixed | iteration: 3 | score: 100/100 | date: 2026-05-07 -->
 <!-- iteration trace:
      Iter 0: 100/100 — initial draft (2026-04-26)
      Iter 1 (2026-05-04): added Kotlin Flow deep-dive (cold streams, builders, operators, backpressure,
        exception handling, flowOn, StateFlow/SharedFlow, cancellation, anti-patterns) sourced from
        kotlinlang.org/docs/flow.html; added Flow-related gotchas and anti-pattern rows
+     Iter 2 (2026-05-07): added Kotlin 2.0 features — K2 compiler stable, smart cast improvements
+       (local variables, ||, inline functions, property types, exception handling, inc/dec),
+       Kotlin Multiplatform stable, Power-Assert plugin, lambda invokedynamic, enumEntries<T>();
+       sourced from kotlinlang.org/docs/whatsnew20.html
+     Iter 3 (2026-05-07): added Kotlin 2.1.20 features — K2 kapt default, common Atomic types,
+       UUID improvements (Comparable + new parse formats), kotlin.time.Clock/Instant stdlib,
+       Gradle Isolated Projects support, executable {} DSL for KMP JVM targets;
+       sourced from kotlinlang.org/docs/whatsnew2120.html
 -->
 
 ## Core Philosophy
@@ -600,6 +608,300 @@ class Config {
 
 ---
 
+## Kotlin 2.0 — K2 Compiler and Smart Cast Improvements
+
+### K2 Compiler Stable
+
+Kotlin 2.0 ships with the **K2 compiler enabled by default** for all platforms (JVM, Native, Wasm, JS). K2 provides a unified compilation architecture with major performance improvements. Existing code is fully compatible; check your build plugins for compatibility before upgrading.
+
+**Migration checklist:**
+- Verify all compiler plugins support K2: `all-open`, `no-arg`, `serialization`, `kapt`, `parcelize`, Compose 2.0.0+, KSP2
+- Lambda serialization behavior changed: lambdas now use `invokedynamic` by default (smaller bytecode). Add `@JvmSerializableLambda` if you need serializable lambdas, or pass `-Xlambdas=class`
+- `kotlinOptions` DSL deprecated — replace with `compilerOptions {}` DSL:
+
+```kotlin
+// Deprecated (Kotlin 2.0)
+tasks.withType<KotlinCompile>().configureEach {
+    kotlinOptions {
+        allWarningsAsErrors = true
+        jvmTarget = "17"
+    }
+}
+
+// Current (Kotlin 2.0+)
+kotlin {
+    compilerOptions {
+        allWarningsAsErrors.set(true)
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
+}
+```
+
+---
+
+### K2 Smart Cast Improvements
+
+The K2 compiler performs smart casts in significantly more scenarios. Code that required explicit null checks or casts in Kotlin 1.x now compiles cleanly.
+
+```kotlin
+// 1. Boolean variables used as type-check proxies
+class Cat { fun purr() = println("Purr") }
+
+fun petAnimal(animal: Any) {
+    val isCat = animal is Cat
+    if (isCat) {
+        animal.purr()  // ✅ Smart-cast to Cat (required explicit cast in 1.x)
+    }
+}
+
+// 2. Type checks combined with || operator
+interface Status { fun signal() {} }
+interface Ok : Status
+interface Postponed : Status
+interface Declined : Status
+
+fun check(status: Any) {
+    if (status is Postponed || status is Declined) {
+        status.signal()  // ✅ Smart-cast to common supertype Status
+        // In 1.x: compiler could not infer the supertype from || chains
+    }
+}
+
+// 3. Variables captured in inline lambdas
+inline fun inlineAction(f: () -> Unit) = f()
+
+fun runProcessor(): Any? {
+    var processor: Any? = null
+    inlineAction {
+        if (processor != null) {
+            processor.toString()  // ✅ No safe-call needed in K2 (required in 1.x)
+        }
+    }
+    return processor
+}
+
+// 4. Properties with function types
+class Holder(val provider: (() -> Unit)?) {
+    fun execute() {
+        if (provider != null) {
+            provider()  // ✅ Smart-cast works; required !!() in 1.x
+        }
+    }
+}
+
+// 5. After increment/decrement: result type is narrowed
+interface Rho { operator fun inc(): Sigma = TODO() }
+interface Sigma : Rho { fun sigma() = Unit }
+interface Tau : Rho
+
+fun demo(input: Rho) {
+    var obj: Rho = input
+    if (obj is Tau) {
+        ++obj           // obj is now Sigma (return type of Rho::inc)
+        obj.sigma()     // ✅ Smart-cast to Sigma; ERROR in 1.x
+    }
+}
+```
+
+---
+
+### Kotlin Multiplatform — Strict Source Set Separation
+
+Kotlin 2.0 enforces **strict separation of common and platform sources**. Common code can no longer accidentally call platform-specific functions — output is now consistent across all platforms.
+
+```kotlin
+// BEFORE Kotlin 2.0: common source calling platform function was ambiguous
+// common code:
+fun foo(x: Any) = println("common foo")
+fun example() { foo(42) }  // Called platform foo() on JVM, common foo() on JS!
+
+// AFTER Kotlin 2.0: common code can only call common functions
+// foo(42) now consistently calls common foo() everywhere
+
+// CORRECT pattern: use expect/actual for platform-specific implementations
+expect fun platformInfo(): String
+
+// JVM actual:
+actual fun platformInfo(): String = System.getProperty("os.name") ?: "JVM"
+
+// JS actual:
+actual fun platformInfo(): String = js("navigator.platform") as String
+```
+
+---
+
+### Power-Assert Compiler Plugin (Kotlin 2.0)
+
+The Power-Assert plugin rewrites assertion calls to include intermediate expression values in failure messages — eliminating the need to write manual assertion messages.
+
+```kotlin
+// build.gradle.kts
+plugins {
+    kotlin("plugin.power-assert") version "2.0.0"
+}
+
+powerAssert {
+    functions = listOf(
+        "kotlin.assert",
+        "kotlin.test.assertTrue",
+        "kotlin.test.assertEquals",
+    )
+}
+
+// Test code
+val name = "Kotlin"
+val greeting = "Hello, $name!"
+
+assert(greeting == "Hello, World!")
+// Power-Assert output on failure:
+// assert(greeting == "Hello, World!")
+//        |         |
+//        |         false
+//        "Hello, Kotlin!"
+// Instead of just: "Assertion failed"
+```
+
+---
+
+### `enumEntries<T>()` — Stable Replacement for `enumValues<T>()`
+
+```kotlin
+// DEPRECATED: enumValues<T>() creates a new array on every call
+inline fun <reified T : Enum<T>> printAll() {
+    for (entry in enumValues<T>()) println(entry.name)  // New array each time!
+}
+
+// PREFERRED (Kotlin 2.0, Stable): enumEntries<T>() returns a cached list
+inline fun <reified T : Enum<T>> printAll() {
+    for (entry in enumEntries<T>()) println(entry.name)  // Stable List<T>, cached
+}
+
+// Same applies to Enum.entries property (Kotlin 1.9+) for concrete enums:
+enum class Direction { NORTH, SOUTH, EAST, WEST }
+Direction.entries.forEach { println(it) }  // Preferred over Direction.values()
+```
+
+---
+
+## Kotlin 2.1.20 — Common Atomics, UUID, and Clock
+
+### Common Atomic Types (Experimental)
+
+Kotlin 2.1.20 introduces platform-independent atomic types in `kotlin.concurrent.atomics`, enabling multiplatform atomic operations without conditional `expect/actual` code.
+
+```kotlin
+import kotlin.concurrent.atomics.*
+
+@OptIn(ExperimentalAtomicApi::class)
+class SafeCounter {
+    private val count = AtomicInt(0)
+
+    fun increment(): Int = count.incrementAndFetch()
+    fun decrement(): Int = count.decrementAndFetch()
+    fun get(): Int = count.load()
+    fun reset() = count.store(0)
+
+    // compareAndSwap — atomic conditional update
+    fun resetIfZero(): Boolean = count.compareAndSwap(expected = 0, newValue = 0)
+}
+
+// Interop with java.util.concurrent.atomic
+@OptIn(ExperimentalAtomicApi::class)
+fun interopExample() {
+    val kotlinAtomic = AtomicInt(42)
+    val javaAtomic: java.util.concurrent.atomic.AtomicInteger = kotlinAtomic.asJavaAtomic()
+    val backToKotlin: AtomicInt = javaAtomic.asKotlinAtomic()
+}
+
+// Available types: AtomicInt, AtomicLong, AtomicBoolean, AtomicReference<T>
+```
+
+---
+
+### UUID Improvements — Comparable and Multi-Format Parsing
+
+```kotlin
+import kotlin.uuid.Uuid
+
+// UUID is now Comparable — sort, compare, use in sorted data structures
+val uuids = listOf(
+    Uuid.parse("550e8400-e29b-41d4-a716-446655440000"),
+    Uuid.parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+)
+val sorted = uuids.sorted()  // ✅ New in 2.1.20
+
+// New parsing formats:
+val fromHexDash = Uuid.parseHexDash("550e8400-e29b-41d4-a716-446655440000")  // Canonical
+val fromHex     = Uuid.parse("550e8400e29b41d4a716446655440000")              // Compact hex
+val asHexDash   = fromHex.toHexDashString()                                   // → canonical
+
+// Canonical form is the default for display:
+println(Uuid.random())  // e.g., "550e8400-e29b-41d4-a716-446655440000"
+```
+
+---
+
+### `kotlin.time.Clock` and `kotlin.time.Instant` — Stdlib Time API
+
+```kotlin
+import kotlin.time.*
+
+// System clock — use for production code
+val now: Instant = Clock.System.now()
+
+// Arithmetic with Duration
+val tomorrow: Instant = now + 24.hours
+val yesterday: Instant = now - 1.days
+
+// Interval between two instants
+val elapsed: Duration = tomorrow - now  // 24h exactly
+
+// Comparison
+println(now < tomorrow)  // true
+
+// Interop with kotlinx-datetime and Java time
+val javaInstant: java.time.Instant = now.toJavaInstant()
+val kotlinInstant: Instant = javaInstant.toKotlinInstant()
+
+// Testable clock — inject Clock for deterministic tests
+class EventScheduler(private val clock: Clock = Clock.System) {
+    fun isEventDue(scheduledAt: Instant): Boolean = clock.now() >= scheduledAt
+}
+
+// In tests: provide a fixed clock
+class TestClock(private val fixed: Instant) : Clock {
+    override fun now() = fixed
+}
+val testScheduler = EventScheduler(TestClock(Instant.parse("2026-01-01T00:00:00Z")))
+```
+
+---
+
+### Gradle Isolated Projects Support (Kotlin 2.1.20)
+
+Kotlin Gradle plugins now work with Gradle's **Isolated Projects** feature (enabled with `-Dorg.gradle.unsafe.isolated-projects=true`). No additional configuration is needed — just enable the flag. Isolated Projects configures each project in parallel, improving build configuration time for large multi-project builds.
+
+```kotlin
+// Works automatically with Kotlin 2.1.20+ — no special setup needed:
+// gradle.properties:
+// org.gradle.unsafe.isolated-projects=true
+
+// KMP executable DSL — new in 2.1.20 (replaces deprecated Gradle Application plugin)
+kotlin {
+    jvm {
+        @OptIn(ExperimentalKotlinGradlePluginApi::class)
+        binaries {
+            executable {
+                mainClass.set("com.example.MainKt")
+                // Produces runnable JVM artifact without the Application plugin
+            }
+        }
+    }
+}
+```
+
+---
+
 ## Anti-Patterns Quick Reference
 
 | Anti-Pattern | Why It's Harmful | What to Do Instead |
@@ -617,3 +919,9 @@ class Config {
 | Overloaded constructors instead of defaults | Combinatorial explosion of overloads | Use default parameter values and named arguments |
 | Type-unsafe primitive aliases (`Long` for ID, email, order) | Wrong ID type accepted silently | Use `@JvmInline value class` wrappers |
 | Nesting scope functions 3+ levels deep | Shadowed `this`/`it`, impossible to read | Flatten with named variables; limit scope function chains to 2 |
+| `kotlinOptions {}` DSL (Kotlin 2.0+) | Deprecated; removed in a future Kotlin version | Use `compilerOptions {}` in the new Gradle DSL |
+| `enumValues<T>()` | Creates a new array on every call | Use `enumEntries<T>()` (Kotlin 2.0, stable) or `.entries` on concrete enums |
+| Lambdas that must be serializable without `@JvmSerializableLambda` | K2 uses `invokedynamic` by default; lambdas are not serializable | Annotate with `@JvmSerializableLambda` or pass `-Xlambdas=class` |
+| `expect sealed` class `when` without `else` in multiplatform | New platform-specific subclasses fall through silently | Always add `else` branch in common-code `when` on `expect sealed` |
+| Manual `java.util.UUID` in multiplatform code | Only available on JVM; breaks JS/Native/Wasm targets | Use `kotlin.uuid.Uuid` (Kotlin 2.0+ common stdlib) |
+| Not injecting `Clock` in time-dependent code | Code coupled to `Clock.System.now()` is not unit-testable | Accept `Clock` as a constructor parameter; default to `Clock.System` in production |

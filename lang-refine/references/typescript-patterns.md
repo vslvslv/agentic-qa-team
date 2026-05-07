@@ -1,11 +1,23 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 21 | score: 100/100 | date: 2026-05-04 -->
+<!-- sources: official | community | mixed | iteration: 24 | score: 100/100 | date: 2026-05-07 -->
 <!-- iteration trace (latest):
      Iter 21 (2026-05-04): added Type Narrowing Deep-Dive (all 9 techniques from official narrowing docs),
        Conditional Types section (extends ternary, infer keyword, distributive types, built-in utilities),
        Declaration Files & Merging section, and expanded TSConfig reference table — sourced from
        typescriptlang.org/docs/handbook/2/narrowing.html, conditional-types.html,
        declaration-files/deep-dive.html, and typescriptlang.org/tsconfig/
+     Iter 22 (2026-05-07): added TypeScript 5.8 features — granular return branch checks,
+       require() of ESM in nodenext, --erasableSyntaxOnly for Node.js type-stripping,
+       --module node18, --libReplacement, import attribute with keyword migration sourced from
+       typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html
+     Iter 23 (2026-05-07): added TypeScript 5.9 features — import defer, --module node20,
+       minimal tsc --init defaults, noUncheckedSideEffectImports, ArrayBuffer/TypedArray
+       breaking change, cache optimizations for Zod/tRPC-style libraries sourced from
+       typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html
+     Iter 24 (2026-05-07): added TypeScript 6.0 features — strict/esnext/es2025 defaults,
+       deprecated outFile/baseUrl, Temporal API, RegExp.escape, Map.getOrInsert/getOrInsertComputed,
+       --stableTypeOrdering migration flag, DOM lib consolidation, migration guide to TS 7.0 sourced from
+       typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html
 -->
 
 ## Core Philosophy
@@ -40,8 +52,15 @@
 | 5.7 | `--noCheck`, path rewriting, relative import completions | — |
 | 5.8 | Granular return expression branch checks, `--erasableSyntaxOnly`, `require()` of ESM in `nodenext`, `--module node18`, `--libReplacement` | `"module": "node18"` or `"nodenext"` |
 | 5.9 | `import defer`, `--module node20`, minimal `tsc --init`, `noUncheckedSideEffectImports`, `verbatimModuleSyntax`, DOM summary hovers | `"moduleDetection": "force"`, `"verbatimModuleSyntax": true` |
+| 6.0 | **Breaking:** `strict`/`esnext`/`es2025` defaults; `types: []`; `outFile`, `baseUrl`, `module amd/umd` removed; Temporal API, `RegExp.escape`, `Map.getOrInsert`; `--stableTypeOrdering`; DOM lib consolidates `dom.iterable` | Update `tsconfig.json` — set `"types": ["node"]`, `"rootDir": "./src"`, migrate `baseUrl` → `paths` |
 
 Keep `tsconfig.json` at `"strict": true` regardless of version; new strict sub-flags are only added to the umbrella flag after a deprecation period.
+
+> **TypeScript 6.0 Migration Note:** TS 6.0 is a transition release — all deprecated options still work with `"ignoreDeprecations": "6.0"` in tsconfig. TypeScript 7.0 will remove them entirely. Address deprecations now:
+> - Replace `--baseUrl` with explicit `paths` entries
+> - Remove `--outFile`; use an external bundler (Webpack/Rollup/esbuild)
+> - Add `"types": ["node"]` if your project targets Node.js (new default is `[]`)
+> - Set `"rootDir": "./src"` if you relied on inferred root (now defaults to tsconfig directory)
 
 ---
 
@@ -1527,7 +1546,197 @@ Enable in `tsconfig.json`: `"isolatedDeclarations": true` (requires `"declaratio
 
 ---
 
-### Named Complex Types for Compiler Caching
+### TypeScript 5.8 — `--erasableSyntaxOnly` and Node.js Type-Stripping
+
+Node.js 23.6+ and the `--experimental-strip-types` flag allow TypeScript files to be run directly by stripping types at the JS engine level. However, this only works for **erasable** TypeScript syntax — constructs with no runtime semantics. TypeScript 5.8 adds `--erasableSyntaxOnly` to enforce this constraint at compile time.
+
+**What counts as non-erasable (blocked by `--erasableSyntaxOnly`):**
+- `enum` declarations (compile to object literals with reverse maps)
+- `namespace`/`module` declarations with runtime code (compile to IIFEs)
+- Parameter properties in constructors (compile to assignment statements)
+- `import =` / `export =` assignments (legacy CommonJS bridging syntax)
+
+```typescript
+// tsconfig.json: "erasableSyntaxOnly": true  (+ targeting Node.js type-stripping)
+
+// ❌ Non-erasable — enum has runtime code
+enum Color { Red, Green, Blue }
+
+// ✅ Erasable alternative — const object with as const
+const Color = { Red: 0, Green: 1, Blue: 2 } as const;
+type Color = typeof Color[keyof typeof Color];
+
+// ❌ Non-erasable — parameter property in constructor
+class Service {
+  constructor(public readonly db: Database) {}
+}
+
+// ✅ Erasable alternative — explicit field + explicit assignment
+class Service {
+  readonly db: Database;
+  constructor(db: Database) { this.db = db; }
+}
+```
+
+**`--module node18` vs `--module nodenext`:** Use `node18` when targeting Node.js 18.x LTS (stable, won't gain new behaviors). Use `nodenext` for Node.js 22+ (supports `require()` of ESM modules). Under `nodenext`, import attributes use `with` not `assert`:
+
+```typescript
+// ❌ Deprecated — import assertion
+import data from "./data.json" assert { type: "json" };
+
+// ✅ Current — import attribute
+import data from "./data.json" with { type: "json" };
+```
+
+**Granular return branch checks:** TypeScript 5.8 now checks each branch of a conditional expression in a `return` statement against the declared return type, catching bugs that were silently missed when one branch returned `any`:
+
+```typescript
+declare const cache: Map<string, unknown>;
+
+function getUser(id: string): User {
+  return cache.has(id)
+    ? cache.get(id)  // ❌ Error: 'unknown' not assignable to 'User'
+    : fetchUser(id);
+}
+// Fix: cast the cache hit or narrow before returning
+```
+
+---
+
+### TypeScript 5.9 — `import defer` and Module Improvements
+
+`import defer` delays module evaluation until the first property access on the namespace, improving application startup when expensive modules are only needed conditionally. This is a **TC39 Stage 3** proposal and requires either native runtime support or a bundler transformation.
+
+```typescript
+// Standard import: module evaluates immediately on import
+import * as db from "./database.js";  // Database connection pool started here
+
+// Deferred import: module body NOT evaluated until first property access
+import defer * as db from "./database.js";  // Nothing happens yet
+
+async function handleRequest(path: string): Promise<void> {
+  if (path.startsWith("/db/")) {
+    // Database module evaluated HERE — on first use
+    const result = await db.query("SELECT ...");
+    return result;
+  }
+  // On non-database paths, db module never evaluated — zero startup cost
+}
+```
+
+Only namespace imports (`import defer * as name`) are supported — not named or default imports.
+
+**`--module node20`:** A stable alias for Node.js v20 module semantics (unlike `nodenext`, it won't gain new behaviors in future TypeScript versions). Implies `--target es2023` and supports `require()` of ESM. Choose `node20` for explicit stability; choose `nodenext` to automatically track Node.js's evolving module system.
+
+**Minimal `tsc --init` defaults (TypeScript 5.9+):** New projects initialized with `tsc --init` get a prescriptive, minimal config reflecting modern best practices:
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "module": "nodenext",
+    "target": "esnext",
+    "jsx": "react-jsx",
+    "types": [],
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true
+  }
+}
+```
+
+`"types": []` means no `@types/*` packages are auto-included — add them explicitly (e.g., `"types": ["node"]`). `"verbatimModuleSyntax": true` enforces that `import type` is always used for type-only imports, keeping bundlers informed.
+
+**`ArrayBuffer`/`TypedArray` breaking change (TypeScript 5.9):** `ArrayBuffer` is no longer a supertype of typed array types. Code that passes `Uint8Array` where `ArrayBufferLike` is expected now errors:
+
+```typescript
+// ❌ Error in TypeScript 5.9+
+function process(buf: ArrayBufferLike): void { /* ... */ }
+const arr = new Uint8Array([1, 2, 3]);
+process(arr);  // Error: Uint8Array<ArrayBuffer> not assignable to ArrayBufferLike
+
+// ✅ Fix option 1: use the .buffer property
+process(arr.buffer);
+
+// ✅ Fix option 2: accept explicit type
+function process(buf: Uint8Array<ArrayBuffer>): void { /* ... */ }
+
+// ✅ Fix option 3: update @types/node to pick up corrected overloads
+// npm update @types/node --save-dev
+```
+
+---
+
+### TypeScript 6.0 — New Defaults and Breaking Changes
+
+TypeScript 6.0 is a **breaking transition release**. All deprecated options work with `"ignoreDeprecations": "6.0"` in tsconfig, but TypeScript 7.0 will remove them. Understand the new defaults before upgrading.
+
+**New compiler defaults:**
+
+| Option | Old Default | New Default | Impact |
+|--------|------------|-------------|--------|
+| `strict` | `false` | `true` | All code gets full strict checking |
+| `module` | `commonjs` | `esnext` | ESM output by default |
+| `target` | `es5` | `es2025` | Modern JavaScript assumed; no downleveling |
+| `types` | `["*"]` (all @types) | `[]` (none) | Must add `"types": ["node"]` etc. explicitly |
+| `rootDir` | inferred | `.` (tsconfig dir) | May shift output directory structure |
+
+**New ECMAScript APIs added in TS 6.0 (`"target": "es2025"`):**
+
+```typescript
+// Temporal API (Stage 4 ECMAScript — built-in types now included)
+const tomorrow = Temporal.Now.instant().add({ hours: 24 });
+const date = Temporal.PlainDate.from({ year: 2026, month: 5, day: 7 });
+
+// RegExp.escape — safely escape strings for use in RegExp
+const userInput = "Hello.World+Foo?";
+const safeRegex = new RegExp(RegExp.escape(userInput));
+// Previously required: userInput.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// Map.getOrInsert / Map.getOrInsertComputed — atomic lookup-or-add
+const cache = new Map<string, string[]>();
+const list = cache.getOrInsert("key", []);        // returns existing or inserts []
+const computed = cache.getOrInsertComputed("key2", k => [k]); // lazy computation
+```
+
+**Removed / deprecated options requiring action:**
+
+```json
+// ❌ Removed — use an external bundler instead:
+//   "outFile": "dist/bundle.js"
+
+// ❌ Deprecated — merge into paths:
+//   "baseUrl": "./src"
+// ✅ Replace with:
+{
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}
+
+// ❌ Deprecated — always enabled now; remove:
+//   "esModuleInterop": false
+//   "allowSyntheticDefaultImports": false
+
+// ❌ Deprecated module resolution — use nodenext or bundler:
+//   "moduleResolution": "node"     (was "node10")
+//   "moduleResolution": "classic"
+```
+
+**DOM library consolidation:** `lib.dom` now includes `dom.iterable` and `dom.asynciterable` by default — remove explicit entries if present:
+
+```json
+// ❌ Redundant in TS 6.0+
+{ "lib": ["dom", "dom.iterable", "dom.asynciterable", "esnext"] }
+
+// ✅ Simplified
+{ "lib": ["dom", "esnext"] }
+```
+
+**`--stableTypeOrdering` flag (migration bridge to TS 7.0):** TypeScript 7.0 will introduce deterministic union type ordering. Enable this flag in TypeScript 6.0 to match TS 7.0 behavior now (at up to 25% compile slowdown). Useful for catching declaration emit ordering differences before upgrading.
+
+---
 
 Conditional types and mapped type expressions are re-evaluated every time they appear inline. Extracting them into a named `type` alias allows the compiler to cache the evaluation result and reuse it. This is the type-level equivalent of extracting a computed value into a variable.
 

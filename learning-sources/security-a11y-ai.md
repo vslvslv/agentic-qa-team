@@ -1,5 +1,5 @@
 # Learning Sources: Security, Accessibility & AI/Agent Testing
-<!-- updated: 2026-05-06 | entries: 53 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-07 | entries: 58 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skills
 
@@ -30,6 +30,9 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | OWASP LLM Verification Standard | https://owasp.org/www-project-llm-verification-standard/ | official-docs | AI/LLM security | 2026-05-06 | 📄 v0.1 — 7 objectives: LLM-specific design, training, ops, monitoring security |
 | aquasecurity/trivy | https://github.com/aquasecurity/trivy | github-repo | container / SCA security | 2026-05-06 | 🌟 34.9k stars — CVEs, IaC misconfig, secrets, SBOM; containers, K8s, git repos |
 | gitleaks/gitleaks | https://github.com/gitleaks/gitleaks | github-repo | secrets scanning | 2026-05-06 | 🌟 26.6k stars — regex+entropy detection; pre-commit hook, GH Action, SARIF output |
+| OWASP Top 10 for LLM Applications | https://owasp.org/www-project-top-10-for-large-language-model-applications/ | research/standard | AI/LLM security | 2026-05-07 | 📄 2025 edition — Prompt Injection, Excessive Agency, Unbounded Consumption, System Prompt Leakage |
+| OWASP GenAI LLM Top 10 Guide | https://genai.owasp.org/llm-top-10/ | research/standard | AI/LLM security | 2026-05-07 | 📄 600+ contributors — threat categories, mitigations, red teaming guidance for GenAI systems |
+| microsoft/PyRIT | https://github.com/microsoft/PyRIT | github-repo | AI red-teaming | 2026-05-07 | 3.8k stars — Python Risk Identification Tool; adversarial probing for GenAI systems; active MS research |
 
 ---
 
@@ -47,6 +50,8 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | architzero/Aura-accessibility-scanner | https://github.com/architzero/Aura-accessibility-scanner | github-repo | accessibility | 2026-05-03 | AI-generated alt text + axe violations |
 | Farhod75/ai-a11y-testing | https://github.com/Farhod75/ai-a11y-testing | github-repo | accessibility | 2026-05-03 | AI-assisted accessibility testing patterns |
 | microsoft/accessibility-insights-web | https://github.com/microsoft/accessibility-insights-web | github-repo | accessibility | 2026-05-04 | 899 stars — MS Chrome/Edge extension for WCAG 2.1 AA assessment |
+| pa11y/pa11y-ci | https://github.com/pa11y/pa11y-ci | github-repo | accessibility | 2026-05-07 | CI-focused accessibility runner: URL lists, sitemap support, parallel testing, Node 20+; JSON+CLI reporters |
+| IBMa/equal-access | https://github.com/IBMa/equal-access | github-repo | accessibility | 2026-05-07 | 746 stars — IBM Equal Access Toolkit; browser extensions + Playwright/Selenium/Puppeteer CI packages; WCAG 2.0/2.1/2.2 + Section 508 |
 
 ---
 

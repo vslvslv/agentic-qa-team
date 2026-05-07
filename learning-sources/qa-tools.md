@@ -1,5 +1,5 @@
 # Learning Sources: QA Tools
-<!-- updated: 2026-05-06 | entries: 114 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-07 | entries: 124 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobile`
 
@@ -67,6 +67,16 @@ Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobi
 | Playwright Videos | https://playwright.dev/docs/videos | official-docs | Playwright | 2026-05-06 | ⭐ retain-on-failure, on-first-retry modes; annotated playback |
 | k6 Extensions | https://grafana.com/docs/k6/latest/extensions/ | official-docs | k6 | 2026-05-06 | ⭐ JS, output, secret-source, subcommand extension categories |
 | k6 Environment Variables | https://grafana.com/docs/k6/latest/using-k6/environment-variables/ | official-docs | k6 | 2026-05-06 | ⭐ __ENV object, -e flag, K6_ prefix config, security considerations |
+| Playwright Aria Snapshots | https://playwright.dev/docs/aria-snapshots | official-docs | Playwright / a11y | 2026-05-07 | ⭐ ARIA tree snapshot testing — toMatchAriaSnapshot(), YAML templates, partial/strict matching |
+| Playwright Visual Comparisons | https://playwright.dev/docs/test-snapshots | official-docs | Playwright | 2026-05-07 | ⭐ Screenshot baseline comparison — toHaveScreenshot(), maxDiffPixels, stylePath, golden files |
+| Playwright Release Notes | https://playwright.dev/docs/release-notes | official-docs | Playwright | 2026-05-07 | ⭐ v1.59: Screencast API, browser.bind() multi-client, async disposables, locator.normalize() |
+| k6 Studio Docs | https://grafana.com/docs/k6-studio/ | official-docs | k6 / visual tooling | 2026-05-07 | ⭐ Desktop GUI: HAR capture → k6 script generation; browser scenarios; Grafana Cloud integration |
+| k6 JavaScript API | https://grafana.com/docs/k6/latest/javascript-api/ | official-docs | k6 | 2026-05-07 | ⭐ Full JS API: http, websockets, grpc, browser, crypto, experimental CSV/fs/streams, secrets |
+| k6 xk6-disruptor | https://grafana.com/docs/k6/latest/testing-guides/injecting-faults-with-xk6-disruptor/ | official-docs | k6 / chaos | 2026-05-07 | ⭐ Fault injection for Kubernetes: HTTP/gRPC errors+delays on Pods/Services; no separate agents |
+| k6 Experimental Modules | https://grafana.com/docs/k6/latest/javascript-api/k6-experimental/ | official-docs | k6 | 2026-05-07 | ⭐ k6/experimental: CSV parsing, memory-efficient filesystem I/O, Streams API for test scripts |
+| k6 Secrets Module | https://grafana.com/docs/k6/latest/javascript-api/k6-secrets/ | official-docs | k6 / security | 2026-05-07 | ⭐ Secret management in k6 tests: get(), source(), auto-redacts secrets in logs |
+| Cypress Network Requests | https://docs.cypress.io/app/guides/network-requests | official-docs | Cypress | 2026-05-07 | ⭐ cy.intercept(), stub vs real server strategies, fixtures, aliases, GraphQL matching |
+| Cypress GitHub Actions | https://docs.cypress.io/app/continuous-integration/github-actions | official-docs | Cypress / CI | 2026-05-07 | ⭐ Matrix parallelization, Cypress Cloud orchestration, dependency caching; updated Apr 2026 |
 
 ---
 

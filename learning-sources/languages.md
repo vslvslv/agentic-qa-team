@@ -1,5 +1,5 @@
 # Learning Sources: Programming Languages
-<!-- updated: 2026-05-06 | entries: 58 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-07 | entries: 65 | skill-version: 1.12.0.0 -->
 
 Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 
@@ -47,6 +47,13 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | pytest Fixtures Reference | https://docs.pytest.org/en/stable/reference/fixtures.html | official-docs | Python | 2026-05-04 | ⭐ Built-in fixtures, scopes, conftest patterns |
 | Python PEP 484 — Type Hints | https://peps.python.org/pep-0484/ | official-docs | Python | 2026-05-06 | ⭐ Foundational type-hint spec: Generic, Union, Optional, TypeVar, Callable, stubs |
 | pytest Good Integration Practices | https://docs.pytest.org/en/stable/explanation/goodpractices.html | official-docs | Python | 2026-05-06 | ⭐ src layout, importlib mode, venv setup, tox, test discovery conventions |
+| TypeScript 5.8 Release Notes | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html | official-docs | TypeScript | 2026-05-07 | ⭐ require() of ESM in nodenext, --erasableSyntaxOnly for Node.js type-stripping, --module node18 |
+| TypeScript 5.9 Release Notes | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html | official-docs | TypeScript | 2026-05-07 | ⭐ import defer, --module node20, minimal tsc --init output |
+| TypeScript 6.0 Release Notes | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | official-docs | TypeScript | 2026-05-07 | ⭐ strict/esnext/es2025 defaults, deprecated outFile/baseUrl, Temporal API, RegExp.escape, --stableTypeOrdering |
+| Python 3.13 What's New | https://docs.python.org/3/whatsnew/3.13.html | official-docs | Python | 2026-05-07 | ⭐ TypeIs narrowing, TypeVar defaults, ReadOnly TypedDict, colorized tracebacks, doctest improvements |
+| Python 3.14 What's New | https://docs.python.org/3/whatsnew/3.14.html | official-docs | Python | 2026-05-07 | ⭐ PEP 649 deferred annotations, t-strings, concurrent.interpreters, free-threaded GIL improvements |
+| Kotlin 2.0 What's New | https://kotlinlang.org/docs/whatsnew20.html | official-docs | Kotlin | 2026-05-07 | ⭐ K2 compiler stable, smart cast improvements, Kotlin Multiplatform stable, Power-Assert plugin |
+| Kotlin 2.1.20 What's New | https://kotlinlang.org/docs/whatsnew2120.html | official-docs | Kotlin | 2026-05-07 | ⭐ Default K2 kapt, Atomic types stable, UUID improvements, Gradle Isolated Projects support |
 
 ---
 

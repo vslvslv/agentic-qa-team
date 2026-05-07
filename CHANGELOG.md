@@ -5,6 +5,28 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.1 — 2026-05-07 — nightly refinement run — 24 new catalog sources, 8 reference guides updated
+
+### Catalog updates (learning-sources/)
+
+- **qa-tools.md** — +10 sources: Playwright aria snapshots, visual comparisons, v1.59 release notes; k6 Studio, JS API, xk6-disruptor, experimental modules, secrets module; Cypress network requests + GitHub Actions CI guide
+- **qa-methodology.md** — +2 sources: Pact Plugin Framework (gRPC/Protobuf/WebSocket contracts); JUnit 5/6 User Guide
+- **languages.md** — +7 sources: TypeScript 5.8/5.9/6.0 release notes; Python 3.13/3.14 what's new; Kotlin 2.0/2.1.20 what's new
+- **security-a11y-ai.md** — +5 sources: OWASP LLM Top 10 2025 + GenAI guide; Microsoft PyRIT; pa11y-ci; IBM Equal Access
+
+### Reference guides written/updated
+
+- `qa-refine/references/playwright-aria-visual-snapshots.md` — ARIA snapshot testing, visual golden files, v1.59 Screencast API (score: 88/100)
+- `qa-refine/references/k6-advanced-studio-api-disruptor-experimental-secrets.md` — k6 Studio HAR workflow, full JS API, fault injection, experimental/secrets modules (score: 85/100)
+- `qa-refine/references/cypress-network-requests-github-actions.md` — cy.intercept() stubs, GraphQL helpers, GitHub Actions matrix parallelization (score: 86/100)
+- `qa-methodology/references/contract-testing-guide.md` — +Pact Plugin Framework section: gRPC/Protobuf consumer+provider patterns, matching rules, CI gotchas (score: 89/100)
+- `qa-methodology/references/test-framework-guide.md` — new: JUnit 5/6 full annotation reference, TDD mapping, test pyramid placement, migration from JUnit 4 (score: 91/100)
+- `lang-refine/references/typescript-patterns.md` — +TS 5.8/5.9/6.0: erasableSyntaxOnly, import defer, new compiler defaults, Temporal API, RegExp.escape (score: 100/100)
+- `lang-refine/references/python-patterns.md` — +Python 3.13/3.14: TypeIs, TypeVar defaults, t-strings, deferred annotations, InterpreterPoolExecutor (score: 100/100)
+- `lang-refine/references/kotlin-patterns.md` — +Kotlin 2.0/2.1.20: K2 smart casts, AtomicInt/Long, kotlin.time.Clock, UUID, Gradle Isolated Projects (score: 100/100)
+
+---
+
 ## v1.16.0.0 — 2026-05-06 — 17 new skills + 2 enhancements (BL-067..BL-107)
 
 ### New skills

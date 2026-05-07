@@ -1,6 +1,7 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 15 | score: 100/100 | date: 2026-05-04 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 16 | score: 100/100 | date: 2026-05-07 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07) | community: production lessons -->
+<!-- new in iteration 16: Pact Plugin Framework section (gRPC, Protobuf, plugin driver, plugin CLI, manifest format, consumer/provider examples) -->
 
 ## Terminology (ISTQB CTFL 4.0 alignment)
 
@@ -1633,6 +1634,240 @@ describe('SearchUI → CatalogGraphQL contract', () => {
 
 ---
 
+### Pact Plugin Framework — gRPC and Protobuf Contract Testing
+
+The Pact Plugin Framework extends contract testing beyond REST/HTTP to gRPC, WebSockets, MQTT, GraphQL (body-based matching via plugins), and Protocol Buffers. It was released December 2022 after a developer preview beginning in 2021.
+
+#### Architecture
+
+```
+┌──────────────────────────────┐
+│  Pact Client Library         │   (language-specific: JS, JVM, Python, Rust…)
+│  (pact-js, pact-jvm, etc.)   │
+└──────────┬───────────────────┘
+           │ gRPC messages
+┌──────────▼───────────────────┐
+│  Plugin Driver               │   (Rust or JVM implementation)
+│  - Discovers plugins         │   ~/.pact/plugins/<name>-<version>/
+│  - Reads pact-plugin.json    │   (manifest)
+│  - Starts plugin process     │
+│  - Routes messages to plugin │
+└──────────┬───────────────────┘
+           │ gRPC (plugin protocol)
+┌──────────▼───────────────────┐
+│  Plugin (e.g. protobuf)      │   gRPC server; handles content
+│  - Reads .proto files        │   matching, mock server,
+│  - Creates mock gRPC server  │   provider verification
+│  - Matches Protobuf payloads │
+└──────────────────────────────┘
+```
+
+Three interaction types are supported:
+- **Synchronous/HTTP** — classic REST (no plugin needed)
+- **Asynchronous/Message** — one-way events (Kafka, SNS, SQS); plugin adds Protobuf body matching
+- **Synchronous/Message** — request-response over gRPC; bidirectional/streaming excluded in current stable version
+
+#### Installing the pact-plugin-cli and Protobuf Plugin
+
+```bash
+# 1. Install pact-plugin-cli (cross-platform binary — no npm install needed)
+#    Releases: https://github.com/pact-foundation/pact-plugins/releases
+curl -LO https://github.com/pact-foundation/pact-plugins/releases/latest/download/pact-plugin-cli-linux-x86_64.gz
+gunzip pact-plugin-cli-linux-x86_64.gz && chmod +x pact-plugin-cli-linux-x86_64
+mv pact-plugin-cli-linux-x86_64 /usr/local/bin/pact-plugin-cli
+
+# 2. Install the PactFlow protobuf/gRPC plugin (installs to ~/.pact/plugins/)
+pact-plugin-cli -y install https://github.com/pactflow/pact-protobuf-plugin/releases/latest
+
+# Result directory structure:
+# ~/.pact/plugins/protobuf-<version>/
+# ├── pact-plugin.json          ← plugin manifest
+# └── pact-protobuf-plugin      ← executable (gRPC server)
+
+# Override plugin location via env var (useful in CI):
+export PACT_PLUGIN_DIR=/opt/pact/plugins
+```
+
+#### Plugin Manifest (`pact-plugin.json`)
+
+```json
+{
+  "manifestVersion": 1,
+  "pluginInterfaceVersion": 1,
+  "name": "protobuf",
+  "version": "0.3.15",
+  "executableType": "exec",
+  "entryPoint": "pact-protobuf-plugin",
+  "pluginConfig": {
+    "protocVersion": "3.19.1",
+    "downloadUrl": "https://github.com/protocolbuffers/protobuf/releases/download",
+    "hostToBindTo": "127.0.0.1"
+  }
+}
+```
+
+The Plugin Driver reads this manifest, starts the plugin process on load, and routes test lifecycle messages to it over gRPC. `hostToBindTo` should be `127.0.0.1` in Docker environments without IPv6.
+
+#### gRPC Consumer Contract Test (Java — PactV4 + protobuf plugin)
+
+```java
+// AreaCalculatorConsumerTest.java
+// Consumer: calls Calculator.calculate(ShapeMessage) → AreaResponse
+// Requires pact-jvm-consumer + pact-plugin-driver on classpath
+@ExtendWith(PactConsumerTestExt.class)
+@PactTestFor(providerName = "AreaCalculatorProvider", providerType = ProviderType.SYNCH_MESSAGE)
+public class AreaCalculatorConsumerTest {
+
+    @Pact(consumer = "AreaCalculatorConsumer")
+    public V4Pact calculateRectangleArea(PactBuilder builder) {
+        return builder
+            .usingPlugin("protobuf")
+            .expectsToReceive("Calculate rectangle area", "core/interaction/synchronous-message")
+            .with(Map.of(
+                "pact:content-type", "application/grpc",
+                "pact:proto",         filePath("../proto/area_calculator.proto"),
+                "pact:proto-service", "Calculator/calculate",
+                // request shape with matching rules
+                "request", Map.of(
+                    "rectangle", Map.of(
+                        "length", "matching(number, 3)",
+                        "width",  "matching(number, 4)"
+                    )
+                ),
+                // response shape with matching rules
+                "response", Map.of(
+                    "value", "matching(number, 12)"
+                )
+            ))
+            .toPact();
+    }
+
+    @Test
+    @PactTestFor(pactMethod = "calculateRectangleArea")
+    void verifyCalculateRectangle(V4Interaction.SynchronousMessages interaction) {
+        // interaction.getRequestContents() gives the decoded Protobuf request bytes
+        // interaction.getResponseContents() gives the decoded Protobuf response bytes
+        // Your real client code would use the gRPC channel pointed at the mock server
+        assertThat(interaction).isNotNull();
+    }
+}
+```
+
+#### gRPC Provider Verification (Java — Pact Verifier CLI or unit test)
+
+```bash
+# Verifier CLI approach — verify a running gRPC server against pacts from broker
+pact-provider-verifier \
+  --provider "AreaCalculatorProvider" \
+  --provider-base-url grpc://localhost:50051 \
+  --pact-broker-base-url "$PACT_BROKER_URL" \
+  --broker-token "$PACT_BROKER_TOKEN" \
+  --consumer-version-selectors '{"mainBranch": true}' \
+  --publish-verification-results \
+  --provider-app-version "$GIT_COMMIT"
+```
+
+#### Protobuf Message Consumer (Async — single message, not gRPC)
+
+```java
+// For async message contracts where the message body is a Protobuf-encoded payload
+// (e.g., Kafka message containing a serialised protobuf Person)
+@Pact(consumer = "AddressBookConsumer")
+public V4Pact personMessagePact(PactBuilder builder) {
+    return builder
+        .usingPlugin("protobuf")
+        .expectsToReceive("A person message", "core/interaction/message")
+        .with(Map.of(
+            "message.contents", Map.of(
+                "pact:content-type", "application/protobuf",
+                "pact:proto",        filePath("addressbook.proto"),
+                "pact:message-type", "Person",
+                "name",              "notEmpty('Fred')",
+                "id",                "matching(regex, '100\\d+', '1000001')"
+            )
+        ))
+        .toPact();
+}
+```
+
+#### Matching Rule Reference for Protobuf Fields
+
+| Field type | Matching expression | Example |
+|---|---|---|
+| Numeric scalar | `matching(number, <example>)` | `"length": "matching(number, 3)"` |
+| String non-empty | `notEmpty('<example>')` | `"name": "notEmpty('Fred')"` |
+| Regex | `matching(regex, '<pattern>', '<example>')` | `"id": "matching(regex, '\\d+', '42')"` |
+| Repeated field (array) | `atLeast(<n>), eachValue(matching(...))` | `"numbers": "atLeast(1), eachValue(matching(regex, '\\d+', '1'))"` |
+| Map field | `eachKey(...), eachValue(...), atLeast(<n>)` | `"labels": {"pact:match": "eachKey(matching(regex, '\\w+', '')), eachValue(matching(type, '')), atLeast(1)"}` |
+| Provider state injection | `matching(number, fromProviderState('${expr}', <example>))` | `"length": "matching(number, fromProviderState('${rectLen}', 3))"` |
+| Binary bytes | raw array or base64 string | `"raw_bytes": [1, 2, 3]` or `"raw_bytes": "AQID"` |
+
+#### gRPC Error Response Verification
+
+```java
+// Test that the provider returns a gRPC UNIMPLEMENTED status for unsupported operations
+.with(Map.of(
+    "pact:content-type",  "application/grpc",
+    "pact:proto",         filePath("service.proto"),
+    "pact:proto-service", "Calculator/unsupportedOp",
+    "request",  Map.of("value", "matching(number, 1)"),
+    // No "response" key — use responseMetadata for error status
+    "responseMetadata", Map.of(
+        "grpc-status",  "UNIMPLEMENTED",
+        "grpc-message", "matching(type, 'operation not supported')"
+    )
+))
+```
+
+#### Plugin Versioning in CI
+
+```yaml
+# .github/workflows/pact-grpc.yml — install exact plugin version in CI
+- name: Install pact-plugin-cli
+  run: |
+    curl -LO https://github.com/pact-foundation/pact-plugins/releases/download/pact-plugin-cli-v0.1.2/pact-plugin-cli-linux-x86_64.gz
+    gunzip pact-plugin-cli-linux-x86_64.gz
+    chmod +x pact-plugin-cli-linux-x86_64
+    sudo mv pact-plugin-cli-linux-x86_64 /usr/local/bin/pact-plugin-cli
+
+- name: Install protobuf plugin (pinned version)
+  run: |
+    pact-plugin-cli -y install \
+      https://github.com/pactflow/pact-protobuf-plugin/releases/tag/v-0.3.15
+  env:
+    PACT_PLUGIN_DIR: /opt/pact/plugins
+
+- name: Run consumer pact tests
+  run: ./gradlew test
+  env:
+    PACT_PLUGIN_DIR: /opt/pact/plugins
+```
+
+**Critical CI gotcha:** The plugin binary on the consumer machine (which generates the pact file) and the provider machine (which verifies it) must be the **same major version**. Version drift between local and CI plugin binaries causes silent verification failures — the pact file is written but provider verification skips the interaction. Always pin the plugin version explicitly.
+
+#### What the Protobuf Plugin Does NOT Support (Current Stable)
+
+| Unsupported feature | Workaround |
+|---|---|
+| Proto2 syntax | Migrate to proto3 or use schema-level comparison tools (buf) |
+| gRPC streaming (bidirectional or one-way server/client streams) | Test streaming with integration tests; Pact is designed for unary RPC |
+| Non-string map keys | Convert map to `repeated` message with key+value fields |
+| Default field values | Assert explicitly; protobuf defaults are invisible to the matcher |
+
+#### When to Use the Plugin Framework vs HTTP Pact
+
+| Scenario | Recommended approach |
+|---|---|
+| REST/JSON API | Standard PactV3/V4 HTTP interaction — no plugin needed |
+| gRPC unary RPC | Pact protobuf plugin — provides consumer-driven shape verification at the proto field level |
+| gRPC streaming | Integration test or buf schema breaking-change detection — plugin does not support streaming yet |
+| Async Protobuf messages (Kafka) | `MessageConsumerPact` + protobuf plugin for body matching |
+| GraphQL | Standard HTTP body matching (query in POST body); no plugin needed |
+| WebSockets (MQTT, STOMP) | Plugin framework — prototype transport plugins available; check plugin directory |
+| Third-party gRPC API you don't control | Use `buf` breaking-change detection on the imported proto schema instead of Pact |
+
+---
+
 ### Contract Testing in a Monorepo (TypeScript — Nx / Turborepo)
 
 Monorepos add topology constraints to Pact: all consumer and provider tests live in the same repo, but they must still be run and published independently to preserve CDC's isolation guarantees.
@@ -1995,11 +2230,15 @@ Understanding which Pact specification version your pact files use affects compa
 | Pact JS GitHub | Repo | https://github.com/pact-foundation/pact-js | Examples, changelog, issue tracker |
 | Pact Broker OSS | Repo | https://github.com/pact-foundation/pact_broker | Self-hosted broker (Docker: pactfoundation/pact-broker) |
 | PactFlow | SaaS | https://pactflow.io/ | Managed Pact Broker with bi-directional contract support |
+| Pact Plugin Framework | Official | https://docs.pact.io/plugins | Plugin architecture docs: gRPC, WebSockets, MQTT, Protobuf, GraphQL |
+| pact-protobuf-plugin | Repo | https://github.com/pactflow/pact-protobuf-plugin | PactFlow's official gRPC/Protobuf plugin; installation, manifest, Java/Rust examples |
+| pact-foundation/pact-plugins | Repo | https://github.com/pact-foundation/pact-plugins | Plugin driver source (Rust + JVM); plugin protocol design docs |
+| pact-plugin-cli | Binary | https://github.com/pact-foundation/pact-plugins/releases | CLI tool for installing/listing/uninstalling Pact plugins |
+| buf — Protobuf breaking change detection | Docs | https://buf.build/docs/breaking/ | gRPC/Protobuf CDC alternative when streaming is needed (Pact does not support streaming) |
 | Martin Fowler — Consumer-Driven Contracts | Article | https://martinfowler.com/articles/consumerDrivenContracts.html | Foundational article explaining CDC origins |
 | ts-jest | npm | https://www.npmjs.com/package/ts-jest | TypeScript preprocessor for Jest — compile pact tests without a separate tsc step |
 | openapi-types | npm | https://www.npmjs.com/package/openapi-types | TypeScript types for OpenAPI 2.0/3.0/3.1 documents |
 | OpenAPI Specification | Spec | https://spec.openapis.org/oas/latest.html | For the lighter schema-validation alternative |
-| buf — Protobuf breaking change detection | Docs | https://buf.build/docs/breaking/ | gRPC/Protobuf CDC alternative |
 | ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology reference |
 
 ---
