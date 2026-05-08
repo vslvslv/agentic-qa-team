@@ -1,8 +1,10 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 43 | score: 100/100 | date: 2026-05-04 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 44 | score: 100/100 | date: 2026-05-08 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
 <!-- sources: synthesized from training knowledge — WebFetch blocked; WebSearch unavailable -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
+<!-- Iter-43: AP23–AP25; extended Quick Reference table -->
+<!-- Iter-44: pytest flaky tests cross-reference (docs.pytest.org/en/stable/explanation/flaky.html, 2026-05-08); cross-language flakiness equivalents table -->
 <!-- Iterations 3–12: cross-shard detection; ISTQB CTFL 4.0 terminology; memory/resource exhaustion; snapshot flakiness; -->
 <!--   Storybook/Chromatic; WebSocket/SSE; port collision; Pact provider state; DB migration race; GitHub Actions dashboard; -->
 <!--   Node.js native test runner; ESLint anti-flakiness rules; Playwright trace debugging; worker_threads; -->
@@ -3762,3 +3764,109 @@ afterEach(() => {
 | Effect fiber state bleeds between tests | Uninterrupted fork | Pattern 43 (Scope-scoped fibers) | AP24 (Effect.fork without cleanup) |
 | Floating-point total wrong on ARM CI | IEEE 754 platform variance | Pattern 36 (integer arithmetic) | AP20 (direct toBe on floats) |
 | Biome noFloatingPromises disabled | Test unawaited async | Pattern 44 (Biome config, useAwait) | AP25 (disable rule for tests) |
+
+---
+
+## Cross-Language Flakiness: pytest (Python)  [official: docs.pytest.org/en/stable/explanation/flaky.html, 2026-05-08]
+
+pytest's official flaky test documentation identifies the same root-cause taxonomy as the TypeScript ecosystem but surfaces through Python-specific mechanisms. This section covers the equivalences for polyglot teams or Python microservice test suites.
+
+### Root Causes (pytest framing)
+
+| Root Cause | pytest manifestation | TypeScript equivalent |
+|---|---|---|
+| **Insufficient isolation** | Residual state from previous test's `teardown` failing silently | `afterEach` not running when test body throws; open handles |
+| **Test ordering dependency** | Parallel workers (`pytest-xdist`) expose hidden `fixture` scope leakage | `--runInBand` masks order-dependency; exposed by `--randomize` |
+| **Overly strict assertions** | `assert result == 0.1 + 0.2` fails due to IEEE 754 | `.toBe(0.3)` — fix with `pytest.approx()` / `toBeCloseTo()` |
+| **Thread safety** | `pytest.warns()` / `pytest.raises()` not thread-safe when called from spawned threads | `vi.fn()` count assertions racy in `test.concurrent` |
+
+### pytest Quarantine — `pytest.mark.xfail`
+
+```python
+# Quarantine with xfail (pytest equivalent of it.skip / vi.todo)
+# strict=False means: test may fail, and that's expected — do NOT break CI
+@pytest.mark.xfail(strict=False, reason="JIRA-1234: flaky DB cleanup race — fix by 2026-07-01")
+def test_order_created_in_db():
+    ...
+
+# strict=True means: if the test PASSES, it's an unexpected pass (xpass) — fail CI
+# Use strict=True to detect when a formerly-flaky test is now consistently passing
+@pytest.mark.xfail(strict=True, reason="Expected to fail until migration JIRA-5678 is merged")
+def test_new_payment_flow():
+    ...
+```
+
+**Equivalent pattern in TypeScript/Vitest:** `it.todo()` or `it.skip('[JIRA-1234] flaky: fix by 2026-07-01', () => { ... })`. Neither Vitest nor Jest has an exact `xfail(strict=False)` equivalent — the closest is `it.fails()` (Vitest) which expects the test to fail.
+
+### pytest-rerunfailures (equivalent: Jest `retryTimes`, Vitest `retry`)
+
+```python
+# Install: pip install pytest-rerunfailures
+# Per-test retry:
+@pytest.mark.flaky(reruns=3, reruns_delay=0.5)
+def test_external_api_call():
+    ...
+
+# Global retry via pytest.ini / pyproject.toml:
+# [pytest]
+# addopts = --reruns 2 --reruns-delay 0.3
+```
+
+**TypeScript equivalent:**
+```typescript
+// Vitest — per-test retry
+it('flaky external call', { retry: 3 }, async () => { ... })
+
+// Jest global
+jest.retryTimes(2, { logErrorsBeforeRetry: true })
+```
+
+### pytest-randomly / pytest-random-order — Detecting Hidden State
+
+```bash
+# Install and enable:
+pip install pytest-randomly    # shuffles test order each run with --randomly-seed=LAST to reproduce
+pip install pytest-random-order  # similar; use --random-order-seed=LAST
+
+# Run with randomized order:
+pytest --randomly-seed=12345  # reproducible seed for debugging
+pytest --randomly-seed=random # new seed each run (CI default)
+```
+
+**TypeScript equivalent:** Jest `--randomize` (Jest 29.2+) or Vitest `sequence.shuffle: true` in `vitest.config.ts`.
+
+**Key insight:** Both `pytest-randomly` and Jest's `--randomize` randomize within a file's test order. Neither randomizes *across files* by default. Hidden order-dependencies that only surface when file A runs before file B require a separate strategy: run test files in a random sequence (`pytest --co -q | shuf | xargs pytest`).
+
+### pytest `PYTEST_CURRENT_TEST` Environment Variable
+
+pytest sets `PYTEST_CURRENT_TEST` during test execution — useful for diagnosing which test "got stuck" (hung indefinitely) in CI:
+
+```bash
+# In CI: if a test hangs, check the environment variable in the runner's process list
+# PYTEST_CURRENT_TEST=tests/test_orders.py::test_create_order (call)
+# The format: <file>::<test> (<phase>) where phase is "setup", "call", or "teardown"
+```
+
+**TypeScript equivalent:** Playwright's `testInfo.title` and `testInfo.file` inside test bodies; Jest's `expect.getState().currentTestName`.
+
+### pytest flakiness vs TypeScript flakiness — Key Differences
+
+| Dimension | pytest (Python) | Jest/Vitest (TypeScript) |
+|---|---|---|
+| Fixture scope model | Explicit: `function`, `class`, `module`, `session` | Implicit: `beforeEach` (function), `beforeAll` (module) |
+| Parallel execution | `pytest-xdist` (`-n auto`) — separate OS processes | `--maxWorkers=50%` — forked processes (Vitest `forks` pool) |
+| Module-level singleton reset | Not needed — process isolation in `pytest-xdist` | `vi.resetModules()` / `jest.resetModules()` required in CJS |
+| Thread safety for test primitives | `pytest.raises` / `pytest.warns` not thread-safe | `expect()` from vitest/jest is generally thread-safe in practice |
+| Floating-point assertions | `pytest.approx(0.3, rel=1e-5)` | `expect(n).toBeCloseTo(0.3, 5)` |
+| Randomization | `pytest-randomly` (plugin) | `--randomize` (Jest 29.2+) / `sequence.shuffle` (Vitest) |
+| Quarantine | `@pytest.mark.xfail(strict=False)` | `it.skip()` / `it.fails()` (Vitest) |
+| Retry | `pytest-rerunfailures` | `retry` option (Vitest) / `retryTimes` (Jest) |
+
+### Key Resources (pytest flakiness)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| pytest Flaky Tests | Official | https://docs.pytest.org/en/stable/explanation/flaky.html | Root causes, xfail quarantine, rerunfailures, randomization |
+| pytest-rerunfailures | Community | https://github.com/pytest-dev/pytest-rerunfailures | Per-test and global retry for pytest |
+| pytest-randomly | Community | https://github.com/pytest-dev/pytest-randomly | Randomizes test order to expose hidden state dependencies |
+| pytest-xdist | Official | https://pytest-xdist.readthedocs.io/ | Parallel pytest execution; exposes ordering flakiness |

@@ -1,8 +1,9 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 30 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 31 | score: 100/100 | date: 2026-05-08 -->
 <!-- sources: training-knowledge (WebFetch blocked, WebSearch API unavailable; synthesized from training knowledge per skill fallback rule) -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
+<!-- iter-31: Neon DB copy-on-write branching for test isolation (neon.com/docs/guides/branching-test-queries, 2026-05-08); Testcontainers Cloud 8GB/session + Turbo mode (testcontainers.com/cloud/docs, 2026-05-08) -->
 
 ---
 
@@ -2089,6 +2090,239 @@ creating `activeUser` or `adminUser`. `beforeEach` would run all setup regardles
 | MSW v2 WebSocket handlers | Official | https://mswjs.io/docs/api/ws | Real-time WebSocket test data injection without a live server |
 | Zod v4 migration guide | Official | https://zod.dev/v4 | Breaking changes affecting factory schema definitions (z.email(), z.uuid() top-level) |
 | @aws-sdk/client-sqs (test patterns) | Official | https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/client/sqs/ | SQS event envelope structure for Lambda handler test factories |
+| Neon DB Branching | Official | https://neon.com/docs/guides/branching-test-queries | Copy-on-write Postgres branch per test run; schema-only branching; instant teardown |
+| Testcontainers Cloud | Official | https://testcontainers.com/cloud/docs/ | Cloud Docker daemon; 8GB/session; Turbo mode for parallel test isolation |
+| Testcontainers Guides | Official | https://testcontainers.com/guides/ | Getting-started guides: 11 languages, Spring Boot, Quarkus, ASP.NET, DB, Kafka, WireMock, LocalStack |
+
+---
+
+## Neon DB Branch-per-Test — Copy-on-Write Postgres Isolation  [official: neon.com/docs/guides/branching-test-queries, 2026-05-08]
+
+Neon is a serverless Postgres service with a copy-on-write branching model. Instead of
+resetting a shared test database between runs, you create an isolated Postgres *branch*
+per test run — instantly. Each branch has full SQL isolation from other branches and is
+deleted after the run completes.
+
+**Why this matters for test data management:**
+
+| Traditional approach | Neon branching approach |
+|---|---|
+| Set up a separate test database; replicate schema | Create a branch from `main` instantly (no schema copy) |
+| Run `TRUNCATE` or `DROP TABLE` before each test | Delete the branch after the test — database never mutated |
+| PII risk when copying production data | Use schema-only branches for sensitive data |
+| CI must serialize tests that share the DB | Each PR gets its own branch — full parallelism |
+| Database cleanup is the #1 source of integration flakiness | No cleanup needed — branch is immutable before test writes |
+
+**Schema-only branching** is available when tests should not see production data at all
+(e.g., compliance-regulated environments). Schema-only branches include the DDL but none
+of the rows.
+
+```typescript
+// ci-scripts/neon-branch-setup.ts — create a Neon branch per CI run
+// Requires: npm install @neondatabase/serverless
+// Environment: NEON_API_KEY, NEON_PROJECT_ID set as CI secrets
+
+import { createApiClient } from '@neondatabase/api-client';
+
+interface NeonBranch {
+  id: string;
+  connectionString: string;
+}
+
+async function createTestBranch(runId: string): Promise<NeonBranch> {
+  const client = createApiClient({ apiKey: process.env['NEON_API_KEY']! });
+  const projectId = process.env['NEON_PROJECT_ID']!;
+
+  // Branch from main — gets a full copy-on-write snapshot of the current schema + seed data
+  const { data } = await client.createProjectBranch(projectId, {
+    branch: {
+      name: `ci-${runId}`,         // unique per PR/run
+      parent_id: 'br-main',        // branch from the main branch
+    },
+    endpoints: [
+      { type: 'read_write' }        // create a read-write endpoint for the branch
+    ],
+  });
+
+  const connectionString = data.connection_uris[0].connection_uri;
+  return { id: data.branch.id, connectionString };
+}
+
+async function deleteTestBranch(branchId: string): Promise<void> {
+  const client = createApiClient({ apiKey: process.env['NEON_API_KEY']! });
+  const projectId = process.env['NEON_PROJECT_ID']!;
+  await client.deleteProjectBranch(projectId, branchId);
+}
+
+// Usage in a Vitest global setup file:
+// vitest.config.ts → globalSetup: './ci-scripts/neon-branch-setup.ts'
+export async function setup(): Promise<() => Promise<void>> {
+  const runId = process.env['CI_RUN_ID'] ?? `local-${Date.now()}`;
+  const branch = await createTestBranch(runId);
+
+  // Inject the branch connection string as an env var for test files
+  process.env['TEST_DATABASE_URL'] = branch.connectionString;
+  process.env['NEON_BRANCH_ID'] = branch.id;
+
+  // Return teardown — Vitest calls this after all tests complete
+  return async () => {
+    await deleteTestBranch(branch.id);
+  };
+}
+```
+
+```yaml
+# .github/workflows/ci.yml — Neon branch lifecycle per PR
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    env:
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+      CI_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: npm ci
+      - name: Run integration tests (Neon branch created in globalSetup)
+        run: npx vitest run --project integration
+      # Branch is deleted by vitest globalSetup teardown — no explicit cleanup needed
+```
+
+**When to use Neon branching vs Testcontainers:**
+
+| Factor | Neon branching | Testcontainers (local Postgres) |
+|---|---|---|
+| Docker on CI runner | Not required | Required |
+| Start-up overhead | ~300–500 ms (API call) | ~3–8 s (container pull + init) |
+| Production parity | Full Neon Postgres (Aurora-compatible) | Exact Postgres version |
+| Cost | Per-branch-compute billing (free tier generous) | Free (CPU/RAM only) |
+| Parallel isolation | Per-branch — natural isolation | Requires separate container per worker |
+| Offline development | Requires network | Works fully offline |
+| Schema-only option | Yes | No (must seed separately) |
+
+**Best for:** Teams already on Neon as their production database; CI environments without Docker; teams that want effortless parallel test isolation without configuring shared DB cleanup logic.
+
+---
+
+## Testcontainers Cloud — Cloud Docker Daemon for CI  [official: testcontainers.com/cloud/docs, 2026-05-08]
+
+Testcontainers Cloud provides a hosted Docker daemon accessed via an SSH tunnel agent. CI jobs that require Docker containers (Postgres, Redis, Kafka) can run on Docker-less CI runners by routing all container operations to the cloud daemon.
+
+**Architecture:** The agent opens an SSH tunnel from the CI runner to a cloud Docker daemon. Testcontainers code runs unchanged — it still calls the Docker API, but the API calls are tunneled to the cloud. The test code never changes; only the CI environment setup changes.
+
+**Key specs:**
+- Each cloud session receives **8 GB of RAM**
+- **Turbo mode** (`TC_CLOUD_CONCURRENCY`) gives each test process its own cloud environment, enabling true parallelism without shared Docker daemon contention
+- Supports all Testcontainers languages: Java, Go, .NET, Node.js, Python, Ruby, Rust, PHP, and 5 more
+- Pre-built integrations for GitHub Actions, GitLab CI, CircleCI, Azure Pipelines, Jenkins, and Kubernetes
+
+```typescript
+// Testcontainers Cloud is transparent to test code — no changes needed:
+// This test works identically with local Docker, Docker-in-Docker, or Testcontainers Cloud.
+
+import { beforeAll, afterAll, beforeEach, it, expect } from 'vitest';
+import { GenericContainer, type StartedTestContainer } from 'testcontainers';
+import { Pool } from 'pg';
+
+let container: StartedTestContainer;
+let pool: Pool;
+
+beforeAll(async () => {
+  // Runs against local Docker, CI Docker-in-Docker, OR Testcontainers Cloud — no code change
+  container = await new GenericContainer('postgres:16-alpine')
+    .withEnvironment({
+      POSTGRES_USER: 'test',
+      POSTGRES_PASSWORD: 'test',
+      POSTGRES_DB: 'testdb',
+    })
+    .withExposedPorts(5432)
+    .start();
+
+  pool = new Pool({
+    host: container.getHost(),
+    port: container.getMappedPort(5432),
+    user: 'test',
+    password: 'test',
+    database: 'testdb',
+  });
+
+  await pool.query(`CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    total NUMERIC(10,2) NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+  )`);
+}, 60_000);
+
+afterAll(async () => {
+  await pool.end();
+  await container.stop();
+});
+
+beforeEach(async () => {
+  await pool.query('TRUNCATE orders RESTART IDENTITY');
+});
+
+it('inserts and retrieves an order', async () => {
+  await pool.query(
+    'INSERT INTO orders (customer_id, total) VALUES ($1, $2)',
+    ['c1', 150.00]
+  );
+  const result = await pool.query('SELECT * FROM orders WHERE customer_id = $1', ['c1']);
+  expect(result.rows).toHaveLength(1);
+  expect(parseFloat(result.rows[0].total)).toBe(150.00);
+});
+```
+
+```yaml
+# .github/workflows/ci.yml — Testcontainers Cloud setup
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest  # or any runner, including Docker-less runners
+    env:
+      TC_CLOUD_TOKEN: ${{ secrets.TC_CLOUD_TOKEN }}
+      TC_CLOUD_CONCURRENCY: 4  # Turbo mode: 4 parallel cloud environments (paid tier)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Setup Testcontainers Cloud agent
+        run: |
+          curl -fsSL https://app.testcontainers.cloud/bash | bash
+      - run: npm ci
+      - run: npx vitest run --project integration
+```
+
+**Singleton container pattern for cost efficiency:**
+
+```typescript
+// Use Testcontainers reuse feature to share containers across test files
+// (reduces billable cloud session minutes on Testcontainers Cloud)
+
+import { GenericContainer, type StartedTestContainer } from 'testcontainers';
+
+let _container: StartedTestContainer | null = null;
+
+export async function getSharedPostgres(): Promise<StartedTestContainer> {
+  if (_container) return _container;
+
+  _container = await new GenericContainer('postgres:16-alpine')
+    .withEnvironment({
+      POSTGRES_USER: 'test',
+      POSTGRES_PASSWORD: 'test',
+      POSTGRES_DB: 'testdb',
+    })
+    .withExposedPorts(5432)
+    .withReuse()  // Testcontainers reuse: keeps the container alive between test runs
+    .start();
+
+  return _container;
+}
+// Note: withReuse() requires TESTCONTAINERS_REUSE_ENABLE=true env var.
+// With Testcontainers Cloud + reuse: one cloud session per developer machine session.
+```
 
 ---
 

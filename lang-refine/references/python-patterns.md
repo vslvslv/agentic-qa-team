@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 32 | score: 100/100 | date: 2026-05-07 -->
+<!-- sources: mixed (official + community) | iteration: 33 | score: 100/100 | date: 2026-05-08 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -36,6 +36,7 @@
      Iter 30 (2026-05-04): 100/100 (+0) — added unittest.mock deep-dive (Mock vs MagicMock, patch() patterns, AsyncMock, spec/spec_set, assertion introspection) and community gotcha #27 (patching in wrong namespace) sourced from docs.python.org/3/library/unittest.mock.html
      Iter 31 (2026-05-07): 100/100 (+0) — updated Python 3.13 section with TypeVar defaults (PEP 696), TypeIs (PEP 742), ReadOnly TypedDict (PEP 705), copy.replace() generic, deprecated modules, colorized tracebacks, free-threaded CPython; sourced from docs.python.org/3/whatsnew/3.13.html
      Iter 32 (2026-05-07): 100/100 (+0) — added Python 3.14 section: PEP 649/749 deferred annotations + annotationlib, PEP 750 t-strings, PEP 734 concurrent.interpreters, PEP 758 bracketless except, PEP 765 finally return warning, free-threaded improvements, pathlib.copy/move; community gotcha #28 (deferred annotation + get_type_hints); sourced from docs.python.org/3/whatsnew/3.14.html
+     Iter 33 (2026-05-08): 100/100 (+0) — added factory_boy test factory patterns — basic Factory/DjangoModelFactory/SQLAlchemyModelFactory, LazyAttribute, SubFactory, RelatedFactory, Faker integration, sequences, create/build/stub strategies, batch operations; community gotcha #29 (create vs build strategy pitfalls); sourced from factoryboy.readthedocs.io/en/stable/ + practitioner synthesis
 -->
 
 ## Core Philosophy
@@ -4114,4 +4115,217 @@ class MyProcessor(BaseProcessor):
 | `@patch("a.SomeClass")` when code uses `from a import SomeClass` | Patches the origin module, not the reference in the module under test | Patch where the name is looked up: `@patch("b.SomeClass")` |
 | `Mock()` instead of `MagicMock()` for protocol objects | Magic methods not pre-configured; `str()`, `len()`, `iter()` fail | Use `MagicMock()` for objects that implement Python protocols |
 | `mock.assert_called_with(x)` after multiple calls | Only checks the *last* call — earlier calls may have been different | Use `mock.assert_any_call(x)` to check whether any call matched |
+
+---
+
+## factory_boy — Test Factories Replacing Static Fixtures
+
+`factory_boy` replaces hard-coded test fixtures with declarative factory classes that generate realistic objects on demand. Factories support multiple ORM backends (Django, SQLAlchemy, MongoEngine) and integrate with Faker for realistic data.
+
+**Install:** `pip install factory-boy` (installs Faker automatically).
+
+### Basic Factory
+
+```python
+import factory
+
+class UserFactory(factory.Factory):
+    class Meta:
+        model = dict    # or any plain Python class / dataclass
+
+    id    = factory.Sequence(lambda n: n)          # auto-incrementing
+    name  = factory.Faker("name")                  # "Patricia Jones"
+    email = factory.LazyAttribute(lambda obj: f"{obj.name.lower().replace(' ', '.')}@example.com")
+    role  = "user"
+
+# Default creation
+user = UserFactory()
+# {'id': 0, 'name': 'Patricia Jones', 'email': 'patricia.jones@example.com', 'role': 'user'}
+
+# Override specific fields
+admin = UserFactory(role="admin", email="ceo@acme.com")
+
+# Build a list
+users = UserFactory.create_batch(5)
+```
+
+### DjangoModelFactory
+
+Persists to the database automatically. Place factories in `tests/factories.py`.
+
+```python
+import factory
+from factory.django import DjangoModelFactory
+from myapp.models import User, Profile
+
+class UserFactory(DjangoModelFactory):
+    class Meta:
+        model = User
+
+    username   = factory.Sequence(lambda n: f"user{n}")
+    email      = factory.LazyAttribute(lambda obj: f"{obj.username}@example.com")
+    first_name = factory.Faker("first_name")
+    last_name  = factory.Faker("last_name")
+    is_active  = True
+
+class ProfileFactory(DjangoModelFactory):
+    class Meta:
+        model = Profile
+
+    user = factory.SubFactory(UserFactory)   # creates User first, then links
+    bio  = factory.Faker("sentence")
+    avatar_url = factory.Faker("image_url")
+```
+
+### SQLAlchemyModelFactory
+
+```python
+import factory
+from factory.alchemy import SQLAlchemyModelFactory
+from myapp.models import Product
+from myapp.database import Session
+
+class ProductFactory(SQLAlchemyModelFactory):
+    class Meta:
+        model      = Product
+        sqlalchemy_session = Session
+
+    sku   = factory.Sequence(lambda n: f"SKU-{n:04d}")
+    name  = factory.Faker("commerce.product_name")
+    price = factory.Faker("pydecimal", left_digits=4, right_digits=2, positive=True)
+```
+
+### Key Declarations
+
+```python
+class ArticleFactory(factory.Factory):
+    class Meta:
+        model = Article
+
+    # Sequence — unique incrementing value
+    id    = factory.Sequence(lambda n: n)
+
+    # Faker — delegates to Faker provider
+    title = factory.Faker("sentence", nb_words=6)
+    body  = factory.Faker("paragraphs", nb=3)
+
+    # LazyAttribute — computed from other fields
+    slug  = factory.LazyAttribute(
+        lambda obj: obj.title.lower().replace(" ", "-")[:50]
+    )
+
+    # LazyFunction — computed from external call
+    created_at = factory.LazyFunction(datetime.utcnow)
+
+    # SubFactory — creates a related object
+    author = factory.SubFactory("tests.factories.UserFactory")
+
+    # RelatedFactory — creates a related object AFTER the main object
+    # (useful for reverse FK relationships)
+    # audit_log = factory.RelatedFactory("tests.factories.AuditLogFactory", "article")
+
+    # Iterator — cycles through a fixed set of values
+    status = factory.Iterator(["draft", "published", "archived"])
+
+    # PostGeneration — runs after main object is created (e.g., M2M)
+    @factory.post_generation
+    def tags(self, create, extracted, **kwargs):
+        if not create:
+            return
+        if extracted:
+            for tag in extracted:
+                self.tags.add(tag)
+```
+
+### Creation Strategies
+
+| Strategy | Method | Description |
+|---|---|---|
+| `build` | `UserFactory.build()` | Instantiates without saving (no DB hit) |
+| `create` | `UserFactory.create()` | Instantiates and saves to DB (default for Django/SQLAlchemy) |
+| `stub` | `UserFactory.stub()` | Returns a `Stub` object with no real class |
+
+```python
+# build — no DB interaction; fastest; for unit tests
+user = UserFactory.build()
+
+# create — persists to DB; for integration tests
+user = UserFactory.create()   # same as UserFactory()
+
+# batch — create N instances
+users = UserFactory.create_batch(10)
+admins = UserFactory.create_batch(5, role="admin")
+
+# stub — lightweight object with no behaviour
+stub = UserFactory.stub()
+stub.name   # available as attribute
+```
+
+### Faker Integration
+
+factory_boy integrates directly with Faker's providers via `factory.Faker`:
+
+```python
+class PersonFactory(factory.Factory):
+    class Meta:
+        model = dict
+
+    # Simple provider
+    first_name = factory.Faker("first_name")
+    last_name  = factory.Faker("last_name")
+
+    # Provider with arguments
+    age        = factory.Faker("random_int", min=18, max=90)
+    birth_date = factory.Faker("date_of_birth", minimum_age=18, maximum_age=90)
+
+    # Locale-specific
+    phone      = factory.Faker("phone_number", locale="de_DE")
+
+    # Full address block
+    city       = factory.Faker("city")
+    country    = factory.Faker("country_code")
+```
+
+### Community Gotcha #29: `create` vs `build` in Unit Tests
+
+```python
+# BAD — using create (DB round-trip) in a pure unit test
+def test_user_display_name(db):
+    user = UserFactory.create()   # writes to DB, requires DB fixture, slow
+    assert user.display_name == f"{user.first_name} {user.last_name}"
+
+# GOOD — build avoids the DB entirely for logic-only tests
+def test_user_display_name():
+    user = UserFactory.build()    # no DB, no transaction, much faster
+    assert user.display_name == f"{user.first_name} {user.last_name}"
+
+# Rule of thumb:
+# - Logic tests (no DB behaviour being tested) → build()
+# - Repository/integration tests (DB constraints, queries) → create()
+# - SubFactory always follows the outer strategy (build → sub-build; create → sub-create)
+
+# ALSO BAD — overusing SubFactory depth
+class OrderFactory(factory.Factory):
+    class Meta:
+        model = Order
+    # SubFactory chain: Order → User → Profile → Department → Company
+    # create() fires 5 INSERT statements for one Order object
+    user = factory.SubFactory(UserFactory)
+
+# GOOD — pass in an already-created user when the test controls the fixture
+def test_order_total(user):
+    order = OrderFactory.build(user=user, items=[item1, item2])
+    assert order.total == Decimal("42.00")
+```
+
+### factory_boy Anti-Patterns
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| Static fixtures (JSON/YAML/SQL dumps) | Brittle — model changes break all fixtures silently | Replace with factory classes that evolve with models |
+| `create()` in every test | Unnecessary DB writes slow test suite 3–10×; fails without DB setup | Use `build()` for unit tests; `create()` only for integration/DB tests |
+| Hard-coded PKs in factories (`id = 1`) | Test isolation fails — second test in same session hits a duplicate-key error | Use `factory.Sequence(lambda n: n)` or omit and let DB auto-generate |
+| Duplicating factory fields across test files | Inconsistency; changes require finding all copies | Single source of truth in `tests/factories.py`; import everywhere |
+| No locale set for locale-sensitive Faker fields | Phone/address formats fail locale-specific validators | Set `faker = factory.Faker._get_faker(locale="en_US")` or per-field locale |
+| `RelatedFactory` when `SubFactory` is more appropriate | `RelatedFactory` creates the related object *after*, so the FK relationship may be inverted | Use `SubFactory` for objects the main factory *depends on*; `RelatedFactory` for objects that *depend on* the main one |
 | Not using `spec=` or `create_autospec()` | Mock silently accepts nonexistent attributes; typos go undetected | Use `Mock(spec=SomeClass)` or `create_autospec(SomeClass, instance=True)` |

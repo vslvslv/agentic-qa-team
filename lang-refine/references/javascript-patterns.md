@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 39 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: official | community | mixed | iteration: 40 | score: 100/100 | date: 2026-05-08 -->
 
 ## Core Philosophy
 
@@ -2712,3 +2712,156 @@ EventEmitter.captureRejections = true;
 | Inconsistent sync/async callbacks ("Zalgo") | Non-deterministic execution order; calling code cannot reason about when side effects happen | Always be consistently async; use `async`/Promises which guarantee microtask delivery |
 | `async` handlers on `EventEmitter` without `captureRejections` | Async handler rejections bypass the emitter's `'error'` event; become unhandled rejections that crash the process | Use `new EventEmitter({ captureRejections: true })` or set `EventEmitter.captureRejections = true` |
 | Fixed port in tests (`app.listen(3000)`) | Port collisions under parallel CI workers or watch mode cause `EADDRINUSE` flakiness | Bind to port `0` in tests; read actual port from `server.address().port` after start |
+
+---
+
+## Faker.js — Realistic Fake Test Data
+
+Faker.js generates realistic fake data for testing — names, emails, addresses, dates, UUIDs, product data, and much more. It replaces hard-coded strings like `"test@test.com"` with statistically realistic values that catch format-assumption bugs.
+
+**Install:** `npm install --save-dev @faker-js/faker` (requires Node 20+; also runs in the browser).
+
+### Basic Usage
+
+```javascript
+import { faker } from '@faker-js/faker';
+
+// Each call produces a new random value
+const name     = faker.person.fullName();       // "Raquel Jacobson"
+const email    = faker.internet.email();         // "raquel.jacobson@gmail.com"
+const uuid     = faker.string.uuid();            // "110ec58a-a0f4-4ac4-8ec2-c5b67b6e8a1e"
+const price    = faker.commerce.price({ min: 1, max: 500, dec: 2 }); // "142.78"
+const pastDate = faker.date.past({ years: 2 }); // Date object — ~2 years ago
+
+// Build a full fake user record
+function buildUser(overrides = {}) {
+  return {
+    id:        faker.string.uuid(),
+    firstName: faker.person.firstName(),
+    lastName:  faker.person.lastName(),
+    email:     faker.internet.email(),
+    phone:     faker.phone.number(),
+    birthDate: faker.date.birthdate({ min: 18, max: 70, mode: 'age' }),
+    address: {
+      street: faker.location.streetAddress(),
+      city:   faker.location.city(),
+      state:  faker.location.state({ abbreviated: true }),
+      zip:    faker.location.zipCode(),
+    },
+    ...overrides,    // caller can pin specific fields
+  };
+}
+
+const user = buildUser({ email: 'fixed@example.com' });
+```
+
+### Seeding for Reproducible Tests
+
+Use a seed to produce the same sequence of values on every run — essential for snapshot tests and CI consistency:
+
+```javascript
+import { faker } from '@faker-js/faker';
+
+// Set seed once per test suite (or per test for full isolation)
+faker.seed(42);
+
+const user1 = faker.person.fullName(); // always "Ida Tromp" with seed 42
+const user2 = faker.person.fullName(); // always "Grady Larkin"
+
+// Per-test seeding pattern (Jest/Vitest)
+beforeEach(() => {
+  faker.seed(12345);
+});
+
+test('renders user card', () => {
+  const user = buildUser();   // deterministic — same every time
+  render(<UserCard user={user} />);
+  expect(screen.getByText(user.firstName)).toBeInTheDocument();
+});
+```
+
+### Locales
+
+Faker.js ships with 70+ locale-specific datasets. Locale determines names, addresses, phone formats, etc.:
+
+```javascript
+import { fakerDE as faker } from '@faker-js/faker';   // German locale
+const name = faker.person.fullName();  // "Friedrich Becker"
+
+import { fakerJA as faker } from '@faker-js/faker';   // Japanese
+const name = faker.person.fullName();  // "田中 一郎"
+
+// Or switch locale on a shared instance
+faker.locale = 'fr';
+const city = faker.location.city();    // "Lyon", "Marseille", ...
+```
+
+### Key Module Categories
+
+| Module | Example Methods |
+|---|---|
+| `faker.person` | `firstName()`, `lastName()`, `fullName()`, `jobTitle()`, `gender()` |
+| `faker.internet` | `email()`, `url()`, `userName()`, `domainName()`, `password()`, `ipv4()` |
+| `faker.location` | `streetAddress()`, `city()`, `state()`, `country()`, `zipCode()`, `latitude/longitude()` |
+| `faker.date` | `past()`, `future()`, `recent()`, `birthdate()`, `between()` |
+| `faker.number` | `int()`, `float()`, `bigInt()`, `binary()`, `hex()` |
+| `faker.string` | `uuid()`, `alphanumeric()`, `nanoid()`, `fromCharacters()` |
+| `faker.commerce` | `productName()`, `price()`, `department()`, `productDescription()` |
+| `faker.lorem` | `word()`, `sentence()`, `paragraph()`, `lines()` |
+| `faker.image` | `url()`, `avatar()`, `personPortrait()` |
+| `faker.helpers` | `arrayElement()`, `shuffle()`, `multiple()`, `fake()` (template strings) |
+
+### `faker.helpers` Patterns
+
+```javascript
+// Pick a random element from an array
+const status = faker.helpers.arrayElement(['active', 'inactive', 'pending']);
+
+// Build N records
+const users = faker.helpers.multiple(buildUser, { count: 50 });
+
+// Shuffle and pick N
+const tags   = faker.helpers.shuffle(['web', 'api', 'mobile', 'cli', 'data']);
+const subset = tags.slice(0, faker.number.int({ min: 1, max: 3 }));
+
+// Template string interpolation
+const sentence = faker.helpers.fake('Hello {{person.firstName}}! Your code is {{string.alphanumeric(6)}}.');
+// "Hello Raquel! Your code is aB3x9Z."
+```
+
+### Factory Function Pattern (Zero Dependencies)
+
+Combine Faker with a factory function to produce test objects with sane defaults and per-test overrides — no external library needed:
+
+```javascript
+// factories/userFactory.js
+import { faker } from '@faker-js/faker';
+
+export const createUser = (overrides = {}) => ({
+  id:        faker.string.uuid(),
+  name:      faker.person.fullName(),
+  email:     faker.internet.email(),
+  role:      'user',
+  createdAt: faker.date.recent({ days: 30 }),
+  ...overrides,
+});
+
+export const createAdmin = (overrides = {}) =>
+  createUser({ role: 'admin', ...overrides });
+
+// In tests
+const user     = createUser();
+const admin    = createAdmin({ email: 'ceo@acme.com' });
+const inactive = createUser({ role: 'inactive', createdAt: faker.date.past({ years: 2 }) });
+```
+
+### Faker.js Anti-Patterns
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| Hard-coding test data strings (`"test@test.com"`) | Misses format-assumption bugs; tests pass for the wrong reasons | Use `faker.internet.email()` to generate realistic, varied values |
+| No seed for snapshot tests | Different values each run make snapshots brittle | Call `faker.seed(42)` in `beforeEach` for reproducible snapshots |
+| Generating data inside describe() / module scope | Data generated once at import time; no per-test isolation | Generate inside `beforeEach` or inside the test function |
+| `faker.internet.email()` for security-sensitive ids | Email format not globally unique across test runs | Use `faker.string.uuid()` for unique IDs |
+| Using locale-sensitive data without locale set | Default (en) names/addresses fail locale-specific format validations | Set `faker.locale` to match the domain under test |
+| Building large object graphs with Faker inline | Tests become cluttered and hard to read | Extract into a `factories/` directory with composable factory functions |

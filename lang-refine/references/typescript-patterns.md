@@ -1,5 +1,5 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 24 | score: 100/100 | date: 2026-05-07 -->
+<!-- sources: official | community | mixed | iteration: 25 | score: 100/100 | date: 2026-05-08 -->
 <!-- iteration trace (latest):
      Iter 21 (2026-05-04): added Type Narrowing Deep-Dive (all 9 techniques from official narrowing docs),
        Conditional Types section (extends ternary, infer keyword, distributive types, built-in utilities),
@@ -18,6 +18,11 @@
        deprecated outFile/baseUrl, Temporal API, RegExp.escape, Map.getOrInsert/getOrInsertComputed,
        --stableTypeOrdering migration flag, DOM lib consolidation, migration guide to TS 7.0 sourced from
        typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html
+     Iter 25 (2026-05-08): added Mapped Types deep-dive — basic syntax, mapping modifiers (+/- readonly/?)
+       key remapping with `as`, template literal property transforms, filtering with `never`,
+       union-of-objects remapping, combining with conditional types, built-in utility types implementation
+       reference, and anti-patterns table — sourced from
+       typescriptlang.org/docs/handbook/2/mapped-types.html
 -->
 
 ## Core Philosophy
@@ -2982,3 +2987,193 @@ A single-page reference for reviewing a TypeScript project's configuration and p
 - [ ] `"composite": true` per package
 - [ ] `"references": [...]` at workspace root
 - [ ] `"isolatedDeclarations": true` for parallel `.d.ts` emit
+
+---
+
+## Mapped Types Deep-Dive
+
+Mapped types create new types by iterating over the properties of an existing type and transforming them. They are the foundation of TypeScript's built-in utility types and enable powerful type-level transformations without code duplication.
+
+### Basic Syntax
+
+```typescript
+// Iterate over all properties of Type and change each value type to boolean
+type OptionsFlags<Type> = {
+  [Property in keyof Type]: boolean;
+};
+
+type Features = {
+  darkMode: () => void;
+  newUserProfile: () => void;
+};
+
+type FeatureOptions = OptionsFlags<Features>;
+// Result: { darkMode: boolean; newUserProfile: boolean }
+```
+
+The `[Property in keyof Type]` construct is the mapped type loop:
+- `keyof Type` produces a union of all property name literals
+- `in` iterates over each member of that union
+- `Type[Property]` indexes into the original type to access each property's value type
+
+### Mapping Modifiers: `+/-readonly` and `+/-?`
+
+You can add or remove `readonly` and `?` (optional) modifiers with `+` (add, default) and `-` (remove):
+
+```typescript
+// Remove readonly from every property
+type Mutable<Type> = {
+  -readonly [P in keyof Type]: Type[P];
+};
+
+// Remove optional — make all properties required
+type Concrete<Type> = {
+  [P in keyof Type]-?: Type[P];
+};
+
+// Add readonly to every property (same as built-in Readonly<T>)
+type ImmutableSnapshot<Type> = {
+  +readonly [P in keyof Type]: Type[P];
+};
+
+// Practical example: API response DTO (all optional) → internal domain object (all required)
+type ApiUser = {
+  id?: string;
+  name?: string;
+  email?: string;
+};
+
+type User = Concrete<ApiUser>;
+// Result: { id: string; name: string; email: string }
+```
+
+**Modifier cheat sheet:**
+
+| Syntax | Effect |
+|---|---|
+| `[P in keyof T]` | Preserves existing modifiers |
+| `[P in keyof T]+?` | Makes all optional |
+| `[P in keyof T]-?` | Removes optional (makes required) |
+| `+readonly [P in keyof T]` | Makes all readonly |
+| `-readonly [P in keyof T]` | Removes readonly |
+
+### Key Remapping with `as` (TypeScript 4.1+)
+
+Use `as` after the type parameter to transform property names at the type level:
+
+```typescript
+// Generate getter methods from data properties
+type Getters<Type> = {
+  [P in keyof Type as `get${Capitalize<string & P>}`]: () => Type[P];
+};
+
+interface Person {
+  name: string;
+  age: number;
+  location: string;
+}
+
+type PersonGetters = Getters<Person>;
+// Result: { getName: () => string; getAge: () => number; getLocation: () => string }
+```
+
+### Filtering Keys with `never`
+
+Map a property to `never` in the `as` clause to exclude it from the output type:
+
+```typescript
+// Remove properties matching a name
+type OmitKind<Type> = {
+  [P in keyof Type as Exclude<P, "kind">]: Type[P];
+};
+
+interface Circle {
+  kind: "circle";
+  radius: number;
+}
+
+type KindlessCircle = OmitKind<Circle>;
+// Result: { radius: number }
+
+// Remove all non-string-valued properties
+type StringProperties<Type> = {
+  [P in keyof Type as Type[P] extends string ? P : never]: string;
+};
+
+interface Mixed {
+  name: string;
+  age: number;
+  status: string;
+}
+
+type StringOnly = StringProperties<Mixed>;
+// Result: { name: string; status: string }
+```
+
+### Remapping Union-of-Objects
+
+Mapped types work on union types, enabling discriminated-union-based dispatch tables:
+
+```typescript
+type SquareEvent = { kind: "square"; x: number; y: number };
+type CircleEvent = { kind: "circle"; radius: number };
+
+// Remap union of events to a handler map keyed by discriminant
+type EventHandlers<Events extends { kind: string }> = {
+  [E in Events as E["kind"]]: (event: E) => void;
+};
+
+type Handlers = EventHandlers<SquareEvent | CircleEvent>;
+// Result: {
+//   square: (event: SquareEvent) => void;
+//   circle: (event: CircleEvent) => void;
+// }
+```
+
+### Mapped Types + Conditional Types
+
+Combine mapped and conditional types for property-level type branching:
+
+```typescript
+// Classify each property as PII-sensitive or not
+type ExtractPII<Type> = {
+  [P in keyof Type]: Type[P] extends { pii: true } ? true : false;
+};
+
+type DBFields = {
+  id:   { format: "incrementing" };
+  name: { type: string; pii: true };
+};
+
+type PIIMap = ExtractPII<DBFields>;
+// Result: { id: false; name: true }
+
+// Make only nullable properties optional
+type OptionalNullable<T> = {
+  [K in keyof T]: null extends T[K] ? T[K] | undefined : T[K];
+};
+```
+
+### Built-in Utility Types as Mapped Types
+
+The standard library utility types are all implemented as mapped types. Understanding their implementations helps diagnose edge cases:
+
+| Utility | Implementation |
+|---|---|
+| `Partial<T>` | `{ [P in keyof T]?: T[P] }` |
+| `Required<T>` | `{ [P in keyof T]-?: T[P] }` |
+| `Readonly<T>` | `{ readonly [P in keyof T]: T[P] }` |
+| `Record<K, V>` | `{ [P in K]: V }` |
+| `Pick<T, K>` | `{ [P in K]: T[P] }` |
+| `Omit<T, K>` | `Pick<T, Exclude<keyof T, K>>` |
+| `Mutable<T>` (custom) | `{ -readonly [P in keyof T]: T[P] }` |
+
+### Mapped Type Anti-Patterns
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `type X = { [k: string]: any }` | Too broad — accepts any string key with any value | Use `Record<string, V>` with a concrete value type, or an index signature with explicit type |
+| Layering multiple mapped types for one transform | Creates intermediate anonymous types that slow down the checker | Combine modifiers and `as` in a single mapped type |
+| Using `Partial<T>` for update payloads with `exactOptionalPropertyTypes` | `Partial` uses `?` which allows explicit `undefined`; with `exactOptionalPropertyTypes` this breaks update logic | Use `{ [K in keyof T]+?: T[K] \| undefined }` or a custom `DeepPartial` |
+| Mapping over `any` | `[P in keyof any]` resolves to `string \| number \| symbol`, collapsing all type information | Only map over concrete types or constrained type parameters |
+| Forgetting `string &` before `Capitalize` | `Capitalize<K>` fails when `K` is `string \| number \| symbol` | Always intersect: `Capitalize<string & K>` |

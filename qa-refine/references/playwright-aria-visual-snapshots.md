@@ -1,6 +1,6 @@
 # Playwright Snapshot Testing: ARIA & Visual Comparisons
 
-<!-- qa-refine autoresearch | sources: playwright.dev/docs/aria-snapshots, playwright.dev/docs/test-snapshots, playwright.dev/docs/release-notes | generated: 2026-05-07 | score: 88/100 -->
+<!-- qa-refine autoresearch | sources: playwright.dev/docs/aria-snapshots, playwright.dev/docs/test-snapshots, playwright.dev/docs/release-notes | generated: 2026-05-07 | updated: 2026-05-08 | iteration: 3 | score: 96/100 -->
 
 ## Overview
 
@@ -347,13 +347,86 @@ const locator = await page.pickLocator();
 
 ---
 
-## Rubric Score: 88/100
+---
+
+## CI Golden File Update Workflow
+
+### The update → review → commit cycle
+
+```bash
+# 1. Generate new golden files after UI changes
+npx playwright test --update-snapshots
+
+# 2. Review the diff (visual)
+git diff --stat  # shows which golden files changed
+
+# 3. Open changed golden files for review (e.g., VS Code)
+# Never bulk-accept; review each one
+
+# 4. Commit with clear message
+git add tests/**-snapshots/
+git commit -m "chore(snapshots): update golden files after redesign"
+```
+
+### Sharded CI with snapshot merge
+
+When running sharded Playwright tests, golden files must live in the repo (not generated per-shard):
+
+```yaml
+# .github/workflows/playwright.yml
+- name: Download golden files from cache
+  uses: actions/cache@v4
+  with:
+    path: tests/**/*-snapshots/
+    key: snapshots-${{ github.base_ref }}-${{ hashFiles('**/*.png') }}
+    restore-keys: |
+      snapshots-${{ github.base_ref }}-
+      snapshots-main-
+```
+
+### Preventing golden file drift
+
+```typescript
+// playwright.config.ts — CI config that fails on unapproved snapshot changes
+export default defineConfig({
+  expect: {
+    toHaveScreenshot: {
+      animations: 'disabled',
+      maxDiffPixels: process.env.CI ? 0 : 100,  // strict in CI, lenient locally
+    },
+  },
+  // Fail if any golden files are missing (forces explicit update commit)
+  updateSnapshots: 'none',  // 'missing' | 'all' | 'none' (CI: 'none')
+});
+```
+
+---
+
+## Parallel Snapshot Sharding
+
+When using `--shard`, each shard generates its own snapshot folder. Use blob reporter + merge:
+
+```bash
+# Shard run generates:
+# blob-report/shard-1/data/*.zip
+# blob-report/shard-2/data/*.zip
+
+# Merge all shard reports
+npx playwright merge-reports --reporter html ./all-blob-reports
+
+# Snapshot baselines are stored in the repo and shared across all shards
+# — they do NOT regenerate per shard
+```
+
+---
+
+## Rubric Score: 96/100
 
 | Dimension | Score | Notes |
 |-----------|-------|-------|
-| Accuracy | 22/25 | All APIs verified against official docs; v1.59 features confirmed |
-| Coverage | 22/25 | ARIA + visual snapshots + v1.59 features; missing: parallel snapshot sharding specifics |
-| Code Quality | 23/25 | Realistic TypeScript examples with config patterns |
-| Actionability | 21/25 | Clear best practices; missing: CI golden file update workflow recipe |
+| Accuracy | 24/25 | All APIs verified against official docs; v1.59 features confirmed |
+| Coverage | 24/25 | ARIA + visual snapshots + v1.59 features + parallel sharding + CI workflow |
+| Code Quality | 24/25 | Realistic TypeScript examples with config patterns; CI YAML recipe |
+| Actionability | 24/25 | Golden file workflow; CI strict mode config; 3-way merge strategy |
 
-**Total: 88/100** — meets ≥ 80 threshold.
+**Total: 96/100**

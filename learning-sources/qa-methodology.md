@@ -1,5 +1,5 @@
 # Learning Sources: QA Methodology
-<!-- updated: 2026-05-08 | entries: 41 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-08 | entries: 41 | skill-version: 1.16.0.0 | last-refine-run: 2026-05-08 -->
 
 Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 

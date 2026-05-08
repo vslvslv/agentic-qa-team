@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
+<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 21 | score: 100/100 | date: 2026-05-08 -->
 
 ## Core Philosophy
 
@@ -1815,4 +1815,237 @@ public class EmailSender implements NotificationSender {
 | Modifying collection during for-each loop | `ConcurrentModificationException` at runtime | Use `removeIf()`, `Iterator.remove()`, or collect-then-remove pattern |
 | Unclosed `Files.lines()` stream | Leaks file descriptors; crashes under load with "Too many open files" | Wrap in `try-with-resources`; use `Files.readAllLines()` for small files |
 | `String.format()` in log messages | Always builds string even when log level is disabled; adds GC pressure | Use SLF4J parameterised logging `log.debug("msg {}", arg)` |
+
+---
+
+## REST Assured — API Testing DSL
+
+REST Assured brings readable, BDD-style HTTP API testing to Java. Its `given/when/then` DSL reads like a specification and integrates with Hamcrest matchers for rich JSON/XML assertions.
+
+**Version 6.0 baseline:** Java 17+, Spring Framework 7, Jackson 3, Groovy 5. Released 2025-12-12.
+
+**Maven dependency:**
+```xml
+<dependency>
+  <groupId>io.rest-assured</groupId>
+  <artifactId>rest-assured</artifactId>
+  <version>6.0.0</version>
+  <scope>test</scope>
+</dependency>
+```
+
+### Core Pattern: given / when / then
+
+```java
+import static io.restassured.RestAssured.*;
+import static org.hamcrest.Matchers.*;
+
+// Minimal GET assertion
+when()
+    .get("https://api.example.com/users/1")
+.then()
+    .statusCode(200)
+    .body("id", equalTo(1))
+    .body("name", notNullValue());
+```
+
+### Full Request with given()
+
+```java
+import io.restassured.http.ContentType;
+
+given()
+    .baseUri("https://api.example.com")
+    .contentType(ContentType.JSON)
+    .header("Authorization", "Bearer " + token)
+    .pathParam("userId", 42)
+    .queryParam("include", "profile")
+    .body("""
+        {
+          "name": "Alice Updated",
+          "email": "alice@example.com"
+        }
+        """)
+.when()
+    .put("/users/{userId}")
+.then()
+    .statusCode(200)
+    .body("name", equalTo("Alice Updated"))
+    .body("email", equalTo("alice@example.com"))
+    .header("Content-Type", containsString("application/json"));
+```
+
+### JSON Path Assertions
+
+REST Assured uses GPath (Groovy) expressions for JSON/XML traversal — a superset of JSONPath:
+
+```java
+given()
+    .get("/orders")
+.then()
+    .statusCode(200)
+    // Nested property
+    .body("orders[0].customer.name", equalTo("Alice"))
+    // Collection size
+    .body("orders", hasSize(greaterThan(0)))
+    // Presence in collection
+    .body("orders.id", hasItems(101, 102, 103))
+    // Filtering (GPath)
+    .body("orders.findAll { it.status == 'PAID' }.size()", equalTo(2))
+    // Nested array element
+    .body("orders[0].items[0].sku", startsWith("SKU-"));
+```
+
+### Reusable Request/Response Specifications
+
+Centralise common configuration so individual tests only specify what varies:
+
+```java
+import io.restassured.builder.RequestSpecBuilder;
+import io.restassured.builder.ResponseSpecBuilder;
+import io.restassured.specification.RequestSpecification;
+import io.restassured.specification.ResponseSpecification;
+import org.junit.jupiter.api.BeforeAll;
+
+class UserApiTest {
+
+    private static RequestSpecification requestSpec;
+    private static ResponseSpecification responseSpec;
+
+    @BeforeAll
+    static void setupSpecs() {
+        requestSpec = new RequestSpecBuilder()
+            .setBaseUri("https://api.example.com")
+            .addHeader("Authorization", "Bearer " + System.getenv("API_TOKEN"))
+            .setContentType(ContentType.JSON)
+            .build();
+
+        responseSpec = new ResponseSpecBuilder()
+            .expectStatusCode(200)
+            .expectContentType(ContentType.JSON)
+            .build();
+    }
+
+    @Test
+    void getUser_returnsProfile() {
+        given()
+            .spec(requestSpec)
+            .pathParam("id", 1)
+        .when()
+            .get("/users/{id}")
+        .then()
+            .spec(responseSpec)
+            .body("id", equalTo(1));
+    }
+
+    @Test
+    void createUser_returns201() {
+        given()
+            .spec(requestSpec)
+            .body(new UserRequest("Bob", "bob@example.com"))
+        .when()
+            .post("/users")
+        .then()
+            .statusCode(201)
+            .body("name", equalTo("Bob"));
+    }
+}
+```
+
+### Authentication
+
+```java
+// Basic auth
+given()
+    .auth().basic("username", "password")
+    .get("/secure-endpoint");
+
+// OAuth 2 bearer token
+given()
+    .auth().oauth2(accessToken)
+    .get("/api/resource");
+
+// Preemptive basic auth (sends credentials without waiting for 401 challenge)
+given()
+    .auth().preemptive().basic("user", "pass")
+    .get("/resource");
+```
+
+### Extracting Response Values
+
+```java
+// Extract a single field
+String name = given()
+    .pathParam("id", 1)
+.when()
+    .get("/users/{id}")
+.then()
+    .statusCode(200)
+.extract()
+    .path("name");
+
+// Extract the full response body as a POJO
+User user = given()
+    .get("/users/1")
+.then()
+    .statusCode(200)
+.extract()
+    .as(User.class);
+
+// Extract a header
+String location = given()
+    .body(newUserJson)
+.when()
+    .post("/users")
+.then()
+    .statusCode(201)
+.extract()
+    .header("Location");
+```
+
+### Spring MockMvc Integration
+
+For Spring Boot tests without a running server:
+
+```java
+import io.restassured.module.mockmvc.RestAssuredMockMvc;
+import org.springframework.test.web.servlet.MockMvc;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+class UserControllerTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @BeforeEach
+    void setup() {
+        RestAssuredMockMvc.mockMvc(mockMvc);
+    }
+
+    @Test
+    void getUser_returns200() {
+        RestAssuredMockMvc
+            .given()
+                .param("id", 1)
+            .when()
+                .get("/users/{id}", 1)
+            .then()
+                .statusCode(200)
+                .body("id", equalTo(1));
+    }
+}
+```
+
+### REST Assured Anti-Patterns
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| Hard-coded base URL in every test | Breaks when environment changes; impossible to run against staging | Set `RestAssured.baseURI` globally in `@BeforeAll` or use `RequestSpecBuilder` |
+| `statusCode(200)` but no body assertion | Test passes even if the response body is empty or malformed | Always assert at least one meaningful field in the response body |
+| No `RequestSpecification` for shared headers | Auth token and content-type repeated in every test; change in one place misses others | Extract shared config into `RequestSpecBuilder` applied in `@BeforeAll` |
+| Asserting on `body()` without `statusCode()` | A 500 error with a matching fragment in the error body causes a false positive | Always assert `statusCode` before body content |
+| Checking collection order with `equalTo(list)` | Order-sensitive assertion fails on sorted/paginated responses with different order | Use `containsInAnyOrder()` or `hasItems()` unless order is part of the contract |
+| `extract().path()` for every field separately | Multiple `.extract()` calls each deserialize the response | Use `extract().as(MyDto.class)` to deserialize once and assert on the POJO |
+| Parsing JWT/signed headers manually in tests | Brittle; breaks when signing algorithm changes | Use mock Auth servers (WireMock/Testcontainers Keycloak) for full token flow |
 | Missing `@Override` annotation | Silent overloads instead of overrides; bugs evade the compiler | Always annotate intended overrides; catches signature mismatches at compile time |

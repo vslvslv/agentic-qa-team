@@ -1,11 +1,14 @@
 # Test Framework (JUnit 5/6) — QA Methodology Guide
-<!-- lang: Java | topic: test-framework | iteration: 1 | score: 88/100 | date: 2026-05-07 -->
+<!-- lang: Java | topic: test-framework | iteration: 4 | score: 97/100 | date: 2026-05-08 -->
 <!-- sources: official: docs.junit.org/current/user-guide/ (JUnit 6.0.3, WebFetch 2026-05-07) | ISTQB CTFL 4.0 terminology applied -->
-<!-- covers: JUnit Platform + Jupiter + Vintage; annotations, lifecycle, parameterized tests, @Nested, @TestFactory, extensions, TDD/pyramid patterns -->
+<!-- iter-2: added When to Use table, adoption costs, cross-language equivalents, flakiness patterns, Testcontainers Cloud integration -->
+<!-- iter-3: expanded anti-patterns, gotchas, assertion library comparison, Spring Boot test slices, Pact extension -->
+<!-- iter-4: added CI/CD pyramid enforcement patterns, AssertJ deep-dive, migration checklist, Kotest coroutine patterns -->
+<!-- covers: JUnit Platform + Jupiter + Vintage; annotations, lifecycle, parameterized tests, @Nested, @TestFactory, extensions, TDD/pyramid patterns, Testcontainers, Spring Boot test slices -->
 
 ---
 
-> **Quick reference:** JUnit 5/6 = JUnit Platform (launcher) + JUnit Jupiter (test API) + JUnit Vintage (JUnit 3/4 bridge). Requires Java 17+. Core annotations: `@Test`, `@BeforeEach`/`@AfterEach`, `@BeforeAll`/`@AfterAll`, `@ParameterizedTest` (multiple sources), `@TestFactory` for dynamic tests, `@Nested` for hierarchical suites, `@ExtendWith` for extensions. Pyramid placement: JUnit Jupiter is the unit-test level framework for JVM languages; parameterized tests are the primary vehicle for data-driven unit coverage; `@Nested` mirrors the Arrange-Act-Assert structure at class level.
+> **Quick reference:** JUnit 5/6 = JUnit Platform (launcher) + JUnit Jupiter (test API) + JUnit Vintage (JUnit 3/4 bridge). Requires Java 17+. Core annotations: `@Test`, `@BeforeEach`/`@AfterEach`, `@BeforeAll`/`@AfterAll`, `@ParameterizedTest` (multiple sources), `@TestFactory` for dynamic tests, `@Nested` for hierarchical suites, `@ExtendWith` for extensions. Pyramid placement: JUnit Jupiter is the unit-test level framework for JVM languages; parameterized tests are the primary vehicle for data-driven unit coverage; `@Nested` mirrors the Arrange-Act-Assert structure at class level. Cross-language note: JUnit 5/6 patterns map to pytest (Python), NUnit/xUnit.net (.NET), RSpec (Ruby), Mocha/Vitest (JavaScript/TypeScript) — the same lifecycle hooks, parameterization, and extension patterns appear in every major framework under different names.
 
 ---
 
@@ -19,6 +22,30 @@
 | "bug" | **defect** | Observed deviation from expected behaviour |
 | "test step" | **test step** | Each `Assertions` call within a test case |
 | "setup" | **test precondition** | Code in `@BeforeEach` / `@BeforeAll` |
+
+---
+
+## When to Use
+
+| Context | Recommendation |
+|---------|---------------|
+| New JVM service (Java 17+) | JUnit Jupiter is the default; configure with Maven Surefire 3.x or Gradle `useJUnitPlatform()` from day one |
+| Kotlin-first microservice | JUnit Jupiter works, but consider Kotest for coroutine-native `suspend` test support and richer property-based testing |
+| Spring Boot application | `@SpringBootTest` auto-registers JUnit Jupiter; use test slices (`@WebMvcTest`, `@DataJpaTest`, `@JsonTest`) to isolate layers |
+| Legacy JUnit 4 codebase | JUnit Vintage engine bridges JUnit 4 tests on the JUnit Platform; migrate to Jupiter incrementally during sprint cycles |
+| Integration testing with containers | `@Testcontainers` + `@Container` extension integrates Testcontainers with JUnit lifecycle automatically |
+| BDD-style test descriptions | Use `@Nested` with `@DisplayName("when …")` classes for given/when/then hierarchy; or adopt Spock if Groovy is acceptable |
+| Contract testing (Pact CDC) | `@ExtendWith(PactConsumerTestExt.class)` integrates Pact's mock server with Jupiter lifecycle |
+| CI/CD pipeline with pyramid enforcement | Tag-based filtering (`@Tag("unit")`, `@Tag("integration")`) enables separate Gradle/Maven tasks per test level |
+| Data-driven unit coverage | `@ParameterizedTest` + `@CsvSource`/`@MethodSource` is the primary tool; do NOT copy-paste test methods for boundary values |
+| Performance-sensitive CI | Enable JUnit parallel execution (`junit-platform.properties`) and combine with Testcontainers Cloud for cloud-based container execution |
+
+**Maturity level:** Applicable from greenfield day-one setup. JUnit 5/6 is the industry-standard JVM test framework — it is the correct default choice for any new Java project unless Kotlin coroutines or Groovy-style specs are a hard requirement.
+
+**When NOT to use JUnit:**
+- **Groovy-first teams** doing specification-style testing — Spock's `where:` table is more readable for complex parameterized scenarios
+- **Kotlin-only services** with heavy coroutine usage — Kotest offers coroutine-aware test suspension (`suspend` test blocks) and built-in property testing that JUnit requires additional libraries to match
+- **Node.js / TypeScript services** — Vitest or Jest (see test-pyramid-guide.md; this guide covers JVM only)
 
 ---
 
@@ -745,9 +772,342 @@ public double calculateDiscount(double total, MembershipTier tier) {
 
 ---
 
-### JUnit 5/6 in the Test Pyramid
+### Spring Boot Test Slices  [community]
 
-| Test level | JUnit role | Typical setup |
+Spring Boot provides *test slices* — auto-configured `@SpringBootTest` subsets that start only the portion of the application context relevant to the test level. Test slices dramatically reduce start-up time and isolate each layer for focused testing.
+
+```java
+// ---- Web layer test slice: @WebMvcTest ----
+// Starts only the MVC layer (controllers, filters, HandlerMappingIntrospector).
+// Beans NOT in the web layer (services, repositories) are NOT loaded.
+// Use MockMvc for HTTP assertions without starting a full server.
+
+@WebMvcTest(OrderController.class)
+class OrderControllerTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @MockBean   // Add service as a mock bean — not loaded by @WebMvcTest
+    private OrderService orderService;
+
+    @Test
+    @DisplayName("POST /orders returns 201 and Location header")
+    void createsOrder() throws Exception {
+        given(orderService.create(any()))
+            .willReturn(new Order("ord_001", "pending"));
+
+        mockMvc.perform(post("/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"customerId\":\"c1\",\"items\":[{\"sku\":\"A1\",\"qty\":2}]}"))
+            .andExpect(status().isCreated())
+            .andExpect(header().string("Location", containsString("/orders/ord_001")));
+    }
+}
+
+// ---- Data layer test slice: @DataJpaTest ----
+// Starts only JPA repositories and an in-memory H2 database by default.
+// For production-parity, replace H2 with a Testcontainers Postgres instance.
+
+@DataJpaTest
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@Testcontainers
+class UserRepositoryTest {
+
+    @Container
+    static final PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:16-alpine")
+            .withDatabaseName("test")
+            .withUsername("test")
+            .withPassword("test");
+
+    @DynamicPropertySource
+    static void configure(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.username", postgres::getUsername);
+        registry.add("spring.datasource.password", postgres::getPassword);
+    }
+
+    @Autowired
+    private UserRepository repository;
+
+    @Test
+    @DisplayName("saves and retrieves user by email")
+    void savesAndFindsUser() {
+        User user = repository.save(new User("alice@example.com", "Alice"));
+        Optional<User> found = repository.findByEmail("alice@example.com");
+        assertAll("saved user",
+            () -> assertTrue(found.isPresent()),
+            () -> assertEquals(user.getId(), found.get().getId())
+        );
+    }
+}
+
+// ---- JSON serialization test slice: @JsonTest ----
+// Tests Jackson serialisation/deserialisation in isolation.
+
+@JsonTest
+class OrderResponseJsonTest {
+
+    @Autowired
+    private JacksonTester<OrderResponse> json;
+
+    @Test
+    @DisplayName("serializes OrderResponse to expected JSON shape")
+    void serializes() throws IOException {
+        OrderResponse response = new OrderResponse("ord_001", "confirmed", BigDecimal.valueOf(150.00));
+        assertThat(json.write(response))
+            .hasJsonPathStringValue("$.id", "ord_001")
+            .hasJsonPathStringValue("$.status", "confirmed")
+            .hasJsonPathNumberValue("$.total", 150.00);
+    }
+}
+```
+
+**Key insight:** Use `@WebMvcTest` + `@MockBean` for controller logic, `@DataJpaTest` + Testcontainers for repository logic, and `@SpringBootTest(webEnvironment = RANDOM_PORT)` only for full integration tests. This keeps the unit test level fast and the integration test level production-faithful.
+
+---
+
+### Testcontainers Cloud Integration  [community]
+
+For CI/CD environments without a local Docker daemon, Testcontainers Cloud provides a cloud-based Docker runtime accessed via an SSH tunnel agent. Each test session receives 8 GB of RAM; Turbo mode enables one cloud environment per test process for parallel execution.
+
+```java
+// No code change required — Testcontainers Cloud is transparent to test code.
+// Set up CI with:
+// 1. Download the Testcontainers Cloud agent
+// 2. Set TC_CLOUD_TOKEN environment variable
+// 3. Optionally set TC_CLOUD_CONCURRENCY=4 for Turbo mode (paid tier)
+
+// Example: GitHub Actions workflow fragment
+// env:
+//   TC_CLOUD_TOKEN: ${{ secrets.TC_CLOUD_TOKEN }}
+//   TC_CLOUD_CONCURRENCY: 4
+//
+// The existing @Testcontainers + @Container test code is unchanged.
+// Containers run in the cloud; tests still use local JDBC URLs via SSH tunnel.
+
+// Singleton container pattern — reuse across test classes to reduce cloud session cost:
+class ContainerConfig {
+
+    static final PostgreSQLContainer<?> POSTGRES;
+
+    static {
+        POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+            .withDatabaseName("testdb")
+            .withUsername("test")
+            .withPassword("test")
+            .withReuse(true);  // Testcontainers reuse feature — same container across JVM sessions
+        POSTGRES.start();
+    }
+}
+
+// Test class extends ContainerConfig to use the singleton:
+@Testcontainers
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+class OrderIntegrationTest {
+
+    // Use the singleton container — not started per class
+    @DynamicPropertySource
+    static void configure(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", ContainerConfig.POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.username", ContainerConfig.POSTGRES::getUsername);
+        registry.add("spring.datasource.password", ContainerConfig.POSTGRES::getPassword);
+    }
+}
+```
+
+**CI trade-off:** Local Docker (default Testcontainers) is zero additional cost but requires Docker installed on CI runners. Testcontainers Cloud eliminates the Docker dependency from CI but adds per-minute billing and network latency (~50–150 ms per container start vs. ~1–3 s locally). Use Testcontainers Cloud when CI runners are Docker-less (e.g., GitHub Actions shared runners with Docker-in-Docker disabled) or when parallel test execution exceeds local runner capacity.
+
+---
+
+### AssertJ — Fluent Assertions  [community]
+
+AssertJ is the preferred assertion library for JUnit 5/6 projects — it replaces the built-in `Assertions.*` for non-trivial assertions. Its fluent API produces vastly more readable failure messages.
+
+```java
+import static org.assertj.core.api.Assertions.*;
+
+// Standard Assertions (JUnit built-in) vs AssertJ comparison:
+
+// BEFORE (JUnit Assertions):
+assertEquals("alice@example.com", user.getEmail());
+assertTrue(user.isActive());
+assertNotNull(user.getCreatedAt());
+
+// AFTER (AssertJ — same assertions, richer failure output):
+assertThat(user.getEmail()).isEqualTo("alice@example.com");
+assertThat(user.isActive()).isTrue();
+assertThat(user.getCreatedAt()).isNotNull().isBefore(Instant.now());
+
+// AssertJ strengths: collection assertions
+List<Order> orders = orderService.findByCustomer("c1");
+assertThat(orders)
+    .hasSize(3)
+    .extracting(Order::getStatus)
+    .containsExactlyInAnyOrder("pending", "confirmed", "cancelled");
+
+// Soft assertions — report all failures (like assertAll but more readable)
+SoftAssertions softly = new SoftAssertions();
+softly.assertThat(response.getId()).isNotNull();
+softly.assertThat(response.getStatus()).isEqualTo("confirmed");
+softly.assertThat(response.getTotal()).isEqualByComparingTo(BigDecimal.valueOf(150.00));
+softly.assertAll(); // throws AssertionError listing all failures
+
+// Exception assertions (prefer over assertThrows for message assertions):
+assertThatThrownBy(() -> orderService.cancel("nonexistent"))
+    .isInstanceOf(OrderNotFoundException.class)
+    .hasMessageContaining("nonexistent")
+    .hasNoCause();
+```
+
+**Rule:** Use `assertThat()` from AssertJ for all non-trivial assertions. Reserve `assertThrows` (JUnit built-in) only for the rare case where you need the exception object for further assertions outside AssertJ's `assertThatThrownBy`.
+
+---
+
+### Pact Contract Testing with JUnit 5  [community]
+
+Pact consumer-driven contract tests use JUnit 5 extensions to manage the Pact mock provider lifecycle. The extension starts a local HTTP mock, executes the test body against it, and writes the pact file.
+
+```java
+import au.com.dius.pact.consumer.dsl.PactDslWithProvider;
+import au.com.dius.pact.consumer.junit5.PactConsumerTestExt;
+import au.com.dius.pact.consumer.junit5.PactTestFor;
+import au.com.dius.pact.core.model.V4Pact;
+import au.com.dius.pact.core.model.annotations.Pact;
+
+@ExtendWith(PactConsumerTestExt.class)
+@PactTestFor(providerName = "OrdersService")
+class OrdersApiClientPactTest {
+
+    @Pact(consumer = "FrontendApp")
+    public V4Pact getOrderPact(PactDslWithProvider builder) {
+        return builder
+            .given("order ord_001 exists")
+            .uponReceiving("GET order ord_001")
+            .path("/orders/ord_001")
+            .method("GET")
+            .willRespondWith()
+            .status(200)
+            .headers(Map.of("Content-Type", "application/json"))
+            .body(newJsonBody(o -> {
+                o.stringType("id", "ord_001");
+                o.stringType("status", "confirmed");
+                o.numberType("total", 150.0);
+            }).build())
+            .toPact(V4Pact.class);
+    }
+
+    @Test
+    @PactTestFor(pactMethod = "getOrderPact")
+    @DisplayName("client maps 200 response to Order domain object")
+    void getsOrder(MockServer mockServer) {
+        OrdersApiClient client = new OrdersApiClient(mockServer.getUrl());
+        Order order = client.getOrder("ord_001");
+        assertThat(order.getId()).isEqualTo("ord_001");
+        assertThat(order.getStatus()).isEqualTo("confirmed");
+    }
+}
+```
+
+---
+
+### CI/CD Pyramid Enforcement  [community]
+
+Separating JUnit test levels in CI allows fail-fast feedback: unit tests run first (fast gate), integration tests run second (slower, stop on first failure), and full E2E tests run last (slowest, optional for PRs).
+
+```kotlin
+// build.gradle.kts — three-task CI pipeline per test level
+tasks.withType<Test> {
+    useJUnitPlatform()
+}
+
+// Primary fast gate — unit tests only (< 30 seconds)
+tasks.test {
+    useJUnitPlatform {
+        includeTags("unit")
+    }
+    testLogging { events("passed", "skipped", "failed") }
+}
+
+// Integration test task (runs after unit tests pass)
+tasks.register<Test>("integrationTest") {
+    useJUnitPlatform {
+        includeTags("integration")
+    }
+    shouldRunAfter(tasks.test)
+    testTimeout.set(Duration.ofMinutes(5))
+    jvmArgs("-Xmx1g")  // more memory for containers
+}
+
+// Contract test task
+tasks.register<Test>("contractTest") {
+    useJUnitPlatform {
+        includeTags("contract")
+    }
+    shouldRunAfter("integrationTest")
+    systemProperty("pactPublishResults", System.getenv("CI") ?: "false")
+}
+```
+
+```yaml
+# .github/workflows/ci.yml — pipeline using task separation
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { java-version: '21', distribution: 'temurin' }
+      - run: ./gradlew test --info
+      
+  integration-tests:
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    env:
+      TC_CLOUD_TOKEN: ${{ secrets.TC_CLOUD_TOKEN }}  # optional: Testcontainers Cloud
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { java-version: '21', distribution: 'temurin' }
+      - run: ./gradlew integrationTest
+      
+  contract-tests:
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    env:
+      PACT_BROKER_BASE_URL: ${{ vars.PACT_BROKER_URL }}
+      PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { java-version: '21', distribution: 'temurin' }
+      - run: ./gradlew contractTest
+```
+
+---
+
+### Cross-Language Framework Equivalents
+
+| JUnit 5/6 (Java) | pytest (Python) | NUnit/.NET (C#) | Vitest/Jest (TypeScript) | Notes |
+|---|---|---|---|---|
+| `@Test` | `def test_*()` | `[Test]` | `it()` / `test()` | Test case declaration |
+| `@BeforeEach` | `@pytest.fixture` (autouse) | `[SetUp]` | `beforeEach()` | Per-test setup |
+| `@AfterEach` | `yield` in fixture | `[TearDown]` | `afterEach()` | Per-test teardown |
+| `@BeforeAll` | `@pytest.fixture(scope='class')` | `[OneTimeSetUp]` | `beforeAll()` | Per-class setup |
+| `@AfterAll` | `yield` in class fixture | `[OneTimeTearDown]` | `afterAll()` | Per-class teardown |
+| `@ParameterizedTest` + `@CsvSource` | `@pytest.mark.parametrize` | `[TestCase(...)]` | `it.each([...])` | Data-driven tests |
+| `@Nested` | Inner class / `class TestGroup` | Inner class | `describe()` nesting | Test grouping |
+| `@ExtendWith` | `@pytest.fixture` / plugin | `[SetUpFixture]` | `vi.mock()` / custom fixture | Extension/plugin model |
+| `@Tag` + `includeTags` | `@pytest.mark` + `-m "tag"` | `[Category]` | `vi.runBenchmarks()` / tags | Test filtering |
+| `@Disabled` | `@pytest.mark.skip` | `[Ignore]` | `it.skip()` / `xit()` | Skip tests |
+| `@Timeout` | `@pytest.mark.timeout` | `[Timeout]` | `{ timeout: ms }` | Test timeouts |
+| `assertThrows(X, () -> ...)` | `pytest.raises(X)` | `Assert.Throws<X>()` | `expect(() => ...).toThrow(X)` | Exception testing |
+| `@TempDir` | `tmp_path` fixture | `[TempPath]` | `os.tmpdir()` in `beforeEach` | Temp directory |
+| `Assertions.assertAll()` | Manual collection | `Assert.Multiple()` | `expect.soft()` (Playwright) | Multi-failure assertion |
+| AssertJ `assertThat().extracting()` | `assert [x.attr for x in list] == [...]` | `CollectionAssert.AreEquivalent` | `expect(arr).toEqual(expect.arrayContaining(...))` | Collection assertions |
+
+---
 |---|---|---|
 | Unit (component test level) | `@Test`, `@ParameterizedTest`, `@Nested` | No I/O; Mockito for dependencies; runs in < 10 ms |
 | Integration (component integration test level) | `@Test` + `@TestInstance(PER_CLASS)` + Testcontainers | Real I/O; `@BeforeAll` starts container; `@BeforeEach` resets state |
@@ -877,10 +1237,14 @@ junit.jupiter.execution.parallel.config.dynamic.factor = 1.0
 | Overusing `@Nested` for flat suites | `@Nested` adds value only when inner classes have distinct contexts (different `@BeforeEach` setups). Flat test classes with one `@Nested` level for no contextual reason are harder to read | Use `@Nested` only when the inner class adds a meaningful contextual `@BeforeEach` setup or groups logically distinct contexts |
 | `@BeforeAll` without container sharing pattern | `@BeforeAll` runs once but if the container is not shared (e.g., created in `@BeforeEach`), you pay start-up cost per test case | Use `@TestInstance(PER_CLASS)` + `@BeforeAll` for container-dependent tests; verify start-up happens only once |
 | Ignoring `@Tag` in CI | Tags are defined in code but never used in the build script to separate fast and slow tests | Configure `useJUnitPlatform { includeTags("unit") }` for the primary test task; add a separate `integrationTest` task |
+| Using H2 in-memory DB for `@DataJpaTest` | H2 dialect diverges from Postgres — unique constraints, JSON operators, `ON CONFLICT` clauses silently behave differently | Replace `@AutoConfigureTestDatabase` with a Testcontainers `PostgreSQLContainer` via `@DynamicPropertySource` |
+| `@SpringBootTest` for every test class | Full context start-up takes 5–30 seconds; doing it per class accumulates to minutes of CI overhead | Use test slices (`@WebMvcTest`, `@DataJpaTest`) for layer-specific tests; reserve `@SpringBootTest` for true full-stack integration tests |
+| `@Mock` without `@ExtendWith(MockitoExtension.class)` | Field-injected `@Mock` annotations are not processed without the extension — fields remain null | Add `@ExtendWith(MockitoExtension.class)` to the class; or use `Mockito.mock(X.class)` in `@BeforeEach` explicitly |
+| `@RepeatedTest` for flakiness detection in production tests | `@RepeatedTest(5)` masks flakiness instead of fixing it; every CI run pays 5x the test cost | Use `@RepeatedTest` only during flakiness investigation; fix the root cause and remove the repetition before merging |
 
 ---
 
-## Real-World Gotchas [community]
+## Real-World Gotchas  [community]
 
 1. **`@BeforeAll` must be `static` by default** — teams upgrading from JUnit 4 add `@BeforeAll` to instance methods and get `JUnitException: @BeforeAll method must be static`. Fix: make the method `static` or add `@TestInstance(Lifecycle.PER_CLASS)` to the class.
 
@@ -901,6 +1265,20 @@ junit.jupiter.execution.parallel.config.dynamic.factor = 1.0
 9. **`@TestFactory` methods must return `Stream`, `Iterable`, `Collection`, or `Iterator<DynamicNode>`** — returning `List<String>` instead of `Stream<DynamicTest>` produces a `PreconditionViolationException`. The `DynamicTest.dynamicTest(displayName, executable)` factory method is the correct entry point.
 
 10. **Maven Surefire 2.x does not discover JUnit 5 tests** — teams on legacy Maven builds (Surefire 2.18–2.22) must explicitly add the `junit-platform-launcher` and `junit-vintage-engine` or upgrade to Surefire 3.x. Without it, test discovery silently finds zero tests and the build "passes" with no test executions.
+
+11. **Spring context caching breaks between test slices** — Spring Boot caches the application context across test classes that use the same context configuration. Modifying a mock with `@MockBean` creates a different context key, causing a new (slow) context start-up. Fix: extract shared mock beans to a base class or `@TestConfiguration` class so context keys remain stable across test classes.
+
+12. **`@DynamicPropertySource` must be `static`** — teams try to use `@DynamicPropertySource` on instance methods to configure container properties; it must be static. If `@TestInstance(PER_CLASS)` is set, it still must be static. Non-static methods are silently ignored, leading to `null` datasource URLs.
+
+13. **Testcontainers container not marked `static` = one container per test method** — if a `@Container` field is not `static`, Testcontainers creates and destroys a new container for every test method in the class. On a 30-test class, this means 30 Postgres start-ups, each taking ~3 seconds = 90 seconds of overhead. Always declare `@Container` fields as `static` (or use `@TestInstance(PER_CLASS)` with non-static fields).
+
+14. **JUnit 6 deprecates JUnit Vintage** — migrating from JUnit 4 to JUnit 6 requires removing the Vintage engine from the build and migrating all `@RunWith`, `@Rule`, and `@ClassRule` usages to Jupiter equivalents. The migration guide is at `https://junit.org/junit5/docs/current/user-guide/#migrating-from-junit4`. Teams that delay migration will find Vintage removed entirely in a future release.
+
+15. **`@Disabled` tests accumulate without CI lint** — disabled tests are not failures and pass CI silently. Without a lint rule that fails the build when `@Disabled` count exceeds a threshold (or when `@Disabled` tests are older than 30 days), teams accumulate a graveyard of permanently-disabled tests that reduce effective coverage. Fix: add a CI step that counts `@Disabled` annotations in the codebase and fails if above a configured threshold; reference the tracking issue in every `@Disabled("JIRA-1234: …")` annotation.
+
+16. **Parallel `@SpringBootTest` exhausts database connections** — when JUnit parallel execution starts multiple test classes simultaneously and each has a `@SpringBootTest` that opens a connection pool, the shared test database runs out of connections. Fix: use `@TestInstance(PER_CLASS)` + `@Execution(SAME_THREAD)` on Spring integration tests, or configure the test datasource with a connection pool size equal to the number of parallel test workers.
+
+17. **`@MockBean` causes full Spring context refresh** — adding or removing a `@MockBean` on any test class invalidates the Spring context cache for all test classes that share that context configuration. In a project with 50 integration test classes, adding one `@MockBean` can add 2–3 minutes to CI because contexts must be rebuilt. Fix: consolidate `@MockBean` declarations in a shared `@TestConfiguration` base class; avoid per-test `@MockBean` additions.
 
 ---
 
@@ -925,6 +1303,31 @@ junit.jupiter.execution.parallel.config.dynamic.factor = 1.0
 
 ---
 
+### Adoption Costs  [community]
+
+| Concern | Cost | Mitigation |
+|---------|------|-----------|
+| Migration from JUnit 4 | Medium (1–3 sprint cycles for a large codebase) | Run JUnit 4 and JUnit 5 tests in parallel via JUnit Vintage engine during migration; migrate class-by-class |
+| Testcontainers CI setup | Low–Medium (4–8 h initial config) | Use `@DynamicPropertySource` pattern; pin container versions in a central constants class |
+| Testcontainers Cloud agent | Low (1–2 h) + billing | Set `TC_CLOUD_TOKEN` as a CI secret; transparent to test code; free tier available |
+| Parallel execution tuning | Medium (1–2 days of trial/error) | Start with `dynamic` strategy factor 0.5; monitor DB connection exhaustion before scaling up |
+| Spring context caching | Low to fix after identification | Consolidate `@MockBean` in base classes; inspect context cache hits with `-Dspring.test.context.cache.maxSize=32` |
+| AssertJ adoption | Low | Replace `assertEquals` with `assertThat` one class at a time; IDE can auto-migrate with structural search+replace |
+| `@Tag` infrastructure | Low | Add `@Tag` annotations in one sprint; wire Gradle/Maven tasks in the same sprint |
+
+**JUnit 5 → JUnit 6 migration checklist:**
+- [ ] Remove `junit-vintage-engine` from `build.gradle.kts` (deprecated in JUnit 6)
+- [ ] Upgrade all `@RunWith(…)` to `@ExtendWith(…)`
+- [ ] Migrate `@Before`/`@After` to `@BeforeEach`/`@AfterEach`
+- [ ] Migrate `@BeforeClass`/`@AfterClass` to `@BeforeAll`/`@AfterAll` (add `static` or `@TestInstance(PER_CLASS)`)
+- [ ] Replace `@Test(expected = X.class)` with `assertThrows(X.class, () -> …)`
+- [ ] Replace `@Ignore` with `@Disabled("reason")` — reason string required
+- [ ] Migrate `@Category` to `@Tag`
+- [ ] Replace `Assert.*` with `Assertions.*` (or AssertJ's `assertThat`)
+- [ ] Verify `maven-surefire-plugin` version is 3.x (not 2.x)
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -933,9 +1336,14 @@ junit.jupiter.execution.parallel.config.dynamic.factor = 1.0
 | junit-examples GitHub | Examples | https://github.com/junit-team/junit5-samples | Starter projects for Gradle, Maven, Ant, Bazel, sbt with Java/Kotlin/Groovy |
 | Mockito Extension | Library | https://site.mockito.org/ | `@ExtendWith(MockitoExtension.class)` — `@Mock`, `@InjectMocks`, `@Captor` |
 | Testcontainers JUnit 5 | Library | https://java.testcontainers.org/test_framework_integration/junit_5/ | `@Testcontainers` + `@Container` annotations integrate with JUnit lifecycle |
-| AssertJ | Library | https://assertj.github.io/doc/ | Fluent assertion library; cleaner than `Assertions.*` for complex matchers |
+| Testcontainers Cloud | SaaS | https://testcontainers.com/cloud/docs/ | Cloud Docker daemon for CI without local Docker; 8 GB/session; Turbo mode for parallelism |
+| Testcontainers Guides | Guides | https://testcontainers.com/guides/ | Practical guides: Spring Boot, Quarkus, ASP.NET, DB, Kafka, WireMock, LocalStack patterns |
+| AssertJ | Library | https://assertj.github.io/doc/ | Fluent assertion library; cleaner than `Assertions.*` for complex matchers; `assertThatThrownBy`, `extracting` |
 | WireMock JUnit 5 extension | Library | https://wiremock.org/docs/junit-jupiter/ | `@RegisterExtension WireMockExtension` for HTTP stub-based integration tests |
-| Spring Boot Test | Library | https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.testing | `@SpringBootTest`, `@WebMvcTest`, `@DataJpaTest` — JUnit 5 backed |
+| Spring Boot Test | Library | https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.testing | `@SpringBootTest`, `@WebMvcTest`, `@DataJpaTest`, `@JsonTest` — JUnit 5 backed |
+| Pact JUnit 5 Extension | Library | https://docs.pact.io/implementation_guides/jvm/provider/junit5 | `@ExtendWith(PactConsumerTestExt.class)` — consumer-driven contract tests with JUnit lifecycle |
 | Maven Surefire Plugin 3.x | Plugin | https://maven.apache.org/surefire/maven-surefire-plugin/ | Auto-discovers JUnit Platform; `<groups>` for tag filtering |
 | Gradle test docs | Plugin | https://docs.gradle.org/current/dsl/org.gradle.api.tasks.testing.Test.html | `useJUnitPlatform()`, `includeTags`, `excludeTags` |
 | ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology (test case, test suite, test level) |
+| JUnit 5/6 Migration Guide | Official | https://junit.org/junit5/docs/current/user-guide/#migrating-from-junit4 | Step-by-step JUnit 4 → Jupiter migration checklist |
+| Kotest | Library | https://kotest.io/ | Kotlin-first test framework; coroutine-native; property-based testing built in |

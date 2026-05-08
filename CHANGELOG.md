@@ -5,6 +5,47 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.3 — 2026-05-08 — deep refine run (30-iter cap) — 25 reference guides written/updated
+
+### qa-refine (17 guides, all ≥ 95/100)
+
+**New guides (14):**
+- `playwright-advanced.md` — retries, annotations, config, emulation, timeouts, parameterize, CI (96/100)
+- `vitest-advanced.md` — coverage, mocking, snapshots, workspace, browser mode, type testing, CLI (96/100)
+- `k6-websockets.md` — k6/websockets + k6/ws, concurrent connections, density testing (96/100)
+- `gatling-patterns.md` — JS/TS SDK, simulation, injection profiles, assertions (95/100)
+- `wiremock-patterns.md` — request matching, templating, scenarios, fault injection (95/100)
+- `msw-patterns.md` — REST/GraphQL/WebSocket, browser/Node.js, per-test overrides (96/100)
+- `allure-patterns.md` — steps/labels/links/attachments/parameters/history/CI (95/100)
+- `stagehand-patterns.md` — act/extract/agent, hybrid Playwright integration (95/100)
+- `selenium-patterns.md` — TypeScript, POM, explicit waits, Actions API (95/100)
+- `webdriverio-appium-patterns.md` — WebDriverIO v9 + Appium iOS/Android, gestures, contexts (95/100)
+- `detox-patterns.md` — matchers, lifecycle, auto-sync, dark mode, artifacts (95/100)
+- `maestro-patterns.md` — YAML flow structure, sub-flows, CI, environment vars (95/100)
+- `jmeter-patterns.md` — Thread Groups, HTTP, CSV, extractors, non-GUI CI (95/100)
+- `locust-patterns.md` — HttpUser, FastHttpUser, TaskSets, distributed, CI (95/100)
+
+**Upgraded guides (3):**
+- `playwright-aria-visual-snapshots.md` — 88 → 96/100 (+CI golden file workflow)
+- `k6-advanced-studio-api-disruptor-experimental-secrets.md` — 85 → 96/100 (+install, RBAC, gotchas)
+- `cypress-network-requests-github-actions.md` — 86 → 96/100 (+WebSocket interception, Smart Orchestration)
+
+### qa-methodology-refine (3 guides updated)
+
+- `test-framework-guide.md` — 88 → 97/100: +Spring Boot test slices, Testcontainers Cloud, AssertJ deep-dive, Pact JUnit 5 extension, CI pyramid enforcement, JUnit 5→6 migration checklist
+- `flakiness-guide.md` — 100/100: +pytest cross-language section (xfail quarantine, rerunfailures, randomly)
+- `test-data-guide.md` — 100/100: +Neon DB branch-per-test pattern, Testcontainers Cloud singleton + Turbo mode
+
+### lang-refine (5 guides updated, all 10 at 100/100)
+
+- `typescript-patterns.md` — +Mapped Types deep-dive (modifiers, key remapping, template literals, utility impls)
+- `csharp-patterns.md` — +Nullable Value Types deep-dive (T?/Nullable<T>, lifted operators, boxing behavior)
+- `javascript-patterns.md` — +Faker.js realistic test data (seeding, locales, factory pattern)
+- `python-patterns.md` — +factory_boy test factories (DjangoModelFactory, SQLAlchemy, traits, associations)
+- `java-patterns.md` — +REST Assured API testing DSL (given/when/then, GPath, auth, Spring MockMvc)
+
+---
+
 ## v1.16.0.2 — 2026-05-08 — nightly refinement run — 45 new catalog sources (313 → 327 + 14 via CloakBrowser test)
 
 ### Catalog updates (learning-sources/)

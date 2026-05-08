@@ -1,11 +1,15 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 23 | score: 100/100 | date: 2026-05-04 -->
+<!-- sources: official | community | mixed | iteration: 24 | score: 100/100 | date: 2026-05-08 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
        Frameworks overview (MSTest/NUnit/xUnit/TUnit, VSTest vs MTP) — sourced from
        learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/record and
        learn.microsoft.com/dotnet/core/testing/
+     Iter 24 (2026-05-08): added Nullable Value Types deep-dive — T? syntax, Nullable<T> struct,
+       HasValue/Value, null-coalescing ??, GetValueOrDefault(), is-pattern safe extraction,
+       lifted operators, boxing/unboxing behavior, Nullable.GetUnderlyingType(), and anti-patterns table
+       sourced from learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/nullable-value-types
 -->
 
 ## Core Philosophy
@@ -2215,4 +2219,169 @@ var summaries = await _db.Orders
 | Regex compiled at runtime inside a method | New `Regex` object allocated on every call; parsing overhead per invocation | Use `[GeneratedRegex]` attribute with partial method for compile-time regex |
 | Records used as EF Core entity types | EF Core needs reference equality to track entity identity; records use value equality, causing duplicate inserts/corrupt change tracking | Use regular classes for EF entities; use records only for read-only DTOs/projections |
 | Mutable collection property on a record | Array/list contents can be mutated from outside — shallow immutability broken | Use `IReadOnlyList<T>` or `ImmutableArray<T>` for collection properties on records |
+
+---
+
+## Nullable Value Types Deep-Dive
+
+A *nullable value type* `T?` (equivalent to `Nullable<T>`) wraps any non-nullable value type to add a `null` state. This is essential for database columns, optional form fields, and domain values with "not set" semantics that ordinary value types cannot express.
+
+### Declaration and Assignment
+
+```csharp
+// Any value type can become nullable with ?
+double?   pi      = 3.14;
+char?     letter  = 'a';
+bool?     flag    = null;         // three-state boolean (database NULL pattern)
+DateTime? created = null;         // absent timestamp
+
+// Implicit widening: T → T? is always safe
+int m = 10;
+int? n = m;   // OK — implicit conversion
+
+// Array of nullable value type
+int?[] scores = new int?[10];     // all elements default to null
+```
+
+The default value of `T?` is `null` — its `HasValue` property returns `false`.
+
+### Checking and Extracting the Value
+
+**Preferred: `is` pattern matching** (safe and null-safe in one step):
+```csharp
+int? a = 42;
+if (a is int value)
+{
+    Console.WriteLine($"Has value: {value}");   // "Has value: 42"
+}
+else
+{
+    Console.WriteLine("No value");
+}
+```
+
+**Classic: `HasValue` / `Value` properties:**
+```csharp
+int? b = 10;
+if (b.HasValue)
+{
+    Console.WriteLine(b.Value);   // Safe — only call .Value when HasValue is true
+}
+// NEVER: b.Value when HasValue is false → throws InvalidOperationException
+```
+
+**Null comparison** (equivalent to `HasValue`):
+```csharp
+int? c = 7;
+if (c != null)
+{
+    Console.WriteLine(c.Value);
+}
+```
+
+### Conversion to Non-Nullable — Null-Coalescing `??` and `GetValueOrDefault`
+
+```csharp
+int? a = 28;
+int b = a ?? -1;                     // b = 28 (a has a value)
+
+int? c = null;
+int d = c ?? -1;                     // d = -1 (fallback)
+
+int e = c.GetValueOrDefault();       // e = 0  (type's default)
+int f = c.GetValueOrDefault(-999);   // f = -999 (custom default)
+
+// Null-coalescing assignment ??= (C# 8+)
+int? g = null;
+g ??= 100;   // g = 100
+
+// Explicit cast — compiles but throws at runtime if null
+int? h = null;
+int i = (int)h;   // InvalidOperationException at runtime — avoid this
+```
+
+### Lifted Operators
+
+All arithmetic and comparison operators defined on `T` are *lifted* to `T?`: if either operand is `null`, the result is `null`:
+
+```csharp
+int? a = 10;
+int? b = null;
+
+int? sum = a + b;    // null  — null propagates
+int? product = a * 10; // 100 — T? op T? works via lifting
+a++;                 // a = 11
+
+// Comparison edge case: null comparisons always return false except ==
+int? x = 10;
+Console.WriteLine(x >= null);  // False
+Console.WriteLine(x <  null);  // False (NOT the logical inverse of >=)
+Console.WriteLine(x == null);  // False
+Console.WriteLine(null == null); // True (nullable equality special case)
+
+// bool? logical operators follow 3-value logic (Kleene logic):
+bool? t = true;
+bool? n2 = null;
+Console.WriteLine(t & n2);   // null   (true AND unknown = unknown)
+Console.WriteLine(t | n2);   // True   (true OR unknown = true)
+Console.WriteLine(false & n2); // False (false AND anything = false)
+```
+
+### Boxing and Unboxing
+
+```csharp
+int? a = 42;
+object boxed = a;          // boxes as int (not Nullable<int>)
+
+int? b = null;
+object boxedNull = b;      // boxes as null reference
+
+// Unboxing a boxed int into int? works:
+int x = 41;
+object xBoxed = x;
+int? xNullable = (int?)xBoxed;   // OK → 41
+```
+
+**Gotcha:** `GetType()` on a non-null `int?` returns `System.Int32` (not `System.Nullable<Int32>`) because boxing strips the wrapper:
+```csharp
+int? a = 17;
+Console.WriteLine(a.GetType().FullName);  // "System.Int32" — surprising!
+// Use Nullable.GetUnderlyingType(typeof(int?)) to test at the Type level
+```
+
+### Identifying Nullable Value Types at Runtime
+
+```csharp
+bool IsNullable(Type type) => Nullable.GetUnderlyingType(type) != null;
+
+Console.WriteLine(IsNullable(typeof(int?)));  // True
+Console.WriteLine(IsNullable(typeof(int)));   // False
+
+// Note: the `is` operator cannot distinguish int? from int at runtime
+// because the boxed representation is identical for non-null values
+int? a = 14;
+if (a is int) Console.WriteLine("compatible with int");  // prints — can't use is to detect nullability
+```
+
+### Nullable Value Types vs Nullable Reference Types
+
+| Feature | `int?` / `T?` (value) | `string?` / `T?` (reference, C# 8+) |
+|---|---|---|
+| Backed by | `Nullable<T>` struct | Same reference type — compiler annotation only |
+| Runtime null check | `HasValue` / `is T v` | `!= null` / `is not null` |
+| Default value | `null` (no value) | `null` (reference is null) |
+| Enabled by | Always available | `<Nullable>enable</Nullable>` in csproj |
+| Boxing | Strips wrapper | No change |
+
+### Nullable Value Type Anti-Patterns
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| Accessing `.Value` without checking `.HasValue` | Throws `InvalidOperationException` at runtime | Use `is int v` pattern, `??`, or `GetValueOrDefault()` |
+| Using `==` to compare `int?` in loops | Allocates a boxed nullable on each comparison in older JIT versions | Use `HasValue` + `Value` equality, or `is int v && v == x` pattern |
+| `(int)myNullable` without a null guard | Compiles but throws `InvalidOperationException` when null | Use `myNullable ?? defaultValue` or pattern matching |
+| Using `Object.GetType()` to detect nullable | Returns the underlying type's `Type` — indistinguishable from non-nullable | Use `Nullable.GetUnderlyingType(typeof(T)) != null` |
+| `Optional<T>` fields (borrowing from Java) | Not native C#; `.Value` pattern with `T?` is idiomatic | Use `T?` for value types, nullable reference types for reference types |
+| Three-state `bool?` without documentation | Implicit semantics; readers don't know what `null` means | Document the three states explicitly, or use an `enum { Unknown, True, False }` |
+| `DateTime?` in serialization without culture | `null` JSON round-trips as the default (midnight 0001-01-01) in some serializers | Always use `DateTimeOffset?` and configure serializer to emit/accept `null` |
 | `new()` on a `record struct` positional type | Positional record structs auto-generate a `Deconstruct` — mixing positional and `new()` is fine, but forgetting `readonly` on the struct allows unintended mutation via boxing | Prefer `readonly record struct` for stack-allocated value objects |
