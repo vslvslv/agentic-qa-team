@@ -1,5 +1,5 @@
 # Learning Sources: QA Tools
-<!-- updated: 2026-05-07 | entries: 124 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-08 | entries: 155 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobile`
 
@@ -77,6 +77,33 @@ Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobi
 | k6 Secrets Module | https://grafana.com/docs/k6/latest/javascript-api/k6-secrets/ | official-docs | k6 / security | 2026-05-07 | ⭐ Secret management in k6 tests: get(), source(), auto-redacts secrets in logs |
 | Cypress Network Requests | https://docs.cypress.io/app/guides/network-requests | official-docs | Cypress | 2026-05-07 | ⭐ cy.intercept(), stub vs real server strategies, fixtures, aliases, GraphQL matching |
 | Cypress GitHub Actions | https://docs.cypress.io/app/continuous-integration/github-actions | official-docs | Cypress / CI | 2026-05-07 | ⭐ Matrix parallelization, Cypress Cloud orchestration, dependency caching; updated Apr 2026 |
+| Playwright Test Retries | https://playwright.dev/docs/test-retries | official-docs | Playwright | 2026-05-08 | ⭐ Retry config, flaky test categorisation, serial mode, page reuse across retries |
+| Playwright Test Annotations | https://playwright.dev/docs/test-annotations | official-docs | Playwright | 2026-05-08 | ⭐ skip/fail/fixme/slow, test.only, tag-based --grep filtering, runtime annotations |
+| Playwright Test Configuration | https://playwright.dev/docs/test-configuration | official-docs | Playwright | 2026-05-08 | ⭐ testDir, fullyParallel, projects, expect options, webServer — top-level vs use config |
+| Playwright UI Mode | https://playwright.dev/docs/test-ui-mode | official-docs | Playwright | 2026-05-08 | ⭐ Interactive time-travel debugger: DOM snapshots, timeline, network tab, locator picker |
+| Playwright VS Code Extension | https://playwright.dev/docs/getting-started-vscode | official-docs | Playwright | 2026-05-08 | ⭐ Run/debug/generate tests in VS Code; CodeGen, breakpoints, Copilot AI fix suggestions |
+| Playwright Evaluating | https://playwright.dev/docs/evaluating | official-docs | Playwright | 2026-05-08 | ⭐ page.evaluate() / addInitScript() — execute JS in page context, pass handles to browser |
+| Playwright Dialogs | https://playwright.dev/docs/dialogs | official-docs | Playwright | 2026-05-08 | ⭐ Handle alert/confirm/prompt/beforeunload/print dialogs; auto-dismiss default behaviour |
+| Vitest Coverage | https://vitest.dev/guide/coverage | official-docs | Vitest / TypeScript | 2026-05-08 | ⭐ V8 + Istanbul providers; include/exclude patterns; custom reporters; Vitest UI integration |
+| Vitest Mocking | https://vitest.dev/guide/mocking | official-docs | Vitest / TypeScript | 2026-05-08 | ⭐ Classes, dates, filesystem, functions, globals, modules, requests, timers — with cheat sheet |
+| Vitest Snapshot | https://vitest.dev/guide/snapshot | official-docs | Vitest / TypeScript | 2026-05-08 | ⭐ Inline/file/visual/ARIA snapshots; custom serializers; Jest migration guide |
+| Vitest Projects | https://vitest.dev/guide/workspace | official-docs | Vitest / TypeScript | 2026-05-08 | ⭐ Monorepo multi-project config; glob patterns; --project filter; extends inheritance |
+| Vitest Browser Mode | https://vitest.dev/guide/browser/ | official-docs | Vitest / TypeScript | 2026-05-08 | ⭐ Real-browser component testing via Playwright or WebdriverIO; Testing Library + userEvent |
+| Vitest Type Testing | https://vitest.dev/guide/testing-types | official-docs | Vitest / TypeScript | 2026-05-08 | ⭐ expectTypeOf/assertType; *.test-d.ts files; --typecheck flag; tsc/vue-tsc integration |
+| k6 WebSockets API | https://grafana.com/docs/k6/latest/javascript-api/k6-websockets/ | official-docs | k6 / WebSockets | 2026-05-08 | ⭐ Standards-compliant k6/websockets module; global event loop; concurrent multi-connection VU |
+| Gatling Docs | https://docs.gatling.io/ | official-docs | Gatling / performance | 2026-05-08 | ⭐ Load testing as code: Java/JS/TS/Kotlin/Scala SDKs; HTTP, WS, gRPC, JMS, MQTT; CI/CD integration |
+| WireMock Docs | https://wiremock.org/docs/ | official-docs | WireMock / API mocking | 2026-05-08 | ⭐ API mock testing; request matching, response templating, fault injection, record/playback; 6M+ downloads/mo |
+| MSW Docs | https://mswjs.io/docs/ | official-docs | MSW / API mocking | 2026-05-08 | ⭐ Network-level API mocking; REST, GraphQL, WebSocket; browser + Node.js; updated Feb 2026 |
+| Allure Report Docs | https://allurereport.org/docs/ | official-docs | Test reporting | 2026-05-08 | ⭐ Rich test reports; steps, attachments, timeline; 30+ framework integrations; Allure 3 + Allure 2 |
+| Playwright Test Projects | https://playwright.dev/docs/test-projects | official-docs | Playwright | 2026-05-08 | ⭐ Logical test groupings with shared config; browser matrix, env variants, project dependencies |
+| Playwright Emulation | https://playwright.dev/docs/emulation | official-docs | Playwright | 2026-05-08 | ⭐ Device, locale, timezone, geolocation, permissions, colour scheme, offline, JS-disabled emulation |
+| Playwright CI Setup | https://playwright.dev/docs/ci | official-docs | Playwright / CI | 2026-05-08 | ⭐ CI config examples: GitHub Actions, Azure Pipelines, CircleCI, Jenkins, GitLab; browser cache strategies |
+| Playwright Test Timeouts | https://playwright.dev/docs/test-timeouts | official-docs | Playwright | 2026-05-08 | ⭐ Timeout hierarchy: test (30s), expect (5s), action, navigation, global — override per-test or in config |
+| Playwright Parameterize Tests | https://playwright.dev/docs/test-parameterize | official-docs | Playwright | 2026-05-08 | ⭐ Data-driven tests via forEach; parameterized projects; CSV/env-var data sources; fixture-scoped options |
+| Playwright TypeScript | https://playwright.dev/docs/test-typescript | official-docs | Playwright / TypeScript | 2026-05-08 | ⭐ Zero-config TS support; tsconfig paths/references; --tsconfig flag; separate type-check step recommended |
+| k6 WebSockets Protocol | https://grafana.com/docs/k6/latest/using-k6/protocols/websockets/ | official-docs | k6 / WebSockets | 2026-05-08 | ⭐ Full-duplex WS load testing; event loop, setInterval/setTimeout handlers; k6/ws legacy vs k6/websockets |
+| Vitest CLI | https://vitest.dev/guide/cli | official-docs | Vitest / TypeScript | 2026-05-08 | ⭐ run/watch/bench/list commands; --filter, --coverage, --shard, --retry, --browser flags; API mode |
+| Vitest Reporters | https://vitest.dev/guide/reporters | official-docs | Vitest / TypeScript | 2026-05-08 | ⭐ Default, verbose, dot, JUnit, JSON, HTML, TAP, GitHub Actions, minimal (AI-optimised), blob; multi-reporter |
 
 ---
 
@@ -140,3 +167,7 @@ Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobi
 | grafana/k6-operator | https://github.com/grafana/k6-operator | github-repo | k6 / Kubernetes | 2026-05-06 | 772 stars — Kubernetes operator for distributed k6 test runs; PrivateLoadZone CRD |
 | karatelabs/karate | https://github.com/karatelabs/karate | github-repo | API / UI / Perf testing | 2026-05-06 | 🌟 8.9k stars — unified API test, mock, perf, and UI automation in one DSL; v2.0.7 |
 | jestjs/jest | https://github.com/jestjs/jest | github-repo | JavaScript / Node | 2026-05-06 | 🌟 45.3k stars — snapshot testing, watch mode, broad babel/webpack/TS compat |
+| gatling/gatling | https://github.com/gatling/gatling | github-repo | Performance testing | 2026-05-08 | 6.9k stars — load testing as code: Java, JS/TS, Kotlin, Scala; HTTP/WS/gRPC/JMS/MQTT |
+| wiremock/wiremock | https://github.com/wiremock/wiremock | github-repo | API mocking | 2026-05-08 | 7.2k stars — API mock testing; request matching, templating, fault injection; 6M+ downloads/mo |
+| mswjs/msw | https://github.com/mswjs/msw | github-repo | API mocking | 2026-05-08 | 🌟 17.9k stars — network-level request interception; REST, GraphQL, WebSocket; browser + Node.js |
+| browserbase/stagehand | https://github.com/browserbase/stagehand | github-repo | AI browser automation | 2026-05-08 | 🌟 22.6k stars — natural language + code hybrid browser automation; act()/agent()/extract(); self-healing |

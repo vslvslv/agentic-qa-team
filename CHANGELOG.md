@@ -5,6 +5,23 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.2 — 2026-05-08 — nightly refinement run — 45 new catalog sources (313 → 327 + 14 via CloakBrowser test)
+
+### Catalog updates (learning-sources/)
+
+- **qa-tools.md** — +9 sources: Playwright projects/emulation/CI/timeouts/parameterize/TypeScript, k6 WebSockets protocol, Vitest CLI + reporters
+- **qa-methodology.md** — +2 sources: pytest flaky test guide, Testcontainers getting-started guides
+- **languages.md** — +2 sources: TypeScript mapped types, C# nullable value types
+- **security-a11y-ai.md** — +1 source: NIST AI Risk Management Framework (airc.nist.gov)
+
+### CloakBrowser integration verified
+
+`bin/cloak-fetch.sh` confirmed working: auto-installs `cloakbrowser` via pip, fetches page
+text via stealth Chromium, exits 1 on unreachable URLs. Batched URL verification (single
+Bash call for all candidates) eliminates per-URL permission prompts in nightly runs.
+
+---
+
 ## v1.16.0.1 — 2026-05-07 — nightly refinement run — 24 new catalog sources, 8 reference guides updated
 
 ### Catalog updates (learning-sources/)

@@ -1,5 +1,5 @@
 # Learning Sources: Security, Accessibility & AI/Agent Testing
-<!-- updated: 2026-05-07 | entries: 58 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-08 | entries: 61 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skills
 
@@ -52,6 +52,7 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | microsoft/accessibility-insights-web | https://github.com/microsoft/accessibility-insights-web | github-repo | accessibility | 2026-05-04 | 899 stars — MS Chrome/Edge extension for WCAG 2.1 AA assessment |
 | pa11y/pa11y-ci | https://github.com/pa11y/pa11y-ci | github-repo | accessibility | 2026-05-07 | CI-focused accessibility runner: URL lists, sitemap support, parallel testing, Node 20+; JSON+CLI reporters |
 | IBMa/equal-access | https://github.com/IBMa/equal-access | github-repo | accessibility | 2026-05-07 | 746 stars — IBM Equal Access Toolkit; browser extensions + Playwright/Selenium/Puppeteer CI packages; WCAG 2.0/2.1/2.2 + Section 508 |
+| web.dev — Learn Accessibility | https://web.dev/learn/accessibility | official-docs | accessibility | 2026-05-08 | ⭐ 20-module evergreen course: WCAG principles, semantic HTML, ARIA, keyboard nav, colour contrast, automated/manual/AT testing |
 
 ---
 
@@ -81,3 +82,5 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | promptfoo/promptfoo | https://github.com/promptfoo/promptfoo | github-repo | LLM red-teaming | 2026-05-04 | 🌟 20.8k stars — LLM eval + automated red-teaming CLI |
 | openai/evals | https://github.com/openai/evals | github-repo | LLM benchmarks | 2026-05-04 | 🌟 18.4k stars — open-source LLM benchmark registry |
 | agentops-ai/agentops | https://github.com/agentops-ai/agentops | github-repo | AI agent monitoring | 2026-05-06 | 🌟 5.5k stars — observability for AI agents: session replay, LLM cost tracking, multi-agent graphs |
+| LangSmith Evaluation | https://docs.langchain.com/langsmith/evaluation-concepts | official-docs | LLM evaluation | 2026-05-08 | ⭐ Offline/online LLM eval; datasets, evaluators, LLM-as-judge, pairwise comparison; framework-agnostic |
+| NIST AI Risk Management Framework | https://airc.nist.gov/Home | research/standard | AI/LLM risk | 2026-05-08 | 📄 Voluntary AI RMF: Govern/Map/Measure/Manage functions; TEVV guidance; playbook + crosswalks to other frameworks |

@@ -1,5 +1,5 @@
 # Learning Sources: Programming Languages
-<!-- updated: 2026-05-07 | entries: 65 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-08 | entries: 70 | skill-version: 1.12.0.0 -->
 
 Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 
@@ -54,6 +54,11 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | Python 3.14 What's New | https://docs.python.org/3/whatsnew/3.14.html | official-docs | Python | 2026-05-07 | ⭐ PEP 649 deferred annotations, t-strings, concurrent.interpreters, free-threaded GIL improvements |
 | Kotlin 2.0 What's New | https://kotlinlang.org/docs/whatsnew20.html | official-docs | Kotlin | 2026-05-07 | ⭐ K2 compiler stable, smart cast improvements, Kotlin Multiplatform stable, Power-Assert plugin |
 | Kotlin 2.1.20 What's New | https://kotlinlang.org/docs/whatsnew2120.html | official-docs | Kotlin | 2026-05-07 | ⭐ Default K2 kapt, Atomic types stable, UUID improvements, Gradle Isolated Projects support |
+| Faker.js Guide | https://fakerjs.dev/guide/ | official-docs | JavaScript/TypeScript | 2026-05-08 | ⭐ Generate realistic fake data for testing; 70+ locales, 24+ modules; Node 20+, browser support |
+| factory_boy Docs | https://factoryboy.readthedocs.io/en/stable/ | official-docs | Python | 2026-05-08 | ⭐ Python test factories replacing static fixtures; Django/SQLAlchemy ORM integration, Faker integration |
+| REST Assured | https://rest-assured.io/ | official-docs | Java | 2026-05-08 | ⭐ REST API testing DSL for Java; BDD-style given/when/then; v6.0 requires Java 17+, Spring 7, Jackson 3 |
+| TypeScript Mapped Types | https://www.typescriptlang.org/docs/handbook/2/mapped-types.html | official-docs | TypeScript | 2026-05-08 | ⭐ Create new types by iterating type properties; keyof/in syntax; modifiers (+/-readonly/optional); key remapping |
+| C# Nullable Value Types | https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/nullable-value-types | official-docs | C# | 2026-05-08 | ⭐ T? syntax, HasValue/Value, null-coalescing ??, lifted operators, boxing/unboxing, pattern matching with is |
 
 ---
 

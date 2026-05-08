@@ -1,5 +1,5 @@
 # Learning Sources: QA Methodology
-<!-- updated: 2026-05-07 | entries: 35 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-08 | entries: 41 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 
@@ -57,6 +57,8 @@ Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 | kubeshop/tracetest | https://github.com/kubeshop/tracetest | github-repo | ci-cd-testing | 2026-05-03 | Trace-based test assertions |
 | cucumber/cucumber-js | https://github.com/cucumber/cucumber-js | github-repo | bdd | 2026-05-04 | 🌟 5.3k stars — official JS Cucumber for Gherkin execution |
 | pact-foundation/pact_broker | https://github.com/pact-foundation/pact_broker | github-repo | contract-testing | 2026-05-04 | 742 stars — OSS contract registry; share + verify pacts |
+| faker-js/faker | https://github.com/faker-js/faker | github-repo | test-data | 2026-05-08 | 🌟 15.2k stars — generate realistic fake data in JS/TS; 70+ locales, 24+ modules |
+| thoughtbot/fishery | https://github.com/thoughtbot/fishery | github-repo | test-data | 2026-05-08 | 1k+ stars — TypeScript test object factories; sequences, associations, traits, async create() |
 | pytest plugin writing | https://docs.pytest.org/en/stable/how-to/writing_plugins.html | official-docs | test-framework | 2026-05-04 | ⭐ conftest.py hooks, entry-point distribution, pytester |
 | Pact Nirvana | https://docs.pact.io/pact_nirvana | official-docs | contract-testing | 2026-05-04 | ⭐ 7-level CI/CD maturity roadmap for consumer-driven contracts |
 | Martin Fowler — Practical Test Pyramid | https://martinfowler.com/articles/practical-test-pyramid.html | blog | test-pyramid | 2026-05-06 | 🌟 Definitive long-form guide: unit→integration→E2E, redundancy avoidance |
@@ -65,3 +67,7 @@ Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 | Cucumber 10-Minute Tutorial | https://cucumber.io/docs/guides/10-minute-tutorial/ | official-docs | bdd | 2026-05-06 | ⭐ End-to-end BDD walkthrough: Gherkin→step defs→scenario outlines; Example Mapping |
 | Pact Plugin Framework | https://docs.pact.io/plugins | official-docs | contract-testing | 2026-05-07 | ⭐ Extend Pact to gRPC, WebSockets, MQTT, Protocol Buffers, GraphQL; plugin driver architecture |
 | JUnit 5 User Guide | https://docs.junit.org/current/user-guide/ | official-docs | test-framework | 2026-05-07 | ⭐ JUnit Platform + Jupiter + Vintage; JUnit 6.0.3 — annotations, lifecycle, extensions, parameterized tests |
+| Testcontainers Cloud Docs | https://testcontainers.com/cloud/docs/ | official-docs | test-infrastructure | 2026-05-08 | ⭐ Cloud Docker daemon for tests: 8GB/session, Turbo mode parallelisation, multi-lang CI/CD integration |
+| Neon DB — Test Branching | https://neon.com/docs/guides/branching-test-queries | official-docs | test-data / databases | 2026-05-08 | ⭐ Copy-on-write Postgres branch per test run; schema-only branching for sensitive data; instant teardown |
+| pytest Flaky Tests | https://docs.pytest.org/en/stable/explanation/flaky.html | official-docs | flakiness | 2026-05-08 | ⭐ Root causes (state, assertions, threads); quarantine via xfail; pytest-rerunfailures; randomisation plugins |
+| Testcontainers Guides | https://testcontainers.com/guides/ | official-docs | test-infrastructure | 2026-05-08 | ⭐ Practical guides: 12 language ecosystems; Spring Boot, Quarkus, ASP.NET; DB, Kafka, WireMock, LocalStack |
