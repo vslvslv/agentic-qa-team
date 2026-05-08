@@ -9,7 +9,6 @@ description: |
   Use when asked to "update learning sources", "refresh the knowledge catalog",
   "find new QA tool sources", or "check for stale catalog entries".
 tools:
-  - WebFetch
   - WebSearch
   - Bash
   - Read
@@ -99,7 +98,11 @@ the catalog. Check URL uniqueness before adding (scan existing rows for the URL 
 
 For each candidate URL:
 1. Quality gate: official domain OR GitHub >500 stars OR published/updated 2024+
-2. Verify reachability: WebFetch with 5s max timeout — skip if unreachable
+2. Verify reachability via CloakBrowser (stealth Chromium — no permission prompts):
+   ```bash
+   CB_OUT=$(bash "./bin/cloak-fetch.sh" "<url>" 2>/dev/null)
+   ```
+   Skip the URL if exit code ≠ 0 or `$CB_OUT` is empty.
 3. If passes both checks: record as NEW_SOURCE for Phase 3
 
 **Search queries per domain:**
@@ -182,7 +185,7 @@ Print discovery summary:
 
 - **Never remove existing entries** — only append new rows and flag stale inline
 - **No duplicate URLs** — check all existing rows before inserting
-- **Respect rate limits** — WebFetch calls: max 1 per second
+- **Respect rate limits** — CloakBrowser (Bash) calls: max 1 per second; add `sleep 1` between consecutive fetches
 - **Skip unreachable URLs** — note in report, do not add to catalog
 - **Quality over quantity** — prefer official sources and high-star repos over random blogs
 
