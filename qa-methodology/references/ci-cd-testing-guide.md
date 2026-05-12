@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: typescriptlang.org/docs/handbook/release-notes/typescript-5-9 (TS 5.9 May 2025: --module node20 stable — locked Node 20 semantics with no future behavior changes unlike nodenext; cache instantiations on mapper types — ~11% faster tsc on complex libraries like Zod/tRPC; types:[] in tsc --init default tsconfig blocks accidental @types/* ambient pollution; ArrayBuffer type hierarchy change — Uint8Array.buffer now returns SharedArrayBuffer|ArrayBuffer union, may produce new CI type errors on upgrade; moduleDetection:force default in tsc --init) | prev: typescriptlang.org/docs/handbook/release-notes/typescript-5-8 (TS 5.8 Feb 2025: --erasableSyntaxOnly validates Node.js type-stripping compatibility — errors on enums/namespaces/parameter-properties/import=/export=; --module node18 stable — disallows require() of ESM; --module nodenext allows require() of ESM on Node 22+; --libReplacement false skips @typescript/lib-* package lookups for faster CI; granular branch return type checking catches any-infected return expressions) | nodejs.org/blog/release/v24.0.0 (Node 24 LTS: --test-global-setup for zero-framework global setup/teardown, snapshot testing stable since Node 23.4, programmatic coverage thresholds lineCoverage/branchCoverage/functionCoverage in node:test run(), type stripping at RC status, npm 11 bundled: --ignore-scripts suppresses prepare, bulk audit endpoint fallback removed, requires Node ^20.17.0 || >=22.9.0) | prev: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: typescriptlang.org/docs/handbook/release-notes/typescript-5-9 (TS 5.9 May 2025: --module node20 stable — locked Node 20 semantics with no future behavior changes unlike nodenext; cache instantiations on mapper types — ~11% faster tsc on complex libraries like Zod/tRPC; types:[] in tsc --init default tsconfig blocks accidental @types/* ambient pollution; ArrayBuffer type hierarchy change — Uint8Array.buffer now returns SharedArrayBuffer|ArrayBuffer union, may produce new CI type errors on upgrade; moduleDetection:force default in tsc --init; import defer deferred module evaluation — requires --module preserve or esnext, NOT supported under node20/node18/nodenext, reduces test cold-start by deferring heavy fixture init to first property access; noUncheckedSideEffectImports — new strict flag errors on import 'polyfill' if module cannot be resolved or has no @types declarations, catches dead imports silently ignored before TS 5.9, enable as non-blocking audit first on polyfill-heavy codebases) | prev: typescriptlang.org/docs/handbook/release-notes/typescript-5-8 (TS 5.8 Feb 2025: --erasableSyntaxOnly validates Node.js type-stripping compatibility — errors on enums/namespaces/parameter-properties/import=/export=; --module node18 stable — disallows require() of ESM; --module nodenext allows require() of ESM on Node 22+; --libReplacement false skips @typescript/lib-* package lookups for faster CI; granular branch return type checking catches any-infected return expressions) | nodejs.org/blog/release/v24.0.0 (Node 24 LTS: --test-global-setup for zero-framework global setup/teardown, snapshot testing stable since Node 23.4, programmatic coverage thresholds lineCoverage/branchCoverage/functionCoverage in node:test run(), type stripping at RC status, npm 11 bundled: --ignore-scripts suppresses prepare, bulk audit endpoint fallback removed, requires Node ^20.17.0 || >=22.9.0) | prev: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -3812,6 +3812,10 @@ export default env;
 63. **Playwright `context.setStorageState()` called with empty object — no-op, not a reset** [community]: Playwright v1.51+ supports `browserContext.setStorageState(state)` for in-place auth state replacement. A common mistake: calling `await context.setStorageState({})` expecting it to clear all auth state. An empty object is a no-op — no cookies or storage entries are cleared. The correct idiom for a full reset is `await context.setStorageState({ cookies: [], origins: [] })`. Teams that use the empty-object form believe they have logged out between tests but are surprised when subsequent tests see the previous user's session. This manifests as "passed locally (first test run) but failed on subsequent runs in the same CI job" — a subtle ordering-dependent defect.
 
 64. **Vitest tag shared options defined at project level instead of root level** [community]: In a Vitest workspace with multiple `defineProject` configs, `tags` options (like `timeout` and `retry`) defined inside a `defineProject` block apply only to tests in that project. Teams that define tag options in one `defineProject` file expect them to apply to all projects in the workspace — they do not. The root-level `defineConfig` is the correct place for cross-project tag configuration. When a `@db` tag with `timeout: 60_000` is defined only in `packages/api/vitest.config.ts`, tests tagged `@db` in `packages/core` receive the default timeout. Audit all tag definitions: root-level = applies everywhere; project-level = applies to that project only.
+
+65. **TypeScript 5.9 `import defer` used with `--module node20`/`node18`/`nodenext` — silent compile error** [community]: TypeScript 5.9 introduced the `import defer` syntax for deferred module evaluation (`import defer * as ns from './module.js'`), where the module body is not executed until the first property access on `ns`. This feature requires `--module preserve` or `--module esnext`; it is not supported under `--module node20`, `--module node18`, or `--module nodenext`. Teams that add `import defer` to reduce test cold-start time (lazy-loading expensive fixtures) and then run `tsc --noEmit` with `--module node20` will see TS2468 "Cannot use `import defer` with the current `--module` option". The fix is not to change the module target — use conditional lazy loading via dynamic `import()` instead, which is fully supported across all module targets.
+
+66. **TypeScript 5.9 `noUncheckedSideEffectImports` causes mass CI failure on first enable in polyfill-heavy codebases** [community]: TypeScript 5.9 added `--noUncheckedSideEffectImports`, which makes TypeScript report an error for any `import 'module'` side-effect-only import where the module cannot be resolved or has no type declarations. In projects that polyfill via `import 'core-js/stable'`, `import 'reflect-metadata'`, or custom CSS imports (`import './styles.css'`), enabling this flag produces dozens of TS2307 errors on the first CI run. Teams that add it directly to `tsconfig.json` expecting a clean result are surprised by the volume. Always enable as a two-phase rollout: first add it to a separate `tsconfig.check.json` for audit (`npx tsc -p tsconfig.check.json --noEmit 2>&1 | grep -c "TS2307"`), then add `@types/` declarations or `// @ts-ignore` suppressions for legitimate polyfills before promoting to the required gate.
 
 
 |---|---|---|---|
@@ -8094,6 +8098,162 @@ jobs:
 ```
 
 > [community] The `moduleDetection: "force"` setting (included in the new `tsc --init` defaults) changes how TypeScript decides whether a file is a script or a module — it forces every file to be treated as an ECMAScript module, even files without any `import`/`export` statements. This catches a class of ambient variable leakage: global `var` declarations in one test file bleeding into another test file's type namespace. Teams that adopt this setting on large codebases report 1–5 new type errors from files that relied on implicit global augmentation (typically legacy test helpers written as script files). Convert them to proper module exports.
+
+---
+
+### TypeScript 5.9 `import defer` for Lazy Module Initialization in Tests [community]
+
+TypeScript 5.9 (May 2025) introduced `import defer`, a new module syntax that delays execution of a module's body until the first property access on its namespace object. Unlike a regular `import * as ns from './module.js'` (which executes the module immediately at evaluation time) or a dynamic `await import('./module.js')` (which is async), `import defer * as ns from './module.js'` is synchronous and free of top-level-await constraints — the module is *loaded* but its side effects and exports are not materialized until `ns.someProperty` is first read.
+
+> [community] In CI environments, expensive test fixtures that are `import`ed at the top of large test suites contribute to test cold-start time even when many tests in the suite never use the fixture. Teams with test helpers that eagerly initialize database connection pools, instantiate large schema validators, or load WASM binaries have used `import defer` to shift that initialization cost to the point of first use — reducing CI test-job startup from ~8s to ~2s on suites where 40% of tests never access the heavy fixture. The gain is most visible in sharded CI runs where each shard only executes a subset of tests.
+
+**Correct usage — `--module preserve` or `--module esnext` required:**
+
+```typescript
+// tests/helpers/db-fixtures.ts — eagerly loaded schema validator (before import defer)
+// This executes the full module (schema compilation, pool init) at import time
+import * as dbSchema from '../src/db/schema.js';
+export { dbSchema };
+```
+
+```typescript
+// tests/helpers/db-fixtures.ts — with import defer (TypeScript 5.9+)
+// Requires: "module": "preserve" or "module": "esnext" in tsconfig.json
+// Module body is NOT executed until dbSchema is first accessed
+import defer * as dbSchema from '../src/db/schema.js';
+
+// Exported as-is — execution deferred to first property access at call site
+export { dbSchema };
+
+// Example test file — only tests that call dbSchema.* pay the initialization cost
+// tests/unit/order.test.ts
+import { dbSchema } from '../helpers/db-fixtures.js';
+import { describe, it, expect } from 'vitest';
+
+describe('OrderService — pure logic (no DB)', () => {
+  it('calculates total without hitting DB', () => {
+    // dbSchema is never accessed → schema module body never runs → fast cold start
+    expect(1 + 1).toBe(2);
+  });
+});
+
+describe('OrderService — schema validation', () => {
+  it('validates order shape against DB schema', () => {
+    // First access to dbSchema here — module body runs NOW, only for this describe block
+    const schema = dbSchema.orderSchema;
+    expect(schema).toBeDefined();
+  });
+});
+```
+
+**tsconfig for `import defer` — module target selection:**
+
+```jsonc
+// tsconfig.json — "preserve" is the recommended target for library authors
+// "esnext" works too; node20/node18/nodenext do NOT support import defer
+{
+  "compilerOptions": {
+    "module": "preserve",        // or "esnext" — required for import defer
+    "moduleResolution": "bundler", // matches "preserve" mode
+    "target": "esnext",
+    "strict": true
+  }
+}
+```
+
+**CI type-check gate — verify `import defer` compatibility:**
+
+```yaml
+# .github/workflows/ci.yml — separate typecheck job for import defer validation
+jobs:
+  typecheck-deferred:
+    name: TypeScript — deferred module check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Verify import defer compiles cleanly — catches accidental --module node20 in tsconfig
+      - name: Type-check with import defer
+        run: |
+          npx tsc --noEmit 2>&1 | tee typecheck.log
+          if grep -q "TS2468\|Cannot use.*import defer" typecheck.log; then
+            echo "::error::import defer requires --module preserve or esnext"
+            cat typecheck.log
+            exit 1
+          fi
+          echo "::notice::import defer type-check passed"
+```
+
+> [community] `import defer` is NOT supported under `--module node20`, `--module node18`, or `--module nodenext`. Teams that add `import defer` to reduce cold-start in test helpers and then try to use `--module node20` for Node.js compatibility will receive TS2468. The fix is NOT to downgrade the module target — use a conditional dynamic `import()` wrapper instead for Node-targeted projects:
+
+```typescript
+// tests/helpers/lazy-fixture.ts — portable lazy loading without import defer
+// Works with all --module targets including node20/node18/nodenext
+let _dbSchema: typeof import('../src/db/schema.js') | undefined;
+
+export async function getDbSchema(): Promise<typeof import('../src/db/schema.js')> {
+  if (!_dbSchema) {
+    _dbSchema = await import('../src/db/schema.js');
+  }
+  return _dbSchema;
+}
+```
+
+---
+
+### TypeScript 5.9 `noUncheckedSideEffectImports` as a CI Hygiene Gate [community]
+
+TypeScript 5.9 added `--noUncheckedSideEffectImports`, a new strict-mode flag that reports a type error for any side-effect-only import (`import 'polyfill'` or `import './setup'`) where the imported module cannot be resolved or has no type declarations. Before this flag, TypeScript silently accepted unresolvable side-effect imports — a polyfill package that was accidentally removed from `devDependencies` would produce no compile error, leaving CI blind to the breakage.
+
+> [community] Teams that have enabled `noUncheckedSideEffectImports` report catching two recurring CI breakage patterns: (1) `import 'reflect-metadata'` left in test setup files after the package was removed, silently doing nothing; (2) `import './polyfills.js'` referencing a file that was renamed during a refactor but whose `import` was never updated. Both produce runtime errors only in specific environments. The flag converts these into compile-time errors detectable in every CI run.
+
+**Adding to tsconfig for CI enforcement:**
+
+```jsonc
+// tsconfig.ci.json — extended config used in CI type-check gate
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noUncheckedSideEffectImports": true,  // TS 5.9+: error on unresolvable side-effect imports
+    "noEmit": true
+  }
+}
+```
+
+**CI workflow step:**
+
+```yaml
+# .github/workflows/ci.yml — noUncheckedSideEffectImports gate
+- name: TypeScript side-effect import hygiene check
+  run: |
+    ERROR_COUNT=$(npx tsc -p tsconfig.ci.json 2>&1 | grep -c "TS2307\|TS2834" || true)
+    if [ "$ERROR_COUNT" -gt 0 ]; then
+      echo "::error::$ERROR_COUNT unresolvable side-effect imports detected"
+      npx tsc -p tsconfig.ci.json 2>&1 | grep "TS2307\|TS2834"
+      exit 1
+    fi
+    echo "::notice::Side-effect import hygiene: OK"
+```
+
+**Common polyfill patterns and their `@types/` or declaration fixes:**
+
+```typescript
+// Before: triggers TS2307 with noUncheckedSideEffectImports
+import 'reflect-metadata';        // error if @types/reflect-metadata not installed
+import 'zone.js';                  // error if @types/zone.js not installed
+import './polyfills/array-at.js'; // error if no .d.ts for array-at.js
+
+// Fix option 1: install missing @types packages
+// npm install --save-dev @types/reflect-metadata @types/zone.js
+
+// Fix option 2: add a declaration stub for local polyfills
+// src/polyfills/array-at.d.ts:
+// declare module './array-at.js' {}  // explicit empty declaration
+```
+
+> [community] Teams enabling `noUncheckedSideEffectImports` on an existing codebase with heavy polyfill usage (Angular, legacy React apps) should budget a half-sprint for the initial triage. Run the audit step first (`npx tsc -p tsconfig.ci.json --noEmit 2>&1 | grep "TS2307\|TS2834" | sort -u`) to count distinct error locations, then batch-fix by installing missing `@types/` packages and adding empty `.d.ts` stubs for internal polyfills. Promote to a required blocking gate only after the error count reaches zero.
 
 ---
 

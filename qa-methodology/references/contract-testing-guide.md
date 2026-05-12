@@ -1,10 +1,11 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases/tag/v16.4.0 (WebFetch 2026-05-12 iteration 27), github.com/pact-foundation/pact-js/issues/1762 (WebFetch 2026-05-12 iteration 27), docs.pact.io/pact_broker/advanced_topics/consumer_version_selectors (WebFetch 2026-05-12 iteration 28), pactflow.io/blog (WebFetch 2026-05-12 iteration 28), github.com/pactflow/pact-protobuf-plugin/releases (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1585 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1634 (WebFetch 2026-05-12 iteration 29) | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases/tag/v16.4.0 (WebFetch 2026-05-12 iteration 27), github.com/pact-foundation/pact-js/issues/1762 (WebFetch 2026-05-12 iteration 27), docs.pact.io/pact_broker/advanced_topics/consumer_version_selectors (WebFetch 2026-05-12 iteration 28), pactflow.io/blog (WebFetch 2026-05-12 iteration 28), github.com/pactflow/pact-protobuf-plugin/releases (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1585 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1634 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/issues/1696 (WebFetch 2026-05-12 iteration 30), github.com/pact-foundation/pact-js/pull/1767 (WebFetch 2026-05-12 iteration 30), pactflow.io/blog (WebFetch 2026-05-12 iteration 30) | community: production lessons -->
 <!-- new in iteration 24: extended MatchersV3 quick reference (atMostLike, constrainedArrayLike, includes, nullValue, equal, eachKeyMatches, eachValueMatches), InterfaceToTemplate<T> TypeScript utility, constrainedArrayLike bounded-array pattern, community lessons 47-49 (executeTest single-interaction-per-call constraint, constrainedArrayLike for bounded APIs, InterfaceToTemplate drift) -->
 <!-- new in iteration 26: Multipart form data / file upload contract testing pattern (multipartBody/binaryFile V4 DSL, official docs May 2026), SpecificationVersion enum for explicit spec version control, community lessons 54-57 (EADDRINUSE with provider.setup() missing finalize, Jest --watch tracing subscriber warning, multipart form data over-specification anti-pattern, SpecificationVersion enum usage) -->
 <!-- new in iteration 28: matchingBranch consumer version selector (parallel feature branch development, TypeScript pattern), extended ConsumerVersionSelector reference table (consumer, environment, deployed, released, matchingBranch, all 12 properties), PactFlow AI Code Review feature (August 2025 beta — automated pact quality analysis, distinct from MCP Server), pact-protobuf-plugin v0.7.0 (October 2025 — proto descriptor caching + nested message fix, upgrade guide), community lessons 58-61 (matchingBranch requires providerVersionBranch, consumer selector for scoping, AI Code Review semantic vs type gaps, descriptor cache is per-process) -->
 <!-- new in iteration 29: pact-js v16.0.2 state handler graceful error handling (PR #1585, Oct 2025 — state handler throws now surface at ERROR log level instead of HTTP 500), pact-js v16.0.4 mixed HTTP + async message provider verification fix (PR #1634, Dec 2025 — transports config now sent when no custom transports defined), updated Pact Specification Version Reference table with v16.0.1–v16.0.4 rows, community lessons 62-63 (state handler error diagnosis, mixed pact type provider verification) -->
+<!-- new in iteration 30: pact-js v16.3.0→v16.4.x DELETE request regression in jsdom (issue #1696, PR #1767 merged May 2026 — CORS preflight not enabled by pactffiCreateMockServerForTransport in pact-core v19; fix adds cors option to PactV3/Pact constructors), PactFlow AI Test Templates (May 2025 — custom test scaffolding for 7 languages including TypeScript), updated Pact Specification Version Reference table, community lessons 64-65 (DELETE requests fail in jsdom after upgrading to v16.3.0, PactFlow AI Test Templates for TypeScript) -->
 <!-- new in iteration 27: CORRECTON — addInteractionReference section replaced with accurate .reference(group, name, value) traceability annotation API (issue #1762, v16.4.0); previous section incorrectly described it as an interaction-reuse mechanism with a fabricated InteractionObject API; table entry and v16 API list updated to match actual function signature and purpose -->
 <!-- new in iteration 25: The Bug Catcher Rule (formal principle for interaction inclusion), BDD-style scenario sentence pattern, V4 statusCode class matching (success/clientError/serverError), mTLS client certificate workaround for VerifierV3, ConsumerVersionSelector fallbackBranch TypeScript type gap, status code range matching feature request #1600, community lessons 50-53 (5 reasons contract testing fails, BDD-style naming prevents duplicate interactions, status code class matching avoids unnecessary provider states, mTLS/client-cert provider verification) -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
@@ -2412,6 +2413,7 @@ Understanding which Pact specification version your pact files use affects compa
 | Pact V4 | pact-js v16.3 | `.pending()`, `.withComment()`, `.withTestName()` per-interaction metadata | Per-interaction advisory-only flag; comments and test names visible in Broker UI |
 | Pact V4 | pact-js v16.3.1 | Bug fix: content type extraction from matcher-wrapped `Content-Type` headers | Resolves body-parser failure when `Content-Type` header uses `like()` matcher in provider verification |
 | Pact V4 | pact-js v16.4 | `.reference(group, name, value)` — external reference link annotation on V4 interactions | Attaches a named external link (Jira ticket, GitHub PR, etc.) to an interaction for traceability in the Broker UI; v16.4.0 released 2026-05-04 |
+| Pact V4 | pact-js post-v16.4.0 (PR #1767) | Bug fix: `cors: true` option added to `PactV3`/`Pact` constructors; restores CORS preflight handling for `DELETE`/`PATCH` requests in jsdom environments (pact-core v19 regression, issue #1696) | Required for jsdom consumer tests using `DELETE`; add `cors: true` to constructor when upgrading past v16.2.0 |
 
 **Migration notes for TypeScript projects:**
 
@@ -2669,6 +2671,7 @@ describe('NotificationService consumes OrderCreated events (V4 async, pact-js v1
 | ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology reference |
 | Consumer Version Selectors | Official | https://docs.pact.io/pact_broker/advanced_topics/consumer_version_selectors | Full reference for all selector properties including matchingBranch, consumer, environment |
 | PactFlow AI Code Review | Product | https://pactflow.io/blog/ | AI-powered analysis of existing pact files; identifies over-specification, missing interactions, best practice violations (August 2025 beta, PactFlow only) |
+| PactFlow AI Test Templates | Product | https://pactflow.io/blog/ | AI test generation with team-defined style templates; supports TypeScript, Java, Python, Kotlin, .NET, Go, PHP, Swift; produces scaffolding matching existing test conventions (May 2025, PactFlow only) |
 | pact-protobuf-plugin | Releases | https://github.com/pactflow/pact-protobuf-plugin/releases | v0.7.0 (Oct 2025): proto descriptor caching + nested message lookup fix |
 
 ---
@@ -5319,3 +5322,100 @@ describe('OrderService provider verification (HTTP + async message pacts)', () =
 63. **[community] pact-js < v16.0.4 silently skips async message pacts when a provider serves both HTTP and message consumers.** A provider with a REST API (HTTP pacts from CheckoutService) and a Kafka event emitter (message pacts from NotificationService) runs `verifyProvider()` and sees all tests pass — but NotificationService's message pacts were never actually executed. The root cause: the transports configuration was not sent when no custom transports were provided, causing the message transport to be absent from the verification run. The symptom is deceptive: message consumer pacts appear in the Broker as "verified (0 interactions)" rather than failing. **Diagnosis:** check the verification output for the total interaction count — if it equals the HTTP interaction count only (and you know there are message pacts), the transport is missing. **Fix:** upgrade to pact-js ≥ v16.0.4 and add `messageProviders: { '<state name>': generateMessageFn }` to `VerifierV3` options for each message pact provider state. After the upgrade, previously-silent message pact failures will surface as hard verification failures until `messageProviders` is correctly populated.
 
 ---
+
+### pact-js v16.3.0 — DELETE Request Regression in jsdom Environments (TypeScript)
+
+Upgrading from pact-js v16.2.0 to v16.3.0 introduced a regression that caused `DELETE` (and some `PATCH`) consumer tests to fail with `TypeError: Network request failed` in jsdom environments (Jest with jsdom, or React Testing Library setups). `GET` and `POST` requests were unaffected. The bug was tracked in [issue #1696](https://github.com/pact-foundation/pact-js/issues/1696) and fixed in PR #1767 (merged May 6, 2026).
+
+**Root cause:** v16.3.0 bumped `@pact-foundation/pact-core` from v18 to v19. The v19 core replaced the deprecated `pactffiCreateMockServerForPact` function with `pactffiCreateMockServerForTransport`. The new transport implementation did not automatically enable CORS preflight — so mock servers started by pact-core v19 did not respond to the browser's `OPTIONS` preflight requests that `whatwg-fetch` (used by jsdom) sends before `DELETE` requests. The `OPTIONS` request timed out, causing the `DELETE` request to fail.
+
+**Affected versions:** pact-js v16.3.0 and v16.3.1 when using `PactV3` or `Pact` in a jsdom test environment (`testEnvironment: 'jsdom'` or `testEnvironment: 'node'` with `whatwg-fetch` polyfill).
+
+**The fix (PR #1767):** Adds a `cors` option to the `PactV3` and `Pact` constructors that is wired through to the mock server transport layer. Defaults to `true` to restore the pre-v16.3.0 behavior.
+
+```typescript
+// order-service.consumer.pact.jsdom.spec.ts
+// Fix for pact-js issue #1696: DELETE requests fail in jsdom after v16.3.0 upgrade.
+// The `cors: true` option was the default pre-v16.3.0 and is now explicit.
+// Required only when testEnvironment is 'jsdom' or when using whatwg-fetch.
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { CartClient } from '../src/cart-client';
+
+const { like } = MatchersV3;
+
+const provider = new PactV3({
+  consumer: 'CheckoutApp',
+  provider: 'CartService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8088,
+  logLevel: 'warn',
+  // Fix for issue #1696: enable CORS preflight on the mock server.
+  // Required in jsdom environments (Jest + jsdom, React Testing Library)
+  // where whatwg-fetch sends an OPTIONS preflight before DELETE requests.
+  // Available in the pact-js release that includes PR #1767 (post-v16.4.0).
+  // In v16.2.0 and earlier, this was the default behavior with no option needed.
+  cors: true,
+});
+
+describe('CheckoutApp → CartService contract (DELETE with CORS fix)', () => {
+  it('removes an item from the cart', async () => {
+    await provider
+      .given('cart CART-001 contains item ITEM-42')
+      .uponReceiving('a DELETE request to remove item ITEM-42 from cart CART-001')
+      .withRequest({
+        method: 'DELETE',
+        path: '/carts/CART-001/items/ITEM-42',
+        headers: { Accept: 'application/json' },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          cartId: like('CART-001'),
+          itemCount: like(0),
+        },
+      })
+      .executeTest(async (mockServer) => {
+        const client = new CartClient(mockServer.url);
+        const result = await client.removeItem('CART-001', 'ITEM-42');
+        expect(result.cartId).toBe('CART-001');
+        expect(typeof result.itemCount).toBe('number');
+      });
+  });
+});
+```
+
+**Version matrix for the CORS / DELETE regression:**
+
+| pact-js version | DELETE in jsdom | Action |
+|---|---|---|
+| ≤ v16.2.0 | Works | No change needed |
+| v16.3.0, v16.3.1, v16.4.0 | Broken (no `cors` option available) | Pin to v16.2.0 as workaround |
+| Post-v16.4.0 (PR #1767 included) | Works with `cors: true` | Add `cors: true` to `PactV3`/`Pact` constructor |
+
+**Workaround for teams stuck on v16.3.x / v16.4.0:**
+
+```jsonc
+// package.json — pin to v16.2.0 if upgrading to v16.3.x breaks DELETE tests
+// and the PR #1767 release is not yet available
+{
+  "devDependencies": {
+    "@pact-foundation/pact": "16.2.0"   // pin until PR #1767 fix is released
+  }
+}
+```
+
+**Key points:**
+- The regression only affects jsdom environments where `whatwg-fetch` is used — Node.js environments using `node-fetch` or the built-in `fetch` (Node 18+) are not affected because they do not send CORS preflight requests
+- `DELETE` was the most visibly affected method, but any method that triggers a CORS preflight (including `PATCH` with custom headers) is affected
+- `GET` and `POST` with `application/json` content type do not trigger preflight in jsdom's `whatwg-fetch` implementation, which is why they continued working
+- The `cors` option in the constructor also applies to `PactV4` / `Pact` (V4 alias) — add it to both if your project uses both DSLs
+
+---
+
+### Additional Community Production Lessons [community]
+
+64. **[community] pact-js v16.3.0–v16.4.0 breaks `DELETE` consumer tests in jsdom environments due to CORS preflight not being enabled by the new `pactffiCreateMockServerForTransport` transport API.** After upgrading from v16.2.0 to v16.3.0, any consumer test using `method: 'DELETE'` (or `PATCH` with custom headers) in a Jest jsdom environment fails immediately with `TypeError: Network request failed`. The root cause is that `pact-core` v19's new transport implementation (`pactffiCreateMockServerForTransport`) does not enable CORS preflight by default — jsdom's `whatwg-fetch` sends an `OPTIONS` preflight before `DELETE` requests, but the mock server no longer handles `OPTIONS`, so the preflight times out and the actual request is never sent. The symptom is identical to a network connectivity issue, making it hard to diagnose without knowing the underlying CORS mechanism. **Short-term fix:** downgrade to `@pact-foundation/pact@16.2.0`. **Long-term fix:** upgrade to the pact-js release that includes PR #1767 and add `cors: true` to the `PactV3`/`Pact` constructor options. `GET` and `POST` with `Content-Type: application/json` do not trigger CORS preflight in jsdom, which is why they are unaffected — this asymmetry is the main diagnostic clue.
+
+65. **[community] PactFlow AI Test Templates (May 2025) allow teams to define a canonical TypeScript test style that AI generation consistently follows — but the template must be reviewed for over-specification before committing.** PactFlow's AI test generation previously produced TypeScript Pact tests that varied in style (some used `PactV3`, others `Pact`; some used `eachLike`, others exact arrays). AI Test Templates solve this by letting the team define a reference test file — "always use `PactV3` with `MatchersV3`, never `PactV4`" or "always derive matchers from Zod schemas via `zodToPactBody`" — and all subsequent AI-generated tests follow the same structure. The practical benefit for TypeScript teams: onboarding a new service pair (new consumer + provider) produces idiomatic, team-standard test scaffolding in minutes rather than hours. The caveat: the template does not automatically prevent AI from using exact values where `like()` is correct — include explicit template examples of `like(serverAssignedId)` and `fromProviderState('${id}', 'fallback')` in the reference file to guide the AI. Teams that skip this have the same 40% over-specification rate reported for MCP Server output (community lesson #32). AI Test Templates are a PactFlow feature (not available on the OSS Pact Broker).

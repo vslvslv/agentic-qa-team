@@ -1,7 +1,8 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 34 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
-<!-- Iter 33 additions: Playwright v1.59-v1.60 BDD-relevant APIs not yet covered — await using disposable pattern for BDD resource cleanup (v1.59), page.ariaSnapshot() on full pages (v1.59), --debug=cli for interactive BDD step debugging (v1.59), page.screencast() with action annotations for BDD failure video (v1.59), locator.drop() for drag-and-drop BDD scenarios (v1.60), HAR recording as first-class tracing API (v1.60), getByRole() description option for accessible-name-aware step assertions (v1.60), expect(locator).toHaveCSS() pseudo option for ::before/::after state assertions (v1.60); Quick Reference card updated with v1.59-v1.60 APIs -->
+<!-- lang: TypeScript | topic: bdd | iteration: 35 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 35 additions: Playwright v1.54-v1.56 BDD-relevant APIs not previously covered — TestStepInfo.titlePath (v1.55) for hierarchical step path and collision-free artifact naming in sharded CI, Playwright Test Agents npx playwright init-agents (v1.56) planner/generator/healer loop and BDD Discovery integration, page.pickLocator() (v1.59) interactive locator discovery utility for step definition authoring with BDD vs --debug=cli comparison table; resource links added for all three APIs -->
 <!-- Iter 34 additions: Completed iter-33 announced sections missing from body — page.screencast() with action annotations for BDD failure video capture (v1.59), expect(locator).toHaveCSS() pseudo option for ::before/::after pseudo-element CSS assertions (v1.60); resource links added for both APIs -->
+<!-- Iter 33 additions: Playwright v1.59-v1.60 BDD-relevant APIs not yet covered — await using disposable pattern for BDD resource cleanup (v1.59), page.ariaSnapshot() on full pages (v1.59), --debug=cli for interactive BDD step debugging (v1.59), page.screencast() with action annotations for BDD failure video (v1.59), locator.drop() for drag-and-drop BDD scenarios (v1.60), HAR recording as first-class tracing API (v1.60), getByRole() description option for accessible-name-aware step assertions (v1.60), expect(locator).toHaveCSS() pseudo option for ::before/::after state assertions (v1.60); Quick Reference card updated with v1.59-v1.60 APIs -->
 <!-- Iter 32 additions: Playwright v1.51-v1.60 BDD-relevant APIs not yet covered — TestStepInfo (v1.51) for step-level attachments and conditional skip, IndexedDB storageState (v1.51) for auth token persistence, toContainClass() (v1.52) for ergonomic CSS class assertions, locator.describe() (v1.53) for trace/report labeling, page.consoleMessages()/pageErrors()/requests() (v1.56) for in-step observability, testConfig.tag (v1.57) for run-level tagging in CI, test.abort() (v1.60) for fixture-driven early exit; Cucumber.js v12.8.1 junit-xml-formatter dependency fix; version matrix updated to split v12.6 row; Quick Reference card updated with new Playwright APIs -->
 <!-- Iter 31 additions: Playwright 1.45-1.60 BDD-relevant APIs — Clock API for time-dependent scenarios (password expiry, token TTL, session timeout), WebSocketRoute for WebSocket mocking/interception without real backend, toMatchAriaSnapshot() for semantic markup BDD assertions, toHaveAccessibleErrorMessage() for error-state a11y step definitions; Cucumber community ownership note (2025) — project returned to open-source community governance -->
 <!-- Iter 30 additions: Cucumber.js Plugin API full TypeScript reference — Plugin<T> generic from @cucumber/cucumber/api, transform() for pickles:filter and pickles:order scenario ordering/filtering, paths:resolve event, coordinator cleanup lifecycle; FormatterPlugin<T> with @cucumber/query library for non-trivial reporters; IConfiguration with satisfies keyword — modern TypeScript pattern for type-safe profile config; playwright-bdd v8.4.0 quality-of-life details — deterministic fixture name ordering, in-file BDD fixtures hidden from reports -->
@@ -1357,6 +1358,9 @@ If fewer than 6 of these boxes are checked, start with **Example Mapping only** 
 | Drag-and-drop BDD | `locator.drop({ files: [...] })` (v1.60+) for custom upload zones; use `setInputFiles()` for `<input type="file">` only |
 | HAR network capture on failure | `context.tracing.startHar()` / `tracing.stopHar()` (v1.60+) — first-class HAR API for BDD failure artifact |
 | Accessible-name disambiguation | `getByRole('button', { name: 'Submit', description: '...' })` (v1.60+) — `description` option via `aria-description` |
+| Collision-free artifact naming | `$testInfo.titlePath.join('__')` (v1.55+) — full BDD ancestry as filename prefix; eliminates screenshot overwrites in sharded CI |
+| Interactive locator discovery | `await page.pickLocator()` (v1.59+, dev-time only) — hover-and-click to capture best-practice locator for step authoring |
+| AI-assisted test generation | `npx playwright init-agents --loop=claude` (v1.56+) — planner/generator/healer agents; treat planner Markdown output as Three Amigos seed |
 
 ---
 
@@ -9700,6 +9704,172 @@ Then('the email input container should show an error indicator', async function 
 ```
 
 **[community] `pseudo` option unlocks pure-CSS UI contract testing in BDD**: A substantial portion of modern UI visual design relies on `::before`/`::after` pseudo-elements — required-field markers, tooltips, custom checkbox/radio graphics, notification badges, and decorative separators. Before the `pseudo` option, BDD step definitions either skipped these assertions (accepting that the visual layer was untested) or used JavaScript `getComputedStyle(el, '::before')` workarounds that were verbose and not integrated with Playwright's retry-assertion engine. The `pseudo` option makes these assertions first-class: they participate in Playwright's auto-retry loop, produce readable error messages like `expect(locator).toHaveCSS('content', '"*"', { pseudo: '::after' }) — expected "none", received '"*"'`, and can be co-located with other `expect()` assertions in the same `Then` step.
+
+---
+
+## Additional Resources (Iteration 35 Additions)
+
+### Playwright v1.54–v1.56: BDD-Relevant APIs  [community]
+
+Three releases between v1.53 and v1.57 added tooling that closes specific gaps in BDD authoring and step-level diagnostics.
+
+#### `TestStepInfo.titlePath` — Hierarchical Step Path for Artifact Naming (v1.55+)
+
+Playwright v1.55 added a `titlePath` property to `TestStepInfo`. It returns `Array<string>` — the full title path starting from the test file name, through the test title, down to each nested step title. In playwright-bdd, `titlePath` is accessible via `$testInfo.titlePath` inside fixtures.
+
+**Why this matters for BDD**: Feature file names and scenario titles already form a natural hierarchy — `features/checkout.feature` → `Checkout with credit card` → `Then I should see an order confirmation`. `titlePath` exposes this hierarchy programmatically, making it possible to generate uniquely named artifact files (screenshots, HAR archives, video clips) that are human-readable without collision, even when two scenarios share identical step names.
+
+```typescript
+// src/steps/artifacts.steps.ts — titlePath for unique artifact naming (v1.55+)
+import { createBdd } from 'playwright-bdd';
+import path from 'path';
+
+const { Then, After } = createBdd();
+
+// After hook that generates a descriptive screenshot name from the BDD title hierarchy
+After(async ({ page, $testInfo }, scenario) => {
+  if (scenario.result?.status === 'FAILED') {
+    // titlePath returns e.g. ['features/checkout.feature', 'Checkout', 'Then I should see an order confirmation page']
+    const titlePath: string[] = $testInfo.titlePath;
+
+    // Sanitise each path segment (remove special chars) and join with underscores
+    const sanitised = titlePath
+      .map((segment: string) => segment.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40))
+      .join('__');
+
+    const screenshotPath = path.join('reports', 'screenshots', `${sanitised}.png`);
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+    await $testInfo.attach('Failure screenshot', {
+      path: screenshotPath,
+      contentType: 'image/png',
+    });
+  }
+});
+
+// Step that exposes the current BDD path in the Playwright HTML report
+Then(
+  'the test step context should be logged for debugging',
+  async ({ $testInfo }) => {
+    const titlePath: string[] = $testInfo.titlePath;
+    await $testInfo.attach('BDD step path', {
+      body: titlePath.join(' > '),
+      contentType: 'text/plain',
+    });
+  }
+);
+```
+
+**[community] `titlePath` vs `title` for artifact deduplication**: `$testInfo.title` returns only the innermost step title, which is frequently identical across scenarios (e.g., `Then I should see an order confirmation page` is used by a dozen scenarios). `titlePath` gives the full ancestry, so two screenshots from different scenarios with the same step name will have different filenames. Teams that switched from `$testInfo.title` to `$testInfo.titlePath.join('__')` for screenshot naming eliminated artifact overwrites in sharded CI runs where multiple workers wrote to the same reports directory.
+
+#### Playwright Test Agents: `npx playwright init-agents` (v1.56+)
+
+Playwright v1.56 introduced `npx playwright init-agents`, which generates LLM agent definition files that guide AI assistants through the complete Playwright test-authoring loop. The command supports three LLM client targets: `--loop=vscode` (GitHub Copilot / VS Code extensions), `--loop=claude` (Claude Code), and `--loop=opencode`.
+
+The generated agents implement a three-phase agentic loop:
+
+| Agent | Role | Output |
+|---|---|---|
+| **planner** | Explores the running application and produces a Markdown test plan | `test-plan.md` with feature areas and scenario candidates |
+| **generator** | Transforms the test plan into Playwright `.spec.ts` files | Executable Playwright test files |
+| **healer** | Runs the test suite and automatically repairs failing tests | Fixed test files with updated selectors/assertions |
+
+**Why this is BDD-adjacent**: The `planner` agent's output (a Markdown test plan with scenario candidates) closely mirrors the output of an Example Mapping workshop — structured feature areas with concrete examples. Teams using Gherkin can treat `planner` output as a first-pass draft for Three Amigos review, then promote the refined examples to `.feature` files for formalization.
+
+```bash
+# Generate agent definition files for Claude Code
+npx playwright init-agents --loop=claude
+
+# This creates .claude/agents/ files (or equivalent) that implement the planner/generator/healer loop
+# Run the planner agent against a running app to produce a test plan:
+#   → describes observable feature areas, lists scenario candidates per area
+# Run the generator agent against the test plan:
+#   → produces Playwright .spec.ts files for each scenario
+# Run the healer agent when tests fail:
+#   → diagnoses selector/assertion issues and proposes fixes
+```
+
+```typescript
+// Example: using planner output as BDD scenario seeds
+// planner output (Markdown excerpt):
+// ## Checkout
+// - Happy path: guest user completes purchase with credit card
+// - Error path: checkout fails when card is declined
+// - Edge case: user applies expired discount code at checkout
+//
+// Treat each bullet as a candidate Gherkin Scenario for Three Amigos review:
+
+// features/checkout.feature (after Three Amigos refinement of planner output)
+/*
+Scenario: Guest user completes purchase with a valid credit card
+  Given I have added a product to my cart as a guest
+  When I complete checkout with a valid credit card
+  Then my order should be confirmed
+
+Scenario: Checkout fails when the card is declined
+  Given I have added a product to my cart
+  When I attempt checkout with a declined card
+  Then I should see a payment declined message
+  And my cart should remain unchanged
+*/
+```
+
+**[community] Playwright agents vs playwright-bdd AI skill**: `npx playwright init-agents` produces native Playwright `.spec.ts` files — not Gherkin. The playwright-bdd AI generation skill (documented in iteration 27) produces `.feature` files and step stubs. Choose based on your target artifact: if your team uses Gherkin as the canonical specification, use playwright-bdd's skill; if you need Playwright-native tests rapidly and will review/promote them to BDD scenarios later, `init-agents` is faster for initial discovery.
+
+#### `page.pickLocator()` — Interactive Locator Discovery During Step Authoring (v1.59+)
+
+Playwright v1.59 added `page.pickLocator()`, which puts the browser into interactive hover-and-click mode: hovering over an element shows its computed locator, and clicking captures it, returning a `Promise<Locator>`. It is a development-time utility — not for use in production test steps — but it directly accelerates the BDD step definition authoring workflow.
+
+```typescript
+// scripts/pick-locator.ts — development helper for discovering locators interactively
+// Run with: npx ts-node scripts/pick-locator.ts
+import { chromium, type Locator } from 'playwright';
+
+async function interactiveLocatorDiscovery(url: string): Promise<void> {
+  const browser = await chromium.launch({ headless: false });
+  const page = await browser.newPage();
+  await page.goto(url);
+
+  console.log('Hover over an element to see its locator, then click to capture it...');
+
+  // page.pickLocator() blocks until the user clicks an element
+  const locator: Locator = await page.pickLocator();
+
+  // Log the locator string for use in step definitions
+  console.log(`Captured locator: ${locator}`);
+  // Example output: getByRole('button', { name: 'Add to Cart' })
+  //                 getByTestId('checkout-submit')
+  //                 getByLabel('Email address')
+
+  await browser.close();
+}
+
+// Usage during step definition authoring:
+// 1. Start the app: npm run dev
+// 2. Run this script: npx ts-node scripts/pick-locator.ts
+// 3. Click the element your Given/When/Then step targets
+// 4. Paste the captured locator into your step definition
+await interactiveLocatorDiscovery('http://localhost:3000/checkout');
+```
+
+**[community] `page.pickLocator()` for step definition review**: BDD teams often debate which locator strategy to use in step definitions — `getByRole`, `getByTestId`, `getByLabel`, or CSS selectors. `page.pickLocator()` resolves this empirically: Playwright computes the "best-practice" locator for the element using its internal heuristic (role > label > testid > other). Running it on an element quickly reveals whether the expected `data-testid` attribute is present, or whether the accessible role is better. This is particularly valuable when a new team member is writing step definitions for a feature area they have not worked in before.
+
+**`page.pickLocator()` vs `--debug=cli` for step authoring**:
+
+| Tool | Use case | Mode |
+|---|---|---|
+| `page.pickLocator()` | Find the right locator for an element | Interactive (headful browser) |
+| `--debug=cli` (v1.59+) | Step through existing steps line-by-line | Headless CLI |
+| Playwright Inspector | Full visual debugger with step-through | Interactive (headful) |
+
+Use `page.pickLocator()` at the start of step authoring (when you do not yet know the locator). Use `--debug=cli` when you have locators but need to trace why a step is failing.
+
+---
+
+## Additional Resources (Iteration 35 Additions)
+
+- [Playwright `TestStepInfo.titlePath` docs](https://playwright.dev/docs/api/class-teststepinfo#test-step-info-title-path) — v1.55+ `Array<string>` property with the full step ancestry from file → test → step; use for collision-free artifact naming in sharded CI
+- [Playwright Test Agents (`init-agents`)](https://playwright.dev/docs/release-notes#version-156) — v1.56+ official Playwright AI agent loop (planner/generator/healer) for automated test generation; BDD teams can use planner output as Three Amigos seed material
+- [Playwright `page.pickLocator()` docs](https://playwright.dev/docs/api/class-page#page-pick-locator) — v1.59+ interactive hover-and-click locator discovery for step definition authoring; returns `Promise<Locator>` with Playwright's best-practice locator for the selected element
 
 ---
 

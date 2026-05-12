@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 50 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 51 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -54,6 +54,7 @@
      Iter 48 (2026-05-12): 98/100 (+350 lines) — added Hypothesis stateful testing (RuleBasedStateMachine, @rule, @initialize, @invariant, Bundle, multiple(), consumes(), run_state_machine_as_test); pytest 8.3/8.4/9.0 features: pytest.raises(check=), capteesys fixture, collect_imported_tests, console_output_style=times, --xfail-tb, --no-fold-skipped, strict_parametrization_ids; pytest 8.4 behavior changes (async-without-plugin → error, non-None return → error); community gotchas #48 (sync test requesting async fixture), #49 (non-None return from test); sourced from docs.pytest.org/en/stable/changelog.html + practitioner synthesis
      Iter 49 (2026-05-12): 100/100 (+~420 lines) — added patch.dict/patch.multiple patterns, pytest-mock plugin deep-dive (mocker fixture, spy, stopall), freezegun/time-machine datetime mocking with comparison table, responses HTTP mocking, pytest-httpx/aioresponses for async HTTP, st.register_type_strategy() for Hypothesis custom types, pytest-xdist parallel testing with xdist_group/worker isolation patterns, pytest-cov coverage configuration with branch coverage; community gotchas #50 (xdist session-fixture is per-worker), #51 (freezegun misses C-ext time), #52 (responses only intercepts requests); sourced from practitioner synthesis + docs
      Iter 50 (2026-05-12): 100/100 (+~330 lines) — added snapshot testing (syrupy + inline-snapshot); pytest-benchmark micro-benchmark testing; mutation testing with mutmut; pytest-timeout + pytest-randomly CI plugins; pytest-asyncio asyncio_default_fixture_loop_scope deprecation; community gotchas #53 (syrupy auto-update wipes human-reviewed baselines), #54 (pytest-benchmark warm-up vs measurement confusion), #55 (mutmut false positives from equivalent mutations), #56 (pytest-asyncio event_loop fixture deprecation); sourced from practitioner synthesis + official docs
+     Iter 51 (2026-05-12): 100/100 (+~340 lines) — added Python 3.15 section: TypeForm (PEP 747), TypedDict closed/extra_items (PEP 728), re.prefixmatch() (soft-dep re.match()), profiling package (sampling + tracing profilers), UTF-8 default encoding (PEP 686), profile module deprecation; pytest 9.0 additions: faulthandler_exit_on_timeout, consider_namespace_packages, monkeypatch.syspath_prepend() deprecation; community gotchas #57 (assertWarns no longer swallows non-matching warnings, Python 3.15) and #58 (cProfile/profile module deprecated, migrate to profiling.tracing); sourced from docs.python.org/3.15/whatsnew + peps.python.org + docs.pytest.org/en/stable/changelog.html
 -->
 
 
@@ -2295,6 +2296,134 @@ src.move(dst)          # Move (rename) to destination (new in 3.14)
 - `inspect.get_annotations()` replaces `typing.get_type_hints()` for runtime annotation inspection
 - Default `ProcessPoolExecutor` start method changed to `'forkserver'` on Unix (except macOS)
 - `sys.remote_exec()` / `pdb -p PID` for zero-overhead remote debugging
+
+---
+
+### Python 3.15 — TypeForm, Closed TypedDict, Profiling Package, and UTF-8 Default
+
+Python 3.15 (expected October 2026) adds `TypeForm` for annotating type-manipulation functions, closes `TypedDict` to extra keys, introduces the `profiling` package with a zero-overhead statistical sampler, soft-deprecates `re.match()`, and makes UTF-8 the default encoding.
+
+```python
+# ── 1. TypeForm (PEP 747) — annotate functions that accept type expressions ──
+# Prior to 3.15, no way to type-annotate a function taking `int | str` or `list[int]`
+# as a value. `type[C]` only accepts class objects, not unions or special forms.
+from typing import TypeForm   # new in Python 3.15
+
+def trycast[T](typx: TypeForm[T], value: object) -> T | None:
+    """Return value cast to T if it matches, else None."""
+    if isinstance(value, typx):  # type: ignore[arg-type]
+        return value  # type: ignore[return-value]
+    return None
+
+result = trycast(int | str, 42)     # TypeForm[int | str] — valid
+result2 = trycast(list[int], [1])   # TypeForm[list[int]] — valid
+# trycast(42, "x")                  # Type error: 42 is not a TypeForm
+
+# TypeForm vs type[C]:
+# type[C]: only class objects — type[int], type[str], etc.
+# TypeForm[T]: any type expression — int | str, list[int], Literal['x'], etc.
+
+
+# ── 2. TypedDict `closed` and `extra_items` (PEP 728) ────────────────────────
+from typing import TypedDict, Never
+
+# closed=True: no extra keys allowed (equivalent to extra_items=Never)
+class Point(TypedDict, closed=True):
+    x: float
+    y: float
+
+p: Point = {"x": 1.0, "y": 2.0}           # OK
+# p2: Point = {"x": 1.0, "y": 2.0, "z": 0.0}  # Type error: extra key "z"
+
+# extra_items=<type>: extra keys must have that value type
+class FlexRecord(TypedDict, extra_items=int):
+    name: str
+
+rec: FlexRecord = {"name": "Alice", "age": 30, "score": 99}   # OK
+# rec2: FlexRecord = {"name": "Bob", "active": True}           # Type error: bool not int
+
+# Known keys don't need to match extra_items type:
+class Mixed(TypedDict, extra_items=str):
+    count: int   # int is fine — it's a known key, not an extra
+# Cannot combine closed=True and extra_items= simultaneously — raises TypeError
+
+
+# ── 3. re.prefixmatch() — explicit prefix-anchored search (PEP soft-dep re.match) ──
+import re
+
+# Old way (soft-deprecated in 3.15 for clarity):
+# result = re.match(r"\d+", "42 items")  # Matches "42" at position 0
+
+# New preferred way — same behaviour, name makes intent explicit:
+m = re.prefixmatch(r"\d+", "42 items")  # Match at position 0 → "42"
+assert m is not None and m.group() == "42"
+
+# Key difference from re.search(): prefixmatch only checks the beginning
+assert re.prefixmatch(r"\d+", "abc 42") is None   # No match (not at start)
+assert re.search(r"\d+", "abc 42") is not None     # Match at position 4
+
+# On compiled patterns:
+pat = re.compile(r"o")
+pat.prefixmatch("dog")       # None — "o" not at start
+pat.prefixmatch("dog", 1)    # Match at pos 1 (start offset)
+
+# MULTILINE flag does NOT change prefixmatch behaviour — it always anchors to
+# the absolute start of the string, not each line:
+assert re.prefixmatch("^X", "A\nX", re.MULTILINE) is None
+assert re.search("^X", "A\nX", re.MULTILINE) is not None
+
+
+# ── 4. UTF-8 default encoding (PEP 686) ──────────────────────────────────────
+# Python 3.15 makes UTF-8 the default encoding for open(), subprocess, etc.
+# Previously, the default was locale-dependent (e.g. cp1252 on Windows).
+
+# Old code that relied on locale encoding will now read as UTF-8:
+# with open("data.txt") as f: ...   # Now always UTF-8 on 3.15+
+
+# Opt out if you need locale encoding:
+import locale
+with open("legacy.txt", encoding=locale.getpreferredencoding(False)) as f:
+    content = f.read()
+
+# Safest portable style (unchanged — always explicit):
+with open("data.txt", encoding="utf-8") as f:
+    content = f.read()
+```
+
+#### `profiling` Package — Zero-Overhead Sampling Profiler (Python 3.15)
+
+Python 3.15 ships a new `profiling` package that reorganises the built-in profiling tools. `profiling.sampling` is a new **statistical sampler** that attaches to a running process with virtually zero overhead — equivalent to `perf`/`py-spy` but built into the stdlib. `profiling.tracing` replaces `cProfile` for deterministic call-count tracing.
+
+```python
+# ── Command-line (most common usage) ─────────────────────────────────────────
+# profiling.sampling: low-overhead statistical profiler
+#   python -m profiling.sampling run script.py
+#   python -m profiling.sampling run --flamegraph script.py
+#   python -m profiling.sampling attach 12345     # attach to running PID
+
+# profiling.tracing: exact call counts (higher overhead, replaces cProfile)
+#   python -m profiling.tracing script.py
+
+# ── Programmatic API ─────────────────────────────────────────────────────────
+from profiling.sampling import SamplingProfiler
+
+def cpu_heavy() -> int:
+    return sum(i * i for i in range(500_000))
+
+with SamplingProfiler() as prof:
+    result = cpu_heavy()
+
+# Print collapsed stacks (suitable for flamegraphs):
+prof.print_collapsed()
+
+# ── Choosing between sampling and tracing ────────────────────────────────────
+# sampling:  near-zero overhead; good for production profiling or long runs;
+#            reports approximate hot paths (statistical, not exact counts)
+# tracing:   every call/return traced; exact counts; significant overhead;
+#            best for short, focused micro-profiling of test suites / scripts
+```
+
+**`profile` module deprecated** in Python 3.15, scheduled for removal in 3.17. Migrate to `profiling.tracing` (same interface, actively maintained).
 
 ---
 
@@ -8668,6 +8797,88 @@ def test_values_explicit(x):
 
 ---
 
+#### `faulthandler_exit_on_timeout` — Hard Timeout for Deadlocked Processes (pytest 9.0+)
+
+By default, `pytest-timeout` can dump tracebacks but cannot *interrupt* a deadlocked process. The new `faulthandler_exit_on_timeout` option tells the fault handler to kill the pytest process when the timeout elapses, preventing CI jobs from hanging indefinitely.
+
+```toml
+# pyproject.toml
+[tool.pytest.ini_options]
+# Requires pytest-timeout to be installed.
+# timeout = 60 sets a per-test limit; faulthandler_exit_on_timeout kills the
+# process if the timeout fires — use when tests deadlock on mutexes or C-ext calls.
+timeout = 60
+faulthandler_exit_on_timeout = true   # new in pytest 9.0 (default: false)
+```
+
+```python
+import time
+import pytest
+
+
+# Without faulthandler_exit_on_timeout: this test hangs CI for ever
+# With it: the whole pytest process exits after `timeout` seconds
+@pytest.mark.timeout(5)
+def test_simulated_deadlock():
+    """Demonstrates: faulthandler_exit_on_timeout triggers process exit."""
+    time.sleep(999)   # Deadlock simulation
+```
+
+**When to use:** enable in CI pipelines for test suites that touch threading, C-extension locks, or external processes. Keep disabled locally so you get the traceback dump first.
+
+---
+
+#### `consider_namespace_packages` — PEP 420 Namespace Package Discovery (pytest 9.0+)
+
+Pytest's `--pyargs` mode resolves test paths via Python's import system. By default, pytest does not recognise implicit namespace packages (directories without `__init__.py`). The new `consider_namespace_packages` option enables this.
+
+```toml
+# pyproject.toml
+[tool.pytest.ini_options]
+consider_namespace_packages = true   # new in pytest 9.0 (default: false)
+
+# Also affects test discovery: pytest now treats directories without __init__.py
+# as valid package roots, matching how Python 3+ resolves namespace packages.
+```
+
+```
+# Project layout — no __init__.py files (namespace package style):
+# src/
+#   myapp/
+#     core.py
+#     utils.py
+# tests/
+#   myapp/           ← namespace package mirror of src/myapp/
+#     test_core.py
+
+# Without consider_namespace_packages=true: pytest --pyargs myapp.test_core → ImportError
+# With it: pytest finds and imports the test module correctly
+```
+
+**Rule:** Use `consider_namespace_packages = true` when your project follows the namespace-package layout (`src/` layout without `__init__.py`). Keep it `false` for traditional packages to avoid ambiguous imports.
+
+---
+
+#### `monkeypatch.syspath_prepend()` Deprecation for Legacy Namespace Packages (pytest 9.0)
+
+`monkeypatch.syspath_prepend(path)` now emits a `DeprecationWarning` if the prepended path contains a directory that uses `pkg_resources.declare_namespace()` (the legacy `__init__.py`-based namespace-package mechanism from Python 2 / setuptools).
+
+```python
+import pytest
+
+
+# Triggers DeprecationWarning in pytest 9.0 if the path uses
+# pkg_resources.declare_namespace():
+def test_legacy_path(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(tmp_path))   # Warning if tmp_path has legacy NS pkg
+
+# Correct fix: migrate the package to native namespace packages (PEP 420):
+# Remove __init__.py files from the namespace root directories, or
+# replace pkg_resources.declare_namespace(__name__) with nothing.
+```
+
+---
+
 ### Real-World Gotchas (Testing-Specific, continued)
 
 ### 48. Sync Test Requesting an Async Fixture Silently Skips Teardown (pytest 8.4+)  [community]
@@ -10121,5 +10332,135 @@ async def release_connection(conn):
 2. Set `asyncio_default_fixture_loop_scope` in `pyproject.toml` to match your previous override scope (`"session"`, `"module"`, or `"function"`).
 3. Add `loop_scope=` to any async fixtures that need a non-default scope.
 4. Run `pytest -W error::DeprecationWarning` to catch remaining usages.
+
+---
+
+### Community Gotcha #57: `unittest.assertWarns()` No Longer Swallows Non-Matching Warnings (Python 3.15)  [community]
+
+**Problem:** Before Python 3.15, `self.assertWarns(DeprecationWarning)` (and `assertWarnsRegex`) silently swallowed **all** warnings emitted inside the block, including `UserWarning`, `FutureWarning`, or any other category that did not match the asserted type. In Python 3.15, non-matching warnings propagate normally (following the normal warnings filter chain), which can cause tests to suddenly emit unexpected warnings or fail if `filterwarnings = "error"` is set.
+
+**Why:** The old behaviour hid a broad class of accidental side effects. A test asserting on `DeprecationWarning` would silently eat a `ResourceWarning` from a leaked file descriptor, obscuring real problems. Python 3.15 aligns `assertWarns` with least-surprise semantics: it only suppresses the warning category it was asked about.
+
+**Code example:**
+
+```python
+import warnings
+import unittest
+
+
+def emits_two_warnings() -> None:
+    warnings.warn("deprecated feature", DeprecationWarning, stacklevel=2)
+    warnings.warn("file descriptor leak", ResourceWarning, stacklevel=2)
+
+
+class TestWarnings(unittest.TestCase):
+
+    # Python ≤3.14: BOTH warnings swallowed — ResourceWarning hidden
+    # Python 3.15+:  ResourceWarning propagates — may trigger 'error' filter
+    def test_only_deprecation_old(self):
+        with self.assertWarns(DeprecationWarning):
+            emits_two_warnings()   # ResourceWarning now escapes the block
+
+    # Fix 1: assert both warnings explicitly
+    def test_assert_both(self):
+        with self.assertWarns(DeprecationWarning):
+            with self.assertWarns(ResourceWarning):
+                emits_two_warnings()
+
+    # Fix 2: use warnings.catch_warnings() to get full control
+    def test_explicit_filter(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            emits_two_warnings()
+        categories = [x.category for x in w]
+        self.assertIn(DeprecationWarning, categories)
+
+
+# pytest equivalent — pytest.warns() also only intercepts matched category in 3.15+
+import pytest
+
+
+def test_with_pytest_warns():
+    with pytest.warns(DeprecationWarning):
+        emits_two_warnings()  # ResourceWarning propagates — may cause W::error failure
+```
+
+**Migration rule:** Audit every `assertWarns` / `assertWarnsRegex` block. If the code under test emits multiple warning categories, either assert each one explicitly or use `warnings.catch_warnings(record=True)` for fine-grained control. Add `filterwarnings = "error::ResourceWarning"` to `pyproject.toml` to expose any newly propagated warnings in CI.
+
+---
+
+### Community Gotcha #58: `profile` Module Deprecated — Migrate to `profiling.tracing` (Python 3.15)  [community]
+
+**Problem:** The `profile` (pure-Python) and `cProfile` (C-optimised) modules are deprecated in Python 3.15 and scheduled for removal in Python 3.17. Test suites and benchmarks that import `cProfile` directly or use `python -m cProfile` will start emitting `DeprecationWarning` on 3.15 and break on 3.17.
+
+**Why:** Python 3.15 ships a new `profiling` package that consolidates deterministic tracing (`profiling.tracing`) and statistical sampling (`profiling.sampling`) under a single, actively maintained interface. The old `profile`/`cProfile` API is frozen and will not receive the new sampling profiler or the async-aware improvements.
+
+**Old pattern (deprecated in 3.15, removed in 3.17):**
+
+```python
+import cProfile
+import pstats
+
+
+def heavy_computation(n: int) -> int:
+    return sum(i * i for i in range(n))
+
+
+# Using cProfile (deprecated) — replace before Python 3.17
+with cProfile.Profile() as pr:
+    result = heavy_computation(100_000)
+
+stats = pstats.Stats(pr)
+stats.sort_stats("cumulative")
+stats.print_stats(10)
+```
+
+**New pattern (Python 3.15+):**
+
+```python
+from profiling.tracing import TracingProfiler   # replaces cProfile
+import pstats
+
+
+def heavy_computation(n: int) -> int:
+    return sum(i * i for i in range(n))
+
+
+# Deterministic tracing — same semantics as cProfile, compatible with pstats:
+with TracingProfiler() as prof:
+    result = heavy_computation(100_000)
+
+stats = pstats.Stats(prof)
+stats.sort_stats("cumulative")
+stats.print_stats(10)
+
+
+# For long-running or production profiling, prefer the sampling profiler instead:
+from profiling.sampling import SamplingProfiler
+
+with SamplingProfiler() as sp:
+    result = heavy_computation(1_000_000)   # near-zero overhead
+
+sp.print_collapsed()   # flamegraph-compatible collapsed stacks output
+```
+
+**Command-line migration:**
+
+```bash
+# Old (deprecated):
+python -m cProfile -o output.pstats script.py
+
+# New equivalents:
+python -m profiling.tracing script.py          # deterministic, replaces cProfile
+python -m profiling.sampling run script.py     # statistical, near-zero overhead
+python -m profiling.sampling run --flamegraph script.py  # flamegraph output
+```
+
+**Migration checklist:**
+1. `grep -r "import cProfile\|import profile\b" .` to find all usages.
+2. Replace `cProfile.Profile()` → `profiling.tracing.TracingProfiler()` (drop-in for most uses).
+3. For performance-sensitive or production profiling, switch to `profiling.sampling.SamplingProfiler`.
+4. Update any `python -m cProfile` calls in Makefiles, CI scripts, or tox configs.
+5. Add `filterwarnings = "error::DeprecationWarning"` to catch remaining usages early.
 
 ---

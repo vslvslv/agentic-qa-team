@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.14 release notes, JUnit 6.0-6.1 release notes, Mockito 5.x-5.23 release notes, AssertJ 3.27.7 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Framework 6.2 MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass @SentenceFragment @ClassTemplate AutoCloseable-in-Store Kotlin-Sequence, JUnit 5.14 ResourceSupport OutputDirectoryCreator MediaType-relocation EnabledOnJre-JRE-OTHER ResourceLock-ClassTemplate, JUnit 6.1 @DefaultLocale @DefaultTimeZone @EmptySource-Iterable @CsvSource-commentCharacter @EnabledOnJre-int, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, AssertJ 3.27.7 XXE CVE-2026-24400 XmlStringPrettyFormatter-deprecated, Spring Boot 3.5 SSL Testcontainers print-condition-evaluation-report, Mockito 5.20 generic-type-construction, Mockito 5.21 ReturnsEmptyValues-Future, Mockito 5.22 Kotlin singleton mocking, Mockito 5.23 @Nullable-when Android-mock-maker) | mixed | iteration: 34 | score: 99/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.14 release notes, JUnit 6.0-6.1 release notes, Mockito 5.x-5.23 release notes, AssertJ 3.27.7 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Boot 4.0 release notes and migration guide, Spring Framework 6.2-7.0 docs, MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass @SentenceFragment @ClassTemplate AutoCloseable-in-Store Kotlin-Sequence, JUnit 5.14 ResourceSupport OutputDirectoryCreator MediaType-relocation EnabledOnJre-JRE-OTHER ResourceLock-ClassTemplate, JUnit 6.1 @DefaultLocale @DefaultTimeZone @EmptySource-Iterable @CsvSource-commentCharacter @EnabledOnJre-int @TempDir-CleanupMode system-properties-extension Constants-class assertInstanceOf-cause trimStacktrace WorkerThreadPool org.junit.start dynamic-test-ExecutionMode memory-cleanup-mode, JUnit 6.0.3 NamespacedHierarchicalStore-deadlock, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, AssertJ 3.27.7 XXE CVE-2026-24400 XmlStringPrettyFormatter-deprecated, Spring Boot 3.5 SSL Testcontainers print-condition-evaluation-report, Spring Boot 4.0 @MockBean-removal @MockitoBean RestTestClient @AutoConfigureMockMvc-HtmlUnit MockitoTestExecutionListener-removal @PropertyMapping-relocation @WithMockUser-security-test, Mockito 5.20 generic-type-construction, Mockito 5.21 ReturnsEmptyValues-Future, Mockito 5.22 Kotlin singleton mocking, Mockito 5.23 @Nullable-when Android-mock-maker) | mixed | iteration: 35 | score: 99/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -5686,5 +5686,451 @@ class OrderServiceIntegrationTest {
 **When to suppress the report:** Turn off the condition evaluation report in well-established integration test suites where the auto-configuration is stable and the report is pure noise. Keep it enabled (the default) for new projects or when diagnosing bean-wiring failures — the report is essential for understanding which `@Conditional` evaluated to false when a required bean is missing.
 
 **Gotcha — noisy CI output from condition reports [community]:** A single `@SpringBootTest` that fails in CI can produce 300–500 lines of condition evaluation output, scrolling the actual assertion failure off the screen. This is the most common reason developers add `logging.level.org.springframework.boot.autoconfigure=ERROR` to test properties. The new property provides a cleaner opt-out.
+
+---
+
+## Spring Boot 4.0 — Testing Breaking Changes and Migration
+
+Spring Boot 4.0 (targeting Spring Framework 7.0) introduces several breaking changes to the testing APIs that affect virtually every Spring Boot test class. The changes clean up long-standing technical debt: Spring Boot's test-only annotation duplicates (`@MockBean`, `@SpyBean`) are removed in favour of Spring Framework's canonical equivalents, and auto-wiring of web test clients is now opt-in rather than automatic.
+
+### @MockBean and @SpyBean Removed — Migrate to @MockitoBean / @MockitoSpyBean
+
+Spring Boot 4.0 removes `@MockBean` and `@SpyBean` entirely. The canonical replacements are `@MockitoBean` and `@MockitoSpyBean` from `org.springframework.test.context.bean.override.mockito`, introduced in Spring Framework 6.2 (available since Spring Boot 3.4).
+
+```java
+// Spring Boot 3.5 and earlier — @MockBean from Boot module
+import org.springframework.boot.test.mock.mockito.MockBean;
+
+@SpringBootTest
+class OrderServiceTest {
+    @MockBean
+    private PaymentGateway paymentGateway;  // REMOVED in Spring Boot 4.0
+}
+
+// Spring Boot 4.0+ — @MockitoBean from Spring Framework
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
+@SpringBootTest
+class OrderServiceTest {
+    @MockitoBean
+    private PaymentGateway paymentGateway;  // canonical replacement
+}
+```
+
+**Key difference in `@MockitoBean` vs `@MockBean`:** `@MockitoBean` cannot be used inside a `@Configuration` class (it is a field-level annotation on test classes only). For shared mocked beans across many test classes, create a base test class with the `@MockitoBean` fields and extend from it.
+
+```java
+// Shared mock base class pattern for Spring Boot 4.0+
+@SpringBootTest
+abstract class BaseIntegrationTest {
+    @MockitoBean
+    protected EmailService emailService;
+
+    @MockitoBean
+    protected AuditService auditService;
+}
+
+class OrderServiceTest extends BaseIntegrationTest {
+    @Autowired OrderService orderService;
+
+    @Test
+    void placeOrder_sendConfirmationEmail() {
+        orderService.placeOrder(new OrderRequest("item-1", 2));
+        verify(emailService).sendConfirmation(any(Order.class));
+    }
+}
+```
+
+### MockitoTestExecutionListener Removed
+
+`MockitoTestExecutionListener`, deprecated in Spring Boot 3.4, is removed in 4.0. Tests that used `@Mock` and `@Captor` via Spring Boot's listener must now use Mockito's own JUnit 5 extension:
+
+```java
+// Spring Boot 3.x — @Mock worked via MockitoTestExecutionListener (Spring Boot owned)
+@SpringBootTest
+class OldTest {
+    @Mock  // initialised by Boot's listener — NO LONGER WORKS in 4.0
+    private UserRepository userRepository;
+}
+
+// Spring Boot 4.0+ — use MockitoExtension explicitly
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+@ExtendWith(MockitoExtension.class)   // Mockito's own extension handles @Mock/@Captor
+class ServiceUnitTest {
+    @Mock
+    private UserRepository userRepository;
+
+    @InjectMocks
+    private UserService userService;
+
+    @Test
+    void findUser_delegatesToRepository() {
+        when(userRepository.findById(1L)).thenReturn(Optional.of(new User("alice")));
+        assertThat(userService.findUser(1L).name()).isEqualTo("alice");
+    }
+}
+```
+
+### @AutoConfigureMockMvc — No Longer Auto-Applied by @SpringBootTest
+
+In Spring Boot 4.0, `@SpringBootTest` no longer automatically provides `MockMvc`, `WebTestClient`, or `TestRestTemplate` beans. Tests must opt in explicitly:
+
+```java
+// Spring Boot 3.x — MockMvc auto-provided by @SpringBootTest
+@SpringBootTest
+class OldTest {
+    @Autowired MockMvc mockMvc;  // just worked — not in Boot 4.0
+}
+
+// Spring Boot 4.0+ — explicit opt-in required
+@SpringBootTest
+@AutoConfigureMockMvc
+class ControllerTest {
+    @Autowired MockMvc mockMvc;  // opt-in
+
+    @Test
+    void getUser_returns200() throws Exception {
+        mockMvc.perform(get("/api/users/1"))
+               .andExpect(status().isOk())
+               .andExpect(jsonPath("$.name").value("alice"));
+    }
+}
+```
+
+**HtmlUnit attribute restructured:** The `webClientEnabled` and `webDriverEnabled` attributes of `@AutoConfigureMockMvc` were replaced by a nested `@HtmlUnit` attribute group:
+
+```java
+// Spring Boot 3.5 and earlier
+@AutoConfigureMockMvc(webClientEnabled = false, webDriverEnabled = false)
+
+// Spring Boot 4.0+
+@AutoConfigureMockMvc(htmlUnit = @HtmlUnit(webClient = false, webDriver = false))
+```
+
+### RestTestClient — Replacement for TestRestTemplate
+
+Spring Boot 4.0 introduces `RestTestClient` as the modern replacement for `TestRestTemplate`. `TestRestTemplate` still exists but was relocated to `org.springframework.boot.resttestclient.TestRestTemplate` and now requires an explicit `@AutoConfigureTestRestTemplate` annotation. New projects should prefer `RestTestClient`.
+
+```java
+// pom.xml — new dependencies required for RestTestClient
+// <dependency>
+//   <groupId>org.springframework.boot</groupId>
+//   <artifactId>spring-boot-resttestclient</artifactId>
+//   <scope>test</scope>
+// </dependency>
+// <dependency>
+//   <groupId>org.springframework.boot</groupId>
+//   <artifactId>spring-boot-restclient</artifactId>
+// </dependency>
+
+// MockMvc-backed RestTestClient — no server started
+@SpringBootTest
+@AutoConfigureMockMvc
+@AutoConfigureRestTestClient
+class MockMvcRestTestClientTest {
+
+    @Autowired
+    private RestTestClient testClient;
+
+    @Test
+    void getUser_returnsOk() {
+        testClient.get().uri("/api/users/1")
+                  .exchange()
+                  .expectStatus().isOk()
+                  .expectBody()
+                  .jsonPath("$.name").isEqualTo("alice");
+    }
+}
+
+// Running-server RestTestClient — actual HTTP, random port
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureRestTestClient
+class IntegrationRestTestClientTest {
+
+    @Autowired
+    private RestTestClient testClient;
+
+    @Test
+    void createOrder_returns201() {
+        testClient.post().uri("/api/orders")
+                  .bodyValue(new OrderRequest("item-1", 3))
+                  .exchange()
+                  .expectStatus().isCreated()
+                  .expectBody()
+                  .jsonPath("$.id").isNotEmpty();
+    }
+}
+```
+
+**`RestTestClient` vs `MockMvcTester` vs `WebTestClient`:** Use `MockMvcTester` (Spring Boot 3.4+) when you want AssertJ-native assertions against MockMvc without starting a server. Use `RestTestClient` when you want a single API surface that works for both MockMvc-backed and server-backed tests with a fluent exchange/expectation DSL. Use `WebTestClient` for reactive WebFlux applications.
+
+### @PropertyMapping Relocation
+
+`@PropertyMapping` moved from `org.springframework.boot.test.autoconfigure.properties` to `org.springframework.boot.test.context`. The `skip` attribute enum type is now `PropertyMapping.Skip` rather than the old inner enum:
+
+```java
+// Spring Boot 3.5 and earlier
+import org.springframework.boot.test.autoconfigure.properties.PropertyMapping;
+
+// Spring Boot 4.0+
+import org.springframework.boot.test.context.PropertyMapping;
+```
+
+### @WithMockUser Now Requires spring-boot-starter-security-test
+
+In Spring Boot 4.0, `@WithMockUser` and `@WithUserDetails` (from `spring-security-test`) require the new `spring-boot-starter-security-test` starter to function correctly. The underlying dependency was not transitively included before, causing silent failures:
+
+```xml
+<!-- Spring Boot 4.0+ — add explicitly if using @WithMockUser -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security-test</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+
+**Gotcha — Spring Boot 4.0 migration checklist [community]:** The five changes that break the most tests in production Spring Boot codebases when upgrading to 4.0 are: (1) `@MockBean` → `@MockitoBean`, (2) removing `@Mock` fields that relied on `MockitoTestExecutionListener`, (3) adding `@AutoConfigureMockMvc` to any `@SpringBootTest` that injects `MockMvc`, (4) updating `@AutoConfigureMockMvc` HtmlUnit attributes, and (5) updating `@PropertyMapping` imports. Run `./gradlew test` after each change to catch failures incrementally rather than all at once. [community]
+
+---
+
+## JUnit 6.1 M1 / RC1 — Additional Testing Improvements
+
+### assertInstanceOf Enriches Failure with Throwable Cause (JUnit 6.1 M1)
+
+`Assertions.assertInstanceOf(Class, Object)` in JUnit 6.1 now uses the test subject as the `cause` of the `AssertionFailedError` when the subject is a `Throwable`. This means the test subject's full stack trace is included in the test failure output, making it far easier to diagnose unexpected exception types without adding manual `e.printStackTrace()` calls.
+
+```java
+// Before JUnit 6.1 M1: when type check fails, you only see "expected Foo but was Bar"
+// You had to separately print or inspect the actual exception to see its stack trace
+
+// JUnit 6.1 M1+: when type check fails, the subject's full stack trace is attached as cause
+@Test
+void processingFails_withDomainException() {
+    Exception ex = assertThrows(Exception.class, () -> orderService.process(badRequest));
+
+    // If the wrong exception type is thrown, JUnit now shows BOTH:
+    // 1. The assertion failure message ("expected OrderValidationException but was IllegalArgumentException")
+    // 2. The IllegalArgumentException's full stack trace as the cause
+    assertInstanceOf(OrderValidationException.class, ex,
+        "Expected a domain validation exception, not an internal error");
+}
+```
+
+**WHY this matters:** Deep stack traces from unexpected exceptions were previously invisible in test output — you only saw the assertion message. Now the root-cause stack trace propagates automatically, reducing time spent adding debug logging to locate the origin of unexpected exceptions.
+
+### Stack Trace Pruning in Custom Assertions (JUnit 6.1 RC1)
+
+JUnit 6.1 RC1 introduced two improvements to `AssertionFailedError` stack traces:
+
+1. **Internal JUnit frames are automatically stripped** from `AssertionFailedError` stack traces, so assertion failures no longer show the 10–15 internal JUnit frames between `fail()` and your test method — only the relevant frames remain.
+2. **`AssertionFailureBuilder`** gained two new methods for custom assertion authors: `trimStacktrace(Class<?>)` removes frames from a specified class upward, and `retainStackTraceElements(int)` keeps only the N deepest frames.
+
+```java
+import org.junit.jupiter.api.AssertionFailureBuilder;
+
+// Custom assertion helper — stack trace trimmed so callers see THEIR frame, not the helper's
+public class OrderAssertions {
+    public static void assertOrderPending(Order order) {
+        if (order.status() != OrderStatus.PENDING) {
+            AssertionFailureBuilder.assertionFailure()
+                .message("Expected order to be PENDING")
+                .expected(OrderStatus.PENDING)
+                .actual(order.status())
+                .trimStacktrace(OrderAssertions.class)  // remove frames from this class up
+                .buildAndThrow();
+        }
+    }
+}
+
+// Test failure now points to the test method line, not inside OrderAssertions.assertOrderPending
+@Test
+void newOrder_isPending() {
+    Order order = orderService.create(new OrderRequest("item-1", 1));
+    OrderAssertions.assertOrderPending(order);  // failure line shown here, not inside helper
+}
+```
+
+### @TempDir Configurable Deletion Strategy (JUnit 6.1 RC1)
+
+`@TempDir` in JUnit 6.1 RC1 gained a configurable `cleanup` attribute (`CleanupMode`) that controls what happens when deletion of a temporary file or directory fails. This is useful on Windows where file locking prevents deletion even after the test completes.
+
+```java
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.io.CleanupMode;
+import java.nio.file.Path;
+
+// Default — ALWAYS: attempt deletion; failure is silently logged (JUnit ≤ 6.0 behaviour)
+@TempDir
+Path tempDir;
+
+// ON_SUCCESS — only clean up if the test passed; preserve dir on failure for post-mortem inspection
+@TempDir(cleanup = CleanupMode.ON_SUCCESS)
+Path debugTempDir;
+
+// NEVER — never delete; useful for debugging or when CI archives the temp directory
+@TempDir(cleanup = CleanupMode.NEVER)
+Path auditTempDir;
+
+@Test
+void processFiles_createsOutputs() throws Exception {
+    // debugTempDir survives if this assertion fails — inspect files manually after CI failure
+    Path input = Files.writeString(debugTempDir.resolve("input.txt"), "hello");
+    processor.process(input, debugTempDir);
+    assertThat(debugTempDir.resolve("output.txt")).exists();
+}
+```
+
+**Gotcha — `CleanupMode.ON_SUCCESS` on Windows [community]:** On Windows, file handles held by child processes or JVM-internal caches can prevent deletion even after a test passes. If `ALWAYS` mode causes intermittent "cannot delete" warnings in CI, switch to `ON_SUCCESS` so failures leave the directory intact for inspection, and ALWAYS mode won't silently fail on success paths. Use `ON_SUCCESS` as the default for integration tests that write to disk.
+
+### Memory Cleanup Mode for Large Test Suites (JUnit 6.1 RC1)
+
+JUnit 6.1 RC1 adds an experimental memory cleanup mode that reduces peak memory usage when running a large number of tests (thousands of test classes). Enable it via `junit-platform.properties`:
+
+```properties
+# junit-platform.properties (on the classpath in src/test/resources)
+
+# Experimental: release internal bookkeeping structures after each test class completes.
+# Reduces peak heap usage for large suites at the cost of a small CPU overhead.
+junit.platform.execution.memory.cleanup.enabled=true
+```
+
+**When to enable:** Enable in monorepo builds or large microservice test suites where a single JVM executes 5,000+ test classes and GC pressure causes test slowdowns. On smaller suites the overhead is negligible but the benefit is also minimal.
+
+### Parallel Execution — WorkerThreadPool Alternative to ForkJoinPool (JUnit 6.1 M1)
+
+JUnit 6.1 M1 added `WorkerThreadPoolHierarchicalTestExecutorService` as an alternative to the existing `ForkJoinPool`-based parallel executor. The `ForkJoinPool` uses work-stealing and is well-suited for CPU-bound tasks but performs poorly when tests block on I/O (databases, external services). The worker thread pool uses a fixed thread pool that does not steal work, giving more predictable parallelism for I/O-heavy integration tests.
+
+```properties
+# junit-platform.properties
+
+# Enable parallel execution
+junit.jupiter.execution.parallel.enabled=true
+junit.jupiter.execution.parallel.mode.default=concurrent
+junit.jupiter.execution.parallel.mode.classes.default=concurrent
+
+# JUnit 6.1+: choose executor service
+# "fork-join" (default) — ForkJoinPool, best for CPU-bound tests
+# "worker-thread-pool" — fixed thread pool, better for I/O-heavy integration tests
+junit.jupiter.execution.parallel.config.executor-service=worker-thread-pool
+
+# Configure the worker thread pool size (defaults to processor count)
+junit.jupiter.execution.parallel.config.fixed.parallelism=4
+```
+
+**Gotcha — ForkJoinPool vs WorkerThreadPool in integration test suites [community]:** The default `ForkJoinPool` executor can cause slow test execution in suites with many `@SpringBootTest` tests because the work-stealing threads block waiting for application context loading and database operations. Switching to `worker-thread-pool` with `fixed.parallelism=4` often reduces integration suite runtime by 20–40% by preventing work-stealing from starving context-loading threads. Test on your specific suite before adopting — CPU-bound unit test suites run faster with `fork-join`.
+
+### `org.junit.jupiter.api.Constants` — Typed Configuration Parameters (JUnit 6.1 RC1)
+
+JUnit 6.1 RC1 introduced `org.junit.jupiter.api.Constants` to provide named constants for all Jupiter configuration parameters. This replaces the deprecated `org.junit.jupiter.engine.Constants` (an engine-internal class that should never have been public API).
+
+```java
+import org.junit.jupiter.api.Constants;
+
+// Before JUnit 6.1: configuration parameter names were raw strings
+// "junit.jupiter.execution.parallel.enabled"
+// "junit.jupiter.execution.parallel.config.executor-service"
+
+// JUnit 6.1+: use Constants to avoid typos and get IDE completion
+// Constants.PARALLEL_EXECUTION_ENABLED_PROPERTY_NAME
+// Constants.PARALLEL_CONFIG_EXECUTOR_SERVICE_PROPERTY_NAME
+
+// Primarily useful in custom JUnit extensions or launcher configurations:
+class ParallelExecutionExtension implements BeforeAllCallback {
+    @Override
+    public void beforeAll(ExtensionContext ctx) {
+        ctx.getConfigurationParameter(Constants.PARALLEL_EXECUTION_ENABLED_PROPERTY_NAME)
+           .ifPresent(val -> System.out.println("Parallel execution: " + val));
+    }
+}
+```
+
+### `org.junit.start` Module — Compact Test Files (JUnit 6.1 M1)
+
+JUnit 6.1 M1 introduced the `org.junit.start` module, designed to work with Java 24+ **unnamed classes** (JEP 477, standard in Java 25) and **module import declarations** (JEP 476, standard in Java 24). A single `import module org.junit.start;` statement pulls in all commonly needed JUnit annotations and assertions, enabling minimal-boilerplate test files.
+
+```java
+// Java 25 compact test — no class declaration, single module import
+// Requires: --enable-preview (if Java 24) or standard (Java 25+)
+import module org.junit.start;  // pulls in @Test, @BeforeEach, assertThat, etc.
+
+@Test
+void addition() {
+    assertThat(1 + 1).isEqualTo(2);
+}
+
+@Test
+void stringLength() {
+    assertThat("hello".length()).isEqualTo(5);
+}
+```
+
+**Note:** `org.junit.start` is primarily aimed at educational use, quick experiments, and scripting contexts. Production test code should continue using explicit imports for clarity and IDE tooling support.
+
+### Dynamic Test Execution Mode Configuration (JUnit 6.1 M1)
+
+`DynamicTest` and `DynamicContainer` factory methods in JUnit 6.1 M1 gained overloads that accept a `Consumer<Configuration>` to set the `ExecutionMode` alongside the display name and executable. Previously, `@TestFactory`-generated tests always inherited the parent's execution mode and could not be individually configured for concurrent or sequential execution.
+
+```java
+import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.TestFactory;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
+import java.util.stream.Stream;
+
+@TestFactory
+Stream<DynamicTest> dynamicTestsWithCustomExecutionMode() {
+    return Stream.of("alice", "bob", "charlie").map(name ->
+        DynamicTest.dynamicTest(
+            "validate-" + name,       // display name
+            config -> config.withExecutionMode(ExecutionMode.CONCURRENT),  // JUnit 6.1+ config
+            () -> {
+                // Each dynamic test runs concurrently even if the @TestFactory method
+                // class default is SAME_THREAD
+                assertThat(name).isNotBlank();
+            }
+        )
+    );
+}
+```
+
+---
+
+## JUnit 6.0.3 — Deadlock Fix in NamespacedHierarchicalStore (February 2026)
+
+JUnit 6.0.3 (February 15, 2026) fixed a critical concurrency bug: `NamespacedHierarchicalStore.computeIfAbsent()` could deadlock when two test threads simultaneously computed values for different keys in the same namespace. This was observed in suites using `@ExtendWith` extensions that lazily initialize expensive resources (database connections, WireMock servers) in `getOrComputeIfAbsent()` calls during parallel test execution.
+
+```java
+// Extension pattern that triggered the deadlock pre-6.0.3
+class DatabaseExtension implements BeforeAllCallback {
+    private static final ExtensionContext.Namespace NS =
+        ExtensionContext.Namespace.create(DatabaseExtension.class);
+
+    @Override
+    public void beforeAll(ExtensionContext ctx) throws Exception {
+        // 6.0.0-6.0.2: two parallel @TestClass instances could deadlock here
+        // if both called getOrComputeIfAbsent simultaneously for different keys
+        ctx.getRoot().getStore(NS)
+           .getOrComputeIfAbsent("db", key -> startDatabase(), Database.class);
+    }
+}
+
+// Fix: upgrade to JUnit 6.0.3; no code change required
+// The internal lock granularity was reduced from namespace-level to key-level
+```
+
+**Action required:** Any team running JUnit 6.0.0–6.0.2 with parallel test execution and stateful extensions should upgrade to 6.0.3 to prevent intermittent test suite hangs. The symptom is a JVM that appears to be running tests but produces no output — threads are deadlocked inside `NamespacedHierarchicalStore`.
+
+---
+
+## Real-World Gotchas (continued)  [community]
+
+**49. Spring Boot 4.0 — @MockBean Removal Breaks Tests Silently on Upgrade [community]**
+Upgrading from Spring Boot 3.x to 4.0 without migrating `@MockBean` / `@SpyBean` causes `NoSuchBeanDefinitionException` at test startup — the annotations are no longer on the classpath, and any `@MockBean` fields are silently treated as regular uninitialized fields (or cause compilation errors after the Boot test module removes the class). The error message mentions the service class rather than the missing mock, pointing in the wrong direction. Fix: bulk-rename `@MockBean` → `@MockitoBean` and `@SpyBean` → `@MockitoSpyBean` across the test sources before upgrading. [community]
+
+**50. JUnit 6.1 @TempDir CleanupMode.NEVER Leaks Disk Space in CI [community]**
+`CleanupMode.NEVER` is intended for debugging and short-lived local runs. In CI pipelines with ephemeral agents, it is harmless — the agent is discarded. But on self-hosted runners or shared CI machines, accumulated `@TempDir(cleanup = NEVER)` directories fill disk over time. Use `CleanupMode.ON_SUCCESS` instead: failed test runs retain the directory for inspection while successful runs clean up. Add a CI cron job to purge stale temp directories older than 48 hours as a safety net. [community]
 
 

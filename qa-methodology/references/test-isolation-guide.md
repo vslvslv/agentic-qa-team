@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -78,6 +78,11 @@
 <!--            prevents test contamination when invariants are violated mid-test (Gotcha 99);          -->
 <!--            Playwright v1.60 `tracing.startHar()` with `await using` disposable for scoped         -->
 <!--            network recording without manual stopHar() teardown (Gotcha 100)                        -->
+<!--          Iteration 24 (2026-05-12): Vitest 3.2 `test.signal` (AbortSignal) for cancelling        -->
+<!--            in-flight async resources on timeout/bail/Ctrl-C without afterEach cleanup             -->
+<!--            (Pattern 40, Gotcha 101); Playwright v1.59 `page.clearConsoleMessages()` /            -->
+<!--            `page.clearPageErrors()` for intra-test diagnostic isolation in multi-phase            -->
+<!--            workflows — prevent cross-phase console/error contamination (Pattern 41, Gotcha 102)   -->
 
 ---
 
@@ -5595,3 +5600,254 @@ test('registration form is accessible and persists the user', async ({
 | Playwright v1.39 Release Notes — mergeTests | Official | https://playwright.dev/docs/release-notes#version-139 | `mergeTests()` + `mergeExpects()` — compose fixture modules without coupling |
 | Playwright v1.60 Release Notes — test.abort | Official | https://playwright.dev/docs/release-notes#version-160 | `test.abort(message)` — fail-fast from route handlers + fixtures when isolation invariants are violated |
 | Playwright Docs — Tracing API (startHar/stopHar) | Official | https://playwright.dev/docs/api/class-tracing | HAR recording API: `startHar`, `stopHar`; disposable-compatible for `await using` teardown |
+
+---
+
+### Pattern 40: Vitest `test.signal` for async resource cancellation on timeout or bail (TypeScript, Vitest 3.2+)  [community]
+
+Long-running async operations started inside a test body — fetch requests, polling loops, streaming consumers — do not stop automatically when a test times out. They continue executing in the background, holding handles open and potentially contaminating the next test with their eventual resolution or rejection. Vitest 3.2 exposes `signal` as a built-in property on the test context (the argument to the test function). It is an `AbortSignal` that Vitest aborts as soon as any of the following occurs: the test's timeout fires, the user presses Ctrl+C, `vitest.cancelCurrentRun()` is called programmatically, or another test fails when the `bail` flag is non-zero. Passing this signal to any API that accepts `AbortSignal` — `fetch`, `ReadableStream`, custom async iterators, database cursors — gives those operations a guaranteed cancellation path.
+
+```typescript
+import { it, describe, expect } from 'vitest';
+
+// Simulates a slow API that supports cancellation via AbortSignal
+async function fetchWithAbort(url: string, signal: AbortSignal): Promise<string> {
+  const response = await fetch(url, { signal });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.text();
+}
+
+// Simulates a polling loop that must stop when the test ends
+async function pollUntilReady(
+  url: string,
+  signal: AbortSignal,
+  intervalMs = 100,
+): Promise<string> {
+  while (!signal.aborted) {
+    const result = await fetchWithAbort(url, signal);
+    if (result !== 'pending') return result;
+    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+  }
+  // signal was aborted — clean exit, no unhandled-rejection
+  throw new DOMException('Polling aborted', 'AbortError');
+}
+
+describe('order processing service', () => {
+  // WRONG: no signal — if this test times out at 2000 ms, the poll loop
+  // continues running after the test ends, holds the worker open, and may
+  // resolve against the *next* test's server state.
+  it('processes order without cancellation (broken)', async () => {
+    const status = await pollUntilReady('http://localhost:3000/order/42/status');
+    expect(status).toBe('complete');
+  }, 2000);
+
+  // CORRECT: pass signal — Vitest aborts the signal on timeout, the poll loop
+  // exits cleanly, and no handles remain open after the test ends.
+  it('processes order with signal (safe)', async ({ signal }) => {
+    const status = await pollUntilReady(
+      'http://localhost:3000/order/42/status',
+      signal,
+    );
+    expect(status).toBe('complete');
+  }, 2000);
+});
+
+// Fixture that starts a streaming subscription and cancels it via signal
+import { test as base } from 'vitest';
+
+interface StreamFixtures {
+  eventStream: ReadableStreamDefaultReader<string>;
+}
+
+const test = base.extend<StreamFixtures>({
+  // signal is available on the fixture context — same abort triggers as in tests
+  eventStream: async ({ signal }, use) => {
+    const response = await fetch('http://localhost:3000/events', { signal });
+    const reader = response.body!.getReader() as ReadableStreamDefaultReader<string>;
+    await use(reader);
+    // reader.cancel() is idempotent — safe even if test aborted cleanly
+    await reader.cancel();
+  },
+});
+
+test('receives first domain event', async ({ eventStream, signal }) => {
+  const { value, done } = await eventStream.read();
+  expect(done).toBe(false);
+  expect(value).toContain('order.created');
+});
+```
+
+**WHY the signal does not replace `onCleanup`:** `test.signal` and `onCleanup` serve different responsibilities. `signal` propagates cancellation *during* the test to in-flight async operations, while `onCleanup` / `afterEach` handles deterministic resource teardown *after* the test. For resources that cannot receive an `AbortSignal` (e.g., a database connection pool that must be explicitly `.end()`ed), `onCleanup` is still required. Use `signal` to cancel the operation and `onCleanup` to release the resource — the two compose cleanly.
+
+**Scope restriction:** `signal` is a test-scoped context property. File-scoped and worker-scoped fixtures (`scope: 'file'` / `scope: 'worker'`) do not receive a per-test `signal` because they outlive individual tests. For those fixtures, rely on `onCleanup` registered at the appropriate scope.
+
+---
+
+### Pattern 41: Playwright `page.clearConsoleMessages()` / `page.clearPageErrors()` for intra-test diagnostic isolation (TypeScript, Playwright v1.59+)  [community]
+
+Playwright stores up to 200 recent console messages and page errors per page, accessible via `page.consoleMessages()` and `page.pageErrors()`. These collections accumulate across the entire page lifetime — meaning messages emitted during the *setup* phase of a multi-phase test are still present when you assert on console output during the *action* phase. Assertions like `expect(page.consoleMessages()).toHaveLength(1)` become order-dependent and fragile when earlier test steps emit their own log output. Playwright v1.59 introduces `page.clearConsoleMessages()` and `page.clearPageErrors()` to reset these collections at any point, enabling fine-grained intra-test isolation of diagnostic state.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+// WRONG: console messages accumulate from page.goto() onward.
+// The assertion on page.consoleMessages().length is fragile because the
+// page may have emitted info or warning messages during initial load.
+test('checkout does not log errors (broken)', async ({ page }) => {
+  await page.goto('/checkout');           // may emit "Initialized payment SDK" log
+  await page.getByRole('button', { name: 'Pay now' }).click();
+
+  // Could be 2+ if goto() emitted setup logs — assertion is flaky
+  expect(page.consoleMessages()).toHaveLength(1); // ← brittle
+  expect(page.consoleMessages()[0].type()).toBe('error');
+});
+
+// CORRECT: clear the diagnostic buffer before the action you are asserting on.
+test('checkout does not log errors after payment attempt (correct)', async ({ page }) => {
+  // Arrange: navigate and let any initialization logging complete
+  await page.goto('/checkout');
+  await page.waitForLoadState('networkidle');
+
+  // Reset: discard all console messages emitted during page load/setup
+  await page.clearConsoleMessages();
+  await page.clearPageErrors();
+
+  // Act: perform the action under test
+  await page.getByRole('button', { name: 'Pay now' }).click();
+  await page.waitForResponse('**/api/payment');
+
+  // Assert: only messages emitted AFTER clearConsoleMessages() are present
+  const messages = page.consoleMessages();
+  const errorMessages = messages.filter((m) => m.type() === 'error');
+  expect(errorMessages).toHaveLength(0);
+});
+
+// Multi-phase test: assert console state independently per phase
+test('multi-phase form submission — isolated console assertions per phase', async ({ page }) => {
+  await page.goto('/checkout');
+  await page.waitForLoadState('networkidle');
+
+  // Phase 1: validate address — assert no validation errors logged
+  await page.clearConsoleMessages();
+  await page.getByLabel('Address').fill('');
+  await page.getByRole('button', { name: 'Next' }).click();
+  const phase1Errors = page.consoleMessages().filter((m) => m.type() === 'error');
+  expect(phase1Errors.map((m) => m.text())).toEqual(['Validation: address is required']);
+
+  // Phase 2: fill address and proceed — assert only payment console output
+  await page.clearConsoleMessages();
+  await page.clearPageErrors();
+  await page.getByLabel('Address').fill('123 Main St');
+  await page.getByRole('button', { name: 'Next' }).click();
+
+  const phase2Messages = page.consoleMessages();
+  expect(phase2Messages.map((m) => m.text())).not.toContain('Validation: address is required');
+});
+
+// Fixture that resets console state before each test body runs
+// (useful when page is promoted to file scope for performance)
+import { test as base } from '@playwright/test';
+
+export const test = base.extend({
+  page: async ({ page }, use) => {
+    // Clear any console/error state emitted during authentication or
+    // other shared beforeAll setup before the test body starts.
+    await page.clearConsoleMessages();
+    await page.clearPageErrors();
+    await use(page);
+  },
+});
+```
+
+**WHY this matters for isolation:** `page.consoleMessages()` and `page.pageErrors()` are not automatically reset between tests — they reset when a new page object is created. With the default test-scoped `page` fixture, this is automatic (each test gets a fresh page). The problem surfaces when `page` is promoted to `file` scope or `worker` scope for performance, or when a single test has multiple logical phases that must be asserted independently. In both cases, `clearConsoleMessages()` / `clearPageErrors()` provide the isolation boundary that would otherwise require creating and disposing a new page.
+
+**The `filter` option is not a substitute:** `page.consoleMessages({ type: 'error' })` filters *by type* but does not isolate by *when* the message was emitted. If a phase-1 error and a phase-2 error have the same type, filtering cannot distinguish them. `clearConsoleMessages()` provides a true temporal boundary.
+
+---
+
+## Gotchas — Iteration 24
+
+101. **Vitest `test.signal` is aborted for ALL bail/timeout/cancel conditions — do not use it to distinguish test failure from timeout; it fires on both.** [community]
+    `test.signal` is aborted when (a) the test times out, (b) `vitest.cancelCurrentRun()` is called, (c) the user presses Ctrl+C, or (d) another test fails and `bail > 0` is configured. Teams that instrument long-running operations with `signal.aborted` to decide whether to emit a diagnostic error (e.g., "did the test fail or time out?") are surprised to discover that case (d) — a *different* test failing under `bail` — also fires the signal in the still-running test. WHY: Vitest's implementation aborts the global run signal and propagates it to all in-progress tests simultaneously when a bail condition is triggered. There is no per-cause discrimination on the signal. If your cleanup logic needs to distinguish "this test itself timed out" from "the run was cancelled externally", the only reliable source of that information is `onTestFailed()` for the former — the signal covers all cancellation causes without differentiation.
+    ```typescript
+    import { it, onTestFailed } from 'vitest';
+
+    it('handles slow API with correct bail vs timeout distinction', async ({ signal }) => {
+      let testBodyFailed = false;
+      // Track whether THIS test's assertion failed (vs a different test failing + bail)
+      onTestFailed(() => { testBodyFailed = true; });
+
+      try {
+        const result = await fetch('/slow-resource', { signal });
+        // ... assertions
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          // signal was aborted — could be timeout, bail, or Ctrl+C
+          // use testBodyFailed to narrow down if needed
+          if (!testBodyFailed) {
+            // cancelled externally (bail / Ctrl+C) — not a test logic failure
+            return; // exit cleanly without re-throwing
+          }
+        }
+        throw err;
+      }
+    }, 3000);
+    ```
+    **Key rule:** Use `test.signal` for *resource cancellation* (passing to fetch/stream/cursor). Do not use it as a diagnostic oracle for *why* the test ended — that is `onTestFailed()` / `onTestFinished()`'s role.
+
+102. **`page.clearConsoleMessages()` and `page.clearPageErrors()` clear the Playwright-side buffer only — they do not affect `console.error` spy counts or browser-side listeners registered before the clear.** [community]
+    `page.clearConsoleMessages()` resets the internal array returned by `page.consoleMessages()`. It does NOT: (1) affect any `page.on('console', ...)` event listener's accumulated call count, (2) clear spy wrappers on `console.error` in the page's JavaScript context, or (3) remove `page.on('pageerror', ...)` listener state. Teams that mix the `page.consoleMessages()` API with `page.on('console', handler)` pattern — for example, using both a listener that pushes to a custom array and then calling `clearConsoleMessages()` — discover that the custom array is untouched while Playwright's internal buffer is cleared, producing inconsistent assertion results depending on which collection they check. WHY: `page.consoleMessages()` is Playwright's internal store; the event listener model is separate. Choose one pattern per test, not both.
+    ```typescript
+    import { test, expect } from '@playwright/test';
+
+    test('demonstrates the split between listener array and internal buffer', async ({ page }) => {
+      const capturedByListener: string[] = [];
+
+      // Custom listener accumulates ALL messages (independent of clearConsoleMessages())
+      page.on('console', (msg) => capturedByListener.push(msg.text()));
+
+      await page.goto('/dashboard');
+      // page.consoleMessages() has, say, 3 items from load
+      // capturedByListener also has 3 items
+
+      // Clear the internal Playwright buffer only
+      await page.clearConsoleMessages();
+
+      // page.consoleMessages() → [] (cleared)
+      // capturedByListener → still has 3 items (NOT cleared)
+      await page.getByRole('button', { name: 'Load report' }).click();
+
+      // page.consoleMessages() now has only the 1 new message from button click
+      expect(page.consoleMessages()).toHaveLength(1);
+
+      // capturedByListener has 4 items (3 from load + 1 from button) — NOT 1
+      // Asserting capturedByListener.length === 1 would FAIL
+    });
+
+    // CORRECT: use only page.consoleMessages() for assertion + clearConsoleMessages() for reset
+    // OR use only the custom listener array + manual reset (capturedByListener.length = 0)
+    // Never mix the two for the same assertion.
+    ```
+    **Fix:** Pick a single collection strategy for each test file. For Playwright-native assertions, use `page.consoleMessages()` with `page.clearConsoleMessages()`. For custom accumulation (e.g., filtering by regex before storing), use a `page.on('console', ...)` listener with `capturedByListener.length = 0` for reset. Mixing both collections in the same assertion creates a confusing split-brain state.
+
+---
+
+## Quick Reference Additions — Iteration 24
+
+| Problem | Symptom | Vitest solution | Playwright solution |
+|---------|---------|-----------------|---------------------|
+| Async operation continues after test timeout | Open handles warning; next test sees stale response | `async ({ signal }) => fetch(url, { signal })` — Vitest aborts signal on timeout/bail (v3.2+) | N/A (Playwright manages its own async lifecycle) |
+| Console assertions flaky in multi-phase test | `expect(page.consoleMessages())` includes log output from earlier test phases | N/A | `await page.clearConsoleMessages()` between phases (v1.59+) |
+| Page error assertions include pre-test errors | `page.pageErrors()` contains errors from navigation or fixture setup | N/A | `await page.clearPageErrors()` before the action under test (v1.59+) |
+| Bail cancellation leaves resources open | Worker hangs after bail because async operations hold process open | Pass `signal` to all cancelable ops — Vitest aborts on bail | N/A |
+
+---
+
+## Key Resources — Iteration 24 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest 3.2 Blog — scoped fixtures + test.signal | Official | https://vitest.dev/blog/vitest-3-2 | Introduces `test.signal` (AbortSignal) and scoped fixtures (`scope: 'file'`/`'worker'`) |
+| Vitest Docs — Test Context (signal) | Official | https://vitest.dev/guide/test-context#test-signal | `signal` property reference: abort conditions, usage with fetch, relationship to `bail` |
+| Playwright v1.59 Release Notes — clearConsoleMessages | Official | https://playwright.dev/docs/release-notes#version-159 | `page.clearConsoleMessages()` + `page.clearPageErrors()` introduced; filter option on `consoleMessages()` |
+| Playwright Docs — page.clearConsoleMessages | Official | https://playwright.dev/docs/api/class-page#page-clear-console-messages | API reference; confirms page-scoped only (no context-level equivalent) |

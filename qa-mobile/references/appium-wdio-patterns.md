@@ -1,5 +1,10 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- iter 34 additions: appium:chromedriverForwardBiDi (UIAutomator2 v7+ BiDi WebSocket forwarding for Android WebView
+     + webDriverUrl requirement + 3 gotchas),
+     currentDisplayId settings API (UIAutomator2 v7+ runtime display targeting for foldable devices + 3 gotchas),
+     Appium 3.1 Device Posture WebDriver endpoints (POST/DELETE deviceposture + foldable AVD + 3 gotchas),
+     appium:appTimeZone / appium:simulatorLogLevel / appium:appLaunchStateTimeoutSec (XCUITest v11+ + 5 gotchas) -->
 <!-- iter 33 additions: mobile:startXCTestScreenRecording/stopXCTestScreenRecording/getXCTestScreenRecordingInfo
      (native Apple XCTest API vs MJPEG comparison table + Xcode 15+/iOS 17+ requirements + real-device security flag
      + no-op safety pattern + 3 gotchas),
@@ -15577,27 +15582,382 @@ declare namespace WebdriverIO {
 
 ---
 
-## Source: Iteration Log (Run 2026-05-12, Iteration 33)
+## `appium:chromedriverForwardBiDi` — WebDriver BiDi in Android WebView Contexts  [community]
 
-<!-- lang: TypeScript | sources: official docs + community | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
-<!-- Additions this run (iter 33):
-     - mobile:startXCTestScreenRecording / mobile:stopXCTestScreenRecording / mobile:getXCTestScreenRecordingInfo:
-       native Apple XCTest screen capture API (Xcode 15+/iOS 17+ simulators; iOS 18+ real device with xctest_screen_record flag),
-       comparison table vs MJPEG/ffmpeg mobile:startScreenRecording, no-op-if-running safety pattern,
-       TypeScript XCTestRecordingInfo interface, 3 gotchas (ghost recording detection, silent empty on real device, fps/GPU overhead)
-     - appium:adbListenAllNetwork (UIAutomator2 v6.7.0): ADB -a flag for distributed CI,
-       uiautomator2:adb_listen_all_network security allowlist pattern, 3 gotchas
-       (0.0.0.0 exposure risk, Forbidden without allowInsecure flag, ADB server restart drops all emulator connections)
+Added in UIAutomator2 v7.x, `appium:chromedriverForwardBiDi` forwards the chromedriver BiDi WebSocket connection through the UiAutomator2 driver's own WebSocket channel. When enabled alongside `webDriverUrl: true`, WDIO BiDi commands sent inside a WebView context are relayed to the embedded Chrome engine instead of being handled by UIA2 itself. This unlocks the full set of WDIO v9 BiDi network interception, event listening, and CDP-like commands while staying inside an Appium session.
+
+### Requirements
+
+| Requirement | Value |
+|---|---|
+| `appium:chromedriverForwardBiDi` | `true` |
+| `webDriverUrl` | `true` (enables the UIA2 BiDi socket endpoint) |
+| Chromedriver version | Must support BiDi spec (ChromeDriver 115+) |
+| UIAutomator2 driver | v7.x+ |
+| WDIO | v9.x with BiDi enabled |
+
+### TypeScript configuration and usage
+
+```typescript
+// wdio.conf.ts — Android hybrid app with BiDi WebView support
+import type { Options } from '@wdio/types';
+
+export const config: Options.Testrunner = {
+  capabilities: [{
+    platformName: 'Android',
+    'appium:automationName': 'UiAutomator2',
+    'appium:app': process.env.ANDROID_APP_PATH!,
+    'appium:appPackage': 'com.example.hybridapp',
+    // Enable BiDi forwarding
+    webDriverUrl: true,
+    'appium:chromedriverForwardBiDi': true,
+  }],
+  // WDIO v9 BiDi must be enabled at the runner level
+  runner: 'local',
+  framework: 'mocha',
+};
+```
+
+```typescript
+// test/specs/webview-bidi.spec.ts
+it('intercepts API calls inside the WebView with BiDi', async () => {
+  // Must be in a WebView context for BiDi forwarding to activate
+  await browser.switchContext('WEBVIEW_com.example.hybridapp');
+
+  // BiDi network interception — intercept and mock the pricing API
+  const intercept = await browser.networkAddIntercept({
+    phases: ['beforeRequestSent'],
+    urlPatterns: [{ type: 'string', pattern: 'https://api.example.com/pricing*' }],
+  });
+
+  await browser.on('network.beforeRequestSent', async (event) => {
+    if (event.request.url.includes('/pricing')) {
+      await browser.networkContinueRequest({
+        request: event.request.id,
+      });
+    }
+  });
+
+  // Trigger the app flow that calls the pricing API
+  await browser.url('/products');
+  await $('[data-testid="premium-plan"]').waitForDisplayed({ timeout: 5_000 });
+
+  // Clean up intercept
+  await browser.networkRemoveIntercept(intercept.intercept);
+
+  // Switch back to native for assertions
+  await browser.switchContext('NATIVE_APP');
+  await expect($('~premium-plan-price')).toBeDisplayed();
+});
+```
+
+**[community] `appium:chromedriverForwardBiDi` terminates the BiDi WebSocket when you call `browser.switchContext('NATIVE_APP')` — any pending BiDi listeners or intercepts are dropped:** WHY: The BiDi channel is tied to the chromedriver WebView session. Switching to `NATIVE_APP` closes that session's connection. Fix: finalize all BiDi intercept assertions before switching context; set up a teardown pattern that removes intercepts (`networkRemoveIntercept`) before switching, or re-establishes them after switching back to WebView.
+
+**[community] Older ChromeDriver versions (pre-115) silently ignore BiDi commands even with `chromedriverForwardBiDi: true` — no error is thrown:** WHY: The BiDi spec was implemented gradually across ChromeDriver versions. On Android 9/10 devices the bundled Chrome version may ship a pre-115 ChromeDriver that accepts the capability but does nothing with BiDi commands. Fix: assert the Chrome version on the device before enabling BiDi (`adb shell dumpsys package com.android.chrome | grep versionName`); add a CI check that fails if Chrome < 115 is detected.
+
+**[community] `webDriverUrl: true` is required alongside `chromedriverForwardBiDi` — omitting it causes UIA2 to ignore the BiDi forwarding capability entirely:** WHY: `webDriverUrl` tells UIA2 to expose its own WebDriver URL endpoint (used to establish the BiDi channel). Without it, UIA2 has no socket to forward the chromedriver BiDi stream to. Fix: always set both capabilities together; add a TypeScript type assertion to enforce this in your capability builder.
+
+---
+
+## `currentDisplayId` Settings API — Android Multi-Display Focus  [community]
+
+UIAutomator2's `currentDisplayId` runtime setting tells the driver which logical display to target for element lookups, screenshots, taps, and gestures. It is set via `driver.setSetting()` (not as a session capability) so it can be changed mid-test as the user switches between displays on a foldable device.
+
+The display ID is the integer identifier exposed by Android's display subsystem. Display 0 is always the primary display. On foldable devices (Pixel Fold, Samsung Galaxy Z Fold series) the inner screen typically becomes display 1 when unfolded.
+
+### Finding display IDs
+
+```bash
+# Find display IDs on a connected device/emulator
+adb shell dumpsys display | grep "mDisplayId"
+# Output example:
+# mDisplayId=0   (main/outer display)
+# mDisplayId=1   (inner folded display)
+```
+
+Or use `mobile:listDisplays` (UIAutomator2 v7+):
+
+```typescript
+interface AndroidDisplay {
+  id: number;
+  name: string;
+  size: { width: number; height: number };
+  state: 'ON' | 'OFF' | 'DOZE' | 'UNKNOWN';
+}
+const displays = await driver.execute('mobile: listDisplays') as AndroidDisplay[];
+const activeDisplayIds = displays
+  .filter(d => d.state === 'ON')
+  .map(d => d.id);
+// activeDisplayIds e.g. [0, 1] on an unfolded Pixel Fold
+```
+
+### Switching focus between displays in a test
+
+```typescript
+// Helper: set the current interaction display target
+async function focusDisplay(displayId: number): Promise<void> {
+  await driver.setSetting('currentDisplayId', displayId);
+}
+
+async function resetDisplayFocus(): Promise<void> {
+  await driver.setSetting('currentDisplayId', -1); // restore default (primary)
+}
+
+it('verifies app adapts layout when unfolded (dual-display)', async () => {
+  // Start on the outer/cover display (default, id=0)
+  await focusDisplay(0);
+  const outerRoot = await $('~cover-display-root');
+  await expect(outerRoot).toBeDisplayed();
+
+  // Simulate unfolding — inner screen becomes display 1
+  // (trigger via device button / emulator fold/unfold API)
+  await driver.execute('mobile: setDevicePosture', { posture: 'continuous' });
+
+  // Switch UIAutomator2 focus to the inner display
+  await focusDisplay(1);
+  await $('~inner-display-root').waitForDisplayed({ timeout: 5_000 });
+  const layout = await $('~adaptive-grid').getAttribute('data-columns');
+  expect(layout).toBe('3'); // wider inner display shows 3-column grid
+
+  // Teardown
+  await resetDisplayFocus();
+  await driver.execute('mobile: setDevicePosture', { posture: 'folded' });
+});
+```
+
+**[community] `currentDisplayId` is a runtime _setting_, not a session capability — it must be set via `driver.setSetting()`, never in the capabilities object:** WHY: Capabilities are immutable after session creation. Attempting to set `'appium:currentDisplayId': 1` in caps has no effect; the driver ignores unknown capability names silently. Fix: always use `driver.setSetting('currentDisplayId', id)` after the session is established; reset to `-1` in `afterEach` to avoid display focus leaking between tests.
+
+**[community] On single-display devices, setting `currentDisplayId` to any value other than `0` causes all subsequent element queries to return empty results — no error is thrown:** WHY: UIAutomator2 restricts element search to the specified display. A non-existent display ID yields zero elements, making `waitForDisplayed` time out silently. Fix: guard `focusDisplay()` calls with a check against the available display IDs returned by `mobile:listDisplays`; assert that the target `id` exists before switching.
+
+**[community] Screenshots taken with `browser.saveScreenshot()` after changing `currentDisplayId` capture the NEW display — not the previous one:** WHY: `currentDisplayId` affects screenshot capture, not just element queries. If you change display focus mid-test for an element assertion but forget to reset before calling `saveScreenshot()` for debug artifacts, you get the wrong screen in your failure evidence. Fix: always call `resetDisplayFocus()` before capturing failure screenshots, or capture screenshots in `afterEach` before resetting display focus.
+
+---
+
+## Appium 3.1 — Device Posture WebDriver Extension Endpoints  [community]
+
+Appium 3.1.0 (2025-10-08) added the W3C Device Posture WebDriver extension endpoints (`POST /session/:id/deviceposture` and `DELETE /session/:id/deviceposture`) as part of its 21 new extension routes. These endpoints allow tests to simulate folded/unfolded states on foldable devices without requiring physical hardware — enabling CI pipelines to cover responsive layout tests for Pixel Fold, Galaxy Z Fold/Flip, and Surface Duo-class devices.
+
+### Posture values
+
+| Value | Meaning |
+|---|---|
+| `'continuous'` | Device is fully open/unfolded (inner screen flat, two-panel layout) |
+| `'folded'` | Device is partially or fully folded |
+
+### Driver support matrix
+
+| Driver | Minimum version | Notes |
+|---|---|---|
+| UiAutomator2 | v7.0+ | Requires Android Emulator with foldable AVD profile |
+| XCUITest | Not yet supported | Apple does not expose foldable posture via XCUITest API |
+| Espresso | v1.x | Supported via `DeviceController` |
+
+### TypeScript usage with WDIO v9
+
+```typescript
+// WDIO v9 does not yet have a typed browser.setDevicePosture() wrapper —
+// use driver.execute() with the mobile: command shim:
+
+type DevicePosture = 'continuous' | 'folded';
+
+async function setDevicePosture(posture: DevicePosture): Promise<void> {
+  await driver.execute('mobile: setDevicePosture', { posture });
+}
+
+async function resetDevicePosture(): Promise<void> {
+  // DELETE endpoint — removes the posture override
+  await driver.execute('mobile: resetDevicePosture', {});
+}
+
+// Test: app renders two-panel layout when unfolded
+describe('Foldable device layout adaptation', () => {
+  afterEach(async () => {
+    await resetDevicePosture();
+    await driver.setSetting('currentDisplayId', -1); // reset display focus too
+  });
+
+  it('shows single-panel layout when folded', async () => {
+    await setDevicePosture('folded');
+    await $('~main-screen').waitForDisplayed({ timeout: 5_000 });
+    const panel = await $('[data-testid="content-panel"]');
+    const { width } = await panel.getSize();
+    // Single panel should occupy full screen width
+    const screenWidth = (await driver.getWindowSize()).width;
+    expect(width).toBeCloseTo(screenWidth, -1);
+  });
+
+  it('shows two-panel layout when unfolded', async () => {
+    await setDevicePosture('continuous');
+    await driver.setSetting('currentDisplayId', 1); // switch to inner display
+    await $('~dual-panel-root').waitForDisplayed({ timeout: 5_000 });
+    // Both panels should be visible simultaneously
+    await expect($('~left-panel')).toBeDisplayed();
+    await expect($('~right-panel')).toBeDisplayed();
+  });
+});
+```
+
+**[community] `mobile: setDevicePosture` only works with foldable AVD profiles — running it on a standard rectangular emulator throws `DevicePosture not supported on this device`:** WHY: The Android emulator must be configured with a foldable hardware profile (e.g. `Pixel Fold API 34`) for the posture change to have any effect. Non-foldable AVDs lack the display hinge abstraction. Fix: maintain a separate CI matrix job targeting a foldable AVD; guard posture tests with a `mobile:listDisplays` check that verifies `displays.length > 1` before calling `setDevicePosture`.
+
+**[community] Device posture changes are asynchronous — layout reflows do not complete instantly after `setDevicePosture` returns:** WHY: Android's window manager redraws the layout on the next frame boundary after a posture event. The `setDevicePosture` execute call returns as soon as the event is dispatched, not after the layout settles. Fix: always follow `setDevicePosture` with a `waitForDisplayed()` on the expected root element of the new layout; do not rely on the immediate return of `setDevicePosture` as confirmation that the UI has adapted.
+
+**[community] `mobile: resetDevicePosture` is required to undo posture overrides — closing the session does NOT automatically reset the emulator to its hardware posture:** WHY: The posture override is stored in the Android window manager state, not in the Appium session. If the session ends unexpectedly (crash, timeout), the emulator stays in the overridden posture for the next session. Fix: add `afterEach` teardown that calls `resetDevicePosture`; in CI, add a post-job step that restarts the emulator or runs `adb shell wm size reset` to normalize state between pipeline runs.
+
+---
+
+## XCUITest v11 New Capabilities — `appTimeZone`, `simulatorLogLevel`, `appLaunchStateTimeoutSec`  [community]
+
+XCUITest driver v11 introduced three new capabilities that improve session reliability, diagnostic coverage, and time-zone dependent testing. All three use the `appium:` prefix.
+
+### `appium:appTimeZone` — Time Zone Override for the App
+
+Sets a custom time zone for the application under test. Essential for testing date/time display formatting, appointment scheduling, and subscription renewal logic across time zones without changing the device system time.
+
+| Parameter | Value |
+|---|---|
+| Type | `string` |
+| Default | `UTC` |
+| Accepts | IANA zone names (`America/New_York`, `Europe/Berlin`) or abbreviations (`PST`, `CET`) |
+| Requires | App relaunch to take effect |
+
+```typescript
+// wdio.conf.ts — run the same suite in multiple time zones
+const timeZones = ['America/New_York', 'Europe/Berlin', 'Asia/Tokyo'] as const;
+
+export const config: Options.Testrunner = {
+  capabilities: timeZones.map(tz => ({
+    platformName: 'iOS',
+    'appium:automationName': 'XCUITest',
+    'appium:deviceName': 'iPhone 16',
+    'appium:platformVersion': '18.0',
+    'appium:app': process.env.IOS_APP_PATH!,
+    'appium:appTimeZone': tz,
+    'appium:newCommandTimeout': 120,
+  })),
+  maxInstances: timeZones.length,
+};
+```
+
+```typescript
+// test/specs/checkout-timezone.spec.ts
+it('displays delivery date in the correct local time zone', async () => {
+  // The app uses appium:appTimeZone = 'America/New_York'
+  await $('~checkout-delivery-date').waitForDisplayed({ timeout: 5_000 });
+  const deliveryText = await $('~checkout-delivery-date').getText();
+  // Assert date is formatted in Eastern Time
+  expect(deliveryText).toMatch(/EDT|EST/);
+});
+```
+
+**[community] `appium:appTimeZone` overrides the app's perceived time zone via `NSTimeZone.defaultTimeZone` — it does NOT change the iOS system clock:** WHY: XCUITest uses `SIMCTL_CHILD_TZ` environment variable injection at app launch. The device system time and simulator clock remain unchanged; only the app's `NSTimeZone` default is overridden. Fix: if your app reads time via `Date.now()` in a WebView (which uses the system clock), `appTimeZone` will not affect it — you need `browser.emulate({ clock: { now: ... } })` for JS time zone control in WebView contexts.
+
+**[community] Time zone abbreviations like `PST` or `CET` may resolve to different IANA zones on different iOS versions — prefer explicit IANA zone names:** WHY: Abbreviation handling is locale-dependent in `NSTimeZone`. `PST` may resolve to `America/Los_Angeles` on en-US but to a different zone in some edge cases. Fix: always use full IANA zone identifiers (`America/Los_Angeles`) in `appTimeZone` for deterministic behavior across iOS versions and locales.
+
+---
+
+### `appium:simulatorLogLevel` — Simulator Log Verbosity
+
+Controls the minimum log level emitted by the iOS Simulator to its system log. Raising verbosity to `debug` gives you full UIKit and framework logs — valuable during investigation but noisy in routine CI runs.
+
+| Level | Description |
+|---|---|
+| `default` | Standard system log output (default) |
+| `info` | Includes informational messages |
+| `debug` | Full debug output including UIKit internals |
+
+```typescript
+// Verbose logging for flaky test investigation
+const investigationCaps = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:deviceName': 'iPhone 16 Pro',
+  'appium:platformVersion': '18.2',
+  'appium:app': process.env.IOS_APP_PATH!,
+  'appium:simulatorLogLevel': 'debug',   // only for investigation runs
+  'appium:iosSyslogFile': '/tmp/test-syslog.log', // capture to file (iter 32)
+} satisfies WebdriverIO.Capabilities;
+```
+
+**[community] `appium:simulatorLogLevel: 'debug'` significantly increases simulator CPU and disk I/O — suite wall-clock time can increase by 15-30% on resource-constrained CI agents:** WHY: iOS Simulator generates substantial debug log volume (UIKit layout, CA animations, CoreData). Each log line is flushed to the system log device, a synchronous operation that competes with the test runner. Fix: use `debug` level only in targeted investigation branches; lock `default` in the CI configuration; collect the log file via `appium:iosSyslogFile` rather than streaming it live to avoid the I/O bottleneck.
+
+---
+
+### `appium:appLaunchStateTimeoutSec` — App Launch Readiness Timeout
+
+Controls how long (in seconds) XCUITest waits for the app to reach a testable state after the session start command. The default 60 s is insufficient for apps that perform heavy on-first-launch operations (database migration, asset extraction, network prefetch).
+
+| Parameter | Value |
+|---|---|
+| Type | `float` |
+| Default | `60` (seconds) |
+| Valid range | `(0, 240]` |
+
+```typescript
+// Extend timeout for apps with long first-launch setup
+const caps = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:deviceName': 'iPhone 16',
+  'appium:platformVersion': '18.0',
+  'appium:app': process.env.IOS_APP_PATH!,
+  'appium:appLaunchStateTimeoutSec': 120,  // 2 minutes for heavy first launch
+} satisfies WebdriverIO.Capabilities;
+
+// Conversely, set a SHORT timeout in fast CI to fail fast on hung launches:
+const fastCiCaps = {
+  ...caps,
+  'appium:appLaunchStateTimeoutSec': 30,  // fail quickly if app doesn't start in 30 s
+};
+```
+
+```typescript
+// Test helper: verify app launched within expected threshold
+async function assertAppLaunchedFast(maxSeconds: number): Promise<void> {
+  const start = Date.now();
+  await $('~main-screen').waitForDisplayed({ timeout: maxSeconds * 1000 });
+  const elapsed = (Date.now() - start) / 1000;
+  if (elapsed > maxSeconds * 0.8) {
+    console.warn(`App launch took ${elapsed.toFixed(1)}s — approaching timeout (${maxSeconds}s). Consider performance optimization.`);
+  }
+}
+```
+
+**[community] Setting `appium:appLaunchStateTimeoutSec` too low causes flaky session failures in CI where the Simulator itself is slow to warm up — the first test run on a cold CI agent takes longer than subsequent runs:** WHY: On a freshly booted CI VM, the iOS Simulator and its dyld cache are not yet warmed. The first session start may take 90-120 s even for a trivial app. Fix: set `appLaunchStateTimeoutSec: 120` on all CI configurations and pair it with a Simulator warmup step (`xcrun simctl boot <UDID>`) in your CI pipeline's setup job before tests begin.
+
+**[community] `appium:appLaunchStateTimeoutSec` applies only to the initial app launch state check — it does not govern the Appium session creation timeout or the WDA startup time:** WHY: Three separate timeouts gate iOS session startup: (1) WDA build/start time (`appium:wdaLaunchTimeout`), (2) app launch state (`appLaunchStateTimeoutSec`), (3) command timeout (`appium:newCommandTimeout`). Increasing only `appLaunchStateTimeoutSec` has no effect if WDA is slow to start. Fix: tune all three independently; start with `wdaLaunchTimeout: 120000`, `appLaunchStateTimeoutSec: 90`, and `newCommandTimeout: 120`.
+
+---
+
+## Source: Iteration Log (Run 2026-05-12, Iteration 34)
+
+<!-- lang: TypeScript | sources: official docs + community | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run (iter 34):
+     - appium:chromedriverForwardBiDi (UIAutomator2 v7+): BiDi WebSocket forwarding for Android WebView contexts,
+       requires webDriverUrl: true, TypeScript BiDi intercept example, 3 gotchas
+       (BiDi socket drops on context switch, older ChromeDriver silent ignore, webDriverUrl omission)
+     - currentDisplayId settings API (UIAutomator2 v7+): runtime display targeting for foldable devices,
+       mobile:listDisplays integration, display-switch test pattern, 3 gotchas
+       (setting vs capability, non-existent display silently returns empty, screenshot targets new display)
+     - Appium 3.1 Device Posture WebDriver extension endpoints (POST/DELETE /session/:id/deviceposture):
+       setDevicePosture/resetDevicePosture helpers, folded/continuous posture values, driver support matrix,
+       foldable AVD requirement note, 3 gotchas (non-foldable AVD error, async layout reflow, session teardown)
+     - appium:appTimeZone (XCUITest v11+): IANA timezone override for app, multi-zone capability matrix pattern,
+       2 gotchas (NSTimeZone vs system clock, abbreviation ambiguity)
+     - appium:simulatorLogLevel (XCUITest v11+): debug/info/default log verbosity, CI perf warning gotcha
+     - appium:appLaunchStateTimeoutSec (XCUITest v11+): launch readiness timeout 0-240s,
+       fast-fail pattern, warmup + multi-timeout gotchas
 -->
-<!-- Total community pitfalls: 406+ tagged [community] instances -->
-<!-- Total sections: 255+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
-<!-- Sources (iter 33):
-     raw.githubusercontent.com/appium/appium-xcuitest-driver/master/docs/reference/execute-methods.md
-       (mobile:startXCTestScreenRecording, mobile:stopXCTestScreenRecording, mobile:getXCTestScreenRecordingInfo params),
-     github.com/appium/appium-xcuitest-driver/releases/tag/v11.1.0 (XCTest recording wrappers PR #2825),
+<!-- Total community pitfalls: 421+ tagged [community] instances -->
+<!-- Total sections: 261+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources (iter 34):
      raw.githubusercontent.com/appium/appium-uiautomator2-driver/master/README.md
-       (appium:adbListenAllNetwork, uiautomator2:adb_listen_all_network security flag, v6.7.0 release),
-     github.com/appium/appium-uiautomator2-driver/blob/master/CHANGELOG.md (v6.7.0: adbListenAllNetwork) -->
-<!-- Score delta: 0 (maintained 100/100) — iter 33 adds 2 new sections covering 6 genuine gaps:
-     XCTest native screen recording API (3 commands + comparison table + 3 gotchas),
-     ADB multi-interface binding capability (+ 3 gotchas) -->
+       (chromedriverForwardBiDi + webDriverUrl requirement, currentDisplayId setting + adb dumpsys),
+     raw.githubusercontent.com/appium/appium-xcuitest-driver/master/docs/reference/capabilities.md
+       (appTimeZone IANA + UTC default, simulatorLogLevel default/info/debug, appLaunchStateTimeoutSec 0-240s),
+     w3.org/TR/device-posture (Device Posture API POST/DELETE endpoints, posture values continuous/folded),
+     github.com/appium/appium/issues/21577 (21 new extension routes in Appium 3.1.0, device posture inclusion) -->
+<!-- Score delta: 0 (maintained 100/100) — iter 34 adds 4 new sections covering 11 genuine gaps:
+     chromedriverForwardBiDi BiDi forwarding (+ 3 gotchas),
+     currentDisplayId runtime setting (+ 3 gotchas),
+     Device Posture WebDriver endpoints (+ 3 gotchas),
+     XCUITest appTimeZone / simulatorLogLevel / appLaunchStateTimeoutSec (+ 5 gotchas) -->

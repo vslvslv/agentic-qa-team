@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -7560,3 +7560,265 @@ jobs:
 > [community] **Lesson (Zod v4 bundle size and Lambda cold start, 2025)**: Zod v4's 57% bundle size reduction (57KB → ~24KB) has a measurable impact on AWS Lambda cold start times for TypeScript functions that include Zod for input validation. Teams deploying Lambda with esbuild-bundled handlers report cold start improvement of 15–25ms per function — relevant for latency-sensitive API endpoints. The shift-left implication: Lambda bundle size gates (covered in the Serverless section above) have a lower Zod-contributed baseline in v4.
 
 > [community] **Gotcha (Zod v4 + `zod-to-openapi`, `@asteasolutions/zod-to-openapi`, 2025)**: Third-party Zod OpenAPI integration packages (`zod-to-openapi`, `@asteasolutions/zod-to-openapi`) require version updates for Zod v4 compatibility. If your project uses these packages to generate OpenAPI specs from Zod schemas, check their compatibility matrix before upgrading Zod. `@hono/zod-openapi` and `zod-openapi` were among the first to release v4-compatible versions. Do not upgrade Zod to v4 in a project that depends on these packages until you confirm the package supports v4.
+
+---
+
+## Playwright Accessibility Snapshots (`toMatchAriaSnapshot`, v1.49+)
+
+Playwright v1.49 introduced `toMatchAriaSnapshot()` — a YAML-based accessibility tree snapshot assertion that captures the semantic structure of a page component rather than its visual DOM tree. This is a direct shift-left a11y technique: it enforces that ARIA roles, labels, and hierarchy remain correct as a first-class automated assertion on every CI run, catching regressions the same way visual snapshots catch layout regressions.
+
+### How it works
+
+`toMatchAriaSnapshot()` serialises the accessible name, role, and nesting of elements into a compact YAML format and diffs it against a stored snapshot. The snapshot format is human-readable and reviewable in code review — unlike raw accessibility-tree JSON dumps — making it practical as a checked-in artefact.
+
+```typescript
+// accessibility-snapshot.spec.ts
+import { test, expect } from "@playwright/test";
+
+test("navigation landmark structure is stable", async ({ page }) => {
+  await page.goto("/");
+
+  // Capture the top-level navigation landmark.
+  // On first run, Playwright writes the snapshot file.
+  // On subsequent runs it diffs against the stored YAML.
+  await expect(page.getByRole("navigation")).toMatchAriaSnapshot(`
+    - navigation:
+      - list:
+        - listitem:
+          - link "Home"
+        - listitem:
+          - link "Products"
+        - listitem:
+          - link "About"
+  `);
+});
+
+test("modal dialog exposes correct ARIA attributes", async ({ page }) => {
+  await page.goto("/products");
+  await page.getByRole("button", { name: "Add to cart" }).click();
+
+  // Assert dialog role, name, and its child controls
+  await expect(page.getByRole("dialog")).toMatchAriaSnapshot(`
+    - dialog "Add to cart":
+      - heading "Confirm item" [level=2]
+      - spinbutton "Quantity":
+      - button "Cancel"
+      - button "Confirm"
+  `);
+});
+```
+
+### Updating snapshots
+
+When a deliberate UI change breaks the aria snapshot, regenerate with:
+
+```bash
+npx playwright test --update-snapshots accessibility-snapshot.spec.ts
+```
+
+This writes updated YAML inline (when the snapshot is an inline string) or updates the `.snap` file (when using external snapshots). Review the diff in your PR the same way you review visual snapshot diffs.
+
+### Shift-left integration pattern
+
+Add aria snapshot tests alongside component tests in the same file. The recommended pattern is one `toMatchAriaSnapshot` assertion per interactive component region (navigation, modal, form), run as part of the unit/component test suite rather than as a separate a11y audit step:
+
+```typescript
+// button.component.spec.ts
+import { test, expect } from "@playwright/experimental-ct-react";
+import { Button } from "./Button";
+
+test("Button has correct accessible name and role", async ({ mount }) => {
+  const component = await mount(
+    <Button variant="primary" disabled={false}>
+      Save changes
+    </Button>
+  );
+
+  await expect(component).toMatchAriaSnapshot(`
+    - button "Save changes"
+  `);
+});
+
+test("disabled Button exposes aria-disabled attribute", async ({ mount }) => {
+  const component = await mount(
+    <Button variant="primary" disabled={true}>
+      Save changes
+    </Button>
+  );
+
+  await expect(component).toMatchAriaSnapshot(`
+    - button "Save changes" [disabled]
+  `);
+});
+```
+
+> **Gotcha (aria snapshot whitespace sensitivity, 2025)**: The YAML snapshot is indentation-sensitive. A tab-versus-space mismatch or an extra blank line in the inline template literal causes a false-positive snapshot mismatch. Always use two-space indentation inside the template literal and confirm your editor is not converting spaces to tabs in `.spec.ts` files. Set `"editor.insertSpaces": true` and `"editor.detectIndentation": false` in `.vscode/settings.json` for `.spec.ts` glob patterns.
+
+> **Gotcha (aria snapshot + dynamic text, 2025)**: Aria snapshots embed the accessible name, so any dynamic text (e.g., item counts, timestamps) in element labels causes the snapshot to fail whenever the value changes. Use `page.getByRole()` with a scoped locator that excludes the dynamic element, or use the `{ timeout: 0, ...mask }` option pattern — but the cleanest solution is to extract dynamic labels into `aria-label` attributes whose value is controlled by a test-stable constant. In component tests, pass static props to control the label value.
+
+---
+
+## Playwright `--only-changed` — Target-Modified Test Files in CI (v1.46+)
+
+Playwright v1.46 added the `--only-changed` CLI flag, which runs only the test files that have been modified (or whose imported source files have changed) since a given Git ref. This mirrors the `nx affected` and Turborepo `--filter` patterns for monorepos, but at the Playwright test-file level within a single project.
+
+```bash
+# Run only tests touching files changed since main
+npx playwright test --only-changed=main
+
+# Run only tests touching files changed in the last commit
+npx playwright test --only-changed=HEAD~1
+```
+
+### CI integration pattern
+
+Use `--only-changed` in a fast-feedback PR gate that runs in parallel with — not instead of — the full suite:
+
+```yaml
+# .github/workflows/pr-fast-feedback.yml
+name: PR fast feedback
+
+on:
+  pull_request:
+
+jobs:
+  playwright-affected:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # required: --only-changed needs full history
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Run affected Playwright tests
+        run: npx playwright test --only-changed=origin/main
+        # Full suite still runs on merge to main (separate workflow)
+```
+
+> **Gotcha (`--only-changed` requires `fetch-depth: 0`, 2025)**: GitHub Actions `actions/checkout` defaults to a shallow clone (`fetch-depth: 1`). `--only-changed` uses `git diff` to determine changed files and silently produces empty results (runs zero tests) when the repository history is too shallow to reach the base ref. Always set `fetch-depth: 0` (or at minimum `fetch-depth: 2` for `HEAD~1`) when using this flag in CI. A zero-test run exits with code 0, which can mask the missing history problem — add a step that asserts `playwright test --list --only-changed=origin/main | wc -l` is non-zero when changes are expected.
+
+> [community] **Lesson (`--only-changed` scope, 2025)**: `--only-changed` tracks source imports transitively, so a change to a shared utility module triggers all test files that import it — not only tests for the changed file. Teams using large shared test utilities (`test-utils.ts`, `fixtures.ts`) report that `--only-changed` ends up running 60–80% of the suite when those utilities are touched. Extract frequently-changed test helpers into smaller, more narrowly-scoped modules to improve `--only-changed` selectivity.
+
+---
+
+## Vitest Pool Types — Choosing Between `forks`, `threads`, and `vmThreads`
+
+Vitest supports three pool types that control the execution environment for test workers. The guide's examples throughout use `pool: 'forks'` (the default since Vitest 1.x), but each pool has a distinct isolation and performance profile that affects shift-left CI times and debugging ergonomics.
+
+| Pool | Worker mechanism | Module isolation | Memory overhead | Best for |
+|------|-----------------|-----------------|-----------------|---------|
+| `forks` | `child_process.fork()` | Full (separate process) | High (process per worker) | Default; good for most suites |
+| `threads` | `worker_threads` | Shared module registry | Low | CPU-bound suites where process overhead dominates |
+| `vmThreads` | `worker_threads` + VM context | Strong (VM sandbox) | Medium | Suites needing isolation without subprocess overhead |
+
+```typescript
+// vitest.config.ts
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: {
+    // Default — safest isolation, highest overhead
+    pool: "forks",
+
+    // Fastest for pure-computation suites (no globals, no singleton state)
+    // pool: "threads",
+
+    // VM sandbox isolation with lower overhead than forks
+    // Useful when: tests mutate module-level singletons and you need isolation
+    // but fork startup cost is measurable in your suite (>500 tests)
+    // pool: "vmThreads",
+
+    poolOptions: {
+      forks: {
+        // Number of fork workers (default: os.cpus().length / 2)
+        maxForks: 4,
+        minForks: 2,
+      },
+      vmThreads: {
+        // VM memory limit per worker context (default: none)
+        // Set explicitly to catch memory leaks in test isolation
+        memoryLimit: "512m",
+      },
+    },
+  },
+});
+```
+
+### When `vmThreads` outperforms `forks`
+
+`vmThreads` creates a fresh V8 VM context per test file (strong isolation) but shares the Node.js process (no fork overhead). It is most beneficial when:
+
+1. Your test suite has **500+ test files** and fork startup latency is measurable in total CI time
+2. Tests mutate **module-level singleton state** that must be reset between files (e.g., global event emitters, module-level caches)
+3. You run tests on **resource-constrained CI workers** where spawning many processes exhausts memory
+
+`vmThreads` is not a drop-in replacement — module identity (the `===` check for imported class instances) differs across VM contexts, which can break tests that assert `instanceof` across module boundaries. Use `forks` as the default and switch to `vmThreads` only after profiling.
+
+> **Gotcha (Vitest `threads` pool and globals, 2025)**: The `threads` pool does **not** isolate module registries between test files — all workers share the same imported module instances. Tests that rely on module-level side effects (singletons, `jest.mock()` / `vi.mock()` module replacement) are not safe with `pool: 'threads'`. The most common symptom is flaky tests that pass in isolation but fail when run concurrently: the shared module state from one test bleeds into another. Migrate to `vmThreads` or `forks` if you observe this.
+
+> [community] **Gotcha (Vitest `vmThreads` and `instanceof` across contexts, 2025)**: Each `vmThreads` worker creates a separate V8 VM context, so imported class constructors are distinct objects per context. Code that does `error instanceof MyError` can return `false` when `MyError` was imported in a different VM context than where the error was thrown — a common failure mode for custom error class hierarchies shared across test utilities and source code. The fix: use duck typing (`'code' in error && error.code === 'MY_ERROR'`) or check `error.constructor.name` rather than `instanceof` for cross-context assertions.
+
+---
+
+## ESLint v9 Flat Config Migration — Ecosystem Friction (2025)
+
+ESLint v9 made "flat config" (`eslint.config.js` / `eslint.config.ts`) the default and deprecated the legacy `.eslintrc.*` format. The migration is non-trivial for TypeScript projects because it requires every plugin your config uses to publish a flat-config-compatible release.
+
+### Migration checklist
+
+```typescript
+// eslint.config.ts  (ESLint v9 flat config — TypeScript projects)
+import eslint from "@eslint/js";
+import tseslint from "typescript-eslint";
+import playwright from "eslint-plugin-playwright";
+import vitest from "@vitest/eslint-plugin";
+
+export default tseslint.config(
+  // 1. Base recommended rules
+  eslint.configs.recommended,
+
+  // 2. TypeScript-ESLint — flat config exported as tseslint.configs.recommended
+  //    (NOT the legacy extends: ['plugin:@typescript-eslint/recommended'])
+  ...tseslint.configs.recommended,
+
+  // 3. Per-glob plugin config — flat config uses objects, not extends strings
+  {
+    files: ["**/*.spec.ts", "**/*.test.ts"],
+    plugins: { vitest },
+    rules: {
+      ...vitest.configs.recommended.rules,
+    },
+  },
+  {
+    files: ["e2e/**/*.ts", "playwright/**/*.ts"],
+    plugins: { playwright },
+    rules: {
+      ...playwright.configs["flat/recommended"].rules,
+    },
+  }
+);
+```
+
+### Key differences from legacy config
+
+| Legacy (`.eslintrc.js`) | Flat (`eslint.config.ts`) |
+|------------------------|--------------------------|
+| `extends: ['plugin:X/recommended']` | Spread `X.configs.recommended` into array |
+| `plugins: ['@typescript-eslint']` | `plugins: { '@typescript-eslint': tseslint.plugin }` |
+| `overrides: [{ files, rules }]` | Separate config object with `files` property |
+| `env: { node: true }` | `languageOptions: { globals: globals.node }` |
+| `.eslintignore` file | `ignores: [...]` array in config |
+
+> [community] **Gotcha (ESLint v9 plugin compatibility, 2025)**: Many popular ESLint plugins did not ship flat-config-compatible releases until mid-to-late 2025. Projects that upgraded to ESLint v9 before their plugin ecosystem caught up hit a hard wall: the legacy-compat shim (`@eslint/eslintrc` `FlatCompat`) works for most plugins but silently drops shareable config rules that use `extends` internally, producing a config that appears to load but applies far fewer rules than intended. Before upgrading to ESLint v9, run `npx @eslint/config-inspector` to audit which rules are actually active — then compare against your v8 baseline to detect silent rule drops.
+
+> [community] **Gotcha (ESLint `typescript-eslint` v7 vs v8 API, 2025)**: `typescript-eslint` v8 changed its flat-config export shape. Projects following tutorials written for `typescript-eslint` v7 (which used `tseslint.configs.recommendedTypeChecked` as a spread array) find that the same pattern in v8 requires a different import path and the config object structure changed. Pin a specific major version of `typescript-eslint` and read that version's migration guide — do not copy config snippets from Stack Overflow or blog posts without checking which major version they target.
+
+> [community] **Lesson (ESLint flat config and test-file rule scoping, 2025)**: One genuine improvement in flat config is per-glob plugin scoping: you can now apply `eslint-plugin-vitest` rules exclusively to `*.spec.ts` files and `eslint-plugin-playwright` exclusively to `e2e/**/*.ts` without complex overrides. Teams that adopt this pattern eliminate an entire class of false positives — e.g., `vitest/expect-expect` firing on Playwright tests, or `playwright/no-wait-for-timeout` firing on unit tests. The shift-left benefit: lint gates catch test-quality issues in the right file scope rather than producing noise that trains developers to ignore lint output.
+
+> **Gotcha (ESLint v9 `ESLINT_USE_FLAT_CONFIG` env var removed, 2025)**: ESLint v9.0 initially kept the `ESLINT_USE_FLAT_CONFIG=true` escape hatch that allowed loading legacy config. This was removed in ESLint v9.9+. If your CI scripts or Docker images set this environment variable explicitly (as a migration aid), remove it — it now silently has no effect and gives false confidence that your config is correct. The v9.9+ release also removed the automatic `.eslintrc.*` fallback, so projects that had not completed migration started getting "No eslint configuration file found" errors on upgrade.

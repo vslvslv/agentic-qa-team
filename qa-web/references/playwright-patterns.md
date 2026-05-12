@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description/highlight), /api/class-apirequestcontext, /api/class-tracing (startHar/stopHar), /api/class-test (abort), /api/class-browser (on-context), /api/class-weberror (location), /api/class-testconfig (reportSlowTests/globalTimeout) -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed), eslint-plugin-playwright flat config (ESLint v9 migration, v1.6+ required), v1.60 webError.location() (JS error source location API), iteration-34 gap audit (page.on weberror and webError.location added to Key APIs table, testConfig.reportSlowTests + globalTimeout added to recommended config baseline) -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed), eslint-plugin-playwright flat config (ESLint v9 migration, v1.6+ required), v1.60 webError.location() (JS error source location API), iteration-34 gap audit (page.on weberror and webError.location added to Key APIs table, testConfig.reportSlowTests + globalTimeout added to recommended config baseline), iteration-35 gap audit (fixed consoleMessages v1.56 section heading, added --fail-on-flaky-tests CLI flag, added clock.runFor/tick vs fastForward behavioral gotcha #48) -->
 
 ---
 
@@ -2078,6 +2078,25 @@ test('session timeout warning appears after 14 minutes', async ({ page }) => {
   await expect(page.getByRole('alertdialog', { name: 'Session expiring' })).toBeVisible();
 });
 
+// runFor() — fire each timer callback sequentially as clock advances
+// Unlike fastForward() (which jumps the clock in one step), runFor() triggers
+// every intermediate timer callback that falls within the window.
+test('animated counter increments exactly 5 times over 5 seconds', async ({ page }) => {
+  await page.clock.install();
+  await page.goto('/counter'); // app uses setInterval(increment, 1000)
+  // Advance 5 seconds, firing each 1 s tick callback in sequence
+  await page.clock.runFor(5_000);
+  await expect(page.getByTestId('count')).toHaveText('5');
+});
+
+// tick() is an alias for runFor() with identical semantics
+test('progress bar advances 10% per second', async ({ page }) => {
+  await page.clock.install();
+  await page.goto('/upload-progress');
+  await page.clock.tick(1_000); // fires all timers due within the first 1 s
+  await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '10');
+});
+
 // Pause time for stable visual snapshots
 test('dashboard visual regression at fixed time', async ({ page }) => {
   await page.clock.setFixedTime(new Date('2025-06-01T12:00:00'));
@@ -3958,7 +3977,7 @@ await page.getByRole('button', { name: 'Checkout' }).click();
 
 ---
 
-### Post-Facto Inspection: `consoleMessages()`, `pageErrors()`, `requests()` (v1.59+)
+### Post-Facto Inspection: `consoleMessages()`, `pageErrors()`, `requests()` (v1.56+)
 
 Access the recent history of console messages, page errors, and network requests without setting up event listeners in advance. Useful for post-action verification and fixture-based log capture.
 
@@ -6928,6 +6947,7 @@ export default defineConfig({
 |------|-------------|----------------|
 | `--test-list <file>` | Run only tests listed in the file (v1.56+) | CI test selection from external test management |
 | `--test-list-invert <file>` | Skip tests listed in the file (v1.56+) | Exclude broken tests without modifying source |
+| `--fail-on-flaky-tests` | Exit with failure code if any test needed a retry to pass (v1.45+) | Enable on nightly runs to surface flaky tests as hard failures; gate with `STRICT_FLAKE_MODE` env var so PR runs are unaffected |
 
 ---
 
@@ -8846,3 +8866,35 @@ page.on('console', (msg) => {
 ```
 
 > **WHY:** Minified production bundles make `pageerror` messages near-useless — the stack trace references `bundle.min.js:1:84921`. With `webError.location()` you get the exact position, which (when paired with a source map) resolves to the original TypeScript file and line. Additionally, `page.on('weberror')` fires for *both* uncaught exceptions and unhandled promise rejections, whereas `page.on('pageerror')` only fires for uncaught exceptions. Switching to `weberror` closes that gap. [official]
+
+---
+
+### Gotcha \#48 — `fastForward()` vs `runFor()` / `tick()`: intermediate callbacks skipped vs. fired
+
+```typescript
+// ❌ fastForward() jumps the clock in ONE step — intermediate timer callbacks
+//    are NOT invoked if they fire at sub-intervals within the window.
+//    Use it only when you need the clock to land at a specific time and
+//    don't care about the intermediate ticks.
+test('wrong: counter stays at 0 because intermediate ticks are skipped', async ({ page }) => {
+  await page.clock.install();
+  await page.goto('/counter'); // setInterval(increment, 1000)
+  await page.clock.fastForward(5_000); // jumps straight to t+5 s
+  // Counter may still read "0" — the five 1-s callbacks were never fired
+  await expect(page.getByTestId('count')).toHaveText('0'); // passes, but wrong intent
+});
+
+// ✅ runFor() / tick() advance the clock incrementally, firing every timer
+//    callback that falls within the elapsed window in chronological order.
+test('correct: counter reaches 5 because each 1-s tick fires', async ({ page }) => {
+  await page.clock.install();
+  await page.goto('/counter');
+  await page.clock.runFor(5_000); // fires t+1 s, t+2 s, t+3 s, t+4 s, t+5 s
+  await expect(page.getByTestId('count')).toHaveText('5');
+});
+
+// tick() is a direct alias — choose whichever reads more clearly in context
+await page.clock.tick('05:00'); // string shorthand: "MM:SS" format also accepted
+```
+
+> **WHY:** `fastForward()` is modelled after Sinon's `clock.tick()` with "skip to the end" semantics — it sets `Date.now()` to the target time and only fires timers whose *deadline* is at or before that target, but does so in a single evaluation pass. `runFor()` / `tick()` repeatedly advance the clock by the smallest pending timer interval, invoking each callback before moving forward, which mirrors how a real clock behaves. The distinction matters for any app that chains timers (e.g., `setTimeout` inside a `setInterval` callback) or that uses `requestAnimationFrame` sequences. When in doubt, prefer `runFor()`. [community]

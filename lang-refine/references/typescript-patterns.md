@@ -1,6 +1,13 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 38 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 39 | score: 97/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 39 (2026-05-12): added TypeScript 5.5 — JSDoc @import Tag (type-only imports in .js files
+       without comment clutter, works with @param/@returns in JSDoc typechecked JS, avoids polluting
+       runtime module graph); added TypeScript 5.7 — Faster Composite Project Ownership (editor-only
+       perf: only root file sets loaded for composite projects, not all files); added TypeScript ES2024
+       Object.groupBy / Map.groupBy Return Type Gotcha (return type is Partial<Record<K, T[]>> with
+       values possibly undefined, must guard before accessing, noUncheckedIndexedAccess makes this
+       visible; community signal from TypeScript 5.7 release notes and MDN) — verified 2026-05-12
      Iter 38 (2026-05-12): added TypeScript 5.8 — Preserved Computed Property Names in Declaration
        Files (entity-name computed keys no longer produce errors under --declaration, .d.ts no longer
        collapses to broad index signature, isolatedDeclarations incompatibility, backward-compat warning
@@ -5579,3 +5586,131 @@ Commit these settings to `.vscode/settings.json` (in source control) so the whol
 | Computed entity-name class property in library `.d.ts` targeting TS 5.7 consumers | TypeScript 5.8 preserves computed names in `.d.ts` but older compilers reject the syntax | Use `unique symbol` keys for maximum backward compatibility in library declaration files |
 | `tsc --build` fail-fast behavior missing after TS 5.6 upgrade | TS 5.6 changed default to continue-on-error; previously stopped at first upstream error | Add `--stopOnBuildErrors` to restore old behavior; omit it in upgrade-mode CI to see all errors simultaneously |
 | `autoImportSpecifierExcludeRegexes` as an import enforcement mechanism | The setting only hides suggestions — manually typed imports still work and pass type-checking | Use ESLint `no-restricted-imports` rule alongside the VS Code setting to actually block imports |
+
+---
+
+## TypeScript 5.5 — JSDoc `@import` Tag for JavaScript Files
+
+TypeScript 5.5 added the `@import` JSDoc tag for JavaScript files that use type-checking via `// @ts-check` or `allowJs`. It allows type-only imports to appear in JSDoc without polluting the file's runtime module graph — the imported name is only used for type annotations, not emitted as an `import` statement.
+
+Before this addition, importing a type in a JSDoc-annotated JavaScript file required a full `import` statement that would be executed at runtime (adding a require/import to the bundle), or an awkward inline `@type {import('module').Type}` on every annotation that used the type.
+
+```javascript
+// @ts-check
+
+// ❌ Before @import: runtime import needed just for a type reference
+// This adds 'my-lib' to the module graph even though nothing is used at runtime
+import { SomeType } from 'my-lib';
+
+/** @param {SomeType} value */
+function process(value) {}
+
+// ❌ Alternative — inline import() per annotation: repetitive and verbose
+/** @param {import('my-lib').SomeType} value */
+function process(value) {}
+
+// ✅ TypeScript 5.5+: @import — type-only, zero runtime cost
+/** @import { SomeType } from 'my-lib' */
+
+/** @param {SomeType} value */
+function process(value) {}
+
+// Multiple named types from the same module
+/** @import { Config, Options, Handler } from './types.js' */
+
+/** @param {Config} config @param {Options} opts */
+function createApp(config, opts) {}
+
+// Default import
+/** @import DefaultExport from 'some-module' */
+
+// Namespace import
+/** @import * as utils from './utils.js' */
+```
+
+**When to use `@import`:**
+- JavaScript files with `// @ts-check` or `allowJs: true` that reference types from other modules
+- Migration paths from untyped JS to TypeScript — add type annotations incrementally without converting to `.ts`
+- Configuration files, scripts, and test fixtures that stay as `.js` but benefit from IDE type checking
+
+**TypeScript project files (`.ts`) do not need `@import`** — they use the standard `import type { X } from 'module'` syntax.
+
+[community] **Pitfall:** `@import` is a JSDoc-level construct — it has no effect in `.ts` files and produces no JavaScript output in `.js` files. Teams that see it in community JavaScript projects and try to use it in TypeScript source will get a no-op (the comment is ignored). Also, `@import` requires TypeScript 5.5+ language service to be understood; older editors or TS versions treat it as an unrecognized JSDoc tag with no effect on types.
+
+---
+
+## TypeScript 5.7 — Faster Composite Project Ownership (Editor Performance)
+
+TypeScript 5.7 improved editor performance for workspaces that use composite projects. Previously, when the language service determined which project a file belonged to, it had to load and parse **all** files listed in each composite project's `tsconfig.json`. For large projects, this meant thousands of files were parsed just to answer "which project owns this file?"
+
+TypeScript 5.7 changed this: the language service now only reads **root file sets** (`include`/`exclude`/`files` glob results) rather than loading the full compilation. Project ownership checks are now O(root files) rather than O(all files), which is dramatically faster in monorepos with deep dependency chains.
+
+**What this means in practice:**
+- Opening a file in VS Code in a monorepo with 10+ packages is now faster — the project affiliation check is cheaper
+- The improvement is automatic; no tsconfig changes are required
+- Combines with `disableReferencedProjectLoad: true` for maximum editor startup performance
+
+```json
+// tsconfig.json — no changes needed to benefit from TS 5.7 project ownership improvement.
+// But combine with these flags for maximum editor performance in large monorepos:
+{
+  "compilerOptions": {
+    "composite": true,
+    "disableReferencedProjectLoad": true,  // load projects lazily on file open (TS 5.x)
+    "disableSolutionSearching": true        // disable cross-project go-to-definition (TS 5.x)
+  }
+}
+```
+
+[community] **Pitfall:** Teams upgrading to TypeScript 5.7 who also have `disableReferencedProjectLoad: true` get the best of both improvements — lazy project loading plus fast ownership checks. But `disableReferencedProjectLoad` alone in TypeScript 5.6 and earlier would still trigger the full file parse during ownership determination. If you've had `disableReferencedProjectLoad` for a long time but editor startup is still slow in TypeScript 5.6, upgrading to 5.7 may be a free performance win without any config changes.
+
+---
+
+## TypeScript ES2024 — `Object.groupBy` and `Map.groupBy` Return Type Gotcha
+
+TypeScript 5.7 added built-in types for `Object.groupBy` and `Map.groupBy` (ES2024). These methods group an iterable's elements by a computed key. However, the TypeScript return type reflects a subtle reality: **not every key in the returned object is guaranteed to have a value** — the result is typed as `Partial<Record<K, T[]>>`, not `Record<K, T[]>`.
+
+```typescript
+// tsconfig: "target": "es2024" or "lib": ["es2024"]
+
+const people = [
+  { name: 'Alice', dept: 'eng' },
+  { name: 'Bob',   dept: 'design' },
+  { name: 'Carol', dept: 'eng' },
+];
+
+const byDept = Object.groupBy(people, p => p.dept);
+// Type: Partial<Record<string, { name: string; dept: string }[]>>
+// i.e., byDept['eng'] is  { name: string; dept: string }[] | undefined
+
+// ❌ Direct access without guard — TypeScript allows this (without noUncheckedIndexedAccess)
+// but crashes at runtime if the key is absent
+const engTeam = byDept['eng'];
+engTeam.forEach(p => console.log(p.name)); // potential crash if 'eng' is absent
+
+// ✅ Guard before use — correct pattern
+const engTeam = byDept['eng'];
+if (engTeam) {
+  engTeam.forEach(p => console.log(p.name));
+}
+
+// ✅ Nullish coalescing for safe default
+const engTeam = byDept['eng'] ?? [];
+engTeam.forEach(p => console.log(p.name)); // safe — empty array if key absent
+
+// Map.groupBy — same return type semantics
+const grouped = Map.groupBy(people, p => p.dept);
+// Type: Map<string, { name: string; dept: string }[]>
+// Map.groupBy returns a full Map (not Partial) — entries for every observed key ARE present
+// but accessing an absent key via .get() still returns undefined
+const design = grouped.get('design'); // { name: string; dept: string }[] | undefined
+```
+
+**Why `Object.groupBy` is `Partial` but `Map.groupBy` is not:** `Object.groupBy` returns a plain object literal, and TypeScript's index signature model means accessing any unobserved key would normally return `undefined`. The `Partial` typing makes this explicit. `Map.groupBy` returns a `Map`, and `Map.get()` already returns `V | undefined` by definition — so no extra `Partial` wrapper is needed.
+
+[community] **Pitfall:** Teams that switch from manual `reduce()`-based grouping to `Object.groupBy` often assume the result type is `Record<K, T[]>` (all keys present) because that's what the mental model suggests. In practice, TypeScript types the return as `Partial<Record<K, T[]>>`, meaning every key access may be `undefined`. Enable `noUncheckedIndexedAccess: true` to make these undefined cases visible as type errors — without it, `byDept['eng']` is typed as `T[] | undefined` but the `undefined` branch is easily overlooked. If you need a guaranteed full record with a known set of keys, initialize a `Record<K, T[]>` first and fill it with a loop rather than using `Object.groupBy`.
+
+| Anti-pattern | Why it's harmful | What to do instead |
+|---|---|---|
+| `Object.groupBy(arr, fn)['key'].forEach(...)` without null guard | Return type is `Partial<Record<...>>` — key may be absent at runtime | Guard with `?? []` or `if (group)` before iterating |
+| Using `@import` in `.ts` files expecting type-only import behavior | `@import` is a JSDoc tag for `.js` files only — ignored in TypeScript source | Use `import type { X } from 'module'` in `.ts` files |

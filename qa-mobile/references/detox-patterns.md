@@ -1,7 +1,7 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 52 | score: 99/100 | date: 2026-05-12 -->
-<!-- WebFetch live sources verified for Detox 20.47–20.51.1 (Jan–May 2026 releases) + PRs #4932 #4912 #4928 #4936 #4943 #4948 + Issues #4937 #4942 #4945 #4901 (May 2026) -->
-<!-- iteration 52 (2026-05-12) adds: Gotcha 89 (ADB commands fail when Android device serial contains parentheses, e.g. mDNS/Wi-Fi serials like "adb-xxx (2)._adb-tls", Issue #4937), Gotcha 90 (SyncStatusSchema rejects null one_time_events object from iOS DetoxSync causing "Failed to execute the current status query" diagnostic errors, Issue #4942), Gotcha 91 (Android WebView injection silently broken in LavaMoat / JS-restricted environments before PR #4943 fix — upgrade to post-20.51.1 or use ignoreUnexpectedMessages:'warn'), Gotcha 92 (withAncestor() returns null on Android with New Architecture/Fabric — RN NewArch regression, Issue #4901), plus community note on toHaveText() lacking RegExp support (Issue #4914 workaround pattern), anti-pattern checklist rows 89-92, 4 new source links; 63 patterns total; ~10050+ lines -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 53 | score: 99/100 | date: 2026-05-12 -->
+<!-- WebFetch live sources verified for Detox 20.47–20.51.1 (Jan–May 2026 releases) + PRs #4932 #4912 #4928 #4936 #4943 #4948 #4868 + Issues #4937 #4942 #4945 #4901 #4850 #4887 (May 2026) -->
+<!-- iteration 53 (2026-05-12) adds: Gotcha 94 (launchApp({ resetAppState: true, permissions: {} }) silently ignores permissions on Android — separate the reset and permissions calls, Issue #4850), Gotcha 95 (Node.js 20+ emits DEP0190 security deprecation warning during Detox test runs due to spawn(shell:true) with array args in TestRunnerCommand.js, Issue #4887 — benign but noisy), Gotcha 96 (device.appStatus() does not exist yet — workaround using private client.currentStatus() is unreliable when sync is disabled, Issue #4945), Pattern 61 (idle-aware polling with disableSynchronization + currentStatus() private API workaround — safe pattern for media/animation-heavy screens), anti-pattern checklist rows 94-96, Android 16 Espresso looper fix note (PR #4868, Detox 20.45+); 64 patterns total; ~10400+ lines -->
 <!-- iteration 51 (2026-05-12) adds: Gotcha 85 (iOS 26+ biometric API breaking change: --matchFace/--matchFinger deprecated, use --biometricMatch/--biometricNonmatch with --booted flag, Detox 20.51+, PR #4932), Gotcha 86 (Android <Modal> creates separate native Window — tap events silently bypass modal layer, Issue #4928), Gotcha 87 (RN 0.85 requires Detox 20.51+, version matrix update), Gotcha 88 (atIndex(N).getAttributes() on iOS returned ALL matching elements before fix in 20.51.x, PR #4912), Pattern 60 (Android Modal interaction workaround using restructured hierarchy), anti-pattern checklist rows 85-88, 4 new source links; 63 patterns total; ~9920+ lines -->
 <!-- iteration 44 (2026-05-12) adds: WebView testing (by.web() matchers, web element interactions, hybrid app patterns), visual regression with device.takeScreenshot() + external tools, JUnit XML CI reporting (jest-junit), React Native 0.78+ New Architecture strict mode notes, device.resetContentAndSettings() for deep iOS simulator reset, network activity tracking (NetworkSynchronizationEnabled per-configuration), 7 new community gotchas (44–50: by.web() IPC latency vs native sync, visual diff false positives from dynamic content, jest-junit path collision in sharded CI, device.resetContentAndSettings() permission re-grant pattern, Android API 35 predictive back gesture breaking by.system() back button, Hermes debugger port conflict on parallel CI jobs, and WebView URL not yet updated when Detox selector fires) -->
 <!-- iteration 45 (2026-05-12) adds: by.system() full dialog workflow (permissions/alerts/sheets), device.openURL() deep link testing pattern, parallel worker configuration for large suites, by.traits() iOS accessibility traits testing, element.getAttributes() extended inspection, device.shake() shake gesture testing, 6 new community gotchas (51–56: by.system() label locale mismatch, deep link cold-start race condition, parallel workers sharing global launchArgs, by.traits() not available on Android, getAttributes() returning null for off-screen elements, device.shake() no-op on physical devices without shake hardware) -->
@@ -10027,7 +10027,226 @@ it('shows a formatted order total', async () => {
 
 ---
 
-## Updated Anti-Patterns Checklist (iteration 52 additions)
+### Pattern 61 — Idle-aware polling when synchronization is disabled [community]
+
+When `device.disableSynchronization()` is active (e.g., for media playback, infinite animations, or background-polling screens), standard `waitFor` assertions can time out even though the app is visually stable and ready — because Detox's idle detector is turned off. The workaround is to implement idle-aware polling using Detox's internal (but stable) `currentStatus()` method as a stop-loss signal.
+
+**Why this matters**: Without this pattern, tests on media-heavy or animation-heavy screens have two failure modes: either they hang indefinitely (sync enabled) or they time out without knowing whether the app was truly idle (sync disabled). This pattern lets you fail fast when the app is genuinely idle.
+
+> **Note**: `device.appStatus()` is a public API proposed in Issue #4945 but not yet implemented as of Detox 20.51.1. The pattern below uses the private `device.deviceDriver.client.currentStatus()` as a workaround. It is functional but fragile — the internal path may change between minor versions. Track Issue #4945 for the official API.
+
+```js
+// e2e/helpers/idleAwareWaitFor.js
+/**
+ * Polls for an element to be visible while synchronization is disabled.
+ * Fails immediately if the app reports "idle" before the element appears
+ * (indicates the element will never appear — no point waiting longer).
+ *
+ * @param {object} elementQuery  — result of element(by.id(...))
+ * @param {number} timeoutMs     — max wait in milliseconds
+ * @param {number} intervalMs    — polling interval in milliseconds
+ */
+async function idleAwareWaitFor(elementQuery, timeoutMs = 10000, intervalMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      // Fast check: is the element visible right now?
+      await expect(elementQuery).toBeVisible();
+      return; // success — element found
+    } catch {
+      // Not visible yet — check if the app is genuinely idle
+      try {
+        // PRIVATE API — may break on major Detox upgrades
+        // Proposed public API: device.appStatus() tracked in Issue #4945
+        const status = await device.deviceDriver.client.currentStatus();
+        const isIdle = status?.app_status === 'idle' || !status?.app_status;
+        if (isIdle) {
+          throw new Error(
+            `App is idle but element is still not visible after ${Date.now() - (deadline - timeoutMs)}ms. ` +
+            'No point waiting — element will not appear.'
+          );
+        }
+      } catch (statusErr) {
+        if (statusErr.message.includes('App is idle')) throw statusErr;
+        // currentStatus() itself failed (e.g., Android returns non-structured string)
+        // Ignore and continue polling
+      }
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+    }
+  }
+  throw new Error(`Timeout: element not visible after ${timeoutMs}ms`);
+}
+
+module.exports = { idleAwareWaitFor };
+```
+
+```js
+// Usage in a test — e.g., video player screen where sync must be disabled
+const { idleAwareWaitFor } = require('./helpers/idleAwareWaitFor');
+
+it('shows chapter title after video seek completes', async () => {
+  await element(by.id('play-button')).tap();
+
+  await device.disableSynchronization();
+  try {
+    await element(by.id('seek-bar')).swipe('right', 'fast', 0.6);
+    // Wait for chapter title to update after seek, but bail if app goes idle first
+    await idleAwareWaitFor(element(by.id('chapter-title-label')), 8000);
+  } finally {
+    await device.enableSynchronization();
+  }
+});
+```
+
+**When to use this pattern:**
+- Video / audio players where a media timer keeps the sync engine "busy" permanently
+- Screens with infinite looping animations not gated behind `launchArgs`
+- Real-time dashboards where WebSocket activity constantly signals "busy"
+
+**When NOT to use this pattern:**
+- Regular navigation and form flows — Detox's built-in sync handles these; adding polling adds noise and slows tests
+- Any context where `device.disableSynchronization()` is not called — `waitFor` + `withTimeout` is always preferred
+
+---
+
+## Gotcha 94 — `launchApp({ resetAppState: true, permissions: {} })` silently ignores permissions on Android [community]
+
+When `resetAppState: true` is passed alongside a `permissions` map in the same `launchApp()` call on Android, the permissions are not applied. The app state is reset but the requested permissions (notifications, location, etc.) are never granted, leaving the test to encounter permission dialogs or feature failures:
+
+```js
+// BROKEN on Android — permissions parameter is ignored when resetAppState is true
+await device.launchApp({
+  newInstance: true,
+  resetAppState: true,
+  permissions: { notifications: 'YES', location: 'always' },  // silently ignored
+});
+```
+
+**Affected versions**: Detox 20.x on Android (Issue #4850, open as of May 2026). iOS is not affected.
+
+**Workaround**: Separate the reset and the permission grant into two sequential calls:
+
+```js
+// CORRECT on Android — separate the operations
+beforeAll(async () => {
+  // Step 1: Launch with reset to clear app state
+  await device.launchApp({ newInstance: true, resetAppState: true });
+  // Step 2: Relaunch immediately with permissions (no reset this time)
+  await device.launchApp({
+    newInstance: false,  // reuse the running instance
+    permissions: { notifications: 'YES', location: 'always' },
+  });
+});
+```
+
+```js
+// Alternative: use device.resetAppState() then launchApp with permissions separately
+beforeEach(async () => {
+  await device.resetAppState();
+  await device.launchApp({
+    permissions: { notifications: 'YES', location: 'always' },
+  });
+});
+```
+
+**Rule of thumb**: On Android, never combine `resetAppState: true` with a `permissions` map in the same `launchApp()` call. Always treat them as separate lifecycle steps until Issue #4850 is resolved.
+
+---
+
+## Gotcha 95 — Node.js 20+ emits DEP0190 security deprecation warning during Detox test runs [community]
+
+When running Detox with **Node.js 20 or later**, the test runner emits a `DeprecationWarning` before tests start:
+
+```
+DeprecationWarning: Passing args to a child process with shell option true can lead to
+security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --no-deprecation` to suppress deprecation warnings.)
+```
+
+**Root cause**: `local-cli/testCommand/TestRunnerCommand.js` uses `cp.spawn()` with `{ shell: true }` and passes the argument list as an array. Node.js 20+ flags this combination as insecure (DEP0190). The fix (converting the array to a joined string since args are already escaped via `escapeSpaces`) is tracked in Issue #4887 and is not yet merged as of Detox 20.51.1.
+
+**Impact**: Tests run correctly — this is a **diagnostic warning only**, not a test failure. However it pollutes CI logs and can mask real warnings from application code.
+
+**Suppression workaround** (temporary):
+
+```bash
+# In your CI pipeline or package.json test script:
+# Pass --no-deprecation to Node via the NODE_OPTIONS env var
+NODE_OPTIONS=--no-deprecation npx detox test -c ios.sim.release
+```
+
+```json
+// package.json
+{
+  "scripts": {
+    "test:e2e": "NODE_OPTIONS=--no-deprecation detox test -c ios.sim.release"
+  }
+}
+```
+
+> **Caution**: `--no-deprecation` suppresses ALL Node.js deprecation warnings for the process, not just this one. Only use it if your CI log review process does not rely on Node deprecation warnings to catch issues in your own code. Track Issue #4887 for the upstream fix.
+
+---
+
+## Gotcha 96 — No public `device.appStatus()` API yet — private `currentStatus()` workaround is unreliable when sync is disabled [community]
+
+A common advanced requirement — especially for tests on animation-heavy or media-player screens — is to query whether the app is currently idle or busy. Developers often reach for the internal method:
+
+```js
+// FRAGILE — private API, not documented, may break on any Detox upgrade
+const status = await device.deviceDriver.client.currentStatus();
+// iOS returns: { app_status: "idle" | "busy", resources: [...] }
+// Android returns: an unstructured string (not JSON) — cannot be reliably parsed
+```
+
+**Why this breaks silently when sync is disabled**:
+
+Once `await device.disableSynchronization()` is called, `currentStatus()` unconditionally returns `app_status: "idle"` on iOS — even when the app is mid-navigation, fetching data, or running layout. It tells you nothing useful after sync is disabled.
+
+**The planned fix**: Issue #4945 proposes a public `device.appStatus()` API that:
+1. Returns `{ idle: boolean, busyResources: string[] }` on both platforms
+2. Works **independently** of whether synchronization is enabled or disabled
+3. Is documented and version-stable
+
+Until `device.appStatus()` is available, the safest approaches are:
+
+```js
+// Option A — Don't disable synchronization; instead suppress only the noisy SDK
+// (setURLBlacklist for analytics, setURLBlacklist for media CDN)
+await device.setURLBlacklist(['.*cdn\\.yourmedia\\.com.*', '.*analytics.*']);
+// Now sync stays enabled and waitFor works correctly for your app's own UI events
+
+// Option B — Re-enable sync just for the assertion, then disable again
+it('media player shows chapter title after seek', async () => {
+  await element(by.id('seek-bar')).swipe('right', 'fast', 0.6);
+
+  await device.disableSynchronization();  // suppress media timer
+  // Use a short waitFor loop at fixed intervals rather than relying on idle check
+  let found = false;
+  for (let i = 0; i < 20; i++) {
+    try {
+      await device.enableSynchronization();
+      await expect(element(by.id('chapter-title'))).toBeVisible();
+      found = true;
+      break;
+    } catch {
+      await device.disableSynchronization();
+      await new Promise(r => setTimeout(r, 300));
+    }
+  }
+  await device.enableSynchronization();
+  if (!found) throw new Error('chapter-title never appeared');
+});
+
+// Option C — Add a testID-gated "ready" marker in app code that only appears when idle
+// (See Pattern 61 for the idle-aware polling helper)
+```
+
+**Rule of thumb**: Avoid `device.deviceDriver.client.currentStatus()` in production test code — it is a private API with no stability guarantees. Use Option A (`setURLBlacklist`) first; it eliminates the need to disable sync entirely for most media/analytics scenarios. Track Issue #4945 for the official `device.appStatus()` API.
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 53 additions)
 
 | Anti-Pattern | Fix |
 |---|---|
@@ -10040,6 +10259,9 @@ it('shows a formatted order total', async () => {
 | `by.web()` selectors returning nothing in Android apps using LavaMoat | Upgrade to post-PR #4943 Detox build; set `ignoreUnexpectedMessages: 'warn'` to surface hidden injection errors (Gotcha 91) |
 | `element(by.id('child').withAncestor(by.id('parent')))` failing with "was null" on Android + New Architecture | RN Fabric regression (Issue #4901); use unique per-item testIDs or `.and(by.text())` to remove `withAncestor` dependency (Gotcha 92) |
 | `toHaveText('Order #12345')` breaking when order number changes | `toHaveText()` has no RegExp overload; use `getAttributes()` + `jestExpect(attrs.text).toMatch(/regex/)` (Gotcha 93) |
+| `launchApp({ resetAppState: true, permissions: { ... } })` not granting permissions on Android | Android ignores `permissions` when `resetAppState: true` in same call (Issue #4850); separate into two sequential `launchApp()` calls (Gotcha 94) |
+| `DeprecationWarning: DEP0190` cluttering CI logs on Node.js 20+ | Benign Detox internal spawn() issue (Issue #4887); suppress with `NODE_OPTIONS=--no-deprecation` in test script until upstream fix lands (Gotcha 95) |
+| `device.deviceDriver.client.currentStatus()` used to check app idle state when sync is disabled | Private API; reports idle unconditionally when sync is disabled; use `setURLBlacklist` to avoid needing to disable sync, or Pattern 61 for the safe polling helper (Gotcha 96) |
 
 ---
 
@@ -10074,4 +10296,8 @@ it('shows a formatted order total', async () => {
 - Detox SyncStatusSchema null rejection (open issue): https://github.com/wix/Detox/issues/4942
 - Detox withAncestor Android New Architecture regression (open issue): https://github.com/wix/Detox/issues/4901
 - Detox toHaveText RegExp support request (open issue): https://github.com/wix/Detox/issues/4914
+- Detox resetAppState+permissions bug on Android (open issue): https://github.com/wix/Detox/issues/4850
+- Detox DEP0190 Node.js deprecation warning (open issue): https://github.com/wix/Detox/issues/4887
+- Detox public appStatus() API proposal (open issue): https://github.com/wix/Detox/issues/4945
+- Detox Android 16 Espresso looper fix (merged Dec 2025): https://github.com/wix/Detox/pull/4868
 - React Navigation Testing: https://reactnavigation.org/docs/testing/

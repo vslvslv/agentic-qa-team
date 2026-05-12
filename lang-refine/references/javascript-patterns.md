@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 53 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 54 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -5717,3 +5717,152 @@ class User {
 | Assuming `node file.ts` performs type checking | Type stripping erases annotations; type errors surface at runtime, not at load time | Run `tsc --noEmit` separately in CI for type checking |
 | Importing `.js` extensions in TypeScript files when using native stripping | `./module.js` resolves to the compiled output — but with native stripping there is no compiled output | Use `.ts` extensions: `import './module.ts'` |
 | Using `enum` or `namespace` with Node.js native type stripping | These TypeScript features generate runtime code — Node.js strips them but does not compile them | Use `const` objects instead of `enum`; refactor `namespace` to ESM modules; or use `tsx` |
+
+---
+
+## ESLint 9 — Flat Config System
+
+ESLint 9 (April 2024) made the **flat config** (`eslint.config.js`) the default and deprecated the legacy `.eslintrc.*` format. Flat config is a significant redesign: one JavaScript file, explicit plugin namespacing, no `extends` string lookup, and direct `import` of configs and plugins. Every project that upgrades to ESLint 9+ must migrate.
+
+### `eslint.config.js` — The New Format
+
+```javascript
+// eslint.config.js — flat config (ESLint 9+, default; ESLint 8 with --flag unstable_config_lookup_from_file)
+import js from '@eslint/js';
+import tsPlugin from '@typescript-eslint/eslint-plugin';
+import tsParser from '@typescript-eslint/parser';
+import nodePlugin from 'eslint-plugin-n';
+
+export default [
+  // 1. Global ignores — replaces .eslintignore
+  {
+    ignores: ['dist/**', 'node_modules/**', 'coverage/**'],
+  },
+
+  // 2. Base JS recommended rules — explicit import, no 'extends: eslint:recommended' string
+  js.configs.recommended,
+
+  // 3. TypeScript files — scoped config block
+  {
+    files: ['src/**/*.ts', 'src/**/*.tsx'],
+    plugins: {
+      '@typescript-eslint': tsPlugin,   // namespaced — no global plugin registry
+    },
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        project: './tsconfig.json',
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      ...tsPlugin.configs['recommended'].rules,
+      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/consistent-type-imports': 'error',
+    },
+  },
+
+  // 4. Node.js files — separate config block with its own scope
+  {
+    files: ['src/**/*.js', 'src/**/*.ts'],
+    plugins: { n: nodePlugin },
+    rules: {
+      'n/prefer-node-protocol': 'error',   // enforce node: prefix
+      'n/no-missing-import': 'off',        // handled by TypeScript
+    },
+  },
+
+  // 5. Test files — override timeout-sensitive rules
+  {
+    files: ['**/*.test.ts', '**/*.spec.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
+];
+```
+
+**Key structural changes from `.eslintrc`:**
+
+| Old (`.eslintrc.json`) | New (`eslint.config.js`) |
+|---|---|
+| `"extends": ["eslint:recommended"]` | `import js from '@eslint/js'; export default [js.configs.recommended, ...]` |
+| `"extends": ["plugin:@typescript-eslint/recommended"]` | Spread `...tsPlugin.configs.recommended.rules` inside a config object |
+| `"plugins": ["n"]` — string name | `plugins: { n: nodePlugin }` — object with imported plugin |
+| `.eslintignore` file | `ignores: ['dist/**']` array inside `eslint.config.js` |
+| `"env": { "node": true }` | `languageOptions: { globals: nodePlugin.environments.node.globals }` |
+| Per-directory `.eslintrc` overrides | Multiple config objects with `files` glob patterns |
+| `"root": true` | Not needed — flat config is always root-based |
+
+### Compatibility Layer for Legacy Configs
+
+Plugins that haven't updated to flat config can be wrapped with `@eslint/compat`:
+
+```javascript
+import { fixupPluginRules } from '@eslint/compat';
+import importPlugin from 'eslint-plugin-import';
+
+export default [
+  {
+    plugins: {
+      // Wrap a plugin not yet updated for flat config
+      import: fixupPluginRules(importPlugin),
+    },
+    rules: {
+      'import/no-unresolved': 'error',
+    },
+  },
+];
+```
+
+**Check plugin compatibility:** `npx @eslint/config-inspector` visualizes which rules apply to which files and shows compatibility warnings.
+
+### ESLint 9 with TypeScript — `typescript-eslint` v8
+
+`typescript-eslint` v8 ships its own flat config helpers:
+
+```javascript
+import tseslint from 'typescript-eslint';
+
+// Recommended: typescript-eslint's own flat config factory
+export default tseslint.config(
+  tseslint.configs.recommended,           // no-any, no-unused-vars, etc.
+  tseslint.configs.recommendedTypeChecked, // type-aware rules (slower but catches more)
+  {
+    languageOptions: {
+      parserOptions: {
+        project: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
+);
+
+// tseslint.config() is a thin wrapper that merges and types config arrays
+// — equivalent to writing the export default [] array manually
+```
+
+**Community guidance [community]:** `recommendedTypeChecked` is 2–10× slower than `recommended` because it triggers a TypeScript type check pass per-file. Enable it for CI and save the speed for local `--watch` runs by splitting configs or disabling type-checking rules in watch mode.
+
+---
+
+## Additional Community Pitfalls (2026 — Tooling)
+
+**76. Using `.eslintrc.*` on ESLint 9+** [community] — ESLint 9 still supports legacy `.eslintrc` via a compatibility flag, but it is deprecated and generates a warning. Some plugins with config presets only export flat-config-compatible objects; importing them inside an `.eslintrc` `extends` array throws. WHY it causes problems: a project that upgrades ESLint to v9 expecting backward compatibility runs into silent rule omissions or `Cannot read properties of undefined` errors from incompatible plugin config exports. Fix: migrate to `eslint.config.js` using the flat config format; wrap legacy plugins with `fixupPluginRules()` from `@eslint/compat` during the transition.
+
+**77. Spreading `tsPlugin.configs['recommended'].rules` Instead of Using `tseslint.config()`** [community] — Manually spreading `...tsPlugin.configs['recommended'].rules` into a flat config object skips the plugin registration step — the `@typescript-eslint` namespace is missing, so rules that reference other rules in the plugin throw `Definition for rule '@typescript-eslint/xyz' was not found`. WHY it causes problems: the error is a runtime ESLint startup failure, not a type error — it only surfaces when ESLint runs. Fix: use `typescript-eslint`'s `tseslint.config()` helper or explicitly add `plugins: { '@typescript-eslint': tsPlugin }` in the same config object as the rules.
+
+**78. `eslint.config.js` Ignores Not Applying to All File Types** [community] — In the flat config system, `ignores` entries at the top level (without a `files` field) apply globally. However, `ignores` inside a config object that also has a `files` field are scoped to that pattern's matches — they do NOT globally ignore files. WHY it causes problems: developers add `ignores: ['dist/**']` inside a `{ files: ['**/*.ts'] }` block expecting it to exclude `dist/` from all processing, but it only excludes `.ts` files in `dist/` — other file types in `dist/` are still linted. Fix: place global ignores in a config object that has ONLY an `ignores` property and no `files` property.
+
+---
+
+## Additional Anti-Patterns (Tooling 2026)
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `.eslintrc.json` on ESLint 9+ | Deprecated format; some flat-config-only plugins break silently | Migrate to `eslint.config.js`; wrap legacy plugins with `fixupPluginRules` |
+| Spreading plugin rules without registering the plugin | `Definition for rule 'plugin/xyz' was not found` at startup | Register plugins in `plugins: { name: plugin }` in the same config object |
+| `ignores` inside a `files`-scoped block for global exclusions | Only excludes that file-pattern within the files scope, not globally | Use a standalone `{ ignores: ['dist/**'] }` config object (no `files` property) |
+| `"extends": "eslint:recommended"` string in flat config | Flat config has no string lookup — will throw `TypeError` | `import js from '@eslint/js'; js.configs.recommended` |
+| `"env": { "node": true }` in flat config | `env` key does not exist in flat config format | Use `languageOptions.globals` with a globals package or plugin environment |
+| Running `recommendedTypeChecked` in `--watch` mode | Type-checked rules trigger a full TS type pass per-file change — O(n) per keystroke | Use `recommended` (non-type-checked) for watch; run `recommendedTypeChecked` in CI only |

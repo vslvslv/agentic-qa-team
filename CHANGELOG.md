@@ -5,6 +5,39 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.17 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 14/100)
+
+### qa-refine (5 guides, 97-100/100)
+- `playwright-patterns.md` — `--fail-on-flaky-tests` CLI flag (v1.45+) added to CLI Flags table with `STRICT_FLAKE_MODE` env var gate; `page.clock.runFor()`/`page.clock.tick()` typed TypeScript examples added to Clock section; G48 `fastForward()` vs `runFor()`/`tick()` behavioral difference (intermediate callback skipping) (+51 lines, 100/100, iter 35)
+- `cypress-patterns.md` — Pattern 132: `Cypress.require()` in `cy.origin()` callbacks (SSO login, custom commands, `experimentalOriginDependencies: true`); Pattern 133: `experimentalCspAllowList` (3 config modes, directive table, hash-based `script-src` runner breakage); Pattern 134: `detect-flake-but-always-fail` retry strategy + `stopIfAnyPassed` comparison table; G120-122 (+244 lines, 97/100, iter 43)
+- `k6-patterns.md` — `file` secret source key=value plaintext format + Docker volume-mount pattern; `url` secret source 9-option table (`urlTemplate`/`method`/`headers`/`responsePath`/`timeout`/rate-limit options) with 4 provider examples (Vault KV v2, AWS Secrets Manager, multi-source); G61 URL-encoded slash in Vault paths returns 404 (+192 lines, 100/100, iter 34)
+- `detox-patterns.md` — P61 `idleAwareWaitFor` custom condition loop; G94 `resetAppState()` + runtime permissions silently broken on Android (separate `revokePermissions()` call required); G95 DEP0190 Node.js path.join deprecation in configs; G96 no public `appStatus()` API (+226 lines, 99/100, iter 53)
+- `appium-wdio-patterns.md` — `appium:chromedriverForwardBiDi` (UIAutomator2 v7+ BiDi WebSocket in Android WebView); `currentDisplayId` settings API (foldable device display targeting); Appium 3.1 Device Posture WebDriver endpoints; XCUITest v11 `appium:appTimeZone`/`simulatorLogLevel`/`appLaunchStateTimeoutSec` capabilities (+359 lines, 100/100, iter 34)
+
+### qa-methodology-refine (12 guides, all 97-100/100)
+- `test-pyramid-guide.md` — `@fast-check/vitest` `test.prop()` API (named Vitest test cases, TypeScript typing); RTL v16 + React 19 auto-`act()` deprecation + `onCaughtError`; G50 fast-check v4.x ESM-only `ERR_REQUIRE_ESM` (+300 lines, 98/100, iter 45)
+- `tdd-guide.md` — Vitest 4.1 `test.extend()` builder chaining (auto-inferred fixture types); `context.annotate()` (structured diagnostics, JUnit XML/HTML integration); `sequence.groupOrder` multi-project ordered CI pipeline; G48-49 (+294 lines, 97/100, iter 26)
+- `bdd-guide.md` — `TestStepInfo.titlePath` (v1.55+) collision-free artifact filenames; Playwright Test Agents `npx playwright init-agents` (v1.56+, planner/generator/healer loop); `page.pickLocator()` (v1.59+) locator strategy selector (+171 lines, 100/100, iter 35)
+- `test-isolation-guide.md` — Pattern 40: Vitest `test.signal` AbortSignal cancellation; Pattern 41: `page.clearConsoleMessages()`/`clearPageErrors()` (v1.59+) multi-phase isolation; G101-102 (+251 lines, 100/100, iter 24)
+- `test-data-guide.md` — Vitest 3.2 `scope: 'file'` fixture; `test.signal` AbortSignal for factory teardown; `using vi.spyOn()` auto-restoration; Vitest 4.1 `mockThrow()`/`mockThrowOnce()`; Chai-style mock assertions (`calledBefore`/`calledAfter`) (+442 lines, 100/100, iter 45)
+- `contract-testing-guide.md` — pact-js v16.3.0 DELETE body regression in jsdom; PactFlow AI Test Templates; lessons #64-65 (+104 lines, 100/100, iter 30)
+- `coverage-guide.md` — G56 `coverage.skipFull`; G57 `aroundEach`/`aroundAll` rollback paths undetected by V8 branch coverage (+149 lines, 100/100, iter 44)
+- `ci-cd-testing-guide.md` — TS 5.9 `import defer` lazy module init (8s→2s CI cold-start, `module: preserve`); `noUncheckedSideEffectImports` CI hygiene gate; G65-66 (+160 lines, 100/100, iter 37)
+- `accessibility-guide.md` — `testInfoError.errorContext` (Playwright 1.60) aria snapshot in failure output; `cypress-axe v1.7.0` Cypress 15 support + `retries`/`interval` options; G86-88 (+194 lines, 98/100, iter 44)
+- `shift-left-guide.md` — Playwright `toMatchAriaSnapshot()` (v1.49) YAML-based a11y shift-left; `--only-changed` (v1.46) PR fast-feedback GitHub Actions; Vitest pool types `forks`/`threads`/`vmThreads`; ESLint v9 flat config migration (+261 lines, 100/100, iter 34)
+- `flakiness-guide.md` — P97 `page.clock` deterministic time control; P98 `page.addLocatorHandler()` overlay dismiss; P99 Vitest 4.0 `getSeed()`; AP48 (+461 lines, 100/100, iter 58)
+- `exploratory-guide.md` — `test.step()` timeout phase inheritance; `toHaveAccessibleErrorMessage()` live region oracle; `locator.filter({ visible: true })`; `partitionKey` cookie isolation; `page.consoleMessages()`/`pageErrors()`/`requests()` async diagnostic APIs; lessons #132-134 (+534 lines, 100/100, iter 48)
+
+### lang-refine (3 guides updated)
+- `java-testing-guide.md` — Spring Boot 4.0 `@MockBean`→`@MockitoBean` migration + `RestTestClient`; JUnit 6.1 `assertInstanceOf` cause attachment, stack trace pruning, `@TempDir(cleanup=CleanupMode)`, `WorkerThreadPoolHierarchicalTestExecutorService`; JUnit 6.0.3 deadlock fix; G49-50 (+447 lines, 99/100, iter 35)
+- `python-testing-guide.md` — Python 3.15 `TypeForm`/`TypedDict(closed=True)`/`re.prefixmatch()`; pytest 9.0 breaking changes; G57-58 (+341 lines, iter 51)
+- `typescript-testing-guide.md` — TS 5.5 JSDoc `@import` tag; TS 5.7 composite project ownership; `Object.groupBy()` `Partial<Record>` gotcha (+135 lines, iter 39)
+
+### Other guides
+- `javascript-testing-guide.md` — ESLint 9 flat config migration; G76-78 (+148 lines, iter 54)
+
+---
+
 ## v1.16.0.16 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 13/100)
 
 ### qa-refine (5 guides, 97-100/100)

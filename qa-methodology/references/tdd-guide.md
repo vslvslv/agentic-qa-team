@@ -1,6 +1,6 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 25 | score: 97/100 | date: 2026-05-12 -->
-<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) + typescript-6.0-baseurl-deprecation (WebFetch 2026-05-12) + typescript-6.0-subpath-imports (WebFetch 2026-05-12) + vitest-4.1-coverage-ignore-comments (WebFetch 2026-05-12) + vitest-3.2-scoped-fixtures (WebFetch 2026-05-12) + vitest-3.2-using-spyon (WebFetch 2026-05-12) + vitest-3.2-matchers-type (WebFetch 2026-05-12) + google-tott-2025-functional-core + google-tott-2025-arrange-data-flow + typescript-6.0-temporal-api (WebFetch 2026-05-12) + vitest-3.2-abortsignal + ts5to6-codemod | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 26 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) + typescript-6.0-baseurl-deprecation (WebFetch 2026-05-12) + typescript-6.0-subpath-imports (WebFetch 2026-05-12) + vitest-4.1-coverage-ignore-comments (WebFetch 2026-05-12) + vitest-3.2-scoped-fixtures (WebFetch 2026-05-12) + vitest-3.2-using-spyon (WebFetch 2026-05-12) + vitest-3.2-matchers-type (WebFetch 2026-05-12) + google-tott-2025-functional-core + google-tott-2025-arrange-data-flow + typescript-6.0-temporal-api (WebFetch 2026-05-12) + vitest-3.2-abortsignal + ts5to6-codemod + vitest-4.1-builder-pattern (WebFetch 2026-05-12) + vitest-3.2-annotate-api (WebFetch 2026-05-12) + vitest-3.2-sequence-grouporder | ISTQB CTFL 4.0 terminology applied -->
 <!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
 <!-- extension 2026-05-12: iter 17 — added TDD for Feature Flags (safe defaults pattern); One Map Key One Lookup for test doubles; TCR TypeScript script; gotchas #24–#26 -->
 <!-- extension 2026-05-12: iter 18 — added Zod v4 TDD patterns (schemaMatching with v4 APIs, z.input/z.output for test data, migration pitfall); `using`/`await using` for TDD resource teardown; Neon DB branching for database-level TDD isolation; `Promise.try` for sync-to-async TDD wrappers; gotchas #27–#29 -->
@@ -11,6 +11,7 @@
 <!-- extension 2026-05-12: iter 23 — added TypeScript 6.0 baseUrl deprecation → paths migration for test aliases; #/ subpath import syntax alternative to @/ aliases; noUncheckedSideEffectImports now on-by-default in TS 6.0 (correction to earlier "opt-in" description); --moduleResolution bundler + --module commonjs valid combo; Vitest 4.1 coverage ignore comments with @preserve flag for esbuild; gotchas #40–#42 -->
 <!-- extension 2026-05-12: iter 24 — added Vitest 3.2 native vi.spyOn/vi.fn Disposable support (direct using, no wrapper needed); Vitest 3.2 scoped fixtures (scope:'file'|'worker' in test.extend); Vitest 3.2 unified Matchers type (replaces older Assertion<R> per-context pattern); Google TotT 2025 posts (Functional Core Oct 2025, Arrange Data Flow Jan 2025) added to Key Resources; gotchas #43–#45 -->
 <!-- extension 2026-05-12: iter 25 — added Temporal API TDD patterns (TypeScript 6.0 built-in types, ClockService interface injection, vi.setSystemTime for Temporal.Now); Vitest 3.2 AbortSignal per-test-case for timeout-aware TDD; ts5to6 codemod reference in TS 6.0 migration section; gotchas #46–#47 -->
+<!-- extension 2026-05-12: iter 26 — added test.extend() builder pattern (Vitest 4.1, chained type-inferred fixtures); context.annotate() API (Vitest 3.2, attach diagnostic messages/files to test cases); sequence.groupOrder for multi-project test ordering; gotchas #48–#49 -->
 
 ## Core Principles
 
@@ -5311,9 +5312,301 @@ it('stops producing events when the signal is aborted', async (ctx) => {
 
 ---
 
-### Real-World Gotchas [community] — Additions (iter 25)
+### Vitest 4.1 — `test.extend()` Builder Pattern for Type-Inferred Fixtures [community]
 
-46. **[community] The `ts5to6` codemod does not update `"types"` arrays — the highest-impact TDD breakage must be fixed manually.** The `ts5to6` automated migration tool ([github.com/andrewbranch/ts5to6](https://github.com/andrewbranch/ts5to6)) handles `baseUrl` → `paths` migration, deprecated option removal, and `rootDir` inference fixes. However, it does not add `"types": ["vitest/globals"]` (or `"jest"` / `"mocha"`) to `tsconfig.json` — because it cannot know which test framework's globals your project uses. Teams that run the codemod and assume the migration is complete will still hit the `Cannot find name 'describe'` TypeScript error in every test file. The correct checklist: run `ts5to6` for mechanical config changes, then manually add the `types` array entry for the test runner, then run `tsc --noEmit` to catch any remaining issues. Do not use `ts5to6` as the sole migration step before upgrading `typescript`.
+Vitest 4.1 introduces a chainable builder pattern for `test.extend()` that automatically infers fixture types from return values — eliminating the need to declare a generic type interface manually. In TDD, this reduces the annotation overhead in test setup code and keeps fixture types always in sync with their implementations.
+
+**The previous object-syntax form** required manually declaring a generic interface:
+
+```typescript
+// ❌ Old object syntax — requires manual type declaration (verbose, can drift)
+interface MyFixtures {
+  repo: InMemoryUserRepository;
+  service: UserService;
+}
+
+const userTest = test.extend<MyFixtures>({
+  repo: async ({}, use) => {
+    const r = new InMemoryUserRepository();
+    await use(r);
+  },
+  service: async ({ repo }, use) => {
+    await use(new UserService(repo));
+  },
+});
+```
+
+**The new builder pattern** chains `.extend()` calls and infers types automatically:
+
+```typescript
+// ✅ Vitest 4.1 builder pattern — types inferred, no manual interface needed
+// fixtures.ts
+import { test as baseTest } from 'vitest';
+import { InMemoryUserRepository } from './test-doubles/InMemoryUserRepository.js';
+import { InMemoryMailer } from './test-doubles/InMemoryMailer.js';
+import { UserService } from './UserService.js';
+
+export const userTest = baseTest
+  // Fixture 1: inline value — type inferred as { maxPageSize: number }
+  .extend('config', { maxPageSize: 20 })
+
+  // Fixture 2: sync factory — type inferred as InMemoryUserRepository
+  .extend('repo', () => new InMemoryUserRepository())
+
+  // Fixture 3: async factory with cleanup — type inferred as InMemoryMailer
+  .extend('mailer', { scope: 'file' }, async ({}, { onCleanup }) => {
+    const m = new InMemoryMailer();
+    onCleanup(() => m.reset());
+    return m;
+  })
+
+  // Fixture 4: uses previous fixtures — type of repo/mailer inferred from above
+  .extend('service', ({ repo, mailer }) => new UserService(repo, mailer));
+
+// Usage: all fixture types are TypeScript-inferred — no interface required
+// userTest.ts
+userTest('creates a user and sends welcome email', async ({ service, mailer }) => {
+  // `service` is UserService, `mailer` is InMemoryMailer — inferred, not declared
+  await service.register({ email: 'alice@example.com', name: 'Alice' });
+
+  expect(mailer.sent).toHaveLength(1);
+  expect(mailer.sent[0]).toMatchObject({ to: 'alice@example.com', subject: 'Welcome!' });
+});
+
+userTest('uses config fixture for pagination', async ({ service, config }) => {
+  // `config.maxPageSize` is number — inferred from the inline value above
+  const page = await service.listUsers({ page: 1, pageSize: config.maxPageSize });
+  expect(page.items.length).toBeLessThanOrEqual(config.maxPageSize);
+});
+```
+
+**Builder pattern scope and cleanup options:**
+
+```typescript
+// Scoped and cleanup-aware fixtures in the builder chain
+export const dbTest = baseTest
+  // File-scoped: one DB connection per test file (like beforeAll/afterAll)
+  .extend('db', { scope: 'file' }, async ({}, { onCleanup }) => {
+    const db = await createTestDatabase();
+    onCleanup(() => db.close());
+    return db;
+  })
+
+  // Per-test transaction: each test case gets its own transaction, rolled back after
+  .extend('tx', async ({ db }, { onCleanup }) => {
+    const tx = await db.beginTransaction();
+    onCleanup(() => tx.rollback());
+    return tx;
+  });
+
+// Type-safe test case — `tx` is typed from the return value of db.beginTransaction()
+dbTest('inserts a row and reads it back within a transaction', async ({ tx }) => {
+  await tx.insert('orders', { id: 'ORD-1', status: 'pending' });
+  const row = await tx.findById('orders', 'ORD-1');
+  expect(row?.status).toBe('pending');
+  // tx.rollback() called automatically — DB unchanged after test case
+});
+```
+
+**Why the builder pattern improves TDD:** When using the object syntax, a TypeScript interface must be manually maintained alongside the fixture implementations. When a fixture's return type changes (e.g., a repository gains a new method), the interface must be updated separately — and TypeScript will not catch a divergence between the interface and the implementation. With the builder pattern, the type flows directly from the factory's return value: if `InMemoryUserRepository` gains a new method, the test fixture's type automatically includes it on the next TypeScript check. This closes the "type definition diverges from fake implementation" class of TDD drift.
+
+**[community] The builder pattern is the recommended approach for new TDD test suites.** The object syntax remains supported for backward compatibility and for Playwright-compatible fixture patterns that require the `use()` callback form. For TypeScript-native Vitest projects, prefer the builder pattern: it eliminates the generic interface boilerplate that the object syntax requires, reducing the maintenance surface for test infrastructure.
+
+---
+
+### Vitest 3.2 — `context.annotate()` for Diagnostic Test Attachments [community]
+
+Vitest 3.2 added `context.annotate()`, an API for attaching custom messages, links, and file attachments to test cases. In TDD, this provides a structured way to attach diagnostic information — API response bodies, DOM snapshots, log excerpts — to failing test cases without printing them to stdout, keeping the terminal output clean while preserving evidence in reporters (JUnit XML, HTML, GitHub Actions).
+
+Unlike `console.log` or `console.error` which always print and pollute the TDD watch loop output, `context.annotate()` only surfaces in reporters when requested — making it a low-noise diagnostic tool compatible with the tight TDD feedback loop.
+
+```typescript
+// order-service.test.ts — annotate() for rich failure context
+import { describe, it, expect } from 'vitest';
+import { OrderService } from './OrderService.js';
+import { InMemoryOrderRepository } from './test-doubles/InMemoryOrderRepository.js';
+
+describe('OrderService.checkout', () => {
+  // Test case: RED — annotate attaches response body on assertion failure
+  it('returns a confirmed order response', async (ctx) => {
+    const repo = new InMemoryOrderRepository();
+    const service = new OrderService(repo);
+
+    const result = await service.checkout({
+      userId: 'u1',
+      items: [{ sku: 'WIDGET-A', qty: 2, price: 49.99 }],
+    });
+
+    // Attach the full result for diagnostics — surfaced in CI reporter on failure
+    // Does NOT print to terminal during normal TDD watch runs
+    await ctx.annotate(`checkout result: ${JSON.stringify(result, null, 2)}`);
+
+    expect(result.status).toBe('confirmed');
+    expect(result.total).toBeCloseTo(99.98);
+  });
+
+  // Test case: attaching a warning-level annotation for known flakiness context
+  it('handles concurrent checkouts without double-charging', async (ctx) => {
+    const repo = new InMemoryOrderRepository();
+    const service = new OrderService(repo);
+
+    // Attach context about the concurrency scenario being tested
+    await ctx.annotate(
+      'Concurrent checkout test: two simultaneous requests for the same cart',
+      'notice'
+    );
+
+    const [r1, r2] = await Promise.allSettled([
+      service.checkout({ userId: 'u2', items: [{ sku: 'A', qty: 1, price: 10 }] }),
+      service.checkout({ userId: 'u2', items: [{ sku: 'A', qty: 1, price: 10 }] }),
+    ]);
+
+    const successes = [r1, r2].filter(r => r.status === 'fulfilled').length;
+    expect(successes).toBe(1); // exactly one checkout succeeds
+  });
+});
+```
+
+**Annotation types:**
+
+| Type | When to use |
+|------|-------------|
+| *(default / no type)* | Informational — available in reports, silent during watch |
+| `'notice'` | Contextual notes about the test case scenario |
+| `'warning'` | Known flakiness, environment assumptions |
+| `'error'` | Additional error context attached before a failing assertion |
+
+**Attaching file content (e.g., HTML snapshots for UI tests):**
+
+```typescript
+// browser.test.ts — annotate with DOM snapshot on failure
+import { describe, it, expect } from 'vitest';
+import { page } from '@vitest/browser/context';
+
+describe('CheckoutPage', () => {
+  it('shows the order confirmation banner', async (ctx) => {
+    await page.goto('/checkout/confirm?orderId=ORD-1');
+    const banner = page.getByRole('status', { name: /confirmed/i });
+
+    // Attach the page HTML for CI debugging — only visible in HTML/JUnit reports
+    const html = await page.content();
+    await ctx.annotate('page HTML at assertion time', {
+      contentType: 'text/html',
+      body: html,
+      bodyEncoding: 'utf-8',
+    });
+
+    await expect.element(banner).toBeVisible();
+  });
+});
+```
+
+**`context.annotate()` in the Vitest report pipeline:**
+
+Annotations flow into the `onTestAnnotate` reporter hook and appear in:
+- **Vitest HTML reporter** — as expandable panels on test case results
+- **JUnit XML reporter** — as `<properties>` elements on test cases (viewable in CI dashboards)
+- **GitHub Actions reporter** — as step annotations in the PR checks UI
+- **TAP reporter** — as YAML directives
+
+**Why this matters for TDD:** During the Red phase, a failing test case often needs more context than the assertion failure message provides — particularly for integration test cases that produce complex responses. Adding `ctx.annotate()` at the Arrange→Act boundary (before the assertion) means that when the test goes Red in CI, the full response or diagnostic context is attached to the test result without bloating the terminal output during the local TDD watch loop.
+
+**[community] `context.annotate()` resolves the "debug log hygiene" problem in TDD test suites.** Teams that use `console.log` for diagnostic output in tests must remember to remove those statements before committing — they pollute the TDD terminal output. `ctx.annotate()` is the structured alternative: diagnostic output that is always present in reports but invisible in the terminal watch output. This enables permanent diagnostic annotations in test cases without disrupting the TDD Red→Green feedback signal.
+
+---
+
+### Vitest 3.2 — `sequence.groupOrder` for Ordered Multi-Project TDD Pipelines [community]
+
+Vitest 3.2 adds `sequence.groupOrder` to the project configuration, enabling multi-project test suites to define explicit execution groups that run sequentially. In TDD, this matters when a suite has multiple test layers — domain unit tests, integration tests, and E2E tests — that have ordering dependencies: integration tests should not run before domain tests have passed, and E2E tests should not run before integration tests are green.
+
+Without `sequence.groupOrder`, multi-project Vitest configurations run all projects in parallel by default. This can produce misleading CI failures where E2E tests fail because the domain model is not correctly implemented yet — obscuring the real Red signal.
+
+```typescript
+// vitest.config.ts — sequence.groupOrder for TDD pipeline ordering
+import { defineConfig } from 'vitest/config';
+import tsconfigPaths from 'vite-tsconfig-paths';
+
+export default defineConfig({
+  plugins: [tsconfigPaths()],
+  test: {
+    projects: [
+      {
+        // Group 1: fast domain unit tests — run first, stop immediately on failure
+        name: 'unit',
+        include: ['src/domain/**/*.test.ts'],
+        sequence: { groupOrder: 1 },  // ← Vitest 3.2+: runs before group 2 and 3
+        bail: 1,
+        reporter: ['verbose'],
+        tags: ['unit'],
+      },
+      {
+        // Group 2: integration tests — run only after unit group passes
+        name: 'integration',
+        include: ['src/**/*.integration.test.ts'],
+        sequence: { groupOrder: 2 },  // ← runs after group 1 is complete
+        bail: 0,  // integration: collect all failures for CI visibility
+        tags: ['integration'],
+      },
+      {
+        // Group 3: E2E tests — run only after integration group passes
+        name: 'e2e',
+        include: ['e2e/**/*.test.ts'],
+        sequence: { groupOrder: 3 },  // ← runs after group 2 is complete
+        browser: {
+          enabled: true,
+          provider: { name: 'playwright' },
+          name: 'chromium',
+        },
+        tags: ['e2e'],
+      },
+    ],
+    reporter: process.env.CI === 'true'
+      ? ['verbose', 'github-actions', 'junit']
+      : ['verbose'],
+    outputFile: process.env.CI === 'true' ? './test-results/junit.xml' : undefined,
+    coverage: {
+      enabled: process.env.CI === 'true',
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts', 'src/**/*.integration.test.ts', 'src/**/test-doubles/**'],
+      thresholds: { branches: 80, functions: 85, lines: 85 },
+    },
+  },
+});
+```
+
+**How `sequence.groupOrder` affects TDD CI flow:**
+
+Without `groupOrder`: all three project groups run in parallel. A domain bug produces three simultaneous failure sets — unit, integration, and E2E — creating confusing CI output where the root cause (a failing domain test case) is buried under downstream failures.
+
+With `groupOrder`: if the unit group (group 1) fails, groups 2 and 3 are skipped. The CI output shows exactly one failing layer, and the root-cause TDD test case is immediately visible.
+
+```bash
+# CI output with sequence.groupOrder — clean Red signal:
+# ✓ Group 1 (unit): 47 passed
+# ✓ Group 2 (integration): 12 passed
+# ✗ Group 3 (e2e): 2 failed — checkout flow does not complete on Safari
+
+# vs. without groupOrder — confusing parallel failures:
+# ✗ unit: OrderService.checkout fails (root cause)
+# ✗ integration: CheckoutAPI POST /checkout fails (downstream)
+# ✗ e2e: checkout flow times out (downstream)
+# → Real cause obscured by three simultaneous failure signals
+```
+
+**[community] `sequence.groupOrder` is most valuable for TDD teams practicing double-loop TDD** (outer acceptance test loop + inner unit test loop). Without group ordering, a failing outer acceptance test case in E2E runs simultaneously with the inner unit loop, making the Red signal ambiguous: is the outer test failing because the feature is not implemented, or because the unit-level code has a defect? With group 1 (unit) completing before group 3 (E2E), the failure is always attributed to the correct TDD layer.
+
+---
+
+### Real-World Gotchas [community] — Additions (iter 26)
+
+48. **[community] The `test.extend()` builder pattern's return-value type inference does not work for fixtures that use the `use()` callback form.** The Vitest 4.1 builder pattern infers fixture types from the return value of factory functions. However, fixtures that need explicit async teardown — patterns like `async ({ dep }, use) => { const resource = ...; await use(resource); await resource.close(); }` — cannot use the builder pattern because the `use()` callback style does not produce a return value. TypeScript cannot infer the fixture type from `await use(resource)`. For teardown-requiring fixtures, use either the builder pattern with `onCleanup()` (which returns the resource and registers cleanup separately), or fall back to the object syntax with a manual type declaration. Mixing both patterns within a single `test.extend()` chain is supported: builder-pattern fixtures (with `onCleanup`) can be followed by object-syntax fixtures in the same `test` instance.
+
+49. **[community] `ctx.annotate()` attached before the test assertion can mislead when the annotation itself is async and the test throws synchronously.** In Vitest, `annotate()` returns a `Promise<void>` and must be awaited. When a developer writes `ctx.annotate(message)` without `await` (forgetting the async nature), the annotation Promise is fire-and-forget — Vitest attempts to auto-await it before test completion, but if the test throws before that cleanup phase, the annotation may not be captured in the report. The TDD failure message then lacks the expected diagnostic context. The fix: always `await ctx.annotate(...)` immediately when called, regardless of whether it precedes or follows assertions. ESLint's `@typescript-eslint/no-floating-promises` rule will catch unawaited `annotate()` calls if test files are included in the ESLint project configuration.
+
+---
+
+ — the highest-impact TDD breakage must be fixed manually.** The `ts5to6` automated migration tool ([github.com/andrewbranch/ts5to6](https://github.com/andrewbranch/ts5to6)) handles `baseUrl` → `paths` migration, deprecated option removal, and `rootDir` inference fixes. However, it does not add `"types": ["vitest/globals"]` (or `"jest"` / `"mocha"`) to `tsconfig.json` — because it cannot know which test framework's globals your project uses. Teams that run the codemod and assume the migration is complete will still hit the `Cannot find name 'describe'` TypeScript error in every test file. The correct checklist: run `ts5to6` for mechanical config changes, then manually add the `types` array entry for the test runner, then run `tsc --noEmit` to catch any remaining issues. Do not use `ts5to6` as the sole migration step before upgrading `typescript`.
 
 47. **[community] `ctx.signal` in Vitest 3.2 is not the same as an `AbortController` created in `beforeEach` — it fires on test _timeout_, not on `afterEach`.** Teams who read about `ctx.signal` and attempt to use it as a general teardown signal (e.g., for cleaning up background tasks in all test cases, not just timeout cases) will find it does not fire when a test case completes normally. `ctx.signal` is only aborted on timeout or external cancellation. For general cleanup of background async work, continue to use `using` (TypeScript 5.2 Explicit Resource Management) or `afterEach` hooks. The correct use of `ctx.signal` is narrowly scoped: pass it to production code that should be cancellation-aware, and verify it is honoured when the timeout fires. Mixing `ctx.signal` with `afterEach` teardown logic creates a race: the `afterEach` cleanup may run before the signal fires (normal completion), making the cleanup correct, but for a timeout case the signal fires during the test body before `afterEach` — a different execution path the cleanup code may not handle.
 
@@ -5362,7 +5655,8 @@ it('stops producing events when the signal is aborted', async (ctx) => {
 | Vitest 4.1 ARIA Snapshots Guide | Docs | https://vitest.dev/guide/browser/aria-snapshots | TDD for accessibility contracts: `toMatchAriaSnapshot` / `toMatchAriaInlineSnapshot` assert against the accessibility tree; catches semantic regressions that visual snapshots and Axe linting miss |
 | Vitest Type Testing Guide | Docs | https://vitest.dev/guide/testing-types.html | Type-level TDD with `expectTypeOf` in `*.test-d.ts` files; `@ts-expect-error` as Red type tests; `toEqualTypeOf` for exact type contract assertions; `vitest typecheck` for CI integration |
 | TypeScript 6.0 — Module Resolution Migration | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `baseUrl` fully deprecated in TS 6.0 (removed in 7.0); `paths` entries must use full relative paths; `#/` subpath imports as Node.js-native alias alternative; `--moduleResolution bundler` + `--module commonjs` now valid for CJS migrations |
-| Vitest 3.2 Release Notes | Docs | https://vitest.dev/blog/vitest-3-2 | Scoped fixtures (`scope:'file'|'worker'` in `test.extend`); `using` keyword support for `vi.spyOn`/`vi.fn` (native Disposable); unified `Matchers` type replacing `Assertion<R>`; `watchTriggerPatterns`; `AbortSignal` per test case |
+| Vitest 3.2 Release Notes | Docs | https://vitest.dev/blog/vitest-3-2 | Scoped fixtures (`scope:'file'|'worker'` in `test.extend`); `using` keyword support for `vi.spyOn`/`vi.fn` (native Disposable); unified `Matchers` type replacing `Assertion<R>`; `watchTriggerPatterns`; `AbortSignal` per test case; `context.annotate()` for structured diagnostic attachments; `sequence.groupOrder` for ordered multi-project execution |
+| Vitest 4.1 Test Context / Builder Pattern | Docs | https://vitest.dev/guide/test-context | Chainable `test.extend().extend()` builder pattern with automatic TypeScript type inference from fixture return values; eliminates manual `interface` declarations; `onCleanup()` for co-located teardown; scoped fixtures in builder chain |
 | Google Testing Blog — "Simplify Your Code: Functional Core, Imperative Shell" | Blog post | https://testing.googleblog.com/2025/10/simplify-your-code-functional-core.html | 2025 Google TotT post; reinforces the Functional Core/Imperative Shell pattern as a testing simplification strategy — pure core is trivially unit-testable, imperative shell is integration-tested |
 | Google Testing Blog — "Arrange Your Code to Communicate Data Flow" | Blog post | https://testing.googleblog.com/2025/01/arrange-your-code-to-communicate-data.html | 2025 Google TotT post; code arrangement to communicate data flow — directly applicable to TDD Arrange phase: ordering local variables to show data transformation chain makes test intent readable |
 | Google Testing Blog — "Sort Lines in Source Code" | Blog post | https://testing.googleblog.com/2025/09/sort-lines-in-source-code.html | 2025 Google TotT post; consistent line ordering in test doubles and fixtures reduces merge conflicts and improves scanability during TDD refactor phase |

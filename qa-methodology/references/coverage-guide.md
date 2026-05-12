@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 43 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 44 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -25,7 +25,9 @@
      nodejs.org/blog/release/v24.0.0 (fetched 2026-05-12: Node 24 --experimental-strip-types still RC; test runner auto-awaits subtests; Node 24 global setup/teardown hooks) |
      jestjs.io/docs/configuration (fetched 2026-05-12: Jest 30 defineConfig/mergeConfig helpers v30.3+; jest.config.mts v30.4+; global coverageThreshold applies only to unmatched files; Babel .mts/.cts coverage v30.4+) |
      github.com/jestjs/jest/blob/main/CHANGELOG.md (fetched 2026-05-12: Jest 30.3 defineConfig/mergeConfig; Jest 30.4 jest.config.mts, Babel .mts/.cts coverage, global threshold unmatched-files fix, projects coverage accuracy fix) |
-     community: production experience patterns synthesized from training knowledge -->
+     community: production experience patterns synthesized from training knowledge;
+     vitest.dev/config/coverage (re-fetched 2026-05-12: coverage.skipFull — user-settable option; AI-agent auto-sets skipFull:true on text reporter; distinct from watermarks);
+     vitest.dev/blog/vitest-4-1 (re-fetched 2026-05-12: aroundEach/aroundAll hooks; coverage gap in transaction-wrapped tests) -->
 
 ## Core Principles
 
@@ -3929,6 +3931,151 @@ export default defineConfig({
 Coverage numbers may change (these files were previously invisible — they will now appear in
 the report, possibly at lower coverage if their branches were never directly tested).
 
+### G56 — `coverage.skipFull`: reduce terminal noise in large codebases without hiding gaps  [community]
+
+Vitest's `coverage.skipFull` option suppresses files that have achieved 100 % statement,
+branch, and function coverage from the `text` reporter's terminal output. This is distinct
+from the AI-agent auto-configuration (G37) — it is a user-settable option for local
+development and CI terminal output in large TypeScript monorepos where hundreds of
+fully-covered files produce unreadable terminal walls.
+
+**Default**: `false` — all files appear in the text reporter.
+
+```typescript
+// vitest.config.ts — reduce terminal coverage noise for large TypeScript codebases
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: ['src/**/*.d.ts', 'src/**/__mocks__/**', 'src/**/index.ts'],
+      reporter: ['text', 'html', 'lcov', 'json-summary'],
+      reportsDirectory: './coverage',
+      // Suppress 100%-covered files from terminal text output.
+      // The files still appear in the HTML report and json-summary.
+      // Threshold enforcement is unaffected — all files are still evaluated.
+      // Useful in monorepos with many well-covered utility modules drowning
+      // out the files that actually need attention (< 100 % coverage).
+      skipFull: true,
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+        perFile: true,
+      },
+    },
+  },
+});
+```
+
+**WHY it matters**: in a mature TypeScript codebase with 300+ source files, running
+`npx vitest --coverage` in a developer terminal shows hundreds of green 100 % rows
+before the few files that actually need attention. With `skipFull: true`, only files
+below 100 % appear in the terminal — the signal-to-noise ratio improves dramatically.
+The HTML report and `coverage-summary.json` are unaffected; full data is preserved for
+threshold checks and Codecov uploads.
+
+**Critical distinction from `watermarks`**: `skipFull: true` only hides **100 % files**
+from terminal text output. `watermarks` controls colour-coding thresholds (red/yellow/
+green) for all files. The two options are complementary — use both together for large
+codebases: `skipFull: true` to remove fully-covered noise, `watermarks` to colour-code
+the remaining files correctly.
+
+**AI agent mode interaction (G37)**: Vitest automatically sets `skipFull: true` when
+running inside AI coding agents to minimise token output. If you are explicitly setting
+`skipFull: false` to override this, the AI-agent auto-configuration takes precedence for
+the `text` reporter — Vitest applies both settings and the more restrictive wins. To
+reliably see all files in an AI agent context, switch to `json-summary` reporter output
+and parse `coverage-summary.json` programmatically (it is unaffected by AI-agent
+auto-configuration).
+
+### G57 — Vitest 4.1 `aroundEach`/`aroundAll` hooks: transaction-wrapped tests create coverage gaps in rollback paths  [community]
+
+Vitest 4.1 introduced `test.aroundEach` and `test.aroundAll` hooks that wrap test
+execution inside a caller-controlled context — the canonical use case is database
+transaction isolation:
+
+```typescript
+test.aroundEach(async (runTest, { db }) => {
+  await db.transaction(runTest);  // each test runs inside a transaction that rolls back
+});
+```
+
+This pattern solves test isolation but creates a specific coverage gap: any TypeScript
+code that executes **on transaction rollback** (rollback error handlers, cleanup logic,
+`finally` blocks triggered by transaction abort) is never reached because `runTest`
+always succeeds at the test framework level — the transaction completes normally before
+Vitest tears down coverage. Code paths that only execute on transaction failure are
+unreachable through `aroundEach`.
+
+**WHY it matters**: database service classes often have rollback-specific error handling:
+
+```typescript
+// src/services/order-service.ts
+export async function createOrder(db: Database, payload: OrderPayload): Promise<Order> {
+  return db.transaction(async (trx) => {
+    const order = await trx.insert('orders', payload);
+    try {
+      await trx.insert('order_events', { orderId: order.id, type: 'created' });
+    } catch (err) {
+      // This catch block executes only on failed sub-insert during rollback.
+      // Tests using aroundEach transaction isolation NEVER reach this path —
+      // the outer transaction is always committed in test runs.
+      await trx.rollback();    // branch: only reachable on actual DB failure
+      throw new OrderCreationError(`Event log failed: ${String(err)}`);
+    }
+    return order;
+  });
+}
+```
+
+The `catch` branch in the example above will appear as uncovered even though the service
+has comprehensive `aroundEach`-wrapped tests. Istanbul reports the branch as red; teams
+often suppress it with `/* istanbul ignore next */` without understanding why it is
+unreachable.
+
+**Coverage gap diagnosis**: if you see uncovered branches in `catch` blocks or `finally`
+branches inside functions that are otherwise well-covered by `aroundEach`-wrapped tests,
+and those branches execute on database or external service errors, the `aroundEach`
+isolation is the cause. The fix: write **dedicated error-path tests** that do NOT use
+the `aroundEach` transaction wrapper — instead, inject a mock database that throws
+on the specific operation you want to test:
+
+```typescript
+// src/services/order-service.test.ts — dedicated error path test (no aroundEach)
+import { describe, it, expect, vi } from 'vitest';
+import { createOrder } from './order-service';
+import type { Database } from '../db/types';
+
+describe('createOrder — error paths (no transaction isolation)', () => {
+  it('throws OrderCreationError when event log insert fails (kills rollback branch)', async () => {
+    const mockTrx = {
+      insert: vi.fn()
+        .mockResolvedValueOnce({ id: 'order-1' })   // orders insert succeeds
+        .mockRejectedValueOnce(new Error('DB constraint')), // event log insert fails
+      rollback: vi.fn().mockResolvedValue(undefined),
+    };
+    const mockDb = {
+      transaction: (fn: (trx: typeof mockTrx) => Promise<unknown>) => fn(mockTrx),
+    } as unknown as Database;
+
+    await expect(createOrder(mockDb, { userId: 'u1', items: [] }))
+      .rejects
+      .toThrow('Event log failed');
+
+    expect(mockTrx.rollback).toHaveBeenCalledOnce();
+  });
+});
+```
+
+**Rule of thumb**: `aroundEach` transaction isolation tests the happy path at full fidelity.
+Failure path tests (catch blocks, rollback handlers, finally branches) require mock-injected
+failures that bypass the transaction wrapper. Maintain both test types for services with
+explicit error handling — coverage tools will show the gap if the failure paths are missing.
+
 ---
 
 ## Key Resources
@@ -3975,3 +4122,5 @@ the report, possibly at lower coverage if their branches were never directly tes
 | @fast-check/vitest integration | Official | https://github.com/dubzzz/fast-check/tree/main/packages/vitest | Dedicated fast-check × Vitest integration: `test.prop()`, `fc.test.failing()`, `beforeEach`/`afterEach` hooks; requires fast-check 4.x + Vitest 4.1+ |
 | fast-check docs | Official | https://fast-check.io/docs/ | Property-based testing for TypeScript: arbitraries, shrinking, `fc.assert`, model-based testing |
 | Node.js 24 release notes | Official | https://nodejs.org/en/blog/release/v24.0.0 | Node 24 breaking change: `test()`/`t.test()` no longer return Promises; global setup/teardown; `--experimental-strip-types` still RC status |
+| Vitest coverage config — skipFull | Official | https://vitest.dev/config/coverage#coverage-skipfull | coverage.skipFull: suppress 100%-covered files from terminal text reporter; AI-agent auto-sets this; see G56 |
+| Vitest 4.1 aroundEach/aroundAll hooks | Official | https://vitest.dev/blog/vitest-4-1 | Transaction-context hooks: aroundEach wraps each test, aroundAll wraps suites; creates rollback-path coverage gaps (G57) |

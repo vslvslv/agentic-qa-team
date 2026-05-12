@@ -1,6 +1,7 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 42 | score: 97/100 | date: 2026-05-12 -->
-<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide, /app/tooling/typescript-support, /app/references/experiments, /guides/references/cypress-studio -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 43 | score: 97/100 | date: 2026-05-12 -->
+<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide, /app/tooling/typescript-support, /app/references/experiments, /guides/references/cypress-studio, /api/cypress-api/require, /app/references/experiments#experimentalCspAllowList -->
+<!-- new in this iteration (43): 3 new patterns (132-134): Cypress.require() in cy.origin() callbacks with experimentalOriginDependencies, experimentalCspAllowList for preserving real CSP headers, detect-flake-but-always-fail retry strategy; 3 new community gotchas (120-122): Cypress.require() static-string limitation, experimentalCspAllowList + hash nonce breakage, detect-flake-but-always-fail openMode/runMode boolean requirement -->
 <!-- new in this iteration (42): fix stale result.code → result.exitCode in pattern 29 (Cypress 15 breaking change); 3 new community gotchas (117-119): Chrome autofill popup suppression (15.6.0), cy.intercept() multi-alias hang during navigation (fixed 15.12.0), cy.intercept() delay ≥ 2^31 now throws (15.13.1); pattern 131: multi-intercept + navigation safe patterns with 15.12.0 context -->
 <!-- new in this iteration (41): structural fix — restored missing "### 68. Pure API Test Suite with cy.request()" heading (was orphaned prose); score revised to 97/100 after independent review of all 130 patterns against Cypress changelog 15.0–15.14.2: no uncovered 2025-2026 APIs or breaking changes found; verified coverage complete through latest Cypress 15.14.2 release (2026-04-29) -->
 <!-- new in this iteration (40): cy.press() modifier key limitations + cy.type() chord fallback (pattern 125), Studio AI assertion suggestions workflow (pattern 126), cy.prompt() CT + browser restrictions (pattern 127), experimentalFastVisibility shadow DOM caveat (pattern 128), Cypress 15 tsx config parsing + TypeScript 6 + Vite 8 setup (pattern 129), Brotli compression proxy (pattern 130), 6 new community gotchas (111-116): cy.press() modifier key chord limitation, experimentalFastVisibility shadow DOM break, cy.prompt() CT-only restriction, cy.prompt() Chromium-only, ts-loader upgrade webpack config break (15.14.2), Brotli proxy corruption pre-15.11 -->
@@ -8486,5 +8487,246 @@ it('order creation payload is correct and response is persisted', () => {
 | Any version | Sequential waits | Always safe, prefer in shared utility code |
 
 **[community]** WHY: The hang was caused by Cypress's internal "stability" mechanism: after a navigation event, Cypress waits for the page to be "stable" before processing the next command. In the pre-15.12 race condition, the multi-alias wait's internal bookkeeping received the stability-change event and deadlocked against the pending request resolution. The bug was reported by teams testing checkout flows where clicking "Submit Order" triggers both a POST (order creation) and a GET (order details fetch) simultaneously, and the POST response redirects to the confirmation page — exactly the pattern that exercises all three conditions at once.
+
+---
+
+## Patterns Added in Iteration 43
+
+### 132. `Cypress.require()` — Loading npm Packages and Local Files Inside `cy.origin()` Callbacks
+
+`Cypress.require()` is the only way to load npm packages or local files inside a `cy.origin()` callback. Standard `import` and CommonJS `require()` cannot be used in the callback body because the callback runs in a separate execution context that is bundled independently. Enable it with `experimentalOriginDependencies: true`.
+
+```typescript
+// cypress.config.ts — enable the experiment
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    experimentalOriginDependencies: true,
+  },
+});
+```
+
+```typescript
+// cypress/e2e/oauth-flow.cy.ts
+
+// ✅ Correct: use Cypress.require() inside cy.origin() callback
+it('logs in via third-party SSO and lands on dashboard', () => {
+  cy.visit('/');
+  cy.get('[data-cy="sso-login"]').click();
+
+  cy.origin('https://auth.example-sso.com', () => {
+    // Load lodash inside the cross-origin callback — standard import would be undefined
+    const _ = Cypress.require<typeof import('lodash')>('lodash');
+
+    // Load a shared utility from the support folder
+    const { fillLoginForm } = Cypress.require<typeof import('../support/auth-helpers')>(
+      '../support/auth-helpers'
+    );
+
+    fillLoginForm('alice@example.com', 'secret');
+    cy.get('[data-cy="sso-submit"]').click();
+  });
+
+  cy.url().should('include', '/dashboard');
+});
+
+// ✅ Custom commands inside cy.origin() — load the commands file via Cypress.require()
+it('uses custom commands in a cross-origin context', () => {
+  cy.origin('https://auth.example-sso.com', () => {
+    // Registers cy.loginViaSSO() in this origin's command registry
+    Cypress.require('../support/commands');
+    cy.loginViaSSO('alice@example.com', 'secret');
+  });
+});
+
+// ❌ WRONG: standard require/import — silently undefined or throws
+it('broken — standard require does not work in cy.origin()', () => {
+  cy.origin('https://auth.example-sso.com', () => {
+    // @ts-ignore — this is runtime-undefined even if TypeScript compiles it
+    const _ = require('lodash');         // ← throws or returns undefined
+    const helpers = import('./helpers'); // ← throws TypeError
+  });
+});
+```
+
+**TypeScript typing patterns for `Cypress.require()`:**
+
+```typescript
+// Option 1 — cast the return value
+const _ = Cypress.require('lodash') as typeof import('lodash');
+_.merge({}, { a: 1 }); // fully typed
+
+// Option 2 — generic type parameter (preferred, less verbose)
+const _ = Cypress.require<typeof import('lodash')>('lodash');
+
+// Option 3 — local file with explicit interface
+interface AuthHelpers {
+  fillLoginForm(email: string, password: string): void;
+}
+const { fillLoginForm } = Cypress.require<AuthHelpers>('../support/auth-helpers');
+```
+
+**WHY `Cypress.require()` and not `require()`:** The `cy.origin()` callback is serialized and sent to a separate browser frame for the foreign origin. Cypress's bundler pre-processes the callback body, collects all `Cypress.require()` calls (statically), and bundles the referenced modules alongside the callback code. Standard `require()` or `import()` calls are not statically analyzable in this phase and are not included in the bundle — they appear as `undefined` at runtime, producing confusing "TypeError: require is not a function" or silent undefined reference bugs.
+
+### 133. `experimentalCspAllowList` — Preserving Real CSP Headers During Testing
+
+By default, Cypress strips all `Content-Security-Policy` response headers to avoid interfering with test execution. `experimentalCspAllowList` lets you selectively preserve specific CSP directives when you need to test that your application behaves correctly under its real CSP constraints.
+
+```typescript
+// cypress.config.ts
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    // Option A: allow specific directives — recommended starting point
+    experimentalCspAllowList: ['default-src', 'script-src', 'script-src-elem'],
+
+    // Option B: allow all directives Cypress can safely preserve
+    // experimentalCspAllowList: true,
+
+    // Option C: default — strip all CSP headers (safest, fastest)
+    // experimentalCspAllowList: false,
+  },
+});
+```
+
+```typescript
+// cypress/e2e/csp-compliance.cy.ts
+
+// Test: verify inline scripts are blocked by script-src policy
+it('CSP blocks inline script injection', () => {
+  // With experimentalCspAllowList: ['script-src'], the real CSP is active.
+  // An inline <script>alert(1)</script> injected into the page should be blocked.
+  cy.visit('/');
+
+  // Listen for CSP violation reports via a reporting endpoint
+  cy.intercept('POST', '/csp-report', cy.spy().as('cspReport'));
+
+  // Attempt to inject an inline script via the app's render path
+  cy.window().then((win) => {
+    const script = win.document.createElement('script');
+    script.innerHTML = 'window.__cspTest = true;';
+    win.document.head.appendChild(script);
+  });
+
+  // The script was blocked — window.__cspTest is not set
+  cy.window().its('__cspTest').should('be.undefined');
+});
+
+// Test: verify third-party CDN assets load correctly under default-src
+it('CDN assets are allowed by default-src policy', () => {
+  cy.visit('/');
+  // If CDN requests are blocked by CSP the image will fail to load
+  cy.get('img[data-cy="cdn-hero"]')
+    .should('be.visible')
+    .and(($img) => {
+      expect(($img[0] as HTMLImageElement).naturalWidth).to.be.greaterThan(0);
+    });
+});
+```
+
+**Which CSP directives can and cannot be allowed:**
+
+| Directive | Can be allowed | Notes |
+|-----------|---------------|-------|
+| `default-src` | Yes | Controls all resource types not overridden |
+| `script-src` | Yes | Allows testing real script origin policies |
+| `script-src-elem` | Yes | Script element source restriction |
+| `child-src` | Yes | Worker/iframe sources |
+| `frame-src` | Yes | Frame/iframe source restriction |
+| `form-action` | Yes | Form submission targets |
+| `frame-ancestors` | **No** | Always stripped — would prevent Cypress from framing the AUT |
+| `navigate-to` | **No** | Always stripped — blocks Cypress navigation |
+| `sandbox` | **No** | Always stripped — would sandbox Cypress itself |
+| `trusted-types` | **No** | Always stripped — breaks Cypress DOM manipulation |
+| `require-trusted-types-for` | **No** | Always stripped |
+
+**[community]** WHY start with a minimal list: Enabling broad CSP enforcement (especially `script-src` with hash or nonce algorithms) can make Cypress's own instrumentation scripts fail their integrity checks, causing the runner to silently stop injecting commands into the page. Start with `['default-src']` only, verify the suite still passes, then add `script-src` and verify again. Never combine `script-src` (with hash values) with `modifyObstructiveCode: true` or `experimentalSourceRewriting: true` — the hash computed against the original script content becomes invalid after Cypress rewrites the script body, producing a CSP violation that blocks the test runner itself.
+
+### 134. `detect-flake-but-always-fail` — Flakiness Visibility Without Letting Flaky Tests Pass
+
+The `detect-flake-and-pass-on-threshold` strategy (covered in the CI section) lets flaky tests pass once they hit the success threshold. When you want flakiness to **always block the build** while still collecting retry data for diagnosis, use `detect-flake-but-always-fail`. This strategy ensures a test that ever passes AND ever fails during its retry budget is reported as "flaky-but-failed" — useful for enforcing a zero-flakiness policy in trunk builds.
+
+```typescript
+// cypress.config.ts — enforce zero-tolerance flakiness on main branch
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    retries: {
+      runMode: 3,    // allow up to 3 retries in CI
+      openMode: 0,   // never retry locally
+      experimentalStrategy: 'detect-flake-but-always-fail',
+      experimentalOptions: {
+        maxRetries: 3,          // total retry budget after first failure
+        stopIfAnyPassed: true,  // stop retrying as soon as one pass is observed
+                                // (reveals flakiness immediately, saves CI time)
+      },
+    },
+  },
+});
+```
+
+```typescript
+// cypress.config.ts — collect full flakiness signal without early stop
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    retries: {
+      runMode: 5,
+      openMode: 0,
+      experimentalStrategy: 'detect-flake-but-always-fail',
+      experimentalOptions: {
+        maxRetries: 5,
+        stopIfAnyPassed: false,  // run all retries regardless of intermediate passes
+                                 // use when you want the full pass/fail ratio logged
+      },
+    },
+  },
+});
+```
+
+**Comparison of the two experimental flake strategies:**
+
+| Strategy | Final result when test is flaky | Use case |
+|----------|--------------------------------|----------|
+| `detect-flake-and-pass-on-threshold` | **Pass** (if success count ≥ `passesRequired`) | Gradual flakiness reduction — keep the build green while tracking issues |
+| `detect-flake-but-always-fail` | **Fail** always (even if some retries passed) | Zero-tolerance policy — flakiness is a blocking defect |
+
+```typescript
+// For detect-flake-and-pass-on-threshold — correct option names:
+retries: {
+  runMode: 4,
+  experimentalStrategy: 'detect-flake-and-pass-on-threshold',
+  experimentalOptions: {
+    maxRetries: 4,        // total retries after first failure
+    passesRequired: 2,    // test passes once 2 successes are observed within budget
+  },
+}
+
+// For detect-flake-but-always-fail — correct option names:
+retries: {
+  runMode: 4,
+  experimentalStrategy: 'detect-flake-but-always-fail',
+  experimentalOptions: {
+    maxRetries: 4,
+    stopIfAnyPassed: true,  // true = stop on first pass (reveals flakiness fast)
+  },
+}
+```
+
+**[community]** WHY `detect-flake-but-always-fail` over standard retries for trunk: standard `retries.runMode: 3` silently masks a test that fails twice and then passes — the build stays green and the flakiness is never surfaced. `detect-flake-but-always-fail` with `stopIfAnyPassed: true` breaks the build the moment a single intermediate pass is detected, forcing the team to triage the test. Teams that ship to production multiple times per day find that even "mostly passing" flaky tests erode confidence in the test suite; this strategy makes flakiness a first-class failure that cannot be ignored.
+
+---
+
+## Additional Real-World Gotchas (Iteration 43) [community]
+
+120. **`Cypress.require()` argument must be a static string literal — dynamic requires fail silently** [community] — The Cypress bundler statically analyzes `cy.origin()` callbacks to collect `Cypress.require()` calls before runtime. If the argument is a variable, template literal, or computed expression — e.g., `Cypress.require(moduleName)` or `Cypress.require(\`../support/${file}\`)` — the bundler does not include the module in the callback bundle. At runtime the return value is `undefined` (not an error), which causes confusing downstream TypeErrors like `"undefined is not a function"` when you try to use the imported value. The fix is always to use a string literal: `Cypress.require('../support/auth-helpers')`. If you need to conditionally load one of several modules, use multiple literal `Cypress.require()` calls inside an `if` block — the bundler includes all statically detectable calls regardless of branching. Also: never destructure the `require` method off `Cypress` (`const { require } = Cypress`) — the bundler looks for the exact call signature `Cypress.require(...)` and will not find the destructured form, resulting in the same silent undefined behavior.
+
+121. **`experimentalCspAllowList` combined with `script-src` hash directives breaks the Cypress runner itself** [community] — When your application's CSP `script-src` policy uses hash-based integrity constraints (`'sha256-xxxx...'`), enabling `experimentalCspAllowList: ['script-src']` causes Cypress's own injected runner scripts to violate the policy. Cypress rewrites certain scripts during proxying (for instrumentation and command injection), which changes the script content and invalidates any pre-computed hash. The symptom is that the Cypress app opens the AUT in the iframe but no test commands execute — the runner appears "stuck" at the first `cy.visit()` with no error message. The policy violation is visible only in the browser DevTools console (`Refused to execute inline script because it violates the following Content Security Policy directive: "script-src ..."`), not in the Cypress command log. The fix: remove `'script-src'` from `experimentalCspAllowList` if your policy uses hash values, or disable `modifyObstructiveCode` and `experimentalSourceRewriting` (but these are often needed for other reasons). Test CSP enforcement of script origins using a dedicated server-side CSP report endpoint (`report-uri` / `report-to`) instead of relying on the live CSP to block Cypress's own instrumentation.
+
+122. **`detect-flake-but-always-fail` requires boolean `openMode`/`runMode` values — numeric values are silently ignored** [community] — The experimental retry strategies require the sibling `openMode` and `runMode` keys to be set as booleans (`true`/`false`), not numbers. The standard `retries` config accepts `{ runMode: 2, openMode: 0 }` as numbers to specify retry counts, which is the conventional usage. When `experimentalStrategy` is set, Cypress treats these keys as feature flags (on/off per mode), not counts — the `maxRetries` inside `experimentalOptions` is the actual retry budget. A common mistake is copying a working standard config and adding `experimentalStrategy` without changing the types: `{ runMode: 2, openMode: 0, experimentalStrategy: 'detect-flake-but-always-fail', experimentalOptions: { maxRetries: 3 } }`. The numeric `runMode: 2` is silently ignored and the experimental strategy uses its own `maxRetries` exclusively — but more importantly, the mismatch can cause Cypress to emit a config validation warning in some versions and may cause `openMode` behavior to be undefined. Always write: `{ runMode: true, openMode: false, experimentalStrategy: '...', experimentalOptions: { maxRetries: 3 } }` when using experimental strategies.
 
 ---

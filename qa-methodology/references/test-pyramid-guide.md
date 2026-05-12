@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 44 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 45 | score: 98/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
@@ -16,6 +16,7 @@
 <!-- new (2026-05-12 iter 42): Node.js 24.15.0 (Apr 2026 LTS) — worker ID exposed during concurrent test execution (debugging parallel integration tests), `require(esm)` stable, module compile cache stable; Node.js 25.9.0 (Apr 2026) — BREAKING: `MockModuleOptions.defaultExport` + `MockModuleOptions.namedExports` consolidated into single `MockModuleOptions.exports` object (automated codemod: `npx codemod @nodejs/mock-module-exports`), fake timer compatibility with `node:test` fixed; community gotcha: Node.js 25.9 `mock.module()` API consolidation silently breaks integration test stubs that used `namedExports` or `defaultExport` after upgrading Node (gotcha #47) -->
 <!-- new (2026-05-12 iter 43): Bun 1.3.x (2025) — `bun:test` adds `--parallel`/`--shard`/`--only-failures`/`--pass-with-no-tests`, `retry`+`repeats` options for flaky tests, `Symbol.dispose` for mock/spyOn automatic cleanup, global `vi` mock API without imports; MSW v2.14+ — WebSocket handler `ws.onUpgrade` for protocol upgrade interception, `finalize` cleanup API for handler resource management, `NetworkApi` TypeScript type exported; Pact-JS v16.0.0 (Oct 2025) — BREAKING: `PactV4`/`MatchersV3` exported as `Pact`/`Matchers` (old names become `PactV2`/`MatchersV2`), Node 20 minimum, GraphQL support for V3+V4; Pact-JS v16.3 — pending/comments/test-names on interactions; Pact-JS v16.4 — external interaction references; community gotcha #48: pact-js v16.0 silent API rename — TypeScript import `{ PactV3, MatchersV3 }` still resolves but `PactV3` is now an alias for the old V3 class while `Pact` is the new canonical name, causing confusion and inconsistent usage in codebases that mix old and new imports -->
 <!-- new (2026-05-12 iter 44): TypeScript 5.9 additional `tsc --init` strict defaults — `noUncheckedIndexedAccess:true`, `exactOptionalPropertyTypes:true`, `noUncheckedSideEffectImports:true`, `skipLibCheck:true` — silently break typed test fixtures and mock objects when inherited; `noUncheckedIndexedAccess` makes every `items[0]` in test fixtures type `T | undefined`, requiring null guards or `!`-assertions; `exactOptionalPropertyTypes` breaks test doubles where optional properties are assigned `undefined` explicitly; `noUncheckedSideEffectImports` blocks bare `import 'module'` in test setup files (vitest.setup.ts, jest.setup.ts); Bun 1.3.x additional: `--randomize`/`--seed` flags for order-dependency detection (analogous to Node.js 26 `--test-randomize`), `test.concurrent`/`test.serial` for within-file parallel/sequential control, `--concurrent`/`--max-concurrency` for file-level parallel execution, AI agent mode (CLAUDECODE=1/AGENT=1 env vars for minimal output suppressing passing tests — analogous to Vitest 4.1 agent reporter); community gotcha #49: TS 5.9 `noUncheckedIndexedAccess` default breaks typed test factory array access
+<!-- new (2026-05-12 iter 45): @fast-check/vitest `test.prop()` API — Vitest-native property-based testing replacing the verbose `fc.assert(fc.property(...))` pattern; `@fast-check/vitest` 0.4+ dropped CJS support (ESM-only), breaking CommonJS test projects; React Testing Library v16 (Dec 2024) + React 19 support — `act()` is now automatically wrapped by RTL so explicit `await act(...)` wrappers are no longer needed in RTL tests, fixing a widespread TypeScript async test pattern; RTL v16 moves `@testing-library/dom` and `@types/react-dom` to peer dependencies; community gotcha #50: fast-check 4.x (@fast-check/vitest 0.4+) drops CommonJS — vitest projects using `require('@fast-check/vitest')` break silently with ESM import errors when upgrading
 
 ---
 
@@ -235,6 +236,28 @@ it('submits the form and shows confirmation message', async () => {
   await user.type(screen.getByLabelText('Email'), 'user@example.com');
   await user.click(screen.getByRole('button', { name: /place order/i }));
   expect(await screen.findByText(/order confirmed/i)).toBeInTheDocument();
+});
+```
+
+**React Testing Library v16 + React 19 (December 2024):** RTL v16.1.0 adds first-class React 19 support. The most important change for TypeScript integration tests: React 19 makes `act()` automatic inside RTL's `render`, `userEvent`, and `fireEvent` calls — explicit `await act(async () => { ... })` wrappers around async state updates are no longer necessary and produce a TypeScript deprecation signal in strict mode. RTL v16 also moves `@testing-library/dom` and `@types/react-dom` to peer dependencies — projects that relied on transitive resolution of these packages must declare them explicitly in `package.json`. RTL v16.2.0 adds `renderOptions.onCaughtError` for React 19's new error boundary handler signature, keeping TypeScript types aligned with React 19's updated `ErrorBoundary` interface.  [community: github.com/testing-library/react-testing-library/releases/tag/v16.1.0]
+
+```typescript
+// BEFORE RTL v16 / React 19 — explicit act() wrapper for async state updates
+import { render, screen, act } from '@testing-library/react';
+it('loads user profile', async () => {
+  render(<UserProfile userId="u1" />);
+  await act(async () => {
+    // wait for the fetch to resolve and React state to update
+  });
+  expect(screen.getByRole('heading', { name: /John/i })).toBeInTheDocument();
+});
+
+// AFTER RTL v16 + React 19 — act() is automatic; use findBy* or waitFor directly
+import { render, screen } from '@testing-library/react';
+it('loads user profile', async () => {
+  render(<UserProfile userId="u1" />);
+  // findByRole automatically waits for the element — no explicit act() needed
+  expect(await screen.findByRole('heading', { name: /John/i })).toBeInTheDocument();
 });
 ```
 
@@ -924,6 +947,61 @@ describe('calculateDiscount — property tests', () => {
   });
 });
 ```
+
+### `@fast-check/vitest`: Vitest-Native Property-Based Testing  [community]
+
+The `@fast-check/vitest` package provides a `test.prop()` API that integrates `fast-check` directly into Vitest's test registration model. Unlike the raw `fc.assert(fc.property(...))` pattern, `test.prop()` registers each property as a named Vitest test case with full support for `.only`, `.skip`, `.todo`, `.concurrent`, and `beforeEach`/`afterEach` hooks. This makes property-based tests first-class citizens in Vitest output and in the pyramid shape check script.
+
+**Installation:** `npm install --save-dev @fast-check/vitest fast-check`
+
+```typescript
+// src/pricing/discount.property.test.ts — @fast-check/vitest test.prop() API (Vitest-native)
+// Preferred over raw fc.assert() for Vitest projects — registers as named test cases
+import { test, fc } from '@fast-check/vitest';
+import { describe, expect } from 'vitest';
+import { calculateDiscount } from './discount.js';
+import type { DiscountInput } from './discount.js';
+
+describe('calculateDiscount — property tests', () => {
+  // Array syntax: arbitraries as positional arguments
+  test.prop([
+    fc.float({ min: 0, max: 10_000, noNaN: true }),
+    fc.constantFrom('standard', 'gold', 'silver' as const),
+  ])('never returns a negative discount', (total, tier) => {
+    const input: DiscountInput = { total, membershipTier: tier };
+    expect(calculateDiscount(input)).toBeGreaterThanOrEqual(0);
+  });
+
+  // Named-property syntax: arbitraries as an object — better readability for complex inputs
+  test.prop({
+    total: fc.float({ min: 0, max: 10_000, noNaN: true }),
+    tier: fc.constantFrom('standard', 'gold', 'silver' as const),
+  })('discount never exceeds the order total', ({ total, tier }) => {
+    const input: DiscountInput = { total, membershipTier: tier };
+    const discount = calculateDiscount(input);
+    expect(discount).toBeLessThanOrEqual(total);
+  });
+
+  // Reproducible seed: pin the seed in CI to replay failing cases deterministically
+  test.prop(
+    [fc.float({ min: 0, max: 10_000, noNaN: true }), fc.constantFrom('standard', 'gold', 'silver' as const)],
+    { seed: 42 }, // optional: fix seed for stable CI output; omit to use random seed each run
+  )('discount is always a non-negative multiple of 5 cents (gold tier)', (total, tier) => {
+    if (tier !== 'gold') return; // only assert the gold-tier precision rule
+    const discount = calculateDiscount({ total, membershipTier: 'gold' });
+    expect(discount % 0.05).toBeCloseTo(0, 5);
+  });
+});
+```
+
+**Key difference from raw `fc.assert()`:**
+- `test.prop()` entries appear as individual named test cases in Vitest's reporter and the JSON output consumed by `check-pyramid-shape.ts` — they count towards the unit test total.
+- Failure output includes the minimised (shrunk) counterexample directly in the Vitest assertion error, not buried in a wrapped `Error`.
+- `.concurrent` modifier works correctly: `test.prop([...]).concurrent('...', ...)` runs multiple property tests in parallel within the unit test file.
+
+**Note on ESM requirement (fast-check 4.x / @fast-check/vitest 0.4+):** Both packages dropped CommonJS support in March 2025. Vitest projects using `"type": "commonjs"` in `package.json` must either switch to ESM (`"type": "module"`) or add `@fast-check/vitest` and `fast-check` to Vite's `optimizeDeps.include` list. See gotcha #50 below. [official: fast-check.io, github.com/dubzzz/fast-check/tree/main/packages/vitest]
+
+---
 
 ### Vitest Configuration for Three-Layer Test Structure
 
@@ -3589,6 +3667,27 @@ The AI agent mode completes the bun/Vitest/Node.js coverage of this pattern: Vit
 
 ---
 
+50. **`fast-check` 4.x and `@fast-check/vitest` 0.4+ drop CommonJS — TypeScript projects with `"type":"commonjs"` break on upgrade** [community] — In March 2025, `fast-check` v4.x and `@fast-check/vitest` v0.4.0 shipped as ESM-only packages; CommonJS bundles were removed. TypeScript projects that have `"type": "commonjs"` in `package.json` (or use `"module": "commonjs"` in `tsconfig.json`) will see `ERR_REQUIRE_ESM` when importing `@fast-check/vitest` after upgrading. The failure is particularly confusing because the TypeScript compilation succeeds — it is a runtime Node.js module resolution error, not a type error. Fix: either (1) migrate the project to `"type": "module"` and update all test files to use `.js` extensions in imports (recommended for Vitest projects); or (2) add `@fast-check/vitest` and `fast-check` to Vite's `optimizeDeps.include` array in `vitest.config.ts` — Vite's dependency pre-bundler converts the ESM-only packages to CJS on-the-fly in CommonJS projects:
+
+```typescript
+// vitest.config.ts — workaround for fast-check ESM-only in CJS Vitest projects
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  optimizeDeps: {
+    // Force Vite to pre-bundle these ESM-only packages into CJS for non-ESM projects
+    include: ['@fast-check/vitest', 'fast-check'],
+  },
+  test: {
+    // ... rest of config
+  },
+});
+```
+
+Note: the `optimizeDeps.include` workaround applies only when running tests through Vitest — bare `node --test` will still fail without ESM support. For teams running property-based unit tests with Node.js's built-in runner, migrate to ESM first. Check `fast-check`'s breaking change log before upgrading across major versions — `fc.assert()` API itself is unchanged, but CommonJS import paths (`require('fast-check')`) must become `import ... from 'fast-check'`. [official: github.com/dubzzz/fast-check/blob/main/CHANGELOG.md — v4.0.0 ESM-only migration]
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -3604,7 +3703,6 @@ The AI agent mode completes the bun/Vitest/Node.js coverage of this pattern: Vit
 | Testcontainers for Node | Tool | https://testcontainers.com/guides/getting-started-with-testcontainers-for-nodejs/ | Real integration tests against containerised dependencies; TypeScript typings included |
 | Neon DB Branch Testing | Tool | https://neon.com/docs/guides/branching-test-queries | Copy-on-write Postgres branch per test run; alternative to testcontainers for cloud-native TypeScript |
 | Playwright | Tool | https://playwright.dev/docs/intro | Modern e2e testing for TypeScript/Node; first-class TypeScript support |
-| React Testing Library | Tool | https://testing-library.com/docs/react-testing-library/intro/ | Integration-layer testing aligned with Testing Trophy |
 | MSW (Mock Service Worker) | Tool | https://mswjs.io/docs/ | Network boundary mocking; TypeScript handler types prevent handler drift |
 | Vitest | Tool | https://vitest.dev/guide/ | Fast Jest-compatible test runner with first-class TypeScript + ESM support; no Babel needed |
 | Vitest Projects API | Tool | https://vitest.dev/guide/projects.html | defineProject + extends API for type-safe workspace pyramid configuration |
@@ -3612,6 +3710,7 @@ The AI agent mode completes the bun/Vitest/Node.js coverage of this pattern: Vit
 | vitest-mock-extended | Tool | https://github.com/eratio08/vitest-mock-extended | Type-safe mock generation from TypeScript interfaces; prevents `as any` mock escapes |
 | orval | Tool | https://orval.dev/ | Generates type-safe MSW handlers and TypeScript API clients from OpenAPI schemas |
 | fast-check | Tool | https://fast-check.io/ | Property-based testing for TypeScript; finds edge cases unit tests miss |
+| @fast-check/vitest | Tool | https://github.com/dubzzz/fast-check/tree/main/packages/vitest | Vitest-native `test.prop()` API for property-based testing; registers properties as named Vitest test cases; ESM-only from v0.4+ (fast-check 4.x) |
 | expect-type | Tool | https://github.com/mmkal/expect-type | Compile-time type assertions for TypeScript — the base layer of the Testing Trophy |
 | @pact-foundation/pact | Tool | https://github.com/pact-foundation/pact-js | Consumer-driven contract testing for TypeScript microservices |
 | vite-tsconfig-paths | Tool | https://github.com/aleclarson/vite-tsconfig-paths | Syncs `tsconfig.json` path aliases to Vitest/Vite — prevents "alias works in tsc, fails in test" defects |
@@ -3622,6 +3721,7 @@ The AI agent mode completes the bun/Vitest/Node.js coverage of this pattern: Vit
 | @faker-js/faker | Tool | https://fakerjs.dev/ | Realistic TypeScript test data generation; used with fishery for typed factories |
 | Playwright Component Testing | Tool | https://playwright.dev/docs/test-components | Integration-level browser component testing; covers browser APIs jsdom cannot emulate; `@playwright/experimental-ct-react` |
 | Playwright Release Notes | Tool | https://playwright.dev/docs/release-notes | Clock API (v1.45), Aria Snapshots (v1.49), tsconfig option (v1.50), screencast API (v1.59), test.abort + page ARIA snapshot (v1.60) |
+| React Testing Library | Tool | https://testing-library.com/docs/react-testing-library/intro/ | Integration-layer testing aligned with Testing Trophy; v16 adds React 19 support + automatic `act()` wrapping |
 | How They Test | Community | https://abhivaikar.github.io/howtheytest/ | 108 companies, 797 resources — real-world test pyramid ratios, strategies, and culture from production engineering orgs |
 | Mocks Aren't Stubs (Fowler) | Community | https://martinfowler.com/articles/mocksArentStubs.html | Canonical taxonomy: Dummy/Fake/Stub/Spy/Mock; Classical vs Mockist TDD; when to use each at each pyramid level |
 | Vitest 3.0 Release | Tool | https://vitest.dev/blog/vitest-3.html | Inline workspace config, multi-browser instances, reporter redesign, public node API stabilisation |
@@ -3651,3 +3751,5 @@ The AI agent mode completes the bun/Vitest/Node.js coverage of this pattern: Vit
 | Pact-JS Migration Guide 16.x | Tool | https://github.com/pact-foundation/pact-js/blob/master/MIGRATION.md | Step-by-step upgrade from v15 to v16; API rename codemod; DSL version compatibility notes |
 | TypeScript 5.9 Release Notes (full) | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html | Complete list of new `tsc --init` defaults including `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noUncheckedSideEffectImports`, `skipLibCheck` — all of which may silently break test tsconfigs that inherit the new defaults |
 | Bun Test Runner (full docs) | Tool | https://bun.sh/docs/cli/test | Complete `bun:test` CLI reference: `--randomize`/`--seed` for order-dependency detection, `--concurrent`/`--max-concurrency`, `test.concurrent`/`test.serial`, AI agent mode (CLAUDECODE=1/AGENT=1), `--rerun-each` for flakiness detection |
+| React Testing Library v16 Release | Tool | https://github.com/testing-library/react-testing-library/releases/tag/v16.1.0 | React 19 support: automatic `act()` wrapping eliminates explicit `await act(...)` in tests; `@testing-library/dom` and `@types/react-dom` moved to peer dependencies |
+| fast-check v4 Changelog | Tool | https://github.com/dubzzz/fast-check/blob/main/CHANGELOG.md | v4.x ESM-only migration (March 2025); CommonJS bundles removed; `@fast-check/vitest` 0.4+ dropped CJS — add to `optimizeDeps.include` for CommonJS Vitest projects |

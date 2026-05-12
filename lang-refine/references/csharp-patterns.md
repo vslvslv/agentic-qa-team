@@ -1,6 +1,18 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 38 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 39 | score: 98/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 39 (2026-05-12): added Code Coverage section (coverlet.collector, dotnet test --collect, coverlet.msbuild
+       MSBuild integration, reportgenerator HTML reports, threshold enforcement, dotnet-coverage tool vs coverlet
+       comparison); added Stryker.NET Mutation Testing (install, run, stryker-config.json thresholds high/low/break,
+       mutation-level, coverage-analysis, --since incremental analysis, dashboard reporter); added Test Ordering
+       section (xUnit ITestCaseOrderer + TestPriorityAttribute, xUnit CollectionBehavior parallelism control,
+       NUnit [Order] attribute); added .NET Aspire Integration Testing (DistributedApplicationTestingBuilder,
+       CreateAsync, CreateHttpClient, WaitForResourceAsync, GetEndpoint); added community gotchas: coverlet
+       collector vs msbuild instrument-time difference, Stryker timeout loops on complex async code, xUnit
+       ITestCaseOrderer breaks xUnit v3 due to assembly name change, Aspire test startup latency and resource
+       readiness races — sourced from learn.microsoft.com/dotnet/core/testing/unit-testing-code-coverage,
+       stryker-mutator.io/docs/stryker-net, learn.microsoft.com/dotnet/core/testing/order-unit-tests,
+       learn.microsoft.com/dotnet/aspire
      Iter 38 (2026-05-12): added Testcontainers.NET integration testing (ContainerBuilder, SqlServerContainer,
        PostgreSqlContainer, lifecycle management with IAsyncLifetime, resource reuse); added MockHttp /
        WireMock.NET for HttpClient testing (RichardSzalay.MockHttp — MockedRequest, When/Respond, Verify;
@@ -7740,3 +7752,480 @@ public class CleanArchitectureTests
 | One test class per architecture rule with NetArchTest | Assembly loaded via reflection for every class — O(classes * assembly size) startup | Consolidate all architecture assertions into one `[Collection]` test class |
 | Testcontainers with no `DisposeAsync` | Container continues running after the test suite, consuming memory and ports | Always implement `IAsyncLifetime.DisposeAsync` on the fixture |
 | `Console.WriteLine` in xUnit tests for diagnostics | Output lost in parallel runs; not captured by the runner | Use `ITestOutputHelper.WriteLine` — scoped to the test, captured on failure |
+
+---
+
+## Code Coverage — Coverlet and ReportGenerator
+
+Code coverage measures which lines, branches, and methods are exercised by tests. In .NET, **Coverlet** is the standard open-source collector; **ReportGenerator** converts raw Cobertura XML into browsable HTML. Both are free and cross-platform.
+
+### Setup and collection (DataCollector approach — recommended)
+
+`dotnet new xunit` already includes `coverlet.collector`. Run tests and collect coverage in one step:
+
+```bash
+# Produces TestResults/{guid}/coverage.cobertura.xml
+dotnet test --collect:"XPlat Code Coverage"
+
+# Force the output format and merge results from multiple test projects
+dotnet test --collect:"XPlat Code Coverage" \
+  -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
+```
+
+The `"XPlat Code Coverage"` argument is a friendly name for the Coverlet data collector. Use `"Code Coverage"` (without quotes) to invoke the .NET built-in collector, which produces a binary `.coverage` file (VS-only format) instead of Cobertura XML.
+
+### Generate an HTML report with ReportGenerator
+
+```bash
+# Install globally (once per machine)
+dotnet tool install -g dotnet-reportgenerator-globaltool
+
+# Generate from the XML produced by dotnet test
+reportgenerator \
+  -reports:"**/TestResults/**/coverage.cobertura.xml" \
+  -targetdir:"coveragereport" \
+  -reporttypes:Html
+```
+
+Open `coveragereport/index.html` to browse per-file line/branch/method coverage. Common additional formats: `Cobertura`, `lcov`, `Badges`, `MarkdownSummaryGithub`.
+
+### MSBuild integration — coverlet.msbuild
+
+For projects already using MSBuild-based builds or where the DataCollector approach is unavailable:
+
+```xml
+<!-- Add to your test .csproj -->
+<ItemGroup>
+  <PackageReference Include="coverlet.msbuild" Version="6.*" />
+</ItemGroup>
+```
+
+```bash
+dotnet test /p:CollectCoverage=true \
+            /p:CoverletOutputFormat=cobertura \
+            /p:CoverletOutput=./coverage.cobertura.xml
+```
+
+### CI threshold enforcement — fail build below N%
+
+```bash
+# Fail if line coverage drops below 80% or branch coverage below 70%
+dotnet test --collect:"XPlat Code Coverage" \
+  -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Threshold=80 \
+     DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.ThresholdType=line \
+     DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.ThresholdStat=Total
+
+# MSBuild equivalent
+dotnet test /p:CollectCoverage=true \
+            /p:Threshold=80 \
+            /p:ThresholdType=line \
+            /p:ThresholdStat=total
+```
+
+### dotnet-coverage tool — built-in alternative
+
+`.NET 8+` ships `dotnet-coverage` as a cross-platform global tool that wraps the built-in collector and can merge, convert, and snapshot coverage:
+
+```bash
+dotnet tool install -g dotnet-coverage
+
+# Collect and output Cobertura directly (no VS binary format)
+dotnet-coverage collect "dotnet test" -f cobertura -o coverage.cobertura.xml
+
+# Merge coverage from multiple test runs into one report
+dotnet-coverage merge -f cobertura -o merged.xml ./test1/coverage.xml ./test2/coverage.xml
+```
+
+**Coverlet vs dotnet-coverage comparison:**
+
+| Feature | coverlet.collector | dotnet-coverage |
+|---|---|---|
+| Output format | Cobertura XML (human-readable) | Binary `.coverage` or Cobertura with flag |
+| Integration | `--collect:"XPlat Code Coverage"` | Separate CLI invocation wrapping `dotnet test` |
+| Threshold enforcement | Built-in MSBuild props | Requires external check on exit code |
+| Multi-run merge | Manual (ReportGenerator can merge) | `dotnet-coverage merge` |
+| .NET Framework support | Yes | Partial (Windows only for binary format) |
+
+---
+
+## Stryker.NET — Mutation Testing
+
+Mutation testing evaluates test suite _quality_ by injecting artificial bugs (mutants) into the production code and verifying that your tests catch them. A **mutation score of 80%+** is a reasonable target for business-critical code. High line coverage does not guarantee effective tests; mutation testing surfaces gaps in assertions.
+
+### Installation and quickstart
+
+```bash
+# Global install (per machine)
+dotnet tool install -g dotnet-stryker
+
+# Project-local install (reproducible CI)
+dotnet new tool-manifest    # once per repo
+dotnet tool install dotnet-stryker
+
+# Run from your test project directory — no config needed for most projects
+dotnet stryker
+```
+
+Stryker discovers the source project automatically from the test project's `<ProjectReference>`. The HTML report opens in the browser after the run.
+
+### stryker-config.json — key options
+
+```json
+{
+  "stryker-config": {
+    "project": "MyApp.csproj",
+    "mutation-level": "Standard",
+    "thresholds": {
+      "high": 80,
+      "low": 60,
+      "break": 0
+    },
+    "coverage-analysis": "perTest",
+    "concurrency": 4,
+    "reporter": ["html", "progress"],
+    "mutate": [
+      "src/**/*.cs",
+      "!src/**/*.Generated.cs",
+      "!src/**/Migrations/**"
+    ],
+    "ignore-methods": [
+      "ToString",
+      "GetHashCode"
+    ]
+  }
+}
+```
+
+**Threshold semantics:**
+- `high` (default 80): score above this → green; below → yellow in the report
+- `low` (default 60): score below this → red in the report
+- `break` (default 0): score **at or below** this → non-zero exit code, fails CI build
+
+**`mutation-level` options:**
+- `Basic` — arithmetic, equality operators only (fastest)
+- `Standard` (default) — adds string, boolean, and LINQ mutations
+- `Advanced` — adds bitwise, assignment mutations
+- `Complete` — all mutators including regex and initializer mutations (slowest)
+
+### Incremental analysis — `--since`
+
+```bash
+# Only mutate code changed since the main branch — dramatically faster for PRs
+dotnet stryker --since:main
+
+# Store baseline in .stryker-dashboard (disk) so unchanged mutant results are reused
+dotnet stryker --with-baseline:main
+```
+
+### Coverage analysis modes
+
+`coverage-analysis` tells Stryker which tests to run per mutant:
+
+| Mode | Behaviour | Speed |
+|---|---|---|
+| `off` | Run all tests for every mutant | Slowest; safest |
+| `perTest` (default) | Run only tests that cover each mutant (via coverage data) | ~3–10× faster |
+| `perTestInIsolation` | Same as perTest but re-initialises static state between tests | Slower than perTest; use for static state side effects |
+| `all` | Batch mutants, run all tests once per batch | Faster than off; less accurate |
+
+### Reading the HTML report — mutant statuses
+
+| Status | Meaning |
+|---|---|
+| **Killed** | A test caught the mutant — good |
+| **Survived** | No test caught the mutant — gap in assertions |
+| **No Coverage** | No test runs the mutated line at all |
+| **Timeout** | Mutant caused an infinite loop (counted as killed) |
+| **Compile Error** | Stryker generated an invalid mutant (internal; not your fault) |
+
+---
+
+## Test Ordering — xUnit, NUnit, MSTest
+
+Unit tests should ideally be order-independent. When integration tests genuinely require sequencing (e.g., a create-then-read-then-delete workflow), use the ordering mechanisms below. Always pair ordering with disabled parallelism — ordering only controls _start_ sequence; parallel execution can still overlap tests.
+
+### xUnit — `ITestCaseOrderer` with `TestPriorityAttribute`
+
+xUnit provides no built-in ordering attribute; you implement `ITestCaseOrderer` yourself (or use the community `xunit.extensions.ordering` package for a simpler API).
+
+```csharp
+// 1. Define the attribute
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+public class TestPriorityAttribute(int priority) : Attribute
+{
+    public int Priority { get; } = priority;
+}
+
+// 2. Implement ITestCaseOrderer
+using Xunit.Abstractions;
+using Xunit.Sdk;
+
+public class PriorityOrderer : ITestCaseOrderer
+{
+    public IEnumerable<TTestCase> OrderTestCases<TTestCase>(
+        IEnumerable<TTestCase> testCases) where TTestCase : ITestCase
+    {
+        var sorted = new SortedDictionary<int, List<TTestCase>>();
+        foreach (var tc in testCases)
+        {
+            int priority = tc.TestMethod.Method
+                .GetCustomAttributes(typeof(TestPriorityAttribute).AssemblyQualifiedName!)
+                .FirstOrDefault()
+                ?.GetNamedArgument<int>(nameof(TestPriorityAttribute.Priority)) ?? 0;
+
+            if (!sorted.TryGetValue(priority, out var list))
+                sorted[priority] = list = [];
+            list.Add(tc);
+        }
+
+        foreach (var tc in sorted.Values.SelectMany(l => l.OrderBy(t => t.TestMethod.Method.Name)))
+            yield return tc;
+    }
+}
+
+// 3. Apply to a test class — disable parallelism first
+[TestCaseOrderer(
+    ordererTypeName: "MyProject.Tests.PriorityOrderer",
+    ordererAssemblyName: "MyProject.Tests")]
+public class OrderedIntegrationTests
+{
+    [Fact, TestPriority(-10)]
+    public async Task Step1_CreateResource() { /* ... */ }
+
+    [Fact, TestPriority(0)]
+    public async Task Step2_ReadResource() { /* ... */ }
+
+    [Fact, TestPriority(10)]
+    public async Task Step3_DeleteResource() { /* ... */ }
+}
+```
+
+**Disable parallelism across test classes** (assembly-level, typically in `AssemblyInfo.cs`):
+
+```csharp
+[assembly: CollectionBehavior(DisableTestParallelization = true)]
+```
+
+To control the order of test _collections_ (not just methods within a class), implement `ITestCollectionOrderer` and apply `[assembly: TestCollectionOrderer(...)]`.
+
+### NUnit — `[Order]` attribute
+
+NUnit provides `[Order(n)]` directly on test methods. Lower values run first. Tests without `[Order]` run last in undefined order. NUnit runs tests sequentially within a single thread by default; the `[Order]` attribute alone is sufficient without additional parallelism configuration.
+
+```csharp
+using NUnit.Framework;
+
+[TestFixture]
+public class OrderedNUnitTests
+{
+    [Test, Order(-5)]
+    public void Step1_SetupDatabase() { /* runs first */ }
+
+    [Test, Order(0)]
+    public void Step2_SeedData() { /* runs second */ }
+
+    [Test, Order(5)]
+    public void Step3_VerifyAndCleanup() { /* runs third */ }
+}
+```
+
+### MSTest — alphabetical order with `OrderTestsByNameInClass`
+
+MSTest 3.6+ adds a runsettings option that sorts methods by name within the class:
+
+```xml
+<!-- myproject.runsettings -->
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <MSTest>
+    <OrderTestsByNameInClass>true</OrderTestsByNameInClass>
+  </MSTest>
+</RunSettings>
+```
+
+```bash
+dotnet test --settings myproject.runsettings
+```
+
+A common naming convention is to prefix test methods with numeric step numbers: `Test01_Create`, `Test02_Read`, `Test03_Delete`.
+
+---
+
+## .NET Aspire Integration Testing
+
+.NET Aspire provides `DistributedApplicationTestingBuilder` — an xUnit/NUnit/MSTest-compatible test harness that starts the full Aspire AppHost (all containers, services, and resources) inside the test process. This replaces ad-hoc `docker-compose` scripts and Testcontainers boilerplate for Aspire-based systems.
+
+### Package setup
+
+```xml
+<!-- In your dedicated test project (.csproj) -->
+<ItemGroup>
+  <!-- Reference the AppHost project so the test can discover resources -->
+  <ProjectReference Include="..\MyApp.AppHost\MyApp.AppHost.csproj" />
+  <PackageReference Include="Aspire.Hosting.Testing" Version="9.*" />
+  <PackageReference Include="xunit"                   Version="2.*" />
+  <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
+</ItemGroup>
+```
+
+### Writing an Aspire integration test
+
+```csharp
+using Aspire.Hosting;
+using Aspire.Hosting.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using System.Net;
+using Xunit;
+
+public class AppHostTests : IAsyncLifetime
+{
+    private DistributedApplication? _app;
+
+    public async Task InitializeAsync()
+    {
+        // Build and start the entire Aspire AppHost
+        var appHost = await DistributedApplicationTestingBuilder
+            .CreateAsync<Projects.MyApp_AppHost>();
+
+        // Optionally override resources — e.g. swap real DB for Testcontainers
+        // appHost.Services.ConfigureHttpClientDefaults(b => b.AddStandardResilienceHandler());
+
+        _app = await appHost.BuildAsync();
+        await _app.StartAsync();
+    }
+
+    public async Task DisposeAsync()
+    {
+        if (_app is not null)
+            await _app.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ApiService_ReturnsHealthy()
+    {
+        // Wait for the "apiservice" resource to reach Running state
+        var resourceNotifications = _app!.Services
+            .GetRequiredService<ResourceNotificationService>();
+
+        await resourceNotifications.WaitForResourceAsync(
+            "apiservice",
+            KnownResourceStates.Running)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        // Get an HttpClient pre-configured with the service's base address
+        using var client = _app.CreateHttpClient("apiservice");
+
+        var response = await client.GetAsync("/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ApiService_GetWeatherForecast_ReturnsFiveItems()
+    {
+        var resourceNotifications = _app!.Services
+            .GetRequiredService<ResourceNotificationService>();
+
+        await resourceNotifications.WaitForResourceAsync(
+            "apiservice", KnownResourceStates.Running)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        using var client = _app.CreateHttpClient("apiservice");
+        var forecasts = await client.GetFromJsonAsync<WeatherForecast[]>("/weatherforecast");
+
+        Assert.NotNull(forecasts);
+        Assert.Equal(5, forecasts.Length);
+    }
+}
+```
+
+**Key API surface:**
+
+| Member | Purpose |
+|---|---|
+| `DistributedApplicationTestingBuilder.CreateAsync<TAppHost>()` | Bootstraps the AppHost; returns a builder for overriding services |
+| `builder.BuildAsync()` | Materialises `DistributedApplication` (does not start resources yet) |
+| `app.StartAsync()` | Starts all resources (containers, services); waits for initial health |
+| `app.CreateHttpClient("resourceName")` | Returns `HttpClient` with `BaseAddress` set to the named resource's endpoint |
+| `ResourceNotificationService.WaitForResourceAsync(name, state)` | Async wait until a resource reaches a given state |
+| `app.GetEndpoint("resourceName", "endpointName")` | Returns the `Uri` for a specific named endpoint of a resource |
+| `app.DisposeAsync()` | Stops all resources and tears down containers |
+
+---
+
+## Real-World Gotchas — Code Coverage, Mutation Testing, and Test Ordering [community]
+
+### **Coverlet DataCollector vs MSBuild Produce Different Instrumentation** [community]
+
+`coverlet.collector` (DataCollector, `--collect:"XPlat Code Coverage"`) instruments assemblies at _run time_ via the VSTest platform. `coverlet.msbuild` instruments at _compile time_. WHY it causes problems: the two modes can report different line counts, especially for auto-generated code and compiler-synthesised state machines (async methods, iterators). MSBuild instrumentation is tighter but more fragile with AOT or trimming. DataCollector mode is recommended for most projects. Fix: choose one mode per project and stick to it; mixing them in a single solution produces incoherent merged reports.
+
+```bash
+# DataCollector mode — recommended; no .csproj changes needed beyond the package reference
+dotnet test --collect:"XPlat Code Coverage"
+
+# MSBuild mode — compile-time instrumentation; add coverlet.msbuild package
+dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura
+```
+
+### **Stryker Timeout Loops on Complex `async` Code With `await foreach`** [community]
+
+Stryker's default `additional-timeout` (5 000 ms) is relative to the median test run time. Long-running integration tests or async pipelines that use `await foreach` + infinite `IAsyncEnumerable` producers can cause mutants to trigger the timeout repeatedly, classifying every mutant as `Timeout` (which counts as killed). WHY it causes problems: the mutation score looks artificially high because every mutant "times out" rather than surviving. Fix: exclude infinite-pipeline code from mutation with `!` patterns, raise `additional-timeout`, or set `coverage-analysis: "off"` for those test classes.
+
+```json
+{
+  "stryker-config": {
+    "mutate": [
+      "src/**/*.cs",
+      "!src/**/StreamProcessing/**"
+    ],
+    "additional-timeout": 10000
+  }
+}
+```
+
+### **xUnit `ITestCaseOrderer` Type Name Breaks in xUnit v3** [community]
+
+xUnit v2's `ITestCaseOrderer` uses `GetCustomAttributes(assemblyQualifiedName)` to look up attributes. In xUnit v3, the reflection API changed: attribute lookup now uses the full type name without version/culture tokens. WHY it causes problems: orderers that worked in v2 silently stop ordering in v3 — tests run in undefined order without any error message. Fix: when migrating to xUnit v3, verify the `ordererTypeName` and `ordererAssemblyName` strings still resolve; add a constructor-time assertion or log from the orderer to confirm it is being called.
+
+```csharp
+// xUnit v3: use the full assembly-qualified name WITHOUT version tokens
+// BAD (v2 style — includes version/culture tokens in some reflection paths):
+// "MyProject.Tests.PriorityOrderer, MyProject.Tests, Version=1.0.0.0, Culture=neutral"
+// GOOD: simple type + assembly only
+[TestCaseOrderer(
+    ordererTypeName:     "MyProject.Tests.PriorityOrderer",
+    ordererAssemblyName: "MyProject.Tests")]
+public class OrderedTests { /* ... */ }
+```
+
+### **Aspire Test Startup Latency — `WaitForResourceAsync` Is Required, Not Optional** [community]
+
+`_app.StartAsync()` returns as soon as the Aspire orchestrator has _submitted_ start requests for all resources. Containers are not yet running and HTTP endpoints are not yet listening. WHY it causes problems: `CreateHttpClient("apiservice").GetAsync("/health")` immediately after `StartAsync()` returns `Connection refused` — not a test logic failure, but a timing one. Fix: always `await WaitForResourceAsync("resourceName", KnownResourceStates.Running)` with a `WaitAsync` timeout before issuing any HTTP call. If the timeout is too short on slow CI runners, increase it or set it via an environment variable.
+
+```csharp
+// WRONG: races against container startup
+await _app.StartAsync();
+using var client = _app.CreateHttpClient("apiservice");
+var response = await client.GetAsync("/health");  // May get Connection refused
+
+// CORRECT: wait for Running state before any request
+await _app.StartAsync();
+var notifications = _app.Services.GetRequiredService<ResourceNotificationService>();
+await notifications
+    .WaitForResourceAsync("apiservice", KnownResourceStates.Running)
+    .WaitAsync(TimeSpan.FromSeconds(60));  // generous timeout for slow CI
+using var client = _app.CreateHttpClient("apiservice");
+var response = await client.GetAsync("/health");  // always reachable now
+```
+
+---
+
+## Anti-Patterns Quick Reference — Coverage, Mutation, and Ordering
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| Treating 100% line coverage as a quality gate | High coverage does not mean good assertions — tests may cover lines without asserting anything | Use mutation testing (Stryker) to measure assertion effectiveness |
+| Running Stryker on all code with `mutation-level: Complete` in CI | Extremely slow (hours on mid-sized projects) — blocks developer feedback | Use `Standard` level on PRs; `Advanced` or `Complete` only on scheduled nightly runs |
+| Mixing `coverlet.collector` and `coverlet.msbuild` in the same solution | Incoherent merged reports — line counts differ per mode | Pick one mode per solution; DataCollector (`--collect`) is the simpler default |
+| Writing xUnit tests that assume execution order without `ITestCaseOrderer` | xUnit runs tests within a class in reflection-defined order, which varies by platform | Either make tests fully independent or apply `ITestCaseOrderer` + `[TestPriority]` |
+| Calling `CreateHttpClient` before `WaitForResourceAsync` in Aspire tests | Race condition — container may not be listening yet, producing flaky `Connection refused` | Always await `WaitForResourceAsync` + `WaitAsync(timeout)` before first HTTP call |
+| Using `dotnet-reportgenerator` with a single test project's XML | Multi-project solutions have multiple XML files; missing files skews coverage down | Use glob pattern `"**/coverage.cobertura.xml"` to collect all test project outputs |

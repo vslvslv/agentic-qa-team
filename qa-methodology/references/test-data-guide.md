@@ -1,6 +1,6 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 44 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes, playwright.dev/docs/api/class-websocketroute, playwright.dev/docs/test-global-setup-teardown, playwright.dev/docs/api/class-test#test-abort, github.com/mswjs/msw/releases, playwright.dev/docs/release-notes#version-157, playwright.dev/docs/release-notes#version-159, playwright.dev/docs/release-notes#version-160); training-knowledge fallback for remaining gaps -->
+<!-- lang: TypeScript | topic: test-data | iteration: 45 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes, playwright.dev/docs/api/class-websocketroute, playwright.dev/docs/test-global-setup-teardown, playwright.dev/docs/api/class-test#test-abort, github.com/mswjs/msw/releases, playwright.dev/docs/release-notes#version-157, playwright.dev/docs/release-notes#version-159, playwright.dev/docs/release-notes#version-160, vitest.dev/blog/vitest-3-2, vitest.dev/blog/vitest-4-1); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
 <!-- iter-31: Neon DB copy-on-write branching for test isolation (neon.com/docs/guides/branching-test-queries, 2026-05-08); Testcontainers Cloud 8GB/session + Turbo mode (testcontainers.com/cloud/docs, 2026-05-08) -->
@@ -12,6 +12,7 @@
 <!-- iter-42: MSW v2.14.0 ws.onUpgrade() API for HTTP-upgrade-based WebSocket connections in Node.js; community gotcha #30 (ws.onUpgrade vs ws.link — upgrade handler applies globally, not per-link; not available in browser/service worker context); new Key Resource (2026-05-12) -->
 <!-- iter-43: MSW defineNetwork() RFC — unified network mock API separating sources from handlers; Playwright 1.52 failOnFlakyTests as factory isolation quality signal (community gotcha #31); Playwright 1.53 locator.describe() for fixture element annotation in traces; Playwright 1.56 page.requests() for asserting factory-driven request patterns; Playwright 1.56 LLM Test Agents applied to factory scaffolding; corrected testProject.workers attribution to v1.52 (not v1.57); updated Playwright checklist; 4 new Key Resources (2026-05-12) -->
 <!-- iter-44: Playwright 1.57 testConfig.webServer.wait (regex + named capture groups for dynamic port injection into test data fixtures); Playwright 1.60 locator.drop() for binary/clipboard test data delivery to dropzone elements; webSocketRoute.protocols() for subprotocol-aware WebSocket mock factories (dispatch different message factories per negotiated protocol); community gotcha #32 (locator.drop() needs explicit mimeType in file descriptor — omitting it silently drops the drop event); 3 new Key Resources (2026-05-12) -->
+<!-- iter-45: Vitest 3.2 scope:'file' fixture scope (between test-scoped and worker-scoped — lazy beforeAll equivalent); Vitest 3.2 Test Signal AbortSignal in test context for timeout-aware factory teardown; Vitest 3.2 using vi.spyOn() for automatic mock restoration; Vitest 4.1 mockThrow()/mockThrowOnce() for factory error-path testing; Vitest 4.1 Chai-style mock assertions as alternative to Jest-style toHaveBeenCalled; community gotcha #33 (scope:'file' fixture requires test.extend() on a non-isolated file — isolation:false — otherwise the fixture reinitialises per file); 5 new Key Resources (2026-05-12) -->
 <!-- iter-40: faker v10 new APIs for factory authors (word error strategy 'fail', BigInt number generation, book module, UPC barcodes, simple coordinate methods, generic sex type); Playwright 1.46 component testing router fixture for MSW test data injection; community gotcha #28 (faker.word default 'fail' error strategy breaks word-based factories); updated Key Resources (2026-05-12) -->
 <!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-37: Vitest 4.0 expect.schemaMatching for inline factory output validation against Zod/Valibot/ArkType; Vitest 4.0 getSeed() API for programmatic seed access; Vitest 4.1 experimental viteModuleRunner:false for native Node.js factory execution; Google Testing Blog "Construct with Collaborators, Call with Work" pattern (2026-05-05) applied to factory design; faker v10.4.0 latest stable (2026-03-23); fishery v2.4.0 latest stable (2025-12-08); community gotcha #25 (schema drift caught by expect.schemaMatching); updated Key Resources (2026-05-12) -->
@@ -9907,3 +9908,445 @@ test('event list renders factory events delivered over binary subprotocol', asyn
 | Playwright 1.57 release notes | Official | https://playwright.dev/docs/release-notes#version-157 | `testConfig.webServer.wait` with regex named capture groups for dynamic port injection into test data fixtures |
 | Playwright 1.60 `locator.drop()` API | Official | https://playwright.dev/docs/api/class-locator#locator-drop | File and clipboard test data delivery to dropzone elements; `files` and `data` DataTransfer variants |
 | Playwright 1.60 release notes | Official | https://playwright.dev/docs/release-notes#version-160 | `locator.drop()`, `webSocketRoute.protocols()`, `tracing.startHar/stopHar` as async disposable, `test.abort()` |
+
+---
+
+## Vitest 3.2 `scope: 'file'` Fixture Scope — Lazy `beforeAll` for Test Data  [community]
+
+Vitest 3.2 (June 2025) introduced a third fixture scope option: `scope: 'file'`. This sits between `scope: 'test'` (the default — a fresh instance per test) and `scope: 'worker'` (one shared instance across all files in the same worker). The `file` scope initialises the fixture once per **spec file** and tears it down when the last test in the file finishes — behaving like `beforeAll`/`afterAll`, but only running when at least one test in the file actually uses the fixture.
+
+**Why it matters for test data:** Many integration test files need a shared database connection or seeded baseline that is expensive to create per-test but should not bleed across spec files. Before `scope: 'file'`, the only options were:
+- `scope: 'test'` — too expensive (connects/disconnects per test, or seeds N times)
+- `scope: 'worker'` — requires `isolation: false`, making the shared fixture visible to all spec files in the worker
+
+`scope: 'file'` fills the gap: expensive setup runs once per file without disabling isolation.
+
+```typescript
+// fixtures/db-fixtures.ts — file-scoped DB fixture (Vitest 3.2+)
+import { test as baseTest } from 'vitest';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
+import * as schema from '../src/db/schema';
+
+interface DbFixtures {
+  db: ReturnType<typeof drizzle>;
+  seedUsers: typeof schema.users.$inferSelect[];
+}
+
+export const test = baseTest.extend<DbFixtures>({
+  // scope: 'file' — one pool per spec file, shared across all tests in the file
+  db: [
+    async ({}, use) => {
+      const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+      const db = drizzle(pool, { schema });
+      await use(db);
+      await pool.end(); // teardown after last test in the file
+    },
+    { scope: 'file' },
+  ],
+
+  // seedUsers depends on 'db' — also file-scoped, seeded once per file
+  seedUsers: [
+    async ({ db }, use) => {
+      const inserted = await db.insert(schema.users).values([
+        { id: crypto.randomUUID(), email: 'alice@example.com', role: 'admin' },
+        { id: crypto.randomUUID(), email: 'bob@example.com',   role: 'member' },
+      ]).returning();
+      await use(inserted);
+      // cleanup — delete only this file's seeded rows
+      await db.delete(schema.users)
+        .where(inArray(schema.users.id, inserted.map(u => u.id)));
+    },
+    { scope: 'file' },
+  ],
+});
+
+export { expect } from 'vitest';
+```
+
+```typescript
+// user.test.ts — two tests share the file-scoped seedUsers without repeated seeding
+import { test, expect } from './fixtures/db-fixtures';
+
+test('admin user has full permissions', ({ seedUsers }) => {
+  const admin = seedUsers.find(u => u.role === 'admin')!;
+  expect(admin).toBeDefined();
+});
+
+test('member user has limited permissions', ({ seedUsers }) => {
+  const member = seedUsers.find(u => u.role === 'member')!;
+  expect(member.role).toBe('member');
+  // seedUsers seeded once at the start of this file — not re-inserted between tests
+});
+```
+
+**Scope comparison:**
+
+| Scope | Lifecycle | Good for |
+|-------|-----------|----------|
+| `test` (default) | Fresh per test | Mutable test data that must not bleed between tests |
+| `file` (Vitest 3.2+) | Once per spec file | Expensive read-only seeds; shared DB connections within a file |
+| `worker` | Once per worker | Truly shared infrastructure (DB schema migrations, server boot) — requires `isolation: false` |
+
+**Lazy behaviour:** Unlike `beforeAll`, a `scope: 'file'` fixture is only initialised if at least one test in the file declares it. Files that import the extended `test` object but never use `db` or `seedUsers` pay zero initialisation cost.
+
+---
+
+## Vitest 3.2 Test Signal — AbortSignal for Timeout-Aware Factory Teardown  [community]
+
+Vitest 3.2 (June 2025) injects an `AbortSignal` named `signal` into every test context. The signal aborts when:
+- The test exceeds its timeout
+- The `--bail` threshold is reached and Vitest is shutting down
+- The user presses `Ctrl+C`
+
+**Why it matters for test data:** Long-running fixture setup operations (fetching remote seed data, waiting for a container to become healthy, streaming a large dataset) should be cancellable. Without `signal`, a timed-out test leaves orphan HTTP connections, open DB transactions, or lingering container processes — the classic "port already in use" CI flakiness pattern. Passing `signal` to `fetch`, `AbortController`-aware SDK calls, and Testcontainers health checks lets the runtime clean up promptly.
+
+```typescript
+// fixtures/remote-seed-fixtures.ts — signal-aware remote seed fixture (Vitest 3.2+)
+import { test as baseTest } from 'vitest';
+
+interface RemoteSeedFixtures {
+  remoteSeed: { users: Array<{ id: string; email: string }> };
+}
+
+export const test = baseTest.extend<RemoteSeedFixtures>({
+  remoteSeed: async ({ signal }, use) => {
+    // Pass the test signal to fetch — aborts automatically on test timeout or bail
+    const response = await fetch('https://seed-api.internal/users?limit=20', { signal });
+    if (!response.ok) throw new Error(`Seed fetch failed: ${response.status}`);
+    const seed = await response.json();
+    await use(seed);
+    // No manual cleanup needed — the seeded data is read-only
+  },
+});
+```
+
+```typescript
+// Container health check — signal-aware polling (Vitest 3.2+)
+import { test as baseTest } from 'vitest';
+import { GenericContainer } from 'testcontainers';
+
+export const test = baseTest.extend<{ redisUrl: string }>({
+  redisUrl: async ({ signal }, use) => {
+    const container = await new GenericContainer('redis:7-alpine')
+      .withExposedPorts(6379)
+      .start();
+
+    // Abort handler: stop the container if the test times out or bail fires
+    signal.addEventListener('abort', () => {
+      container.stop().catch(() => {});
+    }, { once: true });
+
+    const host = container.getHost();
+    const port = container.getMappedPort(6379);
+    await use(`redis://${host}:${port}`);
+
+    await container.stop();
+  },
+}, 60_000); // 60s timeout for container startup
+```
+
+```typescript
+// Using signal with a factory that streams data (e.g., SSE seed endpoint)
+it('processes all seed events before timeout', async ({ signal }) => {
+  const events: string[] = [];
+  const es = new EventSource('/seed-stream');
+
+  await new Promise<void>((resolve, reject) => {
+    signal.addEventListener('abort', () => reject(new Error('Test timed out during seed stream')));
+    es.onmessage = (e) => { events.push(e.data); if (events.length >= 10) resolve(); };
+    es.onerror = reject;
+  });
+
+  es.close();
+  expect(events).toHaveLength(10);
+}, 5_000);
+```
+
+**Key difference from `AbortController` in `beforeEach`:** The test `signal` is provided by Vitest's runner — you do not need to create or wire an `AbortController` yourself. It is already connected to the test's timeout mechanism, `--bail`, and SIGINT handling.
+
+---
+
+## Vitest 3.2 `using vi.spyOn()` — Automatic Mock Restoration in Factory Helpers  [community]
+
+Vitest 3.2 (June 2025) added support for the TC39 [Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal with `vi.spyOn()` and `vi.fn()`. When declared with `using` (synchronous disposal), the spy or mock is automatically restored when the block exits — no `afterEach(() => vi.restoreAllMocks())` needed.
+
+**Why it matters for test data:** Factory helper functions frequently need to spy on or stub a dependency for one specific test — e.g., replacing a clock, stubbing a UUID generator to return a predictable value, or intercepting a random-number call. Manual `spy.mockRestore()` calls in teardown are easy to forget when tests throw early. `using` guarantees restoration even if the test throws before `mockRestore()`.
+
+```typescript
+// Automatic spy restoration with 'using' — Vitest 3.2+ (Node 22+ or with polyfill)
+import { vi, it, expect } from 'vitest';
+import { buildOrder } from './factories/order.factory';
+import { orderService } from './order.service';
+
+it('order ID is the UUID generated at creation time', () => {
+  // 'using' — spy.mockRestore() is called automatically when this block exits
+  using idSpy = vi.spyOn(crypto, 'randomUUID').mockReturnValue('fixed-uuid-1234' as `${string}-${string}-${string}-${string}-${string}`);
+
+  const order = buildOrder();
+  // Factory calls crypto.randomUUID() internally — spy intercepts it
+  expect(order.id).toBe('fixed-uuid-1234');
+  // idSpy.mockRestore() runs here automatically — no afterEach needed
+});
+
+it('factory uses real crypto.randomUUID() in subsequent tests (spy was restored)', () => {
+  // spy from the previous test is already restored — no bleed
+  const order = buildOrder();
+  expect(order.id).toMatch(/^[0-9a-f-]{36}$/);
+});
+```
+
+```typescript
+// using with vi.fn() for a single-test factory override
+it('checkout total uses the mocked pricing service', () => {
+  using pricingMock = vi.spyOn(pricingService, 'calculateTotal')
+    .mockReturnValue(9999);
+
+  const cart = buildCart({ items: [buildLineItem({ sku: 'WIDGET-1' })] });
+  const total = checkoutService.total(cart);
+
+  expect(pricingMock).toHaveBeenCalledWith(cart.items);
+  expect(total).toBe(9999);
+  // pricingMock.mockRestore() called automatically on block exit
+});
+```
+
+**Requirement:** The JavaScript runtime must support `Symbol.dispose`. This is available natively in Node.js 22+ and in Vitest ≥ 1.4 running under Node 22. For Node 18/20, add `"lib": ["ES2023", "ESNext.DisposableStack"]` to `tsconfig.json` and install the `@vitest/snapshot` polyfill or `core-js/proposals/explicit-resource-management`.
+
+**Difference from `await using`:** `using vi.spyOn()` uses *synchronous* disposal (`Symbol.dispose`). `await using` (TypeScript 5.2, `Symbol.asyncDispose`) is for async teardown — e.g., closing a database connection. Spies and mocks are synchronous resources: use `using`, not `await using`.
+
+---
+
+## Vitest 4.1 `mockThrow()` / `mockThrowOnce()` — Factory Error-Path Testing  [community]
+
+Vitest 4.1 (March 2026) added `mockThrow()` and `mockThrowOnce()` as first-class alternatives to `mockImplementation(() => { throw ... })`. This simplifies test data setup for **error-path scenarios** — the common pattern where a factory needs a dependency to throw in order to test the system's error handling.
+
+**Before 4.1:**
+```typescript
+// Verbose — requires a wrapper function just to throw
+vi.spyOn(db, 'insert').mockImplementation(() => { throw new Error('Connection lost'); });
+```
+
+**After 4.1:**
+```typescript
+// Concise — intent is immediately clear
+vi.spyOn(db, 'insert').mockThrow(new Error('Connection lost'));
+```
+
+```typescript
+// factories/error-scenarios.ts — reusable error-scenario factory helpers (Vitest 4.1+)
+import { vi } from 'vitest';
+import { db } from '../src/db';
+import { emailService } from '../src/email';
+import { paymentGateway } from '../src/payment';
+
+/**
+ * Configures the test environment to simulate a database connection failure.
+ * Returns a cleanup function to restore the mock.
+ */
+export function withDbConnectionFailure() {
+  const spy = vi.spyOn(db, 'insert').mockThrow(
+    new Error('ECONNREFUSED: Connection refused to database')
+  );
+  return () => spy.mockRestore();
+}
+
+/**
+ * Simulates an email service failure on the first call only.
+ * Subsequent calls in the same test use the real implementation.
+ */
+export function withEmailFailureOnce() {
+  return vi.spyOn(emailService, 'send').mockThrowOnce(
+    new Error('SMTP 550: Recipient address rejected')
+  );
+}
+
+/**
+ * Simulates a payment gateway timeout.
+ */
+export function withPaymentTimeout() {
+  return vi.spyOn(paymentGateway, 'charge').mockThrow(
+    Object.assign(new Error('Request timed out'), { code: 'ETIMEDOUT' })
+  );
+}
+```
+
+```typescript
+// checkout.test.ts — error-path tests using factory helpers
+import { test, expect, vi } from 'vitest';
+import { buildUser, buildCart } from './factories';
+import { withDbConnectionFailure, withEmailFailureOnce, withPaymentTimeout } from './factories/error-scenarios';
+import { checkoutService } from '../src/checkout.service';
+
+test('checkout returns DB_ERROR status when database is unavailable', async () => {
+  const restore = withDbConnectionFailure();
+  try {
+    const result = await checkoutService.process(buildUser(), buildCart());
+    expect(result.status).toBe('DB_ERROR');
+  } finally {
+    restore();
+  }
+});
+
+test('checkout retries email and succeeds after transient SMTP failure', async () => {
+  const emailSpy = withEmailFailureOnce();
+  const result = await checkoutService.process(buildUser(), buildCart());
+
+  // First call threw (mockThrowOnce); second call used real implementation
+  expect(emailSpy).toHaveBeenCalledTimes(2);
+  expect(result.status).toBe('SUCCESS');
+  emailSpy.mockRestore();
+});
+
+test('checkout returns TIMEOUT status on payment gateway timeout', async () => {
+  using _paymentMock = withPaymentTimeout();  // 'using' auto-restores (Vitest 3.2+)
+
+  const result = await checkoutService.process(buildUser(), buildCart());
+  expect(result.status).toBe('TIMEOUT');
+});
+```
+
+**`mockThrow` vs `mockThrowOnce`:**
+
+| API | Throws on | Use case |
+|-----|-----------|----------|
+| `mockThrow(err)` | Every call | Permanent failure scenarios (DB down, network unreachable) |
+| `mockThrowOnce(err)` | First call only; subsequent calls use the next mock or real impl | Transient error retry tests (SMTP jitter, rate limit on first attempt) |
+
+**Chaining:** Like `mockReturnValueOnce`, `mockThrowOnce` chains — call it multiple times to define a throw-throw-return sequence:
+
+```typescript
+vi.spyOn(api, 'fetch')
+  .mockThrowOnce(new Error('timeout'))     // call 1: throws
+  .mockThrowOnce(new Error('rate limit'))  // call 2: throws
+  .mockReturnValue({ data: [] });          // call 3+: returns empty data
+```
+
+---
+
+## Vitest 4.1 Chai-Style Mock Assertions — Alternative to `toHaveBeenCalled`  [community]
+
+Vitest 4.1 (March 2026) extended Chai-style assertions to cover mock functions, providing a Sinon-compatible alternative to the `expect(fn).toHaveBeenCalled()` family. Both styles are valid in the same project — teams can choose based on preference or adopt Chai-style for consistency with non-Vitest assertions in shared test utility code.
+
+**Why it matters for factory assertions:** Factory verification helpers that check whether a factory side-effect was called (e.g., "did the factory trigger an analytics event?") are easier to read with Chai-style when the helper is shared across multiple test suites that mix assertion styles.
+
+```typescript
+// Both styles produce identical outcomes — choose one and be consistent
+import { vi, it, expect } from 'vitest';
+
+it('factory triggers product-view analytics event', () => {
+  const analyticsTrack = vi.fn();
+  const product = buildProduct({ onView: analyticsTrack });
+
+  product.view();
+
+  // Jest/Vitest style (existing):
+  expect(analyticsTrack).toHaveBeenCalledOnce();
+  expect(analyticsTrack).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'view' }));
+
+  // Chai style (Vitest 4.1+):
+  expect(analyticsTrack).to.have.been.calledOnce;
+  expect(analyticsTrack).to.have.been.calledWith(expect.objectContaining({ eventType: 'view' }));
+});
+```
+
+**Full Chai-style mock assertion surface (Vitest 4.1):**
+
+```typescript
+const fn = vi.fn();
+
+// Called / not called
+expect(fn).to.have.been.called;
+expect(fn).not.to.have.been.called;
+
+// Call count
+expect(fn).to.have.been.calledOnce;
+expect(fn).to.have.callCount(3);
+
+// Arguments
+expect(fn).to.have.been.calledWith('arg1', 42);
+expect(fn).to.have.been.calledWithMatch({ id: expect.any(String) });
+
+// Return values
+expect(fn).to.have.returned;
+expect(fn).to.have.returnedWith({ status: 'ok' });
+
+// Order (useful in factory pipelines where multiple transforms are applied)
+expect(transformA).to.have.been.calledBefore(transformB);
+expect(transformB).to.have.been.calledAfter(transformA);
+```
+
+**Factory pipeline assertion example:**
+
+```typescript
+// Assert transformation order in a multi-stage factory pipeline
+it('data pipeline applies transformations in the correct order', () => {
+  const normalize  = vi.fn((x: string) => x.trim().toLowerCase());
+  const sanitize   = vi.fn((x: string) => x.replace(/<[^>]*>/g, ''));
+  const hash       = vi.fn((x: string) => Buffer.from(x).toString('base64'));
+
+  const pipeline = buildDataPipeline({ steps: [normalize, sanitize, hash] });
+  pipeline.process('  <b>Test</b>  ');
+
+  // Chai-style: verify ordering without verbose indexing
+  expect(normalize).to.have.been.calledBefore(sanitize);
+  expect(sanitize).to.have.been.calledBefore(hash);
+  expect(hash).to.have.been.calledOnce;
+});
+```
+
+**When to use Chai style vs Jest style:**
+- **Chai style** reads naturally in `.to.have.been.called` form — preferred when the test body reads as a prose description
+- **Jest/Vitest style** (`toHaveBeenCalledWith`) is more familiar to teams migrating from Jest, and has better TypeScript autocomplete in some editors
+- **Never mix both styles for the same assertion in one file** — choose one per project and enforce it with `eslint-plugin-vitest`
+
+---
+
+33. **[community] Vitest `scope: 'file'` fixtures do not share state across parallel workers — and re-initialise if the same spec file is split across multiple workers by `--shard`.**
+    `scope: 'file'` initialises the fixture once per spec file **per worker process**. If you run Vitest with `--shard=1/2` and some tests from `user.test.ts` land on worker 1 while others land on worker 2, the fixture initialises **twice** — once per worker. This is correct behaviour (isolation between workers is intentional), but it means:
+    - File-scoped DB connections are created N times (N = number of workers that run tests from that file)
+    - File-scoped seed operations run N times — causing duplicate-key errors if the seed does not use unique IDs per initialisation
+
+    ```typescript
+    // WRONG — fixed IDs in a scope:'file' fixture cause duplicate key errors under sharding
+    seedUsers: [
+      async ({ db }, use) => {
+        await db.insert(schema.users).values([
+          { id: 'fixed-id-1', email: 'alice@example.com' },   // ← same ID on every worker!
+          { id: 'fixed-id-2', email: 'bob@example.com'   },
+        ]);
+        await use(await db.select().from(schema.users));
+      },
+      { scope: 'file' },
+    ],
+
+    // CORRECT — generate unique IDs per initialisation so each worker's seed is independent
+    seedUsers: [
+      async ({ db }, use) => {
+        const rows = [
+          { id: crypto.randomUUID(), email: `alice-${Date.now()}@example.com` },
+          { id: crypto.randomUUID(), email: `bob-${Date.now()}@example.com`   },
+        ];
+        await db.insert(schema.users).values(rows);
+        await use(await db.select().from(schema.users)
+          .where(inArray(schema.users.id, rows.map(r => r.id))));
+        await db.delete(schema.users)
+          .where(inArray(schema.users.id, rows.map(r => r.id)));
+      },
+      { scope: 'file' },
+    ],
+    ```
+
+    **Root cause:** `scope: 'file'` is a *within-worker* scoping boundary, not a *across-all-workers* singleton. Tests that need a true shared singleton across all workers (e.g., one migrated schema shared by all) must use `scope: 'worker'` with `isolation: false`, or rely on a `globalSetup` that runs before any worker starts.
+
+---
+
+## Key Resources (iter-45 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest 3.2 blog post | Official | https://vitest.dev/blog/vitest-3-2 | `scope:'file'` fixture scope; Test Signal AbortSignal in test context; `using vi.spyOn()` for automatic mock restoration; custom browser locators |
+| Vitest 3.2 test fixtures docs | Official | https://vitest.dev/guide/test-fixtures | Full fixture scope documentation: test, file, worker — lifecycle, lazy evaluation, isolation requirements |
+| Vitest 4.1 blog post | Official | https://vitest.dev/blog/vitest-4-1 | `mockThrow`/`mockThrowOnce`; Chai-style mock assertions; builder pattern fixtures; `aroundEach`; `vi.defineHelper()` |
+| Vitest mock API reference | Official | https://vitest.dev/api/mock | `mockThrow`, `mockThrowOnce`, `mockReturnValueOnce` chaining — error-path test data setup |
+| TC39 Explicit Resource Management proposal | Community | https://github.com/tc39/proposal-explicit-resource-management | Spec behind `using` / `await using` — required reading before adopting `using vi.spyOn()` in shared factory helpers |

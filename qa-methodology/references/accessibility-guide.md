@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 43 | score: 98/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) + qa-methodology-refine extension run 2026-05-12 iter 41 (WebAIM Million 2025 published data, Playwright locator.normalize() Playwright 1.50 pattern, axe-core 4.11.4 anchor ancestry selector escaping fix, WCAG 3.0 task-level outcome testing pattern refinements, community gotchas 77-80) + qa-methodology-refine extension run 2026-05-12 iter 42 (ARIA-in-HTML W3C Rec April 2026 — selectedcontent element testing + role=none gotcha, label element ARIA permitted attributes July 2025 update, image role img synonym December 2024, community gotchas 81-83) + qa-methodology-refine extension run 2026-05-12 iter 43 (Jest v30 incompatibility with jest-axe v10, Playwright locator.describe() v1.53 accessibility workflow pattern, community gotchas 84-85) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 44 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) + qa-methodology-refine extension run 2026-05-12 iter 41 (WebAIM Million 2025 published data, Playwright locator.normalize() Playwright 1.50 pattern, axe-core 4.11.4 anchor ancestry selector escaping fix, WCAG 3.0 task-level outcome testing pattern refinements, community gotchas 77-80) + qa-methodology-refine extension run 2026-05-12 iter 42 (ARIA-in-HTML W3C Rec April 2026 — selectedcontent element testing + role=none gotcha, label element ARIA permitted attributes July 2025 update, image role img synonym December 2024, community gotchas 81-83) + qa-methodology-refine extension run 2026-05-12 iter 43 (Jest v30 incompatibility with jest-axe v10, Playwright locator.describe() v1.53 accessibility workflow pattern, community gotchas 84-85) + qa-methodology-refine extension run 2026-05-12 iter 44 (Playwright 1.60 testInfoError.errorContext aria snapshot in failure output, cypress-axe v1.7.0 Cypress 15 support + retry option, Playwright 1.52 failOnFlakyTests for accessibility CI gates, community gotchas 86-88) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -8990,4 +8990,199 @@ export const test = base.extend<{
 84. **[community] jest-axe v10.0.0 is incompatible with Jest v30 — upgrading Jest without the `jest-matcher-utils` override silently breaks axe assertions**: Jest v30 (released August 2025, latest v30.4.2 as of May 2026) changed its internal `jest-matcher-utils` to v30, but jest-axe v10.0.0 was published with a peer range that does not include v30. Teams that `npm install jest@^30` will either see peer dependency warnings (npm v10+ in non-strict mode continues but breaks at runtime) or an explicit peer conflict error (pnpm, Yarn PnP strict mode). The symptom at runtime is `TypeError: Cannot read properties of undefined` inside jest-axe's custom matchers because the `formatReceived` / `printReceived` utilities from `jest-matcher-utils` have changed APIs. WHY: the standard `jest.config.ts` upgrade path does not prompt you to check transitive peer deps of test helpers — always run `npm ls jest-matcher-utils` after a Jest major version upgrade to verify all packages resolve to the same major.
 
 85. **[community] Playwright `locator.describe()` labels are stripped from aria snapshots and `toHaveAccessibleName()` — they only surface in trace viewer steps**: Teams sometimes assume that `.describe('Submit button')` sets an accessible name on the element (similar to setting `aria-label`). It does not — `locator.describe()` only attaches a label to the Playwright locator object for trace viewer display. `await expect(button.describe('Submit button')).toHaveAccessibleName('Submit button')` will still pass or fail based on the element's actual accessible name in the DOM, not the `.describe()` label. WHY: the naming similarity between `locator.describe()`, `aria-description`, and `aria-describedby` causes confusion. Use `locator.describe()` for developer ergonomics in traces; use `aria-label` / `aria-labelledby` on the DOM element for actual accessible names.
+
+---
+
+### Playwright `testInfoError.errorContext` — Aria Snapshots in Test Failure Output (v1.60+)
+
+Playwright 1.60 introduced `testInfoError.errorContext`, a property on the error object emitted with test failures that provides **additional diagnostic context** captured at the moment of failure. For accessibility matchers (`toMatchAriaSnapshot`, `toHaveAccessibleName`, `toHaveRole`, `toHaveAccessibleErrorMessage`), Playwright automatically populates `errorContext` with the **live aria snapshot of the failing element** at the exact instant the assertion failed.
+
+**Why this matters:** Before Playwright 1.60, a failing `toMatchAriaSnapshot()` assertion showed a diff between the expected YAML and what was received, but only within the inline test output. `testInfoError.errorContext` surfaces the accessibility tree snapshot as a separate context object that appears in:
+- The HTML test report (expandable "Error Context" panel)
+- Trace Viewer error details
+- CI log output as a structured block
+
+This makes diagnosing accessibility regressions significantly faster — instead of reading diff output with escaped YAML, you can see the full accessible structure of the failing element directly in the report.
+
+```typescript
+// File: e2e/accessibility/error-context-demo.spec.ts
+// Playwright 1.60+: testInfoError.errorContext captures the aria snapshot on matcher failure.
+// No extra code is needed — Playwright populates this automatically for accessibility matchers.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Aria snapshot regression with errorContext diagnostics', () => {
+
+  test('navigation structure matches expected aria snapshot', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const nav = page.getByRole('navigation', { name: 'Main navigation' });
+
+    // If this fails, testInfoError.errorContext will contain the live aria snapshot
+    // of the `nav` element at failure time — visible in HTML report + trace viewer.
+    await expect(nav).toMatchAriaSnapshot(`
+      - navigation "Main navigation":
+        - link "Home"
+        - link "Products"
+        - link "About"
+        - link "Contact"
+    `);
+  });
+
+  // To programmatically inspect errorContext in a custom reporter or afterEach hook:
+  test('accessibility assertion with programmatic errorContext access', async ({ page }, testInfo) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    try {
+      const header = page.getByRole('banner');
+      await expect(header).toHaveAccessibleName('Site header');
+    } catch (error) {
+      // testInfo.errors is populated after a failure within the test body
+      // Each entry in testInfo.errors may have an errorContext field
+      // Type: testInfo.errors[number].errorContext is string | undefined
+      const errorContext = testInfo.errors[0]?.errorContext;
+      if (errorContext) {
+        // Log the aria snapshot context for custom reporting pipelines
+        console.error('[a11y] Failure context (aria snapshot):\n', errorContext);
+      }
+      throw error; // re-throw to mark the test as failed
+    }
+  });
+
+});
+```
+
+**TypeScript types for `errorContext`:**
+
+```typescript
+// testInfoError.errorContext type (Playwright 1.60+):
+import type { TestInfoError } from '@playwright/test';
+
+// TestInfoError has an optional errorContext field:
+// interface TestInfoError {
+//   message?: string;
+//   stack?: string;
+//   value?: string;
+//   errorContext?: string;  // Added in v1.60 — contains aria snapshot for a11y matcher failures
+// }
+
+// In afterEach hook — access all errors and their contexts:
+import { test } from '@playwright/test';
+
+test.afterEach(async ({}, testInfo) => {
+  if (testInfo.status === 'failed') {
+    for (const error of testInfo.errors) {
+      const ctx = (error as TestInfoError).errorContext;
+      if (ctx) {
+        // ctx is the YAML aria snapshot of the failing locator
+        // Useful for: custom Slack notifications, JIRA ticket creation, accessibility audit logs
+        console.log('[a11y failure context]', ctx);
+      }
+    }
+  }
+});
+```
+
+**How `errorContext` differs from the standard error diff output:**
+
+| Output | What it shows | When to use |
+|--------|--------------|-------------|
+| Error message diff | Expected YAML vs. received YAML, line-by-line | Understanding exactly which ARIA property changed |
+| `errorContext` (new in 1.60) | Full aria snapshot of the locator at failure time | Seeing the complete accessible structure, not just the diff |
+| Trace Viewer screenshot | Visual screenshot at failure moment | Correlating ARIA structure with visual layout |
+
+> **Note**: `errorContext` is only populated for Playwright's built-in accessibility matchers. Custom assertions thrown with `throw new Error(...)` or violations reported from `AxeBuilder.analyze()` do not automatically populate this field. For axe violations, continue formatting the violation list into the thrown error message as shown in the fixture patterns above.
+
+---
+
+### cypress-axe v1.7.0 — Cypress 15 Support and Retry Option
+
+`cypress-axe` (npm: `cypress-axe`) is the official axe-core integration for Cypress E2E tests. As of **v1.7.0** (August 2025), it adds peer dependency support for **Cypress 15** and the `retries` option to the `checkA11y` command, which had been available since v1.4.0 but is frequently overlooked.
+
+**Key version milestones:**
+- `v1.4.0`: Added `retries` option to `checkA11y` for handling dynamic content
+- `v1.6.0` (January 2025): Cypress 14 peer dependency
+- `v1.7.0` (August 2025): Cypress 15 peer dependency — current stable
+
+**TypeScript setup for cypress-axe with Cypress 15:**
+
+```typescript
+// cypress/support/commands.ts
+// cypress-axe v1.7.0+ with Cypress 15 — TypeScript configuration
+import 'cypress-axe';
+
+// cypress/e2e/accessibility/homepage.cy.ts
+describe('Homepage accessibility', () => {
+  beforeEach(() => {
+    cy.visit('/');
+    cy.injectAxe();
+  });
+
+  it('has no detectable WCAG 2.2 AA violations', () => {
+    cy.checkA11y(undefined, {
+      runOnly: {
+        type: 'tag',
+        values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'],
+      },
+    });
+  });
+
+  // Retry option: useful for pages with animations, lazy-loaded content,
+  // or skeleton screens that temporarily introduce a11y violations during load
+  it('dashboard has no violations after content loads (with retry)', () => {
+    cy.visit('/dashboard');
+    cy.injectAxe();
+
+    // retries: 3 — re-run the axe scan up to 3 times if violations are found
+    // interval: 500ms — wait 500ms between each retry
+    // Passes as soon as a scan finds 0 violations; fails after all retries are exhausted
+    cy.checkA11y(
+      undefined,
+      {
+        runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] },
+        retries: 3,
+        interval: 500,
+      },
+      (violations) => {
+        // Custom violation reporter — called only when violations persist after all retries
+        cy.task('log', `${violations.length} accessibility violation(s) after retries:`);
+        violations.forEach((v) => {
+          cy.task('log', `[${v.impact}] ${v.id}: ${v.description}`);
+        });
+      },
+    );
+  });
+});
+```
+
+**TypeScript types — `cypress-axe` with `Cypress 15`:**
+
+```typescript
+// cypress/support/e2e.ts — type augmentation for cypress-axe commands
+// cypress-axe v1.7.0 ships its own type definitions; no @types/ package needed.
+import 'cypress-axe';
+
+// The RetryOptions interface added in cypress-axe v1.4.0:
+// interface Options extends axe.RunOptions {
+//   retries?: number;       // How many times to retry if violations are found (default: 0)
+//   interval?: number;      // Milliseconds between retries (default: 1000)
+//   verbose?: boolean;      // Log retry attempts to Cypress console
+// }
+```
+
+**When to use `cypress-axe` vs. `@axe-core/playwright`:** If your project already runs Cypress for E2E, `cypress-axe` v1.7.0 with Cypress 15 is the correct integration — no need to add Playwright only for accessibility scanning. If you are starting a new project or already use Playwright, `@axe-core/playwright` is the preferred path (newer API, TypeScript-first, better fixture composition).
+
+> **Upgrade note for Cypress 14 → 15**: No API changes in `cypress-axe` itself — bumping to `cypress-axe@^1.7.0` and `cypress@^15.0.0` in `package.json` is sufficient. Run your existing accessibility tests to verify no behavioral change.
+
+---
+
+### New Community Gotchas (Iteration 44)
+
+86. **[community] Playwright 1.60 `testInfoError.errorContext` is only populated for Playwright's built-in accessibility matchers — axe violations thrown manually do not populate it**: Teams sometimes expect that any accessibility-related test failure will produce an `errorContext` entry. Only Playwright's own matchers (`toMatchAriaSnapshot`, `toHaveAccessibleName`, `toHaveRole`, `toHaveAccessibleDescription`, `toHaveAccessibleErrorMessage`) trigger the automatic aria snapshot capture. When you throw `new Error(formatViolations(results.violations))` from an `AxeBuilder.analyze()` call, Playwright has no way to know which locator to snapshot — `errorContext` will be `undefined`. WHY: the automatic capture happens inside the Playwright matcher itself, which has access to the locator under test. For axe-core based tests, continue embedding the violation list in the error message string. The two approaches are complementary — `toMatchAriaSnapshot` for structural regression, `AxeBuilder` for rule-based scanning.
+
+87. **[community] cypress-axe `retries` option does NOT solve permanent violations — it is specifically for timing windows where content is mid-render**: The `retries` option in `checkA11y` (cypress-axe v1.4.0+) is designed to handle animated loading states, skeleton screens, and lazy-loaded content that may temporarily violate WCAG (e.g., a skeleton placeholder `<div>` with no accessible name). It retries the axe scan up to N times until the scan finds zero violations. If a real violation exists — e.g., an image with no `alt` attribute — retrying will not fix it; the test will fail after all retries are exhausted. Teams that set `retries: 5` to "make the accessibility test green" are masking violations. WHY: the retry mechanism was introduced because some valid pages have transient states during loading that produce false positives; it is not a flakiness suppressor for real violations.
+
+88. **[community] Playwright `testConfig.failOnFlakyTests` (v1.52+) is safe to enable for accessibility test suites — accessibility tests should not be flaky if written correctly**: Playwright 1.52 added `testConfig.failOnFlakyTests: true`, which marks a test run as failed if any test passed on a retry (indicating flakiness). Teams sometimes hesitate to enable this for accessibility suites because their `toMatchAriaSnapshot` tests retry against dynamic content. The correct fix is to await stable DOM state before taking a snapshot (`page.waitForLoadState('networkidle')`, `page.waitForSelector('[data-testid="content-loaded"]')`) rather than suppressing flakiness detection. An accessibility test that is flaky is almost always testing a race condition, not a genuine accessibility property. WHY: enabling `failOnFlakyTests: true` in CI forces teams to fix the race condition rather than hiding it — this produces more reliable accessibility coverage and exposes animation timing issues that may themselves be accessibility problems (WCAG 2.3.1 Three Flashes, WCAG 2.2.2 Pause, Stop, Hide).
 

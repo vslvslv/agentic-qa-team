@@ -1,6 +1,7 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 57 | score: 100/100 | date: 2026-05-12 -->
-<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: playwright-websocket-route, playwright-indexeddb-auth, jest30-onGenerateMock -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 58 | score: 100/100 | date: 2026-05-12 -->
+<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: playwright-clock-api, playwright-addLocatorHandler, vitest-getSeed-reproducible-ordering -->
+<!-- Iteration 58: Pattern 97 (Playwright v1.45 page.clock — deterministic browser-level time control replacing fake-timer patches); Pattern 98 (Playwright v1.42 page.addLocatorHandler() — automatic overlay/interstitial dismissal to eliminate action-blocking flakiness); Pattern 99 (Vitest 4.0 sequence.shuffle + getSeed() — seeded random ordering with seed capture for reproducible order-dependent flakiness); AP48 (page.clock.install() called after navigation — undefined behavior from out-of-order clock init); Quick Reference additions (iteration 58) -->
 <!-- Iteration 57: Pattern 94 (Playwright v1.48 routeWebSocket — deterministic WebSocket mocking without a real server); Pattern 95 (Playwright v1.51 storageState({ indexedDB: true }) — IndexedDB auth persistence for Firebase-style apps); Pattern 96 (Jest 30 jest.onGenerateMock — centralized auto-mock configuration); AP47 (jest.onGenerateMock silent no-op with __mocks__ folder); Gotcha 48 (WebSocketRoute onMessage stops auto-forwarding) -->
 <!-- Iteration 56: Pattern 92 (Jest 30 retryTimes with waitBeforeRetry + retryImmediately — staged retry for flaky integration tests); Pattern 93 (Jest 30 advanceTimersToNextFrame() — deterministic requestAnimationFrame testing); AP46 (Jest 30 globalsCleanup not enabled — cross-test global state leak); Quick Reference additions (iteration 56) -->
 <!-- Iteration 55: Pattern 90 (Playwright v1.60 tracing.startHar()/stopHar() — HAR recording as first-class tracing API for network flakiness diagnosis); Pattern 91 (Playwright v1.60 toHaveCSS pseudo option — deterministic pseudo-element assertions replacing screenshot snapshots); Gotcha 47 (Playwright v1.60 BrowserContext lifecycle event mirroring — centralized event monitoring for multi-page flakiness); AP45 (Vitest 4.1 FixtureAccessError in suite hooks — accessing test-scoped fixture in beforeAll now throws explicitly); Quick Reference additions (iteration 55) -->
@@ -9604,3 +9605,464 @@ await page.routeWebSocket('wss://chat.example.com/ws', (ws) => {
 | Playwright v1.51 release notes | Official | https://playwright.dev/docs/release-notes#version-151 | `storageState({ indexedDB: true })` — captures IndexedDB for Firebase-style auth |
 | Playwright Storage State guide | Official | https://playwright.dev/docs/auth#reuse-signed-in-state | Full auth reuse pattern; `storageState` with `indexedDB: true` for IndexedDB-based auth |
 | Jest `onGenerateMock` API | Official | https://jestjs.io/docs/jest-object#jestongenratemockcb | Centralize auto-mock defaults; callback fires for `jest.mock()` without a factory only |
+
+---
+
+## Pattern 97 — Playwright `page.clock` for Deterministic Browser-Level Time Control  [official]
+
+Jest/Vitest fake timers patch the Node.js runtime but do not touch the browser's `Date`, `setTimeout`, or `requestAnimationFrame` inside a real Chromium/Firefox/WebKit process. For Playwright E2E tests that test time-sensitive UI (session expiry banners, countdown timers, auto-logout dialogs, "posted X minutes ago" labels), the only reliable fix is Playwright's built-in Clock API — introduced in v1.45 — which installs a fake clock directly into the browser context.
+
+**Key methods:**
+
+| Method | Effect |
+|--------|--------|
+| `page.clock.install({ time })` | Replaces `Date`, `setTimeout`, `setInterval`, `requestAnimationFrame`, `performance` with fakes; time frozen at `time` |
+| `page.clock.setFixedTime(time)` | Makes `Date.now()` return a fixed value; real timers continue firing at their original intervals |
+| `page.clock.pauseAt(time)` | Jumps to `time` and freezes; no timers fire until `resume()` |
+| `page.clock.fastForward(duration)` | Jumps time forward; each timer fires at most once (like closing and reopening a laptop) |
+| `page.clock.runFor(duration)` | Advances time and fires every timer callback that falls in the window |
+| `page.clock.resume()` | Resumes real-time flow after `pauseAt()` |
+
+**Critical caveat:** `install()` MUST be called before any other clock calls, and — for maximum reliability — BEFORE `page.goto()`. Calling `install()` after navigation means some timers may already be running against the real clock.
+
+```typescript
+// BAD: testing a session-expiry banner by sleeping
+import { test, expect } from '@playwright/test';
+
+test('shows expiry banner after 30-minute inactivity', async ({ page }) => {
+  await page.goto('/app');
+  await page.waitForTimeout(30 * 60 * 1000); // 30-minute real sleep — cannot run in CI
+  await expect(page.getByTestId('session-expiry-banner')).toBeVisible();
+});
+```
+
+```typescript
+// GOOD: freeze the clock, fast-forward to trigger the banner — instant in CI
+import { test, expect } from '@playwright/test';
+
+test('shows session-expiry banner after 30-minute inactivity', async ({ page }) => {
+  // Install BEFORE navigation — ensures the page loads with the fake clock already active
+  await page.clock.install({ time: new Date('2026-06-15T09:00:00.000Z') });
+
+  await page.goto('/app');
+
+  // Fast-forward 31 minutes — timers fire at most once each (correct for session timeout)
+  await page.clock.fastForward('31:00');
+
+  await expect(page.getByTestId('session-expiry-banner')).toBeVisible();
+  await expect(page.getByTestId('session-expiry-banner')).toContainText('Your session has expired');
+});
+```
+
+```typescript
+// GOOD: testing a countdown timer that updates every second
+import { test, expect } from '@playwright/test';
+
+test('countdown timer decrements correctly', async ({ page }) => {
+  // pauseAt — freezes time; use runFor to step through intervals
+  await page.clock.install({ time: new Date('2026-06-15T12:00:00.000Z') });
+  await page.goto('/offer?expires=2026-06-15T12:05:00.000Z');
+
+  // Initial state: 5 minutes remaining
+  await expect(page.getByTestId('countdown')).toHaveText('05:00');
+
+  // Advance 1 minute — fires the setInterval callbacks that update the display
+  await page.clock.runFor('1:00');
+  await expect(page.getByTestId('countdown')).toHaveText('04:00');
+
+  // Advance to expiry
+  await page.clock.runFor('4:00');
+  await expect(page.getByTestId('countdown')).toHaveText('00:00');
+  await expect(page.getByTestId('offer-expired-message')).toBeVisible();
+});
+```
+
+```typescript
+// GOOD: setFixedTime for date-label assertions — simpler when you only need Date.now()
+// Use when: the page only reads the date (labels like "posted 3 hours ago"),
+// and you don't need to fire timer callbacks
+import { test, expect } from '@playwright/test';
+
+test('"posted X ago" label uses current time correctly', async ({ page }) => {
+  // setFixedTime is lighter than install() — does not replace setTimeout/setInterval
+  await page.clock.setFixedTime(new Date('2026-06-15T15:00:00.000Z'));
+
+  await page.goto('/posts/123'); // post was created at 2026-06-15T12:00:00Z (3 hrs ago)
+
+  await expect(page.getByTestId('post-timestamp')).toHaveText('3 hours ago');
+});
+```
+
+```typescript
+// GOOD: testing date-boundary logic (midnight rollover) with pauseAt + resume
+import { test, expect } from '@playwright/test';
+
+test('dashboard shows "Today" label for entries posted today', async ({ page }) => {
+  // Jump to 23:59 on June 14 and pause
+  await page.clock.install({ time: new Date('2026-06-14T23:59:50.000Z') });
+  await page.goto('/dashboard');
+  await expect(page.getByTestId('entry-date-label')).toHaveText('Today');
+
+  // Fast-forward 15 seconds — crosses midnight, date label should change to "Yesterday"
+  await page.clock.fastForward(15_000);
+  await expect(page.getByTestId('entry-date-label')).toHaveText('Yesterday');
+});
+```
+
+**Scope — clock is context-wide:**
+
+The Playwright clock installs into the entire `BrowserContext`. All pages and iframes created from that context share the same fake clock. This is correct for multi-page tests (e.g., a popup that reads the same `Date.now()` as the opener) but means you cannot set different clocks per page within a single context.
+
+**`fastForward` vs `runFor` — which to use:**
+
+| Method | Timer behavior | Use when |
+|--------|---------------|----------|
+| `fastForward(d)` | Each timer fires at most once, even if it would have fired many times | Testing expiry / timeout — you just want it to trigger |
+| `runFor(d)` | All timers fire as many times as they would in real time | Testing cumulative effects (counters, animations, polling loops) |
+
+---
+
+## Pattern 98 — Playwright `page.addLocatorHandler()` for Automatic Overlay Dismissal  [official]
+
+Unexpected overlays — newsletter sign-up modals, cookie consent banners, chat widget popups, permission prompts — appear non-deterministically during Playwright E2E tests. They block clicks and fill actions with an `Element is not visible` or `Element is intercepted by another element` error. This is a classic source of E2E flakiness: the overlay appears on some runs (depending on server-side feature flags, timing, or first-visit cookies) and not others.
+
+`page.addLocatorHandler()` (introduced in Playwright v1.42, enhanced in v1.44) registers an async callback that fires automatically whenever the specified locator becomes visible. Playwright pauses the in-flight action, runs the handler to dismiss the overlay, then retries the original action — all transparently.
+
+```typescript
+// BAD: manually check for and dismiss a cookie banner before every action
+// Fragile — the banner may appear mid-test, not just at the start
+import { test, expect } from '@playwright/test';
+
+test('user can complete checkout', async ({ page }) => {
+  await page.goto('/shop');
+
+  // Manually dismiss banner — only works if banner appears BEFORE this line
+  const cookieBanner = page.getByTestId('cookie-consent');
+  if (await cookieBanner.isVisible()) {
+    await page.getByRole('button', { name: 'Accept' }).click();
+  }
+
+  // If the banner appears AFTER this point, the next click will fail with
+  // "Element is intercepted by another element: Cookie consent overlay"
+  await page.getByRole('button', { name: 'Add to cart' }).click();
+  await expect(page.getByTestId('cart-count')).toHaveText('1');
+});
+```
+
+```typescript
+// GOOD: addLocatorHandler — registers a persistent handler that fires whenever the
+// overlay appears, regardless of when during the test it shows up
+import { test, expect } from '@playwright/test';
+import { Page } from '@playwright/test';
+
+// Reusable helper — register once per page, works for entire test
+async function dismissCookieConsentIfPresent(page: Page): Promise<void> {
+  await page.addLocatorHandler(
+    page.getByTestId('cookie-consent'),
+    async () => {
+      await page.getByRole('button', { name: 'Accept' }).click();
+      // After clicking, Playwright waits for the overlay to disappear
+      // (noWaitAfter: true skips this wait if the overlay has no exit animation)
+    },
+    { times: 1 } // only dismiss once per test — prevents infinite loops if the banner
+                 // re-renders due to a bug
+  );
+}
+
+test('user can complete checkout', async ({ page }) => {
+  await dismissCookieConsentIfPresent(page);
+
+  await page.goto('/shop');
+
+  // Even if the banner appears AFTER this goto, the handler fires before
+  // the next action is attempted, dismisses it, and retries automatically
+  await page.getByRole('button', { name: 'Add to cart' }).click();
+  await expect(page.getByTestId('cart-count')).toHaveText('1');
+  await page.getByRole('button', { name: 'Checkout' }).click();
+  await expect(page.getByTestId('order-confirmation')).toBeVisible();
+});
+```
+
+```typescript
+// GOOD: using addLocatorHandler in a base fixture for cross-suite overlay handling
+// playwright.config.ts defines a base fixture; all tests extending it get auto-handling
+import { test as base, expect, Page } from '@playwright/test';
+
+type Fixtures = {
+  autoDismissOverlays: void;
+};
+
+export const test = base.extend<Fixtures>({
+  autoDismissOverlays: [
+    async ({ page }, use) => {
+      // Cookie consent
+      await page.addLocatorHandler(
+        page.getByTestId('cookie-consent'),
+        async () => {
+          await page.getByRole('button', { name: /accept|got it/i }).click();
+        },
+        { times: 1 }
+      );
+
+      // Newsletter signup modal
+      await page.addLocatorHandler(
+        page.getByRole('dialog', { name: /newsletter/i }),
+        async () => {
+          await page.getByRole('button', { name: /close|no thanks/i }).click();
+        },
+        { times: 1 }
+      );
+
+      await use(); // run the test
+      // Handlers are automatically removed when the page/context closes
+    },
+    { auto: true }, // auto-use: every test in this suite gets it without opting in
+  ],
+});
+
+// Usage: import { test, expect } from './fixtures';
+// All tests automatically dismiss cookie consent and newsletter modals
+test('product page loads', async ({ page }) => {
+  await page.goto('/products/123');
+  // No explicit overlay handling needed — autoDismissOverlays handles it
+  await expect(page.getByTestId('product-title')).toBeVisible();
+});
+```
+
+**Options reference:**
+
+| Option | Type | Default | Meaning |
+|--------|------|---------|---------|
+| `times` | `number` | unlimited | Max invocations before handler is auto-removed |
+| `noWaitAfter` | `boolean` | `false` | Skip waiting for the overlay to hide after the handler returns |
+
+**Gotchas:**
+
+- Handler execution time counts against the action timeout of the in-flight action. If your overlay dismissal is slow (animated close), increase the action timeout or set `noWaitAfter: true` if the animation is cosmetic.
+- Only one handler fires at a time. If two overlays appear simultaneously, handlers queue and fire in registration order.
+- Use `times: 1` for overlays that should appear once per session. Without a limit, a broken overlay that keeps re-rendering will cause an infinite handler loop. [community]
+- Explicitly handle overlays that are ALWAYS present (e.g., a mandatory cookie banner) rather than using a handler — handlers are for overlays that appear non-deterministically. Using a handler for a guaranteed element hides errors if the element never appears.
+
+---
+
+## Pattern 99 — Vitest 4.0 `sequence.shuffle` + `getSeed()` for Reproducible Order-Dependent Flakiness  [official]
+
+Order-dependent flakiness occurs when a test passes only if certain other tests ran (or did not run) before it, usually because of shared module state, in-memory singletons, or database rows left from a previous test. It is the hardest flakiness family to diagnose because the failure pattern changes on every run.
+
+The standard recommendation is to run the suite in randomized order (`sequence.shuffle`) so that order-dependencies surface early. Vitest 4.0 adds `getSeed()` — a programmatic API that returns the seed value used for the current randomized run. Capturing this seed turns a non-reproducible random failure into a fully reproducible one: re-run with `--sequence.seed=<captured>` to get the identical order.
+
+```typescript
+// vitest.config.ts — enable shuffled order with a deterministic fallback seed in CI
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    sequence: {
+      shuffle: true,          // randomize test file AND test-within-file order
+      seed: process.env.CI
+        ? undefined           // CI: fresh random seed each run — surfaces new order-deps
+        : 1234,               // local: fixed seed for a stable development experience
+    },
+  },
+});
+```
+
+```typescript
+// vitest.setup.ts — capture and print the seed at run start so you can reproduce failures
+// This runs once before any test file
+import { getSeed } from 'vitest';
+
+// getSeed() returns undefined if sequence.shuffle is false or seed was not set
+const seed = getSeed();
+if (seed !== undefined) {
+  // Output appears at the top of the run log — copy this if the run fails
+  console.log(`[vitest] running in random order with seed: ${seed}`);
+  console.log(`[vitest] to reproduce this order: vitest --sequence.seed=${seed}`);
+}
+```
+
+```typescript
+// Alternative: capture seed in a custom reporter for structured CI log output
+// reporters/seed-reporter.ts
+import type { Reporter, TestContext } from 'vitest';
+import { getSeed } from 'vitest';
+
+export default class SeedReporter implements Reporter {
+  onInit(): void {
+    const seed = getSeed();
+    if (seed !== undefined) {
+      // Write to a file so CI scripts can attach it to the failure report
+      const fs = require('fs');
+      fs.writeFileSync(
+        'test-results/seed.txt',
+        `sequence.seed=${seed}\n`,
+        'utf-8'
+      );
+    }
+  }
+}
+```
+
+```typescript
+// vitest.config.ts with custom seed reporter alongside standard reporters
+import { defineConfig } from 'vitest/config';
+import SeedReporter from './reporters/seed-reporter';
+
+export default defineConfig({
+  test: {
+    sequence: { shuffle: true },
+    reporters: [
+      'default',
+      new SeedReporter(),
+    ],
+  },
+});
+```
+
+**Workflow for diagnosing order-dependent flakiness:**
+
+```
+1. Enable sequence.shuffle: true in vitest.config.ts
+2. Run the suite in CI with --reporter=default (shows seed in console via setup log)
+3. When a test fails that passes in isolation:
+   a. Copy the seed from the run log
+   b. Locally run: vitest --sequence.seed=<captured-seed>
+   c. Confirm the same failure reproduces
+4. Narrow down the culprit:
+   a. Run: vitest --sequence.seed=<seed> <failing-test-file>.test.ts
+   b. Use it.only on the failing test — if it NOW passes, the failure is order-dependent
+5. Find the polluter:
+   a. Run: vitest --sequence.seed=<seed> --reporter=verbose to see execution order
+   b. Bisect: split tests at the midpoint; run first half before the failing test;
+      repeat until you find the first test that causes the failure
+6. Fix: add beforeEach reset for the shared state the polluter modifies
+```
+
+```typescript
+// Example: order-dependent failure and fix
+// BAD: module-level singleton leaks between tests in random order
+// UserCache.ts
+export class UserCache {
+  private static cache = new Map<string, User>(); // shared across all test files!
+
+  static get(id: string): User | undefined {
+    return this.cache.get(id);
+  }
+
+  static set(id: string, user: User): void {
+    this.cache.set(id, user);
+  }
+}
+
+// user-service.test.ts — passes when run alone, fails when another test
+// populates the cache beforehand
+it('returns undefined for unknown user', () => {
+  // If another test called UserCache.set('unknown-id', ...) before this one,
+  // this assertion fails — classic order-dependent failure
+  expect(UserCache.get('unknown-id')).toBeUndefined();
+});
+
+// GOOD fix: clear the singleton in beforeEach regardless of order
+beforeEach(() => {
+  // Reset the class-level Map so no test can pollute another
+  // UserCache.clearAll() if public API exists, or:
+  (UserCache as unknown as { cache: Map<string, User> }).cache.clear();
+});
+```
+
+**`getSeed()` availability:**
+
+`getSeed()` is exported from the `vitest` package (not from `vitest/node` or the `vi` object). It returns `undefined` when `sequence.shuffle` is disabled or when `seed` was not set — always guard with a null check before logging.
+
+---
+
+## Anti-Patterns (iteration 58)
+
+### AP48 — `page.clock.install()` Called After `page.goto()`: Undefined Clock Behavior  [official]
+
+**What:** Calling `page.clock.install()` after `page.goto()` instead of before it.
+
+**Why harmful:** When a page navigates, the browser immediately begins executing JavaScript — including timers and `Date` reads that happen during the load phase (e.g., a session token expiry check on `DOMContentLoaded`, a countdown timer initialized in module scope). If `install()` is called after `goto()`, those early timers have already started against the real system clock. The fake clock only takes over for timers created AFTER `install()`. The result is a partially-fake clock state: some timers run against real time, others against fake time. This produces subtle, hard-to-reproduce flakiness where tests pass locally (fast CI, no early-timer race) but fail in slow environments.
+
+```typescript
+// BAD: install() called after goto() — early page timers already fired against real clock
+import { test, expect } from '@playwright/test';
+
+test('session expiry banner appears after 30 minutes', async ({ page }) => {
+  await page.goto('/app'); // ← page loads; JS runs; session timer starts on real clock
+
+  // TOO LATE: the session timer was already created using real Date.now()
+  await page.clock.install({ time: new Date('2026-06-15T09:00:00.000Z') });
+  await page.clock.fastForward('31:00');
+
+  // May pass or fail depending on how long goto() took and when the timer was created
+  await expect(page.getByTestId('session-expiry-banner')).toBeVisible();
+});
+```
+
+```typescript
+// GOOD: install() called before goto() — fake clock is active for ALL page JavaScript
+import { test, expect } from '@playwright/test';
+
+test('session expiry banner appears after 30 minutes', async ({ page }) => {
+  // Install FIRST — clock is fake from the very first frame the page renders
+  await page.clock.install({ time: new Date('2026-06-15T09:00:00.000Z') });
+
+  await page.goto('/app'); // page loads with fake clock already active — deterministic
+
+  await page.clock.fastForward('31:00');
+  await expect(page.getByTestId('session-expiry-banner')).toBeVisible();
+});
+```
+
+```typescript
+// GOOD: setFixedTime() is safe to call at any time (does not affect timer scheduling)
+// Use setFixedTime when you only need to control Date.now() for label rendering,
+// not for triggering setTimeout/setInterval callbacks
+import { test, expect } from '@playwright/test';
+
+test('"posted X ago" label shows correct relative time', async ({ page }) => {
+  await page.goto('/posts/abc');
+  // setFixedTime is safe post-navigation — it patches Date.now() only, no timer state
+  await page.clock.setFixedTime(new Date('2026-06-15T15:00:00.000Z'));
+  await page.reload(); // reload to let the page re-read Date.now() with the fixed time
+  await expect(page.getByTestId('post-timestamp')).toHaveText('3 hours ago');
+});
+```
+
+**Summary:**
+
+| Method | Safe after `goto()`? | Notes |
+|--------|---------------------|-------|
+| `install()` | No — undefined behavior for timers started before install | Must call before navigation |
+| `setFixedTime()` | Yes | Only patches `Date.now()` — no timer scheduling state affected |
+| `pauseAt()` | Only after `install()` | `install()` must precede `pauseAt()` regardless of navigation order |
+| `fastForward()` | Only after `install()` | Same as above |
+| `runFor()` | Only after `install()` | Same as above |
+
+> **Diagnostic tip:** If a clock-based test passes locally but fails in CI with "element not found" on a time-dependent locator, check whether `install()` is called before or after `goto()`. CI machines often render pages faster than local dev, meaning early timers fire before `install()` more reliably on CI — making the ordering bug MORE visible there, not less.
+
+---
+
+## Quick Reference additions (iteration 58)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| E2E test for timer/countdown/session expiry is flaky — passes locally, fails in CI | Timer started against real clock before `page.clock.install()` was called | Pattern 97 (call `page.clock.install()` BEFORE `page.goto()`) | AP48 (`page.clock.install()` after navigation — partial fake clock, non-deterministic timer state) |
+| E2E test fails with "Element is intercepted by another element" only on some runs | Non-deterministic overlay (cookie banner, chat widget, sign-up modal) appearing mid-test | Pattern 98 (`page.addLocatorHandler()` — registers auto-dismiss callback that fires on every appearance) | Manually checking `isVisible()` at test start — misses overlays that appear mid-test |
+| Order-dependent unit test failure visible only in CI, can't reproduce locally | Tests run in deterministic alphabetical order locally; CI randomizes order and hits shared state pollution | Pattern 99 (`sequence.shuffle: true` + `getSeed()` capture — reproduce exact failing order with `--sequence.seed=<N>`) | Running with fixed order locally (default) — order-dependencies are invisible until CI randomizes |
+| `page.clock` fast-forward does not trigger expected timer callback | `runFor()` used instead of `fastForward()` or vice versa — wrong semantic for the use case | Pattern 97 (use `fastForward` for expiry/once-only triggers; `runFor` for cumulative interval effects) | Mixing `fastForward` and `runFor` without understanding the "fires at most once" vs "fires every interval" distinction |
+
+---
+
+## Key Resources (iteration 58 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright Clock API guide | Official | https://playwright.dev/docs/clock | `page.clock.install/pauseAt/fastForward/runFor/setFixedTime` — browser-level fake clock for E2E time tests |
+| Playwright `Clock` class reference | Official | https://playwright.dev/docs/api/class-clock | Full API reference for all Clock methods and parameters |
+| Playwright v1.45 release notes | Official | https://playwright.dev/docs/release-notes#version-145 | Clock API introduced (v1.45) |
+| Playwright `page.addLocatorHandler()` | Official | https://playwright.dev/docs/api/class-page#page-add-locator-handler | Auto-dismiss overlays that block actions; `times` and `noWaitAfter` options |
+| Playwright v1.42 release notes | Official | https://playwright.dev/docs/release-notes#version-142 | `addLocatorHandler` introduced (v1.42) |
+| Vitest `getSeed()` API | Official | https://vitest.dev/api/#getseed | Returns current run's shuffle seed — use to reproduce order-dependent CI failures |
+| Vitest `sequence` config | Official | https://vitest.dev/config/sequence | `sequence.shuffle`, `sequence.seed`, `sequence.concurrent`, `sequence.hooks` |

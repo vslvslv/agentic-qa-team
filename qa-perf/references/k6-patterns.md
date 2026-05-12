@@ -1,8 +1,8 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.3.0, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/, /javascript-api/k6-experimental/fs/, /javascript-api/k6-experimental/streams/, /javascript-api/k6-websockets/, /using-k6/scenarios/concepts/open-vs-closed/, release-notes/v1.7.0, release-notes/v1.7.1 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.3.0, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/, /javascript-api/k6-experimental/fs/, /javascript-api/k6-experimental/streams/, /javascript-api/k6-websockets/, /using-k6/scenarios/concepts/open-vs-closed/, release-notes/v1.7.0, release-notes/v1.7.1, /using-k6/secret-source/file/, /using-k6/secret-source/url/ -->
 
-> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Iteration 32 adds: page.waitForResponse() pattern (v1.3+), locator.contentFrame() for iframe navigation chains, locator.boundingBox() for layout testing, getBy* locators on frameLocator scope, community gotchas 57–59 (waitForResponse race condition, boundingBox null on hidden elements, locator.contentFrame() vs frameLocator() disambiguation). Iteration 33 adds: locator.locator() hierarchical scoping pattern (v1.3+), k6chaijs version updated to 4.5.0.1, K6_CLOUD_STACK env var corrected to K6_CLOUD_STACK_ID throughout cloud stack section, community gotcha #60 (k6 cloud login --stack persists default stack in credentials file — subsequent commands pick it up but K6_CLOUD_STACK_ID or --stack flag overrides it). Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Iteration 32 adds: page.waitForResponse() pattern (v1.3+), locator.contentFrame() for iframe navigation chains, locator.boundingBox() for layout testing, getBy* locators on frameLocator scope, community gotchas 57–59 (waitForResponse race condition, boundingBox null on hidden elements, locator.contentFrame() vs frameLocator() disambiguation). Iteration 33 adds: locator.locator() hierarchical scoping pattern (v1.3+), k6chaijs version updated to 4.5.0.1, K6_CLOUD_STACK env var corrected to K6_CLOUD_STACK_ID throughout cloud stack section, community gotcha #60 (k6 cloud login --stack persists default stack in credentials file — subsequent commands pick it up but K6_CLOUD_STACK_ID or --stack flag overrides it). Iteration 34 adds: `file` secret source with key=value file format and Docker volume-mount pattern, `url` secret source advanced options table (urlTemplate, responsePath, headers.*, timeout, requestsPerMinuteLimit, requestsBurst, maxRetries, retryBackoff), multi-source file+url combination pattern, community gotcha #61 (url source URL-encodes {key} — Vault path slashes become %2F and return 404; fix by flattening key names or using a proxy). Re-run `/qa-refine k6` to refresh.
 
 > **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `--summary-mode=legacy`, `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section. **New in v2.0.0 final:** HTTP API server disabled by default, cloud secrets auto-injected in `--local-execution`, `k6 cloud project list` command, extension tab-completion.
 
@@ -9702,6 +9702,198 @@ for (let i = 0; i < cardCount; i++) {
 > includes CSS `transform` effects but NOT `clip-path`. An element clipped by `clip-path: inset(100%)`
 > still reports its full un-clipped bounding box. For true visibility testing, combine
 > `boundingBox()` with `locator.isVisible()` or `locator.isInViewport()`.
+
+---
+
+## Secret Sources — `file` and `url` Advanced Configuration
+
+### `file` Secret Source — Key=Value File Format
+
+The `file` source reads secrets from a plain-text `key=value` file on disk. Each line holds one
+secret. Secrets are loaded at startup and cached for the test duration — not re-read on each VU
+iteration.
+
+**secrets.file** (plain text, one secret per line):
+```
+api_key=s3cr3t-prod-key-abc123
+db_password=hunter2
+jwt_secret=my-jwt-signing-secret
+stripe_key=sk_live_xxxxxxxxxxxx
+```
+
+**Running with the file source:**
+```bash
+# Local run
+k6 run --secret-source=file=secrets.file script.js
+
+# Docker: mount the directory containing both the script and the secrets file
+docker run -it --rm \
+  -v /path/to/scripts:/scripts \
+  grafana/k6 run \
+  --secret-source=file=/scripts/secrets.file \
+  /scripts/script.js
+
+# Environment variable form (equivalent)
+export K6_SECRET_SOURCE="file=secrets.file"
+k6 run script.js
+```
+
+**Accessing file-sourced secrets in a script:**
+```javascript
+import secrets from "k6/secrets";
+import http from "k6/http";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    api_load: { executor: "constant-vus", vus: 20, duration: "2m" },
+  },
+  thresholds: { http_req_duration: ["p(95)<500"], http_req_failed: ["rate<0.01"] },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default async function () {
+  // Fetched from the file source at runtime — never appears in k6 logs
+  const apiKey   = await secrets.get("api_key");
+  const jwtSecret = await secrets.get("jwt_secret");
+
+  const res = http.post(
+    `${BASE}/api/auth/token`,
+    JSON.stringify({ client_id: "k6", client_secret: jwtSecret }),
+    {
+      headers: {
+        "X-API-Key":      apiKey,
+        "Content-Type":   "application/json",
+      },
+    }
+  );
+  check(res, { "token 200": (r) => r.status === 200 });
+}
+```
+
+> **[community]:** The `file` source resolves the path **relative to the working directory where
+> `k6 run` is invoked**, not relative to the script file. In Docker, this typically means the
+> container's root `/` unless you set `-w /scripts`. Mount the secrets file alongside the script
+> and use an absolute container path (e.g., `/scripts/secrets.file`) to avoid "file not found"
+> errors that are cryptic because k6 surfaces them as a fatal startup error with no path hint.
+
+### `url` Secret Source — Advanced Options
+
+The `url` source fetches secrets from an HTTP endpoint using a `{key}` placeholder URL template.
+It supports per-source configuration as comma-separated key=value pairs after the source type.
+
+**Full option reference:**
+
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `urlTemplate` | (required) | URL with `{key}` placeholder replaced per `secrets.get()` call |
+| `method` | `GET` | HTTP verb (`GET` or `POST`) |
+| `headers.<name>` | — | Custom request header; repeat for multiple headers |
+| `responsePath` | — | Dot-delimited JSON path to extract the secret value (e.g., `data.value`) |
+| `timeout` | `30s` | Per-request deadline |
+| `requestsPerMinuteLimit` | `300` | Rate cap for all `secrets.get()` calls against this source |
+| `requestsBurst` | `10` | Token-bucket burst allowance above the per-minute limit |
+| `maxRetries` | `3` | Retry count on 5xx / network errors |
+| `retryBackoff` | `1s` | Fixed delay between retries |
+
+**Syntax:**
+```
+--secret-source=url=<option>=<value>,<option>=<value>,...
+```
+
+**Examples:**
+
+```bash
+# Basic: Vault KV v2 (flat response: {"value": "s3cr3t"})
+k6 run \
+  --secret-source="url=urlTemplate=https://vault.internal/v1/secret/k6/{key},\
+headers.X-Vault-Token=${VAULT_TOKEN},\
+responsePath=data.data.value" \
+  script.js
+
+# AWS Secrets Manager proxy (nested JSON, POST, custom auth header)
+k6 run \
+  --secret-source="url=urlTemplate=https://secrets-proxy.internal/{key},\
+method=POST,\
+headers.Authorization=Bearer ${PROXY_TOKEN},\
+headers.Content-Type=application/json,\
+responsePath=secret.value,\
+timeout=10s,\
+maxRetries=5,\
+retryBackoff=2s" \
+  script.js
+
+# Rate-limited source (avoid hammering Vault with 500 VUs × iterations)
+k6 run \
+  --secret-source="url=urlTemplate=https://vault.internal/v1/kv/{key},\
+headers.X-Vault-Token=${VAULT_TOKEN},\
+requestsPerMinuteLimit=60,\
+requestsBurst=5" \
+  script.js
+
+# Via K6_SECRET_SOURCE (same options, space-separated within quotes)
+export K6_SECRET_SOURCE="url=urlTemplate=https://vault.internal/v1/secret/k6/{key},headers.X-Vault-Token=${VAULT_TOKEN},responsePath=data.data.value"
+k6 run script.js
+```
+
+**Multi-source with named file + url sources:**
+```bash
+# Combine file source (fast, no network) and url source (dynamic/rotated secrets)
+k6 run \
+  --secret-source=file=name=static,./static-secrets.file \
+  --secret-source="url=name=dynamic,urlTemplate=https://vault.internal/v1/kv/{key},headers.X-Vault-Token=${VAULT_TOKEN}" \
+  script.js
+```
+
+```javascript
+// Access each named source explicitly in your script
+import secrets from "k6/secrets";
+
+export default async function () {
+  const staticKey  = await secrets.source("static").get("api_key");     // from file
+  const rotatedKey = await secrets.source("dynamic").get("db_password"); // from Vault
+  // … use both …
+}
+```
+
+> **[community]:** The `url` source fetches each secret **once per VU per `secrets.get()` call**,
+> not once globally. At 500 VUs × 10 iterations each, a single `secrets.get("api_key")` call
+> generates 5,000 HTTP requests to your secret backend. Use `requestsPerMinuteLimit` to avoid
+> triggering Vault rate-limits or AWS Secrets Manager throttling. Alternatively, call
+> `secrets.get()` in the `setup()` function (or store the result in a module-level `let`) and
+> pass the value to VUs via `exec.test.abort()` for short tests, or via `SharedArray` for read-only
+> data — noting that `secrets.get()` inside `SharedArray` init runs in the init context and must
+> be called with `await` from an async wrapper.
+
+---
+
+### 61. `url` secret source `{key}` template is URL-encoded — keys with `/` or `#` break Vault paths  [community]
+
+When k6 substitutes `secrets.get("path/to/key")` into `urlTemplate`, it **URL-encodes** the key.
+`path/to/key` becomes `path%2Fto%2Fkey`. For Vault KV v2 where the secret path IS the URL path
+segment (e.g., `/v1/secret/data/path/to/key`), this encoding breaks routing and returns 404.
+
+**Wrong:**
+```bash
+# urlTemplate with slash-containing keys silently URL-encodes them
+--secret-source="url=urlTemplate=https://vault/v1/secret/data/{key}"
+# secrets.get("db/password") → GET /v1/secret/data/db%2Fpassword → 404
+```
+
+**Fix — use a thin Vault proxy or sidecar that decodes the key and re-routes to the correct path:**
+```bash
+# Vault proxy normalises the path before forwarding
+--secret-source="url=urlTemplate=https://vault-proxy.internal/secrets/{key},\
+headers.X-Vault-Token=${VAULT_TOKEN}"
+# proxy receives /secrets/db%2Fpassword → decodes → GET /v1/secret/data/db/password
+```
+
+**Or flatten your Vault key names to avoid slashes:**
+```bash
+# Flat key names: db_password instead of db/password
+secrets.get("db_password")   # → GET /v1/secret/data/db_password → 200
+```
 
 ---
 

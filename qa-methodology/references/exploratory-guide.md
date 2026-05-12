@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 47 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + owasp-agentic-2026 + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 48 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + owasp-agentic-2026 + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -38,6 +38,7 @@
      - Iter 45: Playwright v1.60 additions not yet covered — tracing.startHar()/stopHar() as first-class HAR tracing API with await using; locator.drop() for upload-zone and DnD exploration; getByRole() description option for accessible-description matching; test.abort() for unrecoverable-state detection in session harnesses; browser.bind() + playwright-cli Dashboard for multi-client session sharing; TypeScript HAR-oracle harness; community lessons #123-125; new anti-pattern (HAR network capture ignored during API exploration sessions)
      - Iter 46: Playwright v1.57-v1.58 additions not yet covered — locator.description() getter for reading back describe() labels; Service Worker network routing and console interception via BrowserContext (Chromium); testConfig.webServer.wait regex for dynamic-port readiness; steps option for pointer actions (locator.click/dragTo); Speedboard Timeline chart in merged HTML reports (v1.58); OWASP Top 10 for Agentic Applications 2026 as charter framework for agentic-AI exploration; TypeScript agentic-session oracle harness; community lessons #126-128; new anti-pattern (exploring multi-agent pipelines without agentic OWASP charter)
      - Iter 47: Playwright v1.48-v1.52 tooling additions not yet covered — page.routeWebSocket()/WebSocketRoute API as framework-level WS interception oracle (v1.48); page.requestGC() + WeakRef pattern for memory-leak exploration (v1.48); storageState({ indexedDB: true }) for auth-state exploration in Firebase/IndexedDB apps (v1.51); toContainClass() assertion for CSS-state oracles during UI exploration (v1.52); failOnFlakyTests guard for session harness reliability (v1.52); TypeScript WebSocketRouteHarness; community lessons #129-131; new anti-pattern (replacing page.routeWebSocket() with a hand-rolled proxy for WS exploration)
+     - Iter 48: Playwright v1.50-v1.56 tooling additions not yet covered — test.step() timeout + test.step.skip() for bounded step execution in session harnesses (v1.50); toHaveAccessibleErrorMessage() as form-error oracle (v1.50); locator.filter({ visible: true }) for disambiguation in dense UIs (v1.51); partitionKey cookie support + --user-data-dir for persistent exploratory sessions (v1.54); testStepInfo.titlePath for structured session step labelling (v1.55); page.consoleMessages() / page.pageErrors() / page.requests() as in-session diagnostic oracles (v1.56); TypeScript StepBoundedSessionHarness and DiagnosticSnapshotHarness; community lessons #132-134; new anti-pattern (polling page.on() event handlers instead of page.consoleMessages() for post-hoc session analysis)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -10533,3 +10534,536 @@ The proxy approach is still valid for one case the Playwright API does not cover
 130. **[community] The `storageState({ indexedDB: true })` addition in v1.51 changed the economics of multi-role exploratory testing for Firebase-backed applications: auth fixture creation dropped from a per-session cost to a one-time-per-sprint cost.** Before v1.51, a team running exploratory sessions across three user roles (admin, viewer, content-editor) on a Firebase-authenticated app had to begin each session with a manual login sequence (navigate to /login, enter credentials, wait for Firebase SDK to exchange the auth token, wait for the app to redirect). This took 60–90 seconds per session and was a source of session-start friction that caused testers to consolidate roles ("I'll just stay as admin for this session and test viewer behavior by eye"). After v1.51, the team captured three `storageState` files (one per role) at sprint start and reused them for the entire sprint. Session startup dropped to under 5 seconds per context, and role-switching during a session became a routine operation — spawn a new context with the target role's storageState, navigate to the URL under exploration. The role-consolidation anti-pattern (exploring multi-role features from a single role) disappeared from their session sheets within two sprints of the migration.
 
 131. **[community] `failOnFlakyTests` exposed a category of session harness quality problem that teams had previously attributed to "test environment instability": deterministic but order-dependent harness assertions that passed when the harness ran in a specific internal sequence and failed otherwise.** Before v1.52, a flaky session harness would be retried, pass on retry, and produce a session debrief artifact. The tester would note "session harness needed 1 retry — environment issue" and continue. With `failOnFlakyTests: true`, the retry-and-pass case became a hard failure requiring investigation. Teams that investigated their newly-failing flaky harnesses found that the root cause was almost never the test environment — it was the harness itself: race conditions in `page.waitForSelector()` calls that relied on implicit timing, assertions placed before the event that triggered the state change, or shared state between session steps that made step order non-interchangeable. Fixing these produced harnesses that ran reliably without retries. The side effect: session debrief artifacts from deterministic harnesses were trusted as accurate evidence, while artifacts from harnesses that had silently needed retries had been subtly unreliable. `failOnFlakyTests` forced the quality bar upward by making the distinction visible.
+
+---
+
+## Playwright v1.50–v1.56 Tooling Additions (Iteration 48)
+
+Several Playwright APIs introduced in the v1.50–v1.56 window were not covered in earlier guide iterations. This section covers six API groups with direct practical value for TypeScript exploratory session harnesses.
+
+### `test.step()` Timeout + `test.step.skip()` — Bounded Step Execution in Session Harnesses (v1.50)
+
+Playwright v1.50 added two options to `test.step()` that make it significantly more useful for structuring exploratory session harnesses:
+
+- **`timeout`** — sets a maximum wall-clock duration for a single step. If the step's async body does not resolve within `timeout` milliseconds, the step throws a `TimeoutError` and the test fails. Without this option, a step that hangs (a network call that never returns, an assertion waiting for an element that never appears) blocks the entire session until the global test timeout fires.
+- **`test.step.skip()`** — conditionally disables a step entirely. The step is logged as skipped in Trace Viewer and HTML reports, making it easy to mark "not yet explored" areas visibly in the session record without deleting the step code.
+
+Both additions are especially valuable for **multi-phase session harnesses** — harnesses that are structured as a sequence of named exploration phases, where each phase has a known expected duration and some phases may not apply to the current charter scope.
+
+**TypeScript: Step-Bounded Session Harness (v1.50+)**
+
+```typescript
+// src/testing/exploratory/step-bounded-harness.ts
+// Session harness that uses per-step timeouts and conditional step skipping
+// to produce structured, time-bounded exploration phases.
+// Requires: @playwright/test ≥ 1.50
+
+import { test, type Page } from '@playwright/test';
+
+export interface SessionPhase {
+  name: string;
+  /** Max ms allowed for this phase. Default 30_000. */
+  timeoutMs?: number;
+  /** If true, the phase is logged as skipped but not executed. Useful for
+   *  marking out-of-scope charter areas visibly in the trace. */
+  skip?: boolean;
+  /** The exploration logic for this phase. */
+  fn: (page: Page) => Promise<void>;
+}
+
+/**
+ * Runs a sequence of named exploration phases as test.step() blocks,
+ * each with an individual timeout. Skipped phases appear in the trace.
+ */
+export async function runSessionPhases(
+  page: Page,
+  phases: SessionPhase[],
+): Promise<void> {
+  for (const phase of phases) {
+    if (phase.skip) {
+      await test.step.skip(phase.name, async () => {
+        // Intentionally empty — step is skipped
+      });
+      continue;
+    }
+
+    await test.step(
+      phase.name,
+      async () => phase.fn(page),
+      { timeout: phase.timeoutMs ?? 30_000 },
+    );
+  }
+}
+
+// Usage — checkout flow session harness structured as phases:
+//
+// test('CHR-checkout-20260512-01 — guest payment retry exploration', async ({ page }) => {
+//   await runSessionPhases(page, [
+//     {
+//       name: 'Phase 1: navigate to cart with test items',
+//       timeoutMs: 10_000,
+//       fn: async (p) => {
+//         await p.goto('/shop');
+//         await p.getByRole('button', { name: 'Add to Cart' }).first().click();
+//         await p.getByRole('link', { name: 'Checkout' }).click();
+//       },
+//     },
+//     {
+//       name: 'Phase 2: guest checkout — declined card retry',
+//       timeoutMs: 45_000,
+//       fn: async (p) => {
+//         await p.getByLabel('Card number').fill('4000000000000002'); // Stripe decline
+//         await p.getByRole('button', { name: 'Pay' }).click();
+//         // Oracle: User expectations — error message visible within 5s
+//         await expect(p.getByRole('alert')).toBeVisible({ timeout: 5_000 });
+//         await p.getByRole('button', { name: 'Try another card' }).click();
+//       },
+//     },
+//     {
+//       name: 'Phase 3: RTL locale address form (out of scope for this charter)',
+//       skip: true,  // Will appear as skipped in trace — visible gap in coverage
+//       fn: async () => {},
+//     },
+//   ]);
+// });
+```
+
+**Gotcha — `test.step()` timeout does not propagate to inner Playwright API calls:**
+
+The step timeout creates a race between the step's body and a timer. It does NOT override individual timeouts on Playwright assertions or `page.waitForSelector()` calls within the step body. If a step has `timeout: 20_000` but contains `await expect(locator).toBeVisible({ timeout: 30_000 })`, the assertion will wait up to 30 seconds even though the step timeout fires at 20 seconds — the step fails at 20 seconds, but the inner promise is still running until the test runner cleans it up. The safe pattern is to keep inner assertion timeouts at or below the step timeout.
+
+**`test.step.skip()` and the trace record:**
+
+A skipped step appears in Trace Viewer and HTML reports as a grey "skipped" badge, not as a failure. This makes it an effective tool for documenting charter scope decisions in the session artifact: the tester can pre-populate all planned phases as steps, skip the out-of-scope ones, and the debrief record shows exactly which phases were explored and which were explicitly excluded — without requiring a separate session notes document.
+
+---
+
+### `expect(locator).toHaveAccessibleErrorMessage()` — Form-Error Oracle (v1.50)
+
+Playwright v1.50 introduced `expect(locator).toHaveAccessibleErrorMessage(message?)`, which asserts that a form element has an `aria-errormessage` association pointing to a visible error element. This directly targets one of the most commonly under-tested accessibility requirements: that form validation errors are announced to screen readers via the ARIA error message pattern.
+
+The ARIA error message pattern requires:
+1. The input element has `aria-invalid="true"`
+2. The input has an `aria-errormessage` attribute pointing to another element's ID
+3. The pointed-to element contains the error text and is visible
+
+`toHaveAccessibleErrorMessage()` asserts all three conditions together. Without this assertion, an exploratory harness can verify only that an error message element is visible (a visual check) — not that it is semantically connected to the erroring field (an accessibility check). The two can diverge: a designer can style a "floating" error label next to a field without wiring it via `aria-errormessage`, producing a UI that looks correct but fails for screen-reader users.
+
+**TypeScript: Accessible Form-Error Oracle**
+
+```typescript
+// src/testing/exploratory/accessible-form-error-oracle.ts
+// Checks that form validation errors are wired correctly via the ARIA
+// error message pattern — visual presence is necessary but not sufficient.
+// Requires: @playwright/test ≥ 1.50
+
+import { expect, type Locator } from '@playwright/test';
+
+export interface FormFieldErrorExpectation {
+  /** Human-readable label for the field, used in session notes */
+  fieldLabel: string;
+  /** The input/select/textarea locator */
+  fieldLocator: Locator;
+  /** Expected error text (partial match). If omitted, just checks that
+   *  an error message is associated — not its content. */
+  expectedErrorText?: string | RegExp;
+}
+
+export interface FormErrorOracleResult {
+  fieldLabel: string;
+  passed: boolean;
+  note?: string;
+}
+
+/**
+ * Validates that form fields failing validation have proper ARIA error
+ * message associations — not just visually rendered error text.
+ */
+export async function checkAccessibleFormErrors(
+  expectations: FormFieldErrorExpectation[],
+): Promise<FormErrorOracleResult[]> {
+  const results: FormErrorOracleResult[] = [];
+
+  for (const exp of expectations) {
+    try {
+      if (exp.expectedErrorText !== undefined) {
+        await expect(exp.fieldLocator).toHaveAccessibleErrorMessage(
+          exp.expectedErrorText,
+        );
+      } else {
+        // Just verify some accessible error message is associated
+        await expect(exp.fieldLocator).toHaveAccessibleErrorMessage(/.+/);
+      }
+      results.push({ fieldLabel: exp.fieldLabel, passed: true });
+    } catch {
+      results.push({
+        fieldLabel: exp.fieldLabel,
+        passed: false,
+        note:
+          'Field has no valid aria-errormessage association. ' +
+          'Visual error may exist but is inaccessible to screen readers.',
+      });
+    }
+  }
+
+  return results;
+}
+
+// Usage — after submitting a form with invalid data:
+//
+// await page.getByRole('button', { name: 'Submit' }).click();
+//
+// const results = await checkAccessibleFormErrors([
+//   {
+//     fieldLabel: 'Email',
+//     fieldLocator: page.getByLabel('Email address'),
+//     expectedErrorText: /valid email/i,
+//   },
+//   {
+//     fieldLabel: 'Card number',
+//     fieldLocator: page.getByLabel('Card number'),
+//     expectedErrorText: /card number/i,
+//   },
+// ]);
+//
+// const failures = results.filter((r) => !r.passed);
+// // Any failure = accessibility defect: field fails validation but isn't
+// // announced correctly to screen readers (violates WCAG 1.3.1, 3.3.1)
+```
+
+**Gotcha — `toHaveAccessibleErrorMessage()` and custom component libraries:**
+
+Many React component libraries (MUI, Radix UI, shadcn) implement form error patterns using custom ARIA wiring that differs from the standard `aria-errormessage` attribute. Some use `aria-describedby` to link the error element, which is a valid pattern for descriptions but not the error-message pattern. `toHaveAccessibleErrorMessage()` specifically checks `aria-errormessage` (with `aria-invalid` on the field), not `aria-describedby`. If your component library uses `aria-describedby` for errors, this assertion will fail even though the implementation may be acceptable (if somewhat non-standard). Always verify which ARIA pattern the component library uses before treating `toHaveAccessibleErrorMessage()` failures as definitive defects — they may indicate a library convention difference rather than an accessibility bug.
+
+---
+
+### `locator.filter({ visible: true })` — Disambiguation in Dense UIs (v1.51)
+
+Before v1.51, `locator.filter()` accepted only `{ has: Locator }` and `{ hasText: string | RegExp }` options. In dense UIs — dashboards, data tables, multi-panel layouts — this was insufficient for disambiguation when the same element type appeared in both visible and hidden (off-screen, `display: none`, or `visibility: hidden`) regions simultaneously. The common workaround was to chain `.nth()` (by position) or to add custom `data-testid` attributes to distinguish regions.
+
+Playwright v1.51 added `{ visible: boolean }` to `locator.filter()`. With `filter({ visible: true })`, the locator selects only elements that are currently visible in the viewport (or attached to the DOM with visible layout), ignoring elements that match the locator but are hidden. This is directly useful for exploratory sessions on apps with:
+
+- **Slide-in panels / drawers** that share element types with the main layout
+- **Tabbed interfaces** where only one tab's content is visible at a time
+- **Tooltip/popover content** that shares class names with permanent UI elements
+- **Virtualized lists** where some rendered rows are off-screen
+
+**TypeScript: Visible-Only Locator Pattern for Session Harnesses**
+
+```typescript
+// src/testing/exploratory/visible-locator-patterns.ts
+// Demonstrates locator.filter({ visible: true }) for disambiguation
+// in exploratory sessions on dense/multi-panel UIs.
+// Requires: @playwright/test ≥ 1.51
+
+import { expect, type Page } from '@playwright/test';
+
+/**
+ * Returns the count of visible items matching a locator — useful for
+ * asserting "how many rows are currently shown" in a virtualized list
+ * or filtered table, without counting hidden/off-screen rows.
+ */
+export async function countVisibleItems(
+  page: Page,
+  selector: string,
+): Promise<number> {
+  return page.locator(selector).filter({ visible: true }).count();
+}
+
+/**
+ * Clicks the first visible button matching a label — safe for UIs where
+ * the same button label appears in both a modal and the background layout.
+ */
+export async function clickFirstVisible(
+  page: Page,
+  label: string,
+): Promise<void> {
+  await page
+    .getByRole('button', { name: label })
+    .filter({ visible: true })
+    .first()
+    .click();
+}
+
+// Session harness usage — tabbed dashboard with shared element names:
+//
+// // Without filter({ visible: true }), this would match items in all tabs
+// // (only one tab's content is visible at a time):
+// const visibleRows = await countVisibleItems(page, '[data-testid="table-row"]');
+// await expect(visibleRows).toBeGreaterThan(0);
+//
+// // Without filter({ visible: true }), clicking 'Delete' might target a
+// // hidden row in an inactive tab instead of the intended visible row:
+// await clickFirstVisible(page, 'Delete');
+```
+
+**Gotcha — `filter({ visible: true })` and CSS transitions:**
+
+During CSS transitions (entering/leaving animations), an element may be "visible" in the sense that it has non-zero layout dimensions but is still animating into position. `filter({ visible: true })` uses Playwright's visibility heuristic (non-zero bounding box, not `visibility: hidden`, not `display: none`) which can match elements mid-transition. If your application uses animated entry/exit for panels or drawers, add a `page.waitForLoadState('networkidle')` or a custom animation-complete check before relying on `filter({ visible: true })` for disambiguation — otherwise the filter may match elements in transitional visible states that don't represent stable UI.
+
+---
+
+### `partitionKey` Cookie Support + `--user-data-dir` — Persistent Exploratory Sessions (v1.54)
+
+**Partitioned cookies (`partitionKey`) — v1.54:**
+
+Playwright v1.54 added a `partitionKey` property to the cookie objects returned by `browserContext.cookies()` and accepted by `browserContext.addCookies()`. This enables saving and restoring **partitioned cookies** (part of the CHIPS — Cookies Having Independent Partitioned State — specification). Partitioned cookies are scoped to a specific top-level site context, not just a domain — they are used by third-party services embedded in a page to store per-embedding-site state without sharing state across all embeds.
+
+For exploratory testing, this matters when exploring applications that embed third-party services (authentication widgets, embedded analytics, payment SDKs) that rely on partitioned cookies. Before v1.54, `storageState` captures missed partitioned cookies entirely — restoring such a state produced a session where the third-party widget appeared as if a new visitor (no recognized session), even if the real user would have a recognized session from prior visits.
+
+**`--user-data-dir` CLI option — v1.54:**
+
+Playwright v1.54 added `--user-data-dir <path>` to the `playwright open` and `playwright codegen` CLI commands. When specified, the launched browser uses an existing user data directory (profile) rather than creating a fresh temporary profile. This gives the tester access to a real browser profile with existing cookies, cached auth state, localStorage, and browser extensions — without writing any fixture code.
+
+For exploratory sessions, this is a low-overhead way to explore behavior that only manifests for users with an established browsing history (returning-user experiences, cached API responses, service worker state from prior visits) or to explore using a specific browser extension that is already installed in the profile.
+
+```bash
+# Launch headed Chrome with an existing profile for exploratory session
+# (replace PATH with your actual Chrome user data directory)
+npx playwright open --browser=chromium --user-data-dir="/path/to/chrome-profile" https://app.example.com
+
+# Same pattern for codegen — record interactions with existing profile state
+npx playwright codegen --browser=chromium --user-data-dir="/path/to/chrome-profile" https://app.example.com
+```
+
+**Gotcha — `--user-data-dir` and test isolation:**
+
+Using `--user-data-dir` for exploratory sessions breaks the isolation assumption that Playwright normally provides. Any state written during the session (cookies, localStorage, service worker registrations, cached responses) persists in the profile after the session ends. If you run two sessions against the same profile in sequence, the second session starts with state left by the first. For charter-based exploratory sessions, this is sometimes exactly what you want (exploring returning-user behavior) but it means session results are not reproducible without explicitly clearing the profile state. Keep a clean copy of the profile directory and restore it between sessions if reproducibility matters for the session artifact.
+
+---
+
+### `testStepInfo.titlePath` — Structured Session Step Labelling (v1.55)
+
+Playwright v1.55 added `testStepInfo.titlePath`, a property available inside `test.step()` callbacks (via `test.step(name, async (stepInfo) => { ... })` when using the `TestStepInfo` parameter). `titlePath` returns an array of strings representing the full nesting path from the test title down through all enclosing step names to the current step.
+
+For exploratory session harnesses structured as nested steps (outer step = session phase, inner steps = individual observations or probes within that phase), `titlePath` gives each inner step a unique, human-readable path that can be logged to the session note record without additional bookkeeping.
+
+```typescript
+// src/testing/exploratory/step-path-logger.ts
+// Logs a step-path-keyed observation to the session note record.
+// Requires: @playwright/test ≥ 1.55
+
+import { test, type TestStepInfo } from '@playwright/test';
+
+export interface SessionObservation {
+  stepPath: string;   // e.g. "Phase 2: declined card retry > probe: retry CTA visible"
+  observation: string;
+  oracleTriggered?: string;  // HICCUPPS dimension, if a potential defect was noted
+  timestamp: number;
+}
+
+const observations: SessionObservation[] = [];
+
+/**
+ * Records a timed observation at the current step path.
+ * Call from inside a test.step() body where stepInfo is available.
+ */
+export function recordObservation(
+  stepInfo: TestStepInfo,
+  observation: string,
+  oracleTriggered?: string,
+): void {
+  observations.push({
+    stepPath: stepInfo.titlePath.join(' > '),
+    observation,
+    oracleTriggered,
+    timestamp: Date.now(),
+  });
+}
+
+export function getSessionObservations(): readonly SessionObservation[] {
+  return observations;
+}
+
+// Usage inside a nested step harness:
+//
+// await test.step('Phase 2: declined card retry', async () => {
+//   await test.step('probe: retry CTA visible after decline', async (stepInfo) => {
+//     await page.getByLabel('Card number').fill('4000000000000002');
+//     await page.getByRole('button', { name: 'Pay' }).click();
+//     const alert = page.getByRole('alert');
+//     await expect(alert).toBeVisible();
+//     recordObservation(
+//       stepInfo,
+//       'Alert is visible but does not specify which field failed',
+//       'User expectations',  // HICCUPPS: user would expect to know WHICH field is invalid
+//     );
+//   });
+// });
+//
+// After session:
+// console.log(JSON.stringify(getSessionObservations(), null, 2));
+// Produces: [{ stepPath: "Phase 2: ... > probe: ...", observation: "...", ... }]
+```
+
+**Gotcha — `TestStepInfo` is only available when declared as a step callback parameter:**
+
+`testStepInfo.titlePath` is only accessible when the `test.step()` callback explicitly declares the `TestStepInfo` parameter:
+
+```typescript
+// CORRECT — stepInfo is available:
+await test.step('my step', async (stepInfo) => {
+  console.log(stepInfo.titlePath); // ['test title', 'my step']
+});
+
+// INCORRECT — stepInfo is not available (callback has no parameter):
+await test.step('my step', async () => {
+  // Cannot access stepInfo here — TypeScript compile error if you try
+});
+```
+
+This is a source of confusion when refactoring existing session harnesses to add path logging: every step that needs `titlePath` must be updated to declare the `stepInfo` parameter, even if the only use is logging.
+
+---
+
+### `page.consoleMessages()` / `page.pageErrors()` / `page.requests()` — In-Session Diagnostic Oracles (v1.56)
+
+Before Playwright v1.56, capturing console output, JavaScript errors, and network requests during an exploratory session required setting up `page.on('console', ...)`, `page.on('pageerror', ...)`, and `page.on('request', ...)` event listeners at session start and accumulating them in arrays. This added 15–30 lines of setup boilerplate to every session harness, and the accumulated arrays grew unboundedly for long sessions (memory concern for sessions running many probes).
+
+Playwright v1.56 introduced three methods that replace this pattern:
+
+- **`page.consoleMessages(options?)`** — returns the last ≤200 `ConsoleMessage` objects. Option `{ filter: 'since-navigation' }` returns only messages since the last navigation, which is useful for scoping observations to a specific probe phase.
+- **`page.pageErrors(options?)`** — returns the last ≤200 JavaScript errors (`Error` objects). Same `filter` option.
+- **`page.requests()`** — returns the last ≤100 `Request` objects. No filter option; intended for quick "what did the page just request?" inspection.
+
+Complementary clear methods (`page.clearConsoleMessages()`, `page.clearPageErrors()`) let a session harness reset the buffers between probes without reloading the page.
+
+For exploratory session harnesses, these three methods function as **diagnostic snapshot oracles**: after each significant interaction, the harness can snapshot the console, errors, and requests to check for silent failures that don't surface in the visible UI. This is especially valuable for probes targeting:
+
+- **Error suppression defects**: UI appears normal but the console contains uncaught errors (oracle: Purpose — the feature's purpose is undermined by silent errors)
+- **Unexpected network calls**: a UI interaction triggers more API calls than expected (oracle: Claims — the spec says one call, the actual behavior makes three)
+- **Missing network calls**: a save action does not produce the expected API request (oracle: Claims — save should have called POST /orders)
+
+**TypeScript: Diagnostic Snapshot Harness (v1.56+)**
+
+```typescript
+// src/testing/exploratory/diagnostic-snapshot-harness.ts
+// Captures a post-interaction diagnostic snapshot using v1.56 APIs.
+// Requires: @playwright/test ≥ 1.56
+
+import type { Page, ConsoleMessage, Request } from '@playwright/test';
+
+export interface DiagnosticSnapshot {
+  label: string;
+  timestamp: number;
+  consoleErrors: string[];
+  consoleWarnings: string[];
+  pageErrors: string[];
+  recentRequests: Array<{ method: string; url: string; status?: number }>;
+}
+
+/**
+ * Takes a post-interaction diagnostic snapshot.
+ * Call after a significant UI action to record silent failures.
+ * Uses filter: 'since-navigation' to scope to the current probe phase.
+ */
+export async function takeDiagnosticSnapshot(
+  page: Page,
+  label: string,
+): Promise<DiagnosticSnapshot> {
+  const msgs: ConsoleMessage[] = await page.consoleMessages({
+    filter: 'since-navigation',
+  });
+  const errs: Error[] = await page.pageErrors({ filter: 'since-navigation' });
+  const reqs: Request[] = await page.requests();
+
+  const consoleErrors = msgs
+    .filter((m) => m.type() === 'error')
+    .map((m) => m.text());
+
+  const consoleWarnings = msgs
+    .filter((m) => m.type() === 'warning')
+    .map((m) => m.text());
+
+  const pageErrors = errs.map((e) => e.message);
+
+  const recentRequests = reqs.map((r) => ({
+    method: r.method(),
+    url: r.url(),
+    status: r.response()?.status() ?? undefined,
+  }));
+
+  return {
+    label,
+    timestamp: Date.now(),
+    consoleErrors,
+    consoleWarnings,
+    pageErrors,
+    recentRequests,
+  };
+}
+
+/**
+ * Convenience: takes a snapshot and asserts zero page errors and zero
+ * console errors. Use as a "silent failure" oracle after any probe.
+ */
+export async function assertNoSilentErrors(
+  page: Page,
+  label: string,
+): Promise<DiagnosticSnapshot> {
+  const snapshot = await takeDiagnosticSnapshot(page, label);
+
+  if (snapshot.pageErrors.length > 0 || snapshot.consoleErrors.length > 0) {
+    throw new Error(
+      `Silent errors detected after "${label}":\n` +
+        `  Page errors: ${JSON.stringify(snapshot.pageErrors)}\n` +
+        `  Console errors: ${JSON.stringify(snapshot.consoleErrors)}`,
+    );
+  }
+
+  return snapshot;
+}
+
+// Usage in a session harness:
+//
+// // After a "save" interaction — assert no silent errors AND capture network evidence
+// await page.getByRole('button', { name: 'Save' }).click();
+// const snapshot = await takeDiagnosticSnapshot(page, 'after save click');
+//
+// // Oracle: Claims — save should have triggered exactly one POST
+// const saveRequests = snapshot.recentRequests.filter(
+//   (r) => r.method === 'POST' && r.url.includes('/api/orders'),
+// );
+// if (saveRequests.length !== 1) {
+//   console.warn(`Expected 1 POST /api/orders, got ${saveRequests.length}`, snapshot.recentRequests);
+// }
+//
+// // Oracle: Purpose — silent errors undermine save's stated purpose
+// if (snapshot.pageErrors.length > 0) {
+//   console.error('Save produced page errors:', snapshot.pageErrors);
+// }
+```
+
+**Gotcha — `page.requests()` returns up to 100 recent requests with no filter option:**
+
+`page.requests()` is a sliding window of the 100 most recent requests — it always returns requests across all navigations, not just since the last navigation. For long sessions with many probes, old requests from earlier phases may appear in the window alongside requests from the current probe. Use `page.clearConsoleMessages()` / `page.clearPageErrors()` between probes to keep the console and error buffers scoped, but be aware there is no `page.clearRequests()` equivalent — for request scoping, use `page.on('request', ...)` listeners set up and torn down per probe phase, or filter `page.requests()` output by timestamp.
+
+---
+
+### New Anti-Pattern (Iteration 48): Polling `page.on()` Event Handlers Instead of `page.consoleMessages()` for Post-Hoc Session Analysis
+
+**Registering `page.on('console', ...)` and `page.on('pageerror', ...)` listeners at session harness setup, accumulating events in local arrays, and analyzing them at the end of the session — instead of calling `page.consoleMessages()` and `page.pageErrors()` at the point of interest.**
+
+The setup pattern was the correct approach before v1.56, and remains correct for some use cases (streaming real-time analysis of console output, reacting to errors as they occur). But for the most common post-hoc use case in exploratory sessions — "after I clicked X, did anything fail silently?" — the event listener pattern has three failure modes:
+
+1. **Unbounded accumulation**: a long session with many probes accumulates thousands of console messages in the local array. On sessions with performance-heavy feature exploration, the array grows to tens of thousands of entries, and the post-session analysis phase becomes slow.
+2. **No phase scoping**: the local array contains messages from the entire session. Scoping to a specific probe requires manual timestamp filtering, which is error-prone if two probes run close together.
+3. **Listener lifecycle coupling**: if a session harness spawns additional pages or navigates within a multi-page flow, the original `page.on()` listener may miss messages from pages that were opened after setup or may fire on events from the wrong page if the tester navigates unexpectedly.
+
+`page.consoleMessages({ filter: 'since-navigation' })` and `page.pageErrors({ filter: 'since-navigation' })` address all three: the buffer is bounded (≤200 entries), `since-navigation` scopes to the current probe phase, and the method is called on the specific page object the tester is currently interacting with.
+
+The event listener pattern remains correct for:
+- **Real-time reaction**: asserting immediately when a specific error pattern appears (use `page.on('pageerror', handler)` and throw from the handler)
+- **Long-running sessions across many navigations**: when more than 200 console messages are expected before analysis
+
+**HICCUPPS mapping**: The anti-pattern risks oracle accuracy on the **Claims** dimension. If the harness's local accumulation array misses events due to listener lifecycle issues, the session debrief record will incorrectly claim the feature produced no errors — a false negative that may cause a defect to escape to production.
+
+---
+
+## Additional Community Lessons (Iteration 48)
+
+132. **[community] Teams that adopted `page.consoleMessages()` and `page.pageErrors()` to replace event-listener accumulation in their session harnesses discovered a category of defect that the old pattern had systematically missed: "navigation-scoped" console errors that occurred on a specific page in a multi-page flow but were attributed to the wrong page in the session record.** In the event-listener pattern, a single `page.on('console', ...)` listener registered on the initial page missed errors that fired on pages opened via `window.open()` or link navigation within the harness — those events went to a new `Page` object that had no listener. The missing errors were not noticed because the harness reported "0 console errors" (technically correct for the original page object, but not for the session as a whole). With `page.consoleMessages()` called on the correct `Page` object after each navigation, the harness correctly scopes console output to the active page at the time of the probe. Teams that investigated their old session records found that one recurring "no silent errors" claim was false: a background analytics tracking call was throwing an unhandled promise rejection on every checkout page — an error invisible to the user but logged to the console — that had been missed by the event-listener harness for several sprints.
+
+133. **[community] The `test.step()` timeout option changed the failure modes of session harnesses in a way that teams initially found counterintuitive: harnesses that had previously hung silently for the global test timeout (120 seconds) now failed loudly at 30 seconds, producing visible step-level `TimeoutError` entries in Trace Viewer that were easy to triage.** Before per-step timeouts, a hung step produced a timeout at the global test level with a generic "Test timeout of 120000ms exceeded" message and a Trace Viewer snapshot frozen at the hung state — no indication of which step hung or why. After adding `timeout: 30_000` to each session phase, the same hang produces a `TimeoutError` attached to the specific step ("Phase 3: payment submission — TimeoutError: step exceeded 30000ms"), with the Trace Viewer snapshot focused on the last action within that step. Triage time dropped from "replay the entire 2-minute trace to find the hang point" to "read the step error label and check the snapshot at that step." One team reported that their debrief meeting time dropped by approximately 20% after adopting per-step timeouts across all session harnesses — the trace artifacts were simply faster to read.
+
+134. **[community] `locator.filter({ visible: true })` solved a class of false-positive defect reports that teams had been filing for months: reports where a "broken" UI element turned out to be a hidden element in an inactive tab or closed panel that matched the locator used in the session harness.** The defect reports looked like "Button X is not responding to clicks" — the harness was clicking the button and the action was succeeding, but the wrong button was being clicked (a hidden one in an inactive tab). The visible button in the active tab was not being interacted with at all. When the team added `filter({ visible: true })` to their locators for tabbed interfaces, the false positives stopped immediately. The deeper lesson: in any UI with multiple visibility states sharing the same element types, an exploratory session harness without visibility filtering is not observing the UI the user sees — it may be interacting with the shadow structure behind the visible layer, producing results that do not reflect real user experience.
