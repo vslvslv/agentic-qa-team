@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -41,6 +41,7 @@
      Iter 35 (2026-05-12): 100/100 (+0) — added dataclasses.KW_ONLY + field(doc=) + InitVar + weakref_slot patterns; TypeVar(infer_variance=True) (PEP 695); itertools.batched + math.sumprod (Python 3.12); typing.assert_type() for static testing; community gotcha #31 (TypeVar infer_variance misconception); sourced from docs.python.org/3/library/dataclasses.html + docs.python.org/3/whatsnew/3.12.html
      Iter 36 (2026-05-12): 100/100 (+0) — added compression.zstd module (Python 3.14) with zstd.compress/decompress/ZstdCompressor/train_dict; heapq max-heap functions heapify_max/heappop_max/heappush_max (Python 3.14) with running_median example; sys.remote_exec() + pdb -p PID zero-overhead debugging deep-dive; multiprocessing fork-safety patterns; community gotcha #32 (fork() + threads = deadlock); sourced from docs.python.org/3/library/heapq.html + docs.python.org/3/library/compression.zstd.html + docs.python.org/3/whatsnew/3.14.html
      Iter 37 (2026-05-12): 100/100 (+0) — added asyncio.timeout()/timeout_at() structured timeout contexts (Python 3.11+); asyncio eager task execution with eager_start + create_eager_task_factory (Python 3.12+); community gotcha #33 (asyncio task GC — fire-and-forget reference loss); os.reload_environ() for syncing external env mutations (Python 3.14); sourced from docs.python.org/3/library/asyncio-task.html + docs.python.org/3/library/os.html + docs.python.org/3/whatsnew/3.14.html
+     Iter 38 (2026-05-12): 100/100 (+0) — added annotationlib deep-dive (Format enum, ForwardRef evaluation, migration from get_type_hints, metaclass integration); concurrent.interpreters/InterpreterPoolExecutor deep-dive (comparison table vs processes/threads, data-sharing rules, gotchas); t-string custom processor patterns (HTML, SQL, shell); community gotchas #34 (t-string naive concatenation) and #35 (InterpreterPoolExecutor pickle limitations); sourced from docs.python.org/3/library/annotationlib.html + docs.python.org/3/library/concurrent.futures.html + docs.python.org/3/library/string.templatelib.html
 -->
 
 ## Core Philosophy
@@ -5592,6 +5593,477 @@ def safe_reload_and_get(key: str, default: str = "") -> str:
 ```
 
 **Note:** `os.reload_environ()` only reflects mutations to the **current process's** environment block. Variables exported by a child subprocess do not flow back to the parent — that is a Unix process model limitation, not a Python limitation.
+
+---
+
+## `annotationlib` — Deep-Dive Runtime Annotation Introspection (Python 3.14)
+
+Python 3.14 makes annotation evaluation deferred by default (PEP 649/749). The new `annotationlib` standard library module replaces the fragile `typing.get_type_hints()` call as the canonical way to inspect annotations at runtime. It gives callers full control over when and how annotations are resolved.
+
+### Format Enum — Three Modes for Three Use Cases
+
+```python
+from annotationlib import get_annotations, Format, ForwardRef
+
+# Format.VALUE (default) — evaluate to real Python objects
+# Use when: you know all annotation names are in scope
+# Risk: raises NameError if any annotation name is undefined
+
+def greet(name: str) -> str: ...
+
+annots_val = get_annotations(greet, format=Format.VALUE)
+# {'name': <class 'str'>, 'return': <class 'str'>}
+
+
+# Format.FORWARDREF — return ForwardRef proxies for undefined names
+# Use when: working with forward references or partially-defined types
+# Safe: never raises — unresolvable names become ForwardRef objects
+
+def create_node(child: "Node") -> "Node": ...  # Forward ref
+
+annots_fwd = get_annotations(create_node, format=Format.FORWARDREF)
+# {'child': ForwardRef('Node', ...), 'return': ForwardRef('Node', ...)}
+# These proxy objects can be evaluated later when 'Node' is defined
+
+
+# Format.STRING — return raw annotation source text as strings
+# Use when: documentation generators, display, serialisation
+# Exact: returns the annotation text as written in source code
+
+class Config:
+    host: str = "localhost"
+    port: int = 5432
+
+annots_str = get_annotations(Config, format=Format.STRING)
+# {'host': 'str', 'port': 'int'}
+```
+
+### ForwardRef Deferred Evaluation
+
+```python
+from annotationlib import get_annotations, Format, ForwardRef
+
+
+class TreeNode:
+    # At class creation time, 'TreeNode' itself isn't fully defined yet.
+    # Format.FORWARDREF handles this gracefully.
+    def add_child(self, child: "TreeNode") -> None: ...
+
+
+# Inspect immediately — safe even before the class is fully constructed
+annots = get_annotations(TreeNode.add_child, format=Format.FORWARDREF)
+child_annotation: ForwardRef = annots["child"]
+
+# Later: evaluate the ForwardRef in the right scope
+resolved = child_annotation.evaluate(
+    globals={"TreeNode": TreeNode},
+    format=Format.VALUE,
+)
+# resolved == TreeNode  ✓
+```
+
+### Migration: `typing.get_type_hints()` → `annotationlib.get_annotations()`
+
+```python
+# ── BEFORE (Python 3.10–3.13) ────────────────────────────────────────────────
+from typing import get_type_hints
+
+def old_introspect(func):
+    try:
+        return get_type_hints(func)
+    except NameError as exc:
+        # No granular recovery — all-or-nothing
+        raise RuntimeError(f"Could not resolve annotations: {exc}") from exc
+
+
+# ── AFTER (Python 3.14+) ─────────────────────────────────────────────────────
+from annotationlib import get_annotations, Format, ForwardRef
+
+def new_introspect(func) -> dict[str, object]:
+    """Resolve what can be resolved; surface forward refs for the rest."""
+    annots = get_annotations(func, format=Format.FORWARDREF)
+    resolved = {}
+    for name, annotation in annots.items():
+        if isinstance(annotation, ForwardRef):
+            # Log unresolved refs instead of crashing
+            resolved[name] = f"<ForwardRef: {annotation.__forward_arg__}>"
+        else:
+            resolved[name] = annotation
+    return resolved
+```
+
+### Metaclass Integration — Inspecting Annotations During Class Creation
+
+```python
+from annotationlib import get_annotate_from_class_namespace, call_annotate_function, Format
+import typing
+
+
+class ClassVarAwareMeta(type):
+    """Metaclass that separates ClassVar annotations from instance annotations."""
+
+    def __new__(mcls, name, bases, ns):
+        annotate = get_annotate_from_class_namespace(ns)
+        if annotate is not None:
+            raw = call_annotate_function(annotate, Format.FORWARDREF)
+            classvar_names = {
+                k for k, v in raw.items()
+                if typing.get_origin(v) is typing.ClassVar
+            }
+        else:
+            classvar_names = set()
+
+        cls = super().__new__(mcls, name, bases, ns)
+        cls.__classvars__ = classvar_names   # Expose for tooling
+        return cls
+
+
+class Record(metaclass=ClassVarAwareMeta):
+    table: typing.ClassVar[str] = "records"
+    id: int
+    name: str
+
+
+print(Record.__classvars__)  # {'table'}
+```
+
+**Key rules for `annotationlib`:**
+- Always prefer `Format.FORWARDREF` over `Format.VALUE` in library code that processes arbitrary user types.
+- Use `Format.STRING` for documentation generators and serialisers — it is the only format that never executes code.
+- Never call any `annotationlib` function on untrusted code: annotations can contain arbitrary Python expressions.
+
+---
+
+## T-String Custom Processors — Deep-Dive (Python 3.14)
+
+The Python 3.14 section above covers the basics. This section shows complete, production-grade custom processor patterns for the three most common t-string use cases.
+
+### HTML Escaping Processor
+
+```python
+from string.templatelib import Interpolation, Template, convert
+import html
+
+
+def render_html(template: Template) -> str:
+    """
+    Render a t-string to HTML, auto-escaping all interpolated values.
+    Static string parts are trusted as-is (authored by the developer).
+    Interpolated values (user-controlled) are HTML-escaped.
+    """
+    parts: list[str] = []
+    for chunk in template:
+        if isinstance(chunk, str):
+            parts.append(chunk)          # Trusted static HTML
+        else:
+            assert isinstance(chunk, Interpolation)
+            value = chunk.value
+            # Apply explicit conversion (!r, !s, !a) if specified
+            if chunk.conversion:
+                value = convert(value, chunk.conversion)
+            # Apply format spec if present
+            if chunk.format_spec:
+                value = format(value, chunk.format_spec)
+            parts.append(html.escape(str(value)))  # Escape ALL dynamic values
+    return "".join(parts)
+
+
+# Usage
+username = "<script>alert('xss')</script>"
+html_output = render_html(t"<p>Hello, {username}!</p>")
+# → "<p>Hello, &lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;!</p>"
+
+# Compared to f-string (UNSAFE — executes and embeds raw value):
+# f"<p>Hello, {username}!</p>"  # XSS vulnerability
+```
+
+### Parameterised SQL Processor
+
+```python
+from string.templatelib import Interpolation, Template
+
+
+def sql(template: Template) -> tuple[str, list[object]]:
+    """
+    Build a parameterised SQL query from a t-string.
+    Returns (query_with_placeholders, list_of_params).
+
+    Prevents SQL injection by NEVER interpolating values directly into SQL text.
+    Static string parts (the SQL skeleton) are from the developer, not the user.
+    """
+    query_parts: list[str] = []
+    params: list[object] = []
+
+    for chunk in template:
+        if isinstance(chunk, str):
+            query_parts.append(chunk)
+        else:
+            assert isinstance(chunk, Interpolation)
+            query_parts.append("?")       # or "%s" for psycopg2
+            params.append(chunk.value)
+
+    return "".join(query_parts), params
+
+
+# Usage
+user_id = 42
+status = "active"
+query, params = sql(t"SELECT * FROM users WHERE id = {user_id} AND status = {status}")
+# query  → "SELECT * FROM users WHERE id = ? AND status = ?"
+# params → [42, "active"]
+
+# Pass to your DB driver's execute():
+# cursor.execute(query, params)   ← injection-safe
+
+# Compared to f-string (UNSAFE):
+# cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")  # SQL injection risk
+```
+
+### Shell Command Processor
+
+```python
+import shlex
+from string.templatelib import Interpolation, Template
+
+
+def shell(template: Template) -> str:
+    """
+    Build a shell command string, quoting all interpolated values with shlex.
+
+    Use the resulting string with subprocess(shell=True) ONLY in controlled
+    contexts. Prefer subprocess(shell=False, args=[...]) for new code.
+    """
+    parts: list[str] = []
+    for chunk in template:
+        if isinstance(chunk, str):
+            parts.append(chunk)
+        else:
+            assert isinstance(chunk, Interpolation)
+            parts.append(shlex.quote(str(chunk.value)))  # Quote for shell safety
+    return "".join(parts)
+
+
+# Usage
+filename = "report 2026.csv"
+cmd = shell(t"cat {filename} | wc -l")
+# → "cat 'report 2026.csv' | wc -l"   ← spaces in filename are safe
+
+# Without t-string (UNSAFE — shell injection via filename with backticks etc):
+# f"cat {filename} | wc -l"
+```
+
+**Design principle:** T-strings enforce a boundary. The developer writes static structure (trusted); runtime values are dynamic (untrusted). Processors enforce domain-specific escaping on the untrusted portion only. This is structurally impossible with f-strings.
+
+---
+
+## `concurrent.interpreters` / `InterpreterPoolExecutor` — CPU Parallelism (Python 3.14)
+
+Python 3.14's `concurrent.interpreters` module (PEP 734) enables **true multi-core CPU parallelism** within a single process by creating isolated sub-interpreters, each with its own GIL. This fills the gap between `threading` (fast but GIL-bound) and `multiprocessing` (GIL-free but heavyweight).
+
+### Comparison: Interpreters vs Threads vs Processes
+
+| Capability | `threading` | `multiprocessing` | `concurrent.interpreters` |
+|---|---|---|---|
+| True CPU parallelism | No (shared GIL) | Yes | Yes (per-interpreter GIL) |
+| Process overhead | None | High (fork/spawn) | None (in-process) |
+| Shared memory | Yes (unsafe) | No | No (isolated) |
+| Communication | Shared objects | Pipes / Queues | `Queue`, `pickle` |
+| Package compatibility | Full | Full | Limited (C extensions may not be multi-interp-safe) |
+| Python version | All | All | 3.14+ |
+| Best for | I/O-bound | Heavy CPU, big data | CPU-bound, moderate data |
+
+### Basic Usage: `InterpreterPoolExecutor`
+
+```python
+from concurrent.futures import InterpreterPoolExecutor
+
+
+def count_primes(limit: int) -> int:
+    """CPU-bound: count primes up to limit using trial division."""
+    count = 0
+    for n in range(2, limit):
+        if all(n % i != 0 for i in range(2, int(n**0.5) + 1)):
+            count += 1
+    return count
+
+
+# Each task runs in a separate interpreter with its own GIL → true parallelism
+with InterpreterPoolExecutor(max_workers=4) as ex:
+    results = list(ex.map(count_primes, [500_000, 500_000, 500_000, 500_000]))
+    total = sum(results)
+    print(f"Total primes across all ranges: {total}")
+
+# Compare: ThreadPoolExecutor would serialize on the GIL (no speedup)
+# Compare: ProcessPoolExecutor would work too but spawns 4 OS processes
+```
+
+### Data Sharing Rules
+
+```python
+from concurrent import interpreters
+
+
+# ── Only these types cross interpreter boundaries cheaply ────────────────────
+# None, bool, bytes, str, int, float, tuple (of the above), memoryview
+
+def process_chunk(data: bytes) -> int:
+    return sum(data)  # bytes are shareable natively
+
+interp = interpreters.create()
+# .call() pickles args and return value — works for any picklable object
+result = interp.call(process_chunk, b"\x01\x02\x03")
+# result == 6  ✓
+
+
+# ── Use create_queue() for mutable shared data ────────────────────────────────
+queue = interpreters.create_queue()
+
+def worker(q) -> None:
+    # Run in separate interpreter
+    q.put({"result": 42, "status": "ok"})   # dict gets pickled onto the queue
+
+interp2 = interpreters.create()
+t = interp2.call_in_thread(worker, queue)
+t.join()
+item = queue.get()  # {"result": 42, "status": "ok"}  ✓
+
+
+# ── WRONG: sharing mutable Python objects directly ───────────────────────────
+shared_list: list = []
+
+def bad_worker() -> None:
+    # shared_list here is a DIFFERENT object in this interpreter's memory
+    # even though the name is the same — mutations do NOT propagate back
+    shared_list.append(1)   # Lost on interpreter boundary
+
+# Always use Queue or return values — never rely on shared mutable state.
+```
+
+### When to Choose Each Tool
+
+```python
+# Use threading when: I/O-bound work (network, disk, DB queries)
+from concurrent.futures import ThreadPoolExecutor
+with ThreadPoolExecutor(max_workers=10) as ex:
+    pages = list(ex.map(fetch_url, urls))   # 10 concurrent HTTP calls
+
+
+# Use InterpreterPoolExecutor when: CPU-bound + Python 3.14 + picklable work units
+from concurrent.futures import InterpreterPoolExecutor
+with InterpreterPoolExecutor(max_workers=4) as ex:
+    transforms = list(ex.map(transform_dataset, chunks))  # True parallel CPU work
+
+
+# Use ProcessPoolExecutor when: CPU-bound + legacy Python OR C extension heavy OR
+# work units require large non-picklable state
+from concurrent.futures import ProcessPoolExecutor
+with ProcessPoolExecutor(max_workers=4) as ex:
+    results = list(ex.map(heavy_c_extension_task, data))
+```
+
+---
+
+### 34. T-String Naive Concatenation Defeats Injection Safety  [community]
+
+**Problem:** Developers new to t-strings sometimes process templates by iterating and concatenating all parts as strings, which is equivalent to an f-string — it does nothing to prevent injection.
+
+**Why:** `str(interpolation)` converts the `Interpolation` object itself to a string representation, not its `.value`. But even converting `.value` to str and concatenating defeats the purpose: a t-string's safety comes from the *processor* deciding per-part what to do, not from the template syntax itself.
+
+**Fix:** Always dispatch on type in your processor. If your processor converts every `Interpolation` to `str(chunk.value)` and concatenates, you have exactly an f-string with extra steps.
+
+```python
+from string.templatelib import Interpolation, Template
+import html
+
+
+# ── BAD: naive concatenation — functionally identical to an f-string ─────────
+def bad_render(template: Template) -> str:
+    result = ""
+    for chunk in template:
+        result += str(chunk) if isinstance(chunk, str) else str(chunk.value)
+    return result
+# Calling bad_render(t"Hello, {username}!") is IDENTICAL to f"Hello, {username}!"
+# No escaping, no injection prevention — the t-string provided zero benefit.
+
+
+# ── ALSO BAD: treating t-string as format string ─────────────────────────────
+def also_bad(template: Template) -> str:
+    # str(template) does NOT produce the rendered string — it's an object repr
+    return str(template)  # → "Template(strings=(...), interpolations=(...))"
+
+
+# ── GOOD: explicit dispatch with domain-specific handling ────────────────────
+def safe_render(template: Template) -> str:
+    """Process t-string with HTML-escaping for all dynamic values."""
+    parts = []
+    for chunk in template:
+        if isinstance(chunk, str):
+            parts.append(chunk)                          # Static — trusted
+        elif isinstance(chunk, Interpolation):
+            parts.append(html.escape(str(chunk.value))) # Dynamic — escaped
+    return "".join(parts)
+```
+
+**Rule:** A t-string is only safe if your processor treats `Interpolation.value` as untrusted data. The t-string prefix alone provides no safety — it just makes the parts inspectable. The processor is where the safety lives.
+
+---
+
+### 35. `InterpreterPoolExecutor` Silently Fails on Non-Picklable Callables  [community]
+
+**Problem:** `InterpreterPoolExecutor` uses `pickle` to serialize callables and their arguments between interpreters. Lambdas, inner functions, closures over non-trivial state, and class methods defined interactively cannot be pickled. The failure surfaces as an obscure `ExecutionFailed` or `AttributeError: Can't pickle local object` rather than a meaningful error about the concurrency model.
+
+**Why:** Each interpreter is isolated — the callable must be importable by name in the worker interpreter. Lambdas and local functions have no importable module path, so `pickle` cannot round-trip them. This is the same constraint as `multiprocessing`, but more surprising because `InterpreterPoolExecutor` *looks* like `ThreadPoolExecutor` (which has no such restriction).
+
+**Fix:** Define all worker functions at module level. If you need parameterized work, use `functools.partial` or package state into a picklable dataclass argument.
+
+```python
+from concurrent.futures import InterpreterPoolExecutor
+from dataclasses import dataclass
+import functools
+
+
+# ── BAD: lambda is not picklable ─────────────────────────────────────────────
+with InterpreterPoolExecutor(max_workers=2) as ex:
+    # AttributeError: Can't pickle local object '<lambda>'
+    results = list(ex.map(lambda x: x * x, [1, 2, 3, 4]))   # FAILS
+
+
+# ── BAD: inner function (closure over local variable) ────────────────────────
+def process_all(multiplier: int, data: list[int]) -> list[int]:
+    def scale(x: int) -> int:   # Not importable by worker interpreter
+        return x * multiplier
+
+    with InterpreterPoolExecutor(max_workers=2) as ex:
+        return list(ex.map(scale, data))   # FAILS — 'scale' can't be pickled
+
+
+# ── GOOD: module-level function + functools.partial for parameterisation ─────
+def _scale(multiplier: int, x: int) -> int:    # Module-level → importable
+    return x * multiplier
+
+
+def process_all_good(multiplier: int, data: list[int]) -> list[int]:
+    worker = functools.partial(_scale, multiplier)   # partial IS picklable
+    with InterpreterPoolExecutor(max_workers=2) as ex:
+        return list(ex.map(worker, data))   # ✓
+
+
+# ── GOOD: picklable dataclass for rich parameterisation ──────────────────────
+@dataclass
+class TransformTask:
+    multiplier: int
+    offset: int
+
+    def __call__(self, x: int) -> int:
+        return x * self.multiplier + self.offset
+
+
+def process_with_transform(task: TransformTask, data: list[int]) -> list[int]:
+    with InterpreterPoolExecutor(max_workers=2) as ex:
+        return list(ex.map(task, data))   # dataclass __call__ is picklable ✓
+```
+
+**Rule:** If your worker callable isn't importable by `pickle.loads(pickle.dumps(fn))`, it will fail in `InterpreterPoolExecutor`. Test with `import pickle; pickle.dumps(fn)` before deploying parallel code.
 
 ---
 

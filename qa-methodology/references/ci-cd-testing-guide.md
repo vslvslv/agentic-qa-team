@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.53–v1.60: webServer.wait regex+named-capture, HTML Speedboard timeline, --last-failed flag, aria snapshot page-level, Screencast API), vitest.dev (v4.0: workspace removed+Vite6 required, v4.1: aroundEach/aroundAll hooks, --detect-async-leaks, coverage.changed, test tags --tags-filter, toMatchScreenshot), github.blog (custom runner images GA, OIDC custom properties) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping), github.blog (Copilot Actions minutes billing June 2026) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 29 CI testing pillars covered in this guide:**
+**The 44 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -59,6 +59,9 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 39 | Vitest test tags + `--tags-filter` | Vitest v4.1+: `@smoke`, `@slow` tags enable stage-based CI filtering without separate config files |
 | 40 | Vitest `coverage.changed` | Vitest v4.1+: report coverage only for files changed since base branch — faster PR coverage feedback |
 | 41 | HTML report Speedboard | Playwright v1.58+: execution-timeline view in merged shard reports — identifies critical path |
+| 42 | `trace: 'retain-on-failure-and-retries'` | Playwright v1.54+: record every retry attempt; retain all traces when any fails — full debugging context |
+| 43 | `test.abort()` guard-rail fixtures | Playwright v1.60+: abort test with exit code 1 from fixture/hook on missing env — not silent skip |
+| 44 | Vitest 4.0 pool migration | `maxWorkers`/`minWorkers` replaces `poolOptions.threads.maxThreads`; `VITEST_MAX_WORKERS` replaces `VITEST_MAX_THREADS` |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -193,21 +196,24 @@ export default config;
 **Vitest configuration (vitest.config.ts):**
 
 ```typescript
-// vitest.config.ts
+// vitest.config.ts — Vitest 4.x (maxWorkers replaces poolOptions.threads.maxThreads)
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
     pool: 'threads',         // true OS threads (faster than forks for I/O-light tests)
-    poolOptions: {
-      threads: { maxThreads: 4, minThreads: 2 }
-    },
+    // Vitest 4.0: poolOptions.threads.maxThreads/minThreads removed — use top-level maxWorkers
+    // VITEST_MAX_WORKERS env var replaces deprecated VITEST_MAX_THREADS / VITEST_MAX_FORKS
+    maxWorkers: 4,
+    minWorkers: 2,
     isolate: true,           // fresh module registry per file
     sequence: { shuffle: true },
     // TypeScript-friendly coverage with v8 provider
+    // Vitest 4.0: coverage.all and coverage.extensions removed — coverage.include is now required
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov', 'html'],
+      // coverage.include is mandatory in Vitest 4.0; without it, only loaded files are included
       include: ['src/**/*.ts'],
       exclude: ['src/**/*.d.ts', 'src/**/*.test.ts'],
       thresholds: { lines: 80, branches: 75 },
@@ -215,6 +221,8 @@ export default defineConfig({
   },
 });
 ```
+
+> [community] **Vitest 4.0 pool API breaking change**: `poolOptions.threads.maxThreads` and `poolOptions.threads.minThreads` were removed. Use top-level `maxWorkers` and `minWorkers` instead. The `VITEST_MAX_WORKERS` env var also replaces the old `VITEST_MAX_THREADS` and `VITEST_MAX_FORKS` env vars. Teams upgrading from Vitest 3.x that override worker counts via env vars in CI will see those env vars silently ignored — CI parallelism falls back to the default (CPU count), potentially running more workers than intended on 2-core runners.
 
 **Why:** On a 4-core machine, parallel execution typically cuts wall-clock time by 60–70%. The key risk is shared mutable state — randomize order and use worker isolation to catch it early.
 
@@ -3068,6 +3076,9 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 | `--last-failed` used without `blob` reporter in first run | `--last-failed` reads blob report for failed-test list; other reporters don't produce this; silently runs full suite | Always include `blob` in the reporter list when planning to use `--last-failed` for retry workflows |
 | Custom runner image not rebuilt after Playwright upgrade | Browser binary version in image mismatches new `@playwright/test` version; tests fail with "executable not found" | Automate image rebuilds by triggering on `@playwright/test` version changes in `package-lock.json` |
 | `webServer.wait` regex without named capture group — dynamic port not injected | `wait.stdout` regex without `(?<name>...)` captures nothing; `process.env['SERVER_PORT']` is undefined | Use named capture groups in every `wait` regex: `/Listening on port (?<server_port>\d+)/` |
+| Vitest 4.0 `VITEST_MAX_THREADS` / `VITEST_MAX_FORKS` env vars still set in CI | Replaced by `VITEST_MAX_WORKERS`; old env vars silently ignored — worker count falls back to default (CPU count); 2-core runners spawn 2 workers instead of configured 1 | Rename CI env vars to `VITEST_MAX_WORKERS`; audit any `export VITEST_MAX_*` in `.env.ci` and shell scripts |
+| Playwright `trace: 'on-first-retry'` — no trace for tests that fail on first attempt and aren't retried | First-attempt failures produce no trace; debugging requires reproducing locally | Upgrade to `trace: 'retain-on-failure-and-retries'` (Playwright v1.54+) — records every attempt, retains all traces on any failure |
+| Playwright still installing `chromium` explicitly after v1.57 | Playwright v1.57 switched to Chrome for Testing builds; specifying `chromium` still works but misses latest browser stability fixes | Replace `npx playwright install chromium --with-deps` with `npx playwright install --with-deps` (installs the configured browser set including Chrome for Testing) |
 
 ## Real-World Gotchas [community]
 
@@ -5194,9 +5205,9 @@ export default defineProject({
     include: ['src/**/*.test.ts'],
     environment: 'node',
     pool: 'threads',
-    poolOptions: {
-      threads: { maxThreads: 2, minThreads: 1 },
-    },
+    // Vitest 4.0: poolOptions.threads.maxThreads/minThreads removed — use top-level maxWorkers/minWorkers
+    maxWorkers: 2,
+    minWorkers: 1,
     // Per-project globals and setup are allowed
     globals: true,
     setupFiles: ['./tests/setup.ts'],
@@ -5961,6 +5972,188 @@ jobs:
 ```
 
 > [community] The primary ongoing cost of custom runner images: keeping them up to date. When Playwright releases a new version with updated browser binaries, the image must be rebuilt. Teams that automate the rebuild (trigger on `package-lock.json` changes to Playwright's version) eliminate this maintenance burden. Teams that do not automate it discover the mismatch when `npx playwright install --with-deps` is needed again because the image's browser version doesn't match the `@playwright/test` version in `package.json`.
+
+### Playwright `trace: 'retain-on-failure-and-retries'` for Full Retry Debugging [community]
+
+Playwright v1.54 introduced the `'retain-on-failure-and-retries'` trace mode — a more complete alternative to `'on-first-retry'` for CI debugging. While `'on-first-retry'` records only the first retry attempt, `'retain-on-failure-and-retries'` records **every** test run attempt and retains all traces when any attempt fails. This is critical for diagnosing flaky tests that fail on attempt 1, pass on attempt 2, then fail again on attempt 3 — a trace gap invisible to `'on-first-retry'`.
+
+> [community] Teams using `'on-first-retry'` for a high-retry (retries: 2) e2e suite routinely encounter intermittent failures with no trace: the test passed on retry 1 (producing no trace) then failed on retry 2 (which `on-first-retry` also doesn't record because it's not the "first" retry). Switching to `'retain-on-failure-and-retries'` surfaces traces for all failure attempts, reducing mean-time-to-reproduce a flaky defect from days to minutes.
+
+```typescript
+// playwright.config.ts — trace retention for full retry-cycle debugging (v1.54+)
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  retries: process.env['CI'] ? 2 : 0,
+  use: {
+    // 'retain-on-failure-and-retries': record every attempt; retain all if any attempt fails
+    // Replaces 'on-first-retry' when retry count > 1 and full failure history is needed
+    trace: process.env['CI'] ? 'retain-on-failure-and-retries' : 'on-first-retry',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+  },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+  ],
+  reporter: [
+    ['html'],
+    ['blob', { outputFile: 'blob-report/report.zip' }],
+  ],
+});
+```
+
+```yaml
+# .github/workflows/e2e.yml — upload traces for all failed attempts
+  - uses: actions/upload-artifact@v4
+    if: failure()
+    with:
+      name: playwright-traces-${{ github.run_id }}
+      path: test-results/
+      retention-days: 14
+      # With retain-on-failure-and-retries, test-results/ contains traces for every attempt
+      # Trace files named: <test-name>-attempt-1/trace.zip, <test-name>-attempt-2/trace.zip, etc.
+```
+
+> [community] The storage cost of `'retain-on-failure-and-retries'` vs `'on-first-retry'`: roughly `retries × trace_size_per_test × failed_test_count`. For a suite with 2 retries and 5 failing tests of ~2 MB trace each, the increase is ~10 MB — negligible. The break-even is immediate: one debugging session avoided easily exceeds the $0.01 in artifact storage costs.
+
+### Playwright `test.abort()` for Guard-Rail Tests in CI [community]
+
+Playwright v1.60 introduced `test.abort()` — a method to immediately fail the currently running test case and mark it as aborted (not as a normal assertion failure). It can be called from test fixtures, hooks, or route handlers. In CI, the primary use case is **environment guard-rail assertions**: a fixture or `beforeEach` hook that validates a critical precondition and aborts rather than letting the test case run with wrong setup and produce a confusing failure.
+
+> [community] Before `test.abort()`, teams used `test.skip()` to short-circuit tests with unmet preconditions — but skipped tests produce green CI results, hiding environment misconfiguration for days. `test.abort()` produces a distinct non-green exit that is visible in reports and fails the CI job, making the environment problem impossible to miss.
+
+```typescript
+// tests/fixtures/env-guard.ts — abort tests when required env vars are missing (Playwright v1.60+)
+import { test as base } from '@playwright/test';
+
+// Guard-rail fixture: abort test if critical CI env is not configured
+export const test = base.extend<{ requireTestEnv: void }>({
+  requireTestEnv: [async ({}, use, testInfo) => {
+    const requiredVars = ['TEST_BASE_URL', 'TEST_API_KEY', 'TEST_DB_URL'];
+    const missing = requiredVars.filter(v => !process.env[v]);
+
+    if (missing.length > 0) {
+      // abort() fails with distinct status — visible in reports, not silently skipped
+      await testInfo.attach('env-guard-failure', {
+        body: `Missing required env vars: ${missing.join(', ')}`,
+        contentType: 'text/plain',
+      });
+      test.abort(`Required environment variables not set: ${missing.join(', ')}`);
+    }
+
+    await use();
+  }, { auto: true }], // auto: true applies to ALL tests in this suite automatically
+});
+
+// tests/e2e/checkout.spec.ts — guard-rail applied automatically via fixture
+import { test } from '../fixtures/env-guard';
+import { expect } from '@playwright/test';
+
+test('checkout flow completes successfully', async ({ page }) => {
+  // If TEST_BASE_URL is missing, test.abort() fires before this line
+  // CI sees: "1 aborted" (not "1 passed") — environment issue is flagged
+  await page.goto(process.env['TEST_BASE_URL']!);
+  await expect(page.getByRole('heading', { name: 'Checkout' })).toBeVisible();
+});
+```
+
+```yaml
+# .github/workflows/e2e.yml — abort is distinct from skip in GitHub Actions output
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps
+      # Environment guard: abort tests fail CI job (exit code 1) unlike skip (exit code 0)
+      - run: npx playwright test
+        env:
+          TEST_BASE_URL: ${{ vars.TEST_BASE_URL }}      # from GitHub repo variables
+          TEST_API_KEY: ${{ secrets.TEST_API_KEY }}     # from GitHub secrets
+          TEST_DB_URL: ${{ secrets.TEST_DB_URL }}       # from GitHub secrets
+```
+
+> [community] A key difference between `test.abort()` and `test.skip()` in CI: `skip` produces exit code 0 and shows green, which is appropriate for "this test is not applicable in this environment." `abort()` produces exit code 1 and a distinct `aborted` status in the HTML report, which is appropriate for "this environment is incorrectly configured." Use abort for CI guard-rails; use skip for test-level conditional applicability.
+
+### Vitest 4.0 Pool Architecture Migration [community]
+
+Vitest 4.0 rewrote the worker pool system, removing the `tinypool` dependency. The configuration API changed significantly — `poolOptions.threads.maxThreads`/`minThreads` were replaced by top-level `maxWorkers`/`minWorkers`, and the env vars `VITEST_MAX_THREADS`/`VITEST_MAX_FORKS` were replaced by `VITEST_MAX_WORKERS`. Additionally, `singleThread`/`singleFork` modes are now expressed as `maxWorkers: 1, isolate: false`.
+
+> [community] The most dangerous aspect of the Vitest 4.0 pool migration: the old `poolOptions.threads.maxThreads` configuration silently does nothing in v4.0 — it is not an error, it is simply ignored. A CI pipeline that relied on `maxThreads: 1` to serialize database integration tests (preventing connection pool exhaustion) starts running them in parallel after the upgrade, causing intermittent "connection refused" errors. The failure looks like infrastructure instability, not a configuration change. Always audit `poolOptions` usage when upgrading to Vitest 4.0.
+
+```typescript
+// vitest.config.ts — Vitest 4.0 pool migration (before/after comparison)
+import { defineConfig } from 'vitest/config';
+
+// ❌ BEFORE (Vitest 3.x) — poolOptions.threads.maxThreads removed in v4.0
+// export default defineConfig({
+//   test: {
+//     pool: 'threads',
+//     poolOptions: { threads: { maxThreads: 2, minThreads: 1 } },
+//   },
+// });
+
+// ✅ AFTER (Vitest 4.0+) — use top-level maxWorkers / minWorkers
+export default defineConfig({
+  test: {
+    pool: 'threads',
+    // Top-level maxWorkers replaces poolOptions.threads.maxThreads
+    maxWorkers: 2,
+    minWorkers: 1,
+    isolate: true,
+    // Vitest 4.0 V8 coverage: coverage.all and coverage.extensions removed
+    // coverage.include is now REQUIRED — without it, only loaded files are covered
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'json-summary'],
+      // REQUIRED in v4.0: explicitly declare what to include
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: ['src/**/*.d.ts', 'src/**/*.test.ts', 'src/**/*.spec.ts'],
+      thresholds: { lines: 80, branches: 75 },
+    },
+  },
+});
+```
+
+```typescript
+// vitest.config.integration.ts — serialized integration tests (Vitest 4.0+)
+import { defineConfig } from 'vitest/config';
+
+// Integration tests that require sequential DB access
+export default defineConfig({
+  test: {
+    include: ['src/**/*.integration.test.ts'],
+    pool: 'threads',
+    // Old: poolOptions: { threads: { maxThreads: 1 } } — SILENT NO-OP in v4.0
+    // New: top-level maxWorkers: 1 — actually serializes DB tests
+    maxWorkers: 1,
+    isolate: false,   // replaces singleThread: true (singleThread removed in v4.0)
+    testTimeout: 30_000,
+  },
+});
+```
+
+```yaml
+# .github/workflows/ci.yml — update VITEST_MAX_WORKERS env var (Vitest 4.0+)
+  unit:
+    runs-on: ubuntu-latest
+    env:
+      # Vitest 4.0: VITEST_MAX_THREADS and VITEST_MAX_FORKS are removed
+      # Use VITEST_MAX_WORKERS to control parallelism from CI env
+      VITEST_MAX_WORKERS: 2   # was: VITEST_MAX_THREADS: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npx vitest run --coverage
+```
+
+> [community] The V8 coverage overhaul in Vitest 4.0 also affects teams relying on `coverage.all: true` to catch untested files. That option is removed — Vitest 4.0 only reports coverage for files that were actually loaded during the test run. If a source file has no test importing it, it will not appear in the coverage report at all, which can make coverage look artificially high. The fix is to add all source files explicitly via `coverage.include`, which causes Vitest to instrument all matching files even if no test imports them. Teams that relied on the implicit "all: true" behavior will see their coverage drop on upgrade — the numbers are now accurate.
+
+
 | Martin Fowler — Test Pyramid | Official article | https://martinfowler.com/bliki/TestPyramid.html | Fail-fast ordering rationale |
 | GitHub Actions docs — Caching | Official docs | https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows | node_modules + browser caching |
 | GitHub Actions docs — Concurrency | Official docs | https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs | Concurrency group config |
@@ -6030,3 +6223,6 @@ jobs:
 | Vitest 4.1 Release Notes | Official docs | https://github.com/vitest-dev/vitest/releases/tag/v4.1.0 | New features: aroundEach/aroundAll, async leak detection, coverage.changed, test tags, toMatchScreenshot |
 | Playwright HTML Speedboard | Official docs | https://playwright.dev/docs/test-reporters | Execution timeline tab in merged HTML reports (v1.58+) — critical-path analysis for sharded suites |
 | GitHub Actions custom runner images | Official docs | https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/customizing-github-hosted-runners | Pre-warmed CI environments with pre-installed Node, Playwright browsers, Docker images (GA March 2026) |
+| Playwright `trace` retention modes | Official docs | https://playwright.dev/docs/trace-viewer-intro | `retain-on-failure-and-retries` (v1.54+): record every attempt, retain all on any failure |
+| Playwright `test.abort()` | Official docs | https://playwright.dev/docs/api/class-test#test-abort | Abort test from fixture/hook/route with exit code 1 — guard-rail pattern (v1.60+) |
+| Vitest 4.0 Migration Guide | Official docs | https://vitest.dev/guide/migration | Pool API rewrite: maxWorkers replaces poolOptions.threads.maxThreads; VITEST_MAX_WORKERS; V8 coverage.all removed |

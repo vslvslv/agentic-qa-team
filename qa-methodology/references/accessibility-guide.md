@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -2656,7 +2656,7 @@ jobs:
 |------|------|------|---------|
 | axe-core (jest-axe) | Fast, CI-friendly, component-level | No contrast check in JSDOM | Unit/component CI gating |
 | @axe-core/playwright | Real browser, catches contrast, dynamic content | Slower, needs live server | E2E CI gating |
-| Playwright `page.accessibility.snapshot()` | Accessibility tree snapshot testing (structure, names, roles) | Not a WCAG checker; different purpose | Regression testing AT structure |
+| Playwright `page.accessibility.snapshot()` | **Removed in Playwright 1.57** — use `toMatchAriaSnapshot()` instead | Fully removed (breaking change in 1.57) | Migrate to `locator.ariaSnapshot()` / `toMatchAriaSnapshot()` |
 | Lighthouse (Chrome) | Integrated in DevTools, accessibility + perf score | Less detailed rule set, can score 100 with real issues | Dashboard metrics, quick checks |
 | Storybook `@storybook/addon-a11y` | Per-story axe scan in browser, zero CI setup | Only covers isolated stories, not full user flows | Design system component gates |
 | WAVE | Visual overlay, education-friendly | Manual only, not automatable | Auditor walkthroughs |
@@ -2667,6 +2667,8 @@ jobs:
 | Cypress + cypress-axe | Axe integration for Cypress E2E | Requires Cypress infrastructure; axe-core via Playwright is newer | Existing Cypress test suites |
 
 **Playwright `page.accessibility.snapshot()` for structural regression testing:**
+
+> **REMOVED in Playwright 1.57 (late 2024).** This API was fully removed — not deprecated. Remove any calls to `page.accessibility.snapshot()` from your test suite when upgrading to Playwright 1.57+. Use `locator.ariaSnapshot()` + `toMatchAriaSnapshot()` instead (see the `toMatchAriaSnapshot()` section above). The legacy code below is preserved for reference to aid migration — do not use in new tests.
 
 ```typescript
 // File: e2e/accessibility/a11y-tree-snapshot.spec.ts
@@ -2718,6 +2720,10 @@ test.describe('Accessibility tree snapshot regression', () => {
 - The `/children: equal` and `/children: deep-equal` options enable strict mode when needed
 - Built-in snapshot update workflow: `npx playwright test --update-snapshots`
 - Works on both page-level (`expect(page).toMatchAriaSnapshot()`) and locator-level
+- **Playwright 1.57+: `page.accessibility.snapshot()` was fully removed — `toMatchAriaSnapshot()` is now the only supported approach**
+- **Playwright 1.59+: `ariaSnapshot({ depth, mode })` options for granularity control and AI consumption**
+- **Playwright 1.60+: `ariaSnapshot({ boxes: true })` appends bounding box coordinates for spatial/AI analysis**
+- **Playwright 1.59+: global config in `playwright.config.ts` sets default `/children` matching mode**
 
 ```typescript
 // File: e2e/accessibility/aria-snapshot-regression.spec.ts
@@ -2838,9 +2844,189 @@ test.describe('Accessibility tree snapshot regression (toMatchAriaSnapshot)', ()
 | Dynamic content | Regex patterns | Manual filtering required |
 | Baseline management | `--update-snapshots` CLI | Manual JSON file management |
 | Playwright integration | Native assertion with retries | Raw API, no retry logic |
-| Status | **Recommended** | Deprecated (still works, not removed) |
+| Status | **Recommended** | **Removed in Playwright 1.57** — migrate immediately |
 
-50. **[community] `page.accessibility.snapshot()` is the legacy API — prefer `toMatchAriaSnapshot()` for new tests**: Playwright 1.49 introduced the `toMatchAriaSnapshot()` / `ariaSnapshot()` APIs as the modern replacement. `page.accessibility.snapshot()` still works in 2026 but is not receiving new features. Teams migrating should note: the YAML aria snapshot format uses W3C ARIA roles as keys, while the legacy JSON snapshot uses a slightly different property structure (`name`, `role`, `children` vs YAML's role-first format). Migrate one test file at a time — running both side-by-side during transition is safe.
+### Playwright ariaSnapshot Advanced Options — `depth`, `mode`, and `boxes` (v1.59+)
+
+Playwright 1.59 (April 2025) and 1.60 (May 2025) added three new options to `locator.ariaSnapshot()` and `page.ariaSnapshot()` that give teams more control over snapshot granularity and AI integration.
+
+**`depth` (v1.59):** Limits how deep the accessibility tree snapshot descends. Useful when you want to test a component's top-level structure without being coupled to the internal ARIA structure of child components. Set to `1` for the element itself only; higher values include nested children.
+
+**`mode` (v1.59):** `"default"` (human-readable YAML) or `"ai"` (optimized for AI processing — produces a more compact representation for LLM consumption). Use `"default"` for test assertions; `"ai"` when feeding snapshot data to an AI agent for analysis or fix planning.
+
+**`boxes` (v1.60):** Appends each element's bounding box as `[box=x,y,width,height]` (in CSS pixels, relative to the viewport). Useful when accessibility issues are layout-dependent (e.g., elements visually overlapping but present in the tree) or for AI agents that need spatial context.
+
+```typescript
+// File: e2e/accessibility/aria-snapshot-advanced.spec.ts
+// Playwright 1.59+: ariaSnapshot with depth, mode, and boxes options.
+import { test, expect } from '@playwright/test';
+
+test.describe('ariaSnapshot advanced options', () => {
+
+  // depth: limit snapshot to top-level structure of a component
+  test('navigation top-level structure (depth=1)', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const nav = page.getByRole('navigation', { name: 'Main navigation' });
+
+    // depth=1: only the <nav> itself, not its children link items
+    // Use when asserting the container is present/named without coupling to its contents
+    const shallowSnapshot = await nav.ariaSnapshot({ depth: 1 });
+    expect(shallowSnapshot).toContain('navigation "Main navigation"');
+
+    // depth=2: includes direct children (the link list) but not link text
+    // Use to verify structural presence without coupling to link label text
+    const mediumSnapshot = await nav.ariaSnapshot({ depth: 2 });
+    expect(mediumSnapshot).toContain('list');
+  });
+
+  // mode: 'ai' produces compact representation for LLM consumption
+  test('AI-mode snapshot for accessibility agent analysis', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    // Use mode='ai' when feeding snapshot to an AI agent (navable MCP, Claude Code)
+    // The AI-optimized format is more token-efficient for LLM processing
+    const aiSnapshot = await page.ariaSnapshot({ mode: 'ai' });
+
+    // Validate the snapshot is non-empty and machine-readable
+    expect(aiSnapshot).toBeTruthy();
+    expect(typeof aiSnapshot).toBe('string');
+
+    // Pass to an accessibility agent for analysis — the compact format
+    // allows analyzing larger pages within LLM context windows
+    // e.g.: await mcpTool.analyzeA11ySnapshot(aiSnapshot);
+  });
+
+  // boxes: append bounding boxes for layout-aware accessibility testing
+  test('bounding box data for layout-dependent a11y verification', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const main = page.getByRole('main');
+
+    // boxes=true: each element gets [box=x,y,width,height] appended
+    // Useful for: detecting visually overlapping elements, AI spatial analysis
+    const snapshotWithBoxes = await main.ariaSnapshot({ boxes: true });
+
+    // Snapshot now includes spatial data for each element, e.g.:
+    // - heading "Welcome" [box=0,120,1200,48]
+    // - button "Get started" [box=0,200,180,44]
+    expect(snapshotWithBoxes).toMatch(/\[box=\d+,\d+,\d+,\d+\]/);
+
+    // Verify the heading has sufficient height for accessibility (≥24px)
+    // by extracting bounding boxes from the snapshot
+    const headingBoxMatch = snapshotWithBoxes.match(/heading .+? \[box=(\d+),(\d+),(\d+),(\d+)\]/);
+    if (headingBoxMatch) {
+      const height = parseInt(headingBoxMatch[4], 10);
+      // Headings should be visually large enough to be perceived
+      expect(height).toBeGreaterThan(0);
+    }
+  });
+});
+```
+
+**Global `toMatchAriaSnapshot` configuration in `playwright.config.ts`:**
+
+Instead of specifying `/children` mode on each individual snapshot, set a global default in your Playwright config. This is new in Playwright 1.59+.
+
+```typescript
+// File: playwright.config.ts
+// Global aria snapshot configuration — applies to all toMatchAriaSnapshot() calls.
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  // Configure global aria snapshot matching behavior
+  expect: {
+    toMatchAriaSnapshot: {
+      // 'contain' (default): listed items must be present in order; extras ignored
+      // 'equal': listed items must match exactly — extras cause failure
+      // 'deep-equal': listed items AND all nested children must match exactly
+      children: 'contain',  // Explicit default — change to 'equal' for stricter matching
+    },
+  },
+
+  // ... rest of playwright config
+  use: {
+    baseURL: 'http://localhost:3000',
+    // etc.
+  },
+});
+```
+
+**`/children` matching modes — full reference:**
+
+| Mode | Behavior | When to use |
+|------|----------|-------------|
+| `contain` (default) | Listed items must be present in order; unlisted items are ignored | Most tests — resilient to unrelated UI additions |
+| `equal` | All direct children must match exactly; no extras allowed | Guard against unexpected nav items, option lists |
+| `deep-equal` | All direct AND nested children must match exactly | Full structural regression on stable, isolated components |
+
+```typescript
+// File: e2e/accessibility/aria-snapshot-children-modes.spec.ts
+// Demonstrate /children: equal vs deep-equal vs contain (default).
+import { test, expect } from '@playwright/test';
+
+test.describe('/children matching modes', () => {
+  // contain (default): partial match — extras allowed
+  test('navigation contains expected links (contain mode)', async ({ page }) => {
+    await page.goto('/');
+    const nav = page.getByRole('navigation', { name: 'Main navigation' });
+
+    // Partial match: passes even if nav has additional links beyond these three
+    await expect(nav).toMatchAriaSnapshot(`
+      - navigation "Main navigation":
+        - link "Home"
+        - link "Products"
+    `);
+  });
+
+  // equal: direct children must match exactly — no extras
+  test('footer links match exactly (equal mode)', async ({ page }) => {
+    await page.goto('/');
+    const footer = page.getByRole('contentinfo');
+
+    // /children: equal — the list must have EXACTLY these two links
+    // Fails if any link is added, renamed, or removed
+    await expect(footer).toMatchAriaSnapshot(`
+      - contentinfo:
+        - navigation "Footer links":
+          /children: equal
+          - link "Privacy Policy"
+          - link "Terms of Service"
+    `);
+  });
+
+  // deep-equal: all levels must match exactly (structural regression)
+  test('login form matches expected structure (deep-equal mode)', async ({ page }) => {
+    await page.goto('/login');
+
+    const form = page.getByRole('form', { name: 'Sign in' });
+
+    // /children: deep-equal — every element at every nesting level must match
+    // Use this only for stable, isolated components where you want full regression coverage
+    // Any ARIA change at any depth will fail this test
+    await expect(form).toMatchAriaSnapshot(`
+      - form "Sign in":
+        /children: deep-equal
+        - group "Credentials":
+          - textbox "Email address"
+          - textbox "Password"
+        - button "Sign in"
+        - link "Forgot password?"
+    `);
+  });
+});
+```
+
+54. **[community] Playwright `ariaSnapshot({ depth })` prevents test brittleness from deeply nested component internals**: When you snapshot a composite component without `depth` limiting, every internal ARIA change (e.g., a button inside an icon inside a nav item changes its aria-label) breaks the snapshot. Setting `depth: 2` or `depth: 3` captures the component's public accessibility contract (what screen reader users see at the top level) without coupling to internal implementation. WHY: tests that break on internal changes discourage the use of aria snapshots entirely, exactly like snapshot tests that break on any CSS class change. Use shallow snapshots (`depth: 2`) for component contracts and full-depth (`depth` omitted) for critical full-page structural regression.
+
+55. **[community] `page.accessibility.snapshot()` removal in Playwright 1.57 silently breaks CI for projects not pinning Playwright versions**: Unlike most deprecations that emit warnings before removal, Playwright 1.57 removed `page.accessibility.snapshot()` outright. Projects using `@playwright/test: "^1"` or `"latest"` in `package.json` experience a breaking change on the next `npm install` or `npm ci`. WHY: Playwright follows a release cadence of roughly monthly minor versions — range-pinned dependencies pick up the breaking change automatically. Fix: (1) search for `page.accessibility.snapshot` and `page.accessibility` in your codebase and migrate to `locator.ariaSnapshot()` + `toMatchAriaSnapshot()`; (2) pin Playwright to a specific minor version (`"@playwright/test": "1.60.0"`) and upgrade explicitly rather than using `^`.
+
+
+
+50. **[community] `page.accessibility.snapshot()` was fully removed in Playwright 1.57 — migrate to `toMatchAriaSnapshot()` for all new tests**: Playwright 1.57 (late 2024) removed the `Page#accessibility` API that underpinned `page.accessibility.snapshot()`. This was a **breaking change** — not a deprecation. Teams upgrading Playwright from 1.56 or earlier will encounter runtime errors if they still call `page.accessibility.snapshot()`. Migration: replace `page.accessibility.snapshot({ root: handle })` with `expect(locator).toMatchAriaSnapshot(template)` for assertion-based tests, or `await locator.ariaSnapshot()` for programmatic snapshot capture. The YAML aria snapshot format uses role-first syntax and supports partial matching by default — see the `toMatchAriaSnapshot()` section above for the full migration guide. The old JSON snapshot files (`.json` extensions) can be deleted after migration.
 
 ### Playwright `toHaveAccessibleErrorMessage()` — Testing `aria-errormessage` (v1.50+)
 
@@ -6151,7 +6337,7 @@ TypeScript 6.0 (released in the TS 6.x series, see lang-refine TypeScript patter
 | aria-required MDN | Reference | https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Attributes/aria-required | When to use aria-required vs HTML required attribute |
 | RGAA (French Accessibility Standard) | Official | https://accessibilite.numerique.gouv.fr/methode/criteres-et-tests/ | French government accessibility standard; axe-core 4.11.0+ supports RGAA tags for rule filtering |
 | WCAG 3.0 Working Draft (March 2026) | Draft spec | https://www.w3.org/TR/wcag-3.0/ | Most current draft (March 3, 2026); Bronze/Silver/Gold outcome-based model; still "several years" from finalization |
-| Playwright Aria Snapshots | Official | https://playwright.dev/docs/aria-snapshots | toMatchAriaSnapshot() YAML-based accessibility tree regression testing (v1.49+); preferred over legacy page.accessibility.snapshot() |
+| Playwright Aria Snapshots | Official | https://playwright.dev/docs/aria-snapshots | toMatchAriaSnapshot() YAML-based accessibility tree regression testing (v1.49+); ariaSnapshot({ depth, mode, boxes }) options (v1.59-v1.60); page.accessibility.snapshot() removed in v1.57 |
 | Playwright toHaveAccessibleErrorMessage | Official | https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-accessible-error-message | Assert computed aria-errormessage text (v1.50+); tests what screen readers announce, not HTML attributes |
 | Playwright getByRole description | Official | https://playwright.dev/docs/api/class-page#page-get-by-role | description option for getByRole() (v1.60+); matches by accessible description from aria-describedby |
 | React 19 Form Actions | Official | https://react.dev/blog/2024/12/05/react-19 | React 19 form Actions: auto-reset on success, useFormStatus for accessible loading states |

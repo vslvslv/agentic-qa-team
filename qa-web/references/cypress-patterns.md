@@ -1,7 +1,7 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api -->
-<!-- new in this iteration: React SSR hydration bootstrap script (<script data-cy-bootstrap>, Cypress 15.11), Cypress.ElementSelector.defaults() selectorPriority with full attribute list and Studio/cy.prompt() integration (Cypress 15+), cy.intercept() delay >= 2^31 validation error (Cypress 15.13.1), <base target="_top"> iframe navigation break fix (15.14.2), cypress open memory leak from uncaughtException listener accumulation (15.14.1), allowCypressEnv:false gotcha with third-party plugins, 4 new community gotchas (86-89) -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide -->
+<!-- new in this iteration: cy.url()/cy.location() automation-client change in v15 (cross-origin gotcha), cy.fixture() cache invalidation stale-data gotcha after cy.writeFile(), cy.wrap() circular reference protection, synchronous XHR route handler browser freeze (v15.8 fix), defaultBrowser config option for local developer DX, 4 new community gotchas (90-93), pattern 114 (defaultBrowser + browser override patterns) -->
 
 ## Core Principles
 
@@ -5263,6 +5263,9 @@ it('asserts that a new tab URL was requested without navigating', () => {
 | `justInTimeCompile: true` (default webpack CT, Cy 14+) | Compile only current-spec modules | Reduces memory for large webpack CT suites; true by default since Cy 14 |
 | `experimentalRunAllSpecs: true` (component, Cy 15.9+) | All component specs in one browser session | Eliminates browser relaunch overhead for 100+ component specs |
 | `Cypress.browser.family !== 'chromium'` | Browser family guard for CDP commands | Required for all Cypress.automation() CDP calls since Firefox uses BiDi (Cy 14.1+) |
+| `defaultBrowser: 'chrome'` (config, Cy 13.16+) | Set default browser for `cypress open` locally | Ensure developers and CI use the same Chrome engine; avoids Electron/Chrome divergence |
+| `cy.location()` (Cy 15+) | Returns URL via automation client, not window | Available cross-origin in cy.origin() blocks; ancestorOrigins not available — use cy.window() for those |
+| `cy.wrap(circularObj)` (Cy 15.7+) | Safely wrap circular reference objects | Circular reference protection added; older versions freeze the Cypress App |
 
 ### 101. Svelte 5 Component Testing  [community]
 
@@ -6841,5 +6844,84 @@ it('confirms selector strategy is applied', () => {
 88. **Memory leak in `cypress open` from accumulating `uncaughtException` listeners** [community] — In versions before Cypress 15.14.1, each time a spec was re-run during `cypress open` (e.g., while watching files in development), an additional `uncaughtException` listener was registered on the Mocha runner without removing the previous one. After 20-30 re-runs of a complex spec, the Cypress app became sluggish and eventually consumed several gigabytes of memory, requiring a restart. The leak is fixed in 15.14.1. If you're on an older version and experience memory growth during active TDD sessions with `cypress open`, restart the runner every 30-50 re-runs as a stopgap.
 
 89. **`allowCypressEnv: false` blocks ALL `Cypress.env()` calls, including those in plugin and support files** [community] — When you set `allowCypressEnv: false` in `cypress.config.ts` to enforce migration from `Cypress.env()` to `cy.env()`, Cypress throws at test time for any remaining `Cypress.env()` call — including those inside third-party plugins, `cypress/support/e2e.ts`, or community recipes that haven't been updated. A common failure mode is enabling `allowCypressEnv: false` after migrating your own test code, then discovering that `@cypress/grep`'s tag filter, `cypress-axe`, or Cypress Studio internally use `Cypress.env()` to read configuration. Always audit with a grep: `grep -r "Cypress\.env(" cypress/` to find all callsites before setting the flag. As a migration bridge, use `allowCypressEnv: 'warn'` (logs deprecation warnings without throwing) to identify remaining usages without blocking CI.
+
+90. **`cy.url()` and `cy.location()` use automation clients in Cypress 15 — not all properties are available inside `cy.origin()` blocks** [community] — Cypress 15 changed `cy.url()`, `cy.location()`, `cy.hash()`, `cy.title()`, `cy.go()`, and `cy.reload()` to source their values from the CDP or WebDriver BiDi automation client instead of the `window` object. This was done to eliminate cross-origin access restrictions so these commands work anywhere in a test, including inside `cy.origin()` blocks. The catch: the automation client only exposes a subset of window properties. Code that reads `cy.location()` and expects the full `Location` object (all eight properties: `href`, `origin`, `protocol`, `host`, `hostname`, `port`, `pathname`, `search`, `hash`) continues to work, but any custom code that previously relied on extended `window.location` properties (e.g., accessing `window.location` via `cy.window().its('location.ancestorOrigins')`) will no longer work via `cy.location()` and must use `cy.window().then(win => win.location.ancestorOrigins)` instead. This affects exactly the properties not present in the standard URL/Location automation-client response. WebKit still uses the `window` object, so behavior can differ per browser in mixed CI matrices.
+
+91. **`cy.fixture()` cache is invalidated by `cy.writeFile()` — but only as of Cypress 15** [community] — In Cypress 14 and earlier, if a test used `cy.writeFile()` to update a fixture file and then loaded that fixture via `cy.fixture()` or `cy.intercept({ fixture: '...' })` in the same or a later test within the same run, the old cached fixture content was served instead of the updated file. The fixture cache did not observe file modifications made mid-run. Cypress 15 fixed this: `cy.writeFile()` now triggers fixture cache invalidation. If your test suite uses dynamic fixture generation (e.g., writing fixture data from API responses or seeding unique IDs) and then consuming those fixtures via `cy.intercept({ fixture: '...' })`, the pattern is only reliable on Cypress 15+. Also fixed in Cypress 15: tests calling `cy.fixture(name, 'binary')` and `cy.fixture(name)` in different `it()` blocks no longer interfere — different encoding options now produce consistent results regardless of test execution order. Upgrade to Cypress 15 if you rely on mid-run fixture mutation.
+
+92. **`cy.wrap()` freezes the Cypress App when passed an object with circular references** [community] — Before Cypress 15.7.0, calling `cy.wrap(obj)` on any JavaScript object that contained a circular reference (e.g., a DOM element's `owner` property, a Redux store internal structure, or any `{ self: obj }` reference) caused infinite recursion in Cypress's internal cloning logic, hanging the Cypress App completely and requiring a force-quit. The only symptom was the app becoming unresponsive with no error message. Cypress 15.7.0 fixed the recursion by adding circular reference detection, but if you're on an older version: (a) never wrap raw DOM elements directly — use `cy.get()` to query them; (b) avoid wrapping objects that might contain circular references; (c) use `cy.wrap(JSON.parse(JSON.stringify(obj)))` as a shallow-safe workaround for serializable objects. Common unexpected sources: `cy.wrap(event.target)`, `cy.wrap(window)`, and `cy.wrap(this)` inside a `this`-bound Mocha suite.
+
+93. **Synchronous XHR requests with `cy.intercept()` route handlers froze the browser before Cypress 15.8.0** [community] — Legacy code that uses synchronous `XMLHttpRequest` (i.e., `xhr.open('GET', url, false)` with the third argument `false`) causes the browser's main thread to block until the request completes. When a `cy.intercept()` route handler was registered for such a URL, Cypress's async interception logic and the browser's synchronous XHR semantics deadlocked: the browser waited for the XHR response (blocking the thread), while Cypress's handler waited for the browser's event loop to process the intercept callback (which couldn't run because the thread was blocked). The result was a browser freeze that required a test timeout. Cypress 15.8.0 resolved this with a synchronous passthrough path for synchronous XHR. If you're on an older version, the workaround is to register a `cy.intercept()` stub with `{ forceNetworkError: false }` and a static body — synchronous XHR stubs are returned synchronously without invoking the async route handler. For new code, there is no reason to use synchronous XHR; migrate callers to `fetch()` or async `XMLHttpRequest`.
+
+---
+
+### 114. `defaultBrowser` Config — Local Developer Experience and CI Browser Override
+
+The `defaultBrowser` configuration option (Cypress 13.16.0+) sets which browser Cypress opens by default when running `cypress open` without a `--browser` CLI flag. This is separate from the `--browser` CI flag and only affects local development sessions.
+
+```typescript
+// cypress.config.ts — set the default browser for local cypress open sessions
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  // defaultBrowser applies only to 'cypress open' (local interactive mode).
+  // It does NOT affect 'cypress run' — CI always passes --browser explicitly.
+  defaultBrowser: 'chrome',  // 'chrome' | 'edge' | 'firefox' | 'electron' | 'webkit'
+
+  e2e: {
+    baseUrl: 'http://localhost:3000',
+    specPattern: 'cypress/e2e/**/*.cy.ts',
+  },
+});
+```
+
+```typescript
+// cypress.config.ts — per-project defaultBrowser for multi-project setups
+// Useful when E2E tests are Chrome-first but component tests use Electron (faster)
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    baseUrl: 'http://localhost:3000',
+    // defaultBrowser at top-level applies to both e2e and component unless overridden
+  },
+  component: {
+    devServer: {
+      framework: 'react',
+      bundler: 'vite',
+    },
+    specPattern: 'src/**/*.cy.tsx',
+    // Component tests open with Electron by default — fast startup, no browser install needed
+    // Override per-project by adding defaultBrowser inside the component block (not supported
+    // directly; use --browser electron in npm scripts for component testing scripts)
+  },
+  defaultBrowser: 'chrome',  // top-level: E2E tests open in Chrome by default
+});
+```
+
+```bash
+# CI: always specify --browser explicitly — defaultBrowser is ignored in cypress run
+npx cypress run --browser chrome --record --key $CYPRESS_RECORD_KEY
+
+# Local: run E2E in Firefox for cross-browser verification, overriding defaultBrowser
+npx cypress open --browser firefox
+
+# Local: run E2E in the default browser (as configured in defaultBrowser)
+npx cypress open
+# → Opens Chrome (per defaultBrowser: 'chrome' config)
+
+# npm scripts — recommended approach for team consistency
+# package.json
+# {
+#   "scripts": {
+#     "cy:open": "cypress open",                           // uses defaultBrowser
+#     "cy:open:ff": "cypress open --browser firefox",    // cross-browser check
+#     "cy:run": "cypress run --browser chrome",          // CI-style headless run
+#     "cy:run:edge": "cypress run --browser edge"        // Edge cross-browser CI
+#   }
+# }
+```
+
+**[community]** WHY: Without `defaultBrowser`, Cypress 13+ defaults to Electron when opening the test runner locally. Electron is convenient for CI (no browser installation required) but differs from production Chrome in several ways: Electron uses an older Chromium base than the latest stable Chrome, does not support extensions, and its CDP implementation diverges for a few automation APIs. Teams that develop tests locally in Electron but run CI in Chrome regularly hit false-local-passes: the test works in Electron's Chromium but fails in Chrome due to subtle CSS rendering differences (particularly for animations and `contain: strict` layout), Web Crypto API availability, or `navigator.userAgent` checks in the application. Setting `defaultBrowser: 'chrome'` ensures every developer opens the same browser as CI, catching these discrepancies immediately. The trade-off: Chrome must be installed on developer machines, whereas Electron ships bundled with Cypress.
 
 ---

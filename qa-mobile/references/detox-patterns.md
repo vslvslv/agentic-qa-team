@@ -1,7 +1,8 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 43 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 44 | score: 100/100 | date: 2026-05-12 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
+<!-- iteration 44 (2026-05-12) adds: WebView testing (by.web() matchers, web element interactions, hybrid app patterns), visual regression with device.takeScreenshot() + external tools, JUnit XML CI reporting (jest-junit), React Native 0.78+ New Architecture strict mode notes, device.resetContentAndSettings() for deep iOS simulator reset, network activity tracking (NetworkSynchronizationEnabled per-configuration), 7 new community gotchas (44–50: by.web() IPC latency vs native sync, visual diff false positives from dynamic content, jest-junit path collision in sharded CI, device.resetContentAndSettings() permission re-grant pattern, Android API 35 predictive back gesture breaking by.system() back button, Hermes debugger port conflict on parallel CI jobs, and WebView URL not yet updated when Detox selector fires) -->
 
 ## Core Principles
 
@@ -1050,6 +1051,7 @@ Ranked from most stable to most fragile:
 | 5 | Visible text | `by.text('Log in')` | Fragile — breaks on copy changes and i18n |
 | 6 | XPath / CSS | n/a (not supported) | Not supported in Detox — do not attempt |
 | 7 | System elements | `by.system()` | iOS only — target system-level elements (permission dialogs, alerts) not in your app's view hierarchy |
+| 8 | Web elements | `by.web.id()`, `by.web.cssSelector()` | Inside a `<WebView>` — use `web(element(by.id('webview-id')))` scope |
 
 **Rule**: Add `testID` to every button, input, screen root, and list item that a test will touch. Coordinate with app developers to add them proactively.
 
@@ -1775,6 +1777,28 @@ jobs:
 | `jestExpect` (global) | Jest's `expect` aliased to avoid Detox conflict | Value assertions alongside Detox element assertions |
 | `by.system()` | Match system-level UI elements (alerts, permission dialogs) | When pre-granting in `launchApp` is not possible |
 
+### WebView APIs (Detox 20+)
+
+| Method | Description | When to use |
+|--------|-------------|-------------|
+| `web(element(by.id(id)))` | Create a WebView scope for DOM interactions | Required before any `by.web.*` selector |
+| `by.web.id('el-id')` | Match DOM element by `id` attribute | Primary web selector — most stable |
+| `by.web.testId('val')` | Match DOM element by `data-testid` attribute | When web elements use `data-testid` |
+| `by.web.className('cls')` | Match DOM element by CSS class | When id/testid unavailable |
+| `by.web.cssSelector('sel')` | Match DOM element by CSS selector | Complex DOM structures |
+| `by.web.xpath('xpath')` | Match DOM element by XPath | Semantic HTML traversal |
+| `by.web.label('text')` | Match DOM element by ARIA label | Accessibility-labeled web elements |
+| `by.web.name('attr')` | Match DOM element by `name` attribute | Form input `name` attribute |
+| `by.web.href('url')` | Match anchor by exact `href` | Link validation |
+| `by.web.hrefContains('str')` | Match anchor by partial `href` | Flexible link matching |
+| `webEl.tap()` | Click a DOM element | Web buttons, links |
+| `webEl.typeText(str)` | Type into a web input | Web form fields |
+| `webEl.getText()` | Return element's visible text content | Web content assertions |
+| `webEl.getInnerHTML()` | Return element's innerHTML | HTML structure assertions |
+| `webEl.scrollToView()` | Scroll the web page to reveal element | Off-viewport web elements |
+| `webEl.runScript(fn)` | Execute JS with element as argument | Custom web interactions |
+| `webEl.exists()` | Returns true/false without throwing | Optional web element checks |
+
 ### Android-specific device APIs
 
 | Method | Description | When to use |
@@ -1983,6 +2007,10 @@ Use this checklist when a test passes locally but fails on CI:
 28. **Android Linux CI emulator rendering stalls** — Is `-gpu swiftshader_indirect` missing from emulator boot flags? Add it to prevent single-threaded SwiftShader rendering deadlocks (Gotcha 36).
 29. **`by.type()` matching fails after RN 0.76+ New Architecture migration** — Did Fabric change native type names? Update type strings to `RCTViewComponentView` (iOS) or `ReactViewGroup` (Android), or prefer `by.id()` (Gotcha 37).
 30. **Android app cannot reach mock server at `localhost`** — Is `reversePorts` missing from the app config? The emulator routes `localhost` to its own loopback, not the host. Use `reversePorts: [8088]` or `launchArgs: { API_BASE_URL: 'http://10.0.2.2:8088' }` (Gotcha 38).
+31. **`by.web()` assertion races WebView page transition** — Did a web interaction trigger a navigation before your assertion? Wait for a DOM element on the destination page before asserting (Gotcha 44).
+32. **Screenshot visual diff fails on CI due to dynamic content** — Are timestamps, counters, or badges in the screenshot? Freeze dynamic content with `VISUAL_TEST_MODE` launchArg (Gotcha 45).
+33. **Android 15 predictive back gesture leaves both screens visible briefly** — After `device.pressBack()`, assert destination visible AND source not visible; don't rely on the intermediate preview state (Gotcha 47).
+34. **React Native 0.78+ `strictMode` causes double-render flakiness on Debug builds** — Use Release builds for CI Detox runs; or disable `React.StrictMode` during Detox tests (Gotcha 50).
 
 ---
 
@@ -4963,6 +4991,862 @@ hermes-profile-transformer \
 
 ---
 
+---
+
+## Additional Patterns (iteration 44 additions)
+
+### Pattern 36 — WebView testing with `by.web()` (Detox 20+)
+
+When a React Native app embeds a `<WebView>` component, Detox can interact with DOM
+elements inside the WebView using the `by.web()` matcher API introduced in Detox 20.
+Web element interactions work on both iOS (WKWebView) and Android (Chromium WebView).
+
+The `by.web()` scope must always be wrapped in a `web(element(...))` call that identifies
+the containing WebView element, then `.element(by.web.*matcher*)` to select the DOM node.
+
+```js
+// e2e/webview.test.js
+// NOTE: WebView testing requires the WebView to have testID set on the RN component.
+//       DOM element selectors are matched INSIDE the WebView's page context.
+
+describe('Embedded WebView interactions', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  beforeEach(async () => {
+    await device.reloadReactNative();
+  });
+
+  it('types into a web form inside a WebView', async () => {
+    await element(by.id('open-webview-button')).tap();
+    await waitFor(element(by.id('embedded-webview'))).toBeVisible().withTimeout(5000);
+
+    // Select the WebView container by its native testID
+    const webview = web(element(by.id('embedded-webview')));
+
+    // Fill a web form field using the DOM element's id
+    await webview.element(by.web.id('username')).tap();
+    await webview.element(by.web.id('username')).typeText('testuser@example.com');
+
+    // Fill password field by CSS class (use id when possible — more stable)
+    await webview.element(by.web.className('password-field')).typeText('secret123');
+
+    // Click the web submit button
+    await webview.element(by.web.id('login-btn')).tap();
+
+    // Verify the WebView navigated to the success page
+    await waitFor(webview.element(by.web.id('welcome-message')))
+      .toExist()
+      .withTimeout(5000);
+  });
+
+  it('scrolls inside a WebView to reach a web element', async () => {
+    await element(by.id('open-webview-button')).tap();
+    await waitFor(element(by.id('embedded-webview'))).toBeVisible().withTimeout(5000);
+
+    const webview = web(element(by.id('embedded-webview')));
+
+    // scrollToView: scrolls the web page until the element is in the viewport
+    await webview.element(by.web.id('terms-section')).scrollToView();
+    await webview.element(by.web.id('accept-terms-checkbox')).tap();
+  });
+
+  it('reads web element text via getInnerHTML', async () => {
+    await element(by.id('open-webview-button')).tap();
+    await waitFor(element(by.id('embedded-webview'))).toBeVisible().withTimeout(5000);
+
+    const webview = web(element(by.id('embedded-webview')));
+
+    // getInnerHTML returns the element's innerHTML as a string
+    const html = await webview.element(by.web.id('product-description')).getInnerHTML();
+    jestExpect(html).toContain('Wireless headphones');
+
+    // getText returns the element's visible text content (no HTML tags)
+    const text = await webview.element(by.web.id('product-title')).getText();
+    jestExpect(text).toBe('ANC Headphones Pro');
+  });
+
+  it('navigates within the WebView and waits for the URL to change', async () => {
+    await element(by.id('open-webview-button')).tap();
+    await waitFor(element(by.id('embedded-webview'))).toBeVisible().withTimeout(5000);
+
+    const webview = web(element(by.id('embedded-webview')));
+
+    await webview.element(by.web.id('terms-link')).tap();
+
+    // Wait for a DOM element that only exists on the /terms page
+    await waitFor(webview.element(by.web.id('terms-heading')))
+      .toExist()
+      .withTimeout(5000);
+  });
+});
+```
+
+**`by.web` selector priority (most stable → most fragile):**
+
+| Rank | Matcher | API | Notes |
+|------|---------|-----|-------|
+| 1 | `id` attribute | `by.web.id('el-id')` | Best — `id` attributes rarely change |
+| 2 | `testID` attribute | `by.web.testId('testID')` | Maps to `data-testid` on web |
+| 3 | XPath | `by.web.xpath('//button[@type="submit"]')` | Reliable for semantic HTML |
+| 4 | CSS selector | `by.web.cssSelector('#form .submit-btn')` | Flexible; prefer class+id combos |
+| 5 | Class name | `by.web.className('submit-btn')` | Fragile — CSS classes change frequently |
+| 6 | Accessibility label (ARIA) | `by.web.label('Submit form')` | Good for ARIA-labeled elements |
+| 7 | `href` attribute | `by.web.href('https://...')` | For link validation only |
+| 8 | Partial `href` | `by.web.hrefContains('/products')` | Broad but useful for link testing |
+| 9 | Visible name | `by.web.name('username')` | `name` attribute on form inputs |
+
+**Key `web()` element APIs:**
+
+| Method | Description |
+|--------|-------------|
+| `.tap()` | Click/tap the DOM element |
+| `.typeText(str)` | Type into an input field |
+| `.clearText()` | Clear an input field |
+| `.replaceText(str)` | Clear and type |
+| `.selectAllText()` | Select all text in an input |
+| `.getText()` | Return the element's visible text |
+| `.getInnerHTML()` | Return the element's innerHTML |
+| `.scrollToView()` | Scroll the page to bring element into viewport |
+| `.focus()` | Focus an input element |
+| `.moveCursorToEnd()` | Move text cursor to end of input |
+| `.runScript(fn)` | Run a JS function with the element as argument |
+| `.runScriptAsync(fn)` | Async version of `runScript` |
+| `.exists()` | Returns `true`/`false` — unlike `toExist()`, does not throw |
+
+---
+
+### Pattern 37 — Visual regression testing integration with Detox screenshots
+
+Detox does not have a built-in visual diff engine, but `device.takeScreenshot()` combined
+with an external image comparison library enables pixel-level regression testing. The
+pattern is: capture a baseline screenshot on a known-good build, then compare on every
+subsequent run.
+
+```bash
+# Install image comparison library (pixelmatch + pngjs are commonly used)
+npm install --save-dev pixelmatch pngjs fs-extra
+```
+
+```js
+// e2e/helpers/visualAssert.js
+const fs = require('fs');
+const path = require('path');
+const { PNG } = require('pngjs');
+const pixelmatch = require('pixelmatch');
+
+const BASELINE_DIR = path.join(__dirname, '..', 'visual-baselines');
+const DIFF_DIR = path.join(__dirname, '..', '..', '.artifacts', 'visual-diffs');
+
+/**
+ * Captures a screenshot and compares it against a stored baseline.
+ * On first run (no baseline exists), saves the screenshot as the new baseline.
+ *
+ * @param {string} name - Unique snapshot name (e.g., 'login-screen-light-mode')
+ * @param {number} threshold - Pixel difference threshold 0–1 (default: 0.1 = 10% mismatch allowed)
+ */
+async function assertScreenshot(name, threshold = 0.1) {
+  const screenshotPath = await device.takeScreenshot(name);
+  const baselinePath = path.join(BASELINE_DIR, `${name}.png`);
+
+  if (!fs.existsSync(baselinePath)) {
+    // First run: save as baseline
+    fs.mkdirSync(BASELINE_DIR, { recursive: true });
+    fs.copyFileSync(screenshotPath, baselinePath);
+    console.log(`[visual] Baseline saved: ${name}`);
+    return;
+  }
+
+  // Compare against baseline
+  const current = PNG.sync.read(fs.readFileSync(screenshotPath));
+  const baseline = PNG.sync.read(fs.readFileSync(baselinePath));
+
+  jestExpect(current.width).toBe(baseline.width);
+  jestExpect(current.height).toBe(baseline.height);
+
+  const diff = new PNG({ width: current.width, height: current.height });
+  const mismatchedPixels = pixelmatch(
+    baseline.data, current.data, diff.data,
+    current.width, current.height,
+    { threshold }
+  );
+
+  const totalPixels = current.width * current.height;
+  const mismatchRatio = mismatchedPixels / totalPixels;
+
+  if (mismatchRatio > threshold) {
+    // Save diff image for CI review
+    fs.mkdirSync(DIFF_DIR, { recursive: true });
+    fs.writeFileSync(path.join(DIFF_DIR, `${name}-diff.png`), PNG.sync.write(diff));
+    throw new Error(
+      `Visual regression: ${name} — ${(mismatchRatio * 100).toFixed(2)}% pixels differ ` +
+      `(threshold: ${(threshold * 100).toFixed(0)}%). Diff saved to ${DIFF_DIR}.`
+    );
+  }
+
+  console.log(`[visual] ${name}: ${mismatchedPixels} pixels differ (${(mismatchRatio * 100).toFixed(2)}%) — PASS`);
+}
+
+module.exports = { assertScreenshot };
+```
+
+```js
+// e2e/visual.test.js
+const { assertScreenshot } = require('./helpers/visualAssert');
+
+describe('Visual regression: Login screen', () => {
+  beforeAll(async () => {
+    await device.launchApp({
+      newInstance: true,
+      permissions: { notifications: 'YES' },
+    });
+
+    // Set deterministic status bar for consistent screenshots
+    if (device.getPlatform() === 'ios') {
+      await device.setStatusBar({
+        time: '9:41',
+        batteryLevel: 100,
+        batteryState: 'charging',
+        wifiBars: 3,
+        cellularBars: 4,
+        dataNetwork: 'wifi',
+      });
+    }
+  });
+
+  it('login screen matches baseline (light mode)', async () => {
+    await waitFor(element(by.id('login-screen'))).toBeVisible().withTimeout(5000);
+    await assertScreenshot('login-screen-light', 0.05);
+  });
+
+  it('login screen matches baseline (dark mode)', async () => {
+    if (device.getPlatform() !== 'ios') return; // device.setAppearance is iOS-only
+    await device.setAppearance('dark');
+    await waitFor(element(by.id('login-screen'))).toBeVisible().withTimeout(3000);
+    await assertScreenshot('login-screen-dark', 0.05);
+    await device.setAppearance('light');
+  });
+});
+```
+
+**Updating baselines**: When a legitimate UI change is made, delete the baseline files and let the test run once to regenerate them:
+
+```bash
+# Remove baselines for a specific screen to regenerate on next run
+rm e2e/visual-baselines/login-screen-*.png
+
+# Remove all baselines (full re-baseline)
+rm -rf e2e/visual-baselines/
+```
+
+**CI integration**: Add baseline files to version control so every CI run compares against
+the same committed baseline:
+
+```yaml
+# GitHub Actions — upload visual diffs as artifacts on failure
+- name: Upload visual diffs
+  if: failure()
+  uses: actions/upload-artifact@v4
+  with:
+    name: visual-regression-diffs
+    path: .artifacts/visual-diffs/
+    retention-days: 7
+```
+
+---
+
+### Pattern 38 — JUnit XML test reporting for CI test management integration
+
+Detox's default Jest reporter outputs console logs. For integration with CI test management
+systems (Jenkins, TCMS, Azure DevOps Test Plans, Allure), produce a JUnit XML report using
+`jest-junit`. The XML format is universally accepted by test management systems.
+
+```bash
+npm install --save-dev jest-junit
+```
+
+```js
+// e2e/jest.config.js — add jest-junit alongside Detox reporter
+const isCI = process.env.CI === 'true';
+
+module.exports = {
+  rootDir: '..',
+  testMatch: ['<rootDir>/e2e/**/*.test.js'],
+  testTimeout: 120000,
+  retryTimes: isCI ? 1 : 0,
+  globalSetup: 'detox/runners/jest/globalSetup',
+  globalTeardown: 'detox/runners/jest/globalTeardown',
+  testEnvironment: 'detox/runners/jest/testEnvironment',
+  reporters: [
+    'detox/runners/jest/reporter',           // required for Detox lifecycle
+    ...(isCI ? [['jest-junit', {
+      // Shard-specific output file: avoids collision when multiple shards run in parallel
+      outputDirectory: '.artifacts',
+      outputName: `junit-shard-${process.env.SHARD_INDEX || '1'}.xml`,
+      classNameTemplate: '{classname}',
+      titleTemplate: '{title}',
+      ancestorSeparator: ' › ',
+      addFileAttribute: 'true',
+    }]] : []),
+  ],
+};
+```
+
+```yaml
+# GitHub Actions — publish JUnit results for the Tests tab
+- name: Run Detox E2E (shard ${{ matrix.shard }})
+  run: |
+    npx detox test \
+      -c ios.sim.release \
+      --shard-index ${{ matrix.shard }} \
+      --shard-count ${{ strategy.job-total }} \
+      --loglevel verbose
+  env:
+    SHARD_INDEX: ${{ matrix.shard }}
+
+- name: Publish test results
+  if: always()  # publish even on failure to see which tests failed
+  uses: EnricoMi/publish-unit-test-result-action@v2
+  with:
+    files: .artifacts/junit-*.xml
+    check_name: Detox E2E Results (Shard ${{ matrix.shard }})
+    comment_mode: off  # don't comment on every PR; just add a check
+```
+
+**Test suite classification for JUnit**: `jest-junit` uses the `describe()` name as the
+`classname` and the `it()` name as the `testname`. Structure your test files consistently
+to get clean JUnit reports:
+
+```js
+// e2e/login.test.js — classname will be "Login" in JUnit
+describe('Login', () => {
+  it('authenticates with valid credentials', async () => { /* ... */ });
+  it('shows error for invalid credentials', async () => { /* ... */ });
+  it('navigates to password reset', async () => { /* ... */ });
+});
+```
+
+---
+
+### Pattern 39 — `device.resetContentAndSettings()` for complete iOS Simulator factory reset
+
+`device.resetContentAndSettings()` (available in Detox 20.5+) performs the equivalent
+of **Settings → General → Transfer or Reset iPhone → Erase All Content and Settings** on
+the iOS Simulator. It wipes all installed apps, user data, Keychain, location history,
+and system preferences — returning the simulator to factory state. This is slower than
+`delete: true` but more thorough: it also resets system-level state like trusted Bluetooth
+devices, Wi-Fi history, and `CoreData` system stores that `delete: true` leaves intact.
+
+```js
+// Use only in a globalSetup script — too slow for per-test or per-suite use
+// (takes 30–60 seconds on a cold simulator)
+
+// e2e/globalSetup.js — factory-reset the simulator once before the entire run
+module.exports = async () => {
+  // Only reset on CI to avoid wiping developer simulator state locally
+  if (process.env.CI === 'true' && process.env.DETOX_FULL_RESET === '1') {
+    // Must be called before Detox boots the device (before any launchApp)
+    // This API is not available via the device global — must be called via
+    // the Detox internals or via xcrun simctl before the Detox session starts
+    const { execSync } = require('child_process');
+    const simName = process.env.SIMULATOR_NAME || 'iPhone 15';
+    execSync(`xcrun simctl erase "${simName}"`, { stdio: 'inherit' });
+    // Wait for the simulator to reboot after erase (10–15 seconds)
+    execSync(`xcrun simctl bootstatus "${simName}" -b`, { stdio: 'inherit' });
+  }
+};
+```
+
+```js
+// Within a test (Detox 20.5+ device API):
+// device.resetContentAndSettings() can also be called from within a test
+// It terminates the current app, resets the simulator, and reboots it.
+// WARNING: The device is unavailable for 30–60 seconds after this call.
+// Use only when 'delete: true' is insufficient.
+
+it('verifies onboarding from a factory-fresh simulator state', async () => {
+  // This is a one-off test that requires the simulator to be in pristine state.
+  // Run this test in a dedicated CI job where the simulator state is managed externally.
+  await device.launchApp({
+    delete: true,           // Uninstall + reinstall the test app
+    permissions: { notifications: 'YES', location: 'always' },
+  });
+
+  // First-launch experience — onboarding should appear
+  await waitFor(element(by.id('onboarding-welcome-screen')))
+    .toBeVisible()
+    .withTimeout(15000);  // Cold-start after fresh install: 10–15 seconds
+});
+```
+
+**Reset depth comparison:**
+
+| Method | Speed | Clears App Data | Clears Keychain | Clears System State | Use for |
+|--------|-------|-----------------|-----------------|---------------------|---------|
+| `reloadReactNative()` | <1s | No | No | No | JS-only state reset |
+| `launchApp({ newInstance: true })` | 3–5s | No | No | No | Most test suites |
+| `launchApp({ delete: true })` | 8–15s | Yes | Yes | No | Onboarding / first-launch tests |
+| `xcrun simctl erase` | 30–60s | Yes | Yes | Yes | Factory-state tests, full CI isolation |
+
+---
+
+### Pattern 40 — Per-configuration network synchronization control
+
+Detox's idle detector monitors all network activity by default. Some configurations need
+fine-grained control over which network activity counts toward idle detection. The
+`networkSynchronization` option in the `.detoxrc.js` configuration block lets you
+disable network tracking for specific device configurations — for example, in a
+`debug` configuration where Metro's hot-reload websocket should not block tests:
+
+```js
+// .detoxrc.js — per-configuration network synchronization
+module.exports = {
+  testRunner: {
+    args: { $0: 'jest', config: 'e2e/jest.config.js' },
+    jest: { setupTimeout: 300000 },
+  },
+  apps: {
+    'ios.debug': { type: 'ios.app', binaryPath: 'ios/build/.../Debug-iphonesimulator/MyApp.app' },
+    'ios.release': { type: 'ios.app', binaryPath: 'ios/build/.../Release-iphonesimulator/MyApp.app' },
+  },
+  devices: {
+    simulator: {
+      type: 'ios.simulator',
+      device: { type: 'iPhone 15' },
+    },
+  },
+  configurations: {
+    'ios.sim.debug': {
+      device: 'simulator',
+      app: 'ios.debug',
+      // Disable network sync for debug builds to prevent Metro hot-reload WS from blocking
+      // Use launchArgs + setURLBlacklist for finer control
+      behavior: {
+        init: {
+          exposeGlobals: true,  // make element/by/waitFor/expect globals available
+        },
+      },
+    },
+    'ios.sim.release': {
+      device: 'simulator',
+      app: 'ios.release',
+      // Release config: no Metro WS — full network sync on
+    },
+  },
+  artifacts: {
+    rootDir: '.artifacts',
+    plugins: {
+      screenshot: { shouldTakeAutomaticSnapshots: true, takeWhen: { testFailure: true } },
+      log: { enabled: true },
+      timeline: { enabled: true },
+    },
+  },
+};
+```
+
+For per-test network sync management, the recommended approach is `device.setURLBlacklist()`
+(Pattern 10) rather than global `disableSynchronization()` — it targets specific URLs while
+keeping Detox sync active for all other network activity:
+
+```js
+// Per-test URL blacklist update (Detox 20+): dynamically add URLs mid-test
+// This is useful when a test triggers a feature that starts a new SDK's network traffic
+it('enables live metrics without blocking idle detection', async () => {
+  // Before enabling the feature, blacklist its reporting URL
+  await device.setURLBlacklist([
+    '.*firebaselogging.*',
+    '.*amplitude.*',
+    '.*metrics-reporting.*',  // new SDK added by this feature
+  ]);
+
+  await element(by.id('enable-live-metrics-toggle')).tap();
+  await waitFor(element(by.id('metrics-dashboard'))).toBeVisible().withTimeout(5000);
+});
+```
+
+---
+
+## Community Gotchas (iteration 44 additions)
+
+### 44. `by.web()` interactions are slower than native — Detox sync does not cover web idle [community]
+
+**Root cause**: Native interactions (`tap()`, `typeText()`) go through Detox's native
+instrumentation layer, which waits for the app to idle before executing. `by.web()`
+interactions communicate with the WebView via JavaScript evaluation (IPC bridge) — this
+happens *outside* Detox's synchronization layer. After a `webview.element(by.web.id('btn')).tap()`,
+Detox does not know whether the web page is still processing the click, running animations,
+or fetching data. The test proceeds immediately while the web page may still be mid-transition.
+
+**Symptom**: Tests using `by.web()` appear to work locally (where the machine is fast)
+but intermittently fail on CI because the web page's JavaScript callback hadn't resolved
+before the next assertion fired.
+
+**Fix**: Always follow `by.web()` interactions with an explicit `waitFor` on a DOM element
+that only appears after the web action completes:
+
+```js
+// UNRELIABLE — taps the web button but proceeds before the web page responds
+await webview.element(by.web.id('submit-btn')).tap();
+await expect(element(by.id('rn-success-banner'))).toBeVisible(); // may race
+
+// RELIABLE — wait for a DOM element that confirms the web action completed
+await webview.element(by.web.id('submit-btn')).tap();
+// Wait for a DOM element that appears after form submission
+await waitFor(webview.element(by.web.id('submission-confirmation')))
+  .toExist()
+  .withTimeout(8000);
+// Then assert the RN-layer side effects
+await waitFor(element(by.id('rn-success-banner'))).toBeVisible().withTimeout(3000);
+```
+
+**Why this matters**: Teams that test hybrid apps (WebView-heavy) discover this class of
+failure after migrating from manual QA to Detox automation. The root cause is architectural
+— `by.web()` was designed for targeted interaction, not for flow-level sync.
+
+---
+
+### 45. Visual regression screenshots fail due to dynamic content (timestamps, counters) [community]
+
+**Root cause**: Screenshot comparison tools (pixelmatch, Applitools, Percy) do pixel-level
+diffs. Any element that displays dynamic content — timestamps, elapsed time counters,
+notification badges, animated loading indicators, or random test data — will always
+differ between the baseline and the test run, causing 100% false-positive failures on
+every run.
+
+**WHY teams miss this**: The test works perfectly during local baseline capture (developer
+sees the same timestamp), but CI runs hours later — timestamps differ by definition.
+
+**Fix**: Before taking a screenshot for visual regression, replace or hide dynamic elements
+using `launchArgs` or test-specific overrides in the app:
+
+```js
+// e2e/setup.js — set a fixed "test time" via launchArgs for screenshots
+beforeAll(async () => {
+  await device.launchApp({
+    newInstance: true,
+    launchArgs: {
+      VISUAL_TEST_MODE: '1',      // app hides timestamps and dynamic counters
+      FIXED_TIMESTAMP: '1704067200000', // 2024-01-01T00:00:00Z — always the same
+    },
+  });
+});
+```
+
+```js
+// In RN component
+import { NativeModules } from 'react-native';
+const { VISUAL_TEST_MODE, FIXED_TIMESTAMP } = NativeModules.DetoxSync?.launchArgs ?? {};
+
+// If in visual test mode, freeze the displayed timestamp
+const displayTime = VISUAL_TEST_MODE === '1'
+  ? new Date(parseInt(FIXED_TIMESTAMP)).toLocaleTimeString()
+  : new Date().toLocaleTimeString();
+```
+
+**Alternative**: Use a visual diff tool that supports "ignore regions" — Applitools calls
+these "layout regions", Percy calls them "ignored zones". Configure them to exclude dynamic
+elements from the diff computation:
+
+```js
+// For Applitools Eyes integration:
+await eyes.checkWindow({
+  tag: 'Login screen',
+  ignore: [
+    { selector: '[testid="last-login-timestamp"]' },
+    { selector: '[testid="unread-badge"]' },
+  ],
+});
+```
+
+---
+
+### 46. `jest-junit` output file collision when shards write to the same path [community]
+
+**Root cause**: In matrix-sharded CI pipelines (e.g., 3 shards in GitHub Actions matrix),
+if all shards write `jest-junit` output to the same filename (e.g., `junit.xml`), the last
+shard to finish overwrites the previous shards' results. When the CI system collects artifacts,
+only the last shard's test results are visible — the others are silently lost.
+
+**WHY this is painful**: All tests appear to have run, the CI job shows green, but the test
+count in the management system is only 1/3 of the actual suite. Teams discover it only
+when a flaky test in shard 1 or shard 2 goes undetected.
+
+**Fix**: Use a shard-specific output filename. Pass `SHARD_INDEX` as an environment variable
+from the CI job and include it in the `outputName`:
+
+```js
+// e2e/jest.config.js — shard-specific JUnit output filename
+reporters: [
+  'detox/runners/jest/reporter',
+  ['jest-junit', {
+    outputDirectory: '.artifacts',
+    // SHARD_INDEX is set in the CI job step via: env: { SHARD_INDEX: '${{ matrix.shard }}' }
+    outputName: `junit-shard-${process.env.SHARD_INDEX || 'local'}.xml`,
+  }],
+],
+```
+
+```yaml
+# GitHub Actions — pass SHARD_INDEX to the test step
+- name: Run Detox tests
+  run: npx detox test -c ios.sim.release --shard-index ${{ matrix.shard }} --shard-count 3
+  env:
+    SHARD_INDEX: ${{ matrix.shard }}
+    CI: 'true'
+
+# Merge all shard results before publishing (optional — most CI systems accept multiple XML files)
+- name: Publish JUnit results
+  uses: EnricoMi/publish-unit-test-result-action@v2
+  with:
+    files: .artifacts/junit-shard-*.xml  # glob pattern picks up all shards
+```
+
+---
+
+### 47. Android 15 (API 35) predictive back gesture breaks `device.pressBack()` and `by.system()` back detection [community]
+
+**Root cause**: Android 15 (API 35) made the Predictive Back Gesture (introduced as
+opt-in in API 33) the default for all apps targeting API 35+. The predictive back animation
+shows a preview of the previous screen *before* committing the navigation. Detox's
+`device.pressBack()` triggers the back gesture correctly, but the animation preview causes
+a brief period where both the current screen and the previous screen are partially visible
+— and Detox's idle detector sees two screens rendered simultaneously, holding the app in
+a "not idle" state for the duration of the animation (200–350ms).
+
+**Symptoms**:
+- `waitFor(element(by.id('previous-screen'))).toBeVisible()` resolves during the predictive
+  animation's preview phase (the element is partially visible), then re-fails when the
+  animation completes and the screen fully transitions
+- `by.system()` back button label has changed from "Back" to an animated arrow icon with
+  no text label in some API 35 locales — `by.system().label('Back')` matches nothing
+
+**Fix**: After calling `device.pressBack()` on API 35+, add a `waitFor` on the destination
+screen AND assert the source screen is NOT visible, to confirm the transition completed:
+
+```js
+it('navigates back from settings to home on Android 15', async () => {
+  await element(by.id('settings-tab')).tap();
+  await waitFor(element(by.id('settings-screen'))).toBeVisible().withTimeout(5000);
+
+  // Trigger back navigation
+  await device.pressBack();
+
+  // Wait for the HOME screen — NOT just "source not visible", as predictive back
+  // briefly shows both screens simultaneously during the animation preview
+  await waitFor(element(by.id('home-screen')))
+    .toBeVisible()
+    .withTimeout(5000);
+
+  // Confirm settings screen is fully gone (not just in animation preview)
+  await expect(element(by.id('settings-screen'))).not.toBeVisible();
+});
+```
+
+**Opt-out**: If your app targets API 34 or lower (`targetSdkVersion 34`), predictive back
+is not applied. Update your app's `android/app/build.gradle` to use `targetSdkVersion 34`
+in your Detox test variant only if API 35 back behavior is causing widespread test failures
+and you are not ready to update all tests.
+
+---
+
+### 48. Hermes CDP debugger port (8083) conflicts with parallel iOS CI jobs [community]
+
+**Root cause**: When running a Debug build of a React Native app with Hermes, the Hermes
+debugger listens on port 8083 by default. In a CI pipeline that runs multiple Detox jobs
+in parallel on the same machine (e.g., using `matrix` with 3 shards sharing a macOS
+runner), the second and third shards try to bind to port 8083 for their Hermes debugger
+and fail with `EADDRINUSE` — causing the app to hang at launch indefinitely. The first
+shard claims the port; subsequent shards timeout at `setupTimeout`.
+
+**WHY this is underdiagnosed**: The error occurs inside the native Hermes layer, not in the
+JS thread, so Detox's error log shows `App has not responded in time` rather than a port
+conflict. Teams increase `setupTimeout` repeatedly instead of finding the root cause.
+
+**Fix 1**: Use Release builds for CI (recommended — no Hermes debugger port needed):
+```bash
+npx detox build -c ios.sim.release   # Release: no Hermes CDP listener
+npx detox test  -c ios.sim.release
+```
+
+**Fix 2**: If Debug builds are required, configure Hermes to use a different port per shard:
+```js
+// .detoxrc.js — per-shard Hermes port via environment variable
+apps: {
+  'ios.debug': {
+    type: 'ios.app',
+    binaryPath: '...',
+    launchArgs: {
+      // Set HERMES_DEBUGGER_PORT to avoid port collisions on parallel CI jobs
+      // Each shard sets this env var to a unique value: 8083, 8084, 8085
+      ReactNativeHermesDebuggerPort: process.env.HERMES_DEBUGGER_PORT || '8083',
+    },
+  },
+},
+```
+
+```yaml
+# GitHub Actions — unique Hermes port per shard
+strategy:
+  matrix:
+    include:
+      - shard: 1
+        hermes_port: 8083
+      - shard: 2
+        hermes_port: 8084
+      - shard: 3
+        hermes_port: 8085
+steps:
+  - name: Run shard ${{ matrix.shard }}
+    env:
+      HERMES_DEBUGGER_PORT: ${{ matrix.hermes_port }}
+      SHARD_INDEX: ${{ matrix.shard }}
+    run: npx detox test -c ios.sim.debug --shard-index ${{ matrix.shard }} --shard-count 3
+```
+
+---
+
+### 49. `by.web()` assertions resolve before WebView URL update completes [community]
+
+**Root cause**: When a WebView navigates to a new URL (e.g., after clicking a link or
+submitting a form), the `by.web.id()` matcher can match elements from the *previous*
+page's DOM that are still in memory during the unload phase. The test asserts against
+the old page's elements while the WebView is mid-navigation, passes incorrectly, and
+then the subsequent assertions fail because the page has since changed.
+
+**Symptom**: A test for a two-step web form (Step 1 → Step 2) passes the "submit" step
+but then fails on "verify Step 2 elements" because by the time the verification fires,
+the WebView is still showing Step 1's "thank you" interstitial.
+
+**Fix**: Add a native-layer signal that the WebView has completed the navigation
+(e.g., a `testID` on the RN `<WebView>` component that updates its `accessibilityLabel`
+or value when the web page load is complete):
+
+```jsx
+// RN component: emit navigation state via accessibilityValue
+<WebView
+  testID="payment-webview"
+  accessibilityValue={{ text: currentUrl }}  // update on every URL change
+  onNavigationStateChange={({ url }) => setCurrentUrl(url)}
+  source={{ uri: paymentUrl }}
+/>
+```
+
+```js
+// In test: wait for the WebView's accessibilityValue to reflect the new URL
+it('completes two-step payment flow', async () => {
+  const webview = web(element(by.id('payment-webview')));
+
+  // Step 1: submit the payment form
+  await webview.element(by.web.id('submit-payment')).tap();
+
+  // Wait for the WebView to navigate to the confirmation URL
+  // (WebView's accessibilityValue is updated to the new URL on navigation complete)
+  await waitFor(element(by.value('https://payment.example.com/confirm')))
+    .toExist()
+    .withTimeout(10000);
+
+  // Now safe to assert Step 2 DOM elements — WebView has fully loaded
+  await waitFor(webview.element(by.web.id('confirmation-number')))
+    .toExist()
+    .withTimeout(5000);
+
+  const confirmationText = await webview.element(by.web.id('confirmation-number')).getText();
+  jestExpect(confirmationText).toMatch(/^CONF-\d+/);
+});
+```
+
+---
+
+### 50. React Native 0.78+ `strictMode: true` causes double-render in tests — assertions may see intermediate state [community]
+
+**Root cause**: React Native 0.78 (released March 2025) enabled React 19's `strictMode`
+by default for new projects. In Strict Mode, React renders components twice in development
+(to help detect side effects). When Detox runs against a Debug build of an RN 0.78+ app,
+the double-render can cause an element to briefly appear, disappear, and reappear during
+initial mount. A `waitFor(...).toBeVisible()` that fires during the intermediate "hidden"
+state fails even though the element becomes visible moments later.
+
+**Symptoms**:
+- Tests that pass on Release builds fail on Debug builds of the same code
+- `waitFor(element(by.id('welcome-banner'))).toBeVisible().withTimeout(2000)` fails on
+  Debug but passes with `withTimeout(5000)` — the doubled render adds ~1–2 seconds
+
+**Fix 1 (recommended)**: Use Release builds for CI Detox tests, where `strictMode` has no
+effect (double renders only happen in development mode):
+
+```bash
+npx detox build -c ios.sim.release && npx detox test -c ios.sim.release
+```
+
+**Fix 2**: Disable Strict Mode in the development build used for Detox:
+
+```jsx
+// App.js — disable Strict Mode for Detox runs
+const AppContainer = process.env.DETOX_BUILD === '1'
+  ? React.Fragment           // no Strict Mode double-renders
+  : React.StrictMode;       // full Strict Mode for development
+
+export default function App() {
+  return (
+    <AppContainer>
+      <AppNavigator />
+    </AppContainer>
+  );
+}
+```
+
+```js
+// .detoxrc.js — set DETOX_BUILD env var during build
+apps: {
+  'ios.debug.detox': {
+    type: 'ios.app',
+    build: 'DETOX_BUILD=1 npx detox build -c ios.sim.debug',
+    binaryPath: '...',
+  },
+},
+```
+
+**Fix 3**: Increase timeouts for all `waitFor` calls in Debug test configurations using
+the CI-aware `TIMEOUT` constants pattern (Pattern 5), adding a separate multiplier for
+`strictMode`:
+
+```js
+// e2e/constants.js
+const IS_CI = process.env.CI === 'true';
+const IS_DEBUG_BUILD = process.env.DETOX_CONFIGURATION?.includes('debug') ?? false;
+
+// Debug builds with Strict Mode add ~1-2s overhead per mount due to double-render
+const strictModeMultiplier = IS_DEBUG_BUILD ? 2 : 1;
+
+const TIMEOUT = {
+  short:  (IS_CI ? 5000  : 2000) * strictModeMultiplier,
+  medium: (IS_CI ? 10000 : 3000) * strictModeMultiplier,
+  long:   (IS_CI ? 20000 : 5000) * strictModeMultiplier,
+  launch: (IS_CI ? 30000 : 10000) * strictModeMultiplier,
+};
+
+module.exports = { TIMEOUT, IS_CI, IS_DEBUG_BUILD };
+```
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 44 additions)
+
+| Anti-Pattern | Fix |
+|---|---|
+| `by.web()` interaction followed immediately by a native assertion | Add `waitFor` on a DOM element confirming web action completed before asserting native layer (Gotcha 44) |
+| Screenshot comparison without masking dynamic elements (timestamps, badges) | Use `launchArgs: { VISUAL_TEST_MODE: '1' }` to freeze dynamic content; or use per-region ignore in Applitools/Percy (Gotcha 45) |
+| `jest-junit` writing all shards to the same `junit.xml` filename | Include `SHARD_INDEX` in `outputName` to produce shard-specific files (Gotcha 46) |
+| `device.pressBack()` on Android 15 without verifying full navigation completion | Assert destination screen visible AND source screen not visible; predictive back shows both briefly (Gotcha 47) |
+| Using Debug builds for CI Detox tests (Hermes debugger port 8083 conflict) | Use Release builds; or set unique `HERMES_DEBUGGER_PORT` per parallel shard (Gotcha 48) |
+| `by.web()` assertion on new page before WebView URL navigation completes | Track WebView URL via `accessibilityValue`; `waitFor` the new URL value before asserting DOM (Gotcha 49) |
+| Debug builds on RN 0.78+ with `strictMode: true` causing double-render timing issues | Use Release builds for CI; or disable `React.StrictMode` via `DETOX_BUILD=1` env (Gotcha 50) |
+| `device.resetContentAndSettings()` called without re-granting permissions afterward | After factory reset, all app permissions are revoked; call `launchApp({ permissions })` on next launch |
+| Visual regression test not normalizing status bar before screenshot | Call `device.setStatusBar({ time: '9:41', batteryLevel: 100, ... })` in `beforeAll` (Gotcha 19) |
+
+---
+
 - Detox Official Docs: https://wix.github.io/Detox/
 - Detox Getting Started: https://wix.github.io/Detox/docs/introduction/getting-started
 - Detox Flakiness Guide: https://wix.github.io/Detox/docs/troubleshooting/flakiness
@@ -4980,5 +5864,6 @@ hermes-profile-transformer \
 - Detox Biometrics (iOS): https://wix.github.io/Detox/docs/api/device#devicematchface
 - Detox View Hierarchy Capture: https://wix.github.io/Detox/docs/api/device#devicecaptureviewhierarchyname
 - Detox TypeScript types: https://wix.github.io/Detox/docs/introduction/typescript
+- Detox WebViews API: https://wix.github.io/Detox/docs/api/webviews
 - Expo Detox Integration: https://docs.expo.dev/build-reference/e2e-tests/
 - React Navigation Testing: https://reactnavigation.org/docs/testing/

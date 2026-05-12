@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas) | mixed | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas) | mixed | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -856,6 +856,69 @@ List<String> emails = rawEmails.stream()
     .toList();
 ```
 
+### StampedLock — Optimistic Reads for Low-Contention Shared State
+`StampedLock` (Java 8+) offers three locking modes — write, read, and **optimistic read** — and is significantly faster than `ReentrantReadWriteLock` when reads dominate and contention is low. The optimistic read mode doesn't acquire any lock at all: you read, then validate that no write occurred during the read. If validation fails, you fall back to a proper read lock.
+
+```java
+import java.util.concurrent.locks.StampedLock;
+
+public class Point {
+    private double x, y;
+    private final StampedLock lock = new StampedLock();
+
+    public void move(double deltaX, double deltaY) {
+        long stamp = lock.writeLock();   // exclusive write lock
+        try {
+            x += deltaX;
+            y += deltaY;
+        } finally {
+            lock.unlockWrite(stamp);
+        }
+    }
+
+    // Optimistic read: try without locking; validate; fall back to read lock if needed
+    public double distanceFromOrigin() {
+        long stamp = lock.tryOptimisticRead();   // no lock acquired
+        double currentX = x, currentY = y;      // snapshot
+
+        if (!lock.validate(stamp)) {
+            // A write happened during our read — upgrade to real read lock
+            stamp = lock.readLock();
+            try {
+                currentX = x;
+                currentY = y;
+            } finally {
+                lock.unlockRead(stamp);
+            }
+        }
+        return Math.hypot(currentX, currentY);
+    }
+
+    // Convert read stamp to write stamp if condition warrants upgrade
+    public void moveIfAtOrigin(double newX, double newY) {
+        long stamp = lock.readLock();
+        try {
+            while (x == 0.0 && y == 0.0) {
+                long ws = lock.tryConvertToWriteLock(stamp);
+                if (ws != 0L) {          // upgrade succeeded
+                    stamp = ws;
+                    x = newX;
+                    y = newY;
+                    break;
+                } else {
+                    lock.unlockRead(stamp);
+                    stamp = lock.writeLock();  // wait for exclusive lock
+                }
+            }
+        } finally {
+            lock.unlock(stamp);
+        }
+    }
+}
+```
+
+**When to use:** `StampedLock` wins over `ReentrantReadWriteLock` when: (1) reads vastly outnumber writes, (2) the read body is short (optimistic read validates quickly), and (3) you don't need reentrancy (StampedLock is non-reentrant — calling `readLock()` from a thread that holds a write stamp deadlocks). Never use `StampedLock` with virtual threads that can be interrupted while blocked in `lock()` — use `tryLock(timeout)` variants instead.
+
 ### SequencedCollection (Java 21)
 `SequencedCollection` is a new interface in Java 21 that gives `List`, `Deque`, and `LinkedHashSet` a uniform API for accessing/removing first and last elements — no more `list.get(0)` vs `deque.peekFirst()` inconsistency.
 
@@ -875,6 +938,38 @@ items.removeLast();                // remove tail
 SequencedCollection<String> reversed = items.reversed();
 reversed.forEach(System.out::println);  // z, a, b, c
 ```
+
+### SequencedMap (Java 21) — Consistent First/Last Access for Ordered Maps
+`SequencedMap` extends `SequencedCollection` semantics to map interfaces. `LinkedHashMap` and `TreeMap` both implement it, providing a uniform API for accessing the first and last entries without casting or maintaining a parallel `TreeMap` reference.
+
+```java
+import java.util.LinkedHashMap;
+import java.util.SequencedMap;
+
+// LinkedHashMap preserves insertion order and implements SequencedMap
+SequencedMap<String, Integer> scores = new LinkedHashMap<>();
+scores.put("Alice", 95);
+scores.put("Bob",   87);
+scores.put("Carol", 92);
+
+// First and last entry — no need for iterator.next() or Iterables.getLast()
+Map.Entry<String, Integer> first = scores.firstEntry();  // Alice=95
+Map.Entry<String, Integer> last  = scores.lastEntry();   // Carol=92
+
+// pollFirstEntry / pollLastEntry — atomic remove-and-return (useful for LRU eviction)
+Map.Entry<String, Integer> removed = scores.pollFirstEntry();  // removes Alice=95
+
+// Reversed view — iterates from Carol to Bob without copying
+SequencedMap<String, Integer> reversed = scores.reversed();
+reversed.forEach((name, score) ->
+    System.out.println(name + ": " + score));  // Carol, Bob
+
+// putFirst / putLast — insert at head or tail (LinkedHashMap only; TreeMap ignores position)
+scores.putFirst("Zoe", 99);   // Zoe becomes the new first entry
+scores.putLast("Dan",  80);   // Dan becomes the new last entry
+```
+
+**When to use:** `SequencedMap` is the correct type for LRU caches (`LinkedHashMap(capacity, 0.75f, true)`), ordered audit logs, and any structure where "oldest" or "most-recent" entries need efficient access. Use `sequencedKeySet()`, `sequencedValues()`, and `sequencedEntrySet()` to get `SequencedCollection` views that also support `addFirst`/`addLast` (for `LinkedHashMap`).
 
 ### EnumSet and EnumMap — Enum-Optimised Collections
 `EnumSet` and `EnumMap` are specialised implementations for enum keys that use compact bit-vector and array representations internally — dramatically more efficient than `HashSet<MyEnum>` or `HashMap<MyEnum, V>`. Use them whenever the key domain is an enum type.
@@ -2379,6 +2474,60 @@ public <T> T[][] storeAll(T... items) {
 ```
 **WHY:** Without `@SafeVarargs`, every call site that passes generic collections gets an unchecked warning, cluttering build output and training developers to suppress warnings broadly. `@SafeVarargs` is the correct contract annotation: it signals that the method author guarantees safe usage, and the warning moves from N call sites to 0. It can only be applied to `final`, `static`, or constructor methods (ensuring the contract cannot be violated by an override).
 
+**41. Using `CopyOnWriteArrayList` in Write-Heavy Scenarios [community]**
+`CopyOnWriteArrayList` (and `CopyOnWriteArraySet`) are designed for the rare case where **reads dominate and writes are infrequent**. Every structural modification (add, set, remove) creates a full copy of the underlying array — an O(n) allocation. Under moderate write load, this causes GC pressure that slows read throughput, defeating the purpose. The root cause is assuming "thread-safe list" means "always use `CopyOnWriteArrayList`". Fix: use `CopyOnWriteArrayList` only for event-listener lists and config snapshots where iteration dominates and mutations are very rare. For general concurrent mutable lists, use `Collections.synchronizedList(new ArrayList<>())` with explicit synchronization on the iterator, or a `ConcurrentLinkedDeque`, or redesign with immutable snapshots.
+
+```java
+// BAD — write-heavy scenario; CopyOnWriteArrayList copies entire array per add
+CopyOnWriteArrayList<String> log = new CopyOnWriteArrayList<>();
+for (int i = 0; i < 1_000_000; i++) {
+    log.add("event-" + i);   // copies 0, 1, 2, ... i elements = O(n²) total work
+}
+
+// GOOD for write-heavy — ConcurrentLinkedDeque or synchronized ArrayList
+Queue<String> log = new ConcurrentLinkedDeque<>();
+log.add("event");   // O(1); lock-free CAS operation
+
+// CORRECT use of CopyOnWriteArrayList — listener registry (rare writes, many reads)
+CopyOnWriteArrayList<EventListener> listeners = new CopyOnWriteArrayList<>();
+listeners.add(myListener);           // rare: only when listener registers
+// Safe concurrent iteration — snapshot taken at iterator creation time
+for (EventListener l : listeners) {  // iterates a frozen snapshot
+    l.onEvent(event);
+}
+```
+**WHY:** A `CopyOnWriteArrayList` with 100,000 elements requires copying 800 KB (100,000 × 8-byte references) on every write. In a system adding 10,000 events per second, this creates 8 GB/s of object allocation pressure. The GC overhead produces stop-the-world pauses that hurt the reads the structure was meant to protect. Benchmark before choosing; the JDK `java.util.concurrent` package provides purpose-built alternatives for every concurrency shape.
+
+**42. Using `WeakHashMap` as a General Cache — Keys Evicted Unpredictably [community]**
+`WeakHashMap` holds **weak references to its keys** — if the only reference to a key is in the map itself, the key (and its entry) can be garbage-collected at any GC cycle. Developers use it as a "self-cleaning cache" but are surprised when entries disappear while the key is still logically in use, or when entries survive longer than expected because the key is reachable from somewhere else. The root cause is misunderstanding weak reference reachability: string literals and enum constants are always strongly reachable, so `WeakHashMap<String, ...>` and `WeakHashMap<MyEnum, ...>` **never evict entries** — they behave like a regular `HashMap`. Fix: use `WeakHashMap` only when the map's lifecycle should follow the key object's lifecycle (e.g., per-object metadata). For caches with size or TTL eviction, use Caffeine or Guava Cache.
+
+```java
+// SURPRISE — String literals are strongly referenced; entries NEVER evict
+WeakHashMap<String, Data> cache = new WeakHashMap<>();
+String key = "my-key";               // interned literal — always strongly reachable
+cache.put(key, heavyData);
+key = null;                          // your reference is gone, but the intern pool still holds it
+System.gc();
+System.out.println(cache.size());    // still 1 — entry was NOT collected!
+
+// CORRECT use — map lifecycle follows key object lifetime
+WeakHashMap<MyObject, Metadata> objectMeta = new WeakHashMap<>();
+MyObject obj = new MyObject();
+objectMeta.put(obj, new Metadata("created"));
+// When obj is no longer referenced anywhere:
+obj = null;
+System.gc();
+// Entry may now be collected — map size becomes 0 at some future GC cycle
+
+// GOOD alternative for a time-bounded cache with size eviction
+// Use Caffeine (de-facto standard) or Guava Cache
+LoadingCache<String, Data> cache = Caffeine.newBuilder()
+    .maximumSize(10_000)
+    .expireAfterWrite(Duration.ofMinutes(30))
+    .build(key -> loadData(key));
+```
+**WHY:** `WeakHashMap` offers no control over when eviction occurs — it happens at the GC's discretion, which may be milliseconds or hours after the key becomes weakly reachable. In production, unpredictable eviction under load (when GC runs more frequently) causes cache miss spikes. Moreover, iterating a `WeakHashMap` is not thread-safe even if reads are concurrent — you need external synchronization or a `Collections.synchronizedMap(new WeakHashMap<>())` wrapper. Caffeine's `weakKeys()` option provides the same semantic with LRU eviction bounds and thread safety.
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -2886,4 +3035,6 @@ class UserControllerTest {
 | Checking collection order with `equalTo(list)` | Order-sensitive assertion fails on sorted/paginated responses with different order | Use `containsInAnyOrder()` or `hasItems()` unless order is part of the contract |
 | `extract().path()` for every field separately | Multiple `.extract()` calls each deserialize the response | Use `extract().as(MyDto.class)` to deserialize once and assert on the POJO |
 | Parsing JWT/signed headers manually in tests | Brittle; breaks when signing algorithm changes | Use mock Auth servers (WireMock/Testcontainers Keycloak) for full token flow |
+| `CopyOnWriteArrayList` in write-heavy scenarios | O(n) array copy per write; GC pressure destroys throughput | Use `ConcurrentLinkedDeque` or `Collections.synchronizedList`; reserve COW for listener registries |
+| `WeakHashMap` with interned keys (String/enum) | Interned keys are always strongly reachable; entries never evict — behaves like a regular HashMap | Use `WeakHashMap` only for per-object metadata whose lifetime follows the key; use Caffeine for TTL/size-bounded caches |
 | Missing `@Override` annotation | Silent overloads instead of overrides; bugs evade the compiler | Always annotate intended overrides; catches signature mismatches at compile time |

@@ -5,6 +5,38 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.8 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 5/100)
+
+### qa-refine (5 guides extended, all 100/100)
+- `playwright-patterns.md` — page.requestGC() WeakRef memory leak detection (v1.48+), tracing.group()/groupEnd() Trace Viewer action grouping (v1.49+), ControlOrMeta cross-platform keyboard modifier (v1.45+), webServer.gracefulShutdown (v1.50+), multiple globalSetup/globalTeardown array syntax (v1.49+), screenshot:'on-first-failure' (v1.49+); page.clock.install() must precede page.goto() gotcha, webSocketRoute.onMessage() disables auto-forwarding, page.requestGC() Chromium-only (+384 lines, +3 gotchas)
+- `cypress-patterns.md` — cy.url()/cy.location() use CDP/BiDi in Cypress 15 (works in cy.origin()), cy.fixture() cache invalidation fix (Cypress 15 — was silently stale in 14), defaultBrowser config (v13.16+) aligns local dev with CI Chrome, cy.wrap() circular reference hang (fixed 15.7.0), synchronous XHR + cy.intercept() deadlock (fixed 15.8.0) (+82 lines, +4 gotchas)
+- `k6-patterns.md` — CSRF token extraction with k6/html parseHTML(), http.asyncRequest + Promise.all concurrent HTTP, coordinated omission gotcha (constant-vus masks SUT degradation — use constant-arrival-rate), AWS SigV4 for Amazon Managed Prometheus (+237 lines)
+- `detox-patterns.md` — WebView by.web() matchers (9 selector types, full web element API), visual regression baseline helper, JUnit XML CI reporting with jest-junit shard-specific outputName, device.resetContentAndSettings() deep factory reset, per-configuration network blacklist; Android 15 predictive back gesture assertion change, RN 0.78+ StrictMode double-render, Hermes debugger port 8083 CI shard conflict (+5 patterns, +7 gotchas)
+- `appium-wdio-patterns.md` — Appium 3 full 37-command rename table (appium prefix) + WDIO v9.26 wrapper, screen recording API iOS+Android with failure-only hook, browser.on() event monitoring table, addInitScript()+emit() BiDi DOM event streaming, TypeScript 7 erasableSyntaxOnly migration guide, disableElementImplicitWait v9.27.1 fix, Allure historyId multi-platform fix (+485 lines, +20 gotchas)
+
+### qa-methodology-refine (12 guides extended, all 100/100)
+- `test-pyramid-guide.md` — Vitest 3.2 sequence.groupOrder fail-fast (replaces &&-chained commands), using vi.spyOn() auto-restore (TS 5.2 Symbol.dispose), TS 5.8 --module node18 + import with breakage (+126 lines, +2 gotchas)
+- `tdd-guide.md` — Feature flags FakeFlagReader disabled-state testing (Google TotT Mar 2026), one-lookup Map pattern vs double Map.has()+get()! smell (Google TotT Apr 2026), TCR strict mode with tsc --noEmit compile gate (+3 community gotchas)
+- `bdd-guide.md` — playwright-bdd next: junit-modern alias deprecated, tinyglobby replaces fast-glob, bddgen worker concurrency capped at CPU/2 (OOM fix for GitHub Actions), @cucumber/messages 27→32 bump, Cucumber JSON reporter skips attachments by default (180MB→3MB), Gherkin "1922" technology-agnostic heuristic, vivid character names recommendation (+286 lines)
+- `test-isolation-guide.md` — Vitest 4.1 aroundEach DB transaction rollback with Prisma, detectAsyncLeaks per-test resource attribution, onCleanup builder pattern, viteModuleRunner: false native Node mode tradeoffs, jest.onGenerateMock() file-scope accumulation gotcha, jest.retryTimes retryImmediately:true breaks ordering, aroundAll breaking change (receives fixture context not Suite) (+7 gotchas, +2 patterns)
+- `test-data-guide.md` — Vitest 4.1 TestRunner.matchesTags() conditional DB seeding (pre-commit 45s→8s), coverage.changed modified-file-only reports, coverage ignore block comments (start/stop for both providers), --detectAsyncLeaks for factory module-scope Pool leaks (+4 patterns)
+- `contract-testing-guide.md` — pact-js v16.3.0 race condition under parallel Vitest (mockServerMatchedSuccessfully() false intermittently, workaround: singleThread:true), no built-in provider interaction filter (by-description/by-state not supported) (+2 community lessons)
+- `flakiness-guide.md` — Playwright v1.59 CLI trace subcommands (actions/action/snapshot --grep, 15min→4min triage), --last-failed targeted rerun, Vitest 3.2 using vi.spyOn() auto-restore (Symbol.dispose), Vitest 3.2 context.signal AbortSignal cleanup on timeout (+367 lines, +4 patterns)
+- `coverage-guide.md` — Correction: /* istanbul ignore next -- @preserve */ (suffix) is canonical Vitest format (prefix still works), multi-line start/stop block suppression directives, Stryker VS Code plugin (v9.3.0+ MSP, gutter annotations, incremental:true required) (+3 findings)
+- `ci-cd-testing-guide.md` — Fixed deprecated Vitest 4.0 poolOptions.threads.maxThreads→maxWorkers in 2 live code examples (was silently ignored causing integration test parallelization), trace:'retain-on-failure-and-retries' (v1.54), test.abort() CI guard-rail fixtures (exit code 1 vs test.skip() silent green), Vitest 4.0 pool migration section (+3 new sections)
+- `accessibility-guide.md` — Correction: page.accessibility.snapshot() fully removed in Playwright 1.57 (not just deprecated — breaking change), ariaSnapshot({ depth }) limits brittleness, ariaSnapshot({ mode:'ai' }) for LLM consumption, ariaSnapshot({ boxes:true }) layout coordinates, global toMatchAriaSnapshot playwright.config.ts (+2 gotchas)
+- `shift-left-guide.md` — TS 5.9 noUncheckedSideEffectImports as new tsc --init default, ArrayBuffer/Buffer breaking change (Buffer no longer assignable to ArrayBuffer), import defer syntax, ~11% tsc --noEmit perf improvement (Zod/tRPC codebases) (+193 lines)
+- `exploratory-guide.md` — OWASP LLM Top 10 2025 full charter mapping table (LLM01-LLM10), TypeScript generateLLMSecurityCharter() utility, LLM-as-judge oracle pattern (judge must differ from agent under test), synthetic monitoring gaps as exploration scheduling signal (+358 lines, +3 community lessons)
+
+### lang-refine (5 guides extended, all 100/100)
+- `typescript-patterns.md` — Zod v4 migration (z.toJSONSchema, z.registry, z.file, z.prefault, z.interface; stricter URL/base64; tuple default materialization), TS 5.9 MDN DOM API summary descriptions with deprecation markers, WeakMap.getOrInsert/getOrInsertComputed (ES2025), fork-ts-checker vs --noCheck CI pitfall
+- `javascript-patterns.md` — Node.js 22 require(ESM) + module-sync exports condition, fs.glob/globSync built-in (no npm), path.matchGlob (v23+), v8.queryObjects() memory leak detection, SuppressedError from using blocks, node --run limitations, url.parse() removed in Node 24; gotchas #42-45 (+267 lines)
+- `java-patterns.md` — StampedLock idiom (optimistic read pattern, virtual thread caveats), SequencedMap (Java 21 firstEntry/lastEntry/reversed/putFirst), CopyOnWriteArrayList O(n²) in write-heavy loops gotcha, WeakHashMap interned-key never-evicts gotcha (+151 lines)
+- `python-patterns.md` — annotationlib deep-dive (Format enum, ForwardRef deferred, get_type_hints() migration), t-string custom processors (HTML escaping, SQL parameterization, shell quoting), concurrent.interpreters/InterpreterPoolExecutor with data-sharing rules; gotcha #34 (t-string naive concat identical to f-string), #35 (InterpreterPoolExecutor pickle constraints) (+473 lines)
+- `csharp-patterns.md` — ASP.NET Core 10 OpenAPI 3.1 YAML output + nullable schema breaking change (nullable:true→["T","null"]), Cookie Auth 401/403 direct response (no more login redirect for API endpoints), IMemoryPoolFactory<T> DI-registered pools, X509Certificate2Collection SHA-256/SHA-3, Blazor JS GetValueAsync/SetValueAsync/InvokeConstructorAsync (+278 lines)
+
+---
+
 ## v1.16.0.7 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 4/100)
 
 ### qa-refine (5 guides extended, all 100/100)

@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
 <!-- This-run additions (iter 11-20): WDIO v9 BiDi features, aria/ selector, eslint-plugin-wdio, browser.mock() network interception,
      mobile:pressButton complete reference, Android mobile:deepLink, TypeScript 'using' keyword, browser.executeAsync(),
      appium:mjpegServerPort, @wdio/visual-service advanced options, appium:newCommandTimeout, Android AVD CI launch,
@@ -12122,31 +12122,516 @@ await browser.setViewport(Viewports.iPhone16Pro);
 
 ---
 
-## Source: Iteration Log (Run 2026-05-12, Iteration 24)
+---
 
-<!-- iteration: 24 | score: 100/100 | date: 2026-05-12 -->
-<!-- Additions this run (iter 24):
-     - Soft assertions: expect.soft(), SoftAssertionService, getSoftFailures/assertSoftFailures/clearSoftFailures + 3 gotchas
-     - longPressKeyCode() Android long press key event + custom W3C hold-duration pattern + 2 gotchas
-     - toggleNetworkSpeed() Android emulator presets table (full/lte/hsdpa/.../gsm) + 3 gotchas
-     - Appium 3 + WDIO v9.27 migration: driver version matrix, Node 20 requirement, API 26 min, multiRemoteBrowser rename + 3 gotchas
-     - multiRemoteBrowser multi-device pattern: config, TypeScript types, chat/push-notification examples + 3 gotchas
-     - Pre-built WDA (appium:usePreinstalledWDA + download-wda CLI) CI cache pattern + 3 gotchas
-     - WDIO v9.23-v9.27 highlights: --exclude-suite, dynamic onPrepare specs, shadow DOM memory leak, no-floating-promise ESLint rule, Jasmine v5.10 fix + 2 gotchas
-     - browser.throttleCPU() CDP CPU throttling for WebView perf tests + 3 gotchas
-     - browser.setViewport() mobile viewport emulation with devicePixelRatio + device presets helper + 3 gotchas
+## Appium 3 Protocol Command Renames (WDIO v9.26+)  [community]
+
+Appium 3 renamed 37 legacy protocol commands to add an `appium` prefix, removing them from the W3C extension command namespace. WDIO v9.26.0 shipped compatibility wrappers that attempt the `mobile:` execute variant first, then fall back to the `appium*` deprecated endpoint. **Existing code using the clean method names continues to work through WDIO's wrapper layer**, but calling `driver.lock()` directly at the protocol level will fail on Appium 3 without the wrapper.
+
+### Complete rename table (37 commands)
+
+| Legacy (Appium 2) | Appium 3 protocol name | WDIO v9 mobile wrapper |
+|---|---|---|
+| `lock` | `appiumLock` | `browser.lock()` |
+| `unlock` | `appiumUnlock` | `browser.unlock()` |
+| `isLocked` | `appiumIsLocked` | `browser.isLocked()` |
+| `getCurrentPackage` | `appiumGetCurrentPackage` | `browser.getCurrentPackage()` |
+| `getCurrentActivity` | `appiumGetCurrentActivity` | `browser.getCurrentActivity()` |
+| `pressKeyCode` | `appiumPressKeyCode` | `browser.pressKeyCode()` |
+| `longPressKeyCode` | `appiumLongPressKeyCode` | `browser.longPressKeyCode()` |
+| `launchApp` | `appiumLaunchApp` | deprecated — use `activateApp()` |
+| `closeApp` | `appiumCloseApp` | deprecated — use `terminateApp()` |
+| `background` | `appiumBackground` | `browser.background()` |
+| `getStrings` | `appiumGetStrings` | `browser.getStrings()` |
+| `getSystemBars` | `appiumGetSystemBars` | `browser.getSystemBars()` |
+| `getDisplayDensity` | `appiumGetDisplayDensity` | `browser.getDisplayDensity()` |
+| `openNotifications` | `appiumOpenNotifications` | `browser.openNotifications()` |
+| `startActivity` | `appiumStartActivity` | `browser.startActivity()` |
+| `touchId` | `appiumTouchId` | `browser.touchId()` |
+| `toggleEnrollTouchId` | `appiumToggleEnrollTouchId` | `browser.toggleEnrollTouchId()` |
+| `toggleAirplaneMode` | `appiumToggleAirplaneMode` | `browser.toggleAirplaneMode()` |
+| `toggleData` | `appiumToggleData` | `browser.toggleData()` |
+| `toggleWiFi` | `appiumToggleWiFi` | `browser.toggleWiFi()` |
+| `toggleLocationServices` | `appiumToggleLocationServices` | `browser.toggleLocationServices()` |
+| `toggleNetworkSpeed` | `appiumToggleNetworkSpeed` | `browser.toggleNetworkSpeed()` |
+| `gsmCall` | `appiumGsmCall` | `browser.gsmCall()` |
+| `gsmSignal` | `appiumGsmSignal` | `browser.gsmSignal()` |
+| `gsmVoice` | `appiumGsmVoice` | `browser.gsmVoice()` |
+| `powerCapacity` | `appiumPowerCapacity` | `browser.powerCapacity()` |
+| `powerAC` | `appiumPowerAC` | `browser.powerAC()` |
+| `sendSms` | `appiumSendSms` | `browser.sendSms()` |
+| `fingerPrint` | `appiumFingerPrint` | `browser.fingerPrint()` |
+| `setClipboard` | `appiumSetClipboard` | `browser.setClipboard()` |
+| `getClipboard` | `appiumGetClipboard` | `browser.getClipboard()` |
+| `getPerformanceData` | `appiumGetPerformanceData` | `browser.getPerformanceData()` |
+| `getPerformanceDataTypes` | `appiumGetPerformanceDataTypes` | `browser.getPerformanceDataTypes()` |
+| `sendKeyEvent` | `appiumSendKeyEvent` | `browser.sendKeyEvent()` |
+| `shake` | `appiumShake` | `browser.shake()` |
+| `startRecordingScreen` | `appiumStartRecordingScreen` | `browser.startRecordingScreen()` |
+| `stopRecordingScreen` | `appiumStopRecordingScreen` | `browser.stopRecordingScreen()` |
+| `queryAppState` | `appiumQueryAppState` | `browser.queryAppState()` |
+
+### Using Appium 3 commands safely
+
+```typescript
+// ✅ WDIO mobile wrapper — works with both Appium 2 and Appium 3
+// The wrapper tries mobile:lock → appiumLock → lock in sequence
+await browser.lock(5);
+
+// ✅ Execute a command directly via mobile: execute for maximum compatibility
+// mobile: commands are the Appium 3 canonical path — no deprecation warnings
+await browser.execute('mobile: lock', { seconds: 5 });
+
+// ❌ Direct Appium 2 protocol command — throws on Appium 3 without wrapper
+// await driver.lock(5);  // ← do not call protocol layer directly
+```
+
+**[community] WDIO v9.26.0 Appium 3 compatibility wrappers revert `queryAppState` in v9.27.0 — beware if you pinned v9.26:** WHY: PR #15141 renamed `queryAppState` to `appiumQueryAppState` in v9.26.0, but this broke existing code. v9.27.0 reverted the rename and removed the mobile command wrapper for `queryAppState`. Teams that pinned v9.26.x will see `queryAppState` behave inconsistently. Fix: upgrade to v9.27.0+ where `queryAppState` is restored to its original name with direct protocol access.
+
+**[community] Appium 3 ESM error on `require()` — all Appium plugins must be ESM:** WHY: Appium 3 is ESM-first. Using `require()` to load an Appium plugin or driver causes `Error [ERR_REQUIRE_ESM]: require() of ES Module` at server startup. Fix: update your `appium.config.json` to reference plugins/drivers that publish ESM builds; use `import()` for dynamic loading patterns; ensure all local drivers have `"type": "module"` in their `package.json`.
+
+**[community] `launchApp`/`closeApp` marked deprecated in Appium 3 and throw warnings on every call:** WHY: The Appium team replaced `launchApp`/`closeApp` with the more granular `activateApp`/`terminateApp`/`openApp` APIs (Appium 2 had both; Appium 3 only keeps the new variants). Fix: replace all `browser.launchApp()` calls with `browser.activateApp(bundleId)` and `browser.closeApp()` with `browser.terminateApp(bundleId)`.
+
+---
+
+## Screen Recording with Appium 3 (WDIO v9.26+)
+
+`browser.startRecordingScreen()` and `browser.stopRecordingScreen()` are the canonical WDIO wrappers for Appium screen recording. In Appium 3, these map through the `mobile:` execute path on both iOS (XCUITest) and Android (UIAutomator2).
+
+### iOS screen recording (XCUITest driver)
+
+```typescript
+// test/specs/onboarding-recording.spec.ts
+import path from 'path';
+import fs from 'fs/promises';
+
+it('records onboarding flow at high quality', async () => {
+  await browser.startRecordingScreen({
+    videoType: 'mp4',          // mp4 (default) or mov
+    videoQuality: 'high',      // low | medium | high | photo (iOS only)
+    videoFps: 30,              // frames per second (iOS default: 10)
+    timeLimit: '120',          // max recording seconds as string (iOS default: 600)
+  });
+
+  // Perform onboarding steps
+  await $('~welcome-screen').waitForDisplayed({ timeout: 10_000 });
+  await $('~get-started-button').click();
+  await $('~name-field').setValue('Test User');
+  await $('~next-button').click();
+
+  // Stop and retrieve base64-encoded video
+  const base64Video = await browser.stopRecordingScreen();
+
+  // Decode and save locally for CI artifact upload
+  const videoBuffer = Buffer.from(base64Video, 'base64');
+  const videoPath = path.join('artifacts', `onboarding-${Date.now()}.mp4`);
+  await fs.mkdir('artifacts', { recursive: true });
+  await fs.writeFile(videoPath, videoBuffer);
+});
+```
+
+### Android screen recording (UIAutomator2 driver)
+
+```typescript
+it('records checkout flow on Android', async () => {
+  await browser.startRecordingScreen({
+    videoSize: '1280x720',       // WxH, default is device native resolution
+    bitRate: 6_000_000,          // bits/sec, default 4 000 000
+    timeLimit: 60,               // seconds (UIAutomator2 default: 180, max: 1800)
+    bugReport: false,            // true = include screen overlay with debug info
+    forceRestart: true,          // stop any in-progress recording and start fresh
+  });
+
+  await $('~cart-button').click();
+  await $('~checkout-button').click();
+  await $('~confirm-order').click();
+
+  const base64Video = await browser.stopRecordingScreen();
+
+  if (process.env.CI) {
+    // Upload to remote storage (e.g., S3) using remotePath instead of base64
+    // Pass remotePath to stopRecordingScreen instead:
+    await browser.startRecordingScreen({ bitRate: 4_000_000 });
+    // ... run test ...
+    await browser.stopRecordingScreen({
+      remotePath: 'https://storage.example.com/upload',
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${process.env.STORAGE_TOKEN}` },
+    });
+  }
+});
+```
+
+### Hooking recording into beforeEach/afterEach
+
+```typescript
+// wdio.conf.ts — global artifact recording for all tests
+import path from 'path';
+import fs from 'fs/promises';
+
+export const config: Options.Testrunner = {
+  beforeTest: async (test) => {
+    await browser.startRecordingScreen({
+      videoType: 'mp4',
+      videoFps: 15,          // lower fps = smaller file for CI storage
+      videoQuality: 'medium',
+    });
+  },
+
+  afterTest: async (test, context, { passed }) => {
+    const base64 = await browser.stopRecordingScreen();
+    if (!passed) {
+      // Only save on failure to avoid filling CI artifact storage
+      const name = test.title.replace(/\s+/g, '_').slice(0, 50);
+      const videoPath = path.join('artifacts', `FAILED_${name}_${Date.now()}.mp4`);
+      await fs.mkdir('artifacts', { recursive: true });
+      await fs.writeFile(videoPath, Buffer.from(base64, 'base64'));
+    }
+  },
+};
+```
+
+**[community] `startRecordingScreen` with no arguments throws on Appium 3 UIAutomator2 if previous recording was not stopped:** WHY: UIAutomator2 keeps the recording session open if `stopRecordingScreen` was not called (e.g., test threw mid-run). A second `startRecordingScreen` call without `forceRestart: true` causes an `ScreenRecordingAlreadyStartedException`. Fix: always pass `forceRestart: true` in `beforeTest`/`beforeEach` hooks, or wrap `stopRecordingScreen` in a `try/finally` block.
+
+**[community] Base64 video from `stopRecordingScreen` can be 50–200 MB for long tests — OOM risk in CI:** WHY: The entire video is decoded in memory before writing. On CI agents with limited heap, a 90-second 1280×720 video at 6 Mbps can cause `JavaScript heap out of memory`. Fix: pass `remotePath` so Appium streams the file directly to a storage endpoint instead of base64-encoding it; or reduce `bitRate` and `videoFps` for CI runs.
+
+**[community] iOS `videoQuality: 'high'` with `videoFps: 60` causes dropped frames on older simulators:** WHY: The XCUITest screen recording codec uses ReplayKit, which has a maximum throughput cap on older simulator profiles. High quality + 60fps exceeds the codec budget, resulting in irregular frame rates. Fix: use `videoFps: 30` and `videoQuality: 'medium'` for reliable simulator recordings; reserve `photo` quality for real device captures.
+
+---
+
+## `browser.on()` — WebDriver Event Monitoring  [community]
+
+`browser.on(eventName, handler)` provides an event emitter interface for monitoring WebDriver protocol activity and BiDi events without intercepting the response. This is the lightweight alternative to `browser.mock()` when you only need to observe, not modify, traffic.
+
+### Available events
+
+| Event | Trigger | Payload fields |
+|---|---|---|
+| `command` | WebDriver Classic command sent | `method`, `endpoint`, `body` |
+| `result` | WebDriver Classic command response received | `method`, `endpoint`, `body`, `result` |
+| `bidiCommand` | WebDriver BiDi command sent | `method`, `params` |
+| `bidiResult` | WebDriver BiDi command response | `type`, `id`, `result` (success) OR `type`, `id`, `error`, `message`, `stacktrace` (error) |
+| `request.start` | HTTP request to driver about to be sent | `url`, `method`, `headers`, `body` |
+| `request.end` | HTTP response from driver received | `url`, `method`, `result`, `error` |
+| `request.retry` | Command being retried after failure | `error`, `retryCount` |
+| `request.performance` | WebDriver operation timing | `durationMillisecond`, `error`, `request`, `retryCount`, `success` |
+
+### Performance monitoring example
+
+```typescript
+// test/specs/checkout-perf.spec.ts
+// Monitor WebDriver command timing to identify slow operations in CI
+
+it('measures WebDriver command latency during checkout', async () => {
+  const timings: { endpoint: string; durationMs: number }[] = [];
+
+  // Attach listener before test actions
+  const onPerf = (ev: {
+    durationMillisecond: number;
+    error: Error | null;
+    request: { url: string; method: string };
+    retryCount: number;
+    success: boolean;
+  }) => {
+    if (ev.success) {
+      timings.push({ endpoint: ev.request.url, durationMs: ev.durationMillisecond });
+    }
+  };
+
+  browser.on('request.performance', onPerf);
+
+  // Run test actions
+  await $('~cart-button').click();
+  await $('~checkout-button').click();
+  await $('~order-confirmation').waitForDisplayed({ timeout: 10_000 });
+
+  // Remove listener after test
+  browser.off('request.performance', onPerf);
+
+  // Identify slow commands (> 2s suggests Appium/driver latency issue)
+  const slowCmds = timings.filter(t => t.durationMs > 2_000);
+  if (slowCmds.length > 0) {
+    console.warn('[PERF] Slow WebDriver commands:', slowCmds);
+  }
+  expect(slowCmds).toHaveLength(0);
+});
+```
+
+### BiDi event monitoring example
+
+```typescript
+// Monitor BiDi command flow for debugging
+beforeAll(() => {
+  browser.on('bidiResult', (ev) => {
+    if (ev.type === 'error') {
+      // Log BiDi protocol errors to test output
+      console.error(`[BiDi ERROR] id=${ev.id} error=${ev.error}: ${ev.message}`);
+    }
+  });
+});
+```
+
+**[community] `browser.on()` listeners persist across tests if added in `before` hooks — always call `browser.off()` to remove them:** WHY: The browser object is shared across all tests in a worker. A `request.performance` listener added in `beforeAll` accumulates timings for every test, not just the target test. Without `browser.off()`, the `timings` array grows unboundedly and each test's assertions see data from all prior tests. Fix: add listeners in `beforeEach` with a closure variable, and always call `browser.off()` in `afterEach`.
+
+**[community] `request.start` / `request.end` events track WebDriver *protocol* requests, not your app's HTTP traffic:** WHY: These events observe WDIO's communication with the Appium server, not the network requests your mobile app makes. Developers expecting to capture API calls made by the app are surprised when `request.start` fires for every `$('~button').click()` command. Fix: for app network monitoring, use `browser.mock()` (CDP-based) in a WebView context, or instrument the app with a network interceptor.
+
+**[community] `bidiCommand`/`bidiResult` events fire frequently in v9 BiDi sessions — log at debug level only:** WHY: BiDi-enabled sessions emit a `bidiCommand` + `bidiResult` pair for every WebDriver operation, including internal commands like `browsingContext.getTree`. Logging these at `info` level floods test output. Fix: gate logging behind `process.env.WDIO_DEBUG === 'true'` or use the WDIO built-in logger (`logger.debug(...)` from `@wdio/logger`).
+
+---
+
+## `browser.addInitScript()` with `emit()` — Browser-to-Node.js Communication
+
+`browser.addInitScript(fn)` injects a function into every new page/frame. In WDIO v9 (BiDi mode), the injected function receives an `emit` callback that sends structured data back to Node.js via the BiDi channel. This enables real-time DOM observation, mutation monitoring, and custom event capture without polling.
+
+```typescript
+// test/specs/mutation-monitoring.spec.ts
+it('detects toast notification via DOM mutation', async () => {
+  const mutations: string[] = [];
+
+  // Register script that watches for toast elements
+  const script = await browser.addInitScript((emit: (data: string) => void) => {
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node instanceof Element && node.classList.contains('toast')) {
+            emit(node.getAttribute('data-message') ?? 'toast-appeared');
+          }
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+
+  // Listen for emitted data in Node.js
+  const toastMessages: string[] = [];
+  script.on('data', (msg: string) => {
+    toastMessages.push(msg);
+  });
+
+  // Trigger action that shows toast
+  await $('~submit-order').click();
+
+  // Wait for toast via emitted event (no polling needed)
+  await browser.waitUntil(() => toastMessages.length > 0, {
+    timeout: 5_000,
+    timeoutMsg: 'Toast notification never appeared',
+  });
+
+  expect(toastMessages[0]).toContain('Order placed successfully');
+
+  // Clean up: remove the injected script
+  await script.remove();
+});
+```
+
+### Custom error capture pattern
+
+```typescript
+// Capture unhandled JS errors in WebView without browser.mock()
+const script = await browser.addInitScript((emit: (err: string) => void) => {
+  window.addEventListener('error', (event) => {
+    emit(`${event.message} at ${event.filename}:${event.lineno}`);
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    emit(`UnhandledPromise: ${String(event.reason)}`);
+  });
+});
+
+const jsErrors: string[] = [];
+script.on('data', (err: string) => jsErrors.push(err));
+
+// After test suite
+afterAll(async () => {
+  if (jsErrors.length > 0) {
+    throw new Error(`Unhandled JS errors during tests:\n${jsErrors.join('\n')}`);
+  }
+  await script.remove();
+});
+```
+
+**[community] `addInitScript()` is a BiDi command — requires `'wdio:enforceWebDriverClassic': false` in capabilities:** WHY: Classic WebDriver sessions do not support `addInitScript`. Calling it on a non-BiDi Appium session (e.g., in `NATIVE_APP` context) throws `BiDi command not supported`. Fix: use `addInitScript` only after switching to a WebView context where BiDi/CDP is available; for native context event monitoring, use Appium's `mobile:` execute commands instead.
+
+**[community] Scripts added via `addInitScript` run on EVERY page navigation — include a guard for single-page apps:** WHY: In WebView-heavy apps, the injected script re-runs after every `href` navigation or `pushState` call. A `MutationObserver` created without disconnecting will create multiple observers per navigation, duplicating `emit` calls. Fix: check `window.__scriptInitialized` at the start of the injected function and set it before creating observers.
+
+**[community] `script.on('data', handler)` is an EventEmitter — use `script.once('data', ...)` to avoid re-trigger:** WHY: Using `.on('data', ...)` accumulates all emitted values across the entire test session. For one-shot assertions ("wait for toast"), use `.once('data', resolve)` inside a `new Promise(...)` wrapper to avoid memory leaks from stale handlers.
+
+---
+
+## TypeScript 7 Compatibility with WDIO v9  [community]
+
+WDIO v9.27.0 ships a compatibility fix for TypeScript 7 (`@wdio/globals` package). TypeScript 7 introduces the `--erasableSyntaxOnly` compiler option, which restricts TypeScript syntax to forms that Node.js native `--experimental-strip-types` can handle (i.e., syntax that is purely erased, not transformed). This mode is opt-in but becomes the default when using Node.js native TypeScript execution.
+
+### What `erasableSyntaxOnly` means for test projects
+
+Under `erasableSyntaxOnly: true`, the following TypeScript constructs are **not allowed** (they require a transform step, not mere erasure):
+
+| Construct | Status | Alternative |
+|---|---|---|
+| `enum` declarations | Forbidden | Use `const` object maps or string literals with `as const` |
+| `namespace`/`module` declarations | Forbidden | Use ES modules (`import`/`export`) |
+| Parameter properties (`constructor(private x)`) | Forbidden | Explicit property + assignment |
+| Legacy decorators (`@Component`) | Forbidden | Use `--experimentalDecorators` compile step outside native strip |
+| `const enum` | Forbidden | Use `const` object or string literal union |
+
+### Recommended migration for WDIO test projects
+
+```typescript
+// ❌ BEFORE — enum declarations (forbidden under erasableSyntaxOnly)
+enum DeviceType {
+  Phone = 'phone',
+  Tablet = 'tablet',
+}
+
+// ✅ AFTER — const object with 'as const' (works with Node native strip)
+const DeviceType = {
+  Phone: 'phone',
+  Tablet: 'tablet',
+} as const;
+type DeviceType = (typeof DeviceType)[keyof typeof DeviceType];
+
+// ❌ BEFORE — parameter properties in Page Objects
+class LoginPage {
+  constructor(private readonly timeout: number = 5_000) {}
+}
+
+// ✅ AFTER — explicit property declaration
+class LoginPage {
+  private readonly timeout: number;
+  constructor(timeout = 5_000) {
+    this.timeout = timeout;
+  }
+}
+
+// ❌ BEFORE — namespace grouping
+namespace Selectors {
+  export const loginButton = '~login-button';
+}
+
+// ✅ AFTER — regular named export object
+export const Selectors = {
+  loginButton: '~login-button',
+} as const;
+```
+
+### `tsx` loader and erasableSyntaxOnly
+
+WDIO v9 uses `tsx` as its internal TypeScript loader. `tsx` handles transformation (not just stripping), so `enum` and parameter properties continue to work in `wdio.conf.ts` and test specs regardless of the TypeScript version. The compatibility fix in v9.27.0 addresses a case in `@wdio/globals` where TypeScript 7's stricter type inference (specifically around the `using` keyword resource management and declaration merging) caused compilation errors with `strict: true`.
+
+```json
+// tsconfig.json — safe to add for future Node native compatibility
+{
+  "compilerOptions": {
+    "erasableSyntaxOnly": false   // default; set true to enforce Node-native-strip compatible TS
+  }
+}
+```
+
+**[community] Setting `erasableSyntaxOnly: true` causes WDIO config files that use `enum` to fail at compile time:** WHY: Many WDIO config examples and community boilerplates use `enum` for environment types, capability names, or test data. Enabling `erasableSyntaxOnly` without migrating these causes `ts-check` / `tsc --noEmit` failures. Fix: run `npx ts-migrate enum-to-const` (community tool) or globally replace `enum Foo { A = 'a' }` with `const Foo = { A: 'a' } as const` before enabling the flag.
+
+**[community] TypeScript 7 `isolatedDeclarations` + `erasableSyntaxOnly` combo breaks Page Object base classes that use `declare` fields:** WHY: `declare` class fields are "type-only" and are erased at runtime. Under `isolatedDeclarations`, every exported class requires explicit return types. Page Objects extending a base class with `declare` fields may fail with "Inferred type cannot be named" errors. Fix: add explicit return type annotations to all public `async` methods in Page Object classes.
+
+---
+
+## `disableElementImplicitWait` — Fine-Grained Element Timeout Control (v9.27.1)
+
+WDIO v9.27.1 fixes a long-standing bug where `disableElementImplicitWait: true` had no effect if set after session initialization (e.g., in a `before` hook). The setting now applies correctly at any point in the test lifecycle.
+
+`disableElementImplicitWait` controls whether WDIO sends the WebDriver implicit wait protocol command when no implicit wait is explicitly set. Set to `true` to rely entirely on explicit waits (`waitForDisplayed`, `waitForEnabled`, etc.).
+
+```typescript
+// wdio.conf.ts — recommended for mobile tests
+export const config: Options.Testrunner = {
+  capabilities: [{
+    platformName: 'iOS',
+    'appium:deviceName': 'iPhone 16',
+    'appium:automationName': 'XCUITest',
+    'appium:app': 'path/to/app.app',
+  }],
+
+  // Disable Appium implicit wait — use explicit waits only
+  // Fixed in v9.27.1: now works when set here vs in before() hook
+  disableElementImplicitWait: true,
+
+  // Explicit wait timeout (used by waitForDisplayed/waitForEnabled/etc.)
+  waitforTimeout: 10_000,
+  waitforInterval: 200,
+};
+```
+
+**[community] `disableElementImplicitWait` was silently ignored in v9.27.0 and earlier when placed in `before()` hooks:** WHY: WDIO applied the implicit wait configuration during session creation. Setting it in `before()` (after session start) had no effect. Tests relying on this pattern were unknowingly using the default implicit wait behavior. Fix: set `disableElementImplicitWait` at the config level in `wdio.conf.ts`, not inside hook functions; upgrade to v9.27.1+ if you need to set it dynamically.
+
+**[community] Appium sessions ignore WDIO's `disableElementImplicitWait` if the driver itself sets an implicit timeout capability:** WHY: UIAutomator2 sets a 0ms implicit wait by default; XCUITest sets a driver-level implicit wait via `appium:commandTimeout`. WDIO's `disableElementImplicitWait` prevents WDIO from calling `setImplicitTimeout(0)`, but it does not override what the driver configures at session start. Fix: always use `appium:newCommandTimeout` for inactivity timeouts, not `implicitWaits`; use explicit `waitFor*` in all test code.
+
+---
+
+## Allure Reporter: `historyId` Fix and Test Plan Filtering (v9.27.1)
+
+WDIO v9.27.1 corrects the Allure reporter's `historyId` generation to use capability keys (identifying the target device/platform) instead of test configuration identifiers. This is important for accurate test trend analysis across runs.
+
+### `historyId` — why it matters
+
+The `historyId` determines which test executions are linked together in Allure's history graph. Before the fix, `historyId` used the test config hash, meaning the same test running on iPhone 14 vs Samsung Galaxy S24 showed as the same history entry. After v9.27.1, each capability set generates a distinct `historyId`, correctly separating iOS and Android test histories.
+
+### Test plan filtering with `ALLURE_TESTPLAN_PATH`
+
+```typescript
+// CI pipeline — only run tests matching the Allure test plan
+// testplan.json is generated by Allure TestOps or manually
+```
+
+```json
+{
+  "version": "1.0",
+  "tests": [
+    {
+      "id": "TC-001",
+      "selector": "test/specs/checkout.spec.ts#completes purchase flow"
+    },
+    {
+      "id": "TC-042",
+      "selector": "Checkout Tests"
+    }
+  ]
+}
+```
+
+```yaml
+# .github/workflows/mobile-tests.yml
+- name: Run Appium suite (filtered by test plan)
+  env:
+    ALLURE_TESTPLAN_PATH: ${{ github.workspace }}/testplan.json
+  run: npx wdio run wdio.conf.ts
+```
+
+The `@wdio/allure-reporter` automatically reads `ALLURE_TESTPLAN_PATH`, skips tests not in the plan, and marks skipped tests with the appropriate Allure status. No code changes needed — set the env var and the reporter handles filtering.
+
+**[community] Allure `historyId` before v9.27.1 caused iOS and Android test histories to merge in the dashboard:** WHY: Using test config identifiers rather than capability keys meant all platform variants of the same test name shared a history entry. Trend graphs showed blended pass rates across platforms. Fix: upgrade to v9.27.1+; clear old Allure history by deleting `allure-results/history/` before the first run with the new version to avoid a corrupted merge period.
+
+**[community] `ALLURE_TESTPLAN_PATH` selector matching is case-sensitive and requires exact test `it()` string:** WHY: The selector `"Login Tests"` matches a `describe('Login Tests', ...)` block; `"should log in with valid credentials"` must match the exact `it('should log in with valid credentials', ...)` string. Typos silently skip all matched tests. Fix: generate `testplan.json` from your test source using `grep -rn 'it(' test/ | ...` or use Allure TestOps to export the correct selectors.
+
+---
+
+## Source: Iteration Log (Run 2026-05-12, Iteration 25)
+
+<!-- iteration: 25 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run (iter 25):
+     - Appium 3 protocol command rename table (37 commands appium-prefixed) + compatibility wrappers + 3 gotchas
+     - Screen recording API: startRecordingScreen/stopRecordingScreen iOS+Android params + beforeEach/afterEach hook pattern + 3 gotchas
+     - browser.on() event monitoring: command/result/bidiCommand/bidiResult/request.* events + perf monitoring example + 3 gotchas
+     - browser.addInitScript() with emit() BiDi pattern: DOM mutation observer, JS error capture + 3 gotchas
+     - TypeScript 7 erasableSyntaxOnly: enum→const migration, namespace removal, parameter property fix + 3 gotchas
+     - disableElementImplicitWait v9.27.1 fix: what it controls, config placement gotcha + 2 gotchas
+     - Allure historyId fix v9.27.1: capability-keyed history, ALLURE_TESTPLAN_PATH test plan filtering + 2 gotchas
 -->
-<!-- Total community pitfalls: 260+ tagged [community] instances -->
-<!-- Total sections: 196+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
-<!-- Sources: webdriver.io/docs/api/expect-webdriverio (soft assertions, getSoftFailures),
-     webdriver.io/docs/assertion (SoftAssertionService),
-     webdriver.io/docs/api/mobile/longPressKeyCode,
-     webdriver.io/docs/api/mobile/toggleNetworkSpeed,
-     github.com/webdriverio/webdriverio/releases (v9.23-v9.27 changelog),
-     github.com/appium/appium-xcuitest-driver/releases (v11.3.0 download-wda),
-     github.com/appium/appium-xcuitest-driver/blob/master/docs/guides/run-prebuilt-wda.md,
-     github.com/appium/appium/releases (appium@3.4.2),
-     webdriver.io/docs/multiremote,
-     webdriver.io/docs/api/browser/throttleCPU,
-     webdriver.io/docs/api/browser/setViewport -->
-<!-- Score delta: 0 (maintained 100/100) — extensions add coverage of newly released APIs -->
+<!-- Total community pitfalls: 280+ tagged [community] instances -->
+<!-- Total sections: 203+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources: github.com/webdriverio/webdriverio/releases (v9.25.0–v9.27.1 changelog),
+     github.com/webdriverio/webdriverio/pull/15141 (Appium 3 protocol renames),
+     webdriver.io/docs/api/appium (screen recording parameters),
+     webdriver.io/docs/api/browser (browser.on events reference),
+     webdriver.io/docs/api/browser/addInitScript (emit() BiDi pattern),
+     webdriver.io/docs/allure-reporter (historyId, ALLURE_TESTPLAN_PATH),
+     github.com/appium/appium-xcuitest-driver/releases (v11.1.0 screen recording wrappers),
+     github.com/appium/appium-uiautomator2-driver/releases (v7.2.0–v7.2.3),
+     github.com/appium/appium/discussions (ESM migration, iOS WDA issues) -->
+<!-- Score delta: 0 (maintained 100/100) — extensions add coverage of newly released APIs (v9.25–v9.27.1) -->

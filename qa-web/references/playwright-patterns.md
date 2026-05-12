@@ -1,5 +1,5 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli -->
 <!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.60 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.60 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50) -->
 
@@ -6884,3 +6884,387 @@ export default defineConfig({
 |---------|--------|-----------|
 | v1.56 | `browserContext.on('backgroundpage')` event **deprecated**; `browserContext.backgroundPages()` returns empty list | Remove background page monitoring; use service worker events instead |
 | v1.56 | ARIA snapshot rendering now includes `input` placeholder text | Update snapshots with `--update-snapshots=changed` after upgrading |
+
+---
+
+## Additional Key APIs (Iterations 27+)
+
+### `page.requestGC()` — Memory Leak Detection (v1.48+)
+
+Force a garbage collection cycle from test code to verify that objects have been properly freed. Uses the browser's native GC trigger (Chrome DevTools Protocol `HeapProfiler.collectGarbage`).
+
+**Pattern:** expose a `WeakRef` on `globalThis` inside the page, call `page.requestGC()`, then assert the ref is dead.
+
+```typescript
+test('dropdown panel is GC-collected after close', async ({ page }) => {
+  await page.goto('/dashboard');
+
+  // 1. Open the panel and capture a WeakRef on globalThis inside the page
+  await page.getByRole('button', { name: 'Open panel' }).click();
+  await page.evaluate(() => {
+    const panel = document.querySelector('.dropdown-panel');
+    (globalThis as any).__panelRef = new WeakRef(panel!);
+  });
+
+  // 2. Close the panel — it should be removed from the DOM and lose all references
+  await page.getByRole('button', { name: 'Close panel' }).click();
+
+  // 3. Request GC and assert the panel element has been collected
+  await page.requestGC();
+
+  const isCollected = await page.evaluate(
+    () => (globalThis as any).__panelRef.deref() === undefined
+  );
+  expect(isCollected, 'Dropdown panel was not garbage-collected — possible memory leak').toBe(true);
+});
+```
+
+> **[community]** `page.requestGC()` only triggers GC in **Chromium** — it is a no-op in Firefox and WebKit because those browsers don't expose a GC trigger via CDP. Add a browser check or limit these tests to the `chromium` project: `test.skip(browserName !== 'chromium', 'GC testing requires Chromium')`. [community]
+
+> **[community]** Calling `requestGC()` does not guarantee immediate collection. In rare cases, the GC cycle may not collect objects referenced by closures inside event listeners. If the assertion fails intermittently, add `await page.requestGC()` a second time before asserting — two cycles catch objects deferred to the second generation. [community]
+
+---
+
+### `tracing.group()` — Visual Action Groups in Trace Viewer (v1.49+)
+
+`context.tracing.group()` wraps a block of actions into a collapsible group in Trace Viewer. This is the low-level primitive; prefer `test.step()` when inside a test — `tracing.group()` is valuable in fixture setup/teardown and utility helpers where `test.step()` is not accessible.
+
+```typescript
+// In a custom fixture or page helper — not inside a test body
+import { BrowserContext } from '@playwright/test';
+
+async function loginViaApi(context: BrowserContext, email: string, password: string) {
+  await context.tracing.group('API login setup');
+
+  const page = await context.newPage();
+  await page.goto('/login');
+  await page.getByLabel(/email/i).fill(email);
+  await page.getByLabel(/password/i).fill(password);
+  await page.getByRole('button', { name: /sign in/i }).click();
+  await page.waitForURL(/dashboard/);
+  await page.close();
+
+  await context.tracing.groupEnd();
+}
+```
+
+**Nested groups:**
+
+```typescript
+await context.tracing.group('Checkout flow');
+
+  await context.tracing.group('Fill cart');
+  await page.getByRole('button', { name: 'Add to cart' }).click();
+  await context.tracing.groupEnd();  // ends 'Fill cart'
+
+  await context.tracing.group('Payment step');
+  const frame = page.frameLocator('iframe[title="Payment"]');
+  await frame.getByLabel('Card number').fill('4111111111111111');
+  await context.tracing.groupEnd();  // ends 'Payment step'
+
+await context.tracing.groupEnd();   // ends 'Checkout flow'
+```
+
+> **[community]** Prefer `test.step()` over `tracing.group()` in test bodies — `test.step()` surfaces in both the HTML report and Trace Viewer, while `tracing.group()` only appears in traces. Use `tracing.group()` for fixture-level helpers, global setup, and utility code outside the test runner where `test.step()` is unavailable. [community]
+
+---
+
+### `ControlOrMeta` — Cross-Platform Keyboard Modifier (v1.45+)
+
+`ControlOrMeta` resolves to `Control` on Windows/Linux and `Meta` (⌘ Command) on macOS. Use it for cross-platform keyboard shortcuts to avoid platform-specific test branches.
+
+```typescript
+test('copies selected text with platform shortcut', async ({ page }) => {
+  await page.goto('/editor');
+  const editor = page.getByRole('textbox', { name: 'Editor' });
+  await editor.fill('Hello world');
+
+  // Select all — works on all platforms without branching
+  await editor.press('ControlOrMeta+A');
+  await editor.press('ControlOrMeta+C');
+
+  // Verify clipboard content was captured (use page.evaluate for clipboard access)
+  const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+  expect(clipboard).toBe('Hello world');
+});
+
+// Click with modifier — multi-select in a list
+test('multi-selects items with ControlOrMeta+click', async ({ page }) => {
+  await page.goto('/file-browser');
+  await page.getByText('file-1.txt').click();
+  await page.getByText('file-2.txt').click({ modifiers: ['ControlOrMeta'] });
+  await page.getByText('file-3.txt').click({ modifiers: ['ControlOrMeta'] });
+
+  await expect(page.getByRole('status')).toHaveText('3 items selected');
+});
+```
+
+> **[community]** In WebKit on macOS, some `ControlOrMeta` keyboard events are intercepted by the OS before reaching the page — particularly `⌘+A` (select all) in `<input>` elements when the OS shortcut conflicts. Use `page.keyboard.down('Meta'); await page.keyboard.press('a'); await page.keyboard.up('Meta')` as a fallback for WebKit-only tests. [community]
+
+---
+
+### `webServer.gracefulShutdown` — Clean Dev Server Teardown (v1.50+)
+
+By default, Playwright sends `SIGKILL` to the dev server process when tests complete. `gracefulShutdown` sends `SIGTERM` first and waits for the process to exit cleanly, allowing servers that hold database connections or write lock files to clean up properly.
+
+```typescript
+// playwright.config.ts
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  webServer: {
+    command:           'npm run dev',
+    url:               'http://localhost:3000',
+    reuseExistingServer: !process.env.CI,
+    gracefulShutdown: {
+      signal:  'SIGTERM',  // 'SIGTERM' (default) or 'SIGINT'
+      timeout: 10_000,     // ms to wait before escalating to SIGKILL
+    },
+  },
+});
+```
+
+> **[community]** `gracefulShutdown` matters for servers that spawn child processes (e.g., Vite's esbuild worker, Next.js Fast Refresh daemon) — a `SIGKILL` orphans those children and leaves zombie processes that hold the development port. On CI, this causes the next run's `webServer.url` health check to fail with "address already in use". Use `gracefulShutdown` + a `timeout` of 10 seconds to reliably free ports between runs. [community]
+
+---
+
+### `test.fail.only()` — Focus on Expected-Failure Tests (v1.49+)
+
+`test.fail.only()` combines `.only()` focus mode with `.fail()` expected-failure annotation. The test must fail for the suite to pass; if it unexpectedly passes, Playwright reports an error.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+// Focus on a known-broken test to isolate and diagnose it
+test.fail.only('search returns zero results for emoji queries', async ({ page }) => {
+  await page.goto('/search');
+  await page.getByRole('searchbox').fill('🔥');
+  await page.getByRole('button', { name: 'Search' }).click();
+  // This currently returns 500 — tracked in JIRA-1234
+  await expect(page.getByRole('list')).toHaveCount(0);
+});
+
+// Other tests are skipped in focused mode
+test('search works for ASCII queries', async ({ page }) => {
+  // Not run while .only() is active
+});
+```
+
+> **[community]** `test.fail.only()` is especially useful when diagnosing a regression in CI — combine it with `--last-failed` to re-run only the failing tests: `npx playwright test --last-failed`. If the focused test unexpectedly passes (regression fixed), the suite fails with "Expected to fail, but passed" — a clear signal to remove the `.fail()` annotation and land the fix. [community]
+
+---
+
+### Multiple `globalSetup` / `globalTeardown` Files (v1.49+)
+
+Pass an array of paths to run multiple global setup/teardown scripts. Scripts run in array order for setup and in reverse order for teardown (LIFO). Useful for separating infrastructure setup (database seeding) from auth setup (creating test accounts).
+
+```typescript
+// playwright.config.ts
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  globalSetup:    ['./e2e/setup/database.ts', './e2e/setup/auth-accounts.ts'],
+  globalTeardown: ['./e2e/teardown/auth-accounts.ts', './e2e/teardown/database.ts'],
+  // Teardown runs in declaration order (NOT reverse) — order explicitly
+
+  use: {
+    baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
+  },
+});
+```
+
+```typescript
+// e2e/setup/database.ts
+import { FullConfig } from '@playwright/test';
+import { seedTestDatabase } from '../helpers/db';
+
+export default async function globalSetup(config: FullConfig) {
+  console.log('[setup] Seeding test database…');
+  await seedTestDatabase();
+}
+```
+
+```typescript
+// e2e/setup/auth-accounts.ts
+import { FullConfig, chromium } from '@playwright/test';
+
+export default async function globalSetup(config: FullConfig) {
+  console.log('[setup] Creating test auth state…');
+  const browser = await chromium.launch();
+  // … create admin/viewer accounts, save storageState
+  await browser.close();
+}
+```
+
+> **[community]** Each `globalSetup` function receives the same `FullConfig` object. If one setup file sets a value on `process.env`, the next setup file in the array can read it — this makes the array order meaningful for pipelines where later setup steps depend on earlier ones (e.g., database URL from dynamic port must be known before auth setup tries to log in). [community]
+
+---
+
+### `screenshot: 'on-first-failure'` — Efficient Failure Evidence (v1.49+)
+
+The `'on-first-failure'` screenshot mode captures a screenshot only on the first attempt of a failing test — not on subsequent retries. Compared to `'only-on-failure'` (which captures on every failed attempt), this halves screenshot storage in suites with `retries: 2`.
+
+```typescript
+// playwright.config.ts
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: 2,
+  use: {
+    screenshot: 'on-first-failure',  // capture once; subsequent retries skip screenshot
+    // vs 'only-on-failure':         // capture on every failed attempt (default retry behavior)
+    // vs 'on':                      // capture always (high storage cost)
+    // vs 'off':                     // never capture (no failure evidence)
+  },
+});
+```
+
+> **[community]** In a 500-test suite with `retries: 2`, switching from `'only-on-failure'` to `'on-first-failure'` reduces screenshot artifacts by up to 67% (one screenshot per failing test vs. three). On CI with artifact storage limits (GitHub Actions free tier: 500MB), this difference matters at scale — a suite with 50 failing tests × 3 retries × 1MB each = 150MB saved per run. [community]
+
+---
+
+### 31. `page.clock.install()` must be called BEFORE `page.goto()` [community]
+
+**What:** Tests using `page.clock.install()` to freeze timers occasionally see the page "stuck" — lazy-loaded content never appears, setTimeout-driven animations don't fire, and `waitForLoadState('load')` times out.
+
+**WHY:** `page.clock.install()` replaces `setTimeout`, `setInterval`, `requestAnimationFrame`, and `Date` globally. If `install()` is called AFTER `page.goto()`, the page has already used the native timer functions during the initial load. Those timers are now orphaned — the fake clock can't advance them. The result is a page partially initialized with native timers and partially frozen by the fake clock.
+
+**Fix:** Always call `page.clock.install()` before the first `page.goto()`. For pages that depend on network responses during load, use `setFixedTime()` instead of `install()` — it only freezes `Date.now()` without touching timers.
+
+```typescript
+// WRONG — install() after navigation orphans timers from the initial load
+test('wrong clock pattern', async ({ page }) => {
+  await page.goto('/app');              // ← page loads with REAL timers
+  await page.clock.install();          // ← fake clock installed too late
+  await page.clock.fastForward(60_000); // animations/timers from load never fire
+  await expect(page.getByText('Session expires in 59:00')).toBeVisible(); // may time out
+});
+
+// CORRECT — install() before navigation; all page timers use the fake clock
+test('correct clock pattern', async ({ page }) => {
+  await page.clock.install({ time: new Date('2025-06-01T09:00:00') });
+  await page.goto('/app');              // ← page loads with FAKE timers
+  await page.clock.fastForward(60_000); // all timers advance together
+  await expect(page.getByText('Session expires in 59:00')).toBeVisible();
+});
+
+// ALSO CORRECT — setFixedTime() is safe to call at any point (only affects Date)
+test('freeze date but allow real timers', async ({ page }) => {
+  await page.goto('/dashboard');
+  await page.clock.setFixedTime(new Date('2025-01-15T10:00:00Z')); // safe after goto
+  await expect(page.getByTestId('current-date')).toHaveText('Jan 15, 2025');
+});
+```
+
+---
+
+### 32. `webSocketRoute.onMessage()` disables auto-forwarding to the server [community]
+
+**What:** A test registers `page.routeWebSocket()` with an `onMessage` handler to intercept specific messages, expecting other messages to pass through to the real server. Instead, all messages are silently dropped and the server receives nothing.
+
+**WHY:** Playwright's WebSocket routing auto-forwards messages to the server by default — but ONLY when no `onMessage` handler is registered. The moment you call `ws.onMessage()`, auto-forwarding is disabled and you must explicitly forward every message you don't want to intercept.
+
+**Fix:** Call `ws.connectToServer()` and forward non-intercepted messages manually:
+
+```typescript
+// WRONG — registering onMessage blocks ALL messages from reaching the server
+test('wrong ws pattern', async ({ page }) => {
+  await page.routeWebSocket('/feed', ws => {
+    ws.onMessage(message => {
+      if (message === 'ping') ws.send('pong'); // ← intercept ping
+      // All other messages are silently dropped — server receives nothing
+    });
+  });
+});
+
+// CORRECT — connect to real server; forward everything except intercepted messages
+test('correct ws pattern', async ({ page }) => {
+  await page.routeWebSocket('/feed', ws => {
+    const server = ws.connectToServer();
+
+    ws.onMessage(message => {
+      if (message === 'ping') {
+        ws.send('pong');          // ← handle locally; don't forward
+        return;
+      }
+      server.send(message);       // ← forward all other messages to real server
+    });
+
+    server.onMessage(message => {
+      ws.send(message);           // ← forward real server responses back to page
+    });
+  });
+
+  await page.goto('/realtime-dashboard');
+  await expect(page.getByRole('feed')).not.toBeEmpty();
+});
+```
+
+> Similarly, registering `server.onMessage()` disables auto-forwarding in the server → page direction. The rule is symmetric: **any `onMessage` registration on either side disables auto-forwarding on that side**. [community]
+
+---
+
+### 33. `page.requestGC()` is Chromium-only; Firefox/WebKit silently no-op [community]
+
+**What:** A test that calls `page.requestGC()` to verify memory cleanup passes on Chromium but never actually runs GC on Firefox or WebKit CI shards — the method exists on the API but has no effect on those engines.
+
+**WHY:** `page.requestGC()` uses Chrome DevTools Protocol's `HeapProfiler.collectGarbage` command, which is only available in Chromium-based browsers. Playwright does not throw an error when called on Firefox or WebKit — the method resolves successfully but no GC occurs, so `WeakRef.deref()` may still return the object even though it would be garbage-collected on Chromium.
+
+**Fix:** Guard memory leak tests with a browser skip:
+
+```typescript
+import { test, expect, browserName } from '@playwright/test';
+
+test('modal is GC-collected after close', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'requestGC() requires Chromium; no-op on Firefox/WebKit');
+
+  await page.goto('/app');
+  await page.getByRole('button', { name: 'Open modal' }).click();
+
+  await page.evaluate(() => {
+    const modal = document.getElementById('modal');
+    (globalThis as any).__modalRef = new WeakRef(modal!);
+  });
+
+  await page.getByRole('button', { name: 'Close' }).click();
+  await page.requestGC();
+
+  const isCollected = await page.evaluate(
+    () => (globalThis as any).__modalRef.deref() === undefined
+  );
+  expect(isCollected).toBe(true);
+});
+```
+
+Alternatively, place all GC tests in a dedicated project scoped to Chromium:
+
+```typescript
+// playwright.config.ts
+{
+  name: 'memory-leak-tests',
+  testMatch: '**/*.gc-spec.ts',
+  use: { ...devices['Desktop Chrome'] },
+  dependencies: ['setup'],
+}
+```
+
+---
+
+## Additional Key APIs (Iteration 27)
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `page.requestGC()` | Trigger GC cycle (Chromium only, v1.48+) | Verify objects are freed after component/modal close |
+| `context.tracing.group(name)` / `tracing.groupEnd()` | Wrap actions in named group in Trace Viewer (v1.49+) | Fixture helpers, page utilities outside test body |
+| `keyboard.press('ControlOrMeta+X')` | Cross-platform ⌃/⌘ modifier (v1.45+) | Copy/paste/select-all shortcuts that differ per OS |
+| `webServer.gracefulShutdown` | SIGTERM + timeout before SIGKILL on test complete (v1.50+) | Servers with child processes, DB connections, or port locks |
+| `test.fail.only()` | Focus mode + expected failure annotation (v1.49+) | Isolating known-broken tests during diagnosis |
+| `globalSetup: [file1, file2]` | Multiple setup scripts run in order (v1.49+) | Separate DB seed from auth setup; clear dependency chain |
+| `screenshot: 'on-first-failure'` | Screenshot only on first retry failure (v1.49+) | Reduce artifact storage cost in suites with retries ≥ 2 |
+
+### Additional Breaking Changes (v1.49)
+
+| Version | Change | Migration |
+|---------|--------|-----------|
+| v1.49 | Chrome and Edge channels switch to **new headless mode** | Some screenshot/PDF tests may produce different pixels; regenerate baselines after upgrade |
+| v1.49 | `updateSnapshots` default changed from `'all'` to `'missing'` | Set `updateSnapshots: 'changed'` explicitly if previous behavior needed |

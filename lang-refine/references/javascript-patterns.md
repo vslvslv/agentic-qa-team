@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 44 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 45 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -3683,3 +3683,271 @@ const inactive = createUser({ role: 'inactive', createdAt: faker.date.past({ yea
 | `faker.internet.email()` for security-sensitive ids | Email format not globally unique across test runs | Use `faker.string.uuid()` for unique IDs |
 | Using locale-sensitive data without locale set | Default (en) names/addresses fail locale-specific format validations | Set `faker.locale` to match the domain under test |
 | Building large object graphs with Faker inline | Tests become cluttered and hard to read | Extract into a `factories/` directory with composable factory functions |
+
+---
+
+## Node.js Platform Features (v22–v24)
+
+### `require()` of Synchronous ESM — Node.js 22+ (Stable in v23+)
+
+Node.js 22 introduced (as experimental) and Node.js 23 enabled by default the ability to `require()` ES modules from CommonJS, as long as the ESM file has no top-level `await`. This finally bridges the gap for gradual CJS→ESM migrations.
+
+```javascript
+// ── Before Node.js 22: ERR_REQUIRE_ESM every time ────────────────────
+// const { greet } = require('./greeter.mjs'); // throws ERR_REQUIRE_ESM
+
+// ── Node.js 22 (with flag) / Node.js 23+ (default) ───────────────────
+// greeter.mjs — synchronous ESM (no top-level await)
+export function greet(name) {
+  return `Hello, ${name}!`;
+}
+
+// index.cjs — CJS file requiring the synchronous ESM module
+const { greet } = require('./greeter.mjs');
+console.log(greet('World')); // "Hello, World!"
+
+// ── Check at runtime whether require(ESM) is supported ───────────────
+if (process.features.require_module) {
+  console.log('require(esm) is available — Node.js 22+');
+}
+
+// ── STILL THROWS: ESM with top-level await cannot be required ─────────
+// async-mod.mjs:  export const data = await fetch('https://...');
+// const { data } = require('./async-mod.mjs'); // ERR_REQUIRE_ASYNC_MODULE
+
+// ── Dual-package pattern: "module-sync" exports condition ─────────────
+// package.json — support both require() and import with the same ESM source
+// {
+//   "exports": {
+//     ".": {
+//       "module-sync": "./index.mjs",  // CJS require() of ESM — sync only
+//       "import":      "./index.mjs",  // Native ESM import
+//       "require":     "./index.cjs"   // CJS fallback for older Node.js
+//     }
+//   }
+// }
+```
+
+**Key rules:**
+- Enabled by default in Node.js 23+; use `--no-experimental-require-module` to opt out.
+- Only works if the ESM module (and all of its ESM dependencies) is fully synchronous.
+- Returns the ESM namespace object — same as dynamic `import()` but synchronous.
+- The `module-sync` exports condition (Node.js 22+) lets packages expose one ESM file for both `require()` and `import` paths.
+
+### `fs.glob` and `fs.globSync` — Built-in Glob API (Node.js 22+)
+
+Node.js 22 ships `fs.glob` and `fs.globSync` in `node:fs`. No more `glob` or `fast-glob` npm packages for standard file discovery.
+
+```javascript
+import { glob, globSync } from 'node:fs';
+import { glob as globPromise } from 'node:fs/promises';
+
+// Async callback style
+glob('src/**/*.test.js', (err, files) => {
+  if (err) throw err;
+  console.log(files); // ['src/auth/auth.test.js', 'src/users/users.test.js', ...]
+});
+
+// Promise style (node:fs/promises)
+const testFiles = await globPromise('**/*.spec.{js,ts}', {
+  cwd: '/project/src',
+  exclude: (entry) => entry.name.startsWith('_'), // filter function
+});
+
+// Sync — useful in config files / scripts
+const configs = globSync('**/.eslintrc.*');
+
+// Glob with exclude patterns
+const srcFiles = await globPromise('src/**/*.js', {
+  exclude: (entry) => entry.name.includes('.min.'),
+});
+```
+
+**Limitations vs. npm `fast-glob`:** `node:fs/promises glob` does not support negation patterns (e.g., `!**/*.test.js`) or `ignore` string arrays (only an `exclude` callback). Use `fast-glob` when you need full negation and ignore-glob syntax; use `node:fs` glob for simple project tooling scripts.
+
+### `path.matchGlob()` — Single-Path Glob Test (Node.js 23+)
+
+`path.matchGlob(path, pattern)` tests whether a single path string matches a glob pattern. It replaces `minimatch` for simple yes/no glob checks without iterating a directory.
+
+```javascript
+import { matchGlob } from 'node:path';
+
+// Basic matching
+matchGlob('src/index.js', '**/*.js');          // true
+matchGlob('src/index.test.js', '**/*.js');     // true
+matchGlob('src/index.ts', '**/*.js');          // false
+
+// File filter in a build pipeline
+const sourceFiles = files.filter(f => matchGlob(f, 'src/**/*.js'));
+const testFiles   = files.filter(f => matchGlob(f, '**/*.{test,spec}.js'));
+
+// Works with absolute paths (match from the path's own components)
+matchGlob('/home/user/project/src/app.js', '**/src/**/*.js'); // true
+```
+
+### `v8.queryObjects()` — Memory Leak Regression Testing (Node.js 22+)
+
+`v8.queryObjects(constructor)` counts live instances of a class, enabling heap regression tests without a full profiler. Use it to verify that objects are collected after expected lifecycle events.
+
+```javascript
+import { queryObjects } from 'node:v8';
+
+class Request {
+  constructor(url) { this.url = url; }
+}
+
+const r1 = new Request('/api/users');
+const r2 = new Request('/api/posts');
+
+// Count all live instances (forces GC before counting)
+console.log(queryObjects(Request, { format: 'count' }));   // 2
+
+// Get summaries for inspection
+console.log(queryObjects(Request, { format: 'summary' }));
+// [ "Request { url: '/api/users' }", "Request { url: '/api/posts' }" ]
+
+// ── Test pattern: assert no leaks after cleanup ──────────────────────
+async function test_requestsCollectedAfterHandler() {
+  let handler = createRequestHandler();
+  handler.process(new Request('/api/test'));
+  handler = null; // drop the reference
+
+  // Force GC (requires --expose-gc flag or test framework integration)
+  if (global.gc) global.gc();
+
+  const leaks = queryObjects(Request, { format: 'count' });
+  console.assert(leaks === 0, `Leaked ${leaks} Request instances`);
+}
+```
+
+**Important notes:**
+- `queryObjects` triggers a full GC before counting — don't call it in hot paths.
+- Only counts instances created after the last GC. In practice, run it at the end of a test after dropping all references.
+- Requires `node:v8` (not V8 the global). Available in Node.js 22+.
+- Child-class instances are counted in the parent class query (prototype chain).
+
+### `SuppressedError` — Error Chains in `using` Blocks (ES2025)
+
+When a `using` block exits with an error AND a disposer also throws, JavaScript wraps both into a `SuppressedError`. Unlike `AggregateError` (parallel errors), `SuppressedError` represents a sequential chain: a cleanup error that happened while handling an original error.
+
+```javascript
+// Structure of SuppressedError:
+// SuppressedError {
+//   error:      // the error from the disposer (what happened during cleanup)
+//   suppressed: // the original error (what caused the block to exit)
+//   message:    // "An error was suppressed during disposal"
+// }
+
+class BrokenConnection {
+  [Symbol.dispose]() {
+    throw new Error('close() failed: connection already dead');
+  }
+}
+
+try {
+  using conn = new BrokenConnection();
+  throw new Error('query failed: timeout');    // original error
+  // conn[Symbol.dispose]() throws during cleanup
+} catch (e) {
+  if (e instanceof SuppressedError) {
+    // Cleanup error (what happened during disposal)
+    console.error('Cleanup error:', e.error.message);
+    // "close() failed: connection already dead"
+
+    // Original error (what caused the using block to exit)
+    console.error('Original error:', e.suppressed.message);
+    // "query failed: timeout"
+  }
+}
+
+// Multiple nested using with multiple disposer errors chains recursively:
+// SuppressedError {
+//   error: Error("disposer 1 failed"),
+//   suppressed: SuppressedError {
+//     error: Error("disposer 2 failed"),
+//     suppressed: Error("original trigger error")
+//   }
+// }
+
+// Helper to extract the root cause of a SuppressedError chain
+function getRootCause(err) {
+  while (err instanceof SuppressedError) {
+    err = err.suppressed;
+  }
+  return err;
+}
+
+function getAllDisposalErrors(err, acc = []) {
+  if (!(err instanceof SuppressedError)) return acc;
+  acc.push(err.error);
+  return getAllDisposalErrors(err.suppressed, acc);
+}
+```
+
+**Why this matters over `try-finally`:** with `try-finally`, if `finally` throws it silently replaces the original error. `SuppressedError` preserves both — the original error and every cleanup error in the chain — ensuring nothing is lost during debugging.
+
+### `node --run` — Run package.json Scripts Without npm (Node.js 22+ stable in v23)
+
+`node --run <script>` executes a script from `package.json` directly without spawning npm or another package manager. It's measurably faster because it skips the npm CLI startup overhead.
+
+```bash
+# Equivalent to: npm run build
+node --run build
+
+# Equivalent to: npm run test
+node --run test
+
+# Works in CI — no npm bootstrap needed if Node.js is already available
+```
+
+```javascript
+// package.json
+{
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --outfile=dist/index.js",
+    "test":  "node --test",
+    "lint":  "eslint src/"
+  }
+}
+```
+
+**Differences from `npm run`:**
+- Only runs exactly one script — no pre/post hooks (`pretest`, `postbuild`).
+- Does NOT add `node_modules/.bin` to PATH automatically (use full paths or `npx` for that).
+- Useful in Docker-based CI layers or scripts that know Node.js is available but want lighter startup.
+
+---
+
+## Additional Community Pitfalls (Node.js Platform)
+
+**42. `require(ESM)` Still Fails for Modules with Top-Level `await`** [community] — Node.js 22/23's new `require(esm)` capability is limited to *synchronous* ESM modules. If any file in the imported graph uses `export const x = await fetch(...)` or any other top-level `await`, `require()` throws `ERR_REQUIRE_ASYNC_MODULE`. WHY it causes problems: a CJS→ESM migration that works locally on simple modules silently breaks when the imported ESM transitively depends on a module that uses top-level await (common in config loaders, DB connection pools, etc.). Fix: audit the full import graph for top-level `await`; use dynamic `import()` for any async ESM.
+
+**43. `url.parse()` Removed in Node.js 24** [community] — `url.parse(urlString)` is removed in Node.js 24 (runtime-deprecated since Node.js 11, EOL since Node.js 22). WHY it causes problems: code that worked fine on Node.js 22 LTS throws `TypeError: url.parse is not a function` when upgraded to Node.js 24, often in legacy middleware or older npm packages. Fix: replace all uses with `new URL(urlString)` (WHATWG URL API); for relative URLs, use `new URL(path, base)`.
+
+```javascript
+// REMOVED in Node.js 24 — do not use
+const parsed = require('url').parse('https://example.com/path?q=1');
+parsed.hostname; // 'example.com'
+parsed.query;    // 'q=1' (string, not object)
+
+// REPLACEMENT — WHATWG URL API (works in Node.js 10+, all browsers)
+const url = new URL('https://example.com/path?q=1');
+url.hostname;                    // 'example.com'
+url.searchParams.get('q');       // '1' (proper typed access)
+```
+
+**44. `v8.queryObjects` Counts Child-Class Instances in Parent Queries** [community] — Calling `queryObjects(ParentClass)` returns instances of `ParentClass` AND all subclasses, because the query uses the prototype chain. WHY it causes problems: a memory leak test that creates `AdminUser extends User` and checks `queryObjects(User)` counts both `User` and `AdminUser` instances — your baseline count is wrong, making leak detection unreliable. Fix: call `queryObjects` on the specific constructor you want to count, not the base class; compare before/after counts rather than expecting exact totals.
+
+**45. `fs.glob` Exclude Callback vs. String Patterns** [community] — `node:fs` `glob()` accepts an `exclude` *function* (not a glob string). Developers expecting `exclude: ['**/*.test.js']` (like `fast-glob`'s `ignore` array) get a `TypeError` or silently no exclusion. WHY it causes problems: a reasonable assumption based on other glob libraries leads to no files being excluded at all — the error is silent if the `exclude` value is ignored instead of validated. Fix: pass a function: `exclude: (entry) => entry.name.endsWith('.test.js')`; for complex ignore patterns, use `fast-glob` which supports negation globs natively.
+
+---
+
+## Additional Anti-Patterns (Node.js Platform)
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `require('./module.mjs')` on async ESM | Throws `ERR_REQUIRE_ASYNC_MODULE` — top-level `await` blocks synchronous require | Use `await import('./module.mjs')` for any ESM with top-level await |
+| `require('url').parse(urlString)` | Removed in Node.js 24; runtime-deprecated since Node.js 11 | Replace with `new URL(urlString)` from the WHATWG URL API |
+| `queryObjects(BaseClass)` expecting only base instances | Counts subclasses too due to prototype chain; baseline counts are inflated | Query the specific leaf constructor; compare before/after deltas instead of absolutes |
+| `glob(pattern, { exclude: ['**/*.test.js'] })` (array) | `exclude` takes a function, not an array — likely a no-op or TypeError | Use `exclude: (entry) => entry.name.endsWith('.test.js')` |
+| Catching `SuppressedError` as a plain `Error` | Only checks `instanceof Error` — misses the cleanup error in `e.error`; original error in `e.suppressed` | Check `e instanceof SuppressedError`; traverse the chain with `getRootCause()` to find the original trigger |

@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -33,6 +33,13 @@
        (MLKem/MLDsa/SlhDsa), ZipArchive async APIs; added community gotchas: EF Core parameterized
        collection mode selection, SQL injection analyzer for FromSqlRaw — sourced from
        learn.microsoft.com/ef/core/what-is-new/ef-core-10.0 and
+       learn.microsoft.com/dotnet/core/whats-new/dotnet-10/libraries
+     Iter 30 (2026-05-12): added ASP.NET Core 10 OpenAPI 3.1 / YAML / XML-doc-comment integration,
+       Cookie Auth 401/403 fix for API endpoints, IMemoryPoolFactory<T> for DI memory pools,
+       X509Certificate2Collection.FindByThumbprint with SHA-256, Blazor JS Interop property get/set
+       and constructor APIs; added community gotchas: OpenAPI 3.1 nullable schema breaking change,
+       Cookie redirect-to-login API surprise — sourced from
+       learn.microsoft.com/aspnet/core/release-notes/aspnetcore-10.0 and
        learn.microsoft.com/dotnet/core/whats-new/dotnet-10/libraries
 -->
 
@@ -3638,3 +3645,282 @@ var byStatus = context.Blogs.FromSqlRaw("SELECT * FROM Blogs WHERE IsDeleted = 0
 var dynamic = context.Blogs.FromSqlRaw(sanitizedSql);  // manually reviewed
 #pragma warning restore EF1002
 ```
+
+---
+
+## ASP.NET Core 10 — Additional New APIs
+
+### OpenAPI 3.1 by Default + YAML Format + XML Doc Comments
+
+ASP.NET Core 10 upgrades the built-in OpenAPI support to emit **OpenAPI 3.1** (JSON Schema draft 2020-12) by default, switches the underlying library to `Microsoft.OpenApi` 2.0.0, adds YAML output format, and automatically incorporates **XML documentation comments** from source files into the generated OpenAPI document via a Roslyn source generator.
+
+**Behavioral changes from OpenAPI 3.0 → 3.1:**
+- Nullable types use `"type": ["string", "null"]` instead of `"nullable": true`
+- `oneOf` pattern for nullable complex types
+- `$ref` siblings now valid (OpenAPI 3.1 allows description alongside a `$ref`)
+
+```csharp
+// Program.cs — enable XML doc comments in OpenAPI (requires GenerateDocumentationFile=true in .csproj)
+builder.Services.AddOpenApi();
+
+// Output as YAML (more concise than JSON)
+app.MapOpenApi("/openapi/{documentName}.yaml");
+
+// XML comments are automatically picked up when methods (not lambdas) are used as handlers
+/// <summary>Place a new order for a customer.</summary>
+/// <param name="request">The order details including customer ID and line items.</param>
+/// <returns>The created order with its assigned ID.</returns>
+/// <response code="201">Order created successfully.</response>
+/// <response code="422">Validation error in request body.</response>
+public static async Task<Results<Created<OrderDto>, ValidationProblem>> CreateOrder(
+    CreateOrderRequest request,
+    IOrderService orders,
+    CancellationToken ct) { /* ... */ return default!; }
+
+app.MapPost("/orders", CreateOrder);
+
+// ProducesResponseType Description parameter (new in ASP.NET Core 10)
+[HttpGet("forecast")]
+[ProducesResponseType<IEnumerable<WeatherForecast>>(StatusCodes.Status200OK,
+    Description = "Five-day weather forecast for the requested location.")]
+public IEnumerable<WeatherForecast> GetForecast() => [];
+```
+
+**IMPORTANT breaking change:** if your OpenAPI consumers (Swagger UI, code generators, API clients) use `nullable: true` for nullable schema detection, they must be updated to handle `"type": ["T", "null"]`. Test generated clients before upgrading.
+
+**YAML output guideline:** use `.yaml` extension for human-readable API specs checked into version control. Use `.json` for machine-to-machine integration where parser compatibility is a concern.
+
+### Cookie Auth — 401/403 Instead of Redirects for API Endpoints
+
+In ASP.NET Core 10, cookie authentication no longer redirects unauthenticated or unauthorized requests to the login page when the request targets an API endpoint. Instead it returns HTTP **401 Unauthorized** or **403 Forbidden** directly. This eliminates the common "why is my API returning HTML?" surprise in SPAs and API-only clients.
+
+An endpoint is recognized as an API endpoint if it:
+- Has `[ApiController]` (MVC)
+- Produces or accepts JSON responses (Minimal API `TypedResults`, content negotiation)
+- Is a SignalR endpoint
+
+```csharp
+// ASP.NET Core 10: API endpoints get 401/403, not login redirects
+
+// Before ASP.NET Core 10: GET /api/orders → 302 to /Account/Login (surprise HTML to JS client)
+// After ASP.NET Core 10:  GET /api/orders → 401 Unauthorized
+
+// Override: restore redirect behavior for a specific auth scheme
+builder.Services.AddAuthentication()
+    .AddCookie(options =>
+    {
+        // Re-enable redirect for traditional web page endpoints
+        options.Events.OnRedirectToLogin = context =>
+        {
+            // Only redirect for browser navigation (Accept: text/html) — not for API clients
+            if (context.Request.Headers.Accept.Contains("text/html"))
+            {
+                context.Response.Redirect(context.RedirectUri);
+            }
+            else
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            }
+            return Task.CompletedTask;
+        };
+    });
+
+// Custom IApiEndpointMetadata: mark any endpoint as "API" to get 401/403 behavior
+public class ApiEndpointMetadata : IApiEndpointMetadata { }
+app.MapGet("/hybrid", () => "data").WithMetadata(new ApiEndpointMetadata());
+```
+
+**Why it matters:** before this change, a cookie-authenticated SPA would receive a `302 → /Account/Login` from its API calls when the session expired. JavaScript `fetch()` followed the redirect silently and the client received HTML instead of an error — causing silent failures and confusing debugging. The new behavior makes API authentication failures visible and unambiguous.
+
+### `IMemoryPoolFactory<T>` — DI-Friendly Memory Pool (.NET 10 / ASP.NET Core 10)
+
+`IMemoryPoolFactory<T>` is a new DI-registered abstraction for creating `MemoryPool<T>` instances. It replaces the anti-pattern of using `MemoryPool<T>.Shared` directly in classes that need scoped or isolated memory pools. Register via `AddMemoryPool<T>()` and inject the factory; the factory creates a pool per consumer, reducing cross-consumer memory pressure.
+
+```csharp
+using Microsoft.Extensions.DependencyInjection;
+
+// Registration — adds IMemoryPoolFactory<byte> to DI
+builder.Services.AddMemoryPool<byte>();
+
+// Consumer: inject factory, create an owned pool, dispose when done
+public sealed class FileProcessor(
+    IMemoryPoolFactory<byte> memoryPoolFactory,
+    ILogger<FileProcessor> logger) : IAsyncDisposable
+{
+    private readonly MemoryPool<byte> _pool = memoryPoolFactory.Create();
+
+    public async Task ProcessAsync(Stream input, CancellationToken ct)
+    {
+        using IMemoryOwner<byte> buffer = _pool.Rent(minBufferSize: 4096);
+        Memory<byte> memory = buffer.Memory;
+        int bytesRead = await input.ReadAsync(memory, ct);
+        ProcessBuffer(memory[..bytesRead]);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _pool.Dispose();
+        logger.LogDebug("Memory pool released.");
+        await ValueTask.CompletedTask;
+    }
+
+    private static void ProcessBuffer(ReadOnlyMemory<byte> data) { /* ... */ }
+}
+
+// Metrics: monitor pool usage at runtime
+// Available under "Microsoft.AspNetCore.MemoryPool" metric namespace
+```
+
+**When to use:** background services, file processing, HTTP request body buffering, or any component that reads large streams and benefits from controlled buffer reuse. Do NOT use `MemoryPool<T>.Shared` for long-lived services — it competes with framework internals. Prefer a dedicated pool from the factory.
+
+### `X509Certificate2Collection.FindByThumbprint` — SHA-256 and SHA-3 Certificate Lookup (.NET 10)
+
+The old `X509Certificate2Collection.Find(X509FindType.FindByThumbprint, ...)` method only searched by SHA-1 thumbprint, making SHA-2 or SHA-3 thumbprint lookup ambiguous. .NET 10 adds `FindByThumbprint(HashAlgorithmName, ReadOnlySpan<byte>)` that accepts the hash algorithm name explicitly.
+
+```csharp
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+
+// Old: Find by SHA-1 thumbprint only
+var oldColl = store.Certificates.Find(
+    X509FindType.FindByThumbprint,
+    "ABC123...",  // hex string — SHA-1 only
+    validOnly: false);
+
+// New: Find by any hash algorithm
+byte[] thumbprintBytes = Convert.FromHexString("ABCDEF...");  // SHA-256 thumbprint bytes
+
+X509Certificate2Collection coll = store.Certificates
+    .FindByThumbprint(HashAlgorithmName.SHA256, thumbprintBytes);
+
+// Ensure at most one match (SHA-2 shouldn't collide)
+Debug.Assert(coll.Count < 2, "Unexpected collision — has SHA-256 been broken?");
+X509Certificate2? cert = coll.SingleOrDefault();
+
+// SHA-3-256 variant
+coll = store.Certificates.FindByThumbprint(HashAlgorithmName.SHA3_256, thumbprintBytes);
+
+// PEM-encoded data in ASCII/UTF-8 (no encoding conversion needed — .NET 10)
+byte[] pemBytes = File.ReadAllBytes("/etc/ssl/certs/my.crt");  // ASCII/UTF-8 file
+PemFields fields = PemEncoding.FindUtf8(pemBytes);             // no char[] needed
+byte[] derBytes = Base64.DecodeFromUtf8(pemBytes.AsSpan()[fields.Base64Data]);
+```
+
+**Why SHA-1 thumbprints are insufficient:** SHA-1 is considered cryptographically weak. Organizations that rotate to SHA-256 certificates need tooling that can uniquely identify them. The new overload eliminates the ambiguity when both SHA-256 and SHA-3-256 thumbprints are 32 bytes.
+
+### Blazor JavaScript Interop — Property Get/Set and Constructor Invocation (.NET 10)
+
+Blazor .NET 10 adds JS interop APIs for getting and setting JavaScript object properties and invoking JavaScript constructors. Previously these required writing JavaScript helper functions; now they can be done directly from C# via `IJSRuntime`.
+
+```razor
+@inject IJSRuntime JS
+
+@code {
+    // Invoke a JavaScript constructor — returns a JS object reference
+    private IJSObjectReference? _instance;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Equivalent to: new jsLib.Counter("start")
+        _instance = await JS.InvokeConstructorAsync("jsLib.Counter", "start");
+    }
+
+    // Get a property value from a JS object
+    private async Task<int> GetCountAsync()
+    {
+        // Equivalent to: jsLib.counter.value
+        return await JS.GetValueAsync<int>("jsLib.counter.value");
+    }
+
+    // Set a property on a JS object
+    private async Task ResetAsync()
+    {
+        // Equivalent to: jsLib.counter.value = 0
+        await JS.SetValueAsync("jsLib.counter.value", 0);
+    }
+
+    // Get/set on a JS object reference returned from InvokeConstructorAsync
+    private async Task<string> GetInstancePropertyAsync()
+    {
+        if (_instance is null) return "";
+        return await _instance.GetValueAsync<string>("label");
+    }
+
+    private async Task SetInstancePropertyAsync(string label)
+    {
+        if (_instance is null) return;
+        await _instance.SetValueAsync("label", label);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_instance is not null)
+            await _instance.DisposeAsync();
+    }
+}
+```
+
+**Synchronous variants** (`GetValue<T>`, `SetValue`) are available for Blazor Server rendering where synchronous JS interop is possible. Use async variants for WebAssembly.
+
+**Why it matters:** before .NET 10, reading a JS property from Blazor required writing a JS helper function: `window.getMyProp = () => myObj.prop` and calling `InvokeAsync("getMyProp")`. The new APIs eliminate boilerplate JS shim functions for simple property access, making Blazor-JS interop code far more readable.
+
+---
+
+## Real-World Gotchas — ASP.NET Core 10 [community]
+
+### **OpenAPI 3.1 `nullable` Schema Breaking Change — Client Code Generators**  [community]
+
+ASP.NET Core 10 defaults to OpenAPI 3.1, which represents nullable types as `"type": ["string", "null"]` instead of `"nullable": true`. WHY it causes problems: generated clients (NSwag, Autorest, Kiota) using OpenAPI 3.0 schema conventions may not recognize the new nullable format, leading to generated code that treats `string?` parameters as required non-nullable strings, or fails with schema validation errors. Fix: pin the OpenAPI library to 3.0 with `AddOpenApi(options => options.OpenApiVersion = OpenApiSpecVersion.OpenApi3_0)` until your code generator supports 3.1, then migrate generator and schema handling simultaneously.
+
+```csharp
+// Temporary: keep OpenAPI 3.0 while updating your client generator
+builder.Services.AddOpenApi(options =>
+{
+    options.OpenApiVersion = OpenApiSpecVersion.OpenApi3_0;  // stays with "nullable": true
+});
+
+// Long-term: migrate generator to 3.1 and remove this override
+// NSwag: update to version that supports OpenAPI 3.1 (v14+)
+// Kiota: supported natively from GA
+```
+
+### **Cookie Auth Redirect-to-Login Surprise After Upgrading to ASP.NET Core 10**  [community]
+
+Teams upgrading a hybrid MVC + API application to ASP.NET Core 10 may find that previously working login redirects stop working for endpoints decorated with `[ApiController]`. WHY it causes problems: ASP.NET Core 10 intercepts cookie auth challenge/forbid for `IApiEndpointMetadata` endpoints and returns 401/403 directly, bypassing the `OnRedirectToLogin` event handler. If you relied on cookie auth to redirect API endpoints (e.g., for a classic AJAX partial-page pattern), those redirects silently stop working. Fix: explicitly opt in to redirects per endpoint by checking `Accept: text/html` in the event handler, or use `RequireAuthorization().WithMetadata(new ExcludeApiEndpointMetadata())` to un-mark specific endpoints.
+
+```csharp
+// Detection: log whether the redirect behavior changed after upgrade
+builder.Services.AddAuthentication()
+    .AddCookie(options =>
+    {
+        options.Events.OnRedirectToLogin = context =>
+        {
+            // Log so you can audit which endpoints hit this path
+            var logger = context.HttpContext.RequestServices
+                .GetRequiredService<ILogger<Program>>();
+            logger.LogInformation(
+                "Cookie redirect-to-login for {Path}", context.Request.Path);
+
+            // Only redirect for traditional browser navigation
+            bool isBrowser = context.Request.Headers.Accept
+                .Any(v => v?.Contains("text/html") == true);
+            if (isBrowser)
+                context.Response.Redirect(context.RedirectUri);
+            else
+                context.Response.StatusCode = 401;
+            return Task.CompletedTask;
+        };
+    });
+```
+
+---
+
+## Anti-Patterns Quick Reference — ASP.NET Core 10 Additions
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| Relying on `nullable: true` in OpenAPI 3.1 output | ASP.NET Core 10 emits `"type": ["T", "null"]` — client generators expecting `nullable: true` break silently | Pin to OpenAPI 3.0 while updating generator, or migrate generator to 3.1 first |
+| Expecting cookie auth to redirect API endpoints after upgrading to .NET 10 | ASP.NET Core 10 returns 401/403 for `[ApiController]` and JSON endpoints instead of redirecting | Check `Accept` header in `OnRedirectToLogin` event to preserve redirect for browser navigations |
+| Using `MemoryPool<T>.Shared` in long-lived background services | Competes with framework internals for shared buffer pool; hard to profile per-service allocations | Use `IMemoryPoolFactory<T>` from DI to get an isolated, disposable pool per service |
+| Finding X.509 certificates by SHA-1 thumbprint in new apps | SHA-1 is weak; SHA-256/SHA-3 certs needed for compliance; old `Find` API only supports SHA-1 | Use `FindByThumbprint(HashAlgorithmName.SHA256, bytes)` for algorithm-specific thumbprint lookup |
+| Writing JS helper shim functions for Blazor property read/write | Boilerplate JS required for every property; round-trips through the JS interop boundary | Use `JS.GetValueAsync<T>` / `JS.SetValueAsync` / `JS.InvokeConstructorAsync` directly from C# (.NET 10+) |

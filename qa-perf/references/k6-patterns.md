@@ -1,6 +1,6 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/ -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/ -->
 
 > Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Re-run `/qa-refine k6` to refresh.
 
@@ -1115,6 +1115,78 @@ export default function () {
 }
 ```
 
+### Concurrent Async HTTP Requests with `http.asyncRequest` + `Promise.all`  [community]
+
+`http.asyncRequest()` returns a `Promise<Response>` — use `Promise.all()` to fire multiple
+HTTP calls concurrently within a single VU iteration. This is distinct from `http.batch()`:
+`asyncRequest` + `Promise.all` is for semantically-related co-dependent calls (e.g., fetch
+user + fetch cart simultaneously); `http.batch()` is for independent asset/page loads.
+
+**Key differences from `http.batch()`:**
+- `http.batch()`: array/object API, simpler, no async function required
+- `asyncRequest` + `Promise.all`: Promise-based, works with any async logic between calls,
+  supports conditional branching on resolved values before continuing
+
+```javascript
+// k6/scripts/concurrent-async.js — two independent API calls fired in parallel per VU
+import http from "k6/http";
+import { check, sleep } from "k6";
+
+export const options = {
+  scenarios: {
+    concurrent_calls: {
+      executor: "constant-vus",
+      vus: 20,
+      duration: "2m",
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<400"],
+    http_req_failed:   ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default async function () {
+  // Fire both requests simultaneously — total wait = max(userTime, cartTime), not sum
+  const [userRes, cartRes] = await Promise.all([
+    http.asyncRequest("GET", `${BASE}/api/users/${__VU}`, null, {
+      headers: { Authorization: `Bearer ${__ENV.TOKEN}` },
+      tags: { name: "GET /api/users/:id" },
+    }),
+    http.asyncRequest("GET", `${BASE}/api/cart/${__VU}`, null, {
+      headers: { Authorization: `Bearer ${__ENV.TOKEN}` },
+      tags: { name: "GET /api/cart/:id" },
+    }),
+  ]);
+
+  check(userRes, { "user 200": (r) => r.status === 200 });
+  check(cartRes, { "cart 200": (r) => r.status === 200 });
+
+  // Dependent call uses results from the parallel calls
+  const userId = userRes.json("id");
+  if (userId) {
+    const orderRes = await http.asyncRequest(
+      "POST",
+      `${BASE}/api/orders`,
+      JSON.stringify({ userId, items: cartRes.json("items") }),
+      { headers: { "Content-Type": "application/json" } }
+    );
+    check(orderRes, { "order created": (r) => r.status === 201 });
+  }
+
+  sleep(1);
+}
+```
+
+> **[community]:** `http.asyncRequest` cannot abort in-flight requests. When using
+> `Promise.race()` to get the first responder, the losing requests continue running until
+> completion and block VU iteration end. This can cause iteration durations to exceed your
+> `sleep()` target — use `Promise.race` only for truly fire-and-forget patterns, not as
+> a timeout mechanism. For true per-request timeouts, use the `timeout` param on each
+> individual `asyncRequest` call.
+
 ### Multi-Step User Journey with `group()`  [community]
 
 `group()` aggregates all request durations within the group into a `group_duration`
@@ -1771,6 +1843,115 @@ K6_VUS=5 K6_DURATION=60s k6 run k6/scripts/load.js  # quick override for local d
 
 ---
 
+---
+
+### HTML Parsing with `k6/html` — CSRF Token Extraction  [community]
+
+The `k6/html` module provides a jQuery-compatible DOM parser for HTML responses. Its most
+important production use case is **CSRF token extraction** from server-rendered forms —
+a prerequisite for load testing traditional server-side applications with CSRF protection.
+
+Without this pattern, POST/PUT requests are rejected with 403 (CSRF token mismatch) and
+teams assume the test environment is broken when in reality they just need to read the token
+from the page HTML first.
+
+```javascript
+// k6/scripts/csrf-form-submit.js — CSRF token extraction + form submission
+import http from "k6/http";
+import { parseHTML } from "k6/html";
+import { check, sleep } from "k6";
+
+export const options = {
+  scenarios: {
+    form_submit: {
+      executor: "ramping-vus",
+      stages: [
+        { duration: "30s", target: 10 },
+        { duration: "1m",  target: 10 },
+        { duration: "15s", target: 0  },
+      ],
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<500"],
+    http_req_failed:   ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.APP_URL || "http://localhost:3001";
+
+export default function () {
+  // Step 1: GET the form page — server sets session cookie and renders CSRF token
+  const loginPage = http.get(`${BASE}/login`);
+  check(loginPage, { "login page 200": (r) => r.status === 200 });
+
+  // Step 2: Extract CSRF token from the rendered HTML
+  const doc   = parseHTML(loginPage.body);
+
+  // Common patterns: hidden input, meta tag, or custom attribute
+  const csrfToken =
+    doc.find('input[name="_csrf"]').val()          ||   // Rails / Express CSRF hidden input
+    doc.find('input[name="csrf_token"]').val()      ||   // Django CSRF input
+    doc.find('meta[name="csrf-token"]').attr("content"); // Rails AJAX meta tag
+
+  if (!csrfToken) {
+    console.warn(`[VU ${__VU}] No CSRF token found — form submission may fail`);
+  }
+
+  // Step 3: Submit the form with the extracted token
+  // k6 automatically sends cookies set by the GET request (same VU cookie jar)
+  const loginRes = http.post(
+    `${BASE}/login`,
+    {
+      email:      "user@example.com",
+      password:   "password123",
+      _csrf:      csrfToken,           // include the extracted token
+    },
+    {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      redirects: 0,  // intercept redirect to check for successful login
+      tags: { name: "POST /login" },
+    }
+  );
+
+  check(loginRes, {
+    "login redirect (302)": (r) => r.status === 302,  // success = redirect to dashboard
+    "not 403 CSRF error":   (r) => r.status !== 403,
+  });
+
+  sleep(1);
+}
+```
+
+**Additional `k6/html` patterns:**
+
+```javascript
+// Link extraction — spider/crawl pattern
+const links = parseHTML(res.body).find("a[href]").toArray()
+  .map((el) => el.attr("href"))
+  .filter((href) => href && href.startsWith("/"));  // internal links only
+
+// Table row parsing — extract data from HTML tables (e.g., pricing tables)
+const rows = parseHTML(res.body).find("table tbody tr").toArray()
+  .map((row) => ({
+    name:  row.find("td:first-child").text().trim(),
+    price: parseFloat(row.find("td.price").text().replace("$", "")),
+  }));
+
+// Form field serialization — build a form submission from a rendered form
+const formData = parseHTML(res.body).find("#checkout-form").serializeObject();
+// Returns: { field1: "value1", field2: "value2", _csrf: "token123", ... }
+// Then submit:
+http.post(`${BASE}/checkout`, formData);
+```
+
+> **[community]:** `k6/html` performs no CSS layout computation — `css()` and `offset()`
+> methods are not available (they throw). DOM trees are read-only: you cannot call
+> `setAttribute()` or modify nodes. Use it for extraction only, not DOM manipulation.
+> For complex form flows with dynamic JS-rendered content, use the browser module instead.
+
+---
+
 ## Real-World Gotchas  [community]
 
 These are production-discovered pitfalls sourced from community experience — the official
@@ -2126,6 +2307,27 @@ function api(method, path, body, params = {}) {
 
 ---
 
+### 29. `__VU` is NOT globally unique in distributed cloud runs — VUs on different instances reuse the same ID  [community]
+**What:** In Grafana Cloud k6 with geographic distribution, `__VU` resets per load-generator
+instance. If you use `testUsers[__VU % testUsers.length]` to distribute test users across VUs,
+multiple instances generate overlapping `__VU` values — VUs on different instances use the SAME
+test user credentials, causing lock contention, false auth failures, and skewed results.
+**WHY:** `K6_CLOUDRUN_INSTANCE_ID` identifies the load generator instance; `__VU` is local
+to that instance. With 4 cloud instances running 25 VUs each, VU IDs are 1-25 on each instance
+— they are NOT globally unique across the test.
+**Fix:** Use `exec.scenario.iterationInTest` (globally unique across all instances) or combine
+`K6_CLOUDRUN_INSTANCE_ID` with `__VU` for distributed-safe unique user assignment:
+```javascript
+import exec from "k6/execution";
+
+// Globally unique across all distributed k6 instances
+const globalVuId = exec.vu.idInTest;  // unique across all cloud instances
+
+// OR use scenario.iterationInTest for per-iteration unique IDs
+const userIdx = exec.scenario.iterationInTest % testUsers.length;
+const user = testUsers[userIdx];
+```
+
 ### 30. Unsafe response body access crashes checks silently  [community]
 **What:** `check(res, { "has id": (r) => r.json("data.user.id") !== null })` throws when the
 server is overloaded and returns an empty body, a plaintext error string, or a non-JSON
@@ -2162,25 +2364,6 @@ that don't exist during setup/teardown, which run once in a synthetic execution 
 logic that needs unique IDs, use `Date.now()` or pass parameters from the script's module scope.
 
 ---
-**What:** In Grafana Cloud k6 with geographic distribution, `__VU` resets per load-generator
-instance. If you use `testUsers[__VU % testUsers.length]` to distribute test users across VUs,
-multiple instances generate overlapping `__VU` values — VUs on different instances use the SAME
-test user credentials, causing lock contention, false auth failures, and skewed results.
-**WHY:** `K6_CLOUDRUN_INSTANCE_ID` identifies the load generator instance; `__VU` is local
-to that instance. With 4 cloud instances running 25 VUs each, VU IDs are 1-25 on each instance
-— they are NOT globally unique across the test.
-**Fix:** Use `exec.scenario.iterationInTest` (globally unique across all instances) or combine
-`K6_CLOUDRUN_INSTANCE_ID` with `__VU` for distributed-safe unique user assignment:
-```javascript
-import exec from "k6/execution";
-
-// Globally unique across all distributed k6 instances
-const globalVuId = exec.vu.idInTest;  // unique across all cloud instances
-
-// OR use scenario.iterationInTest for per-iteration unique IDs
-const userIdx = exec.scenario.iterationInTest % testUsers.length;
-const user = testUsers[userIdx];
-```
 
 ### 32. k6 v2.0 HTTP API server disabled by default — REST clients silently time out  [community]
 **What:** k6 v1.x always started a REST API server on `localhost:6565` by default. In k6 v2.0, the server does **not** start unless you explicitly pass `--address localhost:6565` or set `K6_ADDRESS=localhost:6565`. Teams using `k6 pause`, `k6 resume`, or any tool that calls the k6 REST API (e.g., Gatling Enterprise integrations, custom CI dashboards) silently lose the endpoint after upgrading.
@@ -2278,6 +2461,52 @@ http.get(url, body, { tags: { name: "profile" } });
 http.get(url, { tags: { name: "profile" } });  // params as second arg
 http.post(url, body, { tags: { name: "profile" } });  // if you need a body
 ```
+
+### 38. Coordinated omission — closed-model executors hide latency degradation under stress  [community]
+**What:** Using `ramping-vus` or `constant-vus` (closed models) to load test a system that
+is degrading causes the test to *automatically reduce load* as responses slow down. A stressed
+server taking 10 s per response means each VU issues only 6 req/min instead of 60. The test
+reports 90% lower throughput but "acceptable" latency percentiles — the slow requests are
+never sent, so latency looks fine. You conclude the system handles load when it actually does not.
+**WHY:** In a closed model, the next VU iteration starts only after the previous one finishes.
+When the SUT is slow, VUs spend most of their time waiting for responses — they cannot issue
+new requests. The arrival rate self-limits to match SUT capacity. Gil Tene coined this
+"coordinated omission": the load generator unknowingly omits the load precisely when the system
+is under the most stress, producing misleading results.
+**Fix:** Switch to `constant-arrival-rate` or `ramping-arrival-rate` for stress and breakpoint
+tests. These are *open models*: new iterations start on a fixed schedule regardless of how long
+prior iterations take. The SUT faces constant pressure even when slow — which is how real users behave.
+```javascript
+// ❌ Closed model — load drops when SUT is slow (coordinated omission)
+export const options = {
+  scenarios: { stress: { executor: "constant-vus", vus: 50, duration: "5m" } },
+};
+
+// ✓ Open model — maintains constant RPS regardless of SUT response time
+export const options = {
+  scenarios: {
+    stress: {
+      executor: "constant-arrival-rate",
+      rate: 50,           // 50 iterations/s — fixed regardless of response time
+      timeUnit: "1s",
+      duration: "5m",
+      preAllocatedVUs: 100,  // pool must be large enough to absorb slow responses
+      maxVUs: 300,           // ceiling for when SUT degrades badly
+    },
+  },
+  thresholds: {
+    // Under coordinated omission these thresholds may PASS; under open model they FAIL correctly
+    "http_req_duration": ["p(95)<500"],
+    "dropped_iterations": ["count<10"],  // alert if VU pool is exhausted
+  },
+};
+```
+> **When to use closed models:** Use `constant-vus` / `ramping-vus` to simulate a fixed number
+> of concurrent users who will wait for a response (e.g., browser sessions with a think time).
+> Use arrival-rate executors to simulate a fixed request rate from an independent source (e.g.,
+> an API gateway, payment processor, or IoT fleet) that does not slow down when your SUT does.
+
+---
 
 ## Lesser-Known Options
 
@@ -5784,6 +6013,14 @@ K6_PROMETHEUS_RW_BEARER_TOKEN="eyJhbGci..." \
 K6_PROMETHEUS_RW_SERVER_URL=https://prometheus.internal/api/v1/write \
 K6_PROMETHEUS_RW_CLIENT_CERTIFICATE=/certs/client.pem \
 K6_PROMETHEUS_RW_CLIENT_CERTIFICATE_KEY=/certs/client.key \
+  k6 run --out experimental-prometheus-rw k6/scripts/load.js
+
+# AWS SigV4 (Amazon Managed Prometheus — requires AWS credentials)
+# AMP workspace URL format: https://aps-workspaces.<region>.amazonaws.com/workspaces/<workspace-id>/api/v1/remote_write
+K6_PROMETHEUS_RW_SERVER_URL=https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-abc123/api/v1/remote_write \
+K6_PROMETHEUS_RW_SIGV4_REGION=us-east-1 \
+K6_PROMETHEUS_RW_SIGV4_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE \
+K6_PROMETHEUS_RW_SIGV4_SECRET_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
   k6 run --out experimental-prometheus-rw k6/scripts/load.js
 
 # Full production configuration — native histograms + stale markers + TLS version enforcement

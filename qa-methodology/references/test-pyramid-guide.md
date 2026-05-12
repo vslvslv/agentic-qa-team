@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
@@ -7,10 +7,11 @@
 <!-- new (2026-05-12 iter 33): Vitest 3.x inline workspace config, multi-browser instances API, Playwright 1.50+ Clock API + tsconfig option + Aria Snapshots, TypeScript 7.0 migration implications for test pipelines, Test Double taxonomy per pyramid level (Classical vs Mockist TDD), Fowler TestDouble taxonomy at pyramid layers -->
 <!-- new (2026-05-12 iter 34): Vitest 4.0 (Oct 2025) + 4.1 (Mar 2026) — browser mode stable, toMatchScreenshot, expect.schemaMatching (Zod/Valibot), test tags with --tags-filter, aroundEach/aroundAll hooks, --detect-async-leaks, viteModuleRunner:false; Playwright v1.51-v1.60 — test.abort(), await using teardown, --only-changed, ARIA snapshot on page object, toContainClass(), testProject.teardown, locator.normalize(), page.pickLocator() -->
 <!-- new (2026-05-12 iter 35): TypeScript 6.0 breaking default changes (types:[], strict:true, module:esnext, rootDir:.) — silent test pipeline breakage; Vitest 5.0.0-beta.2 (May 5, 2026) — inline expect, sequential removal, directory restructure; Playwright v1.60 HAR tracing API (tracing.startHar) + locator.drop() drag-and-drop; Google "The Way of TDD" (Mar 2026) blog post -->
+<!-- new (2026-05-12 iter 36): Vitest 3.2 (Jun 2025) — Annotation API, Scoped Fixtures (scope:file|worker), explicit resource management (using vi.spyOn), Test Signal API (AbortSignal), multi-project sequence.groupOrder, watchTriggerPatterns, workspace→projects deprecation; TypeScript 5.8 — --module node18 stable, import with {type:"json"}, watch mode perf; Playwright v1.51 storageState({indexedDB:true}) for IndexedDB auth; Vitest 4.1.4+ browser locators exact option + Aria snapshots in browser mode -->
 
 ---
 
-> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. New patterns (2026 iter 35): TypeScript 6.0 silently breaks test `tsconfig.json` (`types` defaults to `[]`, `strict` defaults to `true`, `module` defaults to `esnext`, `rootDir` defaults to `.`) — most test configs need explicit opt-ins after upgrading; Vitest 5.0.0-beta.2 (May 5, 2026) in active development — inline expect package, `sequential` removal, `.vitest/` directory restructure; Playwright v1.60 adds `tracing.startHar()` first-class HAR API + `locator.drop()` for drag-and-drop e2e tests. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
+> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. New patterns (2026 iter 35): TypeScript 6.0 silently breaks test `tsconfig.json` (`types` defaults to `[]`, `strict` defaults to `true`, `module` defaults to `esnext`, `rootDir` defaults to `.`) — most test configs need explicit opt-ins after upgrading; Vitest 5.0.0-beta.2 (May 5, 2026) in active development — inline expect package, `sequential` removal, `.vitest/` directory restructure; Playwright v1.60 adds `tracing.startHar()` first-class HAR API + `locator.drop()` for drag-and-drop e2e tests. New patterns (2026 iter 36): Vitest 3.2 — Annotation API (structured test metadata for JUnit/HTML reporters), Scoped Fixtures (`scope:'file'|'worker'` in `test.extend`), `using vi.spyOn()` automatic spy restore, Test Signal API (AbortSignal for timeout cleanup), `sequence.groupOrder` replaces `&&`-chained CI commands for fail-fast ordering; TypeScript 5.8 — `--module node18` stable, `import with {type:'json'}` replaces deprecated `assert`, faster watch mode; Vitest 3.2 `workspace` config key deprecated in favour of inline `test.projects`. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
 
 ---
 
@@ -1247,6 +1248,10 @@ The `strict: true` default is usually harmless if the codebase already uses `"st
 
 30. **Vitest 5.0 (beta) introduces breaking changes to test directory conventions and the `sequential` option** [community] — Vitest 5.0.0-beta.2 (released May 5, 2026) is the next major version. Teams maintaining custom CI scripts that interact with Vitest output artifacts should prepare now. Key breaking changes: (1) The default attachment directory has changed from `.vitest-attachements/` to `.vitest/attachments/` and the blob reporter now writes to `.vitest/blob/` — any CI script that reads these paths hardcoded will silently produce empty reports or fail. (2) The `sequential` option on `test` and `suite` has been removed in favour of `concurrent: false` — test files using `test.sequential(...)` or `suite.sequential(...)` will produce a runtime error after upgrading. (3) The `expect` package is now inlined into Vitest rather than a peer dependency — projects that imported `expect` from `'vitest/expect'` directly need to update to `'vitest'`. (4) V8 coverage now tracks `node:child_process` and `node:worker_threads` contexts — this may increase measured branch coverage for integration tests that use worker threads, which can shift coverage threshold pass/fail status. Do not upgrade to Vitest 5.0 stable in production test pipelines until the release is stable; monitor [vitest.dev/blog/vitest-5.html] for the stable announcement. Until then, pin to `vitest@^4.1` and add a TODO note to unpin when 5.0 stable lands. [community: github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2]
 
+31. **Vitest 3.2 `workspace` option deprecation silently changes project discovery** [community] — Vitest 3.2 deprecated the top-level `workspace` config key (which pointed to a `vitest.workspace.ts` file) to prevent naming conflicts with PNPM workspaces. Teams that have both `workspace: './vitest.workspace.ts'` in their `vitest.config.ts` *and* inline `test.projects: [...]` will find that Vitest silently prefers the inline `projects` array — the workspace file is ignored without a warning in Vitest 3.2 (a warning was added in 3.2.1). This creates a migration hazard: if the workspace file and the inline projects list differ (e.g., the workspace file includes a `components` project that wasn't yet migrated to inline), the components test suite stops running silently. Fix: after migrating to inline `test.projects`, delete `vitest.workspace.ts` *and* remove the `workspace:` key from `vitest.config.ts`. Add a CI lint step: `[ -f vitest.workspace.ts ] && echo "ERROR: stale workspace file" && exit 1`. [official: vitest.dev/blog/vitest-3-2.html — workspace deprecation note]
+
+32. **TypeScript 5.8 `--module node18` and `import with` break legacy test setup files** [community] — TypeScript 5.8 stabilised `--module node18` (previously `--module node18` was a preview alias). For TypeScript test pipelines targeting Node.js 18+, `"module": "node18"` is now the recommended setting — it disallows `require()` of native ESM modules and enforces `with { type: "json" }` for JSON imports instead of the now-deprecated `assert { type: "json" }` form. Teams upgrading to `"module": "node18"` find two common breakages in test code: (1) test setup files that use `import config from './vitest.setup.json' assert { type: 'json' }` produce a TypeScript error — update to `with { type: 'json' }`; (2) `testcontainers` and other packages with dual CJS/ESM builds may emit `ERR_REQUIRE_ESM` under `node18` module resolution if the entry point is ESM-only. Fix for (2): use `"module": "nodenext"` instead of `"module": "node18"` in `tsconfig.integration.json` — `nodenext` allows `require()` of ESM under Node.js 22+ (which supports it via `require(esm)` stabilised in Node 22.12). Always have a separate `tsconfig.integration.json` with the integration-level module resolution rather than overriding the root `tsconfig.json`. [official: typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html]
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -1478,6 +1483,126 @@ export default defineConfig({
 ```
 
 The multi-browser `instances` configuration is specifically valuable for the Playwright component test level (`.ct.test.tsx` files) where browser engine differences matter. Do not use `instances` for node-environment unit or integration test cases — the overhead is only justified when testing browser-specific behaviour. [official: vitest.dev/guide/projects]
+
+---
+
+### Vitest 3.2: Annotations, Scoped Fixtures, and Resource Management  [community]
+
+Vitest 3.2 (released June 2, 2025) introduced several features that improve test-level organisation and resource lifecycle management in TypeScript projects. None of these change the pyramid shape, but they reduce the maintenance cost of the integration and e2e test levels where lifecycle complexity is highest.
+
+**Annotation API:** Test cases can now carry structured annotations — a `type` string and an optional `description` — that surface in the UI, HTML, JUnit, TAP, and GitHub Actions reporters. This is particularly useful at the integration test level for marking test cases with their pyramid level, linked story, or known flakiness status, without requiring separate tag syntax. Annotations are composable: `test.info().annotations` can be read at runtime to conditionally skip or modify behaviour.
+
+**Scoped Fixtures (`scope: 'file' | 'worker'`):** `test.extend` now accepts a `scope` option on each fixture. `scope: 'file'` creates the fixture once per test file and tears it down after all tests in the file complete — the right scope for a database connection shared across an integration test file. `scope: 'worker'` creates the fixture once per worker process — useful for heavyweight resources like a browser context shared across multiple component test files running on the same worker. Previously, only `beforeAll`/`afterAll` achieved this scoping without the type-safe fixture injection pattern.
+
+**Explicit resource management with `using`:** `vi.spyOn()` and `vi.fn()` now support the `using` keyword (TypeScript 5.2+ `Symbol.dispose`). A spy created with `await using spy = vi.spyOn(...)` is automatically restored when the block exits — no `afterEach(() => vi.restoreAllMocks())` required. This reduces test pollution risk at the unit test level where spy leakage into subsequent tests is a common source of non-determinism.
+
+**Test Signal API:** A test body now receives an `AbortSignal` that is cancelled when the test times out or is interrupted. Long-running integration tests that open persistent connections (WebSocket, SSE, database listeners) can bind to the signal for early cleanup — preventing the "open handle" failures that `--detect-async-leaks` (Vitest 4.1) later surfaces.
+
+**Multi-project ordering (`sequence.groupOrder`):** Projects with the same `groupOrder` value run together; higher values run later. This enables a fail-fast CI pipeline that does not require separate `vitest run --project unit && vitest run --project integration` invocations. Configure unit tests with `groupOrder: 1`, integration with `groupOrder: 2`, e2e with `groupOrder: 3` — Vitest runs each group sequentially, short-circuiting on the first group failure.
+
+**`workspace` config key deprecated (Vitest 3.2):** The `workspace` config option (which pointed to a `vitest.workspace.ts` file) is deprecated in Vitest 3.2 to avoid naming conflicts with PNPM workspaces. The replacement is the inline `test.projects` array (already covered in the Vitest 3.0 section above). Any `vitest.config.ts` still using `workspace: './vitest.workspace.ts'` should migrate to `test.projects: [...]` before upgrading beyond 3.2.
+
+```typescript
+// vitest.config.ts — Vitest 3.2 patterns: scoped fixtures, groupOrder fail-fast, annotations
+// Demonstrates scoped fixtures in test.extend and multi-project groupOrder
+
+// tests/fixtures/db.fixture.ts — file-scoped DB fixture (Vitest 3.2)
+import { test as base } from 'vitest';
+import { DataSource } from 'typeorm';
+import { Order } from '../../src/orders/order.entity.js';
+
+// scope: 'file' — DB connection created once per test file, torn down after all tests complete
+export const test = base.extend<{ db: DataSource }>({
+  db: [
+    async ({}, use) => {
+      const ds = new DataSource({
+        type: 'sqlite',
+        database: ':memory:',
+        entities: [Order],
+        synchronize: true,
+      });
+      await ds.initialize();
+      await use(ds);       // inject into each test case in this file
+      await ds.destroy();  // automatic teardown when file finishes
+    },
+    { scope: 'file' },     // Vitest 3.2: file-scoped — not recreated for each test case
+  ],
+});
+```
+
+```typescript
+// src/orders/orders.integration.test.ts — using scoped fixture + Annotation API + using-spy
+import { test } from '../fixtures/db.fixture.js';
+import { OrdersService } from '../../src/orders/orders.service.js';
+import { OrderRepository } from '../../src/orders/order.repository.js';
+import { vi, expect } from 'vitest';
+
+test('creates an order and notifies — annotation + using spy', async ({ db }) => {
+  // Annotation API: label this test case for reporters (shows in HTML/JUnit output)
+  test.info().annotations.push({ type: 'pyramid-level', description: 'integration' });
+  test.info().annotations.push({ type: 'story', description: 'ORDER-123' });
+
+  const service = new OrdersService(new OrderRepository(db));
+
+  // Vitest 3.2: using keyword restores the spy when block exits — no afterEach needed
+  // Requires TypeScript 5.2+ with useDefineForClassFields: true
+  // Note: 'using' requires lib.es2025 or later in tsconfig for Symbol.dispose
+  await using notifySpy = vi.spyOn(service as unknown as { notify: () => void }, 'notify' as never);
+
+  const created = await service.create({ customerId: 'c1', items: [{ sku: 'A1', qty: 1 }] });
+  expect(created.id).toBeDefined();
+  // spy is automatically restored here — no afterEach(() => vi.restoreAllMocks()) needed
+});
+```
+
+```typescript
+// vitest.config.ts — sequence.groupOrder for fail-fast without separate CI invocations
+import { defineConfig, defineProject } from 'vitest/config';
+import tsconfigPaths from 'vite-tsconfig-paths';
+
+export default defineConfig({
+  plugins: [tsconfigPaths()],
+  test: {
+    coverage: { provider: 'v8', reporter: ['text', 'json', 'html'] },
+    projects: [
+      defineProject({
+        extends: true,
+        test: {
+          name: 'unit',
+          include: ['src/**/*.unit.test.ts'],
+          environment: 'node',
+          testTimeout: 5_000,
+          sequence: { groupOrder: 1 }, // Vitest 3.2: run first; failure stops later groups
+        },
+      }),
+      defineProject({
+        extends: true,
+        test: {
+          name: 'integration',
+          include: ['src/**/*.integration.test.ts'],
+          environment: 'node',
+          testTimeout: 60_000,
+          pool: 'forks',
+          sequence: { groupOrder: 2 }, // run only if group 1 passes
+        },
+      }),
+      defineProject({
+        extends: true,
+        test: {
+          name: 'e2e',
+          include: ['e2e/**/*.e2e.test.ts'],
+          environment: 'node',
+          testTimeout: 120_000,
+          bail: 1,
+          sequence: { groupOrder: 3 }, // run only if groups 1 + 2 pass
+        },
+      }),
+    ],
+  },
+});
+```
+
+The `sequence.groupOrder` approach unifies the fail-fast pipeline into a single `vitest run` invocation — removing the need for three separate `&&`-chained CI commands while preserving the execution order guarantee. The annotation API provides structured metadata for test-case traceability, which is particularly useful in regulated environments where test cases must be linked to requirements or user stories (ISTQB test management). [official: vitest.dev/blog/vitest-3-2.html]
 
 ---
 
@@ -1903,7 +2028,9 @@ The most critical audit is for teams using `--reporter=blob` in sharded CI pipel
 | How They Test | Community | https://abhivaikar.github.io/howtheytest/ | 108 companies, 797 resources — real-world test pyramid ratios, strategies, and culture from production engineering orgs |
 | Mocks Aren't Stubs (Fowler) | Community | https://martinfowler.com/articles/mocksArentStubs.html | Canonical taxonomy: Dummy/Fake/Stub/Spy/Mock; Classical vs Mockist TDD; when to use each at each pyramid level |
 | Vitest 3.0 Release | Tool | https://vitest.dev/blog/vitest-3.html | Inline workspace config, multi-browser instances, reporter redesign, public node API stabilisation |
+| Vitest 3.2 Release | Tool | https://vitest.dev/blog/vitest-3-2.html | Annotation API, Scoped Fixtures (scope:file|worker), `using vi.spyOn()` resource management, Test Signal API (AbortSignal), sequence.groupOrder for fail-fast, workspace config deprecated |
 | Vitest 4.0 Release | Tool | https://vitest.dev/blog/vitest-4.html | Browser mode stable, toMatchScreenshot visual regression, expect.schemaMatching (Zod/Valibot), Playwright trace support |
 | Vitest 4.1 Release | Tool | https://vitest.dev/blog/vitest-4-1.html | Test tags + --tags-filter, aroundEach/aroundAll hooks, --detect-async-leaks, viteModuleRunner:false, test.extend builder pattern |
+| TypeScript 5.8 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html | `--module node18` stable, `import with {type:'json'}` replaces assert form, granular return-expression branch checking, `--erasableSyntaxOnly` + Node.js type-stripping |
 | TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `--stableTypeOrdering`, deprecated option removal path, TS 7.0 migration preparation; `--erasableSyntaxOnly` for Node.js type-stripping; BREAKING: `types:[]`, `strict:true`, `module:esnext`, `rootDir:.` new defaults |
 | Vitest 5.0 Beta | Tool | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2 | Next major version (beta May 2026): inline expect, sequential removal, .vitest/ directory restructure, V8 worker coverage — audit before upgrading |

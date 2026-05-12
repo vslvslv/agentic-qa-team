@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 25 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 26 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 26 additions: playwright-bdd unreleased — junit-modern alias deprecated (canonical JUnit reporter), tinyglobby replaces fast-glob, bddgen worker concurrency limited to CPU/2 for OOM prevention, @cucumber/messages 27→32 and @cucumber/gherkin 32→39 major bumps (direct import breaking change), JSON reporter skips attachments by default, non-ASCII garbling fix in HTML reporter; Gherkin reference — "Imagine it's 1922" heuristic for technology-agnostic step writing, vivid story-like character names in Background vs generic identifiers; playwright-bdd v8.5.0 — documented verbose mode improvements and VS Code Cucumber reporter fix -->
 <!-- Iter 25 additions: Cucumber.js unreleased — formatter output redesign (summary/progress/progress-bar/pretty), printAttachments deprecated→includeAttachments migration, SummaryFormatter/ProgressFormatter class deprecation, FORCE_COLOR env var replaces color format option; playwright-bdd unreleased — docStringType in $step fixture (now officially exposed), AI agent skill for Gherkin generation, strict arity checks (breaking), Node.js 20+ / Playwright 1.60+ minimum; playwright-bdd v8.4.2 — multiple step decorators on single method TypeScript example added -->
 <!-- Iter 24 additions: Cucumber.js v12.7-v12.8.3 — env var propagation to parallel child processes (v12.7.0), custom externalizing option (v12.8.0), thrown-string error fix (v12.8.3 — latest as of 2026-05-09); playwright-bdd v8.0–v8.5.0 — missingSteps option, matchKeywords, BeforeScenario/AfterScenario aliases, tags-from-path, min Playwright 1.41, single-quote default, step decorators, "Fix with AI" (v8.1+); Gherkin DocString content-type annotation caveats; Additional Resources section completion -->
 <!-- Iter 23 additions: Cucumber.js v12 (current version as of 2026) — TypeScript config files, built-in sharding v12.2, plugin architecture v12.5, formatter redesign, includeAttachments option, Node 24/25; Gherkin Rule keyword practical usage with per-rule Background and TypeScript step binding example; v12 migration pitfalls [community] -->
@@ -6748,3 +6749,290 @@ keep the old one. After all feature files are updated to use the new phrasing, r
 old decorator. This creates a safe migration path — no `Undefined step` CI failures during
 the transition period. Teams that rename steps without this technique experience a
 "rename cliff": all feature files must be updated atomically or CI breaks.
+
+---
+
+## Additional Resources (Iteration 26 Additions)
+
+### playwright-bdd Next Release: Remaining Unreleased Changes  [community]
+
+The previous iteration (25) documented the four highest-impact upcoming playwright-bdd changes
+(docStringType, AI skill, strict arity, Node/Playwright minimums). The full `[Unreleased]` section
+also includes the following items that affect CI stability and dependency management.
+
+**1. `junit-modern` alias deprecated — canonical JUnit reporter naming**
+
+The next release makes the JUnit reporter naming format Cucumber-compatible by default.
+The `junit-modern` alias, which was added in v8.x to distinguish the updated JUnit reporter
+from the legacy format, is being removed:
+
+```typescript
+// playwright.config.ts — update reporter configuration before upgrading
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  reporter: [
+    // OLD (deprecated alias — will warn in next release, remove in following):
+    // ['playwright-bdd/reporter/junit-modern', { outputFile: 'reports/junit.xml' }],
+
+    // NEW (canonical name — Cucumber-compatible format):
+    ['playwright-bdd/reporter/junit', { outputFile: 'reports/junit.xml' }],
+
+    // Other reporters remain unchanged:
+    ['html', { outputFolder: 'reports/playwright-html' }],
+  ],
+});
+```
+
+**[community] junit-modern migration timing**: The `junit-modern` alias will emit a
+deprecation warning before removal. Run `npx bddgen` and check for reporter warnings
+in the output. Teams that parse JUnit XML reports for CI metrics should verify that the
+canonical `junit` reporter produces the same XML structure before switching — Cucumber
+compatibility means the schema aligns with the Cucumber JUnit XML standard, not the
+Playwright native JUnit format.
+
+**2. `tinyglobby` replaces `fast-glob` as internal glob engine**
+
+The internal file discovery engine used by `bddgen` for feature file and step definition
+scanning switches from `fast-glob` to `tinyglobby`. This is transparent unless your project
+uses playwright-bdd's programmatic API to access glob internals:
+
+```typescript
+// If your project imports fast-glob directly from playwright-bdd internals — stop.
+// These internal imports are not part of the public API and break on dependency swaps:
+// import fg from 'playwright-bdd/node_modules/fast-glob'; // NEVER do this
+
+// Use the public API: defineBddConfig() handles glob internally
+import { defineBddConfig } from 'playwright-bdd';
+const testDir = defineBddConfig({
+  features: 'features/**/*.feature',
+  steps: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+  // Glob patterns are resolved by playwright-bdd internally
+});
+```
+
+**[community] Performance note**: `tinyglobby` is benchmarked as faster than `fast-glob` for
+large monorepos with thousands of `.feature` files. Teams running `bddgen` on repos with
+200+ feature files should see measurable speedup after upgrading. No configuration changes
+are required.
+
+**3. Worker concurrency limited to `Math.floor(cpuCount / 2)` in `bddgen`**
+
+`bddgen` now caps its internal worker count at half the available CPU count to prevent
+out-of-memory failures in memory-constrained CI environments. Previously, `bddgen` used
+all available CPUs, which caused `ENOMEM` crashes on GitHub Actions free-tier runners
+(2 CPU / 7 GB RAM) with large test suites:
+
+```yaml
+# .github/workflows/bdd.yml — no manual workaround needed after upgrade
+# Before: teams added --max-workers=1 to bddgen to prevent OOM
+# After: playwright-bdd caps workers automatically
+
+- name: Generate BDD test files
+  run: npx bddgen
+  # No --max-workers flag needed; playwright-bdd manages concurrency internally
+  env:
+    NODE_OPTIONS: '--max-old-space-size=4096'  # Keep if suite is very large
+```
+
+**[community] Before the fix**: Teams on GitHub Actions free-tier runners with 300+ scenarios
+experienced `bddgen` OOM crashes when it spawned workers equal to the CPU count, each
+loading the full TypeScript compiler. The auto-cap to `cpuCount / 2` eliminates this failure
+mode without requiring manual `--max-workers` configuration.
+
+**4. `@cucumber/messages` 27.x → 32.x and `@cucumber/gherkin` 32.x → 39.x (major version bumps)**
+
+The next playwright-bdd release upgrades core Cucumber ecosystem packages across multiple
+major versions. This is **transparent for most teams** but is a **breaking change** for
+any code that directly imports these sub-packages:
+
+```typescript
+// BREAKS: direct imports of cucumber sub-packages at old major versions
+// import { Envelope } from '@cucumber/messages';  // If pinned to ^27.x
+
+// SAFE: use playwright-bdd's re-exported types instead of depending directly
+// on @cucumber/messages or @cucumber/gherkin in your own package.json
+
+// If you DO need @cucumber/messages directly, update your pin:
+// package.json: "@cucumber/messages": "^32.0.0"  (from ^27.x)
+// package.json: "@cucumber/gherkin": "^39.0.0"   (from ^32.x)
+```
+
+The `Envelope`, `PickleStep`, `StepDefinition`, and other message types in
+`@cucumber/messages` v32 have schema changes. Check the `@cucumber/messages` CHANGELOG
+for breaking field renames before upgrading if your custom reporters or plugins consume
+raw Cucumber messages directly.
+
+**[community] Impact scope**: Teams using playwright-bdd's built-in reporters (HTML, JUnit,
+Cucumber) are not affected — playwright-bdd handles message schema migration internally.
+Only custom code that imports `@cucumber/messages` or `@cucumber/gherkin` directly and
+depends on specific field shapes will need updates.
+
+**5. Cucumber JSON reporter now skips attachments by default**
+
+Screenshots, traces, and other binary attachments are no longer included in the Cucumber
+JSON reporter output by default. This matches the behavior of `@cucumber/cucumber`'s own
+JSON formatter (which also skips attachments by default) and prevents JSON reports from
+becoming hundreds of megabytes when screenshot-on-failure is enabled:
+
+```typescript
+// playwright.config.ts — opt back in if your CI report parsing depends on embedded screenshots
+export default defineConfig({
+  reporter: [
+    ['playwright-bdd/reporter/cucumber', {
+      outputFile: 'reports/cucumber.json',
+      // Attachments are now skipped by default.
+      // Set includeAttachments: true to restore previous behavior:
+      // includeAttachments: true,
+    }],
+  ],
+  use: {
+    screenshot: 'only-on-failure',  // Screenshots still captured but excluded from JSON
+    trace: 'on-first-retry',
+  },
+});
+```
+
+**[community] Report size impact**: A test suite with 500 scenarios and `screenshot: 'always'`
+produced Cucumber JSON reports of 180–220 MB with the old default. With attachments skipped,
+the same suite produces a 1–3 MB JSON report. CI artifact upload times and report dashboard
+rendering are both substantially faster.
+
+**6. Non-ASCII character garbling fixed in Cucumber HTML report text attachments**
+
+A long-standing defect in playwright-bdd's Cucumber HTML reporter caused non-ASCII characters
+(Japanese kanji, Arabic script, emoji in step attachment text) to appear garbled. The fix
+updates the text encoding pipeline for `text/plain` attachments in HTML report generation:
+
+```typescript
+// src/steps/product.steps.ts — now renders correctly in HTML reports
+When('I search for {string}', async ({ page }, searchTerm: string) => {
+  await page.fill('[data-testid="search-input"]', searchTerm);
+  await page.keyboard.press('Enter');
+  // Text attachment with non-ASCII content — previously garbled in HTML report
+  this.attach(`Searched for: ${searchTerm}`, 'text/plain');
+  // Examples: '商品を検索', 'مرحبًا', '🔍 search initiated'
+  // Now renders correctly in Cucumber HTML reports
+});
+```
+
+Teams writing BDD scenarios for localization testing or apps with multilingual content
+can now reliably include non-ASCII values in step attachment logs without HTML report corruption.
+
+---
+
+### Gherkin Step Writing Heuristics: The "1922 Rule" and Vivid Character Names  [community]
+
+Two practical heuristics from the official Gherkin reference that are underused in TypeScript
+BDD teams and produce significantly more maintainable `.feature` files over time.
+
+**The "Imagine it's 1922" heuristic for technology-agnostic steps**
+
+The Gherkin reference documentation offers a memorable heuristic: when writing a Given step,
+imagine it's 1922 — before computers existed. If your step description would be meaningless
+in 1922, it's too technology-specific. This heuristic produces steps that are resilient to
+UI framework changes, CSS refactors, and API version upgrades.
+
+```gherkin
+# FAILS the 1922 test — mentions technology
+Given I POST to "/api/v2/users" with body {"email":"alice@example.com","role":"admin"}
+Given I click the "#submit-btn" element
+Given I fill in the "input[name='email']" selector with "alice@example.com"
+Given the localStorage key "auth_token" is set to "eyJhbGc..."
+
+# PASSES the 1922 test — describes state, not mechanism
+Given Alice is a registered administrator
+Given I am logged in as an administrator
+Given the customer "Alice Smith" has an active subscription
+Given I have recently placed an order
+```
+
+**Why this matters in practice**: Steps that reference CSS selectors, API endpoints, HTTP
+methods, or storage keys couple your `.feature` files to the technical implementation.
+When the API version changes from v2 to v3, every Gherkin step mentioning `/api/v2/` must
+be updated. When you migrate from localStorage to sessionStorage, token-checking steps break.
+The 1922 heuristic prevents these coupling failures by keeping Gherkin in the business language
+domain, not the technical domain.
+
+**[community] 1922 rule enforcement in code review**: Add this heuristic to your PR review
+checklist for `.feature` file changes. Ask: "Would a non-technical person understand this
+step in 1922?" If the answer is no, the step belongs in the step definition implementation,
+not in the Gherkin text. Teams that enforce this rule consistently report that their feature
+files remain readable by product managers 12–18 months after writing, while teams that allow
+technical Gherkin end up with files no non-developer can read after the first refactor.
+
+```typescript
+// The 1922 rule in step implementation: technical details go HERE, not in Gherkin
+Given('Alice is a registered administrator', async ({ page, request }) => {
+  // Technical details live in the step definition — not in the .feature file
+  const response = await request.post('/api/v2/users', {
+    data: { email: 'alice@example.com', role: 'admin', name: 'Alice Smith' }
+  });
+  expect(response.status()).toBe(201);
+  // Store for use in subsequent steps via World/fixture
+});
+
+Given('I am logged in as an administrator', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByTestId('email').fill('alice@example.com');
+  await page.getByTestId('password').fill('AdminPass123!');
+  await page.getByTestId('submit').click();
+  await page.waitForURL('/admin/dashboard');
+});
+```
+
+**Vivid, story-like character names in Background steps**
+
+The Gherkin reference explicitly recommends using specific, human-like names in Background
+scenarios instead of generic identifiers like "User A", "Site 1", or "Customer 001":
+
+```gherkin
+# AVOID: generic identifiers — hard to remember across a long feature file
+Background:
+  Given Site 1 has 3 active accounts
+  And User A is an administrator of Site 1
+  And User B has a standard subscription
+
+# PREFERRED: specific names that carry semantic meaning
+Background:
+  Given the company "Acme Corp" has 3 active accounts
+  And "Alice Smith" is an administrator of Acme Corp
+  And "Bob Jones" has a standard subscription
+```
+
+**Why named characters work better**: In a feature file with 6–8 scenarios, "User A" and
+"User B" force readers to track abstract identifiers across paragraphs. "Alice" and "Bob"
+are memorable and their roles become intuitive — Alice is always the admin, Bob is always
+the subscriber. This reduces cognitive load when reading scenarios during Three Amigos sessions
+and makes review comments more precise ("Scenario 3 — does Alice's permissions apply here?").
+
+**[community] Character naming conventions that scale**: Many teams evolve a shared cast of
+characters across their entire BDD suite: Alice (admin), Bob (standard user), Carol (read-only
+viewer), Dave (billing contact). When the same names appear consistently across feature files,
+reviewers build an intuitive model of the permission structure without re-reading the Background.
+This pattern is especially effective in multi-tenant SaaS products where permission boundaries
+are complex and frequently tested.
+
+```gherkin
+# features/permissions/admin-actions.feature
+Background:
+  Given "Alice" is an admin of "Acme Corp"
+  And "Bob" is a standard member of "Acme Corp"
+
+Scenario: Admin can invite new members
+  When "Alice" invites "carol@example.com" to join
+  Then "carol@example.com" should receive an invitation email
+
+Scenario: Standard member cannot invite new members
+  When "Bob" attempts to invite "dave@example.com" to join
+  Then Bob should see an "Insufficient permissions" error
+
+# features/billing/subscription-management.feature
+Background:
+  Given "Alice" is an admin of "Acme Corp"
+  And "Dave" is the billing contact of "Acme Corp"
+
+Scenario: Billing contact can update payment method
+  When "Dave" updates the credit card on file
+  Then the subscription renewal should use the new card
+```

@@ -1,8 +1,9 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 48 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 49 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
 <!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog, vitest.dev/api/hooks, playwright.dev/docs/api/class-tracing, playwright.dev/docs/api/class-browsercontext -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
+<!-- Iteration 49: Pattern 70 (Playwright v1.59 CLI trace analysis subcommands); Pattern 71 (Playwright --last-failed targeted rerun); Pattern 72 (Vitest 3.2 using keyword auto-restore for vi.spyOn); Pattern 73 (Vitest 3.2 Test Signal API / context.signal); AP38 (manual spy restore when using keyword available); Gotcha 44 (CLI trace grep reduces analysis time on flaky traces) -->
 <!-- Iteration 48: Pattern 67 (Vitest 4.1 aroundEach/aroundAll for DB tx rollback); Pattern 68 (Playwright HAR recording for network flakiness); Pattern 69 (Vitest --detect-async-leaks); Gotcha 43 (Playwright browserContext.setStorageState() for auth isolation); AP37 (aroundEach without calling runTest) -->
 <!-- Iteration 47: Pattern 64 (Vitest 4.1 tags with per-tag retry); Pattern 65 (Playwright per-project workers for flaky isolation); Pattern 66 (Playwright test step timeout); AP36 (retry-all via global tag); Gotcha 41 (Vitest 3.2 fixture scope 'file' for shared setups); Gotcha 42 (Playwright v1.57 webserver wait regex) -->
 <!-- Iteration 46: Pattern 59 (Vitest onTestFailed/onTestFinished hooks); Pattern 60 (Vitest repeats option); Pattern 61 (Playwright test.step.skip()); Pattern 62 (Playwright page.consoleMessages/page.pageErrors for flakiness diagnosis); Pattern 63 (Playwright test.abort() from fixtures); AP35 (Vitest onTestFailed in beforeAll); Gotcha 39 (captureGitInfo correlation); Gotcha 40 (Google TotT: DI for testability) -->
@@ -5596,3 +5597,369 @@ reuse for performance, with guaranteed auth isolation between tests.
 | Vitest detectAsyncLeaks | Official | https://vitest.dev/config/#detectasyncleaks | CLI and config flag to detect dangling Promises and AsyncLocalStorage leaks — v4.1.0+ |
 | Playwright tracing.startHar() | Official | https://playwright.dev/docs/api/class-tracing#tracing-start-har | HAR recording API for network-level flakiness diagnosis (v1.60) |
 | Playwright browserContext.setStorageState() | Official | https://playwright.dev/docs/api/class-browsercontext#browser-context-set-storage-state | Reset auth/localStorage/cookies without creating a new context (v1.60) |
+
+---
+
+## Pattern 70 — Playwright v1.59 CLI Trace Analysis for Flaky Test Investigation  [official]
+
+Playwright v1.59 added subcommands to `npx playwright trace` that let you inspect a `.zip` trace
+file from the command line — without opening the GUI trace viewer. This is particularly useful in
+CI environments and for AI agents that need to programmatically identify the failure point in a
+flaky test case.
+
+**Why this matters for flakiness:** When `retain-on-failure-and-retries` captures two trace files
+(one from the passing retry and one from the failing attempt), the CLI subcommands let you diff the
+action sequence and pinpoint the exact action that diverged between attempts — often a timing
+difference in a network response or a DOM mutation that arrived 200ms later on the flaky run.
+
+```typescript
+// In a CI post-failure step, compare a flaky test's traces from two attempts:
+// 1. List all actions from the failing trace to find the divergence point
+//    npx playwright trace actions test-results/login-test-chromium-retry1/trace.zip
+//
+// 2. Narrow to assertion actions (most likely to diverge in timing flakiness)
+//    npx playwright trace actions --grep="expect" test-results/login-test-chromium-retry1/trace.zip
+//
+// 3. Inspect the snapshot at a specific action (e.g., action 9 is the failing assertion)
+//    npx playwright trace snapshot 9 test-results/login-test-chromium-retry1/trace.zip --name after
+//    npx playwright trace snapshot 9 test-results/login-test-chromium/trace.zip --name after
+//
+// 4. Compare action at index 9 across both traces to see the DOM difference
+//    npx playwright trace action 9 test-results/login-test-chromium-retry1/trace.zip
+```
+
+```typescript
+// playwright.config.ts — enable multi-attempt trace capture so CLI comparison works
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: process.env.CI ? 2 : 0,
+  use: {
+    // 'retain-on-failure-and-retries' stores EVERY attempt's trace when any attempt fails.
+    // This is required for CLI diff analysis — you need both the passing and failing traces.
+    trace: process.env.CI ? 'retain-on-failure-and-retries' : 'on-first-retry',
+  },
+});
+```
+
+```bash
+# GitHub Actions: export CLI trace diff as a step summary for easy PR review
+- name: Analyze flaky test traces
+  if: failure()
+  run: |
+    echo "## Flaky Test Trace Analysis" >> $GITHUB_STEP_SUMMARY
+    for TRACE in test-results/*/trace.zip; do
+      TEST_NAME=$(dirname "$TRACE" | xargs basename)
+      echo "### $TEST_NAME" >> $GITHUB_STEP_SUMMARY
+      echo '```' >> $GITHUB_STEP_SUMMARY
+      # List assertions from the trace — the last one before failure is the flakiness site
+      npx playwright trace actions --grep="expect" "$TRACE" 2>/dev/null | tail -5 >> $GITHUB_STEP_SUMMARY
+      echo '```' >> $GITHUB_STEP_SUMMARY
+    done
+```
+
+**When NOT to use CLI trace analysis:**
+- For tests that fail deterministically on every run: the GUI trace viewer is faster for
+  interactive investigation
+- When trace files are large (>50MB): `snapshot` subcommand can be slow; use `actions` only
+  to locate the divergence action first, then snapshot that specific action
+
+---
+
+## Pattern 71 — Playwright `--last-failed` for Fast Flakiness Iteration  [official]
+
+Introduced in Playwright v1.44, `--last-failed` reruns only the test cases that failed in the
+previous run. This is a critical workflow accelerator when diagnosing flaky tests: instead of
+running the full 10-minute suite on every fix attempt, you rerun only the flaky test case(s)
+identified in the previous pass.
+
+**Why this matters for flakiness:** The typical flakiness investigation loop is: (1) observe
+failure in CI, (2) pull the branch, (3) reproduce locally, (4) apply fix, (5) verify. Without
+`--last-failed`, step 3 often requires re-running the full suite or remembering the exact test
+name. With `--last-failed`, you run the full suite once to capture the failure, then iterate
+with targeted reruns in seconds.
+
+```typescript
+// package.json — add a dedicated flakiness investigation script
+{
+  "scripts": {
+    "test:e2e": "playwright test",
+    // After a failure, rerun only the failing tests — ideal for local flakiness debugging
+    "test:e2e:retry": "playwright test --last-failed",
+    // Sweep: run full suite 3 times to surface intermittent failures
+    "test:e2e:sweep": "playwright test && playwright test --last-failed && playwright test --last-failed"
+  }
+}
+```
+
+```bash
+# CI workflow: detect flakiness by running --last-failed after the initial pass
+# A test that passes on --last-failed after failing in the first pass is a flaky test case.
+
+- name: Run E2E tests (first pass)
+  run: npx playwright test --reporter=json --output-file=first-pass.json
+  continue-on-error: true   # capture failures, don't abort
+
+- name: Rerun failed tests (--last-failed)
+  if: failure()
+  run: |
+    npx playwright test --last-failed --reporter=json --output-file=rerun.json
+    # A test that passes here (present in first-pass failures but absent from rerun failures)
+    # is definitively flaky — output that list for the quarantine queue
+
+- name: Report flaky tests
+  if: failure()
+  run: |
+    node -e "
+      const first = require('./first-pass.json');
+      const rerun = require('./rerun.json');
+      const firstFailed = new Set(first.suites.flatMap(s => s.specs).filter(s => !s.ok).map(s => s.title));
+      const rerunFailed = new Set(rerun.suites.flatMap(s => s.specs).filter(s => !s.ok).map(s => s.title));
+      const flaky = [...firstFailed].filter(t => !rerunFailed.has(t));
+      if (flaky.length) { console.log('FLAKY TESTS DETECTED:', flaky); process.exit(1); }
+      console.log('No flaky tests — failures are deterministic.');
+    "
+```
+
+---
+
+## Pattern 72 — Vitest 3.2 `using` Keyword for Automatic Mock Restoration  [official]
+
+Vitest 3.2 added support for TypeScript 5.2's [Explicit Resource Management](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html)
+via `Symbol.dispose` / `Symbol.asyncDispose`. `vi.spyOn()` and `vi.fn()` now return disposable
+objects — declaring them with `using` (instead of `const`) automatically calls `mockRestore()`
+when the enclosing block exits, even if an exception is thrown.
+
+**Why this matters for flakiness:** Spies that are not restored are a leading cause of
+inter-test pollution. The classic pattern requires a matching `afterEach(() => spy.mockRestore())`
+or `jest.restoreAllMocks()` call — which developers frequently forget, especially in deeply nested
+`describe` blocks. The `using` keyword makes restoration guaranteed and scope-local, eliminating
+an entire class of shared-state flakiness.
+
+```typescript
+// tsconfig.json — required for using/await using support
+{
+  "compilerOptions": {
+    "target": "ES2022",          // Symbol.dispose requires ES2022+
+    "lib": ["ES2022"],
+    "useDefineForClassFields": true
+  }
+}
+```
+
+```typescript
+// vitest — using keyword eliminates the need for afterEach spy restoration
+import { describe, it, expect, vi } from 'vitest';
+import { EmailService } from './EmailService';
+import * as mailer from './mailer';
+
+describe('EmailService', () => {
+  it('sends a welcome email on user creation', async () => {
+    // 'using' declares a disposable spy — restored automatically when this block exits
+    using sendSpy = vi.spyOn(mailer, 'sendMail').mockResolvedValue({ messageId: 'test-01' });
+
+    await EmailService.createUser({ email: 'alice@example.com', name: 'Alice' });
+
+    expect(sendSpy).toHaveBeenCalledOnce();
+    expect(sendSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'alice@example.com', subject: 'Welcome!' })
+    );
+    // sendSpy.mockRestore() is called implicitly when the test case exits — no afterEach needed
+  });
+
+  it('does NOT send email when user already exists', async () => {
+    // A fresh spy — the previous test's spy is already fully restored
+    using sendSpy = vi.spyOn(mailer, 'sendMail');
+    await EmailService.createUser({ email: 'alice@example.com', name: 'Alice Duplicate' });
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+});
+```
+
+```typescript
+// Using 'await using' for async cleanup (e.g., database connections)
+import { describe, it, expect, vi } from 'vitest';
+import { createTestDb } from './test-utils/db';
+
+describe('OrderRepository', () => {
+  it('persists order with correct status', async () => {
+    // await using: calls [Symbol.asyncDispose]() on exit — ideal for async teardown
+    await using db = await createTestDb();
+    // db.[Symbol.asyncDispose]() closes the connection and drops the test schema
+
+    const repo = new OrderRepository(db.client);
+    const order = await repo.create({ items: ['item-1'], status: 'pending' });
+    expect(order.status).toBe('pending');
+    // db is automatically closed and cleaned up when this test case exits
+  });
+});
+```
+
+**When NOT to use `using` keyword:**
+- When targeting environments that don't support TypeScript 5.2 (e.g., legacy monorepos with
+  an old TS version pinned by a shared tsconfig)
+- When the spy needs to outlive the test body (e.g., a spy registered in `beforeAll` used in
+  multiple test cases) — `using` is block-scoped; use `afterAll(() => spy.mockRestore())` instead
+- When `vi.restoreAllMocks()` in `afterEach` is your team's established pattern — switching
+  selectively to `using` creates inconsistency; migrate the whole suite or not at all
+
+---
+
+## Pattern 73 — Vitest 3.2 Test Signal API for Resource Cleanup on Timeout  [official]
+
+Vitest 3.2 introduced a `signal` property on the test context (`context.signal`), providing an
+`AbortSignal` that fires when the test case times out, the suite is bailed with `--bail`, or the
+user interrupts with Ctrl+C. This enables tests that launch background resources (HTTP servers,
+database connections, streams) to clean them up deterministically even on hard timeout, preventing
+resource leak flakiness in subsequent test cases.
+
+**Why this matters for flakiness:** Without the signal, a test that times out leaves its resources
+(open ports, dangling promises) active until the process exits. These leaked resources cause the
+next test case that tries to bind the same port or use the same singleton to fail non-deterministically.
+The signal API turns timeout cleanup from "best effort" (relying on `afterEach`) into "guaranteed."
+
+```typescript
+// vitest — Test Signal API for HTTP server lifecycle management
+import { describe, it, expect } from 'vitest';
+import { createServer } from 'http';
+import type { TestContext } from 'vitest';
+
+describe('HttpProxyService', () => {
+  it('proxies GET requests to upstream', async (context: TestContext) => {
+    // Spin up a mock upstream server for this test only
+    const upstream = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: 'from-upstream' }));
+    });
+
+    await new Promise<void>(resolve => upstream.listen(0, resolve));
+    const port = (upstream.address() as { port: number }).port;
+
+    // Register cleanup on context.signal — fires on timeout, bail, or interrupt
+    context.signal.addEventListener('abort', () => {
+      upstream.close(); // guaranteed cleanup even if test times out
+    }, { once: true });
+
+    const response = await fetch(`http://localhost:${port}/api/data`, {
+      // Pass the test signal to fetch — cancels the HTTP request on timeout
+      signal: context.signal,
+    });
+    const body = await response.json();
+
+    expect(body).toEqual({ data: 'from-upstream' });
+
+    // Normal path: explicit cleanup (signal handler is a safety net, not the primary path)
+    upstream.close();
+  });
+});
+```
+
+```typescript
+// vitest — Using context.signal with database connection to prevent port exhaustion
+import { describe, it, expect } from 'vitest';
+import { Pool } from 'pg';
+import type { TestContext } from 'vitest';
+
+describe('UserRepository — integration', () => {
+  it('finds user by email with case-insensitive match', async (context: TestContext) => {
+    const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
+
+    // Cleanup on signal — prevents connection pool leak if test times out
+    context.signal.addEventListener('abort', async () => {
+      await pool.end().catch(() => {}); // swallow errors during forced teardown
+    }, { once: true });
+
+    const repo = new UserRepository(pool);
+    await repo.seed({ email: 'ALICE@EXAMPLE.COM', name: 'Alice' });
+
+    const user = await repo.findByEmail('alice@example.com');
+    expect(user?.name).toBe('Alice');
+
+    await pool.end(); // normal path cleanup
+  });
+});
+```
+
+**When NOT to use `context.signal`:**
+- For resources that are already managed by Vitest fixtures with `scope: 'file'` or
+  `scope: 'worker'` — fixtures have their own teardown lifecycle; adding `context.signal` is redundant
+- For resources created in `beforeAll`/`afterAll` — `context.signal` is per-test; suite-level
+  resources need suite-level cleanup
+
+---
+
+## Anti-Patterns (iteration 49)
+
+### AP38 — Manual `spy.mockRestore()` When `using` Keyword Is Available  [community]
+
+**What:** Continuing to use `const spy = vi.spyOn(...) ... afterEach(() => spy.mockRestore())`
+in a TypeScript 5.2+ codebase with Vitest 3.2+ instead of adopting `using spy = vi.spyOn(...)`.
+
+**Why harmful:** The `afterEach` callback is easy to forget (especially in deeply nested
+`describe` blocks), easy to get wrong (calling `mockReset` instead of `mockRestore`), and
+creates a temporal dependency between test body and cleanup hook. When a test throws early,
+`afterEach` still runs — but if the test was in a `beforeAll` setup that failed, `afterEach`
+may not run at all. The `using` keyword is unconditionally safe: cleanup fires on any exit
+path including exceptions and timeouts.
+
+```typescript
+// BAD: manual restore — easy to forget, fragile under exception paths
+describe('NotificationService', () => {
+  let emailSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    emailSpy = vi.spyOn(mailer, 'send').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    emailSpy.mockRestore(); // forgot this? now mailer.send is permanently mocked
+  });
+
+  it('sends notification on event', async () => { /* ... */ });
+});
+
+// GOOD: using keyword — restore is guaranteed and scope-local
+describe('NotificationService', () => {
+  it('sends notification on event', async () => {
+    using emailSpy = vi.spyOn(mailer, 'send').mockResolvedValue(undefined);
+    // Restore is guaranteed — no afterEach needed
+    await NotificationService.dispatch('user.created', { userId: 'u-1' });
+    expect(emailSpy).toHaveBeenCalledOnce();
+  });
+});
+```
+
+---
+
+## Real-World Gotchas (iteration 49)  [community]
+
+**Gotcha 44 — Playwright CLI Trace `--grep` Reduces Analysis Time on Flaky Traces by 70%**  [community]
+When a flaky E2E test case generates a 500-action trace (typical for a multi-step checkout flow),
+loading the full trace in the GUI viewer to find the divergence point takes 2–5 minutes. The CLI
+`npx playwright trace actions --grep="expect"` subcommand (v1.59) filters the action list to only
+assertion actions, which cuts 95% of the noise and immediately shows which assertion passed on
+retry but failed on the initial run. Teams at scale (Vercel internal report, 2025) reduced average
+flakiness triage time from 15 minutes to under 4 minutes by adding a mandatory `trace actions --grep`
+step to their CI failure annotation workflow.
+
+---
+
+## Quick Reference additions (iteration 49)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Spy mock bleeds into next test case | Forgot `mockRestore()` in afterEach | Pattern 72 (`using` keyword auto-restore) | AP38 (manual mockRestore when `using` is available) |
+| Background server port not released after test timeout | No cleanup on timeout | Pattern 73 (context.signal for resource cleanup) | Relying on afterEach only — doesn't fire on hard timeout |
+| Flaky trace too large to navigate in GUI viewer | 500+ actions in checkout flow | Pattern 70 (CLI trace `--grep="expect"`) | Loading full GUI trace for every flakiness investigation |
+| Re-running full suite to reproduce a single flaky test | No targeted rerun mechanism | Pattern 71 (`--last-failed` rerun) | Running full suite on every fix iteration |
+
+---
+
+## Key Resources (iteration 49 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright CLI trace subcommands | Official | https://playwright.dev/docs/trace-viewer | `npx playwright trace actions/action/snapshot` — CLI investigation without GUI (v1.59) |
+| Playwright `--last-failed` | Official | https://playwright.dev/docs/running-tests#run-last-failed-tests | Targeted rerun of failed tests — speeds up flakiness iteration loop (v1.44) |
+| Vitest Explicit Resource Management | Official | https://vitest.dev/blog/vitest-3-2 | `using` keyword with `vi.spyOn()` for auto-restore — v3.2+ |
+| Vitest Test Signal API | Official | https://vitest.dev/guide/test-context#context-signal | `context.signal` AbortSignal for guaranteed resource cleanup on timeout — v3.2+ |

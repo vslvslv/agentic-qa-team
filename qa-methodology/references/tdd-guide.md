@@ -1,7 +1,8 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 16 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 17 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript | ISTQB CTFL 4.0 terminology applied -->
 <!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
+<!-- extension 2026-05-12: iter 17 — added TDD for Feature Flags (safe defaults pattern); One Map Key One Lookup for test doubles; TCR TypeScript script; gotchas #24–#26 -->
 
 ## Core Principles
 
@@ -1309,6 +1310,12 @@ describe('OrderService', () => {
 ```
 
 23. **[community] TypeScript 6.0 upgrade will silently break TDD test suites that rely on auto-discovered `@types`.** TypeScript 6.0 (May 2026) changed the `types` default from auto-discovering all installed `@types/*` packages to an empty array `[]`. Teams upgrading from TypeScript 5.x will find their TDD test files immediately failing to compile with "Cannot find name 'describe'" and "Cannot find name 'expect'" errors — even though nothing in the test code changed. The fix is one line (`"types": ["vitest/globals"]` or `"jest"`), but without foreknowledge this error is confusing because it looks like the test runner is broken, not the TypeScript config. Add the `types` field to `tsconfig.json` explicitly **before** upgrading to TypeScript 6.0.
+
+24. **[community] Feature flags without TDD test cases for the disabled state are a hidden regression time-bomb.** When a feature flag is introduced, teams typically write test cases only for the flag-enabled path — because that is what is being built. The disabled state (which is the production default and the rollback path) goes untested. When the flag is rolled back under load, the untested code path executes in production for the first time. The TDD discipline: write the disabled-state test case first (it IS the safe default), then write the enabled-state test case. Use a `FakeFlagReader` that defaults all flags to disabled — this mirrors the production safe default and makes the disabled-state test case the baseline.
+
+25. **[community] The double-lookup anti-pattern in in-memory fakes introduces subtle consistency bugs.** TypeScript test doubles written with `Map.has(key)` + `Map.get(key)!` perform two separate lookups. Between these two calls, another operation on the fake could mutate the map. The `!` non-null assertion is itself a signal: TypeScript knows `Map.get` returns `T | undefined`, and the `!` is suppressing that information. The fix: one lookup, store the result, check for `undefined` explicitly. With `noUncheckedIndexedAccess: true` in `tsconfig.json`, TypeScript makes the double-lookup smell visible — `Map.get` returns `T | undefined` and the `!` operator required to dismiss that signal is the code review red flag. Eliminate `!` from fakes by adopting the one-lookup pattern.
+
+26. **[community] TCR (test && commit || revert) without a TypeScript compile-error gate lets broken types persist.** Kent Beck's TCR workflow (gotcha #13) is most commonly implemented as `npx vitest run && git commit || git checkout -- .`. In TypeScript projects, this only reverts when tests fail — not when TypeScript compilation fails. A compile error does not run any tests and therefore does not trigger the revert. TypeScript errors accumulate silently across TCR cycles. The fix: add `npx tsc --noEmit` as the first step in the TCR script. If `tsc` fails, revert immediately — TypeScript compile errors are treated as test failures in the TDD discipline.
 
 ---
 
@@ -2741,6 +2748,251 @@ it('retrieves orders by customer id', async () => {
 
 ---
 
+### TDD for Feature Flags — Safe Defaults Pattern [community]
+
+Feature flags (also called feature toggles) are a common cause of invisible TDD gaps. When a flag is introduced without corresponding test cases for both the enabled and disabled states, the disabled state becomes untested code that lives in production. The "Set Safe Defaults for Flags" principle (Google Testing Blog TotT, March 2026) articulates a direct TDD corollary: **write the test case for the default (disabled) state first**, because the default is the state that ships until the flag is deliberately turned on.
+
+The TDD implication: treat each feature flag as a test condition with at least two test cases — one for the flag enabled, one for the flag disabled. The disabled state is the safe default and must not break existing behaviour.
+
+```typescript
+// feature-flags.ts — typed feature flag registry
+export type FeatureFlag =
+  | 'new-checkout-flow'
+  | 'enhanced-search'
+  | 'experimental-pricing';
+
+export interface FlagReader {
+  isEnabled(flag: FeatureFlag): boolean;
+}
+
+// test-doubles/FakeFlagReader.ts — controllable flag state in test cases
+export class FakeFlagReader implements FlagReader {
+  readonly #flags = new Map<FeatureFlag, boolean>();
+
+  enable(flag: FeatureFlag): void  { this.#flags.set(flag, true); }
+  disable(flag: FeatureFlag): void { this.#flags.set(flag, false); }
+  isEnabled(flag: FeatureFlag): boolean { return this.#flags.get(flag) ?? false; }
+  // Default: all flags disabled — "safe default" mirrors production default
+}
+
+// checkout-service.test.ts — TDD test cases for both flag states
+import { describe, it, expect, beforeEach } from 'vitest';
+import { CheckoutService } from './CheckoutService.js';
+import { FakeFlagReader } from './test-doubles/FakeFlagReader.js';
+import { InMemoryOrderRepository } from './test-doubles/InMemoryOrderRepository.js';
+
+describe('CheckoutService with new-checkout-flow flag', () => {
+  let flags: FakeFlagReader;
+  let service: CheckoutService;
+
+  beforeEach(() => {
+    flags = new FakeFlagReader(); // all flags disabled by default
+    service = new CheckoutService(new InMemoryOrderRepository(), flags);
+  });
+
+  // Test case 1: RED — safe default (flag OFF) uses legacy checkout path
+  it('uses legacy checkout flow when flag is disabled (safe default)', async () => {
+    // flags.isEnabled('new-checkout-flow') → false (default)
+    const result = await service.checkout({ userId: 'u1', cartId: 'c1' });
+    expect(result.flowVersion).toBe('legacy');
+  });
+
+  // Test case 2: RED — flag ON triggers new checkout path
+  it('uses new checkout flow when flag is enabled', async () => {
+    flags.enable('new-checkout-flow');
+    const result = await service.checkout({ userId: 'u1', cartId: 'c1' });
+    expect(result.flowVersion).toBe('v2');
+  });
+
+  // Test case 3: RED — flag OFF never calls new-flow-specific logic
+  it('does not call v2 order processor when flag is disabled', async () => {
+    const v2Calls: string[] = [];
+    const serviceWithSpy = new CheckoutService(
+      new InMemoryOrderRepository(),
+      flags,
+      { onV2Flow: (cartId: string) => v2Calls.push(cartId) }
+    );
+    await serviceWithSpy.checkout({ userId: 'u1', cartId: 'c1' });
+    expect(v2Calls).toHaveLength(0); // safe default: v2 never invoked
+  });
+});
+```
+
+**Why the safe-default pattern matters in TDD:** In TypeScript monorepos, feature flags are often added as environment variables or remote config reads — without anyone writing test cases for the disabled state. When the flag is eventually turned off (rollback, dark launch), the disabled code path is exercised in production for the first time. TDD prevents this by forcing the disabled-state test case to be written first. The `FakeFlagReader` starting with all flags disabled enforces the safe default at the test level.
+
+**[community] Feature flag TDD anti-pattern: "I'll add tests when the flag is permanently on."** Teams that defer testing the disabled state until the flag is scheduled for removal consistently discover latent defects when rolling back the flag under production load. The cost of writing one additional test case at flag-introduction time is trivial compared to the cost of an untested rollback path.
+
+---
+
+### One Map Key, One Lookup — Test Double Efficiency [community]
+
+The "One Map Key, One Lookup" principle (Google Testing Blog TotT, April 2026) applies to test doubles: **never perform two separate map lookups where one lookup with a stored result would suffice**. In typed in-memory fakes, the double-lookup anti-pattern produces subtle consistency bugs when state changes between the two reads, and adds unnecessary branching complexity to test infrastructure.
+
+The principle is: retrieve the value once, store it in a typed constant, then use the constant. This applies to both production code and test doubles — but the impact on test doubles is higher because fakes are mutated frequently during test setup.
+
+```typescript
+// ❌ ANTI-PATTERN: double lookup — inconsistent if state changes between reads
+class InMemoryCartRepository implements CartRepository {
+  readonly #carts = new Map<string, Cart>();
+
+  async updateItem(cartId: string, sku: string, qty: number): Promise<Cart> {
+    if (!this.#carts.has(cartId)) {           // ← lookup 1
+      throw new Error(`Cart ${cartId} not found`);
+    }
+    const cart = this.#carts.get(cartId)!;    // ← lookup 2 — redundant; ! needed to suppress undefined
+    return this.#mutateCart(cart, sku, qty);
+  }
+}
+
+// ✅ ONE LOOKUP: fetch once, handle undefined explicitly
+class InMemoryCartRepository implements CartRepository {
+  readonly #carts = new Map<string, Cart>();
+
+  async updateItem(cartId: string, sku: string, qty: number): Promise<Cart> {
+    const cart = this.#carts.get(cartId);     // ← single lookup
+    if (cart === undefined) {
+      throw new CartNotFoundError(cartId);    // typed error — no ! assertion needed
+    }
+    return this.#mutateCart(cart, sku, qty);  // cart is Cart (narrowed), not Cart | undefined
+  }
+}
+
+// TypeScript benefit: `noUncheckedIndexedAccess` in tsconfig.json forces the pattern.
+// With noUncheckedIndexedAccess: true, Map.get() returns T | undefined — the undefined
+// case cannot be silently ignored. One-lookup + explicit undefined check is the idiomatic fix.
+```
+
+**Why this matters for TDD:** In-memory fakes that use the double-lookup pattern accumulate `!` non-null assertions throughout their implementation. Each `!` is a place where TypeScript's type safety has been bypassed — meaning TypeScript cannot protect you when the fake's state diverges from expectations. The one-lookup pattern eliminates these assertions, keeping fake implementations fully type-safe and consistent with `strictNullChecks`.
+
+```typescript
+// ✅ TypeScript 6.0 version: Map.getOrInsertComputed for computed defaults
+// Useful in fakes that accumulate secondary indexes during save operations
+class InMemoryOrderRepository implements OrderRepository {
+  readonly #store      = new Map<string, Order>();
+  readonly #byCustomer = new Map<string, Set<string>>();
+
+  async save(order: Order): Promise<Order> {
+    this.#store.set(order.id, order);
+
+    // One lookup + computed insert: no double Map.has + Map.set
+    // Map.getOrInsertComputed is available in TypeScript 6.0+ (ES2025)
+    this.#byCustomer
+      .getOrInsertComputed(order.customerId, () => new Set<string>())
+      .add(order.id);
+
+    return order;
+  }
+
+  async findByCustomer(customerId: string): Promise<Order[]> {
+    // One lookup — result is Set<string> | undefined; handle both cases:
+    const orderIds = this.#byCustomer.get(customerId);
+    if (orderIds === undefined) return [];
+    return [...orderIds]
+      .map(id => this.#store.get(id))
+      .filter((o): o is Order => o !== undefined);
+  }
+}
+```
+
+**[community] The `!` non-null assertion operator is a map-double-lookup smell.** Every `this.#store.get(id)!` in a TypeScript fake is evidence of a missing one-lookup-with-narrowing pattern. A TDD code review checklist should flag `!` in fake implementations as a defect: replace with a single lookup, explicit undefined check, and typed error or early return.
+
+---
+
+### TCR — Test && Commit || Revert in TypeScript [community]
+
+TCR (Test && Commit || Revert), introduced by Kent Beck, enforces baby-steps discipline through automation: if the tests pass, the change is committed; if they fail, the change is reverted. This removes the option of accumulating a large failing state during the TDD cycle.
+
+TCR is the fastest way to internalise baby-steps discipline (gotcha #13 above). Here is a production-ready TCR script for TypeScript/Vitest projects:
+
+```bash
+#!/usr/bin/env bash
+# tcr.sh — Test && Commit || Revert for TypeScript/Vitest projects
+# Usage: ./tcr.sh [test-pattern]
+#   e.g.: ./tcr.sh "src/domain/cart/Cart.test.ts"
+#         ./tcr.sh                  (runs all tests)
+
+set -euo pipefail
+
+TEST_PATTERN="${1:-}"
+COMMIT_MSG="${TCR_COMMIT_MSG:-chore: tcr step}"
+
+# Run Vitest (esbuild — fast; no full tsc compile)
+if [ -n "$TEST_PATTERN" ]; then
+  npx vitest run "$TEST_PATTERN" --reporter=verbose
+else
+  npx vitest run --reporter=verbose
+fi
+
+# Tests passed — stage all and commit
+git add -A
+git commit -m "$COMMIT_MSG ($(date +%H:%M:%S))" --quiet
+echo "✓ TCR: tests passed — committed"
+```
+
+```bash
+# tcr-watch.sh — file-watcher variant (restarts TCR loop on file change)
+# Requires: entr (brew install entr / apt-get install entr)
+#!/usr/bin/env bash
+while true; do
+  find src -name '*.ts' | entr -d ./tcr.sh
+done
+```
+
+```typescript
+// vitest.config.ts — optimised for TCR loop
+// Key: bail: 1 ensures the first failure reverts quickly, not after running the full suite
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    bail: 1,          // Stop at first failure — TCR revert signal should be fast
+    reporter: ['verbose'],
+    // Do NOT enable coverage in TCR mode — it doubles execution time
+    // Run coverage separately in CI
+    coverage: { enabled: process.env.CI === 'true', provider: 'v8' },
+  },
+});
+```
+
+**[community] TCR revert policy differences across teams:** Some teams configure TCR to revert only uncommitted changes (`git checkout -- .`); others revert all working-tree changes including untracked files. For TypeScript projects, the recommended policy is `git checkout -- src/` (revert source only) to preserve generated files and `node_modules`. Do not use `git reset --hard` in TCR — it can discard work that is genuinely in-progress.
+
+**[community] TCR with TypeScript compile errors:** If a TypeScript file fails to compile (not just fails tests), TCR should also revert. The recommended approach is to run `npx tsc --noEmit` as a pre-test step in the TCR script — compile errors are treated the same as test failures (revert). Without this, a TDD cycle that produces a compile error instead of a test failure escapes the TCR discipline.
+
+```bash
+# tcr-strict.sh — TCR with type-checking gate
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Step 1: Type-check first (fast fail for compile errors)
+npx tsc --noEmit --incremental --tsBuildInfoFile .tsbuildinfo-tcr || {
+  echo "✗ TCR: TypeScript compile error — reverting"
+  git checkout -- src/
+  exit 1
+}
+
+# Step 2: Run tests
+TEST_PATTERN="${1:-}"
+if [ -n "$TEST_PATTERN" ]; then
+  npx vitest run "$TEST_PATTERN" --reporter=verbose || {
+    echo "✗ TCR: tests failed — reverting"
+    git checkout -- src/
+    exit 1
+  }
+else
+  npx vitest run --reporter=verbose || {
+    echo "✗ TCR: tests failed — reverting"
+    git checkout -- src/
+    exit 1
+  }
+fi
+
+git add -A
+git commit -m "chore: tcr ($(date +%H:%M:%S))" --quiet
+echo "✓ TCR: passed — committed"
+```
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -2768,3 +3020,6 @@ it('retrieves orders by customer id', async () => {
 | Self-Testing Code — Martin Fowler | Article | https://martinfowler.com/bliki/SelfTestingCode.html | The foundational goal behind TDD; explains why automated test suites matter more than methodology |
 | Google Testing Blog — "The Way of TDD" | Blog post | https://testing.googleblog.com/2026/03/the-way-of-tdd.html | 2026 Google TotT post on TDD practice and discipline |
 | Google Testing Blog — "Construct with Collaborators, Call with Work" | Blog post | https://testing.googleblog.com/2026/05/construct-with-collaborators-call-with.html | 2026 Google TotT post; articulates the design principle underlying constructor injection in TDD: collaborators (services, dependencies) belong in constructors, work (data, request inputs) belongs in method parameters |
+| Google Testing Blog — "Set Safe Defaults for Flags" | Blog post | https://testing.googleblog.com/2026/03/set-safe-defaults-for-flags.html | 2026 Google TotT post; safe-default principle for feature flags — TDD implication: write the disabled-state test case first |
+| Google Testing Blog — "One Map Key, One Lookup" | Blog post | https://testing.googleblog.com/2026/04/one-map-key-one-lookup.html | 2026 Google TotT post; one-lookup pattern for in-memory fakes — eliminates `!` non-null assertions and double-lookup bugs in TypeScript test doubles |
+| TCR (Test && Commit \|\| Revert) — Kent Beck | Blog post | https://medium.com/@kentbeck_7670/test-commit-revert-870bbd756864 | Original TCR proposal; automates baby-steps discipline by reverting failed changes automatically |

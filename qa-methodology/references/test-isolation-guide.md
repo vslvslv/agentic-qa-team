@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 14 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 15 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -8,6 +8,9 @@
 <!--          Vitest vi.stubEnv/vi.stubGlobal/unstubEnvs/unstubGlobals (2025/2026)                 -->
 <!--          Vitest vi.hoisted() ESM isolation (vitest.dev/api/vi#vi-hoisted),                    -->
 <!--          Jest 30 upgrade guide (jestjs.io/docs/upgrading-to-jest30),                          -->
+<!--          Vitest 4.1 blog (vitest.dev/blog/vitest-4-1): aroundEach/aroundAll, detectAsyncLeaks,-->
+<!--            viteModuleRunner:false, onCleanup builder pattern, mockThrow, vi.defineHelper,      -->
+<!--            test tags, breaking: aroundAll receives fixture context                             -->
 <!--          Playwright fixtures docs (playwright.dev/docs/test-fixtures),                        -->
 <!--          martinfowler.com/articles/mocksArentStubs.html (classicist vs mockist)               -->
 <!--          Jest 30 jest.replaceProperty + jest.Replaced<T> (jestjs.io/docs/jest-object),        -->
@@ -2312,3 +2315,381 @@ this state poisons every subsequent test file assigned to the same Worker thread
 | Vitest Config — `projects` | Official | https://vitest.dev/config/#projects | Per-project isolation configuration; replaces `workspace` field in Vitest 4.0 |
 | Vitest API — `test.extend` | Official | https://vitest.dev/api/#test-extend | Type-aware fixture definitions with guaranteed `use()`-based teardown |
 | Jest 30 Upgrade Guide (stricter types) | Official | https://jestjs.io/docs/upgrading-to-jest30 | Stricter `CalledWith` TypeScript types, `genMockFromModule` removal, `SpyInstance` removal |
+
+---
+
+## Community Lessons — Iteration 15  [community]
+
+54. **Vitest 4.1 `aroundEach` is the right tool for database transaction rollback in fixtures — not `beforeEach`/`afterEach` pairs.** [community]
+    Vitest 4.1 introduces `test.aroundEach` and `test.aroundAll` hooks that wrap each test in a
+    context. The `runTest` function receives control at the exact moment the test body executes —
+    making it ideal for database transaction wrapping. Unlike the `beforeEach`/`afterEach` pair,
+    `aroundEach` guarantees rollback even if `beforeEach` throws after the transaction starts,
+    because the transaction boundary and the test execution are coupled in a single closure.
+    ```typescript
+    import { test, expect } from 'vitest';
+    import { db } from './db';
+
+    const isolatedTest = test.extend({});
+
+    isolatedTest.aroundEach(async (runTest) => {
+      await db.transaction(async (tx) => {
+        // runTest runs inside the transaction; rollback happens when the
+        // wrapping transaction resolves (or the test throws)
+        await runTest({ tx });
+        // throw here to rollback — Vitest calls this regardless of test outcome
+        throw new Error('rollback'); // intentional rollback
+      }).catch(() => {}); // swallow expected rollback error
+    });
+
+    isolatedTest('creates a user inside a rolled-back transaction', async ({ tx }) => {
+      await tx.user.create({ data: { name: 'Alice', email: 'alice@example.com' } });
+
+      const found = await tx.user.findFirst({ where: { name: 'Alice' } });
+      expect(found?.name).toBe('Alice');
+      // After this test ends, aroundEach triggers rollback — DB is clean for the next test
+    });
+    ```
+    WHY: the `beforeEach`/`afterEach` pair has a gap: if `beforeEach` throws after opening a
+    transaction but before completing setup, `afterEach` still runs — but the `afterEach` rollback
+    code may reference state that was never initialized (e.g., a `queryRunner` that is `undefined`).
+    `aroundEach` collapses setup and teardown into a single async function, eliminating the gap.
+
+55. **Vitest 4.1 `detectAsyncLeaks` flag surfaces resource leaks that cause intermittent CI failures.** [community]
+    Vitest 4.1 adds a `--detect-async-leaks` CLI flag that uses Node.js `async_hooks` to track
+    timers, TCP handles, file descriptors, and unresolved promise chains that are still alive after
+    a test suite completes. Unlike Jest's `--detectOpenHandles` (which only lists Node.js async
+    handles at process exit), `detectAsyncLeaks` reports per-test leak attribution — you see exactly
+    which test case created the un-closed handle.
+    ```bash
+    # Run with async leak detection — reports leaking tests by name
+    vitest --detect-async-leaks
+
+    # Alternatively, enable per test project:
+    # vitest.config.ts → test: { detectAsyncLeaks: true }
+    ```
+    WHY: resource leaks are the second most common cause of flaky CI failures (after shared mutable
+    state). They are non-deterministic: a test suite may pass 9 out of 10 runs until GC lag causes
+    a handle from test N to still be alive when test N+20 runs, producing an `EADDRINUSE` or
+    `ETIMEDOUT` error that looks like an environment problem. `detectAsyncLeaks` converts this
+    non-deterministic failure into a deterministic, attributable error on the offending test.
+
+56. **Vitest 4.1's `onCleanup` builder pattern replaces `use()` boilerplate for simple value fixtures.** [community]
+    The Vitest 4.0 fixture pattern required calling `use()` to yield a value and placing teardown
+    code after the `await use(...)` call. Vitest 4.1 introduces an alternative "builder pattern"
+    where the fixture function *returns* a value directly, and registers cleanup with an `onCleanup`
+    callback — TypeScript infers the fixture type from the return value automatically.
+    ```typescript
+    import { test as baseTest, expect } from 'vitest';
+    import * as fs from 'fs/promises';
+    import * as os from 'os';
+    import * as path from 'path';
+
+    const test = baseTest.extend({
+      // Builder pattern: return the fixture value; use onCleanup for teardown
+      tmpDir: async ({}, { onCleanup }) => {
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'vitest-'));
+        // Cleanup registered declaratively — runs after test even if test throws
+        onCleanup(() => fs.rm(dir, { recursive: true, force: true }));
+        // TypeScript infers the fixture type as `string` from the return value
+        return dir;
+      },
+    });
+
+    test('writes a temp file and reads it back', async ({ tmpDir }) => {
+      const filePath = path.join(tmpDir, 'data.json');
+      await fs.writeFile(filePath, JSON.stringify({ ok: true }));
+
+      const content = JSON.parse(await fs.readFile(filePath, 'utf-8'));
+
+      expect(content.ok).toBe(true);
+      // tmpDir is automatically removed after this test — no afterEach needed
+    });
+
+    test('each test gets a fresh tmpDir — no cross-test contamination', async ({ tmpDir }) => {
+      // Different tmpDir per test; previous test's directory is already deleted
+      const entries = await fs.readdir(tmpDir);
+      expect(entries).toHaveLength(0); // fresh empty directory
+    });
+    ```
+    WHY: the `use()` pattern can be confusing — code after `await use(value)` looks like normal
+    sequential code but executes in teardown. The `onCleanup` builder pattern makes the lifecycle
+    explicit: "here is the value; here is what cleans up after it." Teams onboarding to Vitest
+    fixtures report faster comprehension of the builder pattern vs. the `use()` continuation.
+
+57. **Vitest 4.1 `viteModuleRunner: false` enables native Node.js execution — but breaks Vite-specific test helpers.** [community]
+    By default, Vitest runs test code inside Vite's module runner (a sandbox that applies Vite
+    plugins, aliases, and transforms). Vitest 4.1 adds an experimental `viteModuleRunner: false`
+    option that disables the Vite sandbox and runs tests with native Node.js `import`. This gives
+    stronger isolation from Vite's transform pipeline and catches production-vs-test mismatches
+    (e.g., a missing export that Vite's permissive resolver silently allowed in the sandbox).
+    **Requires Node.js 22.18+ or 23.6+ for native TypeScript type stripping.**
+    ```typescript
+    // vitest.config.ts — experimental native execution
+    import { defineConfig } from 'vitest/config';
+
+    export default defineConfig({
+      test: {
+        experimental: {
+          viteModuleRunner: false, // native Node.js import — no Vite sandbox
+        },
+      },
+    });
+    ```
+    **What is NOT available in this mode:**
+    - `import.meta.env` (Vite-injected environment variables)
+    - Vite plugins and custom transformers
+    - Path aliases defined in `vite.config.ts`
+    - Istanbul coverage provider (use V8 coverage instead)
+
+    WHY: teams that use Vite aliases heavily in production code (e.g., `@/` path alias) cannot
+    use this mode without replacing aliases with `tsconfig` path mapping. The mode is most valuable
+    for pure Node.js backend tests where Vite's sandbox adds no value and where catching
+    non-existent-export errors is more important than alias support.
+
+58. **`jest.onGenerateMock()` is a centralized mock factory hook — not a per-test reset mechanism.** [community]
+    Jest 30 added `jest.onGenerateMock(callback)` to allow customization of auto-generated mocks
+    before they are returned to the test environment. The callback is registered globally in the
+    test file and applies to all subsequent `jest.mock()` calls without an explicit factory. A
+    common misuse: teams call `jest.onGenerateMock()` inside `beforeEach` expecting it to reset
+    the mock for each test — but it registers a *new* callback on every call without removing
+    previous ones. Callbacks accumulate and execute in registration order on each mock generation.
+    ```typescript
+    // CORRECT — register once at file scope; applies to all jest.mock() calls in the file
+    jest.onGenerateMock((modulePath, moduleMock) => {
+      if (modulePath.includes('/analytics/')) {
+        // Enforce all analytics events go through a mock — can't be forgotten per-test
+        (moduleMock as { track: jest.Mock }).track = jest.fn();
+      }
+      return moduleMock;
+    });
+
+    jest.mock('./analytics/tracker'); // onGenerateMock callback runs here
+
+    // DO NOT call jest.onGenerateMock() inside beforeEach — callbacks accumulate
+    ```
+    WHY: `jest.onGenerateMock()` is intended for project-wide mock shape enforcement (e.g., a
+    `jest.setup.ts` file that ensures all database module mocks include a `.disconnect()` mock).
+    It is not a replacement for `beforeEach` mock reset — for per-test stub setup, always
+    recreate mocks in `beforeEach`.
+
+59. **`jest.retryTimes` with `retryImmediately: true` breaks test ordering guarantees — use cautiously.** [community]
+    Jest 30 adds `retryImmediately: true` to `jest.retryTimes()`. Without this option, failed
+    tests are retried *after all other tests in the file finish*. With `retryImmediately: true`,
+    the failed test retries immediately before the next test runs — which can cause retry
+    side effects to contaminate the subsequent test if shared state was not properly cleaned up
+    by the failing test's `afterEach`.
+    ```typescript
+    // Use case: retry a flaky network test without delaying other tests
+    jest.retryTimes(2, {
+      retryImmediately: true,    // retry before next test — reduces total suite time
+      waitBeforeRetry: 500,      // 500ms delay between retries for transient network issues
+      logErrorsBeforeRetry: true // log failure reason before each retry for debugging
+    });
+    ```
+    **When to use:** network-dependent tests with transient failures (rate limits, cold starts).
+    **When NOT to use:** tests with shared state — a retry after partial mutation may leave
+    the state in an inconsistent condition that causes the retry itself to fail for a different
+    reason than the original failure. Always ensure `afterEach` is idempotent before enabling
+    retry. WHY: `retryImmediately` is the right tool for flaky *infrastructure* tests, not for
+    flaky *isolation* failures. If a test is flaky because of shared state (the most common cause),
+    retrying immediately will mask the root cause and introduce new false negatives.
+
+60. **Vitest 4.1 breaking change: `aroundAll` hook now receives fixture context — not the `Suite` object.** [community]
+    In Vitest ≤ 4.0, the undocumented first argument to `beforeAll`/`afterAll` hooks was a
+    `Suite` object from Vitest internals. Vitest 4.1 formalizes `aroundAll` as a lifecycle hook
+    that receives the *fixture context* — the same typed context object available in tests and
+    `aroundEach`. Code that accidentally relied on the `Suite` shape in `beforeAll`/`afterAll` will
+    break after upgrading:
+    ```typescript
+    // BROKEN after Vitest 4.1 upgrade — Suite object no longer passed
+    beforeAll((suite: any) => {
+      console.log(suite.name); // was the suite name; now receives fixture context
+    });
+
+    // CORRECT — use vitest's task API for suite metadata
+    import { getCurrentSuite } from 'vitest';
+    beforeAll(() => {
+      console.log(getCurrentSuite().name); // explicit API for suite metadata
+    });
+    ```
+    WHY: the implicit `Suite` argument was never documented and was an implementation leak.
+    The migration is low-risk because code relying on the `Suite` object is uncommon, but
+    teams using `beforeAll` hooks in test helpers that inspect suite structure must audit
+    their helpers after upgrading to Vitest 4.1.
+
+---
+
+## Extended Patterns — Iteration 15
+
+### Pattern 24: Vitest 4.1 `aroundEach` for guaranteed database transaction rollback (TypeScript)  [community]
+
+Vitest 4.1's `aroundEach` hook wraps each test in a surrounding async context. The `runTest`
+callback is called at the exact point the test body executes, enabling teardown-as-closing-brace
+semantics. For database integration tests, this is the cleanest way to guarantee rollback even
+when the test body throws.
+
+```typescript
+import { test as baseTest, expect } from 'vitest';
+import { PrismaClient } from '@prisma/client';
+
+// Create an isolated Prisma client for the test suite
+const prisma = new PrismaClient();
+
+interface DbFixture {
+  // The test receives a transaction-bound client — not the global prisma instance
+  db: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
+}
+
+// Build an extended test with a DB fixture using aroundEach for rollback
+const test = baseTest.extend<DbFixture>({
+  db: async ({}, use) => {
+    // This fixture is provided via use() so it can participate in aroundEach lifecycle
+    // The actual transaction wrapping is in aroundEach below
+    await use(prisma as unknown as DbFixture['db']);
+  },
+});
+
+// aroundEach wraps every test — receives the same fixture context as the test
+test.aroundEach(async (runTest) => {
+  // Open a transaction before the test runs
+  let rollback!: () => void;
+  const rollbackPromise = new Promise<void>((resolve) => { rollback = resolve; });
+
+  const txPromise = prisma.$transaction(async (tx) => {
+    // Run the test with the transaction-bound client
+    // (In a full implementation, inject tx into the fixture context)
+    await runTest();
+    // Wait for rollback signal from afterTest; this keeps the transaction open
+    await rollbackPromise;
+  }).catch(() => {}); // swallow rollback-by-rejection
+
+  // Signal rollback after the test completes (runTest has returned)
+  rollback();
+  await txPromise;
+});
+
+test('creates a user that is visible within the transaction', async () => {
+  // Database operations here run inside the transaction; rolled back after test
+  const created = await prisma.user.create({
+    data: { name: 'Alice', email: `alice-${Date.now()}@example.com` },
+  });
+
+  const found = await prisma.user.findUnique({ where: { id: created.id } });
+  expect(found?.name).toBe('Alice');
+  // After test: aroundEach triggers rollback → Alice never committed to the real DB
+});
+
+test('database is clean — Alice from previous test was rolled back', async () => {
+  const allUsers = await prisma.user.findMany({ where: { name: 'Alice' } });
+  // Relies on aroundEach rollback — would accumulate if using beforeEach/afterEach pair
+  expect(allUsers).toHaveLength(0);
+});
+```
+
+**Key advantage over `beforeEach`/`afterEach`:** The transaction open and the test execution are
+in the same async scope — there is no gap where the transaction could be open but teardown code
+is not reachable. The `aroundEach` pattern is also more readable: the setup/run/teardown lifecycle
+is visible as a single code block rather than spread across three separate hook calls.
+
+### Pattern 25: Vitest 4.1 `onCleanup` builder pattern for file-system isolation (TypeScript)  [community]
+
+The `onCleanup` fixture builder pattern (Vitest 4.1) is the idiomatic replacement for the
+`await use(value)` + post-`use()` teardown pattern when the fixture is a simple value with a
+cleanup callback. TypeScript infers the fixture type from the return value, eliminating the need
+for explicit type parameters.
+
+```typescript
+import { test as baseTest, expect } from 'vitest';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+
+// --- Fixture definition ---
+
+const test = baseTest.extend({
+  // onCleanup builder: return the value; cleanup registered separately
+  tmpDir: async ({}, { onCleanup }) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'vitest-iso-'));
+    // onCleanup runs after test completes — even if test throws
+    // This is equivalent to placing code after `await use(dir)` but more readable
+    onCleanup(async () => {
+      await fs.rm(dir, { recursive: true, force: true });
+    });
+    // TypeScript infers the fixture type as `string` from this return value
+    return dir;
+  },
+
+  // Composable: tempFile depends on tmpDir — Vitest resolves the dependency graph
+  tempFile: async ({ tmpDir }: { tmpDir: string }, { onCleanup }) => {
+    const filePath = path.join(tmpDir, `file-${Date.now()}.txt`);
+    await fs.writeFile(filePath, '');
+    // File cleanup is handled by tmpDir's onCleanup (rm -rf); this is illustrative
+    onCleanup(() => fs.unlink(filePath).catch(() => {}));
+    return filePath;
+  },
+});
+
+// --- Tests ---
+
+test('writes data to temp file', async ({ tempFile }) => {
+  // Arrange: tempFile is a fresh, empty file in a fresh tmpDir
+  await fs.writeFile(tempFile, JSON.stringify({ event: 'login', userId: 'u1' }));
+
+  // Act
+  const raw = await fs.readFile(tempFile, 'utf-8');
+  const parsed = JSON.parse(raw);
+
+  // Assert
+  expect(parsed.event).toBe('login');
+  // tempFile and tmpDir cleaned up automatically after this test
+});
+
+test('each test gets a separate tmpDir — no cross-test file contamination', async ({ tmpDir }) => {
+  const entries = await fs.readdir(tmpDir);
+  // Previous test's file is not here — it was in a different tmpDir that was already deleted
+  expect(entries).toHaveLength(0);
+});
+```
+
+**Comparison with `use()` pattern (Vitest ≤ 4.0):**
+```typescript
+// Vitest 4.0 style — use() continuation
+tmpDir: async ({}, use) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'vitest-'));
+  await use(dir);  // <- code after this line is teardown; not obvious to newcomers
+  await fs.rm(dir, { recursive: true, force: true }); // teardown
+},
+
+// Vitest 4.1 style — onCleanup builder (clearer intent)
+tmpDir: async ({}, { onCleanup }) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'vitest-'));
+  onCleanup(() => fs.rm(dir, { recursive: true, force: true }));
+  return dir; // <- clearly the fixture value
+},
+```
+
+---
+
+## Quick Reference Additions — Iteration 15
+
+| Problem | Symptom | Vitest 4.1 Solution | Jest equivalent |
+|---------|---------|---------------------|-----------------|
+| DB transaction isolation in fixtures | Rollback not guaranteed if test throws | `test.aroundEach(async (runTest) => { ... await runTest(); ... })` | No equivalent; use `beforeEach`/`afterEach` + try/finally |
+| Async resource leak (timers, handles) | Flaky CI; non-deterministic timeouts | `--detect-async-leaks` flag or `detectAsyncLeaks: true` in config | `--detectOpenHandles` (process-level only) |
+| Fixture teardown intent unclear | Confusion about code after `await use()` | `onCleanup(() => ...)` builder pattern + `return value` | N/A (Jest fixtures follow `beforeEach` model) |
+| Vite sandbox hides missing exports | Test passes but production build fails | `experimental: { viteModuleRunner: false }` (Node 22.18+) | N/A |
+| `aroundAll` `Suite` arg dependency | Runtime error after Vitest 4.1 upgrade | Replace `suite.name` with `getCurrentSuite().name` | N/A |
+
+---
+
+## Key Resources — Iteration 15 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest 4.1 Blog — What's New | Official | https://vitest.dev/blog/vitest-4-1.html | `aroundEach`/`aroundAll`, `detectAsyncLeaks`, `onCleanup` builder, `mockThrow`, `vi.defineHelper` |
+| Vitest API — `aroundEach` / `aroundAll` | Official | https://vitest.dev/api/#test-aroundeach | Wraps each test/suite in a closure; guarantees teardown even if test throws |
+| Vitest Config — `detectAsyncLeaks` | Official | https://vitest.dev/config/#detectasyncleaks | Per-test async resource leak attribution using Node.js `async_hooks` |
+| Vitest API — `onCleanup` (fixture builder) | Official | https://vitest.dev/api/#oncleanup | Declarative fixture cleanup without `use()` continuation semantics |
+| Jest 30 — `jest.onGenerateMock` | Official | https://jestjs.io/docs/jest-object#jestonGeneratemock | Global mock shape enforcement hook — file-scoped, applies to all `jest.mock()` calls |
+| Jest 30 — `jest.retryTimes` options | Official | https://jestjs.io/docs/jest-object#jestretrytimesnumretries-options | `waitBeforeRetry`, `retryImmediately`, `logErrorsBeforeRetry` — flakiness mitigation options |

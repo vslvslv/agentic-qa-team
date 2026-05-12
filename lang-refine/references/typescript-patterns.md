@@ -1,6 +1,15 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 30 (2026-05-12): added Zod v4 Migration Patterns section — new APIs (z.toJSONSchema,
+       z.registry, z.file, z.prefault, z.interface), breaking changes from v3 (tuple defaults,
+       z.undefined() behavior, stricter string validation), and community pitfall about upgrading
+       without running parse() on all data paths; added WeakMap.getOrInsert/getOrInsertComputed
+       (ES2025, complementing Map section); added TypeScript 5.9 DOM API Summary Descriptions
+       (MDN-based hover summaries for DOM types); added community pitfall: fork-ts-checker vs
+       --noCheck parallelization pitfall — sourced from github.com/colinhacks/zod/releases,
+       typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html, and
+       github.com/microsoft/TypeScript/wiki/Performance
      Iter 29 (2026-05-12): added TypeScript 5.9 — Type Argument Inference Fixes (type variable leak fix,
        may surface new errors on upgrade); added TypeScript 5.9 Expandable Hovers (VS Code preview feature)
        and Configurable Hover Length (js/ts.hover.maximumLength); added TypeScript 6.0 —
@@ -3737,3 +3746,251 @@ find . -name "*.tsbuildinfo" -not -path "*/node_modules/*" -delete
 ```
 
 Without the content-based key, a stale `.tsbuildinfo` from a previous branch causes spurious type errors or false clean builds — both worse than a full rebuild.
+
+---
+
+## Zod v4 — Migration Patterns and New APIs
+
+Zod v4 (released 2025) is a significant rewrite with a cleaner API surface, stricter validation defaults, and new capabilities for schema metadata and JSON schema generation. The TypeScript integration improved substantially — fewer `z.infer<typeof ...>` footguns and better error messages.
+
+### New APIs in Zod v4
+
+```typescript
+import { z } from 'zod';
+
+// --- z.interface: cleaner open-ended object schema (no .strip() needed) ---
+// z.object() in v3/v4 strips extra keys by default.
+// z.interface() creates an open schema — extra properties are allowed and preserved.
+const UserBaseSchema = z.interface({
+  id: z.string().uuid(),
+  name: z.string(),
+});
+// type UserBase = { id: string; name: string } — extra keys allowed at runtime
+
+// --- z.toJSONSchema(): built-in JSON Schema generation (no zod-to-json-schema package needed) ---
+const AddressSchema = z.object({
+  street: z.string(),
+  city:   z.string(),
+  zip:    z.string().regex(/^\d{5}$/),
+});
+
+// First-party JSON schema generation with z.toJSONSchema()
+const jsonSchema = z.toJSONSchema(AddressSchema);
+// { type: "object", properties: { street: { type: "string" }, ... }, required: ["street", "city", "zip"] }
+
+// --- z.registry(): schema registries for metadata and documentation ---
+// Attach metadata (OpenAPI, form labels, descriptions) without polluting TypeScript types
+const schemaRegistry = z.registry<{ description?: string; example?: unknown }>();
+
+const EmailSchema = z.string().email();
+schemaRegistry.add(EmailSchema, {
+  description: 'A valid email address',
+  example: 'user@example.com',
+});
+
+// Later: generate OpenAPI docs from the registry
+const metadata = schemaRegistry.get(EmailSchema);
+// { description: 'A valid email address', example: 'user@example.com' }
+
+// --- z.file(): validated File/Blob schema for form inputs ---
+const FileUploadSchema = z.object({
+  name:     z.string(),
+  document: z.file().max(5 * 1024 * 1024, 'Max 5MB').mime(['application/pdf']),
+});
+
+// --- z.prefault(): set a default that applies BEFORE validation (not after) ---
+// z.default() applies after parsing; z.prefault() applies before — useful for normalizing input
+const ConfigSchema = z.object({
+  timeout: z.number().min(1).prefault(30_000),  // applied before min() check
+  retries: z.number().min(0).default(3),         // applied after parsing (v3-style)
+});
+```
+
+### Breaking Changes from Zod v3
+
+```typescript
+// 1. Tuple defaults now appear in parsed output
+//    v3: optional tuple elements with defaults stayed absent
+//    v4: defaults materialize in the output
+const PairSchema = z.tuple([z.string(), z.number().default(0)]);
+const v4Result = PairSchema.parse(['hello']);
+// v3: ['hello']           (default did NOT appear)
+// v4: ['hello', 0]        (default DOES appear — matches user expectation)
+
+// 2. z.undefined() on object keys is now REQUIRED (key must be present)
+//    Use .optional() when the key itself may be absent
+const v3Behavior = z.object({ x: z.undefined() }); // v3: x?: undefined (key optional)
+const v4Correct  = z.object({ x: z.optional(z.undefined()) }); // v4: same runtime behavior
+
+// 3. Stricter string validators
+//    z.string().base64() now rejects whitespace
+//    z.string().url() renamed to z.string().httpUrl() and rejects malformed URLs
+const UrlSchema = z.string().httpUrl();  // v4 — rejects 'https:/example.com'
+// v3 equivalent: z.string().url()
+
+// 4. .merge() throws if receiver has refinements (was silently ambiguous in v3)
+const BaseSchema = z.object({ id: z.string() }).refine(v => v.id.length > 0);
+// BaseSchema.merge(z.object({ name: z.string() })); // v4 ERROR: cannot merge schema with refinements
+// Fix: move the refinement to after the merge:
+const MergedSchema = z.object({ id: z.string() })
+  .merge(z.object({ name: z.string() }))
+  .refine(v => v.id.length > 0);
+```
+
+### Zod v4 TypeScript Inference Improvements
+
+```typescript
+// z.infer<T> still works identically — no migration needed for basic usage
+const ProductSchema = z.object({
+  id:    z.string().uuid(),
+  price: z.number().positive(),
+  tags:  z.array(z.string()),
+});
+
+type Product = z.infer<typeof ProductSchema>;
+// { id: string; price: number; tags: string[] }
+
+// New: z.input<T> and z.output<T> — separate input (before coercion) and output types
+const FlexDateSchema = z.object({
+  createdAt: z.coerce.date(),  // accepts string | number | Date as input, produces Date
+  updatedAt: z.string().datetime().pipe(z.coerce.date()),
+});
+
+type FlexDateInput  = z.input<typeof FlexDateSchema>;
+// { createdAt: string | number | Date; updatedAt: string }   — input before coercion
+
+type FlexDateOutput = z.output<typeof FlexDateSchema>;
+// { createdAt: Date; updatedAt: Date }                       — output after coercion
+
+// This distinction matters for form handlers and API route validators
+// where the incoming data type differs from the validated type
+```
+
+[community] **Pitfall: upgrading to Zod v4 without running `parse()` on ALL data paths.** Zod v4's stricter defaults (tighter base64, stricter URL validation, tuple default materialization) can cause previously-passing schemas to throw at runtime on data that v3 silently accepted. The safest upgrade path: (1) upgrade the package, (2) run your full test suite — not just unit tests but integration tests that exercise real API payloads, (3) audit every schema that uses `.url()` (now `.httpUrl()`), `.base64()`, or tuple defaults. Do not assume a passing TypeScript build means runtime-safe schemas — Zod's runtime validation runs on data shapes that TypeScript cannot inspect.
+
+---
+
+## TypeScript 5.9 — DOM API Summary Descriptions
+
+TypeScript 5.9 adds MDN-sourced summary descriptions to DOM type declarations. These descriptions appear inline in editor hover tooltips without requiring a separate MDN lookup.
+
+**What this means in practice:**
+
+When you hover over `document.querySelector`, `fetch`, `navigator.clipboard.writeText`, or any built-in DOM API in VS Code with TypeScript 5.9's language service, you now see:
+
+- A one-line summary of what the API does
+- The MDN compatibility status
+- A link to the full MDN documentation
+- Deprecation warnings for legacy APIs
+
+```typescript
+// Example: hovering over fetch() in VS Code with TypeScript 5.9 shows:
+// fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>
+// Fetches a resource from the network. [MDN Reference]
+//
+// Example: hovering over document.write() shows:
+// document.write(text: string): void
+// [Deprecated] Writes HTML expressions or JavaScript code to a document. [MDN Reference]
+
+// Practical benefit: you can see deprecation warnings without leaving your editor
+document.write('<p>deprecated API</p>'); // hover shows [Deprecated] — no MDN lookup needed
+
+// Combine with the configurable hover length to see full descriptions on complex APIs
+// VS Code settings.json:
+// { "js/ts.hover.maximumLength": 500 }
+```
+
+[community] **Pitfall:** Teams running the TypeScript 5.9 language service in VS Code may see unfamiliar deprecation markers on DOM APIs they use regularly (e.g., `document.write`, `document.execCommand`, `XMLHttpRequest` CORS methods). These are real deprecations from MDN — the TypeScript team is surfacing existing MDN metadata that was previously invisible. If you see `[Deprecated]` on an API you rely on, investigate the modern replacement rather than suppressing the warning.
+
+---
+
+## ES2025 — `WeakMap.getOrInsert` and `WeakMap.getOrInsertComputed`
+
+TypeScript 6.0 added types for `WeakMap.getOrInsert` and `WeakMap.getOrInsertComputed` alongside the same methods on `Map`. These enable atomic lookup-or-insert on `WeakMap` — particularly useful for caching computed values keyed by object identity without leaking memory.
+
+```typescript
+// WeakMap.getOrInsert: insert a default if key absent, return existing or new value
+const cache = new WeakMap<object, string[]>();
+
+function getTagsFor(obj: object): string[] {
+  return cache.getOrInsert(obj, []);
+  // Equivalent to (but atomic, no separate has/set call):
+  // if (!cache.has(obj)) cache.set(obj, []);
+  // return cache.get(obj)!;
+}
+
+// WeakMap.getOrInsertComputed: lazy computation — only called if key absent
+const expensiveCache = new WeakMap<Element, DOMRect>();
+
+function getBoundingRect(el: Element): DOMRect {
+  return expensiveCache.getOrInsertComputed(el, e => e.getBoundingClientRect());
+  // The arrow function is only called if `el` is not in the WeakMap
+}
+
+// Practical pattern: memoize expensive per-object computations without memory leaks
+// WeakMap holds weak references — when the key object is GC'd, the entry is removed automatically
+class ComponentAnalyzer {
+  private readonly styleCache = new WeakMap<Element, CSSStyleDeclaration>();
+
+  getComputedStyle(el: Element): CSSStyleDeclaration {
+    return this.styleCache.getOrInsertComputed(el, e => window.getComputedStyle(e));
+  }
+}
+```
+
+Requires `"target": "es2025"` or `"target": "esnext"` in `tsconfig.json`. Both `Map` and `WeakMap` gain these methods in the ES2025 standard library, and they share the same signature semantics — `getOrInsert(key, defaultValue)` and `getOrInsertComputed(key, computeFn)`.
+
+[community] **Pitfall:** `WeakMap.getOrInsertComputed` is only safe to use when the compute function has no side effects that depend on the WeakMap state. The spec does not define reentrancy behavior — if `computeFn` triggers a call to `getOrInsertComputed` on the same WeakMap with the same key, the result is implementation-defined. Use a guard variable or convert to an explicit `has`/`set` pattern in reentrant scenarios.
+
+---
+
+## Community Pitfall: `fork-ts-checker` vs `--noCheck` — CI Parallelization Strategy
+
+[community] **Pitfall:** Teams that adopt `tsc --noCheck` for faster builds (TypeScript 5.7+) often disable or remove `fork-ts-checker-webpack-plugin` from their Webpack/Vite setup without replacing the type check step. The result: type errors are never caught in CI because `--noCheck` emits JavaScript without type-checking, and the build "succeeds" with invalid TypeScript.
+
+```json
+// package.json — INCORRECT: type checking removed from CI entirely
+{
+  "scripts": {
+    "build": "tsc --noCheck",     // emits JS fast — no type check
+    "ci": "npm run build"         // ❌ type errors never caught!
+  }
+}
+
+// package.json — CORRECT: type check runs in parallel with build
+{
+  "scripts": {
+    "typecheck": "tsc --noEmit",  // type check only (no emit)
+    "build":     "tsc --noCheck", // emit only (no type check) — 2-3x faster
+    "ci": "npm run typecheck & npm run build"
+    // Both run in parallel; CI fails if EITHER fails
+  }
+}
+```
+
+The same pitfall applies when using `transpileOnly: true` in `ts-loader` or `babel-loader` — fast transpilation without type checking. The fix is always the same: add a dedicated `tsc --noEmit` step that runs on every CI push, even if it takes 30 seconds. Type checking and JavaScript emit are separate concerns that should be explicitly scheduled.
+
+**With `fork-ts-checker-webpack-plugin` (Webpack projects):**
+
+```typescript
+// webpack.config.ts — type check runs in a worker process in parallel with webpack compilation
+import ForkTsCheckerWebpackPlugin from 'fork-ts-checker-webpack-plugin';
+
+export default {
+  module: {
+    rules: [{
+      test: /\.tsx?$/,
+      use: {
+        loader: 'ts-loader',
+        options: {
+          transpileOnly: true,  // fast: no type check in the main thread
+        },
+      },
+    }],
+  },
+  plugins: [
+    new ForkTsCheckerWebpackPlugin(),  // type check in a separate worker
+  ],
+};
+// Result: webpack compilation is fast (transpileOnly); type errors still caught (fork-ts-checker)
+```

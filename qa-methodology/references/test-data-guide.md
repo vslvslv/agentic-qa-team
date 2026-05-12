@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
@@ -8,6 +8,7 @@
 <!-- iter-33: Vitest 4.0 pool config migration (poolOptions.vmForks → top-level isolate; singleFork → maxWorkers: 1; poolMatchGlobs/environmentMatchGlobs → projects; workspace → projects); community gotcha #21; Key Resources updated (2026-05-12) -->
 <!-- iter-34: Playwright mergeTests() modular fixture composition; Playwright box fixture (box:true/box:'self') for clean test reports; Vitest 4.x singleThread also removed (not just singleFork); vi.resetModules() required with isolate:false; VITEST_MAX_WORKERS replaces VITEST_MAX_THREADS/MAX_FORKS; community gotcha #22; 2 new checklists (Playwright fixtures, Vitest 4.x config); 2 new Key Resources (2026-05-12) -->
 <!-- iter-35: Vitest 4.1 builder pattern for test.extend() (return-based, automatic TypeScript type inference); aroundEach hook (transaction-per-test pattern); test.override() per-suite fixture overrides; vi.defineHelper() for clean factory assertion stack traces; Vitest 4.x coverage.all/coverage.extensions removal + mandatory coverage.include; community gotcha #23; new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
+<!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 
 ---
 
@@ -1874,6 +1875,51 @@ export const LLMResponseFixtures = {
     - [ ] Remove `coverage.extensions` (no longer a valid config key)
     - [ ] Review branch coverage numbers — AST-based remapping may change percentages
 
+24. **[community] Factories that open DB connections or register timers without teardown cause silent test pollution detectable via `--detectAsyncLeaks`.**
+    Vitest 4.1 introduced the `--detectAsyncLeaks` CLI flag (or `detectAsyncLeaks: true` in config). It identifies asynchronous resources — open DB connections, unresolved Promises, lingering `setInterval`/`setTimeout` handles — that leak out of a test file into the next. The production scenario: a factory helper that initialises a connection pool at module load (`const pool = new Pool({ ... })`) but never calls `pool.end()` after the test file completes causes each test file to accumulate an open connection. The leak is invisible in passing tests but causes OOM errors on large CI machines after 50+ test files run. `--detectAsyncLeaks` surfaces this as a warning after the file that introduced the leak — giving a precise diagnosis rather than a mystery OOM crash at file #73.
+
+    ```typescript
+    // BAD: factory-helper.ts — pool initialised at module load with no teardown
+    // Vitest --detectAsyncLeaks will report: "Async resource leaked from test file"
+    import { Pool } from 'pg';
+    export const testPool = new Pool({ connectionString: process.env['TEST_DATABASE_URL'] });
+    // Missing: afterAll(() => testPool.end()) — pool never closed between test files
+
+    // GOOD: lazy pool initialisation with explicit teardown in the test file
+    // vitest.setup.ts — or in a fixture that guarantees cleanup
+    import { Pool } from 'pg';
+    import { beforeAll, afterAll } from 'vitest';
+
+    let pool: Pool | undefined;
+
+    export function getTestPool(): Pool {
+      if (!pool) {
+        pool = new Pool({ connectionString: process.env['TEST_DATABASE_URL'], max: 1 });
+      }
+      return pool;
+    }
+
+    // In each test file that uses the pool (or in a shared fixture's teardown):
+    afterAll(async () => {
+      await pool?.end();
+      pool = undefined;  // reset for the next file when isolate: false
+    });
+    ```
+
+    ```bash
+    # Enable in CI to catch resource leaks before they become OOM mysteries
+    npx vitest --detectAsyncLeaks
+
+    # Or in vitest.config.ts:
+    # test: { detectAsyncLeaks: true }
+    ```
+
+    **Interaction with factory patterns:** The most common leak sources in factory-heavy suites:
+    - `Pool` or `DataSource` objects created at module scope in factory setup files
+    - `setInterval` in factory "heartbeat" helpers that simulate real-time data
+    - Unresolved `Promise` chains from factory `buildAndSave()` calls not awaited in `afterEach`
+    - Testcontainers container starts that are never stopped (Ryuk handles this in CI, but `--detectAsyncLeaks` catches cases where Ryuk is disabled)
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -2900,7 +2946,211 @@ test('suspended user is blocked with account_suspended reason', async () => {
 
 ---
 
-## Key Resources
+### Vitest 4.1 Test Tags + `TestRunner.matchesTags()` — Conditional DB Seeding  [community]
+
+Vitest 4.1 introduced **test tags**: named labels attached to tests or suites that enable
+filtering, shared timeout/retry options, and — crucially for test data — conditional setup
+logic based on which tests are actually being run.
+
+**Why it matters for test data factories:** Large test suites often have expensive database
+setup (seeding 50,000 rows, spinning up a Testcontainers instance) that is only needed by
+a subset of tests. Before tags, all setup ran regardless of the test subset selected. With
+`TestRunner.matchesTags()` (Vitest 4.1.1+), a custom runner can check whether the active
+tag filter includes tests that actually need the DB — and skip expensive seeding entirely
+when running tag-filtered unit tests.
+
+**Tag declaration (vitest.config.ts):**
+```typescript
+// vitest.config.ts — tags must be declared before use; undeclared tags throw errors
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Declare tags: name + optional timeout/retry overrides per tag
+    tags: {
+      'integration': { timeout: 30_000, retry: 2 },   // DB tests: longer timeout
+      'unit':        { timeout: 5_000,  retry: 0 },    // Unit tests: fast, no retry
+      'e2e':         { timeout: 60_000, retry: 1 },    // E2E: longest timeout
+      'security':    { timeout: 10_000, retry: 0 },    // Adversarial data tests
+      'slow':        { timeout: 120_000 },             // Performance/bulk factory tests
+    },
+  },
+});
+```
+
+**Applying tags to tests:**
+```typescript
+// specs/user-service.integration.test.ts — tagged integration tests
+import { test, describe } from 'vitest';
+import { buildUser } from '../factories/user.factory';
+import { userRepository } from '../repositories/user.repository';
+
+// Tags propagate from describe to child tests
+describe('UserRepository integration tests', { tags: ['integration'] }, () => {
+  test('creates a user with factory-built data', async ({ db }) => {
+    const user = buildUser({ status: 'active' });
+    const saved = await userRepository.create(user);
+    expect(saved.id).toBeDefined();
+  });
+
+  // Override a single test's tag — inherits 'integration', adds 'slow'
+  test('bulk insert 10,000 users', { tags: ['integration', 'slow'] }, async ({ db }) => {
+    const users = buildUserList(10_000);
+    await userRepository.bulkCreate(users);
+    expect(await userRepository.count()).toBeGreaterThanOrEqual(10_000);
+  });
+});
+
+describe('UserService unit tests', { tags: ['unit'] }, () => {
+  test('maps factory-built user to DTO', () => {
+    const user = buildUser({ subscriptionTier: 'premium' });
+    const dto = mapUserToDTO(user);
+    expect(dto.tier).toBe('premium');
+  });
+});
+```
+
+**`TestRunner.matchesTags()` for conditional DB seeding (Vitest 4.1.1+):**
+```typescript
+// test/setup/globalSetup.ts — skip expensive DB seed when running only unit tests
+import { TestRunner } from 'vitest/node';
+
+export async function setup(runner: TestRunner): Promise<void> {
+  // Check whether the active tag filter includes integration tests
+  const needsDatabase = runner.matchesTags(['integration', 'e2e']);
+  // matchesTags() accepts the same tag expression syntax as --tags-filter:
+  //   runner.matchesTags('integration or e2e')
+  //   runner.matchesTags('integration and not slow')
+  //   runner.matchesTags('*')  // all tests
+
+  if (needsDatabase) {
+    // Only start the DB container when integration/e2e tests are actually running
+    await globalThis.__testContainer__.start();
+    await seedDatabase(globalThis.__testPool__);
+    console.log('[globalSetup] DB seeded — integration tag detected');
+  } else {
+    console.log('[globalSetup] Skipping DB seed — unit-only tag filter active');
+  }
+}
+
+export async function teardown(runner: TestRunner): Promise<void> {
+  if (globalThis.__testContainer__?.isRunning()) {
+    await globalThis.__testContainer__.stop();
+  }
+}
+```
+
+**CLI tag filtering syntax:**
+```bash
+# Run only unit tests (skip all integration DB setup)
+npx vitest --tags-filter="unit"
+
+# Run integration but not slow performance tests
+npx vitest --tags-filter="integration and not slow"
+
+# Run all tests except security adversarial data tests in CI
+npx vitest --tags-filter="not security"
+
+# Combined: unit OR integration, but not slow
+npx vitest --tags-filter="(unit or integration) and not slow"
+```
+
+**Tag filter expressions support:**
+- `and` / `&&` — both tags must match
+- `or` / `||` — either tag matches
+- `not` / `!` — exclude tag
+- `*` — wildcard: matches any string of characters
+- Parentheses for grouping
+
+**Production lesson [community]:** After adopting tags, a team discovered that 40% of their
+CI test time was consumed by DB seeding — even when running `--tags-filter=unit` for
+pre-commit checks. Adding `TestRunner.matchesTags()` in `globalSetup.ts` reduced their
+pre-commit test run from 45 seconds to 8 seconds because the Testcontainers PostgreSQL
+container and seeder no longer started for unit-only runs.
+
+---
+
+### Vitest 4.1 `coverage.changed` — Modified-File-Only Coverage Reports  [community]
+
+Vitest 4.1 added a `coverage.changed` option that limits coverage reporting to files
+modified in the current PR or commit, while still running the full test suite. This is
+particularly useful for factory-heavy codebases where a PR modifies 3 factory files and
+15 test files — you only want to see coverage for the changed files, not the entire
+codebase's coverage baseline.
+
+**Why it matters for test data:** When refactoring factories (e.g., migrating from Vitest
+3.x `poolOptions` to 4.x top-level config), `coverage.changed` shows exactly which
+factory files have dropped coverage after the refactor — without needing to interpret
+the full coverage report.
+
+```typescript
+// vitest.config.ts — coverage.changed for PR-scoped coverage reporting
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      // 'changed' compares against the working tree's diff
+      // value: 'head' (current commit), 'base' (base branch), or a ref like 'main'
+      changed: 'main',
+      // Still require coverage.include — coverage.changed narrows what's REPORTED,
+      // not what's INCLUDED. Files not matching include are always excluded.
+      include: [
+        'src/**/*.ts',
+        'src/factories/**/*.ts',
+      ],
+      exclude: [
+        'src/**/*.test.ts',
+        'src/**/*.spec.ts',
+      ],
+    },
+  },
+});
+```
+
+**Coverage ignore comments** (Vitest 4.1 — both `v8` and `istanbul` providers):
+
+Vitest 4.1 standardised `ignore start/stop` block comments for both providers. These are
+useful for factory utility branches that are unreachable in tests but exist for developer
+ergonomics (e.g., a `if (process.env.NODE_ENV === 'debug')` logging path in a factory).
+
+```typescript
+// factories/user.factory.ts — using coverage ignore comments
+import { faker } from '@faker-js/faker';
+import { User } from '../domain/user';
+
+export function buildUser(overrides: Partial<User> = {}): User {
+  return {
+    id: faker.string.uuid(),
+    email: `${faker.string.uuid()}@${faker.internet.domainName()}`,
+    name: faker.person.fullName(),
+    status: 'active',
+    subscriptionTier: 'free',
+    createdAt: new Date(),
+    paymentMethodId: null,
+    ...overrides,
+  };
+}
+
+// istanbul ignore start — debug utility: only useful when debugging locally, not in CI
+// v8 ignore start
+export function debugFactory(label: string, obj: unknown): void {
+  if (process.env['FACTORY_DEBUG'] === '1') {
+    console.log(`[factory:${label}]`, JSON.stringify(obj, null, 2));
+  }
+}
+// istanbul ignore stop
+// v8 ignore stop
+```
+
+**Note:** `/* istanbul ignore next */` (single-line) and `/* v8 ignore next N */` (next N
+lines) are still supported for single-line ignores. The new `start/stop` block syntax is
+preferred for multi-line factory utility functions.
+
+---
+
+
 
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
@@ -2945,6 +3195,9 @@ test('suspended user is blocked with account_suspended reason', async () => {
 | Vitest 4.1 test context (builder pattern) | Official | https://vitest.dev/guide/test-context | New builder syntax for test.extend() with inferred TypeScript types; aroundEach/aroundAll; test.override(); vi.defineHelper() |
 | Vitest 4.1 blog post | Official | https://vitest.dev/blog/vitest-4-1 | Full changelog: builder fixtures, aroundEach/aroundAll hooks, test.override(), vi.defineHelper(), inferred fixture types |
 | Vitest 4.x coverage config changes | Official | https://vitest.dev/guide/migration#vitest-4-0 | coverage.all and coverage.extensions removed; coverage.include mandatory; V8 AST-based remapping |
+| Vitest 4.1 test tags guide | Official | https://vitest.dev/guide/test-tags | Declaring tags with timeout/retry; filtering with complex expressions; TestRunner.matchesTags() for conditional DB seeding |
+| Vitest 4.1 --detectAsyncLeaks | Official | https://vitest.dev/config/#detectasyncleaks | CLI flag and config option for surfacing leaked DB connections and timer handles from test factories |
+| Vitest 4.1 coverage.changed | Official | https://vitest.dev/config/#coverage-changed | Limits coverage reporting to modified files — useful for PR-scoped factory coverage reviews |
 
 ---
 
@@ -5973,3 +6226,7 @@ test data technical debt from accumulating.
 - [ ] Shared assertion helpers wrapping multiple `expect()` calls are wrapped with `vi.defineHelper()` for call-site stack traces
 - [ ] `coverage.include` is explicitly set — `coverage.all: true` and `coverage.extensions` no longer exist in Vitest 4.x
 - [ ] Factory directories are included in `coverage.include` patterns to catch dead factory code
+- [ ] Test tags declared in `vitest.config.ts` for integration, unit, e2e, and slow test suites — enables `TestRunner.matchesTags()` conditional DB seeding
+- [ ] `globalSetup.ts` uses `runner.matchesTags(['integration', 'e2e'])` to skip Testcontainers start when running unit-only tag filters
+- [ ] `coverage.changed` configured to point at the base branch for PR-scoped factory coverage diffs
+- [ ] Factory utility branches intentionally excluded from coverage use `/* istanbul ignore start */` / `/* v8 ignore start */` block comments (not repeated `/* istanbul ignore next */` per line)
