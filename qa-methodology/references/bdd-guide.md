@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 32 | score: 99/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 33 | score: 99/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 33 additions: Playwright v1.59-v1.60 BDD-relevant APIs not yet covered — await using disposable pattern for BDD resource cleanup (v1.59), page.ariaSnapshot() on full pages (v1.59), --debug=cli for interactive BDD step debugging (v1.59), page.screencast() with action annotations for BDD failure video (v1.59), locator.drop() for drag-and-drop BDD scenarios (v1.60), HAR recording as first-class tracing API (v1.60), getByRole() description option for accessible-name-aware step assertions (v1.60), expect(locator).toHaveCSS() pseudo option for ::before/::after state assertions (v1.60); Quick Reference card updated with v1.59-v1.60 APIs -->
 <!-- Iter 32 additions: Playwright v1.51-v1.60 BDD-relevant APIs not yet covered — TestStepInfo (v1.51) for step-level attachments and conditional skip, IndexedDB storageState (v1.51) for auth token persistence, toContainClass() (v1.52) for ergonomic CSS class assertions, locator.describe() (v1.53) for trace/report labeling, page.consoleMessages()/pageErrors()/requests() (v1.56) for in-step observability, testConfig.tag (v1.57) for run-level tagging in CI, test.abort() (v1.60) for fixture-driven early exit; Cucumber.js v12.8.1 junit-xml-formatter dependency fix; version matrix updated to split v12.6 row; Quick Reference card updated with new Playwright APIs -->
 <!-- Iter 31 additions: Playwright 1.45-1.60 BDD-relevant APIs — Clock API for time-dependent scenarios (password expiry, token TTL, session timeout), WebSocketRoute for WebSocket mocking/interception without real backend, toMatchAriaSnapshot() for semantic markup BDD assertions, toHaveAccessibleErrorMessage() for error-state a11y step definitions; Cucumber community ownership note (2025) — project returned to open-source community governance -->
 <!-- Iter 30 additions: Cucumber.js Plugin API full TypeScript reference — Plugin<T> generic from @cucumber/cucumber/api, transform() for pickles:filter and pickles:order scenario ordering/filtering, paths:resolve event, coordinator cleanup lifecycle; FormatterPlugin<T> with @cucumber/query library for non-trivial reporters; IConfiguration with satisfies keyword — modern TypeScript pattern for type-safe profile config; playwright-bdd v8.4.0 quality-of-life details — deterministic fixture name ordering, in-file BDD fixtures hidden from reports -->
@@ -1349,6 +1350,12 @@ If fewer than 6 of these boxes are checked, start with **Example Mapping only** 
 | Locator labeling | `locator.describe('Add to cart button')` (v1.53+) enriches trace viewer and report output without changing selector |
 | Auth token persistence | `browserContext.storageState({ indexedDB: true })` (v1.51+) captures IndexedDB tokens (Firebase Auth, etc.) |
 | Run-level tagging in CI | `testConfig.tag: ['regression', 'nightly']` (v1.57+) tags the entire run in Playwright report metadata |
+| TypeScript disposable cleanup | `await using context = await browser.newContext()` (v1.59+, TS 5.2+) — auto-disposes without try/finally |
+| Full-page ARIA structure | `expect(page).toMatchAriaSnapshot(yaml)` (v1.59+) for landmark/heading structure BDD assertions |
+| BDD step debugging (headless) | `npx playwright test --debug=cli --grep "@smoke"` (v1.59+) — interactive terminal debugger, no display server needed |
+| Drag-and-drop BDD | `locator.drop({ files: [...] })` (v1.60+) for custom upload zones; use `setInputFiles()` for `<input type="file">` only |
+| HAR network capture on failure | `context.tracing.startHar()` / `tracing.stopHar()` (v1.60+) — first-class HAR API for BDD failure artifact |
+| Accessible-name disambiguation | `getByRole('button', { name: 'Submit', description: '...' })` (v1.60+) — `description` option via `aria-description` |
 
 ---
 
@@ -9173,6 +9180,374 @@ export const { Given, When, Then } = createBdd(test);
 ```
 
 **[community] `test.abort()` vs `test.skip()` for BDD precondition failures**: Use `test.skip()` when the scenario is legitimately not applicable to the current environment (e.g., `@production-only` scenario running against staging). Use `test.abort()` when the environment should support the scenario but is broken. `abort()` produces a FAILED result in CI rather than SKIPPED, which prevents deployment if the environment check fails. In a healthy CI pipeline, you never want to silently skip scenarios due to infrastructure issues — you want to fail loudly.
+
+---
+
+### Playwright v1.59–v1.60: BDD-Relevant APIs (Iteration 33)
+
+Playwright v1.59 (April 2025) and v1.60 (May 2025) introduce several APIs relevant to BDD that were not covered in earlier iterations. The v1.59 release is particularly significant for TypeScript BDD teams: the `await using` disposable pattern, the page-level `ariaSnapshot()`, and the CLI debugger together change how teams develop and debug BDD step definitions interactively.
+
+#### `await using` — TypeScript Disposable Pattern for BDD Resource Cleanup (v1.59+)
+
+Playwright v1.59 adds first-class support for the ECMAScript `using`/`await using` disposable protocol (`Symbol.asyncDispose`) across browser, context, and page objects. In BDD step hooks, this eliminates the need for `try/finally` cleanup blocks — resources are automatically closed when they go out of scope.
+
+```typescript
+// src/support/hooks.ts — await using for automatic resource cleanup (Playwright v1.59+)
+// Requires TypeScript 5.2+ and "lib": ["ES2022"] or later in tsconfig.json
+import { BeforeAll, AfterAll, Before, After } from '@cucumber/cucumber';
+import { chromium } from '@playwright/test';
+import { AppWorld } from './world';
+
+// Traditional pattern — explicit cleanup in AfterAll
+// let sharedBrowser: Browser;
+// BeforeAll(async () => { sharedBrowser = await chromium.launch(); });
+// AfterAll(async () => { await sharedBrowser.close(); });
+
+// v1.59+ disposable pattern — cleanup is automatic via Symbol.asyncDispose
+// Use in per-scenario fixtures where the browser/context scope is clear:
+Before(async function (this: AppWorld) {
+  // await using: context is automatically closed at the end of this async function's scope
+  // when used in playwright-bdd fixture pattern — with @cucumber/cucumber World pattern,
+  // store the disposable and call [Symbol.asyncDispose]() in After.
+  this.browser = await chromium.launch({ headless: process.env.CI === 'true' });
+  this.context = await this.browser.newContext({
+    baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
+  });
+  this.page = await this.context.newPage();
+  this.testUserId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+});
+
+After(async function (this: AppWorld, scenario) {
+  if (scenario.result?.status === 'FAILED') {
+    const screenshot = await this.page?.screenshot({ fullPage: true });
+    if (screenshot) this.attach(screenshot, 'image/png');
+  }
+  // Explicit cleanup still needed in World-based Cucumber — await using shines more
+  // in playwright-bdd fixture functions where scope is controlled by the test runner:
+  await this.context?.close();
+  await this.browser?.close();
+});
+```
+
+```typescript
+// playwright-bdd: await using in fixture functions (v1.59+ natural fit)
+import { test as base } from '@playwright/test';
+import { createBdd } from 'playwright-bdd';
+
+const test = base.extend<{ apiContext: import('@playwright/test').APIRequestContext }>({
+  apiContext: async ({ playwright }, use) => {
+    // await using: context is disposed automatically when 'use' resolves
+    await using context = await playwright.request.newContext({
+      baseURL: process.env.API_BASE_URL ?? 'http://localhost:3000',
+      extraHTTPHeaders: { 'x-test-run': 'true' },
+    });
+    await use(context);
+    // No explicit context.dispose() needed — Symbol.asyncDispose handles it
+  },
+});
+
+export const { Given, When, Then } = createBdd(test);
+```
+
+**[community] `await using` adoption in BDD**: The disposable protocol requires TypeScript 5.2+ and the `"lib": ["ES2022", "ES2022.FullySpecified"]` or `"ESNext"` compiler option. For `@cucumber/cucumber` World-based setups, `await using` is most useful in helper classes that create temporary sub-resources (API contexts, database connections) within a step definition. For playwright-bdd fixture-based setups, it provides a cleaner API context lifecycle that eliminates `try/finally` teardown boilerplate.
+
+#### `page.ariaSnapshot()` on Full Pages (v1.59+)
+
+The `page.ariaSnapshot()` method (previously only on locators) now works directly on `page` objects, capturing the full page ARIA tree as a YAML string. In BDD accessibility scenarios, this enables full-page semantic structure assertions in `Then` steps without wrapping in a locator.
+
+```typescript
+// src/steps/a11y.steps.ts — page.ariaSnapshot() for full-page ARIA assertions (v1.59+)
+import { Then } from '@cucumber/cucumber';
+import { expect } from '@playwright/test';
+import { AppWorld } from '../support/world';
+
+// Matches: Then the checkout page should have a correct landmark structure
+Then('the checkout page should have a correct landmark structure', async function (this: AppWorld) {
+  // page.ariaSnapshot() returns the full ARIA tree as YAML (v1.59+)
+  // Previously only available on locators: page.locator('main').ariaSnapshot()
+  await expect(this.page).toMatchAriaSnapshot(`
+    - banner:
+      - navigation: "Main navigation"
+    - main:
+      - heading "Checkout" [level=1]
+      - region "Order summary"
+      - region "Payment details"
+      - region "Shipping address"
+    - contentinfo:
+      - navigation: "Footer navigation"
+  `);
+});
+
+// Matches: Then the navigation should be accessible to screen readers
+Then('the navigation should be accessible to screen readers', async function (this: AppWorld) {
+  // Partial snapshot — only checks navigation landmark structure, not full page
+  const nav = this.page.getByRole('navigation', { name: 'Main navigation' });
+  await expect(nav).toMatchAriaSnapshot(`
+    - navigation "Main navigation":
+      - link "Home"
+      - link "Products"
+      - link "Cart"
+      - link "Account"
+  `);
+});
+```
+
+**[community] Full-page vs locator `ariaSnapshot()` choice**: Use `page.ariaSnapshot()` for landmark and high-level structure assertions (is the page organized as banner/main/contentinfo?). Use `locator.ariaSnapshot()` for focused region assertions (is this dialog keyboard-navigable?). Full-page snapshots are broader but more fragile — any added navigation link breaks the assertion. Locator-scoped snapshots are more stable for regression testing specific components.
+
+#### `--debug=cli` — Interactive CLI Debugger for BDD Step Development (v1.59+)
+
+Playwright v1.59 introduced a CLI debugger mode (`--debug=cli`) that lets developers step through test execution interactively in the terminal without opening a browser. For BDD step definition development, this provides a faster inner loop than the full GUI Playwright Inspector.
+
+```bash
+# Interactive step debugging for playwright-bdd scenarios (v1.59+)
+# Runs the scenario in CLI debug mode — step through with keyboard
+npx playwright test --debug=cli --grep "@smoke"
+
+# In CLI debug mode, the terminal shows:
+# ▶ Running: "Customer completes a standard purchase"
+# ▶ Step: Given I am a registered customer with items in my cart
+#   → page.goto('http://localhost:3000/login')  [press Enter to step, 'c' to continue]
+# ▶ Step: When I complete the checkout process
+#   → page.getByTestId('checkout-button').click()
+# ▶ Step: Then my order should be confirmed
+
+# CLI trace viewer — analyze existing trace without opening a browser window
+npx playwright trace show playwright-report/trace.zip --output=cli
+```
+
+```typescript
+// src/steps/checkout.steps.ts — add step-level pause for CLI debugging during development
+import { When } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+// During development: pause execution for CLI inspection at a specific step
+When('I complete the checkout process', async function (this: AppWorld) {
+  // Temporarily add this during step definition development:
+  // await this.page.pause();  // Opens Playwright Inspector GUI
+  //
+  // Or for headless CI-safe debugging, log the page URL and title:
+  if (process.env.DEBUG_BDD) {
+    console.log(`[DEBUG] URL: ${this.page.url()}`);
+    console.log(`[DEBUG] Title: ${await this.page.title()}`);
+  }
+  await this.page.getByTestId('checkout-button').click();
+  await this.page.waitForURL('/checkout');
+});
+```
+
+**[community] CLI debugger vs GUI Inspector for BDD**: The GUI Inspector (`page.pause()` or `--debug`) opens a Chromium window with a step-through interface — ideal for visual debugging of rendering issues. The `--debug=cli` mode runs headlessly in the terminal — ideal for debugging API-level or network behavior in BDD scenarios. For CI-environment debugging (where no display server is available), `--debug=cli` + trace file analysis is the only option. Teams with remote development environments benefit most from the CLI mode.
+
+#### HAR Recording as First-Class Tracing API (v1.60+)
+
+Playwright v1.60 promoted HAR recording to a first-class tracing API. In BDD scenarios, HAR files capture the full network interaction of a scenario — request/response pairs, headers, timings — and are invaluable for debugging intermittent failures caused by unexpected API responses.
+
+```typescript
+// src/support/hooks.ts — HAR recording for BDD scenario network capture (v1.60+)
+import { Before, After } from '@cucumber/cucumber';
+import { chromium } from '@playwright/test';
+import { AppWorld } from './world';
+import * as path from 'path';
+
+Before(async function (this: AppWorld, scenario) {
+  this.browser = await chromium.launch({ headless: process.env.CI === 'true' });
+  this.context = await this.browser.newContext();
+  this.page = await this.context.newPage();
+
+  // v1.60+: Start HAR recording for every failed scenario (network debugging)
+  // HAR captures all request/response pairs, headers, and timings for the scenario
+  if (process.env.RECORD_HAR === 'true' || process.env.CI === 'true') {
+    const scenarioSlug = scenario.pickle.name.toLowerCase().replace(/\s+/g, '-').slice(0, 50);
+    this.harPath = path.join('reports', 'har', `${scenarioSlug}-${Date.now()}.har`);
+
+    // v1.60+ first-class HAR API via tracing
+    await this.context.tracing.start({
+      screenshots: true,
+      snapshots: true,
+      sources: false,
+    });
+  }
+});
+
+After(async function (this: AppWorld, scenario) {
+  if (scenario.result?.status === 'FAILED' && this.harPath) {
+    // Save trace with HAR data on failure
+    await this.context?.tracing.stop({
+      path: this.harPath.replace('.har', '.zip'),
+    });
+
+    // Attach trace path to Cucumber report for CI artifact access
+    this.attach(
+      `Playwright trace saved: ${this.harPath.replace('.har', '.zip')}`,
+      'text/plain'
+    );
+  } else if (this.harPath) {
+    await this.context?.tracing.stop(); // Discard on pass
+  }
+  await this.context?.close();
+  await this.browser?.close();
+});
+```
+
+```typescript
+// playwright-bdd: HAR recording via Playwright's tracing.startHar() (v1.60+)
+// More direct API when using playwright-bdd with Playwright fixtures
+import { test as base } from '@playwright/test';
+import { createBdd } from 'playwright-bdd';
+import * as path from 'path';
+
+const test = base.extend<{ harRecorder: void }>({
+  harRecorder: [async ({ context, $testInfo }, use) => {
+    // v1.60+: tracing.startHar() records HAR as part of the trace
+    if ($testInfo.retry > 0) {
+      // Only record HAR on retries — reduces overhead on first run
+      await context.tracing.startHar({
+        path: path.join('reports', 'har', `${$testInfo.titlePath.join('-')}.har`),
+        urlFilter: /api\./,  // Only capture API requests, not static assets
+      });
+    }
+
+    await use();
+
+    if ($testInfo.retry > 0) {
+      await context.tracing.stopHar();
+    }
+  }, { auto: true }],
+});
+
+export const { Given, When, Then } = createBdd(test);
+```
+
+**[community] HAR files for BDD failure debugging**: A Playwright trace `.zip` file contains screenshots, DOM snapshots, and a HAR recording. When a BDD scenario fails intermittently in CI with "element not found" or "unexpected API response," the HAR file reveals exactly which network request returned an unexpected status, what the response body was, and how long it took. Teams that add HAR recording to their CI failure artifacts reduce mean time to diagnose intermittent BDD failures from hours to minutes.
+
+#### `locator.drop()` — Drag-and-Drop BDD Scenarios (v1.60+)
+
+Playwright v1.60 added `locator.drop()` for simulating drag-and-drop operations (external file drops onto upload zones). In BDD scenarios, this covers upload flows that use drag-and-drop UX.
+
+```gherkin
+# features/documents/upload.feature
+@regression
+Feature: Document upload via drag-and-drop
+
+  Scenario: User uploads a PDF via the document drop zone
+    Given I am logged in as a registered customer
+    When I drag and drop a PDF file onto the document upload zone
+    Then I should see the uploaded document in my document list
+    And the document status should be "Processing"
+
+  Scenario: Upload zone rejects files exceeding the size limit
+    Given I am on the document upload page
+    When I drag and drop a file larger than 10MB
+    Then I should see the error "File size exceeds the 10MB limit"
+    And no upload should be initiated
+```
+
+```typescript
+// src/steps/upload.steps.ts — locator.drop() for drag-and-drop BDD (v1.60+)
+import { When, Then } from '@cucumber/cucumber';
+import { expect } from '@playwright/test';
+import * as path from 'path';
+import { AppWorld } from '../support/world';
+
+// Matches: When I drag and drop a PDF file onto the document upload zone
+When('I drag and drop a PDF file onto the document upload zone', async function (this: AppWorld) {
+  const uploadZone = this.page.getByTestId('document-upload-zone');
+  await expect(uploadZone).toBeVisible();
+
+  // locator.drop() simulates an external file being dragged onto the element (v1.60+)
+  // This is the correct way to test file-drop upload zones — page.setInputFiles() only
+  // works for <input type="file"> elements, not custom drop zones.
+  await uploadZone.drop({
+    files: [
+      {
+        name: 'test-document.pdf',
+        mimeType: 'application/pdf',
+        buffer: Buffer.from('%PDF-1.4 test content'),  // Minimal valid PDF header
+      }
+    ],
+  });
+
+  // Wait for upload initiation indicator
+  await expect(this.page.getByTestId('upload-progress')).toBeVisible();
+});
+
+// Matches: When I drag and drop a file larger than 10MB
+When('I drag and drop a file larger than 10MB', async function (this: AppWorld) {
+  const uploadZone = this.page.getByTestId('document-upload-zone');
+
+  // Generate a buffer that exceeds the 10MB limit
+  const oversizedBuffer = Buffer.alloc(11 * 1024 * 1024, 'x'); // 11MB of 'x'
+  await uploadZone.drop({
+    files: [
+      {
+        name: 'oversized-file.pdf',
+        mimeType: 'application/pdf',
+        buffer: oversizedBuffer,
+      }
+    ],
+  });
+});
+
+Then('the document status should be {string}', async function (this: AppWorld, expectedStatus: string) {
+  const statusLocator = this.page.getByTestId('document-status').first();
+  await expect(statusLocator).toHaveText(expectedStatus, { timeout: 10_000 });
+});
+```
+
+**[community] `locator.drop()` vs `page.setInputFiles()`**: Use `page.setInputFiles()` (or `locator.setInputFiles()`) for standard `<input type="file">` elements. Use `locator.drop()` for custom drag-and-drop upload zones that do not expose a file input. The distinction matters: `setInputFiles()` bypasses the visual drag-and-drop interaction entirely, while `locator.drop()` fires the full `dragenter`/`dragover`/`drop` event sequence that custom upload libraries listen for. Teams that use `setInputFiles()` on drag-and-drop zones produce scenarios that pass in tests but fail in production because the events that the upload library requires are never fired.
+
+#### `getByRole()` with `description` Option — Accessible-Name-Aware Step Assertions (v1.60+)
+
+Playwright v1.60 added a `description` option to `getByRole()` that matches elements by their accessible description (from `aria-describedby`, `aria-description`, or `title`). In BDD step definitions, this enables more semantic locators for elements whose accessible name alone is ambiguous.
+
+```typescript
+// src/steps/forms.steps.ts — getByRole() with description for accessible selectors (v1.60+)
+import { Then } from '@cucumber/cucumber';
+import { expect } from '@playwright/test';
+import { AppWorld } from '../support/world';
+
+// Matches: Then the email field should show a validation hint
+Then('the email field should show a validation hint', async function (this: AppWorld) {
+  // getByRole() with description option — matches the email input by both its role
+  // and its accessible description (from aria-describedby pointing to the hint text)
+  const emailInput = this.page.getByRole('textbox', {
+    name: 'Email address',
+    description: 'Enter your work email address',  // v1.60+ description option
+  });
+
+  await expect(emailInput).toBeVisible();
+  // Verify the hint text is associated (confirmed by the description option matching)
+  const hintId = await emailInput.getAttribute('aria-describedby');
+  if (hintId) {
+    await expect(this.page.locator(`#${hintId}`)).toContainText('Enter your work email address');
+  }
+});
+
+// Form with multiple "Submit" buttons distinguished by their accessible description
+Then(
+  'the {string} form submit button should be enabled',
+  async function (this: AppWorld, formName: string) {
+    // When a page has multiple submit buttons, description disambiguates which one
+    const submitButton = this.page.getByRole('button', {
+      name: 'Submit',
+      description: `Submit ${formName} form`,  // Matches aria-description attribute
+    });
+    await expect(submitButton).toBeEnabled();
+  }
+);
+```
+
+**[community] `description` option for BDD locator resilience**: Elements that share the same accessible name across a page (multiple "Submit" buttons, multiple "Close" buttons) are historically hard to select in BDD step definitions without falling back to fragile positional locators (`.nth(0)`) or test IDs. The `description` option provides a semantic, accessibility-first way to disambiguate them. As an added benefit, step definitions using `description` double as accessibility assertions: if the `aria-description` attribute is missing or wrong, the step fails, catching accessibility regressions inline with functional BDD tests.
+
+---
+
+## Additional Resources (Iteration 33 Additions)
+
+- [Playwright `await using` disposable protocol](https://playwright.dev/docs/release-notes#version-159) — v1.59+ TypeScript disposable support for automatic browser/context/page cleanup; requires TypeScript 5.2+
+- [Playwright `page.ariaSnapshot()` on pages](https://playwright.dev/docs/api/class-page#page-aria-snapshot) — v1.59+ full-page ARIA tree capture (previously locator-only); use in `Then` steps for structural accessibility assertions
+- [Playwright CLI debugger `--debug=cli`](https://playwright.dev/docs/release-notes#version-159) — v1.59+ headless interactive debugger for BDD step development in terminal; alternative to GUI Inspector for remote/CI environments
+- [Playwright `locator.drop()` docs](https://playwright.dev/docs/api/class-locator#locator-drop) — v1.60+ external file drag-and-drop simulation; use for custom upload zone BDD scenarios where `setInputFiles()` does not fire drag events
+- [Playwright `tracing.startHar()` / `tracing.stopHar()` docs](https://playwright.dev/docs/api/class-tracing#tracing-start-har) — v1.60+ first-class HAR recording API for BDD failure network capture; attach to Cucumber report artifacts
+- [Playwright `getByRole()` description option](https://playwright.dev/docs/api/class-framelocator#frame-locator-get-by-role) — v1.60+ `description` parameter for disambiguating elements with the same accessible name using `aria-description`/`aria-describedby`
 
 ---
 

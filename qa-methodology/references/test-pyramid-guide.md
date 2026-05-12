@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 42 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 43 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
@@ -14,6 +14,7 @@
 <!-- new (2026-05-12 iter 40): Node.js 26.0.0 (May 5, 2026) — TypeScript type stripping fully stable: `--experimental-transform-types` flag removed, bare `node .ts` works without any flag for erasable syntax on any supported Node.js 26 version; Temporal API enabled by default (replaces `new Date()` for time-sensitive unit tests); V8 14.6 — `Map.prototype.getOrInsertComputed`, `Iterator.concat()`; Node.js 26.1.0 (May 7, 2026) — `node:test` randomization: `--test-randomize` + `--test-random-seed=N` flags detect hidden order-dependencies at the unit and integration test levels; `getTestContext()` API accesses current TestContext from helper functions; `AbortSignal.timeout()` mock support in MockTimers; `testId` added to test event objects for structured test tracing; Vitest 4.1.6 (May 11, 2026) stable patch; community gotcha: Node.js 26 removes `--experimental-transform-types` — teams that explicitly passed the flag in CI scripts (e.g., `node --experimental-transform-types server.ts`) now see an "unknown flag" error on Node 26 upgrade -->
 <!-- new (2026-05-12 iter 41): TypeScript 5.9 — new `tsc --init` defaults (`module:nodenext`, `verbatimModuleSyntax:true`, `moduleDetection:force`, `isolatedModules:true`) silently break test tsconfigs that extend the root tsconfig; `import defer` lazy module evaluation affects test setup performance; `--module node20` stable (replaces unstable `nodenext` for Node 20 environments); BREAKING: `ArrayBuffer` type hierarchy change — `Buffer`/`TypedArray` no longer assignable to `ArrayBuffer` in test files using Node.js buffer types; Zod/tRPC cache-instantiation optimisation reduces "excessive type instantiation" errors in large test suites using `expect.schemaMatching`; `verbatimModuleSyntax:true` as `tsc --init` default breaks test files that import type-only symbols without `import type`; community gotchas: TS 5.9 `ArrayBuffer` change breaks `Buffer` usage in integration test helpers (gotcha #45), TS 5.9 `verbatimModuleSyntax` default breaks non-type test imports (gotcha #46) -->
 <!-- new (2026-05-12 iter 42): Node.js 24.15.0 (Apr 2026 LTS) — worker ID exposed during concurrent test execution (debugging parallel integration tests), `require(esm)` stable, module compile cache stable; Node.js 25.9.0 (Apr 2026) — BREAKING: `MockModuleOptions.defaultExport` + `MockModuleOptions.namedExports` consolidated into single `MockModuleOptions.exports` object (automated codemod: `npx codemod @nodejs/mock-module-exports`), fake timer compatibility with `node:test` fixed; community gotcha: Node.js 25.9 `mock.module()` API consolidation silently breaks integration test stubs that used `namedExports` or `defaultExport` after upgrading Node (gotcha #47) -->
+<!-- new (2026-05-12 iter 43): Bun 1.3.x (2025) — `bun:test` adds `--parallel`/`--shard`/`--only-failures`/`--pass-with-no-tests`, `retry`+`repeats` options for flaky tests, `Symbol.dispose` for mock/spyOn automatic cleanup, global `vi` mock API without imports; MSW v2.14+ — WebSocket handler `ws.onUpgrade` for protocol upgrade interception, `finalize` cleanup API for handler resource management, `NetworkApi` TypeScript type exported; Pact-JS v16.0.0 (Oct 2025) — BREAKING: `PactV4`/`MatchersV3` exported as `Pact`/`Matchers` (old names become `PactV2`/`MatchersV2`), Node 20 minimum, GraphQL support for V3+V4; Pact-JS v16.3 — pending/comments/test-names on interactions; Pact-JS v16.4 — external interaction references; community gotcha #48: pact-js v16.0 silent API rename — TypeScript import `{ PactV3, MatchersV3 }` still resolves but `PactV3` is now an alias for the old V3 class while `Pact` is the new canonical name, causing confusion and inconsistent usage in codebases that mix old and new imports -->
 
 ---
 
@@ -3143,6 +3144,299 @@ Before 25.9.0, running both tests concurrently could cause either test to read t
 
 ---
 
+### Bun 1.3.x Test Runner: Parallel Execution, Sharding, and Symbol.dispose Mocks  [community]
+
+Bun 1.3.x (released throughout 2025) significantly advanced `bun:test` as a first-class TypeScript test runner. The following features are particularly relevant to pyramid-shaped test suites:
+
+**Parallel execution and sharding (`--parallel`, `--shard`):**
+`bun test --parallel` runs test files concurrently within the same process — faster than Vitest's `pool: 'forks'` for small test suites because there is no child-process start-up overhead. `--shard N/M` distributes test files across M workers (analogous to Playwright's sharding), enabling matrix CI jobs that divide the integration test level across multiple runners without external tooling.
+
+**`--only-failures`:** Re-runs only the test cases that failed in the previous run. This is the `bun:test` equivalent of Vitest's `--reporter=json` + custom retry script — but built in. Particularly useful at the integration test level where a single container start-up failure causes many tests to fail; `--only-failures` lets you re-run without a full pyramid re-run.
+
+**`retry` and `repeats` options:**
+`bun:test` accepts `retry` (re-run a failing test up to N times before reporting failure) and `repeats` (run the same test N times per invocation — for flakiness detection). These are first-class test options, not workarounds:
+
+```typescript
+// src/orders/orders.integration.test.ts — bun:test with retry + repeats
+import { test, expect } from 'bun:test';
+import { OrdersService } from '../../src/orders/orders.service.js';
+
+// retry: 2 — re-run up to 2 additional times on failure before reporting (flaky external dep)
+test('places order against external inventory API', { retry: 2, timeout: 30_000 }, async () => {
+  const service = new OrdersService();
+  const result = await service.create({ customerId: 'c1', items: [{ sku: 'A1', qty: 1 }] });
+  expect(result.id).toBeDefined();
+});
+
+// repeats: 5 — run this test 5 times per CI invocation to surface order-dependent flakiness
+test('cart total is deterministic', { repeats: 5 }, () => {
+  const total = [10, 20, 30].reduce((acc, n) => acc + n, 0);
+  expect(total).toBe(60);
+});
+```
+
+**`Symbol.dispose` for `mock` and `spyOn`:**
+Bun 1.3.7+ supports the `Symbol.dispose` protocol on mocks and spies — the same pattern as Vitest 3.2's `using vi.spyOn()`. A spy created with `using spy = spyOn(obj, 'method')` is automatically restored when the block exits:
+
+```typescript
+// src/notifications/notifier.unit.test.ts — bun:test + Symbol.dispose spy cleanup
+import { test, expect, spyOn } from 'bun:test';
+import { NotificationService } from './notification.service.js';
+import { EmailClient } from './email.client.js';
+
+test('sends confirmation email on order creation', () => {
+  const client = new EmailClient();
+  const service = new NotificationService(client);
+
+  // using keyword: spy is restored automatically when block exits (Bun 1.3.7+, TS 5.2+)
+  using sendSpy = spyOn(client, 'send');
+  sendSpy.mockImplementation(() => Promise.resolve({ messageId: 'msg_001' }));
+
+  service.notifyOrderCreated({ customerId: 'c1', orderId: 'ord_001' });
+
+  expect(sendSpy).toHaveBeenCalledWith(
+    expect.objectContaining({ to: expect.stringContaining('c1') }),
+  );
+  // sendSpy automatically restored here — no afterEach(() => spy.mockRestore()) needed
+});
+```
+
+**Global `vi` mock API:**
+Bun 1.3.9+ exposes a global `vi` object (identical to Vitest's `vi`) without requiring an import. This allows test files to use `vi.fn()`, `vi.spyOn()`, and `vi.mock()` without `import { vi } from 'bun:test'` — a migration convenience for teams porting Vitest test suites to Bun.
+
+**Pyramid relevance:** Bun's test runner targets the unit and lightweight integration test levels. For integration tests that require testcontainers (Bun 1.1+ supports testcontainers in Node.js compatibility mode), use `bun test` with `--timeout` rather than Vitest. The pyramid shape applies identically; the key difference is that `bun:test`'s module mock API requires mocks declared at the top of the file *before* imports — unlike Vitest's hoisted `vi.mock()`. This is a subtle but critical distinction: `vi.mock()` in Vitest is automatically hoisted by the Vitest transform; `mock.module()` in `bun:test` runs in declaration order. Teams migrating from Vitest to `bun:test` must audit all `vi.mock()` calls at the top of test files before switching the test runner. [community: bun.sh/blog/bun-v1.3.13, bun.sh/blog/bun-v1.3.9, bun.sh/blog/bun-v1.3.7]
+
+---
+
+### MSW v2.14+: WebSocket Handler Improvements for Integration Testing  [community]
+
+MSW (Mock Service Worker) v2.14.x (2026) extended the WebSocket handler API with two additions that improve integration-level testing of TypeScript WebSocket clients and servers.
+
+**`ws.onUpgrade` — connection upgrade interception:**
+The `onUpgrade` handler fires when the client initiates a WebSocket handshake, before any messages are sent. It receives the HTTP upgrade request object, allowing test handlers to inspect request headers (including authentication tokens, subprotocol requests, and origin) and either accept or reject the upgrade. This is particularly useful for testing authentication flows at the WebSocket layer without a running server:
+
+```typescript
+// tests/integration/ws-auth.integration.test.ts — MSW v2.14+ onUpgrade
+import { setupServer } from 'msw/node';
+import { ws } from 'msw';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { ChatClient } from '../../src/chat/chat-client.js';
+
+const chatHandlers = ws.link('wss://chat.example.com/ws');
+
+const server = setupServer(
+  chatHandlers.addEventListener('connection', ({ client, server }) => {
+    // onUpgrade is called before connection is established (MSW v2.14+)
+    client.onUpgrade((request, upgradeEvent) => {
+      const token = request.headers.get('authorization');
+      if (!token || !token.startsWith('Bearer ')) {
+        // Reject the upgrade — client receives a 401-equivalent connection refusal
+        upgradeEvent.deny();
+        return;
+      }
+      // Accept: proceed with the connection
+    });
+
+    client.addEventListener('message', ({ data }) => {
+      server.send(`echo: ${data}`);
+    });
+  }),
+);
+
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterAll(() => server.close());
+
+it('rejects connection without an Authorization header', async () => {
+  const client = new ChatClient('wss://chat.example.com/ws');
+  // Connect without a token — onUpgrade denies the upgrade
+  await expect(client.connect()).rejects.toThrow(/connection refused/i);
+});
+
+it('accepts connection with a valid Bearer token', async () => {
+  const client = new ChatClient('wss://chat.example.com/ws', {
+    headers: { Authorization: 'Bearer valid-test-token' },
+  });
+  await expect(client.connect()).resolves.not.toThrow();
+  client.disconnect();
+});
+```
+
+**`finalize` cleanup API:**
+MSW v2.14.4+ introduced a `finalize` API on handlers, providing a lifecycle hook for releasing resources (open connections, timers, subscriptions) when a handler is removed via `server.resetHandlers()` or `server.close()`. Without `finalize`, handlers that held references to resources (e.g., a WebSocket handler that kept an internal message queue) could leak those resources between integration test cases, causing the `--detect-async-leaks` flag in Vitest 4.1 to report false positives.
+
+```typescript
+// tests/helpers/msw-ws-handler.ts — finalize for resource cleanup (MSW v2.14.4+)
+import { ws } from 'msw';
+
+const chatHandlers = ws.link('wss://chat.example.com/ws');
+
+// Internal state that must be cleaned up when the handler is removed
+const activeConnections = new Set<WebSocket>();
+
+export const chatWsHandler = chatHandlers.addEventListener('connection', ({ client }) => {
+  activeConnections.add(client as unknown as WebSocket);
+
+  client.addEventListener('close', () => {
+    activeConnections.delete(client as unknown as WebSocket);
+  });
+}).finalize(() => {
+  // finalize: called when resetHandlers() or server.close() removes this handler
+  // Ensures no dangling WebSocket references persist between test cases
+  for (const conn of activeConnections) {
+    conn.close();
+  }
+  activeConnections.clear();
+});
+```
+
+**`NetworkApi` TypeScript type export:**
+MSW v2.14.0 exported the `NetworkApi` type, which describes the shape of the network interface passed to custom handler factories. Previously, teams creating reusable handler factory functions had to type the network parameter as `unknown` or use an internal `@internal` type. The exported type enables properly typed handler factories:
+
+```typescript
+// tests/helpers/api-handler-factory.ts — NetworkApi type (MSW v2.14+)
+import type { NetworkApi } from 'msw';
+import { http, HttpResponse } from 'msw';
+import type { OrderResponse } from '../../src/orders/types.js';
+
+// Typed handler factory — NetworkApi type was not exported before MSW v2.14
+export function createOrderHandler(overrides?: Partial<OrderResponse>) {
+  return http.post('/api/orders', ({ request }: { request: Request }) => {
+    const defaultResponse: OrderResponse = {
+      id: 'ord_test_001',
+      status: 'pending',
+      customerId: 'c1',
+      createdAt: new Date().toISOString(),
+      ...overrides,
+    };
+    return HttpResponse.json(defaultResponse, { status: 201 });
+  });
+}
+```
+
+The `finalize` and `onUpgrade` additions are most relevant at the integration test level where WebSocket handlers are more complex than simple HTTP stubs. Teams running Vitest 4.1 with `--detect-async-leaks` should prioritise adding `finalize` callbacks to any MSW WebSocket handlers that maintain internal state. [official: github.com/mswjs/msw/releases — v2.14.0 (NetworkApi), v2.14.4 (finalize)]
+
+---
+
+### Pact-JS v16.x: GraphQL Contract Testing and Renamed Core API  [community]
+
+`@pact-foundation/pact` v16.0.0 (October 2025) introduced two changes that affect TypeScript contract testing at the fourth layer of the Fowler 5-layer pyramid.
+
+**BREAKING: Core API rename (`PactV4`/`MatchersV3` → `Pact`/`Matchers`):**
+
+Pact-JS v16.0 promotes the V4 DSL to the default exported API:
+- The old `PactV3` class is now exported as `Pact` (V3 DSL, stable)
+- The old `PactV4` class and `MatchersV3` are now exported as `Pact` (V4 DSL default) and `Matchers`
+- The old names `Pact`/`Matchers` from v15.x become `PactV2`/`MatchersV2`
+
+The result: TypeScript files importing `{ PactV3, MatchersV3 }` still compile (the old names are re-exported as aliases), but importing `{ Pact }` in a v16 project gives you the V4 DSL while importing `{ Pact }` in a v15 project gives you the V2 DSL. Mixed codebases that have both v15 and v16 consumers in a monorepo may reference the wrong DSL version without a TypeScript error.
+
+```typescript
+// BEFORE pact-js v16.0 (v15.x style — still works via alias in v16, but not canonical)
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+const { like, string, integer } = MatchersV3;
+const provider = new PactV3({ consumer: 'FrontendApp', provider: 'OrdersService', dir: './pacts' });
+
+// AFTER pact-js v16.0 (canonical v16 style)
+import { Pact, Matchers } from '@pact-foundation/pact';
+const { like, string, integer } = Matchers;
+const provider = new Pact({ consumer: 'FrontendApp', provider: 'OrdersService', dir: './pacts' });
+
+// Migration: run the official migration guide before upgrading
+// npx @pact-foundation/pact-cli migrate --from=15 --to=16 ./consumer/src
+```
+
+**Node.js 20 minimum (v16.0):**
+Pact-JS v16 drops support for Node.js 18 and earlier. Any CI environment running integration tests (including contract tests) on Node 18 must upgrade to Node 20+ before using pact-js v16.
+
+**GraphQL contract testing (V3 + V4 DSL):**
+v16.0 adds first-class GraphQL support to both `PactV3` and `PactV4` — previously GraphQL queries had to be modelled as plain HTTP POST interactions. The new DSL allows declaring the expected GraphQL operation type, query structure, and variable types directly:
+
+```typescript
+// consumer/src/products-graphql.pact.test.ts — pact-js v16 GraphQL contract
+import { Pact, Matchers } from '@pact-foundation/pact';
+import path from 'node:path';
+
+const { like, string, eachLike } = Matchers;
+
+const provider = new Pact({
+  consumer: 'StoreFrontend',
+  provider: 'ProductsService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  logLevel: 'warn',
+});
+
+describe('ProductsService GraphQL Pact (v16)', () => {
+  it('fetches products by category', async () => {
+    await provider
+      .given('products in the "electronics" category exist')
+      .uponReceiving('a GraphQL query for electronics products')
+      .withGraphQLRequest({
+        // v16: GraphQL-aware DSL — validates query structure and variable types
+        query: `
+          query GetProductsByCategory($category: String!) {
+            products(category: $category) {
+              id
+              name
+              price
+            }
+          }
+        `,
+        variables: { category: 'electronics' },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          data: {
+            products: eachLike({
+              id: string('prod_001'),
+              name: string('Laptop Pro'),
+              price: like(999.99),
+            }),
+          },
+        },
+      })
+      .executeTest(async (mockServer) => {
+        const client = new ProductsGraphQLClient(mockServer.url);
+        const result = await client.getByCategory('electronics');
+        expect(result.products.length).toBeGreaterThan(0);
+        expect(result.products[0]!.id).toMatch(/^prod_/);
+      });
+  });
+});
+```
+
+**Interaction metadata (v16.3 — March 2026):**
+Pact-JS v16.3 added `pending`, `comments`, and `testName` fields on interactions. `pending: true` marks an interaction as "work in progress" — the broker will not fail the verification if a pending interaction fails. `comments` allows free-text documentation on the interaction. `testName` links the interaction to the name of the test case that generated it, improving traceability in the Pact Broker UI.
+
+**External interaction references (v16.4 — May 2026):**
+v16.4 allows a consumer to reference an interaction defined in a shared Pact file rather than re-defining it. This is the contract-test equivalent of shared test fixtures — teams with many consumers sharing a common provider interaction can extract it into a shared pact definition and reference it by ID, reducing duplication in the consumer test suite.
+
+```typescript
+// contract/shared/common-interactions.ts — shared interaction library (pact-js v16.4)
+// Defines a canonical interaction that multiple consumers can reference
+export const getOrderByIdInteraction = {
+  id: 'get-order-by-id-v1',
+  given: 'order ord_001 exists',
+  request: { method: 'GET' as const, path: '/orders/ord_001' },
+  response: {
+    status: 200,
+    body: { id: 'ord_001', status: 'confirmed', customerId: 'c1' },
+  },
+};
+
+// consumer/src/mobile-app.pact.test.ts — references shared interaction (v16.4)
+// import { Pact } from '@pact-foundation/pact';
+// provider.withInteractionReference(getOrderByIdInteraction.id).executeTest(async (mockServer) => { ... });
+```
+
+**Community gotcha #48: Pact-JS v16 export rename causes mixed-DSL TypeScript codebases:**
+After upgrading to pact-js v16, a monorepo with multiple consumer packages may have some packages on the new `Pact`/`Matchers` API (updated) and others still using `PactV3`/`MatchersV3` (via the compatibility alias). Both imports resolve and compile without errors — the TypeScript type definitions for the alias are identical to the canonical names. The problem emerges at the Pact Broker: pacts generated via the `PactV3` alias and pacts generated via `Pact` may use different serialisation paths depending on the internal V3 vs V4 DSL resolution. Fix: run `grep -r "PactV3\|PactV4\|MatchersV3" --include="*.test.ts" consumer/` after upgrading, and replace all old-style imports with `{ Pact, Matchers }`. Treat the alias exports as a transitional compatibility shim, not a permanent API surface. [official: github.com/pact-foundation/pact-js/releases/tag/v16.0.0]
+
+48. **Pact-JS v16 export rename silently mixes DSL versions in monorepo contract suites** [community] — After upgrading `@pact-foundation/pact` to v16.0.0, consumer packages that were not updated still import `{ PactV3, MatchersV3 }` (re-exported as compatibility aliases). Consumer packages that were updated import the new canonical `{ Pact, Matchers }`. Both forms compile without error and produce valid pacts — but `PactV3` and `Pact` are resolved differently internally after v16.0: `PactV3` routes through the V3-compatible path; `Pact` routes through the V4-default path. In a Pact Broker setup, interactions from `PactV3` consumers and interactions from `Pact` consumers may be versioned differently, causing provider verification to run against an unexpected DSL version for some consumers. Fix: treat `PactV3`/`MatchersV3` as deprecated immediately after upgrading to v16; run the codemods to replace all instances with `Pact`/`Matchers`; run provider verification against all consumers in the CI suite to confirm no DSL version mismatches. [official: github.com/pact-foundation/pact-js/releases/tag/v16.0.0 — migration guide]
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -3198,3 +3492,8 @@ Before 25.9.0, running both tests concurrently could cause either test to read t
 | Node.js v26.1.0 Release | Official | https://nodejs.org/en/blog/release/v26.1.0 | `node:test` randomization (`--test-randomize` / `--test-random-seed`); `getTestContext()` API; `AbortSignal.timeout()` mock support; `testId` in test event objects |
 | Node.js v24.15.0 LTS Release | Official | https://nodejs.org/en/blog/release/v24.15.0 | Worker ID exposed in concurrent `node:test` execution; `require(esm)` stable; module compile cache stable; `mock.module()` `exports` option consolidation back-port (Apr 2026) |
 | Node.js v25.9.0 Release | Official | https://nodejs.org/en/blog/release/v25.9.0 | BREAKING: `MockModuleOptions.exports` consolidates `defaultExport` + `namedExports` (codemod: `npx codemod @nodejs/mock-module-exports`); fake timer isolation fixed for concurrent `node:test`; CJS-from-ESM mock coverage fix |
+| Bun Test Runner | Tool | https://bun.sh/docs/cli/test | `bun:test` with `--parallel`, `--shard`, `--only-failures`, `retry`/`repeats` options, `Symbol.dispose` for auto mock cleanup, global `vi` API without imports |
+| Bun v1.3.x Changelog | Community | https://bun.sh/blog | v1.3.4 fake timers; v1.3.7 Symbol.dispose for mock/spy; v1.3.9 global vi API + --pass-with-no-tests; v1.3.13 --parallel/--shard/--only-failures |
+| MSW v2.14.x Releases | Tool | https://github.com/mswjs/msw/releases | WebSocket `ws.onUpgrade` for upgrade interception (v2.14.0); `finalize` cleanup API for handler resource management (v2.14.4); `NetworkApi` TypeScript type exported |
+| Pact-JS v16.0.0 Release | Tool | https://github.com/pact-foundation/pact-js/releases/tag/v16.0.0 | BREAKING: `Pact`/`Matchers` are now canonical (previously `PactV4`/`MatchersV3`); old names become `PactV2`/`MatchersV2`; GraphQL contract testing support; Node 20 minimum |
+| Pact-JS Migration Guide 16.x | Tool | https://github.com/pact-foundation/pact-js/blob/master/MIGRATION.md | Step-by-step upgrade from v15 to v16; API rename codemod; DSL version compatibility notes |

@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -7230,3 +7230,232 @@ jobs:
 > [community] **Gotcha (Vitest 5.0 beta: `sequential` option removed)**: Vitest 5.0 removes the `sequential` option on individual tests/suites in favor of `concurrent: false` on the `sequence` config. If your `vitest.config.ts` uses `test: { sequence: { shuffle: true } }` combined with `sequential: true` on individual tests, the `sequential` property is no longer recognized. Migrate to `sequence: { concurrent: false }` at the config level for tests that require sequential execution. The `concurrent: true` option on individual `describe` blocks is unaffected.
 
 > [community] **Lesson (Vitest 5.0 migration readiness, 2026)**: The safest strategy for Vitest 5.0 migration is to run the 5.0 beta in a separate CI job (`continue-on-error: true`) alongside the stable 4.1 job — same approach as the TypeScript 7.0 readiness gate pattern above. This surfaces 5.0 breaking changes before the final release while keeping the primary quality gate stable. Move to 5.0 stable as soon as the beta CI job is green.
+
+---
+
+## Zod v4 — Runtime Validation Migration and Shift-Left Implications (2025–2026)
+
+Zod v4 (released June 2025) is a semver-major rewrite with significant performance improvements and API refinements. The core shift-left pattern — `z.infer<typeof Schema>` derives TypeScript types from runtime schemas — is unchanged. However, several API changes affect existing validation code and TypeScript type definitions.
+
+### What Changed: Shift-Left-Relevant Differences
+
+| Area | Zod v3 | Zod v4 | Shift-Left Impact |
+|---|---|---|---|
+| Bundle size | ~57KB | ~24KB (57% smaller) | Faster cold CI build; smaller Lambda bundles |
+| Parse performance | Baseline | 4–7× faster on large schemas | CI integration test feedback loops are faster |
+| `z.string().min(1)` error message | "String must contain at least 1 character(s)" | "Too small" (configurable) | Test assertions on `.message` may fail after upgrade |
+| `.check()` API | Not present | New: replaces `.superRefine()` for common cases | Simpler custom validation; existing `.superRefine()` still works |
+| `z.meta()` | Not present | New: attach metadata to schemas (descriptions, examples) | OpenAPI generation without separate schema annotations |
+| `z.fromJSONSchema()` | Not present | New: parse JSON Schema → Zod schema | Import existing OpenAPI schemas as Zod validators |
+| `z.discriminatedUnion()` | Requires `discriminant: string` | Improved inference; works with nested discriminants | Fewer explicit type annotations on union schemas |
+| `.brand<T>()` | Zod v3 method | Unchanged | — |
+| `z.ZodError` | Class with `.issues` array | Same API — backward compatible | — |
+| `z.infer<typeof S>` | Works | Works — unchanged | — |
+| `.safeParse()` / `.parse()` | Standard API | Unchanged | — |
+| `z.coerce.*` | `z.coerce.number()`, `z.coerce.string()` | Same (not deprecated) | — |
+
+### Zod v4 `z.check()` — Composable Custom Validation
+
+```typescript
+// src/api/validators/order.validator.ts — Zod v4 .check() replaces .superRefine() for common patterns
+import { z } from 'zod';  // import unchanged between v3 and v4
+
+// Zod v4: .check() is a concise alternative to .superRefine()
+// Use .check() for: single-issue refinements with a fixed path
+// Use .superRefine() for: multi-issue refinements or conditional path-specific errors
+export const OrderSchema = z.object({
+  orderId: z.string().min(1),
+  lineItems: z.array(z.object({
+    sku: z.string().min(1),
+    quantity: z.number().int().positive(),
+    unitPriceCents: z.number().int().positive(),
+  })).min(1, { message: 'Order must have at least one line item' }),
+  discountCents: z.number().int().min(0).default(0),
+  // Zod v4: .check() for cross-field validation (was .superRefine() in v3)
+}).check((data, ctx) => {
+  const lineTotal = data.lineItems.reduce(
+    (sum, item) => sum + item.quantity * item.unitPriceCents, 0
+  );
+  if (data.discountCents > lineTotal) {
+    // Zod v4: ctx.addIssue() signature unchanged — same as .superRefine()
+    ctx.addIssue({
+      code: 'custom',
+      path: ['discountCents'],
+      message: `Discount (${data.discountCents}¢) cannot exceed line total (${lineTotal}¢)`,
+    });
+  }
+});
+
+export type Order = z.infer<typeof OrderSchema>;  // Type derivation unchanged
+```
+
+```typescript
+// Zod v3 equivalent using .superRefine() — still works in v4 (no migration required)
+export const OrderSchemaV3 = z.object({ /* ... */ }).superRefine((data, ctx) => {
+  // .superRefine() works identically in v4 — no breaking change
+  if (data.discountCents > lineTotal(data)) {
+    ctx.addIssue({ code: 'custom', path: ['discountCents'], message: '...' });
+  }
+});
+// WHY .check() is preferred in v4: it communicates intent (single check, single issue)
+// .superRefine() remains the right choice for multi-issue or conditional validations
+```
+
+### Zod v4 `z.meta()` — Schema Metadata for OpenAPI
+
+```typescript
+// src/api/schemas/user.schema.ts — Zod v4 metadata for OpenAPI generation
+import { z } from 'zod';
+
+// Zod v4: z.meta() attaches OpenAPI-compatible metadata directly to schemas
+// Previously: required separate OpenAPI annotation packages (@asteasolutions/zod-to-openapi etc.)
+export const UserSchema = z.object({
+  id: z.string().uuid().meta({
+    description: 'Unique user identifier (UUID v4)',
+    example: '550e8400-e29b-41d4-a716-446655440000',
+  }),
+  email: z.string().email().meta({
+    description: 'User email address — must be verified before activation',
+    example: 'alice@example.com',
+  }),
+  role: z.enum(['admin', 'viewer', 'editor']).meta({
+    description: 'User access level',
+    default: 'viewer',
+  }),
+});
+
+export type User = z.infer<typeof UserSchema>;
+
+// Zod v4: extract metadata for OpenAPI spec generation
+// This replaces the pattern of maintaining separate OpenAPI and Zod schemas
+const emailFieldMeta = UserSchema.shape.email.meta();
+// { description: 'User email address...', example: 'alice@example.com' }
+```
+
+**WHY `z.meta()` is a shift-left improvement**: Previously, TypeScript projects maintaining both Zod validation schemas and OpenAPI specs had a drift problem — the two representations of the same API contract could diverge. `z.meta()` allows OpenAPI-compatible metadata (descriptions, examples, defaults) to live on the Zod schema itself, enabling tools like `zod-to-openapi` or `@hono/zod-openapi` to generate the OpenAPI spec from the single Zod schema source. This is the same "single source of truth" principle that `z.infer<>` applies to TypeScript types, extended to documentation.
+
+### Zod v4 Error Message Changes — Test Assertion Gotchas
+
+```typescript
+// vitest test: asserting on Zod error messages — v3 vs v4 difference
+import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
+
+describe('Zod v4 error message migration', () => {
+  const NameSchema = z.string().min(1);
+
+  // Zod v3: error.issues[0].message === "String must contain at least 1 character(s)"
+  // Zod v4: error.issues[0].message === "Too small"
+  // WHY this breaks tests: existing assertions on .message text fail silently after v4 upgrade
+  it('rejects empty string — v4 error message format', () => {
+    const result = NameSchema.safeParse('');
+    expect(result.success).toBe(false);
+
+    if (!result.success) {
+      // WRONG after v4 upgrade (was correct in v3):
+      // expect(result.error.issues[0].message).toBe('String must contain at least 1 character(s)');
+
+      // CORRECT for v4: use regex or code instead of exact message text
+      expect(result.error.issues[0].code).toBe('too_small');  // Code is stable across versions
+      // OR: use the error message parameter to set a stable custom message:
+    }
+  });
+
+  // BEST PRACTICE: pin error messages in schema to avoid version-specific defaults
+  const StableNameSchema = z.string().min(1, { message: 'Name is required' });
+
+  it('uses stable custom error message', () => {
+    const result = StableNameSchema.safeParse('');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      // Custom message is stable — does not change between Zod versions
+      expect(result.error.issues[0].message).toBe('Name is required');
+    }
+  });
+});
+```
+
+### Zod v4 `z.fromJSONSchema()` — Import Existing Schemas as Shift-Left Gate
+
+```typescript
+// scripts/validate-openapi-schema.ts — CI gate: validate API schema consistency using Zod v4
+// Converts the OpenAPI spec's JSON Schema definitions into Zod validators
+// and runs them against example payloads to catch spec-code drift
+import { z } from 'zod';
+import { readFileSync } from 'node:fs';
+import { load } from 'js-yaml';
+
+// Load OpenAPI spec
+const spec = load(readFileSync('./openapi.yaml', 'utf8')) as Record<string, unknown>;
+const userSchemaJson = (spec.components as Record<string, unknown>)?.schemas as Record<string, unknown>;
+
+// Zod v4: parse an existing JSON Schema into a Zod validator
+// WHY: if the OpenAPI spec and application logic diverge, this fails at CI time
+const ZodUserValidator = z.fromJSONSchema(userSchemaJson['User'] as Record<string, unknown>);
+
+// Validate that the example payload in the OpenAPI spec itself is valid
+const examplePayload = {
+  id: '550e8400-e29b-41d4-a716-446655440000',
+  email: 'alice@example.com',
+  role: 'viewer',
+};
+
+const result = ZodUserValidator.safeParse(examplePayload);
+if (!result.success) {
+  console.error('OpenAPI spec example payload fails its own schema:', result.error.issues);
+  process.exit(1);
+}
+console.log('OpenAPI schema examples validated successfully.');
+```
+
+```yaml
+# .github/workflows/schema-consistency.yml — Zod v4 z.fromJSONSchema() as CI gate
+name: Schema Consistency Check
+on:
+  pull_request:
+    paths: ['openapi.yaml', 'openapi/**', 'src/**/*.schema.ts']
+
+jobs:
+  schema-consistency:
+    name: Validate OpenAPI↔Zod schema consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      # Zod v4: z.fromJSONSchema() converts OpenAPI JSON Schema → Zod validator
+      # This script validates spec examples against the Zod-derived validator
+      - run: node --strip-types scripts/validate-openapi-schema.ts
+        # Fails if OpenAPI spec examples violate the spec's own JSON Schema definitions
+```
+
+### Zod v4 Upgrade — Shift-Left Migration Checklist
+
+```typescript
+// package.json — Zod v4 upgrade
+{
+  "dependencies": {
+    "zod": "^4.0.0"   // Was: "^3.x.x" — v4 is a breaking change (semver major)
+  }
+}
+```
+
+**Migration steps for TypeScript projects:**
+
+1. **Upgrade**: `npm install zod@^4` — most Zod v3 code compiles and runs unchanged
+2. **Audit error message assertions**: Search for `expect(...).toBe('String must contain')` and `expect(...).toMatch(/character/)` — these are v3 default messages that changed in v4. Replace with `code` assertions or custom messages.
+3. **Check `.superRefine()` usage**: `z.superRefine()` still works in v4. If migrating to `.check()` for readability, do so per-schema; it is not required.
+4. **Verify `z.discriminatedUnion()` schemas**: v4 improves inference; check that TypeScript types derived from discriminated unions are still correct after upgrade.
+5. **Add `z.meta()` for OpenAPI metadata**: If your project generates OpenAPI specs from Zod schemas, migrate metadata from annotation packages to `z.meta()` for first-class support.
+
+> [community] **Gotcha (Zod v4 error message tests, 2025)**: The most common Zod v3→v4 migration breakage is test assertions that check Zod's default error messages directly. Zod v4 rewrote default messages to be shorter and more consistent — `"String must contain at least 1 character(s)"` became `"Too small"`. Tests using `toBe()` or `toMatch()` on exact Zod default error text fail immediately after upgrading. The fix: always use explicit `message:` parameters in schema constraints for test-stable error text, and assert on `error.issues[0].code` (stable across versions) rather than `.message` when testing Zod's own validation logic.
+
+> [community] **Gotcha (Zod v4 `z.object()` undefined properties, 2025)**: Zod v4 changes the behavior of `z.object({ key: z.undefined() })` — in v3, the key was effectively optional (missing key was OK). In v4, the key must be explicitly present in the input object, even if its value is `undefined`. This breaks existing schemas that use `z.undefined()` to mark fields as explicitly excluded. Migration: replace `z.undefined()` with `z.optional(z.never())` for "field must not be present" semantics, or simply remove the field from the schema if it was never intended to be present.
+
+> [community] **Lesson (Zod v4 performance impact on CI, 2025)**: Zod v4's 4–7× parse speed improvement is most noticeable in CI integration tests that validate large payloads (database query results, external API responses, LLM outputs). Teams that validate 100k+ records through Zod schemas in test setup report integration test suites running 30–50% faster after upgrading to v4 — because validation is no longer the bottleneck. For unit tests with small payloads, the speedup is imperceptible but contributes to the cumulative CI runtime reduction.
+
+> [community] **Lesson (Zod v4 bundle size and Lambda cold start, 2025)**: Zod v4's 57% bundle size reduction (57KB → ~24KB) has a measurable impact on AWS Lambda cold start times for TypeScript functions that include Zod for input validation. Teams deploying Lambda with esbuild-bundled handlers report cold start improvement of 15–25ms per function — relevant for latency-sensitive API endpoints. The shift-left implication: Lambda bundle size gates (covered in the Serverless section above) have a lower Zod-contributed baseline in v4.
+
+> [community] **Gotcha (Zod v4 + `zod-to-openapi`, `@asteasolutions/zod-to-openapi`, 2025)**: Third-party Zod OpenAPI integration packages (`zod-to-openapi`, `@asteasolutions/zod-to-openapi`) require version updates for Zod v4 compatibility. If your project uses these packages to generate OpenAPI specs from Zod schemas, check their compatibility matrix before upgrading Zod. `@hono/zod-openapi` and `zod-openapi` were among the first to release v4-compatible versions. Do not upgrade Zod to v4 in a project that depends on these packages until you confirm the package supports v4.

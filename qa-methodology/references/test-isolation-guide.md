@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 21 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -63,6 +63,13 @@
 <!--            isolateModulesAsync workaround for top-level-await-free ESM (Gotcha 90);             -->
 <!--            Vitest 5.0 vi.spyOn private method types — TypeScript no longer requires casting to  -->
 <!--            `any` to spy on #private fields (Gotcha 91)                                          -->
+<!--          Iteration 22 (2026-05-12): Node.js `node:test` TestContext.mock auto-restore           -->
+<!--            (Pattern 36, Gotcha 92); node:test `mock.module()` ESM module isolation without       -->
+<!--            Jest (Gotcha 93); Node.js v24 AsyncLocalStorage AsyncContextFrame default —            -->
+<!--            reliable per-test context propagation across setImmediate/nextTick (Gotcha 94);        -->
+<!--            Playwright v1.59 `browserContext.setStorageState()` for zero-overhead in-test user     -->
+<!--            switching (Pattern 37, Gotcha 95); Playwright v1.51 `storageState({ indexedDB: true })-->
+<!--            for Firebase/Supabase IndexedDB-based auth token capture (Gotcha 96)                   -->
 
 ---
 
@@ -4897,3 +4904,386 @@ describe('Order snapshot stability', () => {
 | Jest API — `defineConfig` | Official | https://jestjs.io/docs/configuration#defineconfig | Type-safe Jest config helper; replaces `import type { Config }` pattern; supports function form for async config |
 | Jest API — `mergeConfig` | Official | https://jestjs.io/docs/configuration#mergeconfig | Deep config merge with correct type inference; replaces `Object.assign` for multi-project config composition |
 | Vitest 5.0-beta — Private method spy types | Official | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2 | `vi.spyOn` TypeScript overloads now accept `#private` field names — no `as any` cast required |
+
+---
+
+## Community Lessons — Iteration 22  [community]
+
+92. **Node.js `node:test` `TestContext.mock` provides automatic-restoration mocking without Jest or Vitest — a zero-dependency isolation model.** [community]
+    Node.js v18.13+ ships a built-in test runner (`node:test`) with a `TestContext` object whose `.mock` property tracks and auto-restores every mock registered within the test. Unlike `jest.restoreAllMocks()` (which must be called explicitly in `afterEach`), `TestContext`-based mocks are automatically restored when the test function returns — including if it throws. For TypeScript projects that want to avoid adding Jest or Vitest as dev dependencies (e.g., CLI tools, Node.js libraries, monorepo utility packages), this is a first-class isolation alternative. WHY: the auto-restore guarantee is the same as the `using spy = jest.spyOn()` pattern (Pattern 35) but without requiring TypeScript 5.2+ or a testing framework. Any test registered via `t.mock.method()`, `t.mock.fn()`, or `t.mock.getter()` is automatically unwound at test end regardless of how the test exits.
+    ```typescript
+    import { test, describe } from 'node:test';
+    import assert from 'node:assert/strict';
+
+    class UserService {
+      async findUser(id: string): Promise<{ id: string; name: string } | null> {
+        // real implementation makes a DB call
+        return null;
+      }
+    }
+
+    describe('UserService — node:test TestContext isolation', () => {
+      // No beforeEach/afterEach needed for mock restoration —
+      // TestContext.mock auto-restores when the test function returns
+      test('findUser returns the user when found', async (t) => {
+        const service = new UserService();
+
+        // t.mock.method: spy on the method; auto-restored when test ends
+        t.mock.method(service, 'findUser', async (_id: string) => {
+          return { id: 'u1', name: 'Alice' };
+        });
+
+        const result = await service.findUser('u1');
+
+        assert.strictEqual(result?.name, 'Alice');
+        assert.strictEqual(service.findUser.mock.callCount(), 1);
+        // At test exit: service.findUser is automatically restored to its real implementation
+      });
+
+      test('findUser is real again — no leak from previous test', async (t) => {
+        const service = new UserService();
+
+        // The previous test's mock was auto-restored — this calls the real implementation
+        const result = await service.findUser('u2');
+        assert.strictEqual(result, null); // real implementation returns null
+      });
+    });
+    ```
+    **Comparison with Jest/Vitest:** `t.mock.method()` is the exact counterpart to `jest.spyOn(obj, 'method')` with `restoreMocks: true`. The key difference: the auto-restore is unconditional and requires no config flag — it is the default behavior of `TestContext`. For projects that use `node:test` directly (no Jest/Vitest), this is the canonical isolation pattern.
+
+93. **Node.js v24 `mock.module()` in `node:test` enables module-level isolation without Jest module registry resets — but requires `--experimental-require-module` or Node ≥ 24.9 for ESM.** [community]
+    Node.js v24 stabilizes `mock.module(specifier, options)` in `node:test`. It intercepts imports of a module specifier and returns the mock object for the duration of the test. Unlike `jest.mock()` (which requires Babel/ts-jest hoisting) or Vitest's `vi.mock()` (which requires `vi.hoisted()` in ESM mode), `mock.module()` operates at the Node.js module loader level — no transform needed. The isolation model: the mock is scoped to the test file's module graph and is automatically removed when the test suite finishes. WHY: teams building Node.js libraries and testing them with the native test runner can now achieve module-level isolation that was previously only possible with Jest. The key gotcha: on Node.js < 24.9, mocking ESM modules requires `--experimental-require-module`; on Node.js ≥ 24.9, synchronous ESM evaluation makes `mock.module()` work for all ESM imports without any flags.
+    ```typescript
+    import { test, mock } from 'node:test';
+    import assert from 'node:assert/strict';
+
+    // Mock the analytics module before importing the module that uses it
+    // On Node 24.9+, no experimental flag needed for ESM
+    mock.module('./analytics.ts', {
+      namedExports: {
+        track: mock.fn(async (_event: string, _props: Record<string, unknown>) => {}),
+      },
+    });
+
+    // Dynamic import picks up the mock (module.mock registered before import)
+    const { registerUser } = await import('./userRegistration.ts');
+    const { track } = await import('./analytics.ts');
+
+    test('registerUser tracks a registration event', async () => {
+      await registerUser({ email: 'alice@example.com', name: 'Alice' });
+
+      assert.strictEqual(track.mock.callCount(), 1);
+      assert.deepStrictEqual(track.mock.calls[0].arguments[0], 'user_registered');
+    });
+
+    test('track is called with user email in properties', async () => {
+      track.mock.resetCalls(); // reset between tests
+
+      await registerUser({ email: 'bob@example.com', name: 'Bob' });
+
+      const [_event, props] = track.mock.calls[0].arguments;
+      assert.strictEqual(props.email, 'bob@example.com');
+    });
+    ```
+    **ESM isolation note:** `mock.module()` replaces the loaded module for the entire file's test run — it is not per-test scoped like `t.mock.method()`. Call `mock.module()` once at file scope, then use `mock.fn().resetCalls()` in between tests to isolate call state.
+
+94. **Node.js v24 `AsyncLocalStorage` now uses `AsyncContextFrame` by default — this changes the isolation model for tests that store per-test context in `AsyncLocalStorage`.** [community]
+    Node.js v24.0.0 (semver-major breaking change) switches `AsyncLocalStorage`'s underlying implementation from `AsyncResource`-based tracking to `AsyncContextFrame`, the same mechanism used by V8's built-in `structuredClone` and async hooks. For most tests this is invisible. The isolation-relevant case: tests that use `AsyncLocalStorage` to propagate per-test context (e.g., a database transaction handle, a request ID, or a logger with per-test metadata) may see changed propagation behavior through certain async primitives like `ReadableStream`, `setImmediate`, and `process.nextTick`. The change fixes a class of bugs where context was lost across certain async boundaries — but code that *relied* on the context leaking (e.g., sharing a context across streams) may break. WHY: test frameworks that build on `AsyncLocalStorage` for context propagation (e.g., custom Vitest reporter utilities, `@opentelemetry/api` context in integration tests) should audit their context propagation after upgrading to Node.js v24. The `AsyncContextFrame` model is strictly more correct, but the behavioral change can surface as tests where context is now correctly *not* propagated across boundaries that previously leaked it.
+    ```typescript
+    import { AsyncLocalStorage } from 'node:async_hooks';
+    import { test } from 'node:test';
+    import assert from 'node:assert/strict';
+
+    // Per-test context store — isolates state across parallel tests
+    const testContext = new AsyncLocalStorage<{
+      testId: string;
+      dbTransaction: unknown;
+    }>();
+
+    // Utility: run fn with isolated per-test context
+    async function withTestContext<T>(
+      testId: string,
+      fn: () => Promise<T>,
+    ): Promise<T> {
+      return testContext.run({ testId, dbTransaction: null }, fn);
+    }
+
+    test('context is isolated per test in Node 24 AsyncContextFrame model', async () => {
+      await withTestContext('test-1', async () => {
+        const ctx = testContext.getStore();
+        assert.strictEqual(ctx?.testId, 'test-1');
+
+        // Node 24: context propagates correctly across setImmediate (previously could lose context)
+        await new Promise<void>((resolve) => setImmediate(() => {
+          const innerCtx = testContext.getStore();
+          assert.strictEqual(innerCtx?.testId, 'test-1'); // ← now reliable in Node 24
+          resolve();
+        }));
+      });
+    });
+
+    test('context does not leak between concurrent tests', async () => {
+      // Run two contexts concurrently — they must not cross-contaminate
+      await Promise.all([
+        withTestContext('test-A', async () => {
+          await new Promise<void>((r) => setTimeout(r, 10));
+          assert.strictEqual(testContext.getStore()?.testId, 'test-A');
+        }),
+        withTestContext('test-B', async () => {
+          await new Promise<void>((r) => setTimeout(r, 5));
+          assert.strictEqual(testContext.getStore()?.testId, 'test-B');
+        }),
+      ]);
+    });
+    ```
+    **Isolation implication:** The `AsyncContextFrame` model makes `AsyncLocalStorage` a more reliable per-test isolation mechanism. Teams that abandoned `AsyncLocalStorage` for test context propagation because it lost context across `setImmediate` or `process.nextTick` in older Node.js versions can revisit those patterns in Node.js v24.
+
+95. **Playwright v1.59 `browserContext.setStorageState()` enables mid-session storage reset without context recreation — use for multi-user isolation within a single test.** [community]
+    Playwright v1.59 adds `browserContext.setStorageState({ ... })` which clears all existing cookies, localStorage, and IndexedDB for all origins and atomically replaces them with the provided state — without creating a new browser context. Before this API, the only way to reset authentication state within a test was to: (a) close and recreate the context (expensive) or (b) manually clear each storage type individually (brittle and incomplete). The isolation use case: a single test that verifies a workflow as User A, then as User B, can call `setStorageState()` between the two user scenarios without the overhead of `page.context().newPage()` and without risking partial state leakage.
+    ```typescript
+    import { test, expect, BrowserContext } from '@playwright/test';
+
+    // Fixture: pre-loaded storage states for two users
+    interface MultiUserFixture {
+      context: BrowserContext;
+      userAState: object;
+      userBState: object;
+    }
+
+    test.extend<MultiUserFixture>({
+      // context: playwright's built-in fixture — test-scoped (fresh per test)
+      userAState: async ({}, use) => {
+        // Loaded from a JSON file created by setup project (playwright.config.ts storageState)
+        await use(require('./fixtures/userA.storageState.json'));
+      },
+      userBState: async ({}, use) => {
+        await use(require('./fixtures/userB.storageState.json'));
+      },
+    });
+
+    test('transfer workflow: initiate as User A, approve as User B', async ({
+      page, context, userAState, userBState,
+    }) => {
+      // Phase 1 — act as User A
+      await context.setStorageState(userAState as Parameters<BrowserContext['setStorageState']>[0]);
+      await page.goto('/transfers/new');
+      await page.getByLabel('Amount').fill('500');
+      await page.getByRole('button', { name: 'Submit for approval' }).click();
+      await expect(page.getByText('Awaiting approval')).toBeVisible();
+
+      // Phase 2 — switch to User B without recreating context
+      // setStorageState clears User A's cookies/localStorage and loads User B's atomically
+      await context.setStorageState(userBState as Parameters<BrowserContext['setStorageState']>[0]);
+      await page.goto('/transfers/pending');
+      await page.getByText('Approve').click();
+      await expect(page.getByText('Approved')).toBeVisible();
+    });
+    ```
+    **WHY:** Recreating the browser context between users in the same test (the previous approach) tears down active network connections and clears CDP sessions, adding ~100–300ms per user switch. `setStorageState()` performs an atomic in-context swap in <10ms. For tests that need to exercise multi-user approval flows, role switches, or permission escalations within a single scenario, this is significantly faster and avoids the `page.context().close()` / `browser.newContext()` pattern that can create fixture teardown ordering issues (see Gotcha 23 in this guide).
+
+96. **Playwright v1.51 `browserContext.storageState({ indexedDB: true })` captures IndexedDB for auth token isolation — required for Firebase, Supabase, and IndexedDB-based auth libraries.** [community]
+    Playwright's `browserContext.storageState()` previously captured only cookies and localStorage. Playwright v1.51 adds `{ indexedDB: true }` option to also capture IndexedDB contents. This is critical for applications that use Firebase Auth, Supabase Auth, or other auth libraries that store JWT/session tokens in IndexedDB rather than localStorage. Before v1.51, E2E tests for these applications could not use `storageState` for authentication isolation — each test had to sign in via the UI, making auth the slowest part of E2E suites. WHY: IndexedDB-based auth token storage became common because localStorage is accessible to XSS attacks while IndexedDB is sandboxed per-origin. But it created a Playwright isolation gap — the storage state saved and restored between tests was incomplete, causing random `"auth required"` failures when tests loaded the app and the auth library found no tokens in IndexedDB.
+    ```typescript
+    // playwright.config.ts — global setup to capture auth state including IndexedDB
+    import { defineConfig } from '@playwright/test';
+
+    export default defineConfig({
+      projects: [
+        {
+          name: 'setup',
+          testMatch: /global.setup\.ts/,
+        },
+        {
+          name: 'e2e',
+          use: {
+            // Storage state file generated by setup project — now includes IndexedDB tokens
+            storageState: 'playwright/.auth/user.json',
+          },
+          dependencies: ['setup'],
+        },
+      ],
+    });
+
+    // global.setup.ts — log in once, save state with IndexedDB
+    import { test as setup } from '@playwright/test';
+
+    setup('authenticate and save storage state', async ({ page }) => {
+      await page.goto('/login');
+      await page.getByLabel('Email').fill(process.env.TEST_USER_EMAIL!);
+      await page.getByLabel('Password').fill(process.env.TEST_USER_PASSWORD!);
+      await page.getByRole('button', { name: 'Sign in' }).click();
+      await page.waitForURL('/dashboard');
+
+      // Save storage state INCLUDING IndexedDB (Firebase/Supabase JWT tokens)
+      await page.context().storageState({
+        path: 'playwright/.auth/user.json',
+        indexedDB: true,  // ← Playwright v1.51+ required for Firebase/Supabase auth
+      });
+    });
+    ```
+    **Isolation guarantee:** Each test worker loads the pre-saved storage state (with IndexedDB) in its worker-scoped browser context. Tests never need to perform a UI sign-in, removing the auth flow as a source of flakiness. The isolation contract: the storage state file is read-only during tests — no test modifies it — so all workers start from a deterministic authenticated state.
+
+---
+
+## Extended Patterns — Iteration 22
+
+### Pattern 36: Node.js `node:test` `TestContext` mock isolation (TypeScript, Node.js ≥ 18.13)  [community]
+
+The `TestContext.mock` API in Node.js's built-in test runner provides Jest-compatible mocking with zero-framework-dependency auto-restoration. Every mock registered via `t.mock.method()`, `t.mock.fn()`, or `t.mock.getter()` is automatically removed when the test function exits — no `afterEach` cleanup required.
+
+```typescript
+import { describe, test } from 'node:test';
+import assert from 'node:assert/strict';
+
+// Collaborator with real I/O that we want to replace in tests
+class EmailSender {
+  async send(to: string, subject: string): Promise<void> {
+    // real SMTP send — never called in tests
+    throw new Error('Real SMTP not available in tests');
+  }
+}
+
+class UserRegistrationService {
+  constructor(private readonly emailSender: EmailSender) {}
+
+  async register(email: string, name: string): Promise<{ id: string }> {
+    const user = { id: `user-${Date.now()}`, email, name };
+    await this.emailSender.send(email, `Welcome, ${name}!`);
+    return user;
+  }
+}
+
+describe('UserRegistrationService', () => {
+  // No module-level variables — all state is test-local
+  test('sends a welcome email after registration', async (t) => {
+    const sender = new EmailSender();
+
+    // t.mock.method: wraps sender.send with a spy; auto-restored at test end
+    // No afterEach, no restoreAllMocks — the TestContext handles it
+    t.mock.method(sender, 'send', async (_to: string, _subject: string) => {
+      // stub: do nothing (swallow the send)
+    });
+
+    const service = new UserRegistrationService(sender);
+
+    const user = await service.register('alice@example.com', 'Alice');
+
+    assert.ok(user.id.startsWith('user-'));
+    assert.strictEqual(sender.send.mock.callCount(), 1);
+
+    const call = sender.send.mock.calls[0];
+    assert.strictEqual(call.arguments[0], 'alice@example.com');
+    assert.match(call.arguments[1], /Alice/);
+    // sender.send is automatically restored to real implementation here (test exit)
+  });
+
+  test('real send throws — confirms auto-restore from previous test', async (_t) => {
+    // sender.send is the REAL implementation here — auto-restore worked
+    const sender = new EmailSender();
+    const service = new UserRegistrationService(sender);
+
+    // Real send throws — confirms the spy was NOT leaked from the previous test
+    await assert.rejects(
+      () => service.register('bob@example.com', 'Bob'),
+      /Real SMTP not available/,
+    );
+  });
+
+  test('mock.getter() isolates a property accessor', (t) => {
+    const config = {
+      get maxRetries(): number {
+        return 3; // real value
+      },
+    };
+
+    // Mock the getter for this test only — auto-restored at exit
+    t.mock.getter(config, 'maxRetries', () => 1);
+
+    assert.strictEqual(config.maxRetries, 1); // stubbed
+    // After test: config.maxRetries returns 3 again
+  });
+});
+```
+
+**When to use over Jest/Vitest:** Use `node:test` with `TestContext.mock` when: (1) you are building a Node.js library and want to avoid a testing-framework dependency, (2) you need to run tests without a build step on Node.js 24+ (native TypeScript type-stripping), or (3) you are in a monorepo where some packages use `node:test` and others use Jest/Vitest. The auto-restoration model is equivalent to `restoreMocks: true` in Jest config, but it is per-test and automatic — no configuration needed.
+
+### Pattern 37: Playwright `setStorageState()` for multi-role E2E test isolation (TypeScript, Playwright v1.59+)  [community]
+
+`browserContext.setStorageState()` enables in-test user switching — clearing all authentication state and loading a new user's cookies/localStorage/IndexedDB atomically. This is the correct isolation pattern for E2E tests that exercise multi-user workflows (approval flows, admin+user scenarios, reviewer+author patterns) within a single test body.
+
+```typescript
+import { test, expect } from '@playwright/test';
+import path from 'path';
+
+// Pre-load storage state files (generated by global setup)
+const AUTH_DIR = path.join(__dirname, '../playwright/.auth');
+
+test.use({
+  storageState: path.join(AUTH_DIR, 'admin.json'), // default: tests start as admin
+});
+
+test('document review workflow: author submits, admin approves', async ({
+  page,
+  context,
+}) => {
+  // Load pre-saved author state (IndexedDB + cookies + localStorage)
+  // Playwright 1.51+: storageState JSON was saved with { indexedDB: true }
+  const authorState = require(path.join(AUTH_DIR, 'author.json'));
+
+  // --- Phase 1: Act as Author ---
+  await context.setStorageState(authorState); // atomic swap — ~5ms, no context recreation
+  await page.goto('/documents/new');
+  await page.getByLabel('Title').fill('Q2 Report');
+  await page.getByRole('button', { name: 'Submit for review' }).click();
+
+  const documentUrl = page.url(); // capture for admin to navigate to
+  await expect(page.getByText('Submitted')).toBeVisible();
+
+  // --- Phase 2: Act as Admin (default storageState) ---
+  const adminState = require(path.join(AUTH_DIR, 'admin.json'));
+  await context.setStorageState(adminState); // switch back to admin
+
+  await page.goto(documentUrl); // same page, different user session
+  await expect(page.getByText('Q2 Report')).toBeVisible();
+  await page.getByRole('button', { name: 'Approve' }).click();
+  await expect(page.getByText('Approved')).toBeVisible();
+});
+
+test('audit log shows both author submission and admin approval', async ({
+  page,
+  context,
+}) => {
+  // Each test starts fresh with admin state (set via test.use above)
+  // The previous test's setStorageState changes do NOT persist — context is test-scoped
+  await page.goto('/audit-log');
+  // Assertions on the audit log...
+});
+```
+
+**Key isolation guarantee:** `page` and `context` fixtures are test-scoped by default in Playwright — each test gets a fresh browser context. The `setStorageState()` calls within a test body only affect that test's context. This means `setStorageState()` mid-test does not contaminate the next test, which receives a clean context initialized from the project's default `storageState`.
+
+---
+
+## Quick Reference Additions — Iteration 22
+
+| Problem | Symptom | Node.js native / Playwright solution | Jest/Vitest equivalent |
+|---------|---------|--------------------------------------|------------------------|
+| Spy auto-restore without a test framework | Must call `restoreAllMocks()` in `afterEach` to prevent leaks | `t.mock.method(obj, 'name', impl)` in `node:test` — auto-restored at test exit | `jest.spyOn()` + `restoreMocks: true` in config, or `using spy = jest.spyOn()` |
+| Module mock in native `node:test` | No `jest.mock()` / `vi.mock()` available outside Jest/Vitest | `mock.module(specifier, { namedExports: { fn: mock.fn() } })` — works on Node 24.9+ for ESM without flags | `jest.mock()` + `jest.resetModules()`, or `vi.mock()` + `vi.hoisted()` |
+| IndexedDB-based auth not captured in storageState | Firebase/Supabase tests fail: "auth required" despite storageState config | `page.context().storageState({ path, indexedDB: true })` in global setup (Playwright v1.51+) | N/A |
+| In-test user switching without context recreation | `page.context().close()` + `browser.newContext()` adds 200ms+ per switch | `context.setStorageState(userState)` — atomic swap in <10ms (Playwright v1.59+) | N/A |
+| `AsyncLocalStorage` context lost across `setImmediate` | Per-test context undefined inside deferred callbacks | Upgrade to Node.js v24 (`AsyncContextFrame` default) — context propagates reliably across all async primitives | Same fix: upgrade to Node.js v24 |
+
+---
+
+## Key Resources — Iteration 22 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Node.js Docs — `node:test` MockTracker | Official | https://nodejs.org/docs/latest-v24.x/api/test.html#class-mocktrackerclass | `TestContext.mock` API: auto-restore mocking, `mock.method()`, `mock.fn()`, `mock.getter()`, `mock.module()` |
+| Node.js Docs — `mock.module()` | Official | https://nodejs.org/docs/latest-v24.x/api/test.html#mockmodulespecifier-options | Module-level mock for `node:test` — intercepts `import()` within test scope; ESM support on Node 24.9+ |
+| Node.js v24 Release Notes — AsyncContextFrame | Official | https://nodejs.org/en/blog/release/v24.0.0 | `AsyncLocalStorage` defaults to `AsyncContextFrame` — more reliable context propagation across async primitives |
+| Playwright v1.51 Release Notes — IndexedDB storageState | Official | https://playwright.dev/docs/release-notes#version-151 | `storageState({ indexedDB: true })` — captures Firebase/Supabase auth tokens stored in IndexedDB |
+| Playwright v1.59 Release Notes — setStorageState | Official | https://playwright.dev/docs/release-notes#version-159 | `browserContext.setStorageState()` — atomic in-test user switching; no context recreation needed |
+| Node.js v24 — Native TypeScript type stripping (RC) | Official | https://nodejs.org/en/blog/release/v24.0.0 | Run `.ts` test files directly on Node 24 without ts-jest/ts-node; enables zero-transform `node:test` suites |
+| Node.js v24 — Native TypeScript type stripping (RC) | Official | https://nodejs.org/en/blog/release/v24.0.0 | Run `.ts` test files directly on Node 24 without ts-jest/ts-node; enables zero-transform `node:test` suites |

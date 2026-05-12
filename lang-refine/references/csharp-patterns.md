@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 36 | score: 96/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 37 | score: 97/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -56,6 +56,17 @@
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/field-keyword,
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/first-class-span-types,
        learn.microsoft.com/dotnet/csharp/language-reference/operators/member-access-operators
+     Iter 37 (2026-05-12): added MSTest SDK project type (MSTest.Sdk/4.x, EnableAspireTesting, EnablePlaywright)
+       and MTP extension ecosystem (Retry, Hot Reload, Crash/Hang Dump); added xUnit v3 Assert.Equivalent
+       structural assertion with RespectingRuntimeTypes and RespectingDeclaredTypes modes; added NUnit 4.x
+       FixtureLifeCycle attribute (SingleInstance vs InstancePerTestCase) with parallel test isolation pattern;
+       added FluentAssertions v8.9 BeEqualTo/NotBeEqualTo collection aliases and type-based property exclusion
+       in BeEquivalentTo; added community gotchas: MSTest SDK Dependabot/NuGet update blind spot, MTP Retry
+       tool license surprise, xUnit Assert.Equivalent runtime-type gotcha with sealed vs open hierarchies —
+       sourced from learn.microsoft.com/dotnet/core/testing/unit-testing-mstest-sdk,
+       learn.microsoft.com/dotnet/core/testing/microsoft-testing-platform-retry,
+       learn.microsoft.com/dotnet/core/testing/microsoft-testing-platform-hot-reload, and
+       github.com/fluentassertions/fluentassertions/releases/tag/8.9.0
      Iter 36 (2026-05-12): added NUnit 4.x migration guide (Classic API → NUnit.Framework.Legacy, Assert.AreEqual
        obsolete, NUnit4TestAdapter requirement); added MSTest v4 — Assert.That lambda, CallerArgumentExpression
        diagnostics, breaking API surface changes; added FluentAssertions v8 breaking changes (Xceed Community
@@ -6771,3 +6782,380 @@ public async Task GetAllOrders(CancellationToken ct) { /* correct */ }
 | xUnit v3 `CancellationToken` not last in `[Theory]` method | Discovery error — test data injection sees token slot | Always declare `CancellationToken ct` as the last parameter |
 | MSTest v4 `Assert.That(() => a.Prop == b)` for null `a` | Lambda throws NRE before Assert evaluates it — test error, not assertion failure | Guard null before `Assert.That`, or use `Assert.IsNotNull(a)` first |
 | FluentAssertions v8 `DataSet` assertions after upgrade | `HaveTable` / `HaveColumn` no longer in core — `MissingMethodException` | Add `FluentAssertions.DataSets` NuGet package |
+| `MSTest.Sdk` version pinned in `global.json` only | Dependabot and `dotnet outdated` don't see SDK-style version — silent drift | Check `global.json` + project file version manually; use Renovate with custom pattern |
+| MTP `Retry` extension on unit tests | Retry masks broken logic, hiding real failures — tests pass on second attempt | Use `--retry-failed-tests` only for integration/environment-dependent tests |
+| xUnit v3 `Assert.Equivalent` with open class hierarchy | Default `RespectingDeclaredTypes` allows derived type fields to be ignored — hidden data loss in assertions | Use `Assert.Equivalent(expected, actual, strict: true)` or `BeEquivalentTo` with `RespectingRuntimeTypes()` when inheritance matters |
+
+---
+
+## MSTest SDK — Project-Type Simplification (MSTest.Sdk 3.4+)
+
+`MSTest.Sdk` is a custom MSBuild SDK that replaces the traditional `Microsoft.NET.Sdk` for MSTest projects. It bundles all MSTest dependencies, sets sensible defaults, and enables Microsoft.Testing.Platform (MTP) out of the box.
+
+### Minimal `MSTest.Sdk` Project File
+
+```xml
+<!-- Old-style MSTest project — multiple packages, manual runner opt-in -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <EnableMSTestRunner>true</EnableMSTestRunner>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="MSTest" Version="4.1.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+  </ItemGroup>
+</Project>
+
+<!-- New-style: MSTest.Sdk handles everything automatically -->
+<Project Sdk="MSTest.Sdk/4.1.0">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+</Project>
+```
+
+Pin the SDK version in `global.json` to keep all projects aligned:
+
+```json
+{
+  "msbuild-sdks": {
+    "MSTest.Sdk": "4.1.0"
+  }
+}
+```
+
+### Built-In Profiles and Extensions
+
+`MSTest.Sdk` supports three extension profiles via `TestingExtensionsProfile`:
+
+| Profile | Included extensions |
+|---|---|
+| `None` | No extensions |
+| `Default` (implicit) | Code Coverage + TRX Report |
+| `AllMicrosoft` | Code Coverage + TRX + Crash Dump + Hang Dump + Hot Reload + Retry + Fakes |
+
+```xml
+<!-- Explicit Default profile (same as omitting the property) -->
+<TestingExtensionsProfile>Default</TestingExtensionsProfile>
+
+<!-- Override: disable CodeCoverage, add Retry on top of Default -->
+<EnableMicrosoftTestingExtensionsCodeCoverage>false</EnableMicrosoftTestingExtensionsCodeCoverage>
+<EnableMicrosoftTestingExtensionsRetry>true</EnableMicrosoftTestingExtensionsRetry>
+```
+
+### Aspire and Playwright Integration
+
+`MSTest.Sdk` provides one-line enablement for Aspire and Playwright testing:
+
+```xml
+<!-- Aspire integration testing (MSTest.Sdk 3.4+) -->
+<Project Sdk="MSTest.Sdk/4.1.0">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableAspireTesting>true</EnableAspireTesting>
+  </PropertyGroup>
+</Project>
+
+<!-- Playwright end-to-end testing (MSTest.Sdk 3.4+) -->
+<Project Sdk="MSTest.Sdk/4.1.0">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnablePlaywright>true</EnablePlaywright>
+  </PropertyGroup>
+</Project>
+```
+
+Both properties bring in the required dependencies and implicit `using` directives automatically — no manual `<PackageReference>` entries needed.
+
+**Gotcha — `MSTest.Sdk` migration note:** When switching an existing project from `Microsoft.NET.Sdk` to `MSTest.Sdk`, remove `<EnableMSTestRunner>`, `<OutputType>Exe</OutputType>`, `<IsPackable>false</IsPackable>`, and all `MSTest.*` + `Microsoft.NET.Test.Sdk` `<PackageReference>` entries — the SDK adds them implicitly. Leaving them causes duplicate package warnings and potential version conflicts.
+
+---
+
+## Microsoft.Testing.Platform — Retry and Hot Reload Extensions
+
+### Retry Extension — Flaky Test Resilience (`Microsoft.Testing.Extensions.Retry`)
+
+The MTP Retry extension reruns failed tests up to N times before reporting them as failed. It is designed for integration tests subject to transient environment failures (network blips, container startup races) — **not** for unit tests.
+
+```dotnetcli
+# Add the package (auto-registered when Microsoft.Testing.Platform.MSBuild is present)
+dotnet add package Microsoft.Testing.Extensions.Retry
+
+# CLI: retry failed tests up to 3 times
+dotnet run --project MyIntegrationTests -- --retry-failed-tests 3
+
+# Safety valve — stop retrying if >50% of tests are failing (env problem, not flakiness)
+dotnet run --project MyIntegrationTests -- --retry-failed-tests 2 --retry-failed-tests-max-percentage 50
+
+# Count cap — stop retrying if more than 10 individual tests failed
+dotnet run --project MyIntegrationTests -- --retry-failed-tests 3 --retry-failed-tests-max-tests 10
+```
+
+**Important constraints:**
+- Not supported on browser platforms (Blazor WASM test host).
+- Cannot be combined with Hot Reload mode (`TESTINGPLATFORM_HOTRELOAD_ENABLED=1`).
+- Ships under the **Microsoft.Testing.Platform Tools license** — review before commercial use or redistribution.
+
+```xml
+<!-- Enable Retry explicitly in a project using MSTest.Sdk -->
+<Project Sdk="MSTest.Sdk/4.1.0">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableMicrosoftTestingExtensionsRetry>true</EnableMicrosoftTestingExtensionsRetry>
+  </PropertyGroup>
+</Project>
+```
+
+### Hot Reload Extension — Rapid Test Iteration (`Microsoft.Testing.Extensions.HotReload`)
+
+The Hot Reload extension applies code changes to a running test session without restarting the process. Available in "console mode" only (not Test Explorer in VS or VS Code as of early 2026).
+
+```json
+// launchSettings.json — enable hot reload for the test project
+{
+  "profiles": {
+    "MyTests": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "TESTINGPLATFORM_HOTRELOAD_ENABLED": "1"
+      }
+    }
+  }
+}
+```
+
+The Hot Reload package also ships under the **Microsoft.Testing.Platform Tools license** (restrictive, non-commercial for third-party tool redistribution).
+
+---
+
+## NUnit 4.x — `[FixtureLifeCycle]` for Per-Test Instance Isolation
+
+NUnit 3 creates one instance of a `[TestFixture]` class and runs all `[Test]` methods on it. Shared mutable fields accumulate state across tests, causing ordering bugs. NUnit 4 introduced `[FixtureLifeCycle]` to control whether a new instance is created for every test.
+
+```csharp
+// Default (SingleInstance — NUnit 3 behavior, still default in NUnit 4):
+// ONE fixture instance shared across all tests — fields accumulate state.
+[TestFixture]
+public class SharedStateTests
+{
+    private List<string> _log = new();  // shared across all [Test] methods
+
+    [Test] public void Test1() => _log.Add("T1");
+    [Test] public void Test2() => Assert.That(_log, Is.Empty);  // FAILS if Test1 ran first
+}
+
+// InstancePerTestCase — fresh fixture instance created for every [Test] method
+[TestFixture]
+[FixtureLifeCycle(LifeCycle.InstancePerTestCase)]
+public class IsolatedTests
+{
+    // Field is reset for every test — no shared state
+    private Mock<IOrderService> _sut = new(MockBehavior.Strict);
+
+    [SetUp]
+    public void SetUp()
+    {
+        // Runs on a brand-new instance — safe, no leftover state from previous tests
+        _sut.Setup(s => s.GetAsync(It.IsAny<int>(), default))
+            .ReturnsAsync(new Order(1));
+    }
+
+    [Test]
+    public async Task GetAsync_ReturnsOrder()
+    {
+        var order = await _sut.Object.GetAsync(1, default);
+        Assert.That(order!.Id, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task GetAsync_AnotherTest()
+    {
+        // Fresh Mock — SetUp called on new instance, zero leftover invocations
+        var order = await _sut.Object.GetAsync(1, default);
+        Assert.That(order, Is.Not.Null);
+    }
+}
+```
+
+**When to use each lifecycle:**
+
+| `LifeCycle` value | When to use |
+|---|---|
+| `SingleInstance` (default) | Tests sharing expensive read-only setup (e.g., parsed config, compiled regex) |
+| `InstancePerTestCase` | Any test with `Mock<T>` fields, mutable state, or setup that must be fresh per test |
+
+**With parallel tests:** Combining `InstancePerTestCase` with `[Parallelizable]` is safe — each parallel test runs on its own instance. `SingleInstance` with `[Parallelizable]` requires all field access to be thread-safe (e.g., lock-protected or immutable).
+
+```csharp
+// Safe combination: fresh instance per test + all tests run in parallel
+[TestFixture]
+[FixtureLifeCycle(LifeCycle.InstancePerTestCase)]
+[Parallelizable(ParallelScope.All)]
+public class ParallelSafeTests
+{
+    private readonly Mock<IEmailSender> _email = new();
+
+    [Test] public async Task Send_ValidEmail_Succeeds() { /* isolated Mock */ }
+    [Test] public async Task Send_EmptyTo_Throws()      { /* isolated Mock */ }
+}
+```
+
+---
+
+## xUnit v3 — `Assert.Equivalent` Structural Equality
+
+xUnit v3 adds `Assert.Equivalent` for deep structural comparison — comparing objects by their public member values rather than reference identity. It covers the most common use case without requiring FluentAssertions.
+
+```csharp
+// Basic: compares all public properties recursively by value
+var expected = new OrderDto(Id: 42, Status: "Shipped", Total: 99.99m);
+var actual   = service.GetOrderDto(42);
+
+Assert.Equivalent(expected, actual);
+// Fails with a detailed diff if any property differs
+
+// strict: true — actual must not have extra members that expected lacks
+// (default: extra members on actual are silently ignored)
+Assert.Equivalent(expected, actual, strict: true);
+
+// Collections — order-sensitive element-by-element comparison
+var expectedItems = new[] { new Item("SKU-1", 2), new Item("SKU-2", 1) };
+Assert.Equivalent(expectedItems, actual.Items);
+// Note: order matters — unlike FA BeEquivalentTo which is order-insensitive by default
+```
+
+**`strict` parameter semantics:**
+- `strict: false` (default) — actual may have more members than expected; only expected's members are checked. Useful when asserting a partial projection/DTO.
+- `strict: true` — both sides must expose the same set of members. Use when comparing full entity objects where extra members on actual are a bug.
+
+**Comparison with FluentAssertions `BeEquivalentTo`:**
+
+| Feature | `Assert.Equivalent` (xUnit v3) | FA `BeEquivalentTo` |
+|---|---|---|
+| Deep member comparison | Yes | Yes |
+| Order-insensitive collections | No — order matters | Yes (default), opt-in to ordered |
+| Exclude specific members | No | Yes (`Excluding(x => x.Prop)`) |
+| Exclude by type | No | Yes (v8.9+: `Excluding(m => m.Type == typeof(T))`) |
+| Custom comparers per type | No | Yes |
+| Null-as-empty option | No | Yes (v8.10 `ComparingNullCollectionsAsEmpty`) |
+| Dependency | xUnit v3 built-in | FluentAssertions NuGet |
+
+Use `Assert.Equivalent` for quick structural equality checks with no extra dependencies; use `BeEquivalentTo` when you need exclusions, collection-order flexibility, or custom comparers.
+
+---
+
+## FluentAssertions v8.9 — Collection Aliases and Type-Based Exclusion
+
+### `BeEqualTo` / `NotBeEqualTo` — Collection Equivalence Aliases (v8.9)
+
+v8.9 added `BeEqualTo` and `NotBeEqualTo` as named aliases for `BeEquivalentTo`/`NotBeEquivalentTo` on collections. These match the general assertion convention (`x.Should().Be(y)`) and are the preferred names in new code.
+
+```csharp
+// Existing names (still work in v8.9)
+list.Should().BeEquivalentTo(expected);
+list.Should().NotBeEquivalentTo(other);
+
+// New aliases (v8.9+) — identical semantics, preferred for collections
+list.Should().BeEqualTo(expected);
+list.Should().NotBeEqualTo(other);
+```
+
+### Type-Based Property Exclusion in `BeEquivalentTo` (v8.9)
+
+Prior to v8.9, excluding properties required specifying each path individually. v8.9 added support for excluding all properties of a given type across the entire object graph:
+
+```csharp
+public record OrderDto(int Id, string Status, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+
+// Old — must exclude each timestamp property by path
+actual.Should().BeEquivalentTo(expected,
+    opts => opts
+        .Excluding(o => o.CreatedAt)
+        .Excluding(o => o.UpdatedAt));
+
+// New (v8.9+) — exclude all properties of type DateTimeOffset in one expression
+actual.Should().BeEquivalentTo(expected,
+    opts => opts.Excluding(member => member.Type == typeof(DateTimeOffset)));
+
+// Combine type-based and path-based exclusions
+actual.Should().BeEquivalentTo(expected, opts => opts
+    .Excluding(member => member.Type == typeof(DateTimeOffset))
+    .Excluding(o => o.InternalAuditLog));
+```
+
+This is especially useful for DTOs with audit timestamps scattered across multiple nested types — one expression covers them all.
+
+---
+
+## Real-World Gotchas — MTP and MSTest SDK [community]
+
+### **MSTest SDK Version Not Visible to Dependabot or `dotnet outdated`** [community]
+
+`MSTest.Sdk` is a NuGet-provided MSBuild SDK whose version lives in `global.json` under `msbuild-sdks`. Standard NuGet tooling — `dotnet outdated`, Dependabot, Visual Studio NuGet Manager — does not scan `global.json` for SDK versions. WHY it causes problems: teams run a stale `MSTest.Sdk` version for months after security fixes or breaking change patches are released. Fix: use Renovate Bot with a custom extractor that matches `global.json` `msbuild-sdks` patterns, or audit `global.json` manually on each sprint.
+
+```json
+// global.json — dotnet outdated does NOT warn you when this version is outdated
+{
+  "msbuild-sdks": {
+    "MSTest.Sdk": "4.1.0"   // check NuGet.org manually: nuget.org/packages/MSTest.Sdk
+  }
+}
+```
+
+### **MTP Retry / Hot Reload / Crash Dump Extensions Have a Restrictive License** [community]
+
+Several MTP extensions ship under the **Microsoft.Testing.Platform Tools license**, which is NOT MIT or Apache. It restricts redistribution as part of a third-party SDK or tool. The extensions affected include `Microsoft.Testing.Extensions.Retry`, `Microsoft.Testing.Extensions.HotReload`, `Microsoft.Testing.Extensions.CrashDump`, and `Microsoft.Testing.Extensions.HangDump`. WHY it causes problems: teams enabling `<TestingExtensionsProfile>AllMicrosoft</TestingExtensionsProfile>` silently pull in restricted-license packages that violate their open-source licensing policy. Fix: use `Default` profile; add restricted-license extensions explicitly only to internal test projects.
+
+```xml
+<!-- RISKY: AllMicrosoft pulls in restricted-license extensions -->
+<TestingExtensionsProfile>AllMicrosoft</TestingExtensionsProfile>
+
+<!-- SAFE: Default profile only — MIT-compatible -->
+<TestingExtensionsProfile>Default</TestingExtensionsProfile>
+
+<!-- If you need Retry for integration tests, opt in explicitly and document the license decision -->
+<EnableMicrosoftTestingExtensionsRetry>true</EnableMicrosoftTestingExtensionsRetry>
+<!-- License: https://www.nuget.org/packages/Microsoft.Testing.Extensions.Retry -->
+```
+
+### **`Assert.Equivalent` Ignores Derived-Class Members When Variables Are Typed as Base Class** [community]
+
+xUnit v3's `Assert.Equivalent` uses the compile-time (declared) type to determine which members to compare. When objects are stored in base-class variables, properties added in derived classes are silently skipped. WHY it causes problems: assertions pass even when derived-class data is wrong, giving false confidence in test coverage for polymorphic code.
+
+```csharp
+class Shape { public string Color { get; set; } = ""; }
+class Circle : Shape { public double Radius { get; set; } }
+
+Shape expected = new Circle { Color = "red", Radius = 5.0 };
+Shape actual   = new Circle { Color = "red", Radius = 0.0 };  // wrong radius!
+
+// BAD: Assert.Equivalent sees Shape — Radius property is not compared
+Assert.Equivalent(expected, actual);  // PASSES (silently wrong)
+
+// FIX 1: cast both sides to the concrete type
+Assert.Equivalent((Circle)expected, (Circle)actual);  // FAILS correctly
+
+// FIX 2: use strict mode — forces type-shape validation (still uses declared type,
+// but also fails if actual has extra required members missing from expected)
+Assert.Equivalent(expected, actual, strict: true);  // may still miss Radius
+
+// FIX 3: FluentAssertions with RespectingRuntimeTypes
+actual.Should().BeEquivalentTo(expected, opts => opts.RespectingRuntimeTypes());  // FAILS correctly
+```
+
+---
+
+## Anti-Patterns Quick Reference — MTP, MSTest SDK, and New Assertions
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `MSTest.Sdk` version managed only in `global.json` | `dotnet outdated` / Dependabot blind spot — version drifts silently | Check NuGet.org manually; use Renovate with custom SDK extractor |
+| `<TestingExtensionsProfile>AllMicrosoft</TestingExtensionsProfile>` in OSS project | Pulls in restricted-license extensions — violates MIT/Apache OSS policy | Use `Default` profile; explicitly enable only needed restricted extensions |
+| `--retry-failed-tests` on unit test suite | Masks broken logic — tests pass on retry, hiding real bugs | Reserve Retry for integration/environment-sensitive tests only |
+| `Assert.Equivalent` on base-type variables with derived data | Derived-class members silently ignored — false pass | Cast to concrete type, or use FA `BeEquivalentTo` with `RespectingRuntimeTypes()` |
+| `[FixtureLifeCycle(LifeCycle.SingleInstance)]` with Moq + `[Parallelizable]` | Shared Mock state races — intermittent test failures | Use `InstancePerTestCase` with Moq, or make all shared fixtures immutable |
+| `EnableAspireTesting` in non-Aspire test projects | Pulls unnecessary Aspire dependencies, inflates binary | Only set `EnableAspireTesting` in projects that reference Aspire components |

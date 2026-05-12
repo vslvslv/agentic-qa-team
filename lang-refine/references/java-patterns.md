@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.13 release notes, JUnit 6.0 release notes, Mockito 5.x-5.22 release notes, AssertJ 3.27 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Framework 6.2 MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, Spring Boot 3.5 SSL Testcontainers, Mockito 5.22 Kotlin singleton mocking) | mixed | iteration: 32 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.13 release notes, JUnit 6.0-6.1 release notes, Mockito 5.x-5.23 release notes, AssertJ 3.27.7 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Framework 6.2 MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass @SentenceFragment @ClassTemplate AutoCloseable-in-Store Kotlin-Sequence, JUnit 6.1 @DefaultLocale @DefaultTimeZone @EmptySource-Iterable @CsvSource-commentCharacter @EnabledOnJre-int, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, AssertJ 3.27.7 XXE CVE-2026-24400 XmlStringPrettyFormatter-deprecated, Spring Boot 3.5 SSL Testcontainers, Mockito 5.22 Kotlin singleton mocking, Mockito 5.23 @Nullable-when Android-mock-maker) | mixed | iteration: 33 | score: 99/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -5128,5 +5128,355 @@ void sealedClassAssertions() {
 ```
 
 **Gotcha — recursive comparison with records pre-3.27.1:** Record components are accessed via generated accessor methods (`name()`, not `getName()`). Older AssertJ versions missed these using reflection strategies designed for JavaBeans. 3.27.1 fixed the introspection to use `Class.getRecordComponents()`, which returns `RecordComponent` objects with the correct accessor methods.
+
+---
+
+## JUnit 5.13 — Additional New Features (May 2025)
+
+The guide already covers `@ParameterizedClass` from 5.13. This section covers the remaining additions.
+
+### @SentenceFragment — Custom Display Name Components
+
+`@SentenceFragment` provides per-test-class or per-method display name tokens consumed by the `IndicativeSentences` display name generator. It complements `@DisplayName` when your test names form a human-readable sentence: the class fragment is the subject and each test fragment is the predicate.
+
+```java
+import org.junit.jupiter.api.DisplayNameGeneration;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.api.SentenceFragment;
+import org.junit.jupiter.api.DisplayNameGenerator.IndicativeSentences;
+
+@DisplayNameGeneration(IndicativeSentences.class)
+@SentenceFragment("An order")     // subject; all test names read "An order ..."
+class OrderTest {
+
+    @Test
+    @SentenceFragment("can be placed with valid items")
+    void placeOrderWithValidItems() { /* ... */ }
+
+    @Test
+    @SentenceFragment("cannot be placed when inventory is zero")
+    void cannotPlaceWhenInventoryEmpty() { /* ... */ }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, -1, -100})
+    @SentenceFragment("rejects quantity {0}")
+    void rejectsNonPositiveQuantity(int qty) { /* ... */ }
+}
+// Test display names: "An order can be placed with valid items",
+//                     "An order rejects quantity 0", etc.
+```
+
+**When to use:** `@SentenceFragment` is most valuable in behaviour-driven test suites where the test report must be readable by non-developers. Use `@DisplayName` for individual description; use `@SentenceFragment` + `IndicativeSentences` when you want the class-level noun + method-level verb sentence structure throughout a class.
+
+### AutoCloseable in ExtensionContext.Store (JUnit 5.13)
+
+In JUnit 5.13, any `AutoCloseable` stored in `ExtensionContext.Store` is automatically closed when the store's lifecycle scope ends — without implementing the (now deprecated) `CloseableResource` marker interface. This simplifies custom extensions that open resources.
+
+```java
+import org.junit.jupiter.api.extension.*;
+
+public class DatabaseExtension implements BeforeEachCallback, AfterEachCallback {
+
+    private static final ExtensionContext.Namespace NS =
+        ExtensionContext.Namespace.create(DatabaseExtension.class);
+
+    @Override
+    public void beforeEach(ExtensionContext context) {
+        // Store any AutoCloseable resource — JUnit 5.13 closes it automatically
+        DatabaseConnection conn = openTestConnection();
+        context.getStore(NS).put("connection", conn);  // no CloseableResource needed
+    }
+
+    // No @AfterEach needed for the connection — store.close() calls conn.close()
+    // (AfterEachCallback still needed for non-AutoCloseable cleanup)
+}
+
+// In the test class:
+@ExtendWith(DatabaseExtension.class)
+class UserRepoTest {
+    @Test
+    void insertsAndFindsUser() {
+        // Connection is already closed after this test by the store lifecycle
+    }
+}
+```
+
+**Migration from `CloseableResource`:** Remove `implements CloseableResource` and the `close()` method from extension-stored resources; keep `implements AutoCloseable` (which most connection/session types already implement). The `CloseableResource` interface is deprecated in 5.13 and will be removed in JUnit 6.
+
+### Session and Request-Scoped Stores (JUnit 5.13)
+
+JUnit 5.13 adds two new lifecycle scopes to `ExtensionContext.Store`: `LauncherSession` scope (across the entire test run, even across engines) and `ExecutionRequest` scope (per test engine execution). These enable state sharing between entirely different `@ExtendWith` extensions or between JUnit Jupiter and a custom engine.
+
+```java
+import org.junit.jupiter.api.extension.*;
+import org.junit.platform.launcher.*;
+
+// Sharing a single HttpClient across ALL tests in the session (expensive to create)
+public class SharedHttpClientExtension implements BeforeAllCallback, AfterAllCallback {
+
+    private static final ExtensionContext.Namespace NS =
+        ExtensionContext.Namespace.create(SharedHttpClientExtension.class);
+
+    @Override
+    public void beforeAll(ExtensionContext context) {
+        // LauncherSession store: shared across all test classes in the run
+        ExtensionContext.Store sessionStore =
+            context.getRoot().getStore(ExtensionContext.Namespace.GLOBAL);
+
+        sessionStore.getOrComputeIfAbsent("httpClient",
+            k -> HttpClient.newBuilder()
+                     .connectTimeout(Duration.ofSeconds(5))
+                     .build(),
+            HttpClient.class);
+    }
+}
+```
+
+**When to use session-scoped stores:** Expensive-to-create resources that should be shared across all tests — a Testcontainers container (without `@Container` static field), a warmed-up application context, or an HTTP connection pool. The session store is the JUnit 5 equivalent of a test-suite-level singleton.
+
+### Kotlin Sequence Support in @MethodSource, @FieldSource, @TestFactory (JUnit 5.13)
+
+JUnit 5.13 added native support for Kotlin `Sequence<Arguments>` as the return type of `@MethodSource` methods and `@TestFactory` methods. Previously, Kotlin code had to call `.asStream()` to convert sequences to Java streams.
+
+```kotlin
+import org.junit.jupiter.api.TestFactory
+import org.junit.jupiter.api.DynamicTest
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.MethodSource
+
+class DiscountTest {
+
+    // Before 5.13: had to call .asStream()
+    // After 5.13: Sequence<Arguments> works directly
+    @ParameterizedTest
+    @MethodSource("discountCases")
+    fun `discount is applied correctly`(qty: Int, price: Double, expected: Double) {
+        assertThat(DiscountCalculator.apply(qty, price)).isEqualTo(expected, within(0.01))
+    }
+
+    companion object {
+        @JvmStatic
+        fun discountCases(): Sequence<Arguments> = sequence {  // no .asStream() needed
+            yield(Arguments.of(1, 100.0, 100.0))
+            yield(Arguments.of(10, 100.0, 90.0))
+            yield(Arguments.of(50, 100.0, 75.0))
+        }
+    }
+
+    // @TestFactory also accepts Sequence<DynamicTest> in 5.13
+    @TestFactory
+    fun dynamicTests(): Sequence<DynamicTest> = sequence {
+        yield(DynamicTest.dynamicTest("null input") { assertThat("".isBlank).isTrue() })
+    }
+}
+```
+
+---
+
+## JUnit 6.1 Preview — New Built-In Extensions
+
+JUnit 6.1.0 (RC1, April 2026) added several built-in extensions previously requiring [JUnit Pioneer](https://junit-pioneer.org/). These reduce external dependencies for common test environment management tasks.
+
+### @DefaultLocale and @DefaultTimeZone (JUnit 6.1)
+
+`@DefaultLocale` and `@DefaultTimeZone` set the JVM's default `Locale` and `TimeZone` for the duration of a test class or method, then restore the originals — no try/finally cleanup needed.
+
+```java
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DefaultLocale;
+import org.junit.jupiter.api.condition.DefaultTimeZone;
+import java.util.Locale;
+import static org.assertj.core.api.Assertions.assertThat;
+
+@DefaultLocale("de-DE")       // all tests in this class run with German locale
+@DefaultTimeZone("Europe/Berlin")
+class LocaleSensitiveFormattingTest {
+
+    @Test
+    void formatsDecimalWithGermanConvention() {
+        // German locale uses comma as decimal separator
+        String formatted = String.format(Locale.getDefault(), "%.2f", 1234.56);
+        assertThat(formatted).isEqualTo("1234,56");
+    }
+
+    @Test
+    @DefaultLocale("en-US")    // method-level overrides class-level
+    @DefaultTimeZone("America/New_York")
+    void formatsDecimalWithUSConvention() {
+        String formatted = String.format(Locale.getDefault(), "%.2f", 1234.56);
+        assertThat(formatted).isEqualTo("1234.56");
+    }
+    // After each test, Locale and TimeZone are restored to their original values
+}
+```
+
+**Why this matters for testing:** Code that formats dates, currencies, or numbers using `Locale.getDefault()` is extremely sensitive to the JVM's locale setting. Without explicit locale control, tests pass locally (developer's locale) but fail on CI (typically `en-US` or `C.UTF-8`). `@DefaultLocale` makes locale-dependent tests deterministic without modifying production code.
+
+### @EnabledOnJre and @DisabledOnJre — int Attributes (JUnit 6.1)
+
+`@EnabledOnJre` and `@DisabledOnJre` in JUnit 6.1 added `int`/`int[]` attributes (`value`, `min`, `max`) so tests can target arbitrary JRE versions — including Java 25, 26, 27 — without waiting for new `JRE` enum constants to be added.
+
+```java
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnJre;
+import org.junit.jupiter.api.condition.DisabledOnJre;
+
+class JreVersionConditionTest {
+
+    // Old style — limited to JRE enum constants (JAVA_21, JAVA_22, ...)
+    // @EnabledOnJre(JRE.JAVA_21)
+
+    // JUnit 6.1+ — int attribute: run only on Java 25
+    @Test
+    @EnabledOnJre(25)
+    void testStableValueAPI() {
+        // StableValue (JEP 502) is a Java 25 preview API
+        // This test only runs on JDK 25+
+    }
+
+    // Run on Java 25, 26, or 27
+    @Test
+    @EnabledOnJre({25, 26, 27})
+    void testModernJavaFeature() { /* ... */ }
+
+    // Run on any JRE >= 25 — useful for forward-compatible tests
+    @Test
+    @EnabledOnJre(min = 25)
+    void testJavaFutureFeature() { /* ... */ }
+
+    // Disable on Java 25 (e.g., API removed or changed)
+    @Test
+    @DisabledOnJre(25)
+    void testLegacyBehaviourRemovedInJava25() { /* ... */ }
+}
+```
+
+### @EmptySource Enhancements (JUnit 6.1)
+
+`@EmptySource` in JUnit 6.1 expanded to support `Iterable`, `Iterator`, and `ListIterator` parameter types, in addition to the existing `String`, `List`, `Set`, `Map`, and array support.
+
+```java
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EmptySource;
+import java.util.Iterator;
+
+class CollectionValidatorTest {
+
+    // 6.1+: @EmptySource works with Iterable, Iterator, ListIterator
+    @ParameterizedTest
+    @EmptySource
+    void rejectsEmptyIterable(Iterable<String> input) {
+        assertThatThrownBy(() -> new Validator().validate(input))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @ParameterizedTest
+    @EmptySource
+    void rejectsEmptyIterator(Iterator<String> input) {
+        assertThatThrownBy(() -> new Processor().process(input))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
+}
+```
+
+### @CsvSource commentCharacter Attribute (JUnit 6.1)
+
+`@CsvSource` and `@CsvFileSource` gained a `commentCharacter` attribute for marking comment lines within the CSV data — useful for documenting test data inline without having those lines parsed as test rows.
+
+```java
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+
+class PricingTest {
+
+    @ParameterizedTest(name = "{0} kg → ${2}")
+    @CsvSource(
+        commentCharacter = '#',     // lines starting with '#' are ignored (JUnit 6.1+)
+        textBlock = """
+            # Standard parcels (< 5 kg)
+            0.5, standard, 3.50
+            2.0, standard, 5.00
+            # Heavy parcels (>= 5 kg)
+            5.0, heavy,    8.00
+            10.0, heavy,   12.00
+            """
+    )
+    void shippingRateByWeight(double weightKg, String category, double expectedRate) {
+        assertThat(ShippingCalculator.rate(weightKg, category))
+            .isEqualTo(expectedRate, within(0.01));
+    }
+}
+```
+
+---
+
+## Mockito 5.23 — Changes (March 2025)
+
+### @Nullable on Mockito.when() Parameters
+
+Mockito 5.23 added `@Nullable` annotations to the parameters of `Mockito.when(T methodCall)`. This is a source compatibility improvement: tools with null-safety analysis (IntelliJ IDEA, Error Prone, Kotlin's null-safety inference) no longer incorrectly flag `when(service.method(nullableArg))` as a potential NPE. No runtime behaviour changed.
+
+```java
+// Before 5.23: tools might warn "Nullable value passed to non-null parameter"
+when(service.findById(null)).thenReturn(Optional.empty());  // null arg was always supported
+
+// After 5.23: @Nullable on 'methodCall' parameter suppresses the false warning
+// No code change required — this is a Javadoc/annotation improvement only
+when(service.findById(null)).thenReturn(Optional.empty());  // IDE no longer flags this
+```
+
+### Android Mock Maker Migration (5.23)
+
+Mockito 5.23 replaced `mockito-android` with `dexmaker-mockito-inline` as the recommended Android mock maker. The `mockito-android` artifact still exists but is a compatibility shim. New Android projects should migrate:
+
+```xml
+<!-- OLD (5.22 and earlier) -->
+<dependency>
+  <groupId>org.mockito</groupId>
+  <artifactId>mockito-android</artifactId>
+  <version>5.22.0</version>
+  <scope>test</scope>
+</dependency>
+
+<!-- NEW (5.23+) — requires device/emulator API 28+ (Android P) -->
+<dependency>
+  <groupId>com.linkedin.dexmaker</groupId>
+  <artifactId>dexmaker-mockito-inline</artifactId>
+  <version>2.28.4</version>
+  <scope>androidTestImplementation</scope>
+</dependency>
+```
+
+**Gotcha:** The new mock maker requires a device or emulator running API 28+ (Android 9 / Pie). Tests that previously ran on API < 28 will fail with an unsupported device error. Update your CI pipeline to use a Pixel 2 API 28+ system image.
+
+---
+
+## AssertJ 3.27.7 — Security Fix and Deprecation (January 2025)
+
+### isXmlEqualTo XXE Vulnerability Fix (CVE-2026-24400)
+
+AssertJ 3.27.7 fixed an XXE (XML External Entity) injection vulnerability in the `isXmlEqualTo` assertion. Prior to 3.27.7, `assertThat(xmlString).isXmlEqualTo(other)` parsed XML without disabling external entity processing — an attacker-controlled XML string could cause server-side request forgery or file disclosure.
+
+```java
+// SAFE in 3.27.7+ — external entity processing is now disabled
+assertThat(untrustedXmlString).isXmlEqualTo(expectedXml);
+
+// If you are on 3.27.6 or earlier and use isXmlEqualTo with untrusted input,
+// upgrade to 3.27.7 immediately or sanitize XML before assertion.
+// Affected: all AssertJ versions before 3.27.7 that call isXmlEqualTo().
+```
+
+**Action required:** Upgrade AssertJ to `3.27.7` or later if you use `isXmlEqualTo()` with XML content that originates from external sources (APIs, user input, files). This is a security patch — no API changes required.
+
+### XmlStringPrettyFormatter Deprecated
+
+`XmlStringPrettyFormatter` (used internally by `isXmlEqualTo` failure messages) was deprecated in 3.27.7 without a public replacement. Do not call it directly in test code.
+
+```java
+// DEPRECATED — do not use in test code
+// org.assertj.core.util.xml.XmlStringPrettyFormatter
+```
 
 

@@ -1,5 +1,14 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- iter 32 additions: XCUITest v11 migration table updated (waitForQuiescence + simpleIsVisibleCheck removals),
+     ignoredWebviewBundleIds (filter webview context detection + 3 gotchas),
+     iosSyslogFile (syslog capture to file + 3 gotchas),
+     snapshotMaxChildren/enforceCustomSnapshots (XML hierarchy tuning + 3 gotchas),
+     pageLoadStrategy for Safari/WebView (eager/none modes + 3 gotchas),
+     sendKeyStrategy for React inputs (char-by-char typing + 3 gotchas),
+     placeholderValue explicit XML attribute (iOS 18 + 2 gotchas),
+     mobile:pressButton tvOS extended buttons (6 new tvOS buttons + 2 gotchas),
+     Appium 3.4 getGlobalPrivacyControl/setGlobalPrivacyControl endpoints (2 gotchas) -->
 <!-- iter 31 additions: appium:waitForQuiescence (XCUITest idle-wait control + animationCoolOffTimeout + 3 gotchas),
      appium:includeSafariInWebviews (OAuth/SSO Safari context + returnDetailedContexts pattern + 3 gotchas),
      appium:nativeWebTap (native pointer for WebView clicks + settings API toggle + 2 gotchas),
@@ -13709,6 +13718,8 @@ XCUITest driver v11.0.0 (April 2026) introduced breaking changes that require mi
 | `appInstallStrategy` capability | Removed; Appium selects install strategy automatically |
 | `calendarAccessAuthorized` capability | Removed; use `mobile:grantPermission` / `mobile:revokePermission` instead |
 | `useSimpleBuildTest` capability | Removed; no replacement needed — test runner selection is automatic |
+| `appium:waitForQuiescence` capability | **Removed** — idle-resource waiting is now always managed internally by WDA v12; use `driver.updateSettings({ waitForQuiescence: true/false })` at runtime if the capability is still accepted by older drivers, but the WDA-level control is gone |
+| `appium:simpleIsVisibleCheck` capability | Removed — WebDriverAgent v12 dropped the simple visibility check path; visibility detection is always full-hierarchy now |
 
 ### v11.1.0 — `mobile:startScreenRecording` / `mobile:stopScreenRecording` wrappers
 
@@ -14254,6 +14265,8 @@ await driver.updateSettings({ waitForQuiescence: false });
 **[community] Disabling quiescence can cause false-positive element lookups when elements render asynchronously:** WHY: With `waitForQuiescence: false` Appium no longer waits for the UI to stabilise — a `$('~button')` call may succeed while the button is still flying in from off-screen. Fix: pair `waitForQuiescence: false` with explicit `waitForDisplayed({ timeout })` and `waitForStable()` calls at key interaction points.
 
 **[community] `animationCoolOffTimeout` interacts with `waitForQuiescence` — setting both to 0 is the maximum speed but also the most flaky configuration:** WHY: No cool-off means any fast animation can race with element lookups. Fix: set `animationCoolOffTimeout: 200` (not 0) as a minimum safety margin even in performance-focused CI runs.
+
+> **XCUITest v11 notice:** `appium:waitForQuiescence` was **removed as a session capability** in XCUITest driver v11.0.0 (April 2026). WebDriverAgent v12 handles idle-resource detection internally; setting the capability in `wdio.conf.ts` has no effect on v11+ drivers. The `driver.updateSettings({ waitForQuiescence: ... })` runtime call is also a no-op in v11+. Teams on v11 should rely on explicit `waitForDisplayed()` / `isStable()` guards instead.
 
 ---
 
@@ -14986,3 +14999,467 @@ describe('Flutter login flow', () => {
 <!-- Score delta: 0 (maintained 100/100) — iter 28 adds 5 new sections (isStable, start-appium-inspector, Appium 3.1 printPage, Appium 3.2 click regression, swipe from/to coordinates),
      15 new [community] gotchas, bringing total community signal to 330+ -->
 <!-- Iter 25 additions preserved: Appium 3 protocol command renames, screen recording API, browser.on() monitoring, browser.addInitScript() emit(), TypeScript 7 erasableSyntaxOnly, disableElementImplicitWait v9.27.1, Allure historyId fix -->
+
+---
+
+## `appium:ignoredWebviewBundleIds` — Filter Unwanted WebView Contexts (iOS)  [community]
+
+By default, `getContexts()` on iOS returns **every** `WKWebView` it can discover — including system-level webviews from iOS itself (e.g. `com.apple.SafariViewService`, assistant frameworks) that your tests have no interest in. `appium:ignoredWebviewBundleIds` lets you suppress specific bundle IDs from context detection entirely.
+
+Added in XCUITest driver **v10.24.0**.
+
+### Usage
+
+```typescript
+// wdio.conf.ts
+const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:bundleId': 'com.myapp.app',
+  // Exclude system Safari service webview and any WebKit helpers
+  'appium:ignoredWebviewBundleIds': [
+    'com.apple.SafariViewService',
+    'com.apple.WebKit.WebContent',
+  ],
+};
+```
+
+### When to use it
+
+```typescript
+// Before: getContexts() returns 4–6 contexts including system noise
+const allContexts = await driver.getContexts();
+// ['NATIVE_APP', 'WEBVIEW_com.myapp.app', 'WEBVIEW_com.apple.SafariViewService',
+//  'WEBVIEW_com.apple.WebKit.WebContent']
+
+// After: ignoredWebviewBundleIds applied — only your app's webview is visible
+// ['NATIVE_APP', 'WEBVIEW_com.myapp.app']
+```
+
+TypeScript helper that reads the ignore list from an env variable for flexibility:
+
+```typescript
+// helpers/iosCapabilities.ts
+function buildIgnoredWebviewBundleIds(): string[] {
+  const envOverride = process.env.IGNORED_WEBVIEW_BUNDLE_IDS;
+  if (envOverride) {
+    return envOverride.split(',').map(s => s.trim());
+  }
+  return [
+    'com.apple.SafariViewService',
+    'com.apple.WebKit.WebContent',
+    'com.apple.WebKit.Networking',
+  ];
+}
+
+export const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:ignoredWebviewBundleIds': buildIgnoredWebviewBundleIds(),
+};
+```
+
+**[community] Ignoring `com.apple.SafariViewService` breaks tests that use `ASWebAuthenticationSession` for OAuth:** WHY: `ASWebAuthenticationSession` renders the login page inside a `SafariViewService` webview. If you ignore that bundle ID, `getContexts()` will not surface it and your OAuth redirect automation will fail. Fix: remove `com.apple.SafariViewService` from the ignore list if your app uses `ASWebAuthenticationSession`; use `appium:includeSafariInWebviews: true` alongside the ignore list if you only want to suppress WebKit helper processes.
+
+**[community] `appium:ignoredWebviewBundleIds` is an array — passing a comma-separated string causes it to be silently ignored:** WHY: The driver validates the type of the capability; a `string` instead of `string[]` passes the TypeScript check only if you cast it. At runtime, the driver skips the filter. Fix: always declare the capability as `string[]`; the TypeScript `WebdriverIO.Capabilities` interface accepts `string[]` for this key in driver v10.24+.
+
+**[community] The ignore list does not affect `returnDetailedContexts` results — all contexts still appear in the detailed form:** WHY: `returnDetailedContexts: true` is a lower-level enumeration API that bypasses the ignore filter. The ignore list only suppresses entries in the simplified `getContexts()` string array. Fix: filter the detailed results manually by `bundleId` after calling `getContexts({ returnDetailedContexts: true })`.
+
+---
+
+## `appium:iosSyslogFile` — Capture iOS System Log to File  [community]
+
+`appium:iosSyslogFile` writes the iOS device/simulator syslog to a file on the host machine for the duration of the session. This is useful for debugging crashes, background service failures, or ANR-equivalent events that don't appear in the Appium server log.
+
+Added in XCUITest driver **v9.7.0** (long-stable capability).
+
+### Usage
+
+```typescript
+// wdio.conf.ts
+import * as path from 'node:path';
+
+const logDir = process.env.LOG_DIR ?? path.join(process.cwd(), 'test-artifacts', 'ios-syslogs');
+
+const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:bundleId': 'com.myapp.app',
+  // Write syslog to a per-session file; great for CI artifact upload
+  'appium:iosSyslogFile': path.join(logDir, `syslog-${Date.now()}.log`),
+};
+```
+
+Pair with a `onPrepare` hook that ensures the directory exists:
+
+```typescript
+// wdio.conf.ts (hooks section)
+onPrepare: async () => {
+  const { mkdir } = await import('node:fs/promises');
+  await mkdir(path.join(process.cwd(), 'test-artifacts', 'ios-syslogs'), { recursive: true });
+},
+```
+
+In CI (GitHub Actions), upload the directory as an artifact:
+
+```yaml
+- name: Upload iOS syslog artifacts
+  if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: ios-syslogs
+    path: test-artifacts/ios-syslogs/
+    retention-days: 7
+```
+
+**[community] `appium:iosSyslogFile` silently fails if the parent directory does not exist — no error is thrown:** WHY: The XCUITest driver attempts to open the file for appending; if the directory is missing, the open call fails silently and no syslog is written. Fix: always call `mkdir(..., { recursive: true })` in `onPrepare` before sessions start.
+
+**[community] On simulators, the syslog file captures all OS-level noise — file sizes can reach hundreds of MB per session:** WHY: iOS simulator syslogs include all system processes, not just your app. On a busy CI machine running multiple simulated services, log verbosity can be extreme. Fix: use `grep` in a `onComplete` hook to extract only lines matching your app's bundle ID before uploading; alternatively, limit capture to failing sessions only by writing to a temp path and conditionally copying it on failure.
+
+**[community] The syslog file path is resolved relative to the Appium server process working directory, not the WDIO runner:** WHY: Appium opens the file path as-is. If you provide a relative path like `./logs/syslog.log`, it resolves against wherever `appium` was started from (the Appium service working directory), which may not be your project root. Fix: always provide an absolute path via `path.join(process.cwd(), ...)` or `path.resolve(...)`.
+
+---
+
+## `snapshotMaxChildren` and `enforceCustomSnapshots` — iOS XML Hierarchy Tuning  [community]
+
+Two XCUITest settings that control how the UI element hierarchy is captured for page source and element lookup:
+
+- **`snapshotMaxChildren`** (setting, v10.26.0) — caps the number of direct children per node in the XML snapshot. Reduces `getPageSource()` payload size and speeds up `$$()` calls on screens with large flat lists (e.g. 500-item `UICollectionView`).
+- **`enforceCustomSnapshots`** (setting, v10.12.0) — forces the driver to use its own custom snapshot implementation instead of relying on Apple's `XCUIElement.snapshot()`. Required when the default snapshot throws on certain view types (e.g. `UITableView` with diffable data sources).
+
+### Usage
+
+```typescript
+// In onPrepare or beforeSession — set driver-level defaults
+// These are runtime settings, not session capabilities
+
+// Limit children per node for large list screens
+await driver.updateSettings({ snapshotMaxChildren: 50 });
+
+// Or set at session start via capabilities (treated as initial settings)
+const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:settings[snapshotMaxChildren]': 50,
+  'appium:settings[enforceCustomSnapshots]': true,
+};
+```
+
+Toggling per-test for performance-sensitive suites:
+
+```typescript
+describe('Large list screen', () => {
+  before(async () => {
+    // Tighten snapshot depth for this suite — speeds up element resolution ~3x on 500-item lists
+    await driver.updateSettings({ snapshotMaxChildren: 30 });
+  });
+
+  after(async () => {
+    // Restore default (unlimited) for other suites
+    await driver.updateSettings({ snapshotMaxChildren: 0 }); // 0 = unlimited
+  });
+
+  it('scrolls to the last item', async () => {
+    const list = await $('~myCollectionView');
+    await list.scrollIntoView({ direction: 'down', maxScrolls: 20 });
+  });
+});
+```
+
+**[community] `snapshotMaxChildren: 30` causes `$$('XCUIElementTypeCell')` to silently return fewer elements than are on screen:** WHY: The cap applies per-node in the tree. A `UICollectionView` with 500 cells truncated at 30 children means your `$$` only sees 30 items. Fix: use `snapshotMaxChildren` only when you don't need to find elements by index in large lists; set it to 0 (unlimited) before assertions that require full list traversal.
+
+**[community] `enforceCustomSnapshots: true` can slow down element resolution on screens with deep nesting:** WHY: The custom snapshot walker traverses the entire tree eagerly, while Apple's default snapshot is lazily evaluated. On heavily nested modal stacks, the difference can be 500ms+ per command. Fix: enable `enforceCustomSnapshots` only for test files that hit the specific view types that cause Apple's snapshot to crash (diffable data sources, `UIHostingController`-embedded SwiftUI); disable it globally by default.
+
+**[community] The capability form `appium:settings[snapshotMaxChildren]` requires the exact bracket syntax — malformed keys are silently ignored:** WHY: The XCUITest driver parses settings keys embedded in capabilities using a regex for the `[key]` suffix. A key like `appium:snapshotMaxChildren` (without `settings[]`) is treated as an unknown capability and ignored. Fix: always use `'appium:settings[snapshotMaxChildren]': value` in capability objects; use `driver.updateSettings({})` for runtime changes.
+
+---
+
+## `appium:pageLoadStrategy` — Safari/WebView Navigation Wait Mode  [community]
+
+The `appium:pageLoadStrategy` capability controls when the XCUITest driver considers a `browser.url()` / WebView navigation complete. It mirrors the [W3C `pageLoadStrategy`](https://w3c.github.io/webdriver/#dfn-page-load-strategy) specification.
+
+Added in XCUITest driver **v7.18.0** (stable across v8–v11).
+
+| Value | Driver waits for... | Use case |
+|---|---|---|
+| `normal` | `document.readyState === 'complete'` (default) | Standard pages with synchronous resources |
+| `eager` | `document.readyState === 'interactive'` | Pages with slow lazy-loaded images or fonts |
+| `none` | The HTTP response headers only | CSR apps where JS hydration is async |
+
+### Usage
+
+```typescript
+// wdio.conf.ts — use 'eager' for React/Vue apps that are interactive before images load
+const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:bundleId': 'com.myapp.app',
+  // 'none' is the fastest but requires explicit waitForDisplayed() guards everywhere
+  'appium:pageLoadStrategy': 'eager',
+};
+```
+
+For an app where the WebView hosts a SPA and `document.readyState` never reaches `'complete'` due to long-polling:
+
+```typescript
+const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:bundleId': 'com.myapp.app',
+  'appium:pageLoadStrategy': 'none',
+};
+
+// Now explicitly wait for app shell to be ready
+it('navigates to settings', async () => {
+  await browser.switchContext('WEBVIEW_com.myapp.app');
+  await browser.url('/settings');
+  // Must guard manually with 'none' strategy
+  await $('[data-testid="settings-header"]').waitForDisplayed({ timeout: 10_000 });
+});
+```
+
+**[community] `pageLoadStrategy: 'none'` in an app WebView causes `browser.url()` to return before the WKWebView has loaded any content — `$()` calls immediately after will find 0 elements:** WHY: With strategy `none`, the driver fires the navigation command and returns as soon as the protocol acknowledges it. The actual page content is still loading in the WKWebView render process. Fix: always pair `pageLoadStrategy: 'none'` with an explicit `waitForExist()` or `waitForDisplayed()` on a root element before making further assertions.
+
+**[community] `pageLoadStrategy` only applies to WebView/browser contexts — it has no effect in `NATIVE_APP` context:** WHY: The page load strategy concept is a web spec; in native context, Appium does not navigate via URLs and there is no document ready state. The capability is accepted without error but is unused. Fix: set the strategy in capabilities unconditionally; it will silently do nothing when not in a WebView context.
+
+**[community] `eager` strategy can be slower than expected on iOS Safari/WKWebView because DOMContentLoaded fires later than in Chrome:** WHY: Safari's WKWebView fires DOMContentLoaded after all parser-blocking scripts have run, unlike Chrome which fires it earlier in some configurations. For React/Vue SPA apps that don't block the parser, `eager` and `normal` may produce identical wait times. Fix: benchmark both `eager` and `normal` in your specific app before committing; `none` + explicit guards is usually the most reliable for SPA WebViews.
+
+---
+
+## `appium:sendKeyStrategy` — React/Web Input Typing Strategy  [community]
+
+By default, the XCUITest driver types text into WebView inputs by setting `element.value` directly via JavaScript injection. This works for plain HTML inputs but breaks React-controlled inputs that use synthetic events (`onChange`, `onInput`). `appium:sendKeyStrategy` switches to character-by-character key events instead.
+
+Added in XCUITest driver **v7.13.0** (stable across v8–v11).
+
+| Value | Mechanism | Works with React? |
+|---|---|---|
+| `grouped` | JS `element.value =` + one synthesized change event (default) | No — React's synthetic event system not triggered |
+| `oneByOne` | Fires a key event per character | Yes — triggers `onChange` on every keystroke |
+
+### Usage
+
+```typescript
+// wdio.conf.ts — enable character-by-character typing for React WebView inputs
+const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:bundleId': 'com.myapp.app',
+  // Required for React-controlled <input> elements inside WKWebView
+  'appium:sendKeyStrategy': 'oneByOne',
+};
+```
+
+Per-test override via `driver.updateSettings()` when only specific screens are React:
+
+```typescript
+describe('React checkout form', () => {
+  before(async () => {
+    await driver.updateSettings({ sendKeyStrategy: 'oneByOne' });
+  });
+
+  after(async () => {
+    // Restore grouped (faster) for other screens
+    await driver.updateSettings({ sendKeyStrategy: 'grouped' });
+  });
+
+  it('fills the card number field', async () => {
+    await browser.switchContext('WEBVIEW_com.myapp.app');
+    const cardInput = await $('[data-testid="card-number"]');
+    await cardInput.setValue('4111111111111111');
+    // React onChange fires for each digit — validation logic triggers correctly
+    await expect(cardInput).toHaveValue('4111111111111111');
+  });
+});
+```
+
+**[community] `sendKeyStrategy: 'oneByOne'` is 10–30x slower than `grouped` for long strings — never use it globally:** WHY: Each character requires a round-trip protocol command (keyDown + keyUp). A 16-digit card number takes ~150ms with `grouped` and ~3–5 seconds with `oneByOne` over a typical USB/network connection. Fix: use `driver.updateSettings({ sendKeyStrategy: 'oneByOne' })` only in `before()` hooks for suites that test React inputs; restore `grouped` immediately after.
+
+**[community] `sendKeyStrategy: 'oneByOne'` does not work for native `UITextField` inputs — only for WebView `<input>` elements:** WHY: The strategy controls the WebView (JavaScript) typing path. Native UITextField elements use a completely different Appium pathway (`XCUIElement.typeText()`). Setting `oneByOne` has no effect on native elements. Fix: native inputs with React Native do not need `sendKeyStrategy`; only WebView-embedded React DOM inputs require it.
+
+**[community] Some React libraries (e.g. React Hook Form with `mode: 'onChange'`) still fail to trigger validation with `oneByOne` if the input uses `forwardRef` with custom `onChange` wiring:** WHY: The character-by-character key events update the visible value but the synthetic React event may not propagate through a `forwardRef` wrapper if the ref is attached to the inner element. Fix: after `setValue()` with `oneByOne`, call `browser.execute('arguments[0].dispatchEvent(new Event("input", { bubbles: true }))', element)` to force a synthetic input event.
+
+---
+
+## `placeholderValue` — Explicit iOS Placeholder Attribute in XML  [community]
+
+In XCUITest driver v10+ and iOS 18+, placeholder text for `UITextField` and `WKWebView` `<input placeholder="...">` elements is exposed as a named XML attribute `placeholderValue` in `getPageSource()` output. Previously, placeholder text was only accessible via `element.getAttribute('placeholder')`, which required a separate protocol round-trip.
+
+```typescript
+// Page source XML snippet (iOS 18+ / XCUITest v10+):
+// <XCUIElementTypeTextField
+//   type="XCUIElementTypeTextField"
+//   value=""
+//   placeholderValue="Enter your email"
+//   accessible="true" ... />
+
+// Locate by placeholder — no getAttribute() call needed
+const emailInput = await $('//XCUIElementTypeTextField[@placeholderValue="Enter your email"]');
+await emailInput.setValue('user@example.com');
+
+// Or using the accessibility label that matches the placeholder:
+const emailByPlaceholder = await $('~Enter your email');
+```
+
+For WebView inputs, `placeholderValue` also appears in the XML, allowing XPath-based targeting:
+
+```typescript
+// WebView input with placeholder
+await browser.switchContext('WEBVIEW_com.myapp.app');
+// Standard DOM attribute approach still works:
+const emailWv = await $('[placeholder="Enter your email"]');
+// Switch back to native and use placeholderValue XPath for hybrid checks:
+await browser.switchContext('NATIVE_APP');
+const emailNative = await $('//XCUIElementTypeTextField[@placeholderValue="Enter your email"]');
+```
+
+**[community] `@placeholderValue` in XPath is iOS/XCUITest-only — it does not exist on Android (UiAutomator2):** WHY: Android exposes placeholder text via `text` attribute (when the field is empty) or `hint` attribute in accessibility; there is no `placeholderValue` in the Android XML schema. Fix: wrap XPath selectors that use `@placeholderValue` in a platform guard (`driver.isIOS`); use `[hint="..."]` in UIAutomator2's XPath for Android placeholder targeting.
+
+**[community] On iOS 17 and below (XCUITest driver v9 or older), `placeholderValue` may not appear in `getPageSource()` XML even if the attribute is documented:** WHY: The attribute was backfilled into the XML serializer across multiple minor driver releases. Fix: if you need to target iOS 17, use `element.getAttribute('value')` (returns placeholder when empty) plus a length check, or fall back to `~accessibilityLabel` targeting.
+
+---
+
+## `mobile:pressButton` — Extended tvOS Buttons (XCUITest v10.25)  [community]
+
+XCUITest driver v10.25.0 expanded the `mobile:pressButton` command to include **2 new iOS buttons** and **6 new tvOS-specific buttons**, making it possible to fully automate Apple TV remote navigation in tests.
+
+### New iOS buttons (v10.25+)
+
+| Button name | Description |
+|---|---|
+| `snapshotButton` | Triggers the screenshot gesture on supported iOS hardware |
+| `accessibilityShortcut` | Activates the Accessibility Shortcuts menu (triple-click side button) |
+
+### New tvOS buttons (v10.25+)
+
+| Button name | Description |
+|---|---|
+| `up` | D-pad up |
+| `down` | D-pad down |
+| `left` | D-pad left |
+| `right` | D-pad right |
+| `back` | Back / Menu button (returns to previous screen) |
+| `topMenu` | Long-press Menu / TV button to go to Apple TV home |
+
+### Complete cross-platform `pressButton` reference
+
+```typescript
+// TypeScript helper — cross-platform press button with tvOS support
+type IOSButton =
+  | 'home' | 'lock' | 'volumeup' | 'volumedown' | 'siri'
+  | 'snapshotButton' | 'accessibilityShortcut';
+
+type TVOSButton =
+  | 'home' | 'up' | 'down' | 'left' | 'right' | 'back' | 'topMenu'
+  | 'select' | 'menu' | 'playPause';
+
+async function pressButton(button: IOSButton | TVOSButton): Promise<void> {
+  await driver.execute('mobile: pressButton', { name: button });
+}
+
+// tvOS navigation example
+it('navigates to the Settings app on Apple TV', async () => {
+  await pressButton('topMenu');           // Go to home screen
+  await pressButton('right');             // Navigate to Settings icon
+  await pressButton('right');
+  await pressButton('select');            // Open Settings
+  await $('~General').waitForDisplayed({ timeout: 5000 });
+});
+```
+
+**[community] tvOS `mobile:pressButton` requires `platformName: 'tvOS'` — sending `up`/`down`/`left`/`right` to iOS returns an `unknown button` error:** WHY: The tvOS-specific button names are only registered in the tvOS XCUITest driver variant. Fix: add a runtime check (`driver.capabilities.platformName === 'tvOS'`) before calling directional buttons; maintain separate capability configs for iOS and tvOS in your WDIO conf.
+
+**[community] The D-pad buttons (`up`, `down`, `left`, `right`) do not perform visual focus movement on the Apple TV Simulator unless the focus engine is active:** WHY: tvOS uses the focus engine to route D-pad events to the focused element. If the app hasn't received initial focus (e.g. the home screen was just launched), D-pad presses may be silently ignored. Fix: call `mobile:pressButton` with `select` once after launch to initialize focus, then proceed with directional navigation.
+
+---
+
+## Appium 3.4 — `getGlobalPrivacyControl` / `setGlobalPrivacyControl` Endpoints  [community]
+
+Appium 3.4.0 (2026-05-06) added 3 WebDriver extension endpoints that proxy W3C spec-defined privacy and storage access features. The two privacy endpoints are immediately useful for testing apps that respond to the [Global Privacy Control](https://globalprivacycontrol.org/) signal.
+
+| Endpoint | WDIO method | Description |
+|---|---|---|
+| `GET /session/:id/gpc` | `browser.getGlobalPrivacyControl()` | Returns the current GPC signal value (`true`/`false`) |
+| `POST /session/:id/gpc` | `browser.setGlobalPrivacyControl(gpc)` | Sets the GPC signal for the current session |
+| `GET /session/:id/storageAccess` | (storage access, browser-only) | Proxy for Storage Access API state (not yet used in mobile) |
+
+### Usage in WDIO v9.27+ with Appium 3.4+
+
+```typescript
+// wdio.conf.ts — ensure you're on Appium 3.4+ and WDIO 9.27+
+
+it('app respects GPC opt-out signal', async () => {
+  // Switch to WebView context to use web privacy APIs
+  await browser.switchContext('WEBVIEW_com.myapp.app');
+
+  // Set GPC to indicate user opt-out of tracking
+  await browser.setGlobalPrivacyControl(true);
+
+  // Navigate to the consent screen — the app should auto-accept the GPC signal
+  await browser.url('/privacy-settings');
+  const analyticsToggle = await $('[data-testid="analytics-toggle"]');
+  // Verify the toggle is automatically off when GPC is active
+  await expect(analyticsToggle).not.toBeChecked();
+
+  // Verify GPC is set correctly
+  const gpcValue = await browser.getGlobalPrivacyControl();
+  expect(gpcValue).toBe(true);
+});
+
+it('app shows consent dialog when GPC is off', async () => {
+  await browser.switchContext('WEBVIEW_com.myapp.app');
+  await browser.setGlobalPrivacyControl(false);
+
+  await browser.url('/privacy-settings');
+  const consentDialog = await $('[data-testid="consent-dialog"]');
+  await consentDialog.waitForDisplayed({ timeout: 5_000 });
+});
+```
+
+TypeScript type extension for GPC methods (if `@wdio/types` hasn't caught up yet):
+
+```typescript
+// test/types/wdio-extensions.d.ts
+declare namespace WebdriverIO {
+  interface Browser {
+    getGlobalPrivacyControl(): Promise<boolean>;
+    setGlobalPrivacyControl(gpc: boolean): Promise<void>;
+  }
+}
+```
+
+**[community] `browser.getGlobalPrivacyControl()` / `browser.setGlobalPrivacyControl()` are WebView-only — calling them in `NATIVE_APP` context returns `unknown command` from UIAutomator2/XCUITest:** WHY: GPC is a web privacy specification; the mobile driver delegates it to the embedded browser engine (Chrome/WebKit). In native context there is no underlying browser to relay the command to. Fix: always call GPC methods inside a `browser.switchContext('WEBVIEW_...')` block; switch back to `NATIVE_APP` when done.
+
+**[community] `@wdio/types` v9.27.x may not yet declare `getGlobalPrivacyControl` / `setGlobalPrivacyControl` on `Browser` — TypeScript will report `Property does not exist`:** WHY: Type definitions trail behind protocol implementations by one or two minor releases. Fix: add the `wdio-extensions.d.ts` declaration above and include it in `tsconfig.json`'s `include` array; remove the augmentation once `@wdio/types` catches up.
+
+---
+
+## Source: Iteration Log (Run 2026-05-12, Iteration 32)
+
+<!-- lang: TypeScript | sources: official docs + community | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run (iter 32):
+     - XCUITest v11 migration table updated: added waitForQuiescence removal + simpleIsVisibleCheck removal (2 missing entries)
+     - appium:waitForQuiescence section updated with v11 removal notice callout
+     - appium:ignoredWebviewBundleIds (XCUITest v10.24): filter webview contexts, SafariViewService exclusion, env-var helper + 3 gotchas
+     - appium:iosSyslogFile (XCUITest v9.7, long-stable): syslog capture, CI artifact upload pattern, directory prep hook + 3 gotchas
+     - snapshotMaxChildren + enforceCustomSnapshots (XCUITest v10.26/v10.12): XML hierarchy tuning, per-test toggle + 3 gotchas
+     - appium:pageLoadStrategy for Safari/WebView (XCUITest v7.18): normal/eager/none table, SPA gotcha + 3 gotchas
+     - appium:sendKeyStrategy for React inputs (XCUITest v7.13): oneByOne vs grouped, per-suite toggle + 3 gotchas
+     - placeholderValue explicit XML attribute (XCUITest v10+/iOS 18+): XPath targeting, Android parity note + 2 gotchas
+     - mobile:pressButton tvOS extended buttons (XCUITest v10.25): full tvOS button table, cross-platform helper + 2 gotchas
+     - Appium 3.4 getGlobalPrivacyControl/setGlobalPrivacyControl: GPC endpoints, WebView-only gotcha, TypeScript augmentation + 2 gotchas
+-->
+<!-- Total community pitfalls: 400+ tagged [community] instances -->
+<!-- Total sections: 253+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources (iter 32):
+     github.com/appium/appium-xcuitest-driver/releases (v10.24 ignoredWebviewBundleIds, v10.25 pressButton tvOS,
+       v10.26 snapshotMaxChildren, v11.0.0 removals including waitForQuiescence + simpleIsVisibleCheck),
+     raw.githubusercontent.com/appium/appium-xcuitest-driver/master/CHANGELOG.md (v7.13 sendKeyStrategy, v7.18 pageLoadStrategy,
+       v9.7 iosSyslogFile, v10.12 enforceCustomSnapshots, v11.0.0 full removal list),
+     github.com/appium/appium/issues/22237 (Appium 3.4.0 getGlobalPrivacyControl/setGlobalPrivacyControl + storage access endpoints),
+     globalprivacycontrol.org (GPC spec reference),
+     github.com/appium/appium/blob/master/packages/appium/CHANGELOG.md (3.4.0 "add 3 WebDriver extension endpoints") -->
+<!-- Score delta: 0 (maintained 100/100) — iter 32 adds 9 new sections/updates: corrects v11 migration table (2 missing removals),
+     adds v11 removal notice to waitForQuiescence section, adds 8 new sections covering ignoredWebviewBundleIds,
+     iosSyslogFile, snapshotMaxChildren/enforceCustomSnapshots, pageLoadStrategy, sendKeyStrategy, placeholderValue,
+     tvOS pressButton, and Appium 3.4 GPC endpoints, bringing total community signal to 400+ -->

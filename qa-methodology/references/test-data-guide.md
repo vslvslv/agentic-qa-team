@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 42 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 43 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes, playwright.dev/docs/api/class-websocketroute, playwright.dev/docs/test-global-setup-teardown, playwright.dev/docs/api/class-test#test-abort, github.com/mswjs/msw/releases); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
@@ -10,6 +10,7 @@
 <!-- iter-35: Vitest 4.1 builder pattern for test.extend() (return-based, automatic TypeScript type inference); aroundEach hook (transaction-per-test pattern); test.override() per-suite fixture overrides; vi.defineHelper() for clean factory assertion stack traces; Vitest 4.x coverage.all/coverage.extensions removal + mandatory coverage.include; community gotcha #23; new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-41: Playwright 1.48 page.routeWebSocket() E2E WebSocket test data interception; Playwright 1.49 multiple globalSetup via project dependencies for composable DB seeding; Playwright 1.50 test.step.skip() for data-dependent step guarding; Playwright 1.60 test.abort() for fixture precondition enforcement; MSW v2.14 finalize() API for WS handler cleanup; faker v10.4 locale expansions (Norwegian, Japanese) for locale-sensitive test data; community gotcha #29 (Playwright WebSocket routes linger across tests without explicit teardown); updated checklists; 6 new Key Resources (2026-05-12) -->
 <!-- iter-42: MSW v2.14.0 ws.onUpgrade() API for HTTP-upgrade-based WebSocket connections in Node.js; community gotcha #30 (ws.onUpgrade vs ws.link — upgrade handler applies globally, not per-link; not available in browser/service worker context); new Key Resource (2026-05-12) -->
+<!-- iter-43: MSW defineNetwork() RFC — unified network mock API separating sources from handlers; Playwright 1.52 failOnFlakyTests as factory isolation quality signal (community gotcha #31); Playwright 1.53 locator.describe() for fixture element annotation in traces; Playwright 1.56 page.requests() for asserting factory-driven request patterns; Playwright 1.56 LLM Test Agents applied to factory scaffolding; corrected testProject.workers attribution to v1.52 (not v1.57); updated Playwright checklist; 4 new Key Resources (2026-05-12) -->
 <!-- iter-40: faker v10 new APIs for factory authors (word error strategy 'fail', BigInt number generation, book module, UPC barcodes, simple coordinate methods, generic sex type); Playwright 1.46 component testing router fixture for MSW test data injection; community gotcha #28 (faker.word default 'fail' error strategy breaks word-based factories); updated Key Resources (2026-05-12) -->
 <!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-37: Vitest 4.0 expect.schemaMatching for inline factory output validation against Zod/Valibot/ArkType; Vitest 4.0 getSeed() API for programmatic seed access; Vitest 4.1 experimental viteModuleRunner:false for native Node.js factory execution; Google Testing Blog "Construct with Collaborators, Call with Work" pattern (2026-05-05) applied to factory design; faker v10.4.0 latest stable (2026-03-23); fishery v2.4.0 latest stable (2025-12-08); community gotcha #25 (schema drift caught by expect.schemaMatching); updated Key Resources (2026-05-12) -->
@@ -6250,6 +6251,9 @@ test data technical debt from accumulating.
 - [ ] Playwright ≥ 1.49: DB seeding split across independent setup projects with `dependencies` + `teardown` fields — no monolithic `globalSetup.ts` containing all seed logic
 - [ ] Playwright ≥ 1.50: factory-parametric tests with scenario-inapplicable steps use `step.skip(condition, reason)` rather than `if (condition) return` inside step bodies
 - [ ] Playwright ≥ 1.60: fixtures that enforce test data preconditions (test environment, no stale state) use `test.abort(message)` instead of `throw` or `expect()` for clearer failure output
+- [ ] Playwright ≥ 1.52: integration projects with multiple workers enable `failOnFlakyTests: true` to surface factory data isolation bugs that pass on retry
+- [ ] Playwright ≥ 1.53: factory-variant locators use `locator.describe('${variant} element')` for semantic trace labelling — avoids anonymous selector entries in failure traces
+- [ ] Playwright ≥ 1.56: `page.requests()` used in post-interaction assertions to verify factory-driven API call patterns and detect N+1 regressions introduced by domain model changes
 
 **Vitest configuration checklist (Vitest 4.x):**
 - [ ] `poolOptions` is NOT used — settings are top-level (`isolate`, `maxWorkers`, `pool`)
@@ -9208,4 +9212,348 @@ for (const { locale, address, label } of localeTestCases) {
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
 | MSW v2.14.0 release notes (`ws.onUpgrade`) | Official | https://github.com/mswjs/msw/releases/tag/v2.14.0 | `ws.onUpgrade` API for intercepting HTTP upgrade requests before WebSocket handshake (Node.js only) |
+
+---
+
+## MSW `defineNetwork()` — Upcoming Unified Network Mock API  [community]
+
+`defineNetwork()` is a proposed new top-level API in MSW (RFC #2488, under active development as of May 2026 in v2.14.x). It separates two distinct concerns that are currently conflated in `setupServer()` / `setupWorker()`:
+
+1. **Network sources** — where requests originate (a Service Worker, Node.js interceptors, Playwright's `page.route()`, or a custom source)
+2. **Handler resolution** — how those requests are routed through your MSW handlers
+
+**Why it matters for test data factories:** The current MSW API requires choosing `setupServer` (Node.js only) or `setupWorker` (browser only) at setup time, which forces test code to be aware of its execution environment. `defineNetwork()` lets you write handler logic once and plug in different network sources per environment — the same factory-backed handlers work in Vitest unit tests (Node.js interceptors), Playwright E2E tests (Playwright `page.route()` source), and browser integration tests (Service Worker source) without any handler duplication.
+
+**Proposed API shape (from RFC #2488):**
+```typescript
+// EXPERIMENTAL — API shape subject to change; check MSW docs for stable release
+import { defineNetwork, ServiceWorkerSource } from 'msw';
+import { handlers } from './mocks/handlers';
+// (handlers.ts uses the same http.get/http.post/ws.link factory-backed handlers as today)
+
+// Browser test setup — uses Service Worker as the network source
+const network = defineNetwork({
+  sources: [new ServiceWorkerSource()],
+  initialHandlers: handlers,
+});
+
+// Node.js test setup (Vitest) — uses Node.js interceptors as the source
+// import { NodeInterceptorsSource } from 'msw/node';
+// const network = defineNetwork({
+//   sources: [new NodeInterceptorsSource()],
+//   initialHandlers: handlers,
+// });
+
+await network.enable();
+
+// Per-test handler overrides — same API as server.use() / worker.use()
+network.use(
+  http.get('/api/users/:id', ({ params }) => {
+    return HttpResponse.json(buildUser({ id: params.id as string, status: 'suspended' }));
+  })
+);
+
+// Teardown
+await network.disable();
+```
+
+**Playwright custom source (the key new capability):**
+
+The RFC includes a first-class Playwright integration that uses `page.route()` as the network source. This means MSW factory-backed handlers can run inside Playwright E2E tests **without requiring a Service Worker** — solving the long-standing challenge of using MSW in E2E contexts where Service Worker registration is impractical (behind auth walls, in iframes, in electron apps).
+
+```typescript
+// Playwright + defineNetwork (proposed pattern from RFC)
+// Allows MSW handlers to intercept Playwright page requests via page.route()
+// EXPERIMENTAL — requires MSW >= 2.15 when stable
+
+import { defineNetwork } from 'msw';
+import { PlaywrightSource } from 'msw/playwright'; // proposed import path
+import { handlers } from '../mocks/handlers';
+import { test, expect } from '@playwright/test';
+
+test('checkout with MSW factory-backed handlers via Playwright source', async ({ page }) => {
+  const network = defineNetwork({
+    sources: [new PlaywrightSource(page)],
+    initialHandlers: handlers,
+  });
+
+  await network.enable();
+
+  // Per-test override — scoped to this test only
+  network.use(
+    http.post('/api/checkout', () =>
+      HttpResponse.json({ status: 'success', orderId: buildOrder().id })
+    )
+  );
+
+  await page.goto('/checkout');
+  await page.click('[data-testid="pay-button"]');
+  await expect(page.locator('[data-testid="order-confirmation"]')).toBeVisible();
+
+  await network.disable();
+});
+```
+
+**Current status (May 2026):**
+- RFC merged into main branch
+- Experimental `defineNetwork()` exports appear in MSW v2.14.x internals (referenced in v2.14.6 changelog)
+- Stable release expected in MSW v2.15 — monitor the [MSW releases page](https://github.com/mswjs/msw/releases) for the stable API
+
+**Migration strategy:** When `defineNetwork()` stabilises, existing `setupServer()` / `setupWorker()` code continues working — the RFC is additive, not a replacement. Migrate incrementally: new test files use `defineNetwork()`, existing files keep `setupServer()` / `setupWorker()` until you have time to refactor.
+
+---
+
+## Playwright 1.53 `locator.describe()` — Annotating Fixture Elements in Traces  [community]
+
+Playwright 1.53 added `locator.describe(label)`, which attaches a human-readable label to a locator for display in Trace Viewer and HTML reports. When test data factories create domain objects that are then rendered and interacted with in E2E tests, naming the locators with the factory's semantic variant label makes traces dramatically easier to read.
+
+**Why it matters for test data:** An E2E test that creates a `UserMother.suspended().build()` user and then asserts on their checkout button produces a Trace Viewer entry like `click [data-testid="checkout-btn"]` — providing no context about which user variant is being exercised. With `locator.describe()`, the trace entry becomes `click "Suspended user checkout button"` — immediately identifying the factory variant in the failure trace.
+
+```typescript
+// specs/checkout-trace.spec.ts — factory-aware locator descriptions
+import { test, expect } from '@playwright/test';
+import { userFactory } from '../factories/user.factory';
+
+test('suspended user sees disabled checkout button @integration', async ({ page }) => {
+  // Factory creates the user — the page URL carries the user identity
+  const user = await userFactory.create({ status: 'suspended' });
+  await page.goto(`/checkout?userId=${user.id}`);
+
+  // locator.describe() annotates this locator in Trace Viewer as:
+  // "Suspended user checkout button" — not the generic selector
+  const checkoutBtn = page
+    .locator('[data-testid="checkout-btn"]')
+    .describe(`${user.status} user checkout button`);
+
+  // Trace entry: "Expect 'Suspended user checkout button' to be disabled"
+  await expect(checkoutBtn).toBeDisabled();
+  await expect(checkoutBtn.describe('Disabled reason tooltip')).toHaveAttribute(
+    'title',
+    'Account suspended'
+  );
+});
+```
+
+```typescript
+// fixtures/described-fixtures.ts — factory fixtures that describe their elements
+import { test as base } from '@playwright/test';
+import { userFactory } from '../factories/user.factory';
+
+type DescribedFixtures = {
+  userPage: {
+    user: { id: string; status: string; email: string };
+    // Factory-named locator helper — auto-describes by status
+    checkoutLocator: (page: import('@playwright/test').Page) => import('@playwright/test').Locator;
+  };
+};
+
+export const test = base.extend<DescribedFixtures>({
+  userPage: async ({}, use) => {
+    const user = await userFactory.create({ status: 'suspended' });
+
+    // Returns a locator pre-described with the factory variant's status
+    const checkoutLocator = (page: import('@playwright/test').Page) =>
+      page.locator('[data-testid="checkout-btn"]').describe(`${user.status}-user checkout button`);
+
+    await use({ user, checkoutLocator });
+    await userFactory.cleanup(user.id);
+  },
+});
+```
+
+**Pattern: use `locator.describe()` systematically for factory-driven test data:**
+- Name the variant: `describe('${factory.status} user element')` — identifies the data context
+- Name the action: `describe('Pay button for premium-tier order')` — identifies the business intent
+- Avoid generic labels: `describe('button')` adds no value over the raw selector
+
+**Requires:** Playwright ≥ 1.53.
+
+---
+
+## Playwright 1.56 `page.requests()` — Asserting Factory-Driven Request Patterns  [community]
+
+Playwright 1.56 added `page.requests()` and `page.consoleMessages()` / `page.pageErrors()` — convenience methods that return all network requests, console messages, and page errors collected since the page was created (or since the last call). For factory-heavy E2E test suites, `page.requests()` provides a lightweight way to assert that factory-generated test data caused the expected API calls — without setting up explicit `page.route()` intercepts for every test.
+
+**Why it matters:** When an E2E test creates a factory user and navigates to their dashboard, you may want to verify that the page fetched the user's data from the correct API endpoint. Previously, asserting on specific requests required either `page.waitForRequest()` (fires once, then discards) or a `page.route()` spy. `page.requests()` exposes the full request history as an array — you can filter by URL, method, and timing *after* the interaction completes.
+
+```typescript
+// specs/dashboard-requests.spec.ts — asserting factory-driven API calls
+import { test, expect } from '@playwright/test';
+import { userFactory } from '../factories/user.factory';
+
+test('dashboard fetches user data and orders on load @integration', async ({ page }) => {
+  const user = await userFactory.create({ subscriptionTier: 'premium' });
+
+  await page.goto(`/dashboard?userId=${user.id}`);
+
+  // Wait for the page to settle (all expected requests complete)
+  await page.waitForLoadState('networkidle');
+
+  // page.requests() returns all requests since page creation
+  const requests = await page.requests();
+
+  // Assert: exactly one GET request to the user endpoint with the factory user's ID
+  const userRequests = requests.filter(
+    (r) => r.method() === 'GET' && r.url().includes(`/api/users/${user.id}`)
+  );
+  expect(userRequests).toHaveLength(1);
+
+  // Assert: orders were fetched for the user
+  const orderRequests = requests.filter(
+    (r) => r.method() === 'GET' && r.url().includes('/api/orders') && r.url().includes(user.id)
+  );
+  expect(orderRequests.length).toBeGreaterThanOrEqual(1);
+
+  // Assert: no unauthorized requests (factory user's session token present in all requests)
+  const unauthorizedRequests = requests.filter((r) => {
+    const authHeader = r.headers()['authorization'];
+    return r.url().startsWith(process.env.TEST_API_URL ?? '') && !authHeader;
+  });
+  expect(unauthorizedRequests).toHaveLength(0);
+
+  await userFactory.cleanup(user.id);
+});
+```
+
+```typescript
+// Pattern: factory-driven API call count assertions for regression testing
+// Use page.requests() to catch N+1 query regressions introduced by domain model changes
+
+test('premium dashboard makes at most 5 API calls on initial load @performance', async ({ page }) => {
+  const user = await userFactory.create({ subscriptionTier: 'premium' });
+  await page.goto(`/dashboard?userId=${user.id}`);
+  await page.waitForLoadState('networkidle');
+
+  const apiRequests = (await page.requests()).filter(
+    (r) => r.url().includes('/api/')
+  );
+
+  // Regression guard: factory-seeded premium dashboard should not exceed 5 API calls
+  // If this fails after a domain model change, a new N+1 query was introduced
+  expect(apiRequests.length).toBeLessThanOrEqual(5);
+
+  await userFactory.cleanup(user.id);
+});
+```
+
+**Key difference from `page.waitForRequest()`:**
+
+| Method | When to use |
+|---|---|
+| `page.waitForRequest(urlOrPredicate)` | Assert a specific request fires *during* an interaction; streams in real-time |
+| `page.requests()` | Assert request history *after* interactions complete; returns the full array |
+| `page.route()` + spy | Full intercept + mock; use when you need to control the response, not just observe |
+
+**Requires:** Playwright ≥ 1.56.
+
+---
+
+## Playwright 1.56 LLM Test Agents — Factory Generation in Agentic Workflows  [community]
+
+Playwright 1.56 introduced three built-in LLM agent definitions (`planner`, `generator`, `healer`) available via `npx playwright init-agents`. These agents are pre-configured system prompts that instruct LLMs to follow Playwright's best practices when generating test files and fixture code. They are directly relevant to the LLM-assisted test data generation section earlier in this guide — specifically for factory scaffolding (Mode 1).
+
+**Why it matters for factory authors:** The `generator` agent is explicitly aware of Playwright fixture patterns, `test.extend()` syntax, and fixture teardown. When you ask it to scaffold a factory for a new domain entity, it produces fixture-backed factories with correct `onCleanup()` teardown — not bare `beforeEach`/`afterEach` — because the agent's system prompt encodes Playwright's fixture best practices.
+
+**Agent roles:**
+- **Planner:** Explores the application (via `page.goto()` + Aria snapshots) and produces a Markdown test plan, including which fixtures and factory variants are needed for each scenario.
+- **Generator:** Takes the Markdown plan and generates Playwright test files with correct fixture usage, `test.extend()` factories, and `{ box: true }` for infrastructure fixtures.
+- **Healer:** Runs the generated test suite, analyses failures (including factory drift and fixture teardown errors), and auto-repairs the generated code.
+
+**Initialising agents in a TypeScript project:**
+```bash
+# Generates .claude/agents/ directory with Playwright agent definitions
+npx playwright init-agents
+
+# Available client loops (specify your preferred LLM client):
+# - vscode: works with Copilot, Continue, or any VS Code LLM extension
+# - claude: Claude Code (this tool)
+# - opencode: opencode.ai
+npx playwright init-agents --client=claude
+```
+
+**Directing the generator agent to produce factory-backed fixtures:**
+```markdown
+<!-- test-plan.md — output from the planner agent -->
+
+## Checkout Flow Test Plan
+
+### Fixture Requirements
+- `suspendedUser`: DB-persisted user with status='suspended' — use fishery factory with onCleanup teardown
+- `premiumUser`: DB-persisted user with subscriptionTier='premium' and a valid paymentMethodId
+- `cartWithItems`: in-memory cart factory, 2 items, totalCents=4999
+
+### Test Cases
+
+1. **Suspended user checkout blocked**
+   - Use: `suspendedUser` fixture
+   - Assert: checkout button disabled; reason tooltip = "Account suspended"
+
+2. **Premium user checkout succeeds**
+   - Use: `premiumUser` fixture + `cartWithItems`
+   - Assert: order confirmation visible; orderId is a UUID
+```
+
+When the `generator` agent processes this plan with the Playwright agent system prompt, it produces test files that use `test.extend()` fixtures with correct factory patterns — including `{ box: true }` for the infrastructure fixtures and `onCleanup()` for teardown. The output aligns with the patterns documented in this guide without requiring manual guidance.
+
+**[community] Gotcha — healer agent and factory drift:** The `healer` agent will attempt to fix failing tests by modifying test assertions to match the current output. If a factory is producing schema-invalid data (the `expect.schemaMatching` class of drift covered in Gotcha #25), the healer may change test assertions to accommodate the invalid data rather than fixing the factory. **Add factory smoke tests (`expect.schemaMatching`) as a required CI gate before the healer agent runs** — this ensures the healer only repairs genuine E2E logic failures, not factory data quality issues.
+
+**Integration with the LLM-assisted test data section:** The three Playwright agents implement Mode 1 (one-time factory scaffolding) and Mode 2 (healer-generated edge-case repairs) from the LLM-assisted test data section, but with Playwright-specific best practices baked in. For `fishery`-based factories (non-E2E), the generic Mode 1 prompt pattern (described earlier in this guide) remains the primary approach.
+
+---
+
+31. **[community] `failOnFlakyTests` in Playwright 1.52+ surfaces factory data isolation failures that would otherwise pass on retry.**
+    Playwright 1.52 added the `failOnFlakyTests` config option (also available via `--fail-on-flaky-tests` CLI flag). When enabled, the test run fails if any test passes on retry after an initial failure — catching tests that are non-deterministic across runs. This is directly relevant to test data factories: a test that fails 30% of the time due to a shared DB row (cross-test data contamination) is a flaky test. Without `failOnFlakyTests`, CI marks the run as passing (all tests *eventually* passed) and the factory isolation bug remains hidden. With `failOnFlakyTests`, the flaky run fails immediately, forcing the team to investigate the factory isolation issue.
+
+    ```typescript
+    // playwright.config.ts — enable failOnFlakyTests to surface factory isolation bugs
+    import { defineConfig } from '@playwright/test';
+
+    export default defineConfig({
+      // Fail the run if any test passes only after retrying — surfaces isolation flakiness
+      // Recommended for integration projects (workers: 2+) where factory isolation matters
+      failOnFlakyTests: true,
+
+      // retries: still needed to distinguish infra flakiness (network, timing) from data flakiness
+      // Use retries: 1 — a test that fails once then passes is "flaky" and will fail the run
+      retries: process.env.CI ? 1 : 0,
+
+      projects: [
+        {
+          name: 'integration',
+          testMatch: '**/*.integration.spec.ts',
+          workers: 2,  // parallel workers make factory isolation bugs more likely to manifest
+          // failOnFlakyTests is inherited from the root config — no per-project override needed
+        },
+      ],
+    });
+    ```
+
+    **Pattern: use `failOnFlakyTests` to audit factory isolation quality:**
+
+    ```bash
+    # One-time audit: run with flaky detection to surface all isolation issues
+    npx playwright test --fail-on-flaky-tests --retries=2 --workers=4
+
+    # In CI: enforce as a required gate for the integration project
+    # (smoke project may use --retries=2 without failOnFlakyTests — UI flakiness is expected)
+    ```
+
+    **Root causes when `failOnFlakyTests` surfaces factory failures:**
+    - **Shared DB row:** factory creates a user without a unique prefix; parallel tests collide on the same email unique constraint
+    - **Leaked session state:** a worker-scoped browser context retains auth cookies from the previous test (fix: use `setStorageState({ cookies: [], origins: [] })` in fixture teardown)
+    - **Un-cleaned fixture data:** a factory creates a DB row but the `onCleanup()` was not called (fix: use `await using` or Playwright's `{ box: true }` fixture teardown guarantee)
+    - **Ordering dependency:** test B assumes a row created by test A still exists (fix: each test must create its own data via its own factory call)
+
+    The presence of flaky tests detected by `failOnFlakyTests` is a strong signal that your factory isolation strategy needs to be upgraded — typically from namespace-prefix isolation to transaction rollback or per-worker DB isolation (see the Cleanup Strategy Decision Tree earlier in this guide).
+
+---
+
+## Key Resources (iter-43 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| MSW `defineNetwork()` RFC | Community | https://github.com/mswjs/msw/issues/2488 | Proposed unified API separating network sources from handler resolution; Playwright source integration for E2E |
+| Playwright 1.52 release notes | Official | https://playwright.dev/docs/release-notes#version-152 | `testProject.workers` (per-project worker counts); `failOnFlakyTests` for data isolation quality |
+| Playwright 1.53 `locator.describe()` | Official | https://playwright.dev/docs/release-notes#version-153 | Annotate fixture-created element locators with semantic labels for Trace Viewer + HTML reports |
+| Playwright 1.56 `page.requests()` + agents | Official | https://playwright.dev/docs/release-notes#version-156 | `page.requests()` for post-interaction request history; `init-agents` for LLM-guided factory scaffolding |
 | MSW PR #2732 (`ws.onUpgrade` implementation) | Community | https://github.com/mswjs/msw/pull/2732 | Design rationale: why `ws.onUpgrade` is global (not per-link), default 101 behaviour, Node.js restriction |

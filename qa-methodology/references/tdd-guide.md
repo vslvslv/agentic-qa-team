@@ -1,6 +1,6 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 23 | score: 97/100 | date: 2026-05-12 -->
-<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) + typescript-6.0-baseurl-deprecation (WebFetch 2026-05-12) + typescript-6.0-subpath-imports (WebFetch 2026-05-12) + vitest-4.1-coverage-ignore-comments (WebFetch 2026-05-12) | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 24 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) + typescript-6.0-baseurl-deprecation (WebFetch 2026-05-12) + typescript-6.0-subpath-imports (WebFetch 2026-05-12) + vitest-4.1-coverage-ignore-comments (WebFetch 2026-05-12) + vitest-3.2-scoped-fixtures (WebFetch 2026-05-12) + vitest-3.2-using-spyon (WebFetch 2026-05-12) + vitest-3.2-matchers-type (WebFetch 2026-05-12) + google-tott-2025-functional-core + google-tott-2025-arrange-data-flow | ISTQB CTFL 4.0 terminology applied -->
 <!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
 <!-- extension 2026-05-12: iter 17 — added TDD for Feature Flags (safe defaults pattern); One Map Key One Lookup for test doubles; TCR TypeScript script; gotchas #24–#26 -->
 <!-- extension 2026-05-12: iter 18 — added Zod v4 TDD patterns (schemaMatching with v4 APIs, z.input/z.output for test data, migration pitfall); `using`/`await using` for TDD resource teardown; Neon DB branching for database-level TDD isolation; `Promise.try` for sync-to-async TDD wrappers; gotchas #27–#29 -->
@@ -9,6 +9,7 @@
 <!-- extension 2026-05-12: iter 21 — added Vitest 4.1 viteModuleRunner:false (production-closer execution mode vs runner:node); Vitest 4.1 onCleanup() fixture teardown callback; Vitest 4.1 Chai-style mock assertions; TypeScript 6.0 this-less function context-sensitivity improvement; TypeScript 5.9 --module node20 vs nodenext distinction; TypeScript 7.0 preparation with --stableTypeOrdering; gotchas #36–#37 -->
 <!-- extension 2026-05-12: iter 22 — added Vitest 4.1 ARIA snapshot TDD for accessibility contracts (toMatchAriaSnapshot/toMatchAriaInlineSnapshot); Type-Level TDD with Vitest expectTypeOf and *.test-d.ts files; gotchas #38–#39 -->
 <!-- extension 2026-05-12: iter 23 — added TypeScript 6.0 baseUrl deprecation → paths migration for test aliases; #/ subpath import syntax alternative to @/ aliases; noUncheckedSideEffectImports now on-by-default in TS 6.0 (correction to earlier "opt-in" description); --moduleResolution bundler + --module commonjs valid combo; Vitest 4.1 coverage ignore comments with @preserve flag for esbuild; gotchas #40–#42 -->
+<!-- extension 2026-05-12: iter 24 — added Vitest 3.2 native vi.spyOn/vi.fn Disposable support (direct using, no wrapper needed); Vitest 3.2 scoped fixtures (scope:'file'|'worker' in test.extend); Vitest 3.2 unified Matchers type (replaces older Assertion<R> per-context pattern); Google TotT 2025 posts (Functional Core Oct 2025, Arrange Data Flow Jan 2025) added to Key Resources; gotchas #43–#45 -->
 
 ## Core Principles
 
@@ -469,14 +470,25 @@ TypeScript's type system allows creating type-safe custom Vitest matchers that m
 // test-doubles/matchers.ts — domain-specific Vitest matchers
 import { expect } from 'vitest';
 
-// Extend Vitest's Matchers interface for TypeScript type safety
+// Vitest 3.2+ unified Matchers type — works across expect().to*, expect.to*, and all assertion contexts
+// This replaces the older per-context `interface Assertion<R>` pattern which required separate
+// declarations for regular assertions, async assertions, and negated assertions.
 declare module 'vitest' {
-  interface Assertion<R = unknown> {
-    toBeSuccessResult(): R;
-    toBeFailureResult(expectedError?: string): R;
-    toBeWithinCents(expected: number, toleranceCents?: number): R;
+  interface Matchers<T = any> {
+    toBeSuccessResult(): T;
+    toBeFailureResult(expectedError?: string): T;
+    toBeWithinCents(expected: number, toleranceCents?: number): T;
   }
 }
+
+// Note: for projects still on Vitest < 3.2, use the older pattern:
+// declare module 'vitest' {
+//   interface Assertion<R = unknown> {
+//     toBeSuccessResult(): R;
+//     toBeFailureResult(expectedError?: string): R;
+//     toBeWithinCents(expected: number, toleranceCents?: number): R;
+//   }
+// }
 
 expect.extend({
   toBeSuccessResult(received: unknown) {
@@ -3218,7 +3230,29 @@ describe('UserService', () => {
 3. **TypeScript-enforced contract:** The `[Symbol.dispose]()` method is typed — TypeScript errors if a resource is declared with `using` but the object does not implement the disposal symbol. The compiler catches missing teardown implementations at test authoring time.
 4. **Conditional resource safety:** Unlike `afterEach` where you must guard conditionally-created resources, `using` in a branch only disposes if the branch executed and the resource was assigned.
 
-**[community] `using` with Vitest `vi.spyOn` eliminates the most common spy cleanup bug.** The canonical TDD spy pattern — `const spy = vi.spyOn(...); afterEach(() => spy.mockRestore())` — silently fails when a test case throws before the spy is registered in `afterEach`. With `using spy = useSpy(...)`, restoration is guaranteed by the disposal scope. Teams that adopted this pattern in 2025–2026 report eliminating an entire class of "spy leaked between test cases" flakiness incidents.
+**[community] `using` with Vitest `vi.spyOn` eliminates the most common spy cleanup bug.** Starting with Vitest 3.2, `vi.spyOn()` and `vi.fn()` directly return objects that implement `Symbol.dispose`, so you can use `using` without any wrapper:
+
+```typescript
+// Vitest 3.2+ — vi.spyOn and vi.fn natively support using (no wrapper needed)
+it('intercepts console.error during the test case only', () => {
+  using spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  runCodeThatMightLogErrors();
+  expect(spy).toHaveBeenCalled();
+  // console.error is automatically restored here when the scope exits
+  // — even if the expect() assertion above throws
+});
+
+// Multiple spies in one test: reversed disposal order is deterministic
+it('layers multiple spies safely', () => {
+  using dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000_000_000);
+  using mathSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+  // mathSpy disposed first, then dateSpy — reverse declaration order
+  const token = generateToken(); // uses both Date.now and Math.random
+  expect(token).toMatchSnapshot();
+});
+```
+
+The canonical TDD spy pattern — `const spy = vi.spyOn(...); afterEach(() => spy.mockRestore())` — silently fails when a test case throws before the spy is registered in `afterEach`. With `using spy = vi.spyOn(...)` (Vitest 3.2+), restoration is guaranteed by the disposal scope. Teams that adopted this pattern report eliminating an entire class of "spy leaked between test cases" flakiness incidents.
 
 ---
 
@@ -4919,6 +4953,114 @@ if (process.platform === 'win32' && process.env.NODE_ENV !== 'test') {
 
 42. **[community] Coverage ignore comments without `@preserve` create phantom TDD coverage gaps that misdirect refactoring effort.** A TypeScript team running Vitest with the default esbuild transpiler may add `/* v8 ignore next */` to a defensive error branch, expect it to disappear from the coverage report, and then observe that their coverage drops (because the ignore was silently discarded by esbuild). The team responds by writing an otherwise-unnecessary test case to cover the unreachable branch — adding test ceremony for code that was correctly identified as untestable. The root cause: missing `@preserve` in the ignore comment. The fix is trivial (`-- @preserve`), but the symptom — "my coverage ignore comments don't work" — is confusing enough that teams often write unnecessary tests rather than diagnose the comment stripping. Add `-- @preserve` to every coverage ignore comment and enforce it via a `grep` or custom ESLint rule in the CI pipeline.
 
+---
+
+### Vitest 3.2 — Scoped Fixtures for TDD Infrastructure [community]
+
+Vitest 3.2 added `scope` support to `test.extend()` fixtures, allowing fixture teardown and initialisation to be tied to either the **file** (suite-level, equivalent to `beforeAll`/`afterAll`) or the **worker** (once per worker process, across all files). This solves a long-standing TDD infrastructure problem: the choice between recreating expensive shared resources per test case (slow) versus using global setup that is not type-safe (fragile).
+
+Before scoped fixtures, TDD teams either paid the cost of re-establishing a database connection in each test case's fixture, or used `beforeAll`/`afterAll` directly — which is not type-safe and not tied to whether the fixture is actually used in a given test.
+
+```typescript
+// vitest.config.ts — configure pool threads for worker-scope fixtures
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Worker-scoped fixtures require pool: 'threads' and pool.useAtomics or similar
+    // Each worker process sees its own instance of the worker-scoped fixture
+    pool: 'threads',
+    poolOptions: { threads: { isolate: false } }, // required for worker-scope to be meaningful
+  },
+});
+```
+
+```typescript
+// fixtures/database.ts — scoped fixtures for TDD database infrastructure
+import { test as baseTest } from 'vitest';
+import type { TestDatabase } from '../test-doubles/TestDatabase.js';
+import { createTestDatabase } from '../test-doubles/TestDatabase.js';
+
+interface DatabaseFixtures {
+  db: TestDatabase;
+}
+
+// File-scoped fixture: one DB instance shared across all test cases in a single file
+// Initialises only if the fixture is actually used in that file
+export const test = baseTest.extend<DatabaseFixtures>({
+  db: [
+    async ({}, use) => {
+      // Runs once per file (like beforeAll) — but only if any test in the file uses `db`
+      const database = await createTestDatabase();
+      await database.migrate(); // run migrations once
+      await use(database);
+      await database.close(); // runs once per file (like afterAll)
+    },
+    { scope: 'file' }, // ← Vitest 3.2+: 'file' | 'worker'
+  ],
+});
+
+// Worker-scoped fixture: one DB instance shared across all files on this worker thread
+// Use this for very expensive initialisation (e.g., starting a Postgres container)
+export const testWithWorkerDb = baseTest.extend<DatabaseFixtures>({
+  db: [
+    async ({}, use) => {
+      // Runs once per worker — survives across multiple test files processed by the same worker
+      const database = await createTestDatabase({ persistent: true });
+      await use(database);
+      await database.close();
+    },
+    { scope: 'worker' }, // ← Vitest 3.2+: shared across test files on the same worker
+  ],
+});
+```
+
+```typescript
+// orderService.test.ts — TDD test cases using file-scoped db fixture
+import { describe, expect } from 'vitest';
+import { test } from '../fixtures/database.js'; // ← custom test with scoped fixtures
+
+// `db` is initialised once per file, not once per test case
+// Each test case starts with a fresh transaction (via beforeEach) but shares the connection
+
+describe('OrderService', () => {
+  test('creates an order in the database', async ({ db }) => {
+    const service = new OrderService(db);
+    const order = await service.createOrder({ userId: 'user-1', items: [] });
+    expect(order.id).toBeDefined();
+    const found = await db.findOrderById(order.id);
+    expect(found).not.toBeNull();
+  });
+
+  test('throws for a non-existent user', async ({ db }) => {
+    const service = new OrderService(db);
+    await expect(service.createOrder({ userId: 'ghost', items: [] }))
+      .rejects.toThrow('User not found');
+  });
+  // ← db.close() is called once after all tests in this file complete, not after each test
+});
+```
+
+**When to use each scope for TDD:**
+
+| Scope | Initialises | Disposes | Best for |
+|-------|------------|----------|----------|
+| *(default, per-test)* | Before each test case | After each test case | Small, fast fakes (in-memory repos, spy instances) |
+| `scope: 'file'` | Once per file (if used) | After last test in file | DB connections, HTTP servers — shared per suite |
+| `scope: 'worker'` | Once per worker | When worker exits | Postgres containers, expensive services — shared across files |
+
+**TDD implication:** File-scoped fixtures produce the same isolation characteristics as `beforeAll`/`afterAll`, but with a critical advantage: the fixture only runs if a test in the file actually requests it. Teams that moved from `beforeAll` to `scope: 'file'` fixtures reported a measurable reduction in cold-start times for test files that do not need a database connection — because the DB was no longer initialised just because it was in the `beforeAll` of a shared setup file.
+
+---
+
+### Real-World Gotchas [community] — Additions (iter 24)
+
+43. **[community] Vitest `Assertion<R>` module augmentation breaks in Vitest 3.2+ when using `expect.to*` (static-style) assertions.** The older pattern for typing custom matchers — `declare module 'vitest' { interface Assertion<R = unknown> { ... } }` — only covers `expect(value).toXxx()` (instance-style assertions). In Vitest 3.2, `expect.toXxx(value)` (static-style assertions, sometimes used in pipeline-style fluent APIs or for type-narrowing contexts) requires the `Matchers` interface. If your team adopts both assertion styles and only augments `Assertion<R>`, the static-style calls will silently fall back to `any`, losing type safety. The fix: migrate to the unified `Matchers<T>` declaration (introduced in Vitest 3.2) which covers both styles in a single interface extension. In TDD test suites, this surface matters most in custom test utilities that call `expect.toBeSuccessResult(result)` directly rather than chaining — a pattern that becomes more common as teams extract fluent assertion helpers.
+
+44. **[community] Worker-scoped fixtures with `isolate: false` break per-test state isolation — causing TDD test case ordering dependencies.** When using `scope: 'worker'` fixtures with `poolOptions: { threads: { isolate: false } }`, the fixture's in-memory state persists between test files processed by the same worker. If the fixture object (e.g., an in-memory database fake) carries mutable state across test files without an explicit reset, test cases in the second file may inherit state left by the first file's test cases. The TDD symptom: a test case passes in isolation but fails when the full suite runs — the classic ordering-dependent failure. The fix: ensure worker-scoped fixtures expose a `reset()` method and call it in a `beforeEach` hook, or use `scope: 'file'` instead of `scope: 'worker'` for any fixture that holds mutable TDD state. Reserve `scope: 'worker'` for truly stateless infrastructure (e.g., a read-only reference database, a compiled WASM module).
+
+45. **[community] `vi.spyOn` with `using` in Vitest 3.2+ must not be mixed with `afterEach(() => vi.restoreAllMocks())` — double restoration silently fails.** When a team migrates from `afterEach(() => vi.restoreAllMocks())` to `using spy = vi.spyOn(...)`, leaving the old `afterEach` in place causes double restoration. The first disposal (the `using` scope exit) calls `mockRestore()`, resetting the spy. The second restoration (the `afterEach`) then attempts to restore an already-restored spy — which is a no-op in Vitest but can produce confusing state if the spy was on a prototype method that gets called between disposal and the `afterEach`. The correct migration: replace `afterEach(() => vi.restoreAllMocks())` with `using` declarations on individual spies, or keep the `afterEach` as a safety net but accept that it double-restores. Do not mix the two patterns in the same test file without being aware that `vi.restoreAllMocks()` is now a no-op for spies already cleaned up by `using`.
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -4962,5 +5104,9 @@ if (process.platform === 'win32' && process.env.NODE_ENV !== 'test') {
 | Vitest 4.1 ARIA Snapshots Guide | Docs | https://vitest.dev/guide/browser/aria-snapshots | TDD for accessibility contracts: `toMatchAriaSnapshot` / `toMatchAriaInlineSnapshot` assert against the accessibility tree; catches semantic regressions that visual snapshots and Axe linting miss |
 | Vitest Type Testing Guide | Docs | https://vitest.dev/guide/testing-types.html | Type-level TDD with `expectTypeOf` in `*.test-d.ts` files; `@ts-expect-error` as Red type tests; `toEqualTypeOf` for exact type contract assertions; `vitest typecheck` for CI integration |
 | TypeScript 6.0 — Module Resolution Migration | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `baseUrl` fully deprecated in TS 6.0 (removed in 7.0); `paths` entries must use full relative paths; `#/` subpath imports as Node.js-native alias alternative; `--moduleResolution bundler` + `--module commonjs` now valid for CJS migrations |
+| Vitest 3.2 Release Notes | Docs | https://vitest.dev/blog/vitest-3-2 | Scoped fixtures (`scope:'file'|'worker'` in `test.extend`); `using` keyword support for `vi.spyOn`/`vi.fn` (native Disposable); unified `Matchers` type replacing `Assertion<R>`; `watchTriggerPatterns`; `AbortSignal` per test case |
+| Google Testing Blog — "Simplify Your Code: Functional Core, Imperative Shell" | Blog post | https://testing.googleblog.com/2025/10/simplify-your-code-functional-core.html | 2025 Google TotT post; reinforces the Functional Core/Imperative Shell pattern as a testing simplification strategy — pure core is trivially unit-testable, imperative shell is integration-tested |
+| Google Testing Blog — "Arrange Your Code to Communicate Data Flow" | Blog post | https://testing.googleblog.com/2025/01/arrange-your-code-to-communicate-data.html | 2025 Google TotT post; code arrangement to communicate data flow — directly applicable to TDD Arrange phase: ordering local variables to show data transformation chain makes test intent readable |
+| Google Testing Blog — "Sort Lines in Source Code" | Blog post | https://testing.googleblog.com/2025/09/sort-lines-in-source-code.html | 2025 Google TotT post; consistent line ordering in test doubles and fixtures reduces merge conflicts and improves scanability during TDD refactor phase |
 | Node.js Subpath Imports | Docs | https://nodejs.org/api/packages.html#subpath-imports | `package.json` `imports` field for `#/` subpath imports; works with Vitest `runner: 'node'` and `viteModuleRunner: false` without bundler plugins |
 | Vitest 4.1 Coverage Ignore Comments | Docs | https://vitest.dev/guide/coverage | Coverage ignore comments require `@preserve` annotation in esbuild pipelines: `/* v8 ignore next -- @preserve */`; without `@preserve`, esbuild strips comments before coverage instrumentation |

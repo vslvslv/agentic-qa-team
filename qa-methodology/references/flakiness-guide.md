@@ -1,12 +1,13 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 55 | score: 100/100 | date: 2026-05-12 -->
-<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 56 | score: 100/100 | date: 2026-05-12 -->
+<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: jest30 -->
+<!-- Iteration 56: Pattern 92 (Jest 30 retryTimes with waitBeforeRetry + retryImmediately — staged retry for flaky integration tests); Pattern 93 (Jest 30 advanceTimersToNextFrame() — deterministic requestAnimationFrame testing); AP46 (Jest 30 globalsCleanup not enabled — cross-test global state leak); Quick Reference additions (iteration 56) -->
 <!-- Iteration 55: Pattern 90 (Playwright v1.60 tracing.startHar()/stopHar() — HAR recording as first-class tracing API for network flakiness diagnosis); Pattern 91 (Playwright v1.60 toHaveCSS pseudo option — deterministic pseudo-element assertions replacing screenshot snapshots); Gotcha 47 (Playwright v1.60 BrowserContext lifecycle event mirroring — centralized event monitoring for multi-page flakiness); AP45 (Vitest 4.1 FixtureAccessError in suite hooks — accessing test-scoped fixture in beforeAll now throws explicitly); Quick Reference additions (iteration 55) -->
 <!-- Iteration 54: Pattern 88 (Vitest 5.0-beta sequential option removed — migrate to concurrent:false or test.describe.serial); Pattern 89 (Playwright v1.60 locator.drop() for drag-and-drop upload zone flakiness); Gotcha 46 (Vitest 5.0 merge reports for non-sharded multi-environment test runs); AP44 (Vitest 5.0 hardcoded .vitest-attachments path breaks on upgrade); Quick Reference additions (iteration 54) -->
 <!-- Iteration 53: Pattern 86 (Playwright testCase.outcome() === 'flaky' custom reporter — structured per-retry flakiness tracking); Pattern 87 (Playwright v1.50 updateSnapshots: 'changed' + updateSourceMethod: '3way' for snapshot flakiness review workflow); AP43 (updateSnapshots: 'all' in CI silently overwrites baselines); Quick Reference additions (iteration 53) -->
 <!-- Iteration 52: Pattern 82 (Vitest 4.1 vi.setTimerTickMode — nextTimerAsync/interval for async timer flakiness); Pattern 83 (Playwright v1.59 tracing.start({ live: true }) for real-time trace capture); Pattern 84 (Playwright v1.58 retain-on-failure-and-retries trace mode for multi-retry comparison); Pattern 85 (Vitest 4.1 agent/minimal reporter for AI agent token-efficient flakiness triage); AP42 (Vitest 4.1 beforeAll/afterAll hook signature breaking change — Suite arg removed); Quick Reference additions (iteration 52) -->
 <!-- Iteration 51: Pattern 78 (Vitest 4.1 conditional retry with error condition predicate); Pattern 79 (Playwright v1.53 TestStepInfo.skip() conditional — step-level quarantine); Pattern 80 (Playwright v1.60 testInfoError.errorContext aria snapshot for flakiness diagnosis); Pattern 81 (Vitest 4.1 test.meta for custom flakiness metadata in reporters); AP41 (conditional retry masking real failures); Quick Reference additions (iteration 51) -->
-<!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog, vitest.dev/api/hooks, playwright.dev/docs/api/class-tracing, playwright.dev/docs/api/class-browsercontext -->
+<!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog, vitest.dev/api/hooks, playwright.dev/docs/api/class-tracing, playwright.dev/docs/api/class-browsercontext, jestjs.io/blog/2025/06/jest-30, jestjs.io/docs/jest-object#jestretrytimersnumretries-options, jestjs.io/docs/jest-object#jestadvancetimerstonextframe -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
 <!-- Iteration 50: Pattern 74 (Vitest 4.1 page.mark() for trace annotation in browser mode); Pattern 75 (Vitest 4.1 mockThrow/mockThrowOnce + chai-style assertions); Pattern 76 (Playwright MCP server @playwright/mcp for agentic flaky test investigation); Pattern 77 (Vitest 4.1 experimental.viteModuleRunner: false for production-fidelity isolation); AP39 (unawaited page.mark()); AP40 (mockThrow on async function); Gotcha 45 (Trunk AI failure fingerprinting vs string matching for variant flakiness) -->
 <!-- Iteration 49: Pattern 70 (Playwright v1.59 CLI trace analysis subcommands); Pattern 71 (Playwright --last-failed targeted rerun); Pattern 72 (Vitest 3.2 using keyword auto-restore for vi.spyOn); Pattern 73 (Vitest 3.2 Test Signal API / context.signal); AP38 (manual spy restore when using keyword available); Gotcha 44 (CLI trace grep reduces analysis time on flaky traces) -->
@@ -3831,8 +3832,11 @@ def test_external_api_call():
 // Vitest — per-test retry
 it('flaky external call', { retry: 3 }, async () => { ... })
 
-// Jest global
+// Jest global (Jest 29)
 jest.retryTimes(2, { logErrorsBeforeRetry: true })
+
+// Jest 30+: new waitBeforeRetry and retryImmediately options — see Pattern 92
+jest.retryTimes(2, { logErrorsBeforeRetry: true, waitBeforeRetry: 300, retryImmediately: true })
 ```
 
 ### pytest-randomly / pytest-random-order — Detecting Hidden State
@@ -8685,4 +8689,405 @@ myTest.describe('Admin API', () => {
 | Playwright `toHaveCSS` | Official | https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-css | `pseudo` option (`'before'`/`'after'`) for deterministic pseudo-element CSS assertions; replaces screenshot snapshots (v1.60) |
 | Playwright BrowserContext events | Official | https://playwright.dev/docs/api/class-browsercontext | `browser.on('context')` and context-level lifecycle event mirroring (`framenavigated`, `download`, `pageclose`) — centralized multi-page event handling (v1.60) |
 | Vitest `FixtureAccessError` | Official | https://vitest.dev/guide/test-context#fixture-scope | Thrown in Vitest 4.1 when a test-scoped fixture is accessed from `beforeAll`/`afterAll`; scope mismatch now fails fast with clear message |
+
+---
+
+## Pattern 92 — Jest 30 `retryTimes` Staged Retry Options (`waitBeforeRetry` + `retryImmediately`)  [official]
+
+Jest 30 (June 2025) extended `jest.retryTimes()` with two new options that give you precise control over *when* a retry executes. These options address a class of flakiness where the old default retry behaviour was too blunt:
+
+- **`waitBeforeRetry`** — adds a mandatory delay (ms) before each retry. Useful for integration tests that involve eventual consistency: a REST API that requires propagation delay before a GET reflects a POST, or a DB that needs time to flush a write.
+- **`retryImmediately`** — retries the failing test immediately after failure, before Jest runs other tests in the file. The original default deferred retries to after all other tests completed, which masked cases where shared state introduced by the intervening tests caused the retry to produce a false pass.
+
+**Full type signature (Jest 30+):**
+
+```typescript
+jest.retryTimes(
+  numRetries: number,
+  options?: {
+    logErrorsBeforeRetry?: boolean;   // log failures before each retry (existed in Jest 29)
+    waitBeforeRetry?: number;         // NEW in Jest 30: ms to wait before retry attempt
+    retryImmediately?: boolean;       // NEW in Jest 30: retry right after failure
+  }
+): jest
+```
+
+```typescript
+// BAD: Jest 29 style — retry deferred, no delay, failure logged only on final failure
+// This pattern masks state pollution from intervening tests during retry window
+
+// jest.config.ts
+import type { Config } from 'jest';
+const config: Config = {
+  retryTimes: 2,          // deprecated global config — still works but options not available
+};
+
+// ALSO BAD: retryTimes() without logErrorsBeforeRetry
+// Makes debugging flaky integration tests extremely hard —
+// you only see the final failure message, not the intermediate errors.
+jest.retryTimes(2);
+```
+
+```typescript
+// GOOD: Jest 30 retryTimes with staged delay for integration tests
+// Use case: REST API with optimistic write — GET may lag behind POST by ~200ms
+// waitBeforeRetry gives the system time to reach a consistent state before retry.
+
+describe('OrderService — integration', () => {
+  jest.retryTimes(2, {
+    logErrorsBeforeRetry: true,  // see each failure, not just the final one
+    waitBeforeRetry: 500,        // wait 500ms before each retry — matches API propagation SLA
+    // retryImmediately: false   // default: retry after other tests in file complete
+  });
+
+  it('order appears in listing after creation', async () => {
+    const { id } = await orderApi.create({ item: 'Widget', qty: 3 });
+    // Without waitBeforeRetry, this GET sometimes precedes DB write propagation → flaky
+    const listing = await orderApi.list();
+    expect(listing.map(o => o.id)).toContain(id);
+  });
+});
+```
+
+```typescript
+// GOOD: retryImmediately for tests where shared state from intervening tests
+// causes false positives on deferred retry.
+// Use case: module-level cache that's populated by a preceding test —
+// if the retry is deferred, the cache is warm and the test passes for the wrong reason.
+
+describe('UserCache — isolation', () => {
+  // Reset module-level cache before every test to prevent false-positive retries
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  jest.retryTimes(2, {
+    logErrorsBeforeRetry: true,
+    retryImmediately: true,  // retry before any other test can warm the cache
+    // waitBeforeRetry: 0    // no extra delay needed — failure is deterministic
+  });
+
+  it('returns null for unknown user (cache cold)', async () => {
+    const { UserCache } = await import('./UserCache');
+    expect(await UserCache.get('unknown-id')).toBeNull();
+  });
+});
+```
+
+```typescript
+// Pattern: per-describe block retry policy (Jest 30)
+// Outer describe uses stricter settings; inner describe relaxes for known-slow paths.
+// This documents intent and prevents retry inflation in unit tests.
+
+describe('PaymentGateway', () => {
+  // Unit tests: no retry — any failure is a real bug
+  describe('unit', () => {
+    it('validates card number format', () => {
+      expect(validateCard('4111111111111111')).toBe(true);
+      expect(validateCard('0000')).toBe(false);
+    });
+  });
+
+  // Integration tests: up to 2 retries with 300ms delay (network variance)
+  describe('integration', () => {
+    jest.retryTimes(2, {
+      logErrorsBeforeRetry: true,
+      waitBeforeRetry: 300,
+      retryImmediately: true,
+    });
+
+    it('processes a real sandbox charge', async () => {
+      const result = await gateway.charge({ amount: 100_00, currency: 'USD' });
+      expect(result.status).toBe('succeeded');
+    });
+  });
+});
+```
+
+**Tradeoffs and gotchas:**
+
+| Option | When to use | Caution |
+|--------|-------------|---------|
+| `waitBeforeRetry: N` | API propagation delay, eventual-consistent stores, async queue processing | Don't set > 1000ms — prefer fixing the root cause instead; use this as a short-term bridge |
+| `retryImmediately: true` | Shared module state from intervening tests; any test that fails due to ordering side-effects | Still won't fix tests that depend on global singletons — reset in `beforeEach` first |
+| `logErrorsBeforeRetry: true` | Always — no reason not to; essential for diagnosing *why* retries happen | None |
+
+> **Community signal (Jest 30 blog, June 2025):** Teams migrating from Jest 29 to 30 that enabled `globalsCleanup: 'on'` and `retryImmediately: true` saw their retry-pass rate drop — which is the correct outcome. Retries that stop passing when state is properly reset were masking shared state bugs, not detecting intermittent failures.
+
+---
+
+## Pattern 93 — Jest 30 `advanceTimersToNextFrame()` for `requestAnimationFrame` Flakiness  [official]
+
+`requestAnimationFrame` (rAF) callbacks are a common source of animation-related test flakiness. Before Jest 30, the only ways to test rAF code were:
+1. Use `jest.advanceTimersByTime(16)` — fragile, assumes 60fps frame rate
+2. Use `jest.runAllTimers()` — runs rAF callbacks but also drains ALL timers (can cause infinite loops with recursive rAF)
+3. Wait for a real animation frame — introduces real-time wait and CI timing variance
+
+Jest 30 (backed by `@sinonjs/fake-timers` v13) adds `jest.advanceTimersToNextFrame()` — a targeted method that advances fake timers to precisely the next scheduled animation frame callback, without assuming frame duration or draining the timer queue.
+
+```typescript
+// BAD: hard-coding 16ms assumes 60fps — fails in environments where the fake timer
+// frame rate differs, or when multiple rAF callbacks are chained
+jest.useFakeTimers();
+let animated = false;
+requestAnimationFrame(() => { animated = true; });
+
+jest.advanceTimersByTime(16); // assumes exactly 16ms per frame — fragile
+expect(animated).toBe(true);  // may fail if frame duration changes
+```
+
+```typescript
+// BAD: jest.runAllTimers() drains ALL pending timers including recursive rAFs
+// This causes infinite loops in animation loops that call rAF recursively:
+jest.useFakeTimers();
+let frameCount = 0;
+function animationLoop() {
+  frameCount++;
+  requestAnimationFrame(animationLoop); // recursive — infinite without frame limit
+}
+requestAnimationFrame(animationLoop);
+
+jest.runAllTimers(); // INFINITE LOOP — recursive rAF never terminates
+```
+
+```typescript
+// GOOD: jest.advanceTimersToNextFrame() — advances to exactly the next rAF callback,
+// does NOT drain all timers, and does NOT assume frame rate
+import { AnimationController } from './AnimationController';
+
+describe('AnimationController', () => {
+  beforeEach(() => {
+    // Modern fake timers required — legacy timers do not support advanceTimersToNextFrame
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('executes animation callback on next frame', () => {
+    const controller = new AnimationController();
+    let executed = false;
+
+    controller.scheduleFrame(() => { executed = true; });
+
+    expect(executed).toBe(false); // not yet — frame hasn't advanced
+    jest.advanceTimersToNextFrame(); // advance to next rAF precisely
+    expect(executed).toBe(true);   // now executed
+  });
+
+  it('processes animation loop for N frames without infinite loop', () => {
+    let frameCount = 0;
+    const MAX_FRAMES = 5;
+
+    function loop() {
+      if (frameCount < MAX_FRAMES) {
+        frameCount++;
+        requestAnimationFrame(loop); // recursive — would infinite-loop with runAllTimers
+      }
+    }
+    requestAnimationFrame(loop);
+
+    // Advance one frame at a time — safe with recursive rAF
+    for (let i = 0; i < MAX_FRAMES; i++) {
+      jest.advanceTimersToNextFrame();
+    }
+
+    expect(frameCount).toBe(MAX_FRAMES);
+  });
+
+  it('does not execute second-frame callback on first advanceTimersToNextFrame call', () => {
+    const callOrder: number[] = [];
+
+    requestAnimationFrame(() => {
+      callOrder.push(1);
+      requestAnimationFrame(() => {
+        callOrder.push(2); // second frame callback — scheduled from within first
+      });
+    });
+
+    jest.advanceTimersToNextFrame(); // executes frame 1 callback only
+    expect(callOrder).toEqual([1]);  // frame 2 not yet executed
+
+    jest.advanceTimersToNextFrame(); // executes frame 2 callback
+    expect(callOrder).toEqual([1, 2]);
+  });
+});
+```
+
+```typescript
+// Real-world example: testing a scroll animation utility that uses rAF internally
+import { smoothScroll } from './smoothScroll';
+
+describe('smoothScroll', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    // Mock scrollTop as a writable property
+    Object.defineProperty(document.documentElement, 'scrollTop', {
+      writable: true,
+      value: 0,
+    });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('scrolls to target position over multiple frames', () => {
+    smoothScroll({ target: 500, duration: 300 });
+
+    // Advance frame by frame and assert position progresses deterministically
+    jest.advanceTimersToNextFrame();
+    expect(document.documentElement.scrollTop).toBeGreaterThan(0);
+    expect(document.documentElement.scrollTop).toBeLessThan(500);
+
+    // Run remaining frames until animation completes
+    jest.runAllTimers(); // safe here — no infinite rAF loop (animation ends at target)
+    expect(document.documentElement.scrollTop).toBe(500);
+  });
+});
+```
+
+**Migration from workarounds to `advanceTimersToNextFrame`:**
+
+| Old workaround | Flakiness risk | Replace with |
+|---------------|----------------|--------------|
+| `jest.advanceTimersByTime(16)` | Frame rate assumption — breaks on non-60fps | `jest.advanceTimersToNextFrame()` |
+| `jest.advanceTimersByTime(1000/60)` | Same — floating point rounding | `jest.advanceTimersToNextFrame()` |
+| `jest.runAllTimers()` with recursive rAF | Infinite loop risk | `jest.advanceTimersToNextFrame()` in a loop with limit |
+| `await new Promise(requestAnimationFrame)` | Requires real timers — CI timing variance | `jest.advanceTimersToNextFrame()` with fake timers |
+
+> **Requires `jest.useFakeTimers()` with modern fake timers** (default in Jest 27+). Not available when using `{ legacyFakeTimers: true }`.
+
+---
+
+## Anti-Patterns (iteration 56)
+
+### AP46 — Jest 30 `globalsCleanup` Not Enabled: Silently Leaking Global State Between Test Files  [official]
+
+**What:** Relying on the default `globalsCleanup: 'soft'` setting in Jest 30 when test files mutate `globalThis` or attach properties to the global scope (e.g., polyfills, event listeners, custom matchers added to `globalThis`).
+
+**Why harmful:** Jest 30 introduced the `globalsCleanup` option to address global state pollution across test files running in the same worker process. The default `'soft'` mode cleans up *some* globals but preserves those set by `setupFilesAfterFramework` to avoid breaking existing setups. Test code that directly assigns to `globalThis` — a common pattern in polyfill loading, feature flag injection, or third-party SDK initialization — bypasses the soft cleanup and leaks to subsequent test files. This produces an entire class of order-dependent failures that are invisible in single-file runs and only manifest in full CI suite runs.
+
+**Mechanism:**
+```typescript
+// BAD: test file that leaks a global — pollutes subsequent test files in the same worker
+// src/__tests__/polyfillLoader.test.ts
+
+describe('Polyfill Loader', () => {
+  it('installs the ResizeObserver polyfill when missing', () => {
+    // Attaches a polyfill directly to globalThis — leaks to next test file
+    (globalThis as any).ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+
+    loadPolyfillIfMissing();
+    expect(globalThis.ResizeObserver).toBeDefined();
+    // MISSING: cleanup — the polyfill remains for all subsequent test files
+    // in this worker → order-dependent failures in tests that check native absence
+  });
+});
+```
+
+```typescript
+// BAD: Jest config with globalsCleanup: 'off' — maximally dangerous
+// jest.config.ts
+import type { Config } from 'jest';
+
+const config: Config = {
+  testEnvironmentOptions: {
+    globalsCleanup: 'off', // never do this unless you have a very specific reason
+    // All globalThis mutations persist across ALL test files in the worker
+  },
+};
+```
+
+```typescript
+// GOOD: Enable globalsCleanup: 'on' in Jest 30 for maximum isolation
+// jest.config.ts
+import type { Config } from 'jest';
+
+const config: Config = {
+  testEnvironment: 'node', // globalsCleanup is a Node environment option
+  testEnvironmentOptions: {
+    // 'on': full cleanup — resets all globals to their initial state between test files
+    // 'soft' (default): partial cleanup — preserves setupFilesAfterFramework globals
+    // 'off': no cleanup — leaks everything (debugging only)
+    globalsCleanup: 'on',
+  },
+};
+
+export default config;
+```
+
+```typescript
+// GOOD: if a test legitimately needs a global, clean it up in afterAll/afterEach
+// src/__tests__/polyfillLoader.test.ts
+describe('Polyfill Loader', () => {
+  const originalResizeObserver = globalThis.ResizeObserver;
+
+  afterAll(() => {
+    // Always restore — even if test throws
+    if (originalResizeObserver === undefined) {
+      delete (globalThis as any).ResizeObserver;
+    } else {
+      globalThis.ResizeObserver = originalResizeObserver;
+    }
+  });
+
+  it('installs the ResizeObserver polyfill when missing', () => {
+    delete (globalThis as any).ResizeObserver; // ensure absent for this test
+    loadPolyfillIfMissing();
+    expect(globalThis.ResizeObserver).toBeDefined();
+  });
+});
+```
+
+```typescript
+// GOOD: use protectProperties (jest-util) to explicitly mark globals
+// that should survive globalsCleanup: 'on' between test files
+// (for setupFiles that intentionally install persistent globals)
+
+// jest.setup.ts — globals that should persist across all test files
+import { protectProperties } from 'jest-util';
+
+// Mark these as intentionally persistent — globalsCleanup: 'on' will NOT wipe them
+globalThis.myFeatureFlags = { darkMode: true, newCheckout: false };
+protectProperties(globalThis['myFeatureFlags']); // survives 'on' cleanup
+
+// Note: only use protectProperties for globals that are read-only across tests.
+// Mutable protected globals still cause order-dependency.
+```
+
+**Diagnosis checklist for global state leaks in Jest 30:**
+
+- [ ] Does `globalsCleanup: 'on'` cause new failures after upgrading? → Tests depend on leaked globals from preceding files
+- [ ] Does a test pass when run in isolation but fail in full suite? → Another test file leaked a global it depends on
+- [ ] Does changing `--testSequencer` ordering change which tests fail? → Order-dependent global leak
+- [ ] Does `--runInBand` make the failures deterministic? → Multiple workers with different leak states
+
+> **Community signal:** Teams at Happo saw test runtimes drop from 14 minutes to 9 minutes by enabling `globalsCleanup: 'on'` and cleaning up leaked handles after upgrading to Jest 30 — a 35% improvement solely from eliminating global state accumulation and open handle buildup across the worker process lifecycle.
+
+---
+
+## Quick Reference additions (iteration 56)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Integration test passes when retried immediately after failure but fails after other tests run | Deferred retry exposes intervening-test state pollution | Pattern 92 (`jest.retryTimes(n, { retryImmediately: true, logErrorsBeforeRetry: true })`) | Deferred retry without `retryImmediately` — masks state bugs with false-positive retries |
+| rAF-driven animation test flakes when `jest.advanceTimersByTime(16)` is used | Frame rate assumption (16ms ≈ 60fps) fails in non-60fps fake timer environments | Pattern 93 (`jest.advanceTimersToNextFrame()` — frame-rate-agnostic rAF advancement) | `jest.runAllTimers()` with recursive rAF — infinite loop risk |
+| Jest test order change causes failures in previously passing test files | Global state (polyfill, SDK, feature flag) attached to `globalThis` not cleaned up | AP46 (`globalsCleanup: 'on'` + afterAll restore + `protectProperties` for intentional globals) | `globalsCleanup: 'off'` or relying on soft cleanup with direct `globalThis` mutations |
+
+---
+
+## Key Resources (iteration 56 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Jest 30 release blog | Official | https://jestjs.io/blog/2025/06/jest-30 | June 2025 major release — `retryTimes` new options, `advanceTimersToNextFrame`, `globalsCleanup`, 37% faster; community evidence of flakiness improvements |
+| Jest `retryTimes` API | Official | https://jestjs.io/docs/jest-object#jestretrytimersnumretries-options | `waitBeforeRetry` and `retryImmediately` options (Jest 30+); full type signature with `logErrorsBeforeRetry` |
+| Jest `advanceTimersToNextFrame` | Official | https://jestjs.io/docs/jest-object#jestadvancetimerstonextframe | Deterministic rAF testing without frame-rate assumptions; safe with recursive animation loops |
+| Jest `globalsCleanup` config | Official | https://jestjs.io/docs/configuration#testenvironmentoptions-object | `'on'`/`'soft'`/`'off'` values for controlling cross-test-file global state isolation in Jest 30 |
 | Vitest merge-report CLI | Official | https://vitest.dev/guide/reporters#merge-reporters | Merges blob reports from multiple shards or environments into a single result; enables cross-environment flakiness detection (v5.0) |

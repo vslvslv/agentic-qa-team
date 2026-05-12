@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 42 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -12,12 +12,13 @@
      github.com/vitest-dev/vitest/releases (fetched 2026-05-12: v4.1.4–v4.1.6 + v5.0.0-beta.2; V8 child_process/worker_threads coverage, Istanbul instrumenter option, agent skipFull, blob dir change) |
      stryker-mutator.io/docs/stryker-js/configuration/ (re-fetched 2026-05-12: allowEmpty option, incremental.force flag, disableTypeChecks v7.0 default change) |
      stryker-mutator.io/blog/vscode-plugin (fetched 2026-05-12: VS Code plugin features, MSP protocol, inline mutant visualization) |
-     vitest.dev/guide/coverage#coverage-ignore-hints (fetched 2026-05-12: start/stop ignore directives for v8+istanbul; -- @preserve suffix format) |
+     vitest.dev/guide/coverage#coverage-ignore-hints (fetched 2026-05-12: start/stop ignore directives for v8+istanbul; -- @preserve suffix format; v8 ignore if/else branch-selective directives) |
+     github.com/AriPerkkio/ast-v8-to-istanbul (fetched 2026-05-12: v8 ignore if / v8 ignore else branch-selective directives; full V8 ignore directive reference) |
      github.com/vitest-dev/vitest/pull/9818 (fetched 2026-05-12: Vitest 5 coverage include/exclude glob pattern breaking change — "too eager" fix) |
      stryker-mutator.io/blog (fetched 2026-05-12: Stryker.NET 4.13 MTP runner preview — keep-alive across mutations, YAML config) |
      github.com/Codium-ai/cover-agent (fetched 2026-05-12: Qodo Cover archived June 2025 — no longer maintained) |
      typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html (fetched 2026-05-12: TS 6.0 default changes — module/target/types/rootDir/strict; removed options: outFile, classic moduleResolution; ignoreDeprecations bridge flag) |
-     vitest.dev/config/coverage (re-fetched 2026-05-12: coverage.thresholds[glob-pattern] per-pattern syntax, global threshold still applies to pattern-matched files — differs from Jest) |
+     vitest.dev/config/coverage (re-fetched 2026-05-12: coverage.thresholds[glob-pattern] per-pattern syntax, global threshold still applies to pattern-matched files — differs from Jest; htmlDir option for custom reporters and Vitest UI; html-spa reporter for single-file output) |
      vitest.dev/guide/migration (fetched 2026-05-12: Vitest 4 migration — coverage.all removed, coverage.extensions removed, coverage.ignoreEmptyLines removed, experimentalAstAwareRemapping removed; ignoreClassMethods now works with V8 provider) |
      github.com/vitest-dev/vitest/releases (re-fetched 2026-05-12: v4.1.6 latest stable; v5.0.0-beta.2 worker_threads coverage; @fast-check/vitest beforeEach/afterEach Vitest 4.1+ integration) |
      github.com/dubzzz/fast-check/releases (fetched 2026-05-12: fast-check v4.8.0 chainUntil; @fast-check/vitest dedicated Vitest integration with fc.test, beforeEach/afterEach support) |
@@ -537,6 +538,18 @@ multiple consecutive lines, use the `start`/`stop` directive pair instead of rep
 
 V8 supports an identical pattern: `/* v8 ignore start -- @preserve */` / `/* v8 ignore stop -- @preserve */`.
 
+**Branch-selective V8 ignore directives (`if`/`else`)**: V8 also supports ignoring only one
+side of a conditional branch — useful when one path is genuinely unreachable in tests but the
+other is testable and should remain measured. These are more precise than `next` (which
+suppresses the entire statement):
+- `/* v8 ignore if -- @preserve */` — suppress the true/then branch only
+- `/* v8 ignore else -- @preserve */` — suppress the false/else branch only
+
+These are specific to the V8 provider (via `ast-v8-to-istanbul`). Istanbul does not have an
+equivalent `if`/`else` branch-level directive — for Istanbul, `/* istanbul ignore next */` on
+the branch statement suppresses both sides. Full V8 directive reference:
+[ast-v8-to-istanbul ignore docs](https://github.com/AriPerkkio/ast-v8-to-istanbul?tab=readme-ov-file#ignoring-code).
+
 ```typescript
 // src/config/env.ts — legitimate use: defensive runtime guard
 export function requireEnvVar(name: string): string {
@@ -569,6 +582,27 @@ export function getPlatformConfig(): Record<string, string> {
   return { pathSep: '/', eol: '\n', tempDir: '/tmp' };
 }
 ```
+
+```typescript
+// src/utils/feature-flag.ts — V8-only: suppress only the else branch
+// (V8 provider only — Istanbul has no if/else-selective equivalent)
+export function getFeatureFlag(flag: string): boolean {
+  const enabled = process.env[`FF_${flag}`] === 'true';
+  /* v8 ignore else -- @preserve (disabled path not reachable in integration tests — always enabled) */
+  if (enabled) {
+    return true;
+  } else {
+    // This branch exists as a safety fallback but is never exercised in the test environment.
+    return false;
+  }
+}
+```
+
+**V8 `if`/`else` directive quick reference:**
+- `/* v8 ignore if -- @preserve */` — suppresses the **then** (true) branch only; the else branch is still measured
+- `/* v8 ignore else -- @preserve */` — suppresses the **else** (false) branch only; the if branch is still measured
+- Prefer these over `/* v8 ignore next */` for conditionals where one side is testable — they keep measurement on the reachable side
+- These directives are specific to the V8 provider; Istanbul has no equivalent (Istanbul's `ignore next` suppresses both branches of the conditional)
 
 ### Pattern 8 — TypeScript-aware Stryker with Vitest runner  [community]
 
@@ -3631,6 +3665,94 @@ stream.on('test:fail', () => { process.exitCode = 1; });
 `const result = await test(...)` patterns — the return value is now `void` in Node 24.
 Coverage collection is unaffected; only the manual await is obsolete.
 
+### G53 — `coverage.htmlDir` and `html-spa` reporter: Vitest 4.1 HTML output configuration for custom reporters and Vitest UI  [community]
+
+Vitest 4.1 introduced `coverage.htmlDir` as a companion to the existing `coverage.reportsDirectory`
+option, and the HTML report suite now includes a `html-spa` reporter alongside the original `html`
+reporter. Both additions are frequently missed during Vitest 4.1 upgrades because they have narrow
+use cases — but not understanding them causes confusion when custom reporters fail to appear in
+Vitest UI or when CI uploads pick up the wrong HTML directory.
+
+**`coverage.htmlDir`**: specifies where coverage HTML output is served within Vitest UI.
+By default, the value is **automatically inferred** from whichever of `html`, `html-spa`, or
+`lcov` reporters is configured — it points to the HTML output path for the first HTML reporter
+found. You should only set `coverage.htmlDir` explicitly when using a **custom coverage reporter**
+that generates HTML output to a non-standard path; without explicit configuration, the Vitest UI
+`coverage` tab will not find the custom reporter's output.
+
+```typescript
+// vitest.config.ts — using htmlDir with a custom reporter (Vitest 4.1+)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',
+      include: ['src/**/*.ts'],
+      reporter: [
+        'text',
+        'json-summary',
+        // Custom reporter that writes HTML to a non-standard directory:
+        ['my-custom-reporter', { outputDir: './reports/custom-coverage' }],
+      ],
+      reportsDirectory: './coverage',
+      // Tell Vitest UI where to find the HTML output from the custom reporter.
+      // Without this, the Vitest UI coverage tab looks in `reportsDirectory` and finds nothing.
+      htmlDir: './reports/custom-coverage',
+    },
+  },
+});
+```
+
+**`html-spa` reporter**: the `html-spa` reporter generates a single-page application version of
+the Istanbul/V8 HTML coverage report. Unlike the standard `html` reporter (which generates
+one HTML file per source file), `html-spa` generates a single self-contained HTML file with
+all coverage data loaded as JSON. This makes it suitable for scenarios where the standard
+multi-file report is impractical: S3/blob storage uploads (single file upload instead of
+hundreds), emailing as an attachment, or embedding in CI artifact summaries.
+
+```typescript
+// vitest.config.ts — html-spa reporter for single-file HTML coverage output
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/**/__mocks__/**', 'src/**/index.ts'],
+      reporter: [
+        'text-summary',   // terminal: summary only (CI-friendly with skipFull)
+        'lcov',           // for Codecov / GitHub coverage PR comments
+        'html-spa',       // single HTML file — easier to store/share than multi-file html
+        'json-summary',   // for programmatic threshold checks (Pattern 17)
+      ],
+      reportsDirectory: './coverage',
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+      },
+    },
+  },
+});
+```
+
+**WHY it matters**: teams adding the `html-spa` reporter alongside `html` inadvertently
+double-generate HTML output into the same `reportsDirectory`, causing Vitest UI to pick up
+whichever it finds first. Use either `html` **or** `html-spa`, not both. The `htmlDir` option
+becomes relevant when deploying coverage output to a CDN or CI artifact store where the multi-file
+`html` tree is unwieldy — `html-spa` outputs to a single `index.html` file in `reportsDirectory`,
+while `html` outputs to a directory tree under `reportsDirectory/index.html`.
+
+| Reporter | Output | Best for |
+|----------|--------|----------|
+| `html` | Multi-file tree under `coverage/` | Local HTML report; Vitest UI tab |
+| `html-spa` | Single `coverage/index.html` | S3 upload; CI artifact; email attachment |
+| `lcov` | `coverage/lcov.info` | Codecov, Coveralls, GitHub Actions |
+| `json-summary` | `coverage/coverage-summary.json` | Programmatic threshold checks (Pattern 17) |
+
 ---
 
 ## Key Resources
@@ -3670,7 +3792,8 @@ Coverage collection is unaffected; only the manual await is obsolete.
 | Stryker.NET MTP runner preview | Official | https://stryker-mutator.io/blog/ | Stryker.NET 4.13 MTP runner: keep test process alive across mutations; YAML config support; MTP vs VSTest tradeoffs |
 | Qodo Cover (formerly Codium cover-agent) — ARCHIVED | Community | https://github.com/Codium-ai/cover-agent | ⚠️ No longer maintained (June 2025). LLM-based coverage gap filler; see G34 and AP13 for replacement strategy using mutation-guided prompting |
 | Stryker VS Code Plugin | Official | https://stryker-mutator.io/blog/vscode-plugin/ | Inline mutation results in VS Code gutter (StrykerJS v9.3.0+, Nov 2025); uses MSP; replaces HTML-report-in-browser workflow |
-| Vitest coverage config reference | Official | https://vitest.dev/config/coverage | Full coverage config: autoUpdate, changed, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks, reportOnFailure, processingConcurrency, allowExternal, cleanOnRerun, thresholds.100, thresholds[glob-pattern] per-pattern syntax |
+| Vitest coverage config reference | Official | https://vitest.dev/config/coverage | Full coverage config: autoUpdate, changed, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks, reportOnFailure, processingConcurrency, allowExternal, cleanOnRerun, thresholds.100, thresholds[glob-pattern] per-pattern syntax, htmlDir (Vitest UI custom reporter path), html-spa reporter |
+| ast-v8-to-istanbul ignore docs | Official | https://github.com/AriPerkkio/ast-v8-to-istanbul?tab=readme-ov-file#ignoring-code | Full V8 ignore directive reference: `v8 ignore next`, `start`/`stop`, `if`, `else` — branch-selective suppression unique to V8 provider |
 | TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | TS 6.0 default changes (module, target, types, rootDir) and removed options (outFile, classic moduleResolution) that silently break coverage tooling; ignoreDeprecations bridge flag |
 | @fast-check/vitest integration | Official | https://github.com/dubzzz/fast-check/tree/main/packages/vitest | Dedicated fast-check × Vitest integration: `test.prop()`, `fc.test.failing()`, `beforeEach`/`afterEach` hooks; requires fast-check 4.x + Vitest 4.1+ |
 | fast-check docs | Official | https://fast-check.io/docs/ | Property-based testing for TypeScript: arbitraries, shrinking, `fc.assert`, model-based testing |

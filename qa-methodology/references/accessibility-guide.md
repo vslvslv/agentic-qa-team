@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 41 | score: 97/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) + qa-methodology-refine extension run 2026-05-12 iter 41 (WebAIM Million 2025 published data, Playwright locator.normalize() Playwright 1.50 pattern, axe-core 4.11.4 anchor ancestry selector escaping fix, WCAG 3.0 task-level outcome testing pattern refinements, community gotchas 77-80) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 42 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) + qa-methodology-refine extension run 2026-05-12 iter 41 (WebAIM Million 2025 published data, Playwright locator.normalize() Playwright 1.50 pattern, axe-core 4.11.4 anchor ancestry selector escaping fix, WCAG 3.0 task-level outcome testing pattern refinements, community gotchas 77-80) + qa-methodology-refine extension run 2026-05-12 iter 42 (ARIA-in-HTML W3C Rec April 2026 — selectedcontent element testing + role=none gotcha, label element ARIA permitted attributes July 2025 update, image role img synonym December 2024, community gotchas 81-83) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -3358,6 +3358,142 @@ describe('AccessibleContactForm accessibility', () => {
 
 53. **[community] React 19 `useActionState` form auto-reset can clear in-progress user input if the action resolves too quickly**: React 19's `<form action={fn}>` resets the form on a successful action response. If a user is filling out a multi-field form and another field triggers an auto-save action that resolves as success, the entire form resets — wiping data the user was actively entering. WHY: auto-reset is tied to the action return value, not to explicit user submit intent. Mitigation: ensure form actions only return success state in response to deliberate user submission (button type="submit"), not on individual field interactions. Also: if using optimistic updates with `useOptimistic`, the reset happens before the optimistic UI resolves — test this scenario explicitly with screen readers to verify the announcements are not interrupted.
 
+### `<selectedcontent>` — Customizable Select Accessibility Testing (ARIA-in-HTML April 2026)
+
+The **ARIA in HTML** specification (W3C Recommendation, updated April 15, 2026) added `<selectedcontent>` — a new HTML element that enables fully customizable `<select>` button display. This is part of the "customizable select" feature allowing CSS styling of the native select UI.
+
+**HTML structure:**
+
+```html
+<select>
+  <button>
+    <selectedcontent></selectedcontent>
+    <!-- Browser automatically clones the selected <option> content here -->
+  </button>
+  <option value="1"><img src="flag-us.svg" alt="US"> United States</option>
+  <option value="2"><img src="flag-uk.svg" alt="UK"> United Kingdom</option>
+</select>
+```
+
+**Accessibility characteristics (ARIA-in-HTML April 2026 spec):**
+- `<selectedcontent>` has **no permitted ARIA roles** (implicit role: none)
+- Its content is **inert** — users cannot focus or interact with it directly
+- Browser manages accessible name computation from the selected `<option>` — the `<select>` element's accessible name is still derived from its associated `<label>`, not `<selectedcontent>`
+- The `<button>` child of `<select>` is also inert (browser-managed keyboard interaction)
+
+**Testing considerations for TypeScript projects:**
+
+```typescript
+// File: src/components/CountrySelect/__tests__/CountrySelect.a11y.spec.tsx
+// jest-axe test: verify customizable select does not break form accessibility.
+import React from 'react';
+import { render } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+
+expect.extend(toHaveNoViolations);
+
+function CountrySelect() {
+  return (
+    <div>
+      <label htmlFor="country-select">Country</label>
+      {/*
+        Customizable select pattern using <selectedcontent>.
+        Note: <selectedcontent> is experimental — check browser support
+        before production use. JSDOM does not render <selectedcontent>
+        visually, but axe still evaluates the form semantics.
+      */}
+      <select id="country-select" name="country">
+        <button>
+          <selectedcontent />
+        </button>
+        <option value="us">United States</option>
+        <option value="uk">United Kingdom</option>
+        <option value="de">Germany</option>
+      </select>
+    </div>
+  );
+}
+
+test('customizable select has no accessibility violations', async () => {
+  const { container } = render(<CountrySelect />);
+  // axe evaluates the <select> semantics (label association, name computation)
+  // <selectedcontent> itself has implicit role=none — no additional ARIA required
+  const results = await axe(container);
+  expect(results).toHaveNoViolations();
+});
+
+test('customizable select has accessible label', () => {
+  const { getByRole } = render(<CountrySelect />);
+  // The native <select> exposes role="combobox" in the accessibility tree
+  // Its accessible name comes from the associated <label>, not <selectedcontent>
+  const combobox = getByRole('combobox', { name: 'Country' });
+  expect(combobox).toBeInTheDocument();
+});
+```
+
+**Playwright E2E test for customizable select:**
+
+```typescript
+// File: e2e/accessibility/customizable-select.spec.ts
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Customizable select element accessibility', () => {
+
+  test('country select has no axe violations', async ({ page }) => {
+    await page.goto('/settings/profile');
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      .include('#country-select')
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+
+    expect(results.violations).toHaveLength(0);
+  });
+
+  test('customizable select aria snapshot reflects combobox semantics', async ({ page }) => {
+    await page.goto('/settings/profile');
+
+    // The <select> with <selectedcontent> is still a combobox in the a11y tree.
+    // The <selectedcontent> element itself has role=none — not visible in ARIA snapshot.
+    const form = page.getByRole('form', { name: 'Profile settings' });
+    await expect(form).toMatchAriaSnapshot(`
+      - form "Profile settings":
+        - combobox "Country":
+          - option "United States" [selected]
+          - option "United Kingdom"
+          - option "Germany"
+    `);
+  });
+
+  test('customizable select is keyboard navigable', async ({ page }) => {
+    await page.goto('/settings/profile');
+
+    // Native <select> keyboard behavior is browser-managed — verify it still works
+    // with customizable select button pattern
+    const select = page.getByRole('combobox', { name: 'Country' });
+    await select.focus();
+    await page.keyboard.press('ArrowDown');
+    // Browser-native behavior: ArrowDown moves to next option
+    await expect(select).toHaveAccessibleName('Country');
+
+    // Confirm axe scan after keyboard interaction (no dynamic ARIA state corruption)
+    const results = await new AxeBuilder({ page })
+      .include(page.getByRole('form', { name: 'Profile settings' }))
+      .withTags(['wcag2a', 'wcag2aa'])
+      .analyze();
+    expect(results.violations).toHaveLength(0);
+  });
+});
+```
+
+**Key gotcha:** In JSDOM (jest-axe), `<selectedcontent>` is parsed as an unknown element and may not render its content visually — but this does not affect axe's evaluation of form semantics. The `<select>` element's label association and role computation are unaffected. However, Playwright E2E tests in a real browser will correctly render the cloned option content, so test both layers.
+
+**Browser support note (May 2026):** `<selectedcontent>` is flagged as "Not Baseline" — it is supported in Chromium-based browsers but not yet in Firefox or Safari. Gate production usage behind feature detection or use progressive enhancement. axe-core evaluates the semantic structure of the surrounding `<select>` regardless of whether `<selectedcontent>` renders correctly.
+
+---
+
 **Storybook `@storybook/addon-a11y` integration** — runs axe on each story in the browser:
 
 ```typescript
@@ -6351,6 +6487,7 @@ TypeScript 6.0 (released in the TS 6.x series, see lang-refine TypeScript patter
 | Playwright accessibility testing | Official | https://playwright.dev/docs/accessibility-testing | Official @axe-core/playwright integration guide; AxeBuilder API reference; WCAG tag filtering |
 | axe.run() API documentation | Official | https://www.deque.com/axe/core-documentation/api-documentation/ | Full axe.run() options: resultTypes for performance, preload (cssom/media), context selectors, shadow DOM targeting |
 | @axe-core/mcp | Official | https://github.com/dequelabs/axe-core-npm/tree/develop/packages/mcp | Deque's official MCP server for IDE-integrated accessibility scanning; exposes scan_url, scan_html, get_rule tools; works with Claude Code, Copilot, Cursor |
+| ARIA in HTML (W3C Rec) | Official | https://www.w3.org/TR/html-aria/ | W3C Recommendation April 15, 2026; adds selectedcontent element (role=none, no permitted ARIA roles); permits role/aria-* on label when not associated with a form control (July 2025); image role synonym for img role (Dec 2024) |
 
 ---
 
@@ -8655,4 +8792,12 @@ test.describe('Violation node target processing (axe-core 4.11.4+)', () => {
 79. **[community] WCAG 2.2 ISO/IEC 40500:2025 ratification means ACR/VPAT documents should now cite both the W3C standard and the ISO reference number**: Since WCAG 2.2 is now ratified as ISO/IEC 40500:2025, procurement requirements in APAC and MENA government markets (which mandate ISO standards rather than W3C standards) can now formally require WCAG 2.2 AA compliance where before they could only require WCAG 2.0 (ISO/IEC 40500:2012). When completing an Accessibility Conformance Report (ACR/VPAT) for these markets, cite the conformance claim as: "WCAG 2.2 Level AA (W3C Recommendation October 2023 / ISO/IEC 40500:2025)." This dual citation covers both W3C-referencing and ISO-referencing procurement requirements simultaneously. WHY: teams that produce separate WCAG 2.2 and "ISO standards" documentation for different markets are doing unnecessary work — the technical requirements are identical; only the citation format differs.
 
 80. **[community] The WebAIM Million 2025 report confirms that EU EAA deadline pressure has not significantly improved aggregate web accessibility metrics — teams should not benchmark against the industry average**: Despite the June 28, 2025 EU EAA deadline, the aggregate error rate on the top 1 million homepages decreased by only ~2.6% (56.8 to ~55.3 errors/page). The failure rate remains above 95%. QA teams sometimes use "industry average" as an informal benchmark to justify deferring remediation ("we're better than most"). The WebAIM data shows this benchmark is a race to the bottom. The correct target is WCAG 2.2 AA = 0 automated violations, not "fewer than average." WHY: the EAA compliance requirement is absolute, not comparative — a product with 10 violations is not more legally compliant than one with 50; both fail. Use axe CI violation counts and trend data from your own codebase, not industry averages, as your benchmark.
+
+### New Community Gotchas (Iteration 42)
+
+81. **[community] `<selectedcontent>` inside a customizable `<select>` has implicit role=none — do not add ARIA roles to it**: The ARIA-in-HTML W3C Recommendation (April 2026) explicitly specifies no permitted ARIA roles for `<selectedcontent>`. Adding `role="option"`, `role="presentation"`, or any other ARIA role to `<selectedcontent>` is an authoring error and will trigger axe's `aria-allowed-role` violation. The element's job is purely visual — cloning the selected `<option>`'s content into the button display area. Screen readers derive the select's accessible name from the `<label>` and the selected option value from the native `<select>` semantics — not from `<selectedcontent>`. WHY: teams accustomed to building custom select widgets with ARIA (`role="listbox"` + `role="option"`) may reflexively add roles to the new native element. With customizable select, the browser handles ARIA mapping; adding roles corrupts it.
+
+82. **[community] The July 2025 ARIA-in-HTML update now permits `role` and `aria-*` attributes on `<label>` elements when not associated with a labelable element**: Before this change, adding any ARIA role to a `<label>` was technically a spec violation because `<label>` had no permitted ARIA roles. The July 2025 update carved out an exception: when a `<label>` is not associated with any labelable element (no `for` attribute, no wrapping of a form control), it is permitted to have a `role` and ARIA attributes. This is relevant for design-system teams who use `<label>` as a visual styling element (e.g., a label-styled `<label>` used as a section title). After July 2025, axe-core may no longer flag `role="heading"` on an unassociated `<label>` as an authoring error — test your axe version behavior when upgrading. WHY: if you relied on axe flagging this pattern to enforce that all `<label>` elements are associated with form controls, that guardrail may now be absent for unassociated labels; add an explicit ESLint rule (`jsx-a11y/label-has-associated-control`) to maintain the check.
+
+83. **[community] The `image` role is now the preferred synonym for `img` role in ARIA — but axe-core 4.11.x and testing tools still emit `img` in accessible name computations**: The ARIA-in-HTML December 2024 update added `image` as a preferred synonym for `img` (following natural language conventions). In Playwright ARIA snapshots, `page.ariaSnapshot()` may emit either `- img "Description"` or `- image "Description"` depending on the browser and version. Teams using strict `toMatchAriaSnapshot()` assertions with `/children: equal` or `deep-equal` may encounter intermittent failures if one browser emits `img` and another emits `image`. WHY: Chromium-based browsers adopted the `image` role synonym but Firefox and Safari may still emit `img`. Mitigation: use the `contain` children mode (default) for snapshot assertions that include images, or use a regex pattern: `- /img|image/ "Product photo"`. Test across all target browsers when upgrading Playwright to a version where this normalization changes.
 

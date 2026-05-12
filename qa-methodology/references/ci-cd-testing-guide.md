@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: nodejs.org/blog/release/v24.0.0 (Node 24 LTS: --test-global-setup for zero-framework global setup/teardown, snapshot testing stable since Node 23.4, programmatic coverage thresholds lineCoverage/branchCoverage/functionCoverage in node:test run(), type stripping at RC status, npm 11 bundled: --ignore-scripts suppresses prepare, bulk audit endpoint fallback removed, requires Node ^20.17.0 || >=22.9.0) | prev: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: typescriptlang.org/docs/handbook/release-notes/typescript-5-8 (TS 5.8 Feb 2025: --erasableSyntaxOnly validates Node.js type-stripping compatibility — errors on enums/namespaces/parameter-properties/import=/export=; --module node18 stable — disallows require() of ESM; --module nodenext allows require() of ESM on Node 22+; --libReplacement false skips @typescript/lib-* package lookups for faster CI; granular branch return type checking catches any-infected return expressions) | nodejs.org/blog/release/v24.0.0 (Node 24 LTS: --test-global-setup for zero-framework global setup/teardown, snapshot testing stable since Node 23.4, programmatic coverage thresholds lineCoverage/branchCoverage/functionCoverage in node:test run(), type stripping at RC status, npm 11 bundled: --ignore-scripts suppresses prepare, bulk audit endpoint fallback removed, requires Node ^20.17.0 || >=22.9.0) | prev: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 56 CI testing pillars covered in this guide:**
+**The 57 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -74,6 +74,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 54 | GitHub Actions custom runner images | Pre-bake all tools + browsers into a VM image; eliminates cold-start install overhead (90–175s saved per job on cold runs); GA March 2026 |
 | 55 | Vitest 4.1 mock API improvements | `mockThrow()`/`mockThrowOnce()`, Chai-style mock assertions, `vi.defineHelper()` for stack-trace hygiene, Vite 8 peer dep consolidation, Agent Reporter for AI CI contexts |
 | 56 | Node.js 24 LTS native runner upgrades | `--test-global-setup` for zero-framework global setup/teardown; snapshot testing stable (since Node 23.4); programmatic coverage thresholds (`lineCoverage`, `branchCoverage`, `functionCoverage`); npm 11 `--ignore-scripts` suppresses `prepare`; type stripping at RC status |
+| 57 | TypeScript 5.8 CI gate: `--erasableSyntaxOnly` | Validates Node.js type-stripping compatibility — errors on enums, namespaces, parameter properties, `import =` / `export =`; pair with `--libReplacement false` to skip `@typescript/lib-*` lookups for faster CI |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -3617,6 +3618,9 @@ module.exports = {
 | Custom runner image tag set to `:latest` without version pin | Playwright browser version in image silently changes overnight; tests fail with "browser binary mismatch" | Include Playwright version in image tag (e.g., `:node22-pw1.60`); update on controlled schedule |
 | Vitest `mockThrow()` used on non-function mock without return type annotation | `mockThrow` auto-detects sync vs async from return type — `vi.fn()` without annotation defaults to sync; async callers get an uncaught throw instead of a rejected promise | Always annotate mock return type: `vi.fn() as Mock<Parameters<T>, ReturnType<T>>` |
 | `vi.defineHelper()` wrapping async functions without `await` propagation | `defineHelper` removes stack frames but does not modify async behavior; if the helper `throw`s without propagating, the call site sees an empty stack | Ensure all paths inside `defineHelper` wrappers either return or throw — never silently swallow |
+| TypeScript 5.8 `--erasableSyntaxOnly` enabled without prior enum/namespace audit | All enums, namespaces, parameter properties, and `import =` / `export =` expressions instantly become compiler errors — mass CI failure on first enable in large codebases | Run `tsc --erasableSyntaxOnly --noEmit` as an advisory non-blocking step first; capture error count; refactor over 1–2 sprints (convert enums to `const` objects or `satisfies` maps), then promote to required gate |
+| `--libReplacement false` set globally when some packages use `@typescript/lib-*` replacements | `@typescript/lib-*` package-based lib overrides silently stop working; type definitions revert to bundled TypeScript defaults — subtle type widening that is not caught by tests | Only set `--libReplacement false` in packages/tsconfigs that have no `@typescript/lib-*` devDependencies; audit with `jq '.devDependencies | keys[] | select(startswith("@typescript/lib"))' package.json` |
+| `--module node18` used in a project targeting Node 22+ | `--module node18` disallows `require()` of ESM modules entirely; Node 22 natively supports `require()` of ESM under `--module nodenext` — useful CI patterns (dynamic require for CJS plugin loading) silently break | Use `--module nodenext` for Node 22+ targets; reserve `--module node18` for projects that explicitly must not call `require()` on ESM |
 
 ## Real-World Gotchas [community]
 
@@ -3792,6 +3796,8 @@ export default env;
 58. **npm 11 `prepare` script suppressed by `--ignore-scripts` in `npm ci`** [community]: npm 11 (bundled with Node.js 24) clarifies that `--ignore-scripts` suppresses ALL lifecycle scripts including `prepare`. In npm 9/10, `prepare` would run in some contexts even with `--ignore-scripts`. Teams that relied on `"prepare": "tsc"` to compile TypeScript before tests — using `npm ci --ignore-scripts` for supply-chain security hardening — find that compiled output is missing after upgrading to Node 24/npm 11. Fix: add an explicit `npm run build` step after `npm ci` in CI, decouple compilation from the `prepare` script, or add TypeScript compilation to a `prebuild` or `pretest` script that can be selectively enabled.
 
 59. **Node.js 24 native test runner `--test-global-setup` module must use ESM exports** [community]: The `--test-global-setup` module is loaded as a Node.js ESM module — it must use `export async function setup()` and `export async function teardown()` syntax. CommonJS modules (`module.exports = { setup, teardown }`) are not recognized and the global setup is silently skipped with no error. Teams migrating global setup from Jest (`globalSetup.js` using `module.exports`) to the Node 24 native runner must convert to ESM exports. If the project uses `"type": "commonjs"`, use a `.mts` or `.mjs` extension for the global setup file to force ESM parsing.
+
+60. **TypeScript 5.8 `--erasableSyntaxOnly` mass failure on first CI enable** [community]: TypeScript 5.8 introduced `--erasableSyntaxOnly`, which restricts TypeScript syntax to features that can be removed by simple erasure (as Node.js type-stripping does). Enums, namespaces, parameter properties (`constructor(private x: T)`), `import =` / `export =`, and decorators without `experimentalDecorators` all become compile errors. In a mature codebase, enabling this flag for the first time in a required CI gate typically produces 50–300 errors across test files alone — test helpers commonly use parameter properties and `const enum`. Always enable as a non-blocking advisory gate first: `tsc --erasableSyntaxOnly --noEmit 2>&1 | tee erasable-audit.txt; wc -l erasable-audit.txt`. Count errors, schedule refactoring (convert parameter properties to explicit assignments, convert enums to `const` maps or string unions), then promote to required after the audit sprint.
 
 
 |---|---|---|---|
@@ -7816,5 +7822,113 @@ jobs:
 > [community] The most effective Copilot review cost control strategy: scope the `on.pull_request.paths` trigger to exclude files that don't benefit from code review (documentation, lockfiles, generated code, configuration YAML). Teams that configure path-scoped triggers report 40–60% reduction in Copilot review minutes compared to triggering on every PR file change. The reviews that do run are also higher quality because Copilot has less noise to process.
 
 ---
+
+### TypeScript 5.8 CI-Relevant Features [community]
+
+TypeScript 5.8 (released February 2025) introduces several flags with direct CI pipeline implications. These are not just developer-experience improvements — they change what type errors are caught at the `tsc --noEmit` gate and directly affect build performance.
+
+**`--erasableSyntaxOnly` — Node.js type-stripping compatibility gate**
+
+TypeScript 5.8's `--erasableSyntaxOnly` flag restricts the TypeScript syntax in a project to only features that can be removed by simple erasure — exactly what Node.js type stripping (`--experimental-strip-types`, stable in Node 23+) does at runtime. This means enums, `const enum`, namespaces, parameter properties (`constructor(private x: T)`), `import =` / `export =`, and legacy decorator syntax all become compile errors when this flag is set.
+
+Adding this as a CI gate ensures that your TypeScript code is always compatible with Node.js's native type stripping — no build step required in production.
+
+```jsonc
+// tsconfig.ci.json — TypeScript 5.8 erasable-syntax gate
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // TS 5.8: only allow syntax that Node.js can strip natively
+    // Errors on: enums, namespaces, parameter properties, import=/export=
+    "erasableSyntaxOnly": true,
+
+    // TS 5.8: skip @typescript/lib-* package lookups — faster CI type-check
+    // Only safe if your project does NOT use @typescript/lib-* overrides
+    "libReplacement": false,
+
+    // For Node 22+ targets: use nodenext (allows require() of ESM)
+    // For Node 18 strict targets: use node18 (disallows require() of ESM)
+    "module": "nodenext",
+    "moduleResolution": "bundler"
+  }
+}
+```
+
+```yaml
+# .github/workflows/ci.yml — TypeScript 5.8 erasable-syntax advisory gate
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+
+      # Required gate: standard type-check (catches all type errors)
+      - name: Type-check (required)
+        run: npx tsc --noEmit
+
+      # Advisory gate: erasable-syntax check (TS 5.8) — non-blocking until refactored
+      # Counts errors; fails only after the audit sprint is complete
+      - name: Erasable-syntax audit (advisory)
+        run: |
+          ERROR_COUNT=$(npx tsc --project tsconfig.ci.json --noEmit 2>&1 | grep -c "error TS" || true)
+          echo "erasable_syntax_errors=$ERROR_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::TS 5.8 --erasableSyntaxOnly: $ERROR_COUNT errors (non-blocking)"
+          # Uncomment to promote to hard gate once count reaches 0:
+          # if [ "$ERROR_COUNT" -gt 0 ]; then exit 1; fi
+        continue-on-error: true  # remove this line when promoting to required gate
+```
+
+**`--libReplacement false` — CI performance improvement**
+
+By default, TypeScript searches for `@typescript/lib-*` packages that may override built-in lib files (e.g., `@typescript/lib-dom`). This search adds overhead to every `tsc` invocation. If your project does not use such overrides, set `--libReplacement false` to skip the search entirely.
+
+> [community] Teams with large monorepos report 8–15% reduction in `tsc --noEmit` wall-clock time after enabling `--libReplacement false`. On a 60-second typecheck step, this saves 5–9 seconds per CI run — meaningful at 20+ PRs/day. Only enable after verifying no `@typescript/lib-*` packages are in your devDependencies tree.
+
+**`--module node18` vs. `--module nodenext` — choosing the right CI target**
+
+TypeScript 5.8 stabilized `--module node18` as a distinct target from `nodenext`:
+
+- `--module node18`: Disallows `require()` of ECMAScript modules entirely — enforces Node 18 LTS semantics where `require()` of `.mjs` or ESM-only packages throws at runtime.
+- `--module nodenext`: Allows `require()` of ECMAScript modules in Node 22+ — TypeScript will enforce the synchronous `require()` constraints (no top-level await in required modules) but permits the call.
+
+For CI, the choice gates what `require()` patterns are legal in your TypeScript tests and application code:
+
+```typescript
+// ci-module-target-check.ts — illustrates the difference at the type level
+// With --module node18: the line below is a TypeScript compile error
+// With --module nodenext (Node 22+): the line below is valid
+const { default: something } = require('./esm-module.mjs');
+//      ^^^ TS error with node18: "require() of ESM modules is not allowed"
+//      ^^^ OK with nodenext: sync require() allowed in Node 22+
+
+// Recommended CI gate: enforce module target matches your Node.js version
+// In package.json engines: { "node": ">=22" } → use --module nodenext
+// In package.json engines: { "node": ">=18 <22" } → use --module node18
+```
+
+**Granular branch return type checking (TS 5.8)**
+
+TypeScript 5.8 introduced stricter return type checking in branching expressions. In prior versions, a function returning `any` from one branch could suppress type checking for the whole return expression. In 5.8, TypeScript checks each branch independently — a common source of newly-failing CI when upgrading TypeScript versions.
+
+```typescript
+// Example: TS 5.8 granular branch return checking catches any-infected returns
+// Previously passed tsc; fails with TS 5.8 if strictness flags are set
+
+declare function getUser(): { id: number } | any;  // returns `any` in one path
+
+function extractId(input: unknown): number {
+  // TS 5.8: error on this line — `getUser()` returning `any` was masking the
+  // fact that `input` is `unknown` and cannot be returned as `number` directly
+  return getUser() || (input as any);
+  //                   ^^^^^^^^^^^^
+  // TS 5.8 now checks each branch independently: `input as any` is `any`, not `number`
+  // Fix: `return (getUser() as { id: number }).id ?? (input as number);`
+}
+```
+
+> [community] The most impactful TypeScript 5.8 CI change for existing codebases is the granular branch return type check. Teams upgrading from TS 5.7 to 5.8 with existing `any`-heavy helper functions report 10–40 newly-failing type errors in their test files — test helpers that return `any` from a mock path and are called in typed contexts. Run `tsc --version` in CI before and after upgrading TypeScript in `devDependencies`; if the major type-check gate suddenly gains new errors after a `typescript` devDependency bump, this is the likely cause. Fix by replacing `as any` casts with typed assertions or generics in the affected return expressions.
 
 

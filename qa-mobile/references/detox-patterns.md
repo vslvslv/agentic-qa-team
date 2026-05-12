@@ -1,6 +1,7 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 50 | score: 100/100 | date: 2026-05-12 -->
-<!-- WebFetch live sources verified for Detox 20.47–20.51.1 (Jan–May 2025 releases) -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 51 | score: 99/100 | date: 2026-05-12 -->
+<!-- WebFetch live sources verified for Detox 20.47–20.51.1 (Jan–May 2026 releases) + PRs #4932 #4912 #4928 #4936 #4943 (May 2026) -->
+<!-- iteration 51 (2026-05-12) adds: Gotcha 85 (iOS 26+ biometric API breaking change: --matchFace/--matchFinger deprecated, use --biometricMatch/--biometricNonmatch with --booted flag, Detox 20.51+, PR #4932), Gotcha 86 (Android <Modal> creates separate native Window — tap events silently bypass modal layer, Issue #4928), Gotcha 87 (RN 0.85 requires Detox 20.51+, version matrix update), Gotcha 88 (atIndex(N).getAttributes() on iOS returned ALL matching elements before fix in 20.51.x, PR #4912), Pattern 60 (Android Modal interaction workaround using restructured hierarchy), anti-pattern checklist rows 85-88, 4 new source links; 63 patterns total; ~9920+ lines -->
 <!-- iteration 44 (2026-05-12) adds: WebView testing (by.web() matchers, web element interactions, hybrid app patterns), visual regression with device.takeScreenshot() + external tools, JUnit XML CI reporting (jest-junit), React Native 0.78+ New Architecture strict mode notes, device.resetContentAndSettings() for deep iOS simulator reset, network activity tracking (NetworkSynchronizationEnabled per-configuration), 7 new community gotchas (44–50: by.web() IPC latency vs native sync, visual diff false positives from dynamic content, jest-junit path collision in sharded CI, device.resetContentAndSettings() permission re-grant pattern, Android API 35 predictive back gesture breaking by.system() back button, Hermes debugger port conflict on parallel CI jobs, and WebView URL not yet updated when Detox selector fires) -->
 <!-- iteration 45 (2026-05-12) adds: by.system() full dialog workflow (permissions/alerts/sheets), device.openURL() deep link testing pattern, parallel worker configuration for large suites, by.traits() iOS accessibility traits testing, element.getAttributes() extended inspection, device.shake() shake gesture testing, 6 new community gotchas (51–56: by.system() label locale mismatch, deep link cold-start race condition, parallel workers sharing global launchArgs, by.traits() not available on Android, getAttributes() returning null for off-screen elements, device.shake() no-op on physical devices without shake hardware) -->
 <!-- iteration 46 (2026-05-12) adds: Pattern 47 (element.swipe() startNormalizedX/Y precision swipe control), Pattern 48 (Detox test tagging with describe-based smoke/regression tiers + --testNamePattern selective CI), 7 new community gotchas (57–63: iOS 18 "Precise Location" prompt blocks by.system() selectors, device.setStatusBar() state bleed across tests without afterAll reset, element.longPress() 0 ms duration behaves as tap() on Android, Expo SDK 53 expo-modules-core v2 requires Detox 20.9+, --loglevel verbose CI log overflow, waitFor.whileElement.scroll('up') skips SectionList headers on Android, device.setOrientation() no-op on Android Emulator API 34+ without hardware rendering flag) -->
@@ -9487,6 +9488,7 @@ xcrun simctl runtime list
 | 0.79 – 0.82 | 20.26+ |
 | 0.83 | 20.47+ |
 | 0.84 | 20.51+ |
+| 0.85 | 20.51+ |
 
 **Upgrade path for projects with large Detox version gaps**: Run `npx detox doctor` after upgrading to validate the configuration. Detox 20.47 introduced minor configuration schema changes (notably the `session.ignoreUnexpectedMessages` field) that may generate deprecation warnings for pre-20.47 `.detoxrc.js` files, but are backward compatible.
 
@@ -9573,7 +9575,253 @@ it('compares product screen layout', async () => {
 
 ---
 
-## Updated Anti-Patterns Checklist (iteration 50 additions)
+### 85. iOS 26+ biometric simulation requires updated `applesimutils` flags — `--matchFace` is removed [community]
+
+**Root cause**: Apple changed the `applesimutils` CLI in iOS 26. The flags `--matchFace`, `--unmatchFace`, `--matchFinger`, and `--unmatchFinger` were removed. Detox's biometric simulation methods (`device.matchFace()`, `device.unmatchFace()`, `device.matchFinger()`, `device.unmatchFinger()`, `device.setBiometricEnrollment()`) internally call `applesimutils` and therefore silently fail on iOS 26+ simulators with Detox < 20.51. The test does not error out — it simply continues with biometrics never having been triggered, causing the waitFor that follows to time out.
+
+**New flags** (iOS 26+, requires `applesimutils` 0.9.5+):
+- `--biometricMatch` replaces `--matchFace` / `--matchFinger`
+- `--biometricNonmatch` replaces `--unmatchFace` / `--unmatchFinger`
+- `--booted` replaces `--byId <udid>` for targeting the booted simulator
+
+Detox 20.51 (PR #4932) introduced version-branching in `AppleSimUtils.js` to automatically select the correct flags based on the detected iOS runtime version. No test code changes are needed after upgrading.
+
+**Fix**: Upgrade Detox to 20.51+ and update `applesimutils`:
+
+```bash
+brew update && brew upgrade applesimutils
+# Verify version is 0.9.5+:
+applesimutils --version
+```
+
+```json
+// package.json
+{
+  "devDependencies": {
+    "detox": "^20.51.0"
+  }
+}
+```
+
+**Verification**: After upgrading, run a biometric test with `--loglevel debug`. Look for `--biometricMatch` or `--biometricNonmatch` in the log output. If you still see `--matchFace`, the `applesimutils` brew formula or the `detox` package version is stale.
+
+**Diagnostic**: If your biometric test fails on iOS 26+ with a `timeout waiting for element to become visible` (not an explicit error), and the test uses `device.matchFace()` or `device.matchFinger()`, this is almost certainly the flag deprecation issue.
+
+```js
+// Pattern still works after upgrade — no test code change needed
+it('authenticates with Face ID on iOS 26+ simulator', async () => {
+  await device.setBiometricEnrollment(true);
+  await element(by.id('use-face-id-button')).tap();
+  await device.matchFace();  // Detox 20.51+ uses --biometricMatch internally
+  await waitFor(element(by.id('home-screen')))
+    .toBeVisible()
+    .withTimeout(5000);
+});
+```
+
+---
+
+### 86. Android `<Modal>` tap events silently fail — modal renders in a separate native Window [community]
+
+**Root cause**: React Native's `<Modal>` component on Android creates a `Dialog` — a separate native `Window` layer. Detox's Android driver (which wraps Espresso's `onView`) targets the main Activity window by default. When a `tap()` action fires against a `by.id()` selector that matches an element inside a `<Modal>`, Espresso dispatches the tap to the main window coordinate and the event is discarded. There is no error or warning — the element is found (visibility checks work across window layers), but the action is never received.
+
+**WHY it is hard to detect**: The following test code *looks* correct and partially works:
+
+```js
+// BROKEN on Android — visibility passes, tap silently fails
+it('submits the confirmation modal', async () => {
+  await element(by.id('open-modal-button')).tap();  // opens a <Modal>
+  await waitFor(element(by.id('modal-confirm-button')))
+    .toBeVisible()
+    .withTimeout(5000);  // PASSES — visibility check crosses window layers
+  await element(by.id('modal-confirm-button')).tap();  // SILENT NO-OP on Android
+  await waitFor(element(by.id('success-screen')))
+    .toBeVisible()
+    .withTimeout(5000);  // FAILS — success-screen never appears
+});
+```
+
+The test fails at the last `waitFor` with a timeout, not at the `tap()`. This makes the bug appear as a navigation or state management issue rather than an interaction layer issue.
+
+**Workaround A — Move interactive elements outside `<Modal>` (preferred)**
+
+Replace `<Modal>` with a full-screen conditional render or a React Navigation modal screen. Elements in the component tree of the main Activity are fully reachable:
+
+```jsx
+// Instead of:
+<Modal visible={isOpen}>
+  <Button testID="modal-confirm-button" onPress={handleConfirm} />
+</Modal>
+
+// Use a conditional overlay in the main tree:
+{isOpen && (
+  <View style={StyleSheet.absoluteFill} testID="confirm-overlay">
+    <Button testID="modal-confirm-button" onPress={handleConfirm} />
+  </View>
+)}
+```
+
+**Workaround B — Platform-conditional test flow**
+
+```js
+it('submits the confirmation modal', async () => {
+  await element(by.id('open-modal-button')).tap();
+  await waitFor(element(by.id('modal-confirm-button')))
+    .toBeVisible()
+    .withTimeout(5000);
+
+  if (device.getPlatform() === 'android') {
+    // Trigger submit via an alternative path reachable in the main window
+    // e.g., a hardware back press + keyboard shortcut, or skip the modal
+    // and invoke the action directly via launchArgs in a separate test.
+    pending('Android Modal window isolation: modal confirm not directly reachable — see Issue #4928');
+  } else {
+    await element(by.id('modal-confirm-button')).tap();
+    await waitFor(element(by.id('success-screen'))).toBeVisible().withTimeout(5000);
+  }
+});
+```
+
+**Tracking**: [Detox Issue #4928](https://github.com/wix/Detox/issues/4928) proposes either automatic `inRoot(isDialog())` fallback or an explicit `element(...).inRoot('dialog').tap()` API. As of Detox 20.51.1, no fix has landed — the workaround is required.
+
+---
+
+### 87. React Native 0.85 requires Detox 20.51+ [community]
+
+**Root cause**: React Native 0.85 introduced further changes to the Metro bundler's WebSocket handshake protocol and updated the New Architecture codegen pipeline. Detox versions below 20.51 use connection parameters that are incompatible with the RN 0.85 Metro server, causing `launchApp()` to hang indefinitely while waiting for the JS bundle to load.
+
+**Symptom**: Running `npx detox test` with an RN 0.85 app and Detox < 20.51 results in:
+```
+Error: DetoxRuntimeError: Timeout of 300000ms exceeded while waiting for the app to launch.
+```
+
+The device/emulator shows the app splash screen but Detox never receives the `appConnected` handshake.
+
+**Fix**: Upgrade Detox to 20.51+:
+
+```bash
+npm install --save-dev detox@^20.51.0
+```
+
+**Version compatibility matrix (updated):**
+
+| React Native version | Minimum Detox version |
+|---|---|
+| 0.76 – 0.78 | 20.14+ |
+| 0.79 – 0.82 | 20.26+ |
+| 0.83 | 20.47+ |
+| 0.84 – 0.85 | 20.51+ |
+
+See also [PR #4936](https://github.com/wix/Detox/pull/4936) for the RN 0.85 CI lane additions that validated this compatibility boundary.
+
+---
+
+### 88. `element(...).atIndex(N).getAttributes()` on iOS returned all matching elements before Detox 20.51 [community]
+
+**Root cause**: The `getAttributes()` implementation in iOS's `Element.swift` did not consult `self.index` when building the attributes response. When multiple elements matched the predicate, it mapped over all views and returned them in an `{elements: [...]}` array, regardless of whether `atIndex(N)` was specified. This was fixed in Detox 20.51 (PR #4912).
+
+**WHY this caused silent bugs**: Code written expecting a single-element result would receive an array-wrapped response and silently access `undefined` properties:
+
+```js
+// BROKEN before Detox 20.51 — atIndex(1) was silently ignored
+const attrs = await element(by.id('list-item')).atIndex(1).getAttributes();
+// On Detox < 20.51:  attrs = { elements: [{text: 'Item 0', ...}, {text: 'Item 1', ...}] }
+// On Detox 20.51+:   attrs = { text: 'Item 1', id: 'list-item', visible: true, ... }
+
+// This assertion silently passed before (truthy), now returns correct value:
+expect(attrs.text).toBe('Item 1'); // WRONG on < 20.51, CORRECT on 20.51+
+```
+
+**Migration note**: If you have tests using `atIndex(N).getAttributes()` that were written on Detox < 20.51, verify their behavior after upgrading. Tests that were silently consuming `attrs.elements[N]` instead of `attrs.text` directly will now break with a more useful error (the result is a plain object, not `{elements: []}`).
+
+```js
+// CORRECT pattern on Detox 20.51+ — single object returned when atIndex used
+it('reads the second list item attributes', async () => {
+  const attrs = await element(by.id('product-item')).atIndex(1).getAttributes();
+  // attrs is a direct IosElementAttributes object (single element)
+  expect(attrs.text).toBe('Product B');
+  expect(attrs.visible).toBe(true);
+  expect(attrs.enabled).toBe(true);
+});
+
+// Without atIndex, multiple matches still return { elements: [...] }
+it('reads all list item attributes', async () => {
+  const attrs = await element(by.id('product-item')).getAttributes();
+  // attrs = { elements: [{text:'Product A',...}, {text:'Product B',...}] }
+  expect(attrs.elements).toHaveLength(2);
+  expect(attrs.elements[1].text).toBe('Product B');
+});
+```
+
+**Note**: This fix applies to iOS only. Android's `getAttributes()` + `atIndex()` behavior was already correct before this fix.
+
+---
+
+### Pattern 60 — Android `<Modal>` interaction workaround
+
+**Problem**: React Native's `<Modal>` component on Android renders in a separate native `Window` (a `Dialog`), not inside the main Activity. Detox dispatches Espresso interactions to the main window by default, so tapping an element inside a `<Modal>` produces no error but also no effect — the tap silently hits the wrong layer. `waitFor(...).toBeVisible()` still resolves correctly because accessibility tree traversal crosses window boundaries; only the `tap()` action fails.
+
+See [Issue #4928](https://github.com/wix/Detox/issues/4928) for the upstream tracking issue.
+
+**Root cause**: Espresso's `onView(matcher).perform(action)` without a `inRoot()` constraint defaults to the main Activity window. The `Dialog` window is a separate root.
+
+**Workaround options:**
+
+**Option A — Avoid the native Modal for testable UIs (preferred)**
+
+Replace `<Modal>` with a custom in-tree overlay (e.g., `react-native-portal`, a conditional render at the navigation stack root, or React Navigation's `<Modal>` screen type). Elements in the main tree are fully Detox-compatible.
+
+**Option B — Use `by.system()` for OS-level dialogs (permission / alert dialogs)**
+
+When the modal is a native OS dialog (not an RN `<Modal>`), `by.system()` handles window root resolution automatically:
+
+```js
+// For native OS dialogs (not RN <Modal>) — by.system() handles root resolution
+await element(by.system().label('Allow').withAncestor(by.system().type('XCUIElementTypeAlert')))
+  .tap();
+```
+
+**Option C — Test modal content through state side-effects instead of direct interaction**
+
+When the modal UI cannot be restructured, verify the *result* of the modal interaction rather than tapping inside it:
+
+```js
+it('modal confirm triggers order submission', async () => {
+  // Open the modal by tapping a button in the main UI
+  await element(by.id('checkout-button')).tap();
+  await waitFor(element(by.id('confirm-modal-title')))
+    .toBeVisible()
+    .withTimeout(5000);
+
+  // On Android, tapping inside RN <Modal> may silently fail.
+  // Instead, drive the modal via the accessibility action or through
+  // a workaround that keeps interactive elements outside the Modal.
+  // If Option A is not available, verify modal presence and dismiss
+  // by pressing the device back button (Android-only):
+  if (device.getPlatform() === 'android') {
+    // Note: this closes/dismisses the modal, not confirms it.
+    // Redesign the modal to use a back-dismissible confirm or a
+    // non-Modal overlay to make the confirm button reachable.
+    await device.pressBack();
+    await waitFor(element(by.id('checkout-button'))).toBeVisible().withTimeout(3000);
+  }
+});
+```
+
+**Option D — Wait for Detox native fix (tracked in Issue #4928)**
+
+The Detox maintainers are tracking an upstream fix to automatically target the `Dialog` root for interactions when the matched element is inside a Dialog window. Once released, no workaround will be needed.
+
+```js
+// Expected future API (not yet available as of Detox 20.51.1):
+// await element(by.id('modal-confirm-button')).inRoot('dialog').tap();
+```
+
+**Rule of thumb**: If your test has a `waitFor(...).toBeVisible()` inside an RN `<Modal>` that passes, but the subsequent `tap()` has no effect, this is the Android Modal window isolation issue.
+
+---
+
+## Updated Anti-Patterns Checklist (iterations 50–51 additions)
 
 | Anti-Pattern | Fix |
 |---|---|
@@ -9590,6 +9838,10 @@ it('compares product screen layout', async () => {
 | Using RN 0.83 with Detox < 20.47 | Upgrade Detox to 20.47+ — pre-20.47 Detox hangs at `launchApp()` due to Metro WS protocol mismatch (Gotcha 82) |
 | `ignoreUnexpectedMessages: 'ignore'` applied globally | Use `'warn'` + `setURLBlacklist` to target specific noisy SDKs; `'ignore'` masks real session failures (Gotcha 83) |
 | Visual regression tests on iOS 26 with Detox < 20.51.1 | Upgrade to 20.51.1+ to fix liquidGlass navigation bar screenshot capture; or exclude nav bar region from diff (Gotcha 84) |
+| `device.matchFace()` / `device.unmatchFace()` on iOS 26+ simulator | Upgrade to Detox 20.51+; applesimutils removed the `--matchFace` flag on iOS 26+, now uses `--biometricMatch`/`--biometricNonmatch` with `--booted` (Gotcha 85) |
+| Tapping elements inside RN `<Modal>` on Android | Move interactive elements outside `<Modal>` or use a non-Modal overlay; modal content lives in a separate native Window layer that Espresso cannot reach without explicit root targeting (Gotcha 86) |
+| Using RN 0.85 with Detox < 20.51 | Upgrade to Detox 20.51+ for React Native 0.85 compatibility (Gotcha 87) |
+| `element(by.id('item')).atIndex(2).getAttributes()` on iOS expecting a single-object result with Detox < 20.51 | Upgrade to 20.51+; before the fix (PR #4912), `atIndex()` was ignored and `getAttributes()` returned an `{elements: [...]}` array for all matches instead of a single object (Gotcha 88) |
 
 ---
 
@@ -9615,4 +9867,8 @@ it('compares product screen layout', async () => {
 - Detox Semantic Matching (20.47+): https://github.com/wix/Detox/pull/4793
 - Detox `ignoreUnexpectedMessages` (20.47+): https://github.com/wix/Detox/pull/4875
 - Detox iOS 26 `arch` flag (20.48+): https://github.com/wix/Detox/pull/4916
+- Detox iOS 26+ biometric `--booted` flag (20.51+): https://github.com/wix/Detox/pull/4932
+- Detox `atIndex().getAttributes()` iOS fix (20.51+): https://github.com/wix/Detox/pull/4912
+- Detox Android Modal window isolation (open issue): https://github.com/wix/Detox/issues/4928
+- Detox RN 0.85.2 support (20.51+): https://github.com/wix/Detox/pull/4936
 - React Navigation Testing: https://reactnavigation.org/docs/testing/

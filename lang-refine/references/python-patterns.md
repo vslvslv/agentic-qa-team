@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 48 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 49 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -52,7 +52,9 @@
      Iter 46 (2026-05-12): 100/100 (+0) — added structured logging with StructuredLogMessage t-string processor; adaptive threading strategy pattern; asyncio.timeout() dynamic rescheduling; community gotcha #44 (f_locals cross-thread crash in free-threaded mode); sourced from peps.python.org/pep-0750/ + docs.python.org/3/library/asyncio-task.html + practitioner synthesis
      [testing-focus run] Iter 47 (2026-05-12): 95/100 (+310 lines) — added comprehensive Testing section covering pytest fixtures/scopes/yield teardown/conftest.py, @pytest.mark.parametrize + pytest.param + indirect, built-in fixtures (tmp_path, monkeypatch, caplog, capsys, capfd), pytest.raises/warns/approx, pytest 8.x/9.x new features (RaisesGroup, HIDDEN_PARAM, subtests, native TOML config), Hypothesis property-based testing (@given, @settings, @example, @composite, st.* strategies, assume/note/target, database), and community gotchas #45 (fixture scope leakage), #46 (monkeypatch vs patch namespace), #47 (Hypothesis filter() rejection ratio); sourced from docs.pytest.org/en/stable/changelog.html + docs.pytest.org/en/stable/how-to/fixtures.html + practitioner synthesis
      Iter 48 (2026-05-12): 98/100 (+350 lines) — added Hypothesis stateful testing (RuleBasedStateMachine, @rule, @initialize, @invariant, Bundle, multiple(), consumes(), run_state_machine_as_test); pytest 8.3/8.4/9.0 features: pytest.raises(check=), capteesys fixture, collect_imported_tests, console_output_style=times, --xfail-tb, --no-fold-skipped, strict_parametrization_ids; pytest 8.4 behavior changes (async-without-plugin → error, non-None return → error); community gotchas #48 (sync test requesting async fixture), #49 (non-None return from test); sourced from docs.pytest.org/en/stable/changelog.html + practitioner synthesis
+     Iter 49 (2026-05-12): 100/100 (+~420 lines) — added patch.dict/patch.multiple patterns, pytest-mock plugin deep-dive (mocker fixture, spy, stopall), freezegun/time-machine datetime mocking with comparison table, responses HTTP mocking, pytest-httpx/aioresponses for async HTTP, st.register_type_strategy() for Hypothesis custom types, pytest-xdist parallel testing with xdist_group/worker isolation patterns, pytest-cov coverage configuration with branch coverage; community gotchas #50 (xdist session-fixture is per-worker), #51 (freezegun misses C-ext time), #52 (responses only intercepts requests); sourced from practitioner synthesis + docs
 -->
+
 
 ## Core Philosophy
 
@@ -8760,5 +8762,820 @@ def test_uses_helper():
 ```
 
 **Rule:** Test functions must always return `None`. Any `return <value>` in a test function is a bug. Enable `--strict-markers` and keep `filterwarnings = ["error"]` in your config to catch these before pytest 8.4 enforces them as hard errors.
+
+---
+
+### `unittest.mock.patch.dict` and `patch.multiple`
+
+`patch.dict` replaces keys in a dict (or dict-like object) for the duration of the test, then restores it. It is the correct tool for mocking `os.environ` or any module-level dict without changing the reference.
+
+```python
+import os
+from unittest.mock import patch
+
+# ── patch.dict for os.environ — the idiomatic approach ───────────────────────
+def get_db_url() -> str:
+    host = os.environ.get("DB_HOST", "localhost")
+    port = os.environ.get("DB_PORT", "5432")
+    return f"postgresql://{host}:{port}/app"
+
+
+def test_db_url_from_env():
+    with patch.dict(os.environ, {"DB_HOST": "testhost", "DB_PORT": "9999"}):
+        assert get_db_url() == "postgresql://testhost:9999/app"
+    # os.environ is restored after the block — real values unaffected
+
+
+# clear=True: replace ALL keys (useful to test "no env vars set" scenarios)
+def test_db_url_defaults():
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_db_url() == "postgresql://localhost:5432/app"
+
+
+# ── patch.dict as decorator ───────────────────────────────────────────────────
+@patch.dict(os.environ, {"FEATURE_FLAG": "enabled"})
+def test_feature_flag_enabled():
+    assert os.environ["FEATURE_FLAG"] == "enabled"
+
+
+# ── patch.multiple — patch several attributes on one target in one call ───────
+from unittest.mock import patch, MagicMock
+import time
+
+
+class Scheduler:
+    def run_job(self, job_id: int) -> dict:
+        start = time.monotonic()
+        # ... do work ...
+        elapsed = time.monotonic() - start
+        return {"job_id": job_id, "elapsed": elapsed}
+
+
+def test_scheduler_multiple():
+    with patch.multiple(
+        "time",
+        monotonic=MagicMock(side_effect=[0.0, 1.5]),   # first call 0.0, second 1.5
+        sleep=MagicMock(),
+    ):
+        sched = Scheduler()
+        result = sched.run_job(42)
+        assert result["elapsed"] == 1.5
+
+
+# ── Nested patch.dict for module-level registry dicts ─────────────────────────
+_PLUGIN_REGISTRY: dict[str, type] = {}
+
+
+def get_plugin(name: str) -> type | None:
+    return _PLUGIN_REGISTRY.get(name)
+
+
+def test_plugin_lookup():
+    fake_plugin = type("FakePlugin", (), {})
+    with patch.dict(_PLUGIN_REGISTRY, {"fake": fake_plugin}):
+        assert get_plugin("fake") is fake_plugin
+    assert get_plugin("fake") is None   # restored
+```
+
+**`patch.dict` vs `monkeypatch.setitem`:**
+
+| | `patch.dict` | `monkeypatch.setitem` |
+|---|---|---|
+| Source | `unittest.mock` (stdlib) | pytest built-in fixture |
+| Scope | Context manager / decorator | Fixture (auto-restores at test end) |
+| `clear=True` | Yes | No (only removes added keys) |
+| Works with any mapping | Yes | Yes |
+| Preferred when | Using `unittest.TestCase`, no pytest | Pure pytest; need fine-grained control per key |
+
+---
+
+### `pytest-mock` — Fixture-Based Mocking
+
+`pytest-mock` wraps `unittest.mock` behind a `mocker` fixture, providing cleaner syntax, automatic cleanup, and better pytest integration. It is the community standard for pytest projects.
+
+```bash
+pip install pytest-mock
+```
+
+```python
+# The `mocker` fixture is available in any test that requests it.
+# All patches created via `mocker` are automatically stopped after the test — no addCleanup needed.
+
+import os
+from pathlib import Path
+
+
+# ── mocker.patch — equivalent to @patch decorator ────────────────────────────
+def read_config(path: str) -> str:
+    return Path(path).read_text()
+
+
+def test_read_config(mocker):
+    mock_read = mocker.patch("pathlib.Path.read_text", return_value="[app]\nenv=test")
+    result = read_config("/etc/app.toml")
+    assert result == "[app]\nenv=test"
+    mock_read.assert_called_once()
+
+
+# ── mocker.patch.object — patch a method on a specific class ─────────────────
+class EmailService:
+    def send(self, to: str, subject: str, body: str) -> bool:
+        # ... real SMTP logic ...
+        return True
+
+
+def notify_user(svc: EmailService, email: str) -> None:
+    svc.send(email, "Welcome", "Hello!")
+
+
+def test_notify_user(mocker):
+    svc = EmailService()
+    mock_send = mocker.patch.object(svc, "send", return_value=True)
+    notify_user(svc, "alice@example.com")
+    mock_send.assert_called_once_with("alice@example.com", "Welcome", "Hello!")
+
+
+# ── mocker.patch.dict — patch dict entries ────────────────────────────────────
+def test_env_via_mocker(mocker):
+    mocker.patch.dict(os.environ, {"APP_MODE": "test"})
+    assert os.environ["APP_MODE"] == "test"
+    # Restored automatically after test — no context manager needed
+
+
+# ── mocker.MagicMock / mocker.Mock ────────────────────────────────────────────
+def test_magic_mock(mocker):
+    mock_conn = mocker.MagicMock()
+    mock_conn.execute.return_value = [(1, "Alice")]
+    rows = mock_conn.execute("SELECT * FROM users")
+    assert rows == [(1, "Alice")]
+    mock_conn.execute.assert_called_with("SELECT * FROM users")
+
+
+# ── mocker.spy — wraps a real method, records calls but still executes ────────
+class Calculator:
+    def add(self, a: int, b: int) -> int:
+        return a + b
+
+
+def test_spy_add(mocker):
+    calc = Calculator()
+    spy = mocker.spy(calc, "add")
+    result = calc.add(2, 3)           # real method still called
+    assert result == 5                # real return value
+    spy.assert_called_once_with(2, 3) # call recorded
+
+
+# ── mocker.stopall() — rarely needed; mocker auto-stops on test exit ──────────
+# If you need to stop a patch mid-test:
+def test_mid_test_stop(mocker):
+    m = mocker.patch("os.getcwd", return_value="/fake")
+    assert os.getcwd() == "/fake"
+    mocker.stopall()                  # stops all patches immediately
+    assert os.getcwd() != "/fake"     # real getcwd again
+```
+
+**Why prefer `pytest-mock` over raw `unittest.mock`:**
+- No `addCleanup(patcher.stop)` boilerplate — cleanup is guaranteed by the fixture.
+- `mocker.spy()` has no equivalent in raw `unittest.mock`.
+- Cleaner test signatures: one `mocker` param vs one per `@patch` decorator.
+- Integrates with pytest's assertion rewriting for better failure messages.
+
+---
+
+### Datetime Mocking with `freezegun` and `time-machine`
+
+Tests that call `datetime.now()`, `date.today()`, or `time.time()` are fragile and non-deterministic. Freeze time to make them deterministic.
+
+```bash
+pip install freezegun          # works everywhere; monkeypatches datetime module
+pip install time-machine       # faster; uses libfaketime/ctypes where available
+```
+
+**`freezegun` — broad compatibility:**
+
+```python
+from datetime import datetime, date
+from freezegun import freeze_time
+
+
+def get_greeting() -> str:
+    hour = datetime.now().hour
+    return "Good morning" if hour < 12 else "Good afternoon"
+
+
+def days_until_expiry(expiry: date) -> int:
+    return (expiry - date.today()).days
+
+
+# ── As decorator ──────────────────────────────────────────────────────────────
+@freeze_time("2025-03-15 09:30:00")
+def test_morning_greeting():
+    assert get_greeting() == "Good morning"
+
+
+@freeze_time("2025-03-15 14:00:00")
+def test_afternoon_greeting():
+    assert get_greeting() == "Good afternoon"
+
+
+# ── As context manager ────────────────────────────────────────────────────────
+def test_days_until_expiry():
+    with freeze_time("2025-01-01"):
+        assert days_until_expiry(date(2025, 1, 11)) == 10
+        assert days_until_expiry(date(2024, 12, 31)) == -1   # expired
+
+
+# ── With tick=True: time advances normally from the frozen start ──────────────
+import time
+
+@freeze_time("2025-06-01 00:00:00", tick=True)
+def test_elapsed_time():
+    start = datetime.now()
+    time.sleep(0.01)             # real sleep; frozen clock advances with it
+    elapsed = (datetime.now() - start).total_seconds()
+    assert elapsed >= 0.01
+
+
+# ── pytest fixture integration ────────────────────────────────────────────────
+import pytest
+
+@pytest.fixture
+def frozen_now(freezer):
+    """Use the `freezer` fixture provided by freezegun's pytest plugin."""
+    # freezer is a FakeDatetime controller; call freezer.move_to() to advance
+    return freezer
+
+
+def test_with_freezer_fixture(frozen_now):
+    # freezer plugin auto-freezes at test start at the configured time
+    # add  @freeze_time("2025-01-01") to the fixture or test for a specific time
+    pass
+```
+
+**`time-machine` — higher performance (preferred for large test suites):**
+
+```python
+import time_machine
+from datetime import datetime, timezone
+
+
+@time_machine.travel("2025-07-04 12:00:00", tz_offset=0)
+def test_independence_day():
+    now = datetime.now(tz=timezone.utc)
+    assert now.month == 7
+    assert now.day == 4
+
+
+# As context manager
+def test_new_year():
+    with time_machine.travel("2026-01-01 00:00:00+00:00"):
+        now = datetime.now(tz=timezone.utc)
+        assert now.year == 2026
+        assert now.month == 1
+```
+
+**`freezegun` vs `time-machine` tradeoffs:**
+
+| | `freezegun` | `time-machine` |
+|---|---|---|
+| Mechanism | Monkeypatches Python stdlib | `libfaketime` (Linux/macOS) or ctypes |
+| Speed | Slower | ~10x faster on Linux/macOS |
+| Windows support | Yes | Limited (pure-Python fallback) |
+| Freezes C-ext time | No | Yes (`time.time()` in C extensions) |
+| `tick=True` support | Yes | Yes (default: real-time after start) |
+| Preferred for | Simple projects, full cross-platform | CI performance, projects with C extensions |
+
+---
+
+### HTTP Mocking with `responses`
+
+`responses` intercepts `requests` library HTTP calls and returns controlled responses without touching the network.
+
+```bash
+pip install responses
+```
+
+```python
+import responses as resp
+import requests
+import pytest
+
+
+BASE_URL = "https://api.example.com"
+
+
+def fetch_user(user_id: int) -> dict:
+    r = requests.get(f"{BASE_URL}/users/{user_id}")
+    r.raise_for_status()
+    return r.json()
+
+
+def create_user(name: str, email: str) -> dict:
+    r = requests.post(f"{BASE_URL}/users", json={"name": name, "email": email})
+    r.raise_for_status()
+    return r.json()
+
+
+# ── @responses.activate decorator ────────────────────────────────────────────
+@resp.activate
+def test_fetch_user_success():
+    resp.add(
+        resp.GET,
+        f"{BASE_URL}/users/42",
+        json={"id": 42, "name": "Alice"},
+        status=200,
+    )
+    user = fetch_user(42)
+    assert user["name"] == "Alice"
+    assert len(resp.calls) == 1
+    assert resp.calls[0].request.url == f"{BASE_URL}/users/42"
+
+
+@resp.activate
+def test_fetch_user_not_found():
+    resp.add(resp.GET, f"{BASE_URL}/users/999", status=404, json={"error": "not found"})
+    with pytest.raises(requests.HTTPError):
+        fetch_user(999)
+
+
+# ── Context manager ───────────────────────────────────────────────────────────
+def test_create_user():
+    with resp.RequestsMock() as rsps:
+        rsps.add(
+            resp.POST,
+            f"{BASE_URL}/users",
+            json={"id": 1, "name": "Bob", "email": "bob@example.com"},
+            status=201,
+        )
+        user = create_user("Bob", "bob@example.com")
+        assert user["id"] == 1
+        assert rsps.call_count == 1
+
+
+# ── Simulate connection errors ────────────────────────────────────────────────
+@resp.activate
+def test_network_failure():
+    resp.add(resp.GET, f"{BASE_URL}/users/1", body=ConnectionError("network down"))
+    with pytest.raises(ConnectionError):
+        fetch_user(1)
+
+
+# ── passthrough_prefixes: let some real URLs through ─────────────────────────
+@resp.activate(assert_all_requests_are_fired=True)
+def test_with_passthrough():
+    resp.add_passthrough("https://real-cdn.example.com")
+    resp.add(resp.GET, f"{BASE_URL}/data", json={"ok": True})
+    # requests to BASE_URL are mocked; requests to real-cdn go through
+
+
+# ── pytest fixture with responses ─────────────────────────────────────────────
+@pytest.fixture
+def mock_api():
+    with resp.RequestsMock(assert_all_requests_are_fired=False) as rsps:
+        rsps.add(resp.GET, f"{BASE_URL}/health", json={"status": "ok"})
+        yield rsps
+
+
+def test_health_check(mock_api):
+    r = requests.get(f"{BASE_URL}/health")
+    assert r.json()["status"] == "ok"
+```
+
+**Common alternative — `httpretty`:** Similar to `responses` but also intercepts `urllib` / `http.client` directly. Use `responses` for `requests`-based code; use `httpretty` or `pytest-httpserver` when testing code that uses lower-level HTTP.
+
+---
+
+### Hypothesis — `st.register_type_strategy()` for Custom Types
+
+`register_type_strategy` teaches Hypothesis how to generate instances of a custom type. Combined with `@given(st.from_type(...))`, it enables property-based tests over your own domain models without writing `st.builds(...)` manually everywhere.
+
+```python
+from hypothesis import given, strategies as st
+from hypothesis.strategies import register_type_strategy
+from dataclasses import dataclass
+from enum import Enum
+
+
+class Currency(Enum):
+    USD = "USD"
+    EUR = "EUR"
+    GBP = "GBP"
+    JPY = "JPY"
+
+
+@dataclass
+class Money:
+    amount: int       # integer cents / minor currency units
+    currency: Currency
+
+    def __post_init__(self) -> None:
+        if self.amount < 0:
+            raise ValueError(f"amount must be >= 0, got {self.amount}")
+
+
+# ── Register a strategy for Money ────────────────────────────────────────────
+money_strategy = st.builds(
+    Money,
+    amount=st.integers(min_value=0, max_value=10_000_00),   # up to 1 million cents
+    currency=st.sampled_from(Currency),
+)
+register_type_strategy(Money, money_strategy)
+
+
+# ── Now st.from_type(Money) works transparently ───────────────────────────────
+@given(st.from_type(Money))
+def test_money_is_valid(m: Money) -> None:
+    assert m.amount >= 0
+    assert isinstance(m.currency, Currency)
+
+
+@given(st.from_type(Money), st.from_type(Money))
+def test_same_currency_addable(a: Money, b: Money) -> None:
+    from hypothesis import assume
+    assume(a.currency == b.currency)
+    total = Money(a.amount + b.amount, a.currency)
+    assert total.amount == a.amount + b.amount
+
+
+# ── register_type_strategy with a Pydantic / attrs model ─────────────────────
+# For Pydantic models, use the hypothesis[pydantic] extra which auto-registers:
+#   from hypothesis import given
+#   from pydantic import BaseModel
+#   from hypothesis_pydantic import from_schema  # or hypothesis.extra.pydantic
+#
+# For plain dataclasses without custom constraints, st.from_type() uses
+# the field annotations automatically (no registration needed):
+@dataclass
+class Point:
+    x: float
+    y: float
+
+# st.from_type(Point) works out of the box for simple annotated dataclasses
+@given(st.from_type(Point))
+def test_point_coords_are_floats(p: Point) -> None:
+    assert isinstance(p.x, float)
+    assert isinstance(p.y, float)
+
+
+# ── Overriding a registered strategy locally ─────────────────────────────────
+# Use st.register_type_strategy inside a test module for test-local overrides:
+# register_type_strategy(Money, st.just(Money(0, Currency.USD)))  # only zeros
+```
+
+---
+
+### `pytest-xdist` — Parallel Test Execution
+
+`pytest-xdist` distributes tests across multiple worker processes (or remote machines), dramatically reducing wall-clock time for large test suites.
+
+```bash
+pip install pytest-xdist
+```
+
+```python
+# Run with -n auto: spawn as many workers as CPU cores
+# pytest -n auto tests/
+
+# Run with specific worker count:
+# pytest -n 4 tests/
+
+# Distribute by file (default="load"): pytest -n 4 --dist=load
+# Alternative dist modes:
+#   --dist=loadfile  : all tests from one file go to the same worker (safer for module-scoped fixtures)
+#   --dist=loadscope : all tests from one class/module go to the same worker
+#   --dist=no        : disable distribution (useful to toggle off without removing config)
+```
+
+```toml
+# pyproject.toml — configure xdist defaults
+[tool.pytest.ini_options]
+addopts = ["-n", "auto", "--dist=loadscope"]
+```
+
+```python
+# ── Fixtures that must NOT be parallelised: use @pytest.mark.xdist_group ──────
+import pytest
+
+
+@pytest.mark.xdist_group("database")
+def test_migrate_schema():
+    """Must not run concurrently with other database tests."""
+    ...
+
+
+@pytest.mark.xdist_group("database")
+def test_seed_data():
+    """Same group: serialised onto one worker."""
+    ...
+
+
+# ── Worker ID fixture: access which worker is running ─────────────────────────
+def test_with_worker_id(worker_id):
+    """worker_id == 'master' when not parallelised; 'gw0', 'gw1', ... with -n."""
+    assert worker_id.startswith(("master", "gw"))
+
+
+# ── tmp_path is worker-isolated — safe to use with -n ─────────────────────────
+def test_parallel_file_write(tmp_path):
+    f = tmp_path / "output.txt"
+    f.write_text("data")
+    assert f.read_text() == "data"
+    # Each worker gets its own tmp_path root; no race condition
+
+
+# ── Session-scoped fixtures with -n: use tmp_path_factory ────────────────────
+@pytest.fixture(scope="session")
+def shared_test_db(tmp_path_factory):
+    """
+    When using -n, session-scoped fixtures are created ONCE PER WORKER,
+    not once per session. Use a named lock file or a shared external resource
+    (like a test DB URL from an env var) if you need truly shared state.
+    """
+    db_path = tmp_path_factory.mktemp("db") / "test.db"
+    # initialise db at db_path ...
+    return db_path
+```
+
+---
+
+### Community Gotcha #50: `pytest-xdist` Session-Scoped Fixtures Are Per-Worker, Not Global  [community]
+
+**Problem:** A developer uses `scope="session"` on a fixture expecting it to run once for the entire parallel test run. With `pytest-xdist`, each worker process is an independent pytest session — so a `session`-scoped fixture runs once *per worker*, not once globally.
+
+**Why:** `pytest-xdist` forks N worker processes, each of which runs a subset of tests. Each worker has its own session lifecycle. The primary process (coordinator) does not run tests itself — it only distributes work.
+
+**Consequence:** A `session`-scoped fixture that creates a database schema will create N separate schemas (one per worker). If the fixture also inserts shared seed data from an external source, each worker races to write it. If the fixture is expensive (e.g., builds a Docker container), it runs N times instead of once.
+
+**Fix options:**
+
+```python
+import pytest
+import os
+import sqlite3
+import filelock    # pip install filelock
+
+
+# ── Option A: use --dist=loadscope or --dist=loadfile ─────────────────────────
+# All tests that share a session fixture go to the same worker. No code change needed.
+# pytest -n 4 --dist=loadscope
+
+
+# ── Option B: filelock for shared setup that must run exactly once ────────────
+@pytest.fixture(scope="session")
+def shared_database(tmp_path_factory):
+    """Initialise a shared SQLite DB exactly once, even with multiple xdist workers."""
+    db_path = tmp_path_factory.getbasetemp().parent / "shared_test.db"
+    lock_path = db_path.with_suffix(".lock")
+
+    with filelock.FileLock(str(lock_path)):
+        if not db_path.exists():
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY)")
+            conn.commit()
+            conn.close()
+
+    return str(db_path)
+
+
+# ── Option C: use a pre-provisioned shared resource ───────────────────────────
+# Point all workers at the same external DB via an env var:
+@pytest.fixture(scope="session")
+def db_url():
+    return os.environ.get("TEST_DB_URL", "sqlite:///test.db")
+    # Workers share the URL; your DB must handle concurrent connections
+
+
+# ── Option D: xdist_group marker — serialise tests that share state ───────────
+@pytest.mark.xdist_group("schema")
+def test_create_table():
+    ...
+
+
+@pytest.mark.xdist_group("schema")
+def test_drop_table():
+    ...
+```
+
+**Rule:** For `pytest-xdist`, treat session-scoped fixtures as worker-scoped. Shared mutable state (files, databases, ports) requires explicit coordination via file locks, pre-provisioned resources, or `--dist=loadscope`.
+
+---
+
+### Community Gotcha #51: `freeze_time` / `time-machine` Does Not Affect C-Extension `time.time()`  [community]
+
+**Problem:** Code that calls `time.time()` from a C extension (e.g., inside `asyncio`, certain ORMs, or numpy) returns real wall-clock time even inside a `freeze_time` block. `freezegun` only patches the Python-level datetime/time module; it cannot intercept calls made entirely in C.
+
+**Why:** `freezegun` works by replacing `datetime.datetime`, `datetime.date`, `time.time`, and related names in the `datetime` and `time` modules with fake objects. When a C extension calls `time.time()` at the C API level (via `PyTime_GetMonotonicClock` or similar), it bypasses Python's name lookup entirely.
+
+**Fix:**
+
+```python
+import time
+from datetime import datetime
+from freezegun import freeze_time
+
+
+# Works: pure Python code reading datetime.now()
+@freeze_time("2025-01-01 12:00:00")
+def test_python_datetime():
+    assert datetime.now().year == 2025   # PASSES
+
+
+# Breaks: time.monotonic() in asyncio internals is C-level
+# @freeze_time does not stop asyncio's internal clock from advancing
+
+
+# ── Option A: use time-machine on Linux/macOS ─────────────────────────────────
+# time-machine uses libfaketime to intercept all time calls including C extensions:
+import time_machine
+
+@time_machine.travel("2025-01-01 12:00:00+00:00")
+def test_with_c_ext_time():
+    t = time.time()
+    assert 1_735_689_600 <= t < 1_735_689_601   # Unix timestamp for 2025-01-01 12:00 UTC
+
+
+# ── Option B: inject a clock dependency ───────────────────────────────────────
+from collections.abc import Callable
+
+
+class EventScheduler:
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock   # injectable clock
+
+    def time_until(self, deadline: float) -> float:
+        return deadline - self._clock()
+
+
+def test_scheduler():
+    fake_clock = lambda: 1000.0
+    sched = EventScheduler(clock=fake_clock)
+    assert sched.time_until(1010.0) == 10.0   # no freeze needed
+```
+
+**Rule:** Use `time-machine` instead of `freezegun` when testing code that uses `time.monotonic()`, `time.perf_counter()`, asyncio timeouts, or any C-extension time calls. For pure-Python datetime arithmetic, `freezegun` is sufficient and simpler.
+
+---
+
+### Community Gotcha #52: `responses` Library Does Not Intercept `httpx` or `aiohttp`  [community]
+
+**Problem:** The `responses` library only intercepts the `requests` library. Code that uses `httpx`, `aiohttp`, or `urllib.request` is unaffected — the real network is called, causing test failures or unexpected outbound traffic.
+
+**Why:** `responses` patches `requests.adapters.HTTPAdapter.send`. Libraries that use different HTTP stacks have their own transport layers that are not patched.
+
+**Fix — use the right mock library for your HTTP stack:**
+
+```python
+# ── For httpx: use pytest-httpx ───────────────────────────────────────────────
+# pip install pytest-httpx
+
+import httpx
+import pytest
+
+
+async def fetch_data(url: str) -> dict:
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        return r.json()
+
+
+@pytest.mark.asyncio
+async def test_fetch_data(httpx_mock):
+    httpx_mock.add_response(
+        url="https://api.example.com/data",
+        json={"key": "value"},
+        status_code=200,
+    )
+    result = await fetch_data("https://api.example.com/data")
+    assert result["key"] == "value"
+
+
+# ── For aiohttp: use aioresponses ─────────────────────────────────────────────
+# pip install aioresponses
+
+import aiohttp
+from aioresponses import aioresponses
+
+
+@pytest.mark.asyncio
+async def test_aiohttp_get():
+    with aioresponses() as m:
+        m.get("https://api.example.com/items", payload=[{"id": 1}])
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://api.example.com/items") as resp:
+                data = await resp.json()
+        assert data[0]["id"] == 1
+
+
+# ── For urllib.request / stdlib: use unittest.mock directly ──────────────────
+from unittest.mock import patch, MagicMock
+import urllib.request
+import json
+
+
+def get_page(url: str) -> str:
+    with urllib.request.urlopen(url) as resp:
+        return resp.read().decode()
+
+
+def test_urllib_mock():
+    fake_response = MagicMock()
+    fake_response.__enter__ = MagicMock(return_value=fake_response)
+    fake_response.__exit__ = MagicMock(return_value=False)
+    fake_response.read.return_value = b"hello world"
+
+    with patch("urllib.request.urlopen", return_value=fake_response):
+        result = get_page("https://example.com")
+    assert result == "hello world"
+```
+
+**Rule:** Match your mock library to your HTTP library:
+- `requests` → `responses` (or `requests-mock`)
+- `httpx` → `pytest-httpx` (or `respx`)
+- `aiohttp` → `aioresponses`
+- `urllib.request` → `unittest.mock.patch("urllib.request.urlopen", ...)`
+
+---
+
+### `pytest-cov` — Code Coverage Configuration
+
+`pytest-cov` integrates `coverage.py` with pytest. Configure it in `pyproject.toml` to enforce thresholds, exclude irrelevant code, and produce CI-friendly reports.
+
+```bash
+pip install pytest-cov
+```
+
+```toml
+# pyproject.toml
+[tool.coverage.run]
+source = ["src"]           # measure coverage only for your package
+branch = true              # branch coverage (not just line coverage)
+omit = [
+    "*/migrations/*",
+    "*/conftest.py",
+    "*/tests/*",
+    "*/__main__.py",
+]
+parallel = true            # needed when running with pytest-xdist (-n)
+
+[tool.coverage.report]
+fail_under = 80            # fail if total coverage drops below 80%
+show_missing = true        # show which lines are uncovered
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@abstractmethod",
+    "if __name__ == .__main__.:",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.pytest.ini_options]
+addopts = ["--cov=src", "--cov-report=term-missing", "--cov-fail-under=80"]
+```
+
+```python
+# ── Using pragma: no cover for untestable branches ────────────────────────────
+import sys
+
+
+def main() -> None:
+    print("Running...")
+
+
+if __name__ == "__main__":    # pragma: no cover
+    main()
+
+
+# ── TYPE_CHECKING guard — excluded from coverage (dead at runtime) ─────────────
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:             # always False at runtime → excluded automatically
+    from collections.abc import Sequence
+
+
+# ── Branch coverage: test both sides of an if/else ────────────────────────────
+def process(value: int | None) -> str:
+    if value is None:         # branch: True + False both need tests
+        return "empty"
+    return str(value)
+
+
+# With branch=true, you need TWO tests:
+# test_process_none():   process(None) == "empty"     ← True branch
+# test_process_int():    process(42)  == "42"          ← False branch
+# Without branch=true, just calling process(None) gives 100% line coverage
+```
+
+**Coverage with `pytest-xdist`:** Set `parallel = true` in `[tool.coverage.run]` and run `coverage combine` after `pytest -n auto` to merge per-worker `.coverage.*` files into a single report.
+
+```bash
+pytest -n auto --cov=src --cov-report=xml
+coverage combine         # merge worker coverage files (auto-runs with --cov)
+coverage report
+```
 
 ---

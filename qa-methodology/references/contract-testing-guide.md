@@ -1,8 +1,9 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases/tag/v16.4.0 (WebFetch 2026-05-12 iteration 27), github.com/pact-foundation/pact-js/issues/1762 (WebFetch 2026-05-12 iteration 27) | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases/tag/v16.4.0 (WebFetch 2026-05-12 iteration 27), github.com/pact-foundation/pact-js/issues/1762 (WebFetch 2026-05-12 iteration 27), docs.pact.io/pact_broker/advanced_topics/consumer_version_selectors (WebFetch 2026-05-12 iteration 28), pactflow.io/blog (WebFetch 2026-05-12 iteration 28), github.com/pactflow/pact-protobuf-plugin/releases (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 28) | community: production lessons -->
 <!-- new in iteration 24: extended MatchersV3 quick reference (atMostLike, constrainedArrayLike, includes, nullValue, equal, eachKeyMatches, eachValueMatches), InterfaceToTemplate<T> TypeScript utility, constrainedArrayLike bounded-array pattern, community lessons 47-49 (executeTest single-interaction-per-call constraint, constrainedArrayLike for bounded APIs, InterfaceToTemplate drift) -->
 <!-- new in iteration 26: Multipart form data / file upload contract testing pattern (multipartBody/binaryFile V4 DSL, official docs May 2026), SpecificationVersion enum for explicit spec version control, community lessons 54-57 (EADDRINUSE with provider.setup() missing finalize, Jest --watch tracing subscriber warning, multipart form data over-specification anti-pattern, SpecificationVersion enum usage) -->
+<!-- new in iteration 28: matchingBranch consumer version selector (parallel feature branch development, TypeScript pattern), extended ConsumerVersionSelector reference table (consumer, environment, deployed, released, matchingBranch, all 12 properties), PactFlow AI Code Review feature (August 2025 beta — automated pact quality analysis, distinct from MCP Server), pact-protobuf-plugin v0.7.0 (October 2025 — proto descriptor caching + nested message fix, upgrade guide), community lessons 58-61 (matchingBranch requires providerVersionBranch, consumer selector for scoping, AI Code Review semantic vs type gaps, descriptor cache is per-process) -->
 <!-- new in iteration 27: CORRECTON — addInteractionReference section replaced with accurate .reference(group, name, value) traceability annotation API (issue #1762, v16.4.0); previous section incorrectly described it as an interaction-reuse mechanism with a fabricated InteractionObject API; table entry and v16 API list updated to match actual function signature and purpose -->
 <!-- new in iteration 25: The Bug Catcher Rule (formal principle for interaction inclusion), BDD-style scenario sentence pattern, V4 statusCode class matching (success/clientError/serverError), mTLS client certificate workaround for VerifierV3, ConsumerVersionSelector fallbackBranch TypeScript type gap, status code range matching feature request #1600, community lessons 50-53 (5 reasons contract testing fails, BDD-style naming prevents duplicate interactions, status code class matching avoids unnecessary provider states, mTLS/client-cert provider verification) -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
@@ -850,6 +851,10 @@ const developmentSelectors: ConsumerVersionSelector[] = [
   { mainBranch: true },
   { deployedOrReleased: true },
   { branch: 'feature/new-checkout-flow', fallbackBranch: 'main' },
+  // ALTERNATIVE to { branch: 'X' }: use { matchingBranch: true } when consumer+provider
+  // share the same branch naming convention — eliminates per-feature selector updates.
+  // Requires providerVersionBranch to be set in VerifierV3 options.
+  // { matchingBranch: true },
 ];
 
 // LEGACY (pre-environment API): tag-based — still works but deprecated
@@ -2658,6 +2663,9 @@ describe('NotificationService consumes OrderCreated events (V4 async, pact-js v1
 | PactFlow MCP Server | Product | https://pactflow.io/blog/ | AI-assisted contract test generation and Broker querying from IDE/AI agent workflows (PactFlow only, August 2025) |
 | pact-js GraphQL docs | Official | https://docs.pact.io/implementation_guides/javascript/docs/graphql | Native addGraphQLInteraction() V4 DSL — withOperation/withQuery/withVariables |
 | ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology reference |
+| Consumer Version Selectors | Official | https://docs.pact.io/pact_broker/advanced_topics/consumer_version_selectors | Full reference for all selector properties including matchingBranch, consumer, environment |
+| PactFlow AI Code Review | Product | https://pactflow.io/blog/ | AI-powered analysis of existing pact files; identifies over-specification, missing interactions, best practice violations (August 2025 beta, PactFlow only) |
+| pact-protobuf-plugin | Releases | https://github.com/pactflow/pact-protobuf-plugin/releases | v0.7.0 (Oct 2025): proto descriptor caching + nested message lookup fix |
 
 ---
 
@@ -4871,3 +4879,258 @@ This issue is tracked as pact-js issue #1568. It is most common in projects that
 56. **[community] Multipart form data contracts over-specify binary content when the fixture file changes on disk.** Teams that use `binaryFile()` or `multipartBody()` without `Matchers.contentType()` matching rules record the raw bytes of a specific test fixture into the pact file. When the fixture file is regenerated (e.g., a test image re-exported at a different quality level, or a fixture updated for a new test case), the pact file content changes — triggering a `contract_content_changed` webhook event and a provider re-verification run for what is effectively a test-infrastructure change, not a contract change. **Best practice:** always use `Matchers.contentType('image/jpeg')` on binary body parts rather than byte-exact matching; use `like()` for metadata fields. The contract captures "the consumer sends a JPEG image" without locking to specific bytes — the provider verifies that it accepts `image/jpeg` content, which is the actual contract requirement.
 
 57. **[community] Omitting `spec: SpecificationVersion.SPECIFICATION_VERSION_V4` causes `multipartBody()` and `statusCode()` class matching to fail silently.** When a `Pact` instance is constructed without an explicit `spec` option, it defaults to V2 for some DSL paths. Calling `multipartBody()`, `builder.statusCode()`, or `.pending()` on a V2 pact silently produces a pact file without the expected V4 structures — the build passes but the pact file is missing the content type rules or status code matchers. **Fix:** always set `spec: SpecificationVersion.SPECIFICATION_VERSION_V4` explicitly when using any V4-only feature. Import `SpecificationVersion` from `@pact-foundation/pact` — it is available in pact-js v13+. TypeScript will not warn you when a V4 method is called on a V2 or V3 pact instance because the builder types are shared; the type system cannot enforce the spec version / feature matrix.
+
+---
+
+### `matchingBranch` Consumer Version Selector (TypeScript — coordinated feature branch development)
+
+The `matchingBranch: true` selector dynamically matches consumer pacts from whatever branch shares the **same name** as the provider's current branch. It eliminates the need to hardcode branch names in provider verification config when consumer and provider teams work in parallel on identically-named feature branches.
+
+**How it works:** When the provider runs verification on `feature/new-checkout-flow`, the Broker looks for consumer pacts published from a branch also named `feature/new-checkout-flow`. If found, those pacts are included in verification. If no consumer branch matches (e.g., the consumer has already merged), verification falls through to `mainBranch` and `deployedOrReleased` as normal.
+
+```typescript
+// inventory-service.provider.matching-branch.pact.spec.ts
+// Uses matchingBranch to automatically verify against consumer's same-named feature branch.
+// Eliminates the need for per-branch VerifierV3 config or CONSUMER_BRANCH env vars.
+import { VerifierV3, ConsumerVersionSelector } from '@pact-foundation/pact';
+import { startServer, stopServer } from '../src/test-server';
+
+// RECOMMENDED: three-tier selector for full parallel-feature-branch coverage
+const selectors: ConsumerVersionSelector[] = [
+  // Tier 1: verify consumer pacts from the same feature branch as this provider run.
+  //         When provider is on 'feature/batch-inventory', this automatically picks up
+  //         consumer pacts published from 'feature/batch-inventory' too.
+  //         No-op when no consumer branch with this name exists in the Broker.
+  { matchingBranch: true },
+
+  // Tier 2: verify consumer's main branch pacts — catches regressions before trunk merges.
+  { mainBranch: true },
+
+  // Tier 3: verify what is actually deployed in each environment.
+  { deployedOrReleased: true },
+];
+
+describe('InventoryService provider verification (matchingBranch)', () => {
+  let serverPort: number;
+
+  beforeAll(async () => { serverPort = await startServer(); });
+  afterAll(async () => { await stopServer(); });
+
+  it('satisfies consumer pacts — including same-named feature branch pacts', async () => {
+    const verifier = new VerifierV3({
+      provider: 'InventoryService',
+      providerBaseUrl: `http://localhost:${serverPort}`,
+      pactBrokerUrl: process.env.PACT_BROKER_URL,
+      pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+      // matchingBranch requires providerVersionBranch to be set so the Broker
+      // knows which branch to match against. Always set this in CI.
+      providerVersionBranch: process.env.GIT_BRANCH,
+      providerVersion: process.env.GIT_COMMIT,
+      consumerVersionSelectors: selectors,
+      enablePending: true,
+      includeWipPactsSince: '2024-01-01',
+      stateHandlers: {},
+      publishVerificationResult: process.env.PUBLISH_VERIFICATION_RESULTS === 'true',
+    });
+
+    await verifier.verifyProvider();
+  });
+});
+```
+
+**`matchingBranch` vs `branch: 'X'` vs `fallbackBranch`:**
+
+| Approach | When to use | Downside |
+|---|---|---|
+| `{ matchingBranch: true }` | Consumer and provider feature branches have the same name (common convention) | Requires discipline: branch names must match exactly, including case |
+| `{ branch: 'feature/X', fallbackBranch: 'main' }` | Consumer and provider use different branch names for the same feature | Must be updated per-feature; hardcoded branch name accrues drift |
+| `{ mainBranch: true }` | Always include; catches regressions on trunk | Alone, misses work-in-progress feature branch pacts |
+
+**The `contract_requiring_verification_published` webhook + `matchingBranch` combo:** When a consumer publishes a pact from `feature/batch-inventory`, the webhook triggers the provider's CI and passes `${pactbroker.consumerVersionBranch}` = `feature/batch-inventory` in the payload. The provider CI sets `GIT_BRANCH=feature/batch-inventory` (or reads it from the branch it has checked out), and `matchingBranch: true` automatically includes the consumer's pact. No per-feature selector updates are needed.
+
+**Requirement:** The consumer must publish pacts with `--branch <branchName>` (or `providerVersionBranch` equivalent) set. Without branch metadata on the published pact, `matchingBranch` cannot find the pact.
+
+---
+
+### Extended Consumer Version Selector Reference (TypeScript)
+
+The full `ConsumerVersionSelector` type in pact-js includes properties not covered in the basic reference. The `consumer` and `environment` properties are the most commonly overlooked.
+
+```typescript
+// consumer-version-selectors-full.ts — complete selector reference with TypeScript examples
+import { ConsumerVersionSelector } from '@pact-foundation/pact';
+
+// PROPERTY: consumer — restrict a selector to one specific consumer
+// Useful when a provider has many consumers but only one consumer is being changed.
+// Narrowing to a single consumer reduces verification scope significantly.
+const singleConsumerSelectors: ConsumerVersionSelector[] = [
+  // Verify CheckoutService's main-branch pacts only (ignoring OrderService, FrontendApp, etc.)
+  { mainBranch: true, consumer: 'CheckoutService' },
+  // Verify what's deployed for all consumers (broad safety net regardless of which consumer)
+  { deployedOrReleased: true },
+];
+
+// PROPERTY: environment — restrict deployedOrReleased to a specific environment
+// Useful for staging verification: only verify what is deployed to staging,
+// not what is deployed to production or dev.
+const stagingSelectors: ConsumerVersionSelector[] = [
+  { mainBranch: true },
+  // { deployed: true, environment: 'staging' } — only pacts deployed to staging
+  // TypeScript: the `environment` property narrows the deployedOrReleased scope
+  { deployed: true, environment: 'staging' },
+  { deployed: true, environment: 'production' },
+];
+
+// PROPERTY: latest — with branch/tag selectors, returns only the latest pact version
+// Primarily a legacy selector property (used with tag-based workflows).
+// With branch selectors, the Broker already returns the latest for that branch.
+const legacyTagSelectors: ConsumerVersionSelector[] = [
+  { tag: 'main', latest: true },
+  { tag: 'production', latest: true },
+];
+
+// RECOMMENDED PRODUCTION CONFIG: covers all cases without over-fetching
+const productionSelectors: ConsumerVersionSelector[] = [
+  { matchingBranch: true },        // feature branch parity (same branch name)
+  { mainBranch: true },             // trunk (catches regressions before merge)
+  { deployedOrReleased: true },     // everything actually running in any environment
+];
+```
+
+**Selector property summary (complete reference):**
+
+| Property | Type | Description | When to use |
+|---|---|---|---|
+| `mainBranch` | `true` | Consumer's configured main branch | Always include |
+| `branch` | `string` | Specific named branch | During feature development; remove after merge |
+| `fallbackBranch` | `string` | Fallback if `branch` has no pacts | Pair with `branch` during parallel development |
+| `matchingBranch` | `true` | Consumer branches matching provider's current branch | When consumer+provider feature branches share names |
+| `deployedOrReleased` | `true` | All deployed + released versions across all environments | Always include |
+| `deployed` | `true` | Only currently deployed versions | Use with `environment` to scope to one environment |
+| `released` | `true` | Only released (registry/artifact) versions | Use for library/SDK consumers |
+| `environment` | `string` | Qualifies `deployed`/`released` to a specific environment | When verifying for a specific environment gate |
+| `consumer` | `string` | Restrict selector to one consumer | When narrowing verification scope for performance |
+| `latest` | `true` | Latest matching version only | Legacy tag-based workflows; not needed with branch selectors |
+| `tag` | `string` | Tag-based selection (legacy) | Only for pre-branch Pact Broker setups |
+| `fallbackTag` | `string` | Fallback tag if tag has no pacts (legacy) | Only for pre-branch setups |
+
+**TypeScript note:** `fallbackBranch` is not yet declared in the `ConsumerVersionSelector` TypeScript type in pact-js ≤ v16.4 (issue #1418). Use the `ConsumerVersionSelectorWithFallback` extension type shown in the `fallbackBranch` type gap section above.
+
+---
+
+### PactFlow AI Code Review (August 2025 — automated pact test quality analysis)
+
+PactFlow released an AI Code Review feature in August 2025 (beta) that automatically analyzes existing Pact consumer tests and identifies issues aligned with Pact best practices. It is distinct from the MCP Server (which helps generate new tests) — AI Code Review focuses on improving existing tests.
+
+**What it detects (documented patterns):**
+- Over-specified matchers: `string('ABC-123')` where `like('ABC-123')` is appropriate (exact value locked where type-only is sufficient)
+- Missing `like()` on server-assigned IDs, timestamps, and dynamic fields
+- Interactions that test provider validation rules (anti-pattern: tests a business rule the consumer doesn't enforce)
+- Duplicate `uponReceiving` descriptions that cause silent Broker de-duplication
+- Missing error status interactions for responses the consumer must handle (e.g., consumer has no 404 interaction but its production code has a 404 handler)
+- Provider states that are too broad or too narrow for the interaction they configure
+
+**How it integrates:**
+- Available from the PactFlow UI per-pact file — run analysis on any published pact in the Broker
+- Returns a structured report of findings with severity (critical / warning / info) and suggested fixes
+- Reports are tied to the pact file version — a fixed pact file generates a clean report on the next publish
+
+**Limitations:**
+- PactFlow only (not available on OSS Pact Broker)
+- Currently analyzes pact files as JSON — it does not read the source TypeScript test files
+- Does not understand the consumer's actual business logic — it can only flag structural issues in the pact JSON
+- Generated suggestions must be reviewed: the AI may recommend removing a tight matcher that is actually correct for an enum-driven code path
+
+**Integration with the TypeScript review workflow:**
+
+```typescript
+// Use AI Code Review findings as a post-publish CI check:
+// 1. Consumer CI publishes pact to PactFlow
+// 2. AI Code Review runs asynchronously (no CI integration yet; manual from UI)
+// 3. Development team reviews findings before the pact "graduates" from pending to active
+//
+// PRACTICAL SHORTCUT: run the community checklist manually during code review
+// to catch the same issues AI Code Review flags, without needing PactFlow:
+//
+// Consumer pact review checklist (manual equivalent of AI Code Review):
+// ✓ Every server-assigned ID uses `like()` or `fromProviderState()`, not `string('specific-value')`
+// ✓ Every timestamp uses `like()` or `timestamp()` with a fixed example string
+// ✓ No interaction asserts a provider validation rule the consumer doesn't enforce
+// ✓ No two interactions in the same pact file share the same `uponReceiving` description
+//    under the same provider state
+// ✓ For every consumer code path that branches on a response status code,
+//    there is a corresponding pact interaction for that status
+// ✓ `Authorization` and `X-API-Key` headers are injected via `requestFilter`, not in pact body
+```
+
+**When to use AI Code Review vs the MCP Server:**
+
+| Tool | Use case |
+|---|---|
+| **AI Code Review** | Improving existing pact files already published to PactFlow — retroactive quality analysis |
+| **MCP Server** | Generating new consumer tests interactively from an IDE; querying the Broker during development |
+| **Manual checklist** | Teams on OSS Pact Broker or during code review as a lightweight substitute |
+
+---
+
+### pact-protobuf-plugin v0.7.0 (October 2025 — nested message and descriptor caching)
+
+The PactFlow protobuf/gRPC plugin released v0.7.0 in October 2025 with two improvements relevant to TypeScript/gRPC contract testing:
+
+**1. Proto descriptor caching:** The plugin now caches compiled `.proto` descriptor objects across interactions within a single test run. Previously, each interaction triggered a fresh `protoc` compilation, which added 2–5 seconds per interaction when the proto file was large or had many imports. After v0.7.0, the first interaction compiles and caches the descriptor; subsequent interactions reuse the cache. For provider verification suites with 20+ gRPC interactions, this can reduce total verification time by 30–60%.
+
+**2. Nested message lookup fix:** A defect caused the plugin to fail to locate message type definitions for deeply-nested proto messages (messages defined inside other messages more than two levels deep). v0.7.0 resolves the lookup algorithm, enabling contract testing of APIs that use nested Protobuf message hierarchies.
+
+**Upgrade path:**
+
+```bash
+# Upgrade from pact-protobuf-plugin v0.3.x to v0.7.x
+# The plugin version in pact-plugin.json must match on both consumer and provider machines.
+
+# 1. Update the pinned version in your CI plugin installation step:
+pact-plugin-cli -y install \
+  https://github.com/pactflow/pact-protobuf-plugin/releases/tag/v-0.7.0
+# (or use the latest release URL)
+
+# 2. Update the pact-plugin.json reference in any committed plugin manifests:
+# "version": "0.7.0"  ← was "0.3.15" or similar
+
+# 3. Regenerate pact files (consumer tests must run after plugin upgrade
+#    to produce pact files that reference the new plugin version).
+#    Old pact files that reference v0.3.x can still be VERIFIED with v0.7.0
+#    (the plugin driver handles backward-compatible verification).
+```
+
+**v0.7.0 configuration notes for CI:**
+
+```yaml
+# .github/workflows/pact-grpc.yml — updated for pact-protobuf-plugin v0.7.0
+- name: Install protobuf plugin (v0.7.0 — with descriptor caching)
+  run: |
+    pact-plugin-cli -y install \
+      https://github.com/pactflow/pact-protobuf-plugin/releases/tag/v-0.7.0
+  env:
+    PACT_PLUGIN_DIR: /opt/pact/plugins
+
+# No changes to consumer or provider test code required for the caching improvement.
+# The nested message fix is transparent — tests that previously failed with
+# "message type not found" on deeply-nested messages will now pass.
+```
+
+**Pact Specification Version Reference update** (add v0.7.0 to plugin notes):
+
+The `pact-plugin.json` manifest `version` field must match between consumer and provider. After upgrading to v0.7.0, regenerate all gRPC consumer pact files so the pact JSON records `"protobuf": "0.7.0"` in `pluginConfiguration`. Provider verification with v0.7.0 can verify older pact files (v0.3.x–v0.6.x) — the reverse is not true.
+
+---
+
+### Additional Community Production Lessons [community]
+
+58. **[community] `matchingBranch` only works when `providerVersionBranch` is set in the provider's `VerifierV3` config.** Teams that add `{ matchingBranch: true }` to their `consumerVersionSelectors` without setting `providerVersionBranch: process.env.GIT_BRANCH` in CI find that the selector silently returns zero pacts — the Broker cannot determine which consumer branch to match against because it does not know the provider's current branch. The Broker returns an empty result (no pacts to verify), and if `failIfNoPactsFound` is not set, the build silently passes. **Fix:** always set `providerVersionBranch` alongside `providerVersion` in CI. Both are required for `matchingBranch` to function. In GitHub Actions: `providerVersionBranch: process.env.GIT_BRANCH` where `GIT_BRANCH: ${{ github.ref_name }}`.
+
+59. **[community] The `consumer` selector property is the correct tool for scoping verification during large provider refactors.** When a provider changes a single endpoint that only one of its ten consumers uses, running full verification against all ten consumers' pacts adds unnecessary CI time. Using `{ mainBranch: true, consumer: 'CheckoutService' }` alongside `{ deployedOrReleased: true }` (without the `consumer` qualifier) narrows the branch verification to the affected consumer while retaining the full safety net for deployed versions. Teams that run `filterConsumerNames` (a `VerifierV3` option) for the same purpose find it less precise — `filterConsumerNames` filters globally, whereas the `consumer` property allows fine-grained per-selector scoping.
+
+60. **[community] PactFlow AI Code Review flags over-specification issues that the TypeScript compiler cannot catch.** A consumer pact that contains `string('CONFIRMED')` instead of `like('CONFIRMED')` for an enum field that the consumer renders in a switch statement will typecheck correctly — TypeScript sees only the interface type `string`. AI Code Review identifies this as a potential over-specification issue because `string('CONFIRMED')` in Pact V3/V4 asserts both type and example value; if the provider renames the enum value, verification fails. The correct choice depends on whether the consumer's code path branches on the exact value: `equal('CONFIRMED')` if the switch statement requires the exact value, `like('CONFIRMED')` if the consumer renders it without branching. AI Code Review surfaces the question; the developer provides the answer. This highlights a gap the TypeScript type system cannot fill: the distinction between "this is the shape" and "this exact value drives consumer behaviour" is semantic, not syntactic.
+
+61. **[community] pact-protobuf-plugin v0.7.0 descriptor cache is per-plugin-process, not per-test-file.** Teams that run gRPC consumer tests in parallel across multiple pact-js processes (multiple Jest projects, multiple Nx packages) may not see the full caching benefit of v0.7.0 — each process spawns its own plugin instance with its own cache. The cache is most effective for provider verification (single process, many interactions) and for consumer test files that register many interactions in a single `executeTest()` call. For monorepo setups with multiple packages, the speedup is proportional to the number of interactions per package's verification run, not the total across all packages.
+
+---

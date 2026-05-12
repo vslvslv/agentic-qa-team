@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 51 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 52 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -5156,3 +5156,354 @@ const worker2 = new Worker(new URL(workerURL));
 | `fileURLToPath(import.meta.url)` + `path.dirname()` on Node.js 22+ | Verbose workaround for what `import.meta.dirname` now provides natively | Replace with `import.meta.dirname` on Node.js 22+ |
 
 ---
+
+## Vitest 3 — Testing Patterns (2025)
+
+Vitest 3 (January 2025) introduced several features that affect how test suites are structured and how browser-level testing integrates with the existing Vitest workflow.
+
+### Inline Workspace Configuration (Vitest 3+)
+
+Projects that previously required a separate `vitest.workspace.ts` file can now define multi-project setups directly inside `vitest.config.ts` via the `workspace` field. This eliminates a common source of configuration drift between the root config and the workspace file.
+
+```javascript
+// vitest.config.ts — all projects defined in one file (Vitest 3+)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Inline workspace — replaces separate vitest.workspace.ts
+    workspace: [
+      {
+        // Unit tests: run in Node.js, parallel, isolated
+        extends: true,    // inherit root config
+        test: {
+          name: 'unit',
+          include: ['src/**/*.unit.test.ts'],
+          environment: 'node',
+          isolate: true,
+        },
+      },
+      {
+        // Integration tests: sequential, larger timeout
+        extends: true,
+        test: {
+          name: 'integration',
+          include: ['src/**/*.integration.test.ts'],
+          environment: 'node',
+          fileParallelism: false,  // per-project — impossible before Vitest 3
+          testTimeout: 30_000,
+        },
+      },
+      {
+        // Browser tests: uses Playwright provider
+        extends: true,
+        test: {
+          name: 'browser',
+          include: ['src/**/*.browser.test.ts'],
+          browser: {
+            enabled: true,
+            provider: 'playwright',
+            instances: [
+              { browser: 'chromium' },
+              { browser: 'firefox' },
+            ],
+          },
+        },
+      },
+    ],
+  },
+});
+```
+
+**Why it matters for testing:** per-project `fileParallelism` and `execArgv` options (impossible before Vitest 3) let you pin integration tests to sequential execution while keeping unit tests parallel in the same config file — no more separate workspace file maintenance burden.
+
+### V8 Coverage — Explicit `coverage.include` Required (Vitest 3+)
+
+Vitest 3 switched V8 coverage from `v8-to-istanbul` to AST-based analysis. As a side effect, files that are never imported during a test run are no longer automatically included in coverage reports. You must list source files explicitly via `coverage.include`.
+
+```javascript
+// vitest.config.ts — required for accurate V8 coverage in Vitest 3+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      // REQUIRED in Vitest 3: files not imported during tests won't appear
+      // without this — 0% coverage files are hidden, not reported
+      include: ['src/**/*.ts', '!src/**/*.d.ts'],
+      exclude: ['src/**/*.test.ts', 'src/fixtures/**'],
+      // Recommended thresholds for CI gate
+      thresholds: {
+        lines:     80,
+        functions: 80,
+        branches:  70,
+        statements: 80,
+      },
+    },
+  },
+});
+```
+
+**Gotcha:** if `coverage.include` is not set in Vitest 3, files with 0% coverage disappear from the report entirely — your coverage percentage looks artificially high because untested files are excluded. Always set `include` to ensure untested modules surface in the report.
+
+### `vi.mock` Hoisting Gotchas in ESM (Vitest / Jest)
+
+`vi.mock()` (and Jest's `jest.mock()`) calls are **hoisted** to the top of the file by a transform step. This means they execute before `import` declarations — but it also means they execute before any local variable they close over. A common mistake is referencing a variable inside the factory that is declared in the same file.
+
+```javascript
+// BAD — hoisting puts vi.mock() before the variable declaration
+import { describe, it, vi, expect } from 'vitest';
+import { createService } from './service.js';
+
+const mockLogger = { info: vi.fn(), error: vi.fn() }; // declared AFTER vi.mock is hoisted
+
+vi.mock('./logger.js', () => ({
+  logger: mockLogger,  // ❌ ReferenceError: Cannot access 'mockLogger' before initialization
+}));
+
+// GOOD — factory function is self-contained; no external variable reference
+vi.mock('./logger.js', () => ({
+  logger: { info: vi.fn(), error: vi.fn() },  // ✅ declared inside the factory
+}));
+
+// GOOD — use vi.importActual() for partial mocking (import real, override some)
+vi.mock('./logger.js', async (importActual) => {
+  const actual = await importActual();
+  return {
+    ...actual,
+    logger: { ...actual.logger, error: vi.fn() }, // only mock error
+  };
+});
+
+// GOOD — when you need a reference to a shared mock, use a module-level variable
+// with the vi.hoisted() helper (Vitest 0.31+)
+const mockLogger = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn() }));
+
+vi.mock('./logger.js', () => ({ logger: mockLogger }));
+
+it('logs on creation', () => {
+  createService();
+  expect(mockLogger.info).toHaveBeenCalled();
+});
+```
+
+**Rule:** inside a `vi.mock()` factory, never reference module-scope variables defined outside the factory unless they are created with `vi.hoisted()`. Everything inside the factory runs in the hoisted position before other module code.
+
+### ESM Mock Isolation — `vi.resetModules()` Pattern
+
+In ESM, modules are cached after first import. When a test mocks a module and the next test needs the real version (or a different mock), the cache must be invalidated with `vi.resetModules()`. Without this, mocks bleed across tests.
+
+```javascript
+import { beforeEach, it, vi, expect } from 'vitest';
+
+beforeEach(async () => {
+  vi.resetModules();                    // Clear module cache before each test
+  vi.clearAllMocks();                   // Clear mock call history
+});
+
+it('test with mocked fetch', async () => {
+  vi.mock('node-fetch', () => ({
+    default: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ id: 1 }) }),
+  }));
+
+  // Dynamic import AFTER vi.mock — gets the mocked version
+  const { fetchUser } = await import('./user-service.js');
+  await fetchUser(1);
+  // assertions...
+});
+
+it('test with real fetch (after resetModules)', async () => {
+  // No vi.mock() here — resetModules() cleared the mock from the previous test
+  const { fetchUser } = await import('./user-service.js');
+  // Gets the real module
+});
+```
+
+**Key rule:** static `import` statements at the top of a test file are hoisted and resolved once — they always get the initial cached version. Use dynamic `await import()` inside the test body when you need module-mock isolation across tests.
+
+---
+
+## Playwright — E2E Testing Patterns (2024-2025)
+
+### `page.clock()` — Deterministic Timer Control in E2E Tests
+
+Playwright's `page.clock()` API (added in Playwright 1.45, 2024) brings Jest/Vitest-style fake timer control to end-to-end browser tests. It integrates with `Date`, `setTimeout`, `setInterval`, `requestAnimationFrame`, and `performance.now()` simultaneously — eliminating flaky time-dependent E2E tests.
+
+```javascript
+import { test, expect } from '@playwright/test';
+
+// ── Fix a specific date/time for reproducible rendering tests ──────────
+test('countdown shows correct time remaining', async ({ page }) => {
+  // Install the clock BEFORE navigating — prevents real timers from firing
+  await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
+  await page.goto('/countdown');
+
+  await expect(page.getByTestId('countdown')).toHaveText('23:59:59');
+
+  // Advance time by 1 minute
+  await page.clock.tick(60 * 1000);
+  await expect(page.getByTestId('countdown')).toHaveText('23:58:59');
+});
+
+// ── Simulate session expiry without waiting real minutes ───────────────
+test('session expires after 30 minutes of inactivity', async ({ page }) => {
+  await page.clock.install({ time: Date.now() });
+  await page.goto('/dashboard');
+
+  await expect(page.getByRole('main')).toBeVisible();
+
+  // Fast-forward 31 minutes
+  await page.clock.tick(31 * 60 * 1000);
+
+  // App should have redirected to the login page
+  await expect(page).toHaveURL('/login');
+  await expect(page.getByText('Session expired')).toBeVisible();
+});
+
+// ── Run all pending timers without specifying exact duration ───────────
+test('auto-save triggers after debounce', async ({ page }) => {
+  await page.clock.install();
+  await page.goto('/editor');
+
+  await page.getByRole('textbox').fill('Draft content');
+
+  // Flush all pending timers (debounce, RAF, etc.) without specifying ms
+  await page.clock.runAllTimers();
+
+  await expect(page.getByTestId('save-status')).toHaveText('Saved');
+});
+
+// ── pauseAt + fastForward pattern (for complex time-sequenced UIs) ────
+test('toast notification auto-dismisses after 5 seconds', async ({ page }) => {
+  await page.clock.install({ time: 0 });
+  await page.goto('/notifications');
+
+  await page.getByRole('button', { name: 'Show toast' }).click();
+  await expect(page.getByRole('alert')).toBeVisible();
+
+  // Fast-forward to just before dismissal
+  await page.clock.tick(4900);
+  await expect(page.getByRole('alert')).toBeVisible();
+
+  // Cross the threshold
+  await page.clock.tick(200);
+  await expect(page.getByRole('alert')).not.toBeVisible();
+});
+```
+
+**Key differences from Node.js fake timers:**
+- `page.clock.install()` affects the **browser page** — all browser APIs (`setTimeout`, `Date.now`, `performance.now`, `requestAnimationFrame`) are controlled.
+- `page.clock.tick(ms)` advances time and triggers all timers due within that window, in order.
+- `page.clock.runAllTimers()` flushes all pending timers without specifying duration.
+- Install **before** `page.goto()` to ensure timers started during page load are also under your control.
+
+### Accessibility Assertions — `toHaveRole()` and `toHaveAccessibleName()`
+
+Playwright's `expect` API gained accessibility-specific matchers (`toHaveRole`, `toHaveAccessibleName`, `toHaveAccessibleDescription`) that test ARIA semantics directly, without requiring screen-reader simulation.
+
+```javascript
+import { test, expect } from '@playwright/test';
+
+test('form is accessible', async ({ page }) => {
+  await page.goto('/signup');
+
+  // Assert semantic role (not just visual appearance)
+  const submitButton = page.getByText('Create account');
+  await expect(submitButton).toHaveRole('button');
+
+  // Assert accessible name (what a screen reader announces)
+  const emailInput = page.getByLabel('Email address');
+  await expect(emailInput).toHaveAccessibleName('Email address');
+
+  // Assert accessible description (from aria-describedby)
+  const passwordInput = page.getByLabel('Password');
+  await expect(passwordInput).toHaveAccessibleDescription(/at least 8 characters/);
+
+  // Combined: role + accessible name in one assertion
+  await expect(page.locator('[aria-live="polite"]')).toHaveRole('status');
+});
+
+// ARIA snapshot matching — assert entire accessible tree structure
+test('navigation landmark structure', async ({ page }) => {
+  await page.goto('/');
+
+  await expect(page.getByRole('navigation')).toMatchAriaSnapshot(`
+    navigation:
+      list:
+        listitem: Home
+        listitem: About
+        listitem: Contact
+  `);
+});
+```
+
+**Why accessibility assertions matter for testing:** traditional DOM assertions (`expect(el).toBeVisible()`, `toHaveText()`) don't verify that assistive technology can interpret the element correctly. A button that looks correct visually may have a missing label that makes it useless to screen reader users. Adding `toHaveRole`/`toHaveAccessibleName` to critical interaction flows catches accessibility regressions automatically in CI.
+
+### Soft Assertions — Collect Multiple Failures Per Test
+
+`expect.soft()` marks an assertion as non-fatal: the test continues running after a soft assertion failure and collects all failures, reporting them together at the end. This is useful for validating multiple form fields or page elements without the first failure masking the rest.
+
+```javascript
+import { test, expect } from '@playwright/test';
+
+test('user profile page has correct content', async ({ page }) => {
+  await page.goto('/profile/alice');
+
+  // Soft assertions — test continues even if one fails
+  await expect.soft(page.getByTestId('username')).toHaveText('alice');
+  await expect.soft(page.getByTestId('email')).toHaveText('alice@example.com');
+  await expect.soft(page.getByTestId('avatar')).toBeVisible();
+  await expect.soft(page.getByTestId('join-date')).toContainText('2024');
+
+  // Hard assertion at the end — fails if any soft assertions above failed
+  // (Playwright throws here if there were any soft failures)
+  expect(test.info().errors).toHaveLength(0);
+});
+
+// Pre-configured expect with soft mode on by default for a test block
+const softExpect = expect.configure({ soft: true });
+
+test('product listing page completeness', async ({ page }) => {
+  await page.goto('/products');
+
+  const cards = page.getByTestId('product-card');
+  const count = await cards.count();
+
+  for (let i = 0; i < count; i++) {
+    const card = cards.nth(i);
+    await softExpect(card.getByTestId('product-name')).not.toBeEmpty();
+    await softExpect(card.getByTestId('product-price')).toHaveText(/^\$\d+\.\d{2}$/);
+    await softExpect(card.getByTestId('product-image')).toBeVisible();
+  }
+  // All failures reported together — not masked by the first failure
+});
+```
+
+**Anti-pattern:** overusing `expect.soft()` can hide cascading failures where early assertions should block subsequent ones (e.g., if a page fails to load, all downstream assertions will trivially fail and pollute the report). Use soft assertions when failures are truly independent; use hard assertions for preconditions.
+
+---
+
+## Additional Community Pitfalls (2026 — Testing Tooling)
+
+**67. `vi.mock()` Closing Over Module-Scope Variables** [community] — Vitest and Jest hoist `vi.mock()` / `jest.mock()` calls to the top of the module before any other code. WHY it causes problems: a factory function inside `vi.mock()` that references a variable declared in the same file gets a `ReferenceError: Cannot access 'x' before initialization` — the variable appears to be declared below the `vi.mock()` call after hoisting. Fix: use `vi.hoisted()` to declare shared mock values at the correct hoisting level, or keep all values the factory needs self-contained inside the factory function.
+
+**68. Static Imports Not Intercepted by `vi.mock()` After `vi.resetModules()`** [community] — `vi.resetModules()` clears the module registry, but static `import` statements at the top of a test file were already resolved when the file was first loaded — they are not re-executed after `resetModules()`. WHY it causes problems: developers call `vi.resetModules()` in `beforeEach` and then call a function that was imported at module scope, expecting the mock to apply. The mock only applies to modules imported dynamically (`await import(...)`) AFTER the reset. Fix: when you need per-test module isolation, use dynamic `await import('./module')` inside each test body after calling `vi.resetModules()`.
+
+**69. `page.clock.install()` After `page.goto()` Misses Initial Timers** [community] — Calling `await page.clock.install()` after navigating to a page means timers that started during page initialization (e.g., auto-refresh intervals, countdown timers, polling loops) are already running with real time. WHY it causes problems: the fake clock controls only timers registered after `install()` is called, so initial-load timers fire with real scheduling — tests become timing-dependent again. Fix: always call `await page.clock.install()` before `await page.goto()`.
+
+**70. V8 Coverage Missing Files in Vitest 3** [community] — Vitest 3 switched to AST-based V8 coverage analysis. Files that are never `import`ed during any test run no longer appear in the coverage report. WHY it causes problems: a module with 0% test coverage is silently excluded, making overall coverage percentages artificially high and hiding completely untested code paths. Fix: always set `coverage.include` in `vitest.config.ts` to explicitly enumerate all source files that should be measured, including those not yet tested.
+
+**71. Playwright Soft Assertions Masking Cascading Failures** [community] — Overusing `expect.soft()` on assertions that are actually preconditions for later assertions causes meaningless noise: if a page fails to render, every subsequent `expect.soft()` about its contents trivially fails and the report shows 20 failures when the root cause is one. WHY it causes problems: the signal-to-noise ratio in CI collapses; developers spend time triaging soft-assertion failures that all have the same root cause. Fix: use hard assertions for preconditions (page loaded, section visible); use soft assertions only for independent peer-level checks (validating multiple fields on a form that definitely rendered).
+
+---
+
+## Additional Anti-Patterns (Testing Tooling 2026)
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `vi.mock('./mod', () => ({ x: localVar }))` — closing over module-scope variable | `vi.mock` is hoisted before variable declarations; `ReferenceError` at runtime | Use `vi.hoisted(() => value)` for shared mock values, or keep factory self-contained |
+| Static `import` after `vi.resetModules()` expecting re-execution | Static imports are resolved once at file load; `resetModules` does not re-execute them | Use dynamic `await import('./mod')` inside the test body after `resetModules()` |
+| `page.clock.install()` after `page.goto()` | Timers started during page load run with real scheduling | Call `page.clock.install()` before `page.goto()` |
+| Vitest 3 V8 coverage without `coverage.include` | Untested files disappear from report; coverage % is artificially inflated | Set `coverage.include: ['src/**/*.ts']` to enforce all-file measurement |
+| Soft assertions on cascading preconditions | First-failure cascades fill the report with noise | Use hard assertions for preconditions; `expect.soft()` only for independent peer checks |
+| `vi.mock()` without `vi.clearAllMocks()` in `afterEach` | Mock call counts, implementations, and return values leak between tests | Call `vi.clearAllMocks()` (or configure `clearMocks: true` globally) in `afterEach` |
+| Mixing `vi.useFakeTimers()` (Vitest) and `page.clock` (Playwright) in the same test | Node.js fake timers affect the test runner process; browser clock affects the page — they are independent and do not synchronize | Use `page.clock` for browser timer control in E2E tests; use `vi.useFakeTimers()` for unit tests in Node.js |

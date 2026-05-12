@@ -1,5 +1,20 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 36 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 37 | score: 97/100 | date: 2026-05-12 -->
+<!-- iteration trace (latest):
+     Iter 37 (2026-05-12): added TypeScript 5.7 — Checks for Never-Initialized Variables
+       (closure-captured variable use before assignment, with fix patterns);
+       added TypeScript 5.7 — ES2024 Target and TypedArray Generic Change (Object.groupBy,
+       Map.groupBy, Promise.withResolvers, Promise.withResolvers pattern, Uint8Array<ArrayBuffer>
+       generic breaking change and 3 fix options); added TypeScript 5.7 — Validated JSON Imports
+       in nodenext (with {type:"json"} required, named imports error, dynamic import pattern) and
+       V8 Compile Caching (Node.js 22 + TS 5.7 → 2.5x cold startup, transparent/automatic);
+       added TypeScript 5.6 — --strictBuiltinIteratorReturn (strict sub-flag not in umbrella,
+       BuiltinIteratorReturn = undefined vs any, iterator done-check example) and Arbitrary Module
+       Identifiers (string-keyed exports/imports, WebAssembly use case, CJS compatibility pitfall);
+       added 6 new rows to Anti-Patterns table for TS 5.6-5.7 additions — sourced from
+       typescriptlang.org/docs/handbook/release-notes/typescript-5-7.html and
+       typescriptlang.org/docs/handbook/release-notes/typescript-5-6.html (verified 2026-05-12)
+-->
 <!-- iteration trace (latest):
      Iter 36 (2026-05-12): added TypeScript 5.5 RegExp Syntax Checking section (4 validation types:
        syntax errors, invalid backreferences, named group references, ECMAScript version mismatch;
@@ -143,8 +158,8 @@
 | 5.2 | `using`/`await using` (explicit resource management) | `"target": "ES2022"`, `"lib": ["esnext.disposable"]` |
 | 5.4 | `NoInfer<T>` built-in utility type | — |
 | 5.5 | Inferred type predicates, `isolatedDeclarations`, RegExp `v` flag | `"isolatedDeclarations": true` |
-| 5.6 | Disallow NaN equality check, iterator helper types | — |
-| 5.7 | `--noCheck`, path rewriting, relative import completions | — |
+| 5.6 | Disallow NaN equality check, iterator helper types, `--strictBuiltinIteratorReturn`, arbitrary module identifiers | — |
+| 5.7 | `--noCheck`, path rewriting (`--rewriteRelativeImportExtensions`), never-initialized variable checks, ES2024 target, `TypedArray` generic change, JSON import validation in `nodenext`, V8 compile caching (Node 22+) | — |
 | 5.8 | Granular return expression branch checks, `--erasableSyntaxOnly`, `require()` of ESM in `nodenext`, `--module node18`, `--libReplacement` | `"module": "node18"` or `"nodenext"` |
 | 5.9 | `import defer`, `--module node20`, minimal `tsc --init`, `noUncheckedSideEffectImports`, `verbatimModuleSyntax`, DOM summary hovers | `"moduleDetection": "force"`, `"verbatimModuleSyntax": true` |
 | 6.0 | **Breaking:** `strict`/`esnext`/`es2025` defaults; `types: []`; `outFile`, `baseUrl`, `module amd/umd` removed; Temporal API, `RegExp.escape`, `Map.getOrInsert`; `--stableTypeOrdering`; DOM lib consolidates `dom.iterable`; Subpath imports `#/`; `this`-less function inference; ES2025 `Set` composition methods; `Promise.try` | Update `tsconfig.json` — set `"types": ["node"]`, `"rootDir": "./src"`, migrate `baseUrl` → `paths` |
@@ -5189,3 +5204,231 @@ monorepo/
 [community] **Pitfall: `${configDir}` was added in TypeScript 5.5 and has no effect in earlier versions.** Tools that read `tsconfig.json` without using TypeScript's own parser (some webpack plugins, older editors) may not expand the variable. If your build tooling uses an older parser, the `${configDir}` literal appears as-is and path resolution silently fails. Verify your build tool's TypeScript version before adopting this feature.
 
 [community] **Pitfall: `${configDir}` is only supported in `paths` and `baseUrl` — NOT in `rootDir`, `outDir`, `include`, or `exclude`.** Teams discovering `${configDir}` sometimes apply it to other tsconfig fields expecting uniform path resolution. Outside of `paths`/`baseUrl`, the literal `${configDir}` appears verbatim and is NOT expanded.
+
+---
+
+## TypeScript 5.7 — Checks for Never-Initialized Variables
+
+TypeScript 5.7 added detection of variables that are declared but never assigned in any reachable code path — a class of bug where a variable is used in a nested closure or callback before it has been given a value.
+
+```typescript
+// ❌ Before TypeScript 5.7: no error — TypeScript couldn't see that 'result' was
+//    used inside printResult before it was ever assigned in the enclosing function
+function computeAndPrint(): void {
+  let result: number;
+  // Imagine complex logic here that forgets to assign 'result'
+  function printResult() {
+    console.log(result);  // TS 5.7 Error: Variable 'result' is used before being assigned.
+  }
+  printResult();
+}
+
+// ✅ Fix: assign a default value at declaration
+function computeAndPrint(): void {
+  let result: number = 0;  // initialized — no error
+  function printResult() {
+    console.log(result);
+  }
+  printResult();
+}
+
+// ✅ Alternative: assign in all code paths before the closure is called
+function computeWithPaths(condition: boolean): void {
+  let result: number;
+  if (condition) {
+    result = 42;
+  } else {
+    result = 0;
+  }
+  function printResult() {
+    console.log(result);  // TypeScript knows result is assigned in all paths
+  }
+  printResult();
+}
+```
+
+**Why closures are the key pattern:** TypeScript's existing definite-assignment analysis handles direct use of variables well (`let x: number; console.log(x)` always errored). TypeScript 5.7 extended the analysis to variables captured by nested functions and closures, where the use is deferred to a later invocation rather than appearing inline.
+
+[community] **Pitfall:** If you upgrade to TypeScript 5.7 and see new "Variable used before being assigned" errors in functions that use callbacks or closures, resist the urge to add `!` non-null assertions. The error is real — the variable genuinely may not be assigned when the closure executes. Fix by initializing at declaration, or by restructuring the code so assignment is guaranteed before the nested function runs.
+
+---
+
+## TypeScript 5.7 — ES2024 Target and `TypedArray` Generic Change
+
+### ES2024 Target Support
+
+TypeScript 5.7 added `--target es2024` and `--lib es2024`, including built-in types for:
+- `Object.groupBy` and `Map.groupBy` — group iterables by a computed key
+- `Promise.withResolvers` — create a Promise with externally-accessible resolve/reject functions
+- `ArrayBuffer.prototype.transfer` — zero-copy transfer of ArrayBuffer ownership
+
+```typescript
+// Object.groupBy — ES2024 built-in (requires "target": "es2024" or lib: ["es2024"])
+const people = [
+  { name: 'Alice', dept: 'eng' },
+  { name: 'Bob',   dept: 'design' },
+  { name: 'Carol', dept: 'eng' },
+];
+
+const byDept = Object.groupBy(people, p => p.dept);
+// { eng: [{ name: 'Alice', ... }, { name: 'Carol', ... }], design: [{ name: 'Bob', ... }] }
+// TypeScript knows: byDept['eng'] is Array<{ name: string; dept: string }> | undefined
+
+// Promise.withResolvers — cleaner externalized promise pattern
+function createDeferredTask<T>() {
+  const { promise, resolve, reject } = Promise.withResolvers<T>();
+  // No need for: let resolve!: (v: T) => void; let reject!: ...
+  return { promise, resolve, reject };
+}
+
+const task = createDeferredTask<string>();
+setTimeout(() => task.resolve('done'), 1000);
+const result = await task.promise; // string
+```
+
+### `TypedArray` Generic Change (TypeScript 5.7 / 5.9 — Breaking)
+
+TypeScript 5.7 began a multi-release transition making `TypedArray` types generic over their underlying buffer type. The full breaking change landed in TypeScript 5.9: `ArrayBuffer` is no longer a structural supertype of typed array types like `Uint8Array`.
+
+```typescript
+// ❌ Error in TypeScript 5.9+ (change started in 5.7)
+function process(buf: ArrayBufferLike): void { /* ... */ }
+const arr = new Uint8Array([1, 2, 3]);
+process(arr);
+// Error: Type 'Uint8Array<ArrayBuffer>' is not assignable to type 'ArrayBufferLike'
+
+// ✅ Fix option 1: access the buffer property explicitly
+process(arr.buffer);
+
+// ✅ Fix option 2: accept Uint8Array directly in the function signature
+function process(buf: Uint8Array<ArrayBuffer>): void { /* ... */ }
+process(arr);  // OK
+
+// ✅ Fix option 3: update @types/node — it ships corrected Buffer overloads
+// npm update @types/node --save-dev
+```
+
+[community] **Pitfall:** The `TypedArray` generic change is the most common source of new errors when upgrading to TypeScript 5.7–5.9. Errors typically appear as `Type 'Buffer' is not assignable to type 'Uint8Array<ArrayBufferLike>'` in Node.js projects. The root cause is outdated `@types/node` — updating the package resolves most cases. For custom functions that accept `ArrayBufferLike`, prefer accepting the typed array directly (`Uint8Array`, `Int16Array`, etc.) rather than the abstract `ArrayBufferLike`.
+
+---
+
+## TypeScript 5.7 — Validated JSON Imports in `--module nodenext` and V8 Compile Caching
+
+### Validated JSON Imports
+
+Under `--module nodenext`, TypeScript 5.7 added strict validation of JSON imports. JSON imports now require the `with { type: "json" }` import attribute and only support default imports — named exports are not allowed.
+
+```typescript
+// ❌ Missing import attribute — required under --module nodenext in TypeScript 5.7+
+import myConfig from "./myConfig.json";
+// Error: Import of JSON files requires attribute with 'with { type: "json" }' in nodenext
+
+// ❌ Named import — JSON modules only export a default
+import { version } from "./package.json" with { type: "json" };
+// Error: JSON modules only support a default export
+
+// ✅ Correct: default import with type attribute
+import pkg from "./package.json" with { type: "json" };
+const version = pkg.version;  // string (TypeScript infers the JSON shape)
+
+// ✅ Dynamic import with attribute
+const config = await import("./config.json", { with: { type: "json" } });
+const port = config.default.port;  // typed from the JSON file's structure
+```
+
+[community] **Pitfall:** Teams upgrading to `--module nodenext` with TypeScript 5.7 often hit these JSON import errors in scripts that load configuration files. The `assert {}` syntax was already deprecated; the 5.7 change also adds the named-export restriction. If you need multiple values from a JSON file, import the default and destructure: `const { host, port } = await import("./config.json", { with: { type: "json" } }).then(m => m.default)`.
+
+### V8 Compile Caching (TypeScript 5.7 + Node.js 22)
+
+TypeScript 5.7 leverages Node.js 22's `module.enableCompileCache()` API to cache V8-compiled bytecode for the TypeScript compiler itself. This produces approximately a **2.5× speedup** on cold `tsc` startup in environments that have previously run TypeScript once.
+
+```bash
+# First run: compiler is JIT-compiled and cache is saved
+npx tsc --noEmit
+# Subsequent runs: bytecode loaded from cache — ~2.5x faster startup
+npx tsc --noEmit
+
+# Cache location (Node.js 22 default):
+# $XDG_CACHE_HOME/node/v8-compile-cache-<hash>/ (Linux/macOS)
+# %LOCALAPPDATA%\node\v8-compile-cache-<hash>\ (Windows)
+```
+
+This is **transparent** — no configuration required. It activates automatically when TypeScript 5.7 is run on Node.js 22+. The benefit is most noticeable in watch-mode restarts, CI runs on warm machines, and repeated `tsc --noCheck` builds in development.
+
+[community] **Pitfall:** V8 compile caching only applies when using the Node.js 22 runtime. Teams running TypeScript on Node.js 18 or 20 do not see this improvement. As an incentive to upgrade, V8 caching is a concrete performance argument for adopting Node.js 22 LTS in your build pipeline.
+
+---
+
+## TypeScript 5.6 — `--strictBuiltinIteratorReturn` and Arbitrary Module Identifiers
+
+### `--strictBuiltinIteratorReturn`
+
+TypeScript 5.6 added a new strict mode option `--strictBuiltinIteratorReturn` (also settable as `"strictBuiltinIteratorReturn": true` in tsconfig). When enabled, the `done` value type of built-in iterators changes from `any` to `undefined`, catching a class of bugs where iterator results were used without checking the `done` field.
+
+```typescript
+// Without --strictBuiltinIteratorReturn:
+// BuiltinIteratorReturn = any — masks errors in iterator result handling
+
+// With --strictBuiltinIteratorReturn:
+// BuiltinIteratorReturn = undefined — forces correct done-check
+
+function* uppercase(iter: Iterator<string, BuiltinIteratorReturn>): Generator<string> {
+  while (true) {
+    const { value, done } = iter.next();
+    if (done) break;
+    yield value.toUpperCase(); // ✅ TypeScript knows 'value' is string here (done is false)
+  }
+}
+
+// Without the flag:
+// BuiltinIteratorReturn = any → value.toUppercase() compiles even with a typo
+// With the flag:
+// BuiltinIteratorReturn = undefined → value is string only after done-check, catches typos
+```
+
+Add to tsconfig when using the iterator helper pattern from TypeScript 5.6:
+
+```json
+{
+  "compilerOptions": {
+    "lib": ["ES2025"],
+    "strictBuiltinIteratorReturn": true
+  }
+}
+```
+
+[community] **Pitfall:** `--strictBuiltinIteratorReturn` is not part of the `strict` umbrella flag — it must be added explicitly. Teams enabling `strict: true` and assuming all strict sub-flags are covered will miss this. It is most valuable in codebases that use custom iterator pipelines or call `.next()` directly.
+
+### Arbitrary Module Identifiers
+
+TypeScript 5.6 supports non-identifier export and import names using string literals. This feature enables WebAssembly interoperability and import/export of identifiers that are not valid JavaScript identifier names (such as emoji, hyphenated names, or language keywords).
+
+```typescript
+// Export with a non-identifier name
+export { banana as "🍌" };
+export { handler as "content-type-handler" };
+
+// Import the non-identifier name and bind to a valid JS identifier
+import { "🍌" as banana } from "./emoji-exports.js";
+import { "content-type-handler" as contentTypeHandler } from "./handlers.js";
+
+// Use case: consuming WebAssembly modules with non-JS export names
+import { "memory" as wasmMemory, "table" as wasmTable } from "./module.wasm";
+```
+
+**Testing relevance:** When writing integration tests for modules that export WebAssembly functions or bridge to non-JS runtimes, this feature allows direct import of the actual export names rather than requiring a JavaScript wrapper layer.
+
+[community] **Pitfall:** Arbitrary module identifiers are a TypeScript type-system feature, but runtime support depends on the JavaScript engine and module system. Node.js ESM supports string-keyed exports in `.mjs` files, but CommonJS (`require()`) does not — attempting to `require()` a module with non-identifier exports will produce a runtime error. Always test both import and require paths when authoring modules with non-identifier exports.
+
+---
+
+## Anti-Patterns Quick Reference (TS 5.6–5.7 Additions)
+
+| Anti-pattern | Why it's harmful | What to do instead |
+|---|---|---|
+| Missing `with { type: "json" }` on JSON imports in `nodenext` | TypeScript 5.7+ errors; Node.js 22 also requires it at runtime | Always use `import cfg from "./f.json" with { type: "json" }` |
+| Named imports from JSON modules (`import { x } from "f.json"`) | JSON modules only support default exports — named imports error | Destructure from the default: `import cfg from "f.json" with { type: "json" }; const { x } = cfg` |
+| `Uint8Array` passed as `ArrayBufferLike` (TS 5.7+) | Typed arrays are no longer structural subtypes of ArrayBufferLike — compile error after upgrading | Use `.buffer` property, update `@types/node`, or accept typed array directly |
+| Skipping V8 compile cache by running TypeScript on Node 18/20 | Missing 2.5× startup speedup available on Node.js 22 + TypeScript 5.7 | Upgrade build pipeline to Node.js 22 LTS |
+| `strict: true` without `strictBuiltinIteratorReturn` in iterator-heavy code | Built-in iterator return type remains `any`, masking done-check bugs | Add `"strictBuiltinIteratorReturn": true` explicitly; not included in `strict` umbrella |
+| Non-identifier module exports consumed via `require()` | CommonJS cannot handle non-identifier export keys at runtime | Only use arbitrary module identifiers in ESM (`.mjs`) code paths; keep CJS exports JS-identifier-safe |
