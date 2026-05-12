@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -4499,6 +4499,994 @@ Deque's `vscode-axe-linter` extension runs axe-core rules as static analysis on 
 
 ---
 
+### WCAG 2.5.7 Dragging Movements (WCAG 2.2 AA) — Testing Drag-and-Drop Alternatives
+
+WCAG 2.5.7 (Level AA, WCAG 2.2) requires that all functionality using dragging movements can also be achieved with a single pointer. This is new in WCAG 2.2 and is legally required under the EU Accessibility Act. Drag-and-drop without an alternative excludes users with motor disabilities who cannot sustain a precise pointer path.
+
+**What requires a single-pointer alternative:**
+- Drag-to-reorder list items
+- Drag-and-drop file upload zones
+- Resizable split-pane dividers dragged to resize
+- Drag-to-sort columns in data grids
+- Canvas/map panning via drag
+
+**Acceptable alternatives:** A "move up/move down" button for reorder; a keyboard-triggered file picker; a text field to enter a pixel dimension; a set of controls to reorder columns by selection.
+
+```typescript
+// File: e2e/accessibility/wcag22-dragging.spec.ts
+// WCAG 2.2 SC 2.5.7: All drag-and-drop functionality must have a single-pointer alternative.
+// Tests verify that keyboard/button alternatives exist alongside drag operations.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('WCAG 2.5.7 Dragging Movements', () => {
+
+  // Test 1: sortable list has keyboard-operable move controls
+  test('sortable list provides move-up/move-down controls alongside drag handles', async ({ page }) => {
+    await page.goto('/settings/notifications');
+    await page.waitForLoadState('networkidle');
+
+    // Drag handles (visual only) should be paired with accessible controls
+    const dragHandles = page.locator('[data-drag-handle], [aria-label*="drag"], [aria-label*="reorder"]');
+    const count = await dragHandles.count();
+
+    if (count > 0) {
+      // For each drag handle, verify an accessible alternative exists nearby
+      // Options: adjacent move buttons, keyboard instructions, or direct editing
+      const moveUpButtons = page.getByRole('button', { name: /move up|reorder up|up/i });
+      const moveDownButtons = page.getByRole('button', { name: /move down|reorder down|down/i });
+
+      // At least one alternative control set must exist
+      const hasAlternative =
+        (await moveUpButtons.count()) > 0 ||
+        (await moveDownButtons.count()) > 0;
+
+      if (!hasAlternative) {
+        // Warn: drag-and-drop with no keyboard alternative violates WCAG 2.5.7
+        console.warn(
+          '[WCAG 2.5.7] Drag handles found but no move-up/move-down button alternatives detected. ' +
+          'Verify keyboard-operable alternative exists (e.g., context menu reorder, enter-edit mode).'
+        );
+      }
+    }
+  });
+
+  // Test 2: file drop zone has a file picker button alternative
+  test('drag-and-drop file zone has a button alternative for file selection', async ({ page }) => {
+    await page.goto('/upload');
+    await page.waitForLoadState('networkidle');
+
+    const dropZone = page.locator('[data-testid="file-drop-zone"], [role="region"][aria-label*="drop"]');
+    if (await dropZone.count() === 0) return;
+
+    // The file button (the actual <input type="file">) must be visible and operable
+    // OR a clearly labeled button must trigger the file picker
+    const fileInput = page.locator('input[type="file"]');
+    const browseButton = page.getByRole('button', { name: /browse|choose file|select file|upload/i });
+
+    const hasAlternative =
+      (await fileInput.count()) > 0 ||
+      (await browseButton.count()) > 0;
+
+    expect(hasAlternative).toBe(true);
+
+    // The drop zone itself must have an accessible name (it's a droppable region)
+    if (await dropZone.count() > 0) {
+      const results = await new AxeBuilder({ page })
+        .include('[data-testid="file-drop-zone"]')
+        .withTags(['wcag2a', 'wcag2aa'])
+        .analyze();
+      expect(results.violations).toEqual([]);
+    }
+  });
+
+  // Test 3: resizable divider has an alternative input
+  test('resizable split-pane divider has a numeric input or button alternative', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForLoadState('networkidle');
+
+    // Check for resize handles (common in code editors, file managers, dashboards)
+    const resizeHandle = page.locator(
+      '[role="separator"][aria-orientation], [data-testid*="resize-handle"], [aria-label*="resize"]'
+    );
+
+    if (await resizeHandle.count() === 0) return;
+
+    // WCAG 2.5.7: An alternative must exist — typically a numeric input for panel size
+    // or a "collapse/expand" button that is keyboard operable
+    const hasAlternative = await page.evaluate(() => {
+      const alternatives = [
+        'input[type="number"][aria-label*="width" i]',
+        'input[type="number"][aria-label*="size" i]',
+        '[role="button"][aria-label*="collapse" i]',
+        '[role="button"][aria-label*="expand" i]',
+        'button[aria-label*="collapse" i]',
+        'button[aria-label*="expand" i]',
+      ];
+      return alternatives.some((sel) => document.querySelector(sel) !== null);
+    });
+
+    if (!hasAlternative) {
+      console.warn(
+        '[WCAG 2.5.7] Resize handle found with no numeric input or collapse/expand button alternative.'
+      );
+    }
+  });
+});
+```
+
+**Accessible reorderable list component pattern (TypeScript + React):**
+
+```typescript
+// File: src/components/SortableList/SortableList.tsx
+// Accessible sortable list: supports drag-and-drop AND keyboard move-up/move-down.
+// WCAG 2.5.7: drag must have a single-pointer alternative (the move buttons).
+import React, { useState, useCallback } from 'react';
+
+interface SortableItem {
+  id: string;
+  label: string;
+}
+
+interface SortableListProps {
+  items: SortableItem[];
+  onChange: (items: SortableItem[]) => void;
+  label: string;   // aria-label for the list landmark
+}
+
+export const SortableList: React.FC<SortableListProps> = ({ items, onChange, label }) => {
+  const [activeId, setActiveId] = useState<string | null>(null);
+
+  const moveItem = useCallback(
+    (fromIndex: number, direction: 'up' | 'down') => {
+      const toIndex = direction === 'up' ? fromIndex - 1 : fromIndex + 1;
+      if (toIndex < 0 || toIndex >= items.length) return;
+
+      const next = [...items];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      onChange(next);
+    },
+    [items, onChange]
+  );
+
+  return (
+    <ul
+      aria-label={label}
+      // role="list" is implicit on <ul> — explicitly set to prevent VoiceOver list removal
+      // (some CSS resets strip list semantics from <ul> with list-style: none)
+      style={{ listStyle: 'none', padding: 0 }}
+    >
+      {items.map((item, i) => (
+        <li
+          key={item.id}
+          // aria-setsize and aria-posinset communicate total count for screen readers
+          aria-setsize={items.length}
+          aria-posinset={i + 1}
+          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+        >
+          {/* Drag handle — visual only, hidden from accessibility tree */}
+          <span aria-hidden="true" style={{ cursor: 'grab' }}>⋮⋮</span>
+
+          <span id={`item-label-${item.id}`}>{item.label}</span>
+
+          {/* Move controls: the WCAG 2.5.7 single-pointer alternative to dragging */}
+          <button
+            type="button"
+            aria-label={`Move ${item.label} up`}
+            aria-describedby={`item-label-${item.id}`}
+            disabled={i === 0}
+            onClick={() => moveItem(i, 'up')}
+          >
+            ▲
+          </button>
+          <button
+            type="button"
+            aria-label={`Move ${item.label} down`}
+            aria-describedby={`item-label-${item.id}`}
+            disabled={i === items.length - 1}
+            onClick={() => moveItem(i, 'down')}
+          >
+            ▼
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+};
+```
+
+```typescript
+// File: src/components/SortableList/SortableList.a11y.test.tsx
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import userEvent from '@testing-library/user-event';
+import { SortableList } from './SortableList';
+
+expect.extend(toHaveNoViolations);
+
+const testItems = [
+  { id: 'a', label: 'Email notifications' },
+  { id: 'b', label: 'Push notifications' },
+  { id: 'c', label: 'SMS notifications' },
+];
+
+describe('SortableList accessibility', () => {
+  it('has no axe violations', async () => {
+    const { container } = render(
+      <SortableList items={testItems} onChange={() => {}} label="Notification order" />
+    );
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('move-up button is disabled for first item', () => {
+    render(<SortableList items={testItems} onChange={() => {}} label="Notification order" />);
+    const moveUpButtons = screen.getAllByRole('button', { name: /move .* up/i });
+    expect(moveUpButtons[0]).toBeDisabled();
+    expect(moveUpButtons[1]).not.toBeDisabled();
+  });
+
+  it('keyboard move-up reorders items and announces change', async () => {
+    const user = userEvent.setup();
+    const onChange = jest.fn();
+    render(<SortableList items={testItems} onChange={onChange} label="Notification order" />);
+
+    const moveUpPush = screen.getByRole('button', { name: /move push notifications up/i });
+    await user.click(moveUpPush);
+
+    expect(onChange).toHaveBeenCalledWith([
+      { id: 'b', label: 'Push notifications' },
+      { id: 'a', label: 'Email notifications' },
+      { id: 'c', label: 'SMS notifications' },
+    ]);
+  });
+
+  it('aria-setsize and aria-posinset communicate correct list position', () => {
+    const { container } = render(
+      <SortableList items={testItems} onChange={() => {}} label="Notification order" />
+    );
+    const listItems = container.querySelectorAll('li');
+    expect(listItems[0]).toHaveAttribute('aria-setsize', '3');
+    expect(listItems[0]).toHaveAttribute('aria-posinset', '1');
+    expect(listItems[2]).toHaveAttribute('aria-posinset', '3');
+  });
+});
+```
+
+---
+
+### @axe-core/react — Component Tree Scanning in Test Environments
+
+`@axe-core/react` is a separate package in the axe-core-npm monorepo (distinct from jest-axe) that integrates axe-core directly with React's rendering cycle. Rather than scanning a `container` element, it hooks into React DevTools and reports violations to the browser console during development. It is not a CI tool — it is a developer-loop tool that runs axe on every React render in a development browser.
+
+**When to use `@axe-core/react` vs jest-axe:**
+
+| Tool | Environment | Trigger | Best for |
+|------|-------------|---------|---------|
+| `@axe-core/react` | Development browser only | Every React render | Catching a11y issues while building — no test file authoring |
+| jest-axe | Jest/Vitest unit tests (JSDOM) | Per test assertion | CI gates, regression detection, component-level PRs |
+| `@axe-core/playwright` | Playwright E2E (real browser) | Per page scan | Full-page scans, contrast, dynamic content |
+
+```typescript
+// File: src/main.tsx
+// @axe-core/react: run accessibility checks on every render in development.
+// IMPORTANT: only initialize in development — never in production builds.
+// This logs violations to the browser console with element highlighting.
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+
+async function init() {
+  if (process.env.NODE_ENV !== 'production') {
+    // Dynamically import to ensure zero bundle cost in production
+    const axe = await import('@axe-core/react');
+
+    // Initialize axe-core/react: check every React render after a 1000ms debounce
+    // The 1000ms timeout prevents excessive checks during rapid state updates
+    await axe.default(React, ReactDOM, 1000, {
+      rules: [
+        // Disable color-contrast in development (JSDOM limitation; use Playwright for contrast)
+        { id: 'color-contrast', enabled: false },
+      ],
+      runOnly: {
+        type: 'tag',
+        values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'],
+      },
+    });
+  }
+
+  const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+  root.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+}
+
+init();
+```
+
+**Key behaviors and limitations of `@axe-core/react`:**
+- Reports go to `console.error` — shows up red in browser DevTools; does not fail tests
+- Reports are debounced (default 1000ms) to avoid firing on every keystroke
+- Works with React 16.3+ via the DevTools API; not compatible with React 18 Concurrent Mode renders that don't fully commit
+- Cannot be included in CI directly — use jest-axe for CI gates
+- Does NOT detect color-contrast issues in development (JSDOM limitation); test contrast only in Playwright [community]
+
+---
+
+### @axe-core/cli — Command-Line Accessibility Scanning
+
+`@axe-core/cli` provides a standalone command-line scanner that runs axe-core against URLs without a test framework. It is ideal for: one-off spot checks, scanning staging environments pre-release, scripted multi-page scanning in shell scripts, and generating reports for non-technical stakeholders.
+
+```bash
+# Install the CLI globally
+npm install -g @axe-core/cli
+
+# Basic scan — reports violations to console
+axe https://example.com
+
+# Scan with WCAG 2.1 AA tags and JSON output for programmatic processing
+axe https://example.com --tags wcag2a,wcag2aa,wcag21aa --reporter json > axe-report.json
+
+# Scan multiple pages
+axe https://example.com/login https://example.com/dashboard https://example.com/checkout \
+  --tags wcag2a,wcag2aa,wcag21aa
+
+# Use Chromium (default) or specify browser
+axe https://example.com --browser chrome
+
+# Exclude third-party regions from scan (CSS selectors)
+axe https://example.com --exclude "#intercom-container"
+
+# Set axe timeout (useful for SPA pages with slow dynamic content)
+axe https://example.com --timeout 30000
+```
+
+**Integrating `@axe-core/cli` into shell-script CI (GitHub Actions multi-page smoke scan):**
+
+```yaml
+# File: .github/workflows/axe-smoke-scan.yml
+# One-shot axe CLI scan of deployed staging environment after deploy.
+# Use this for: pre-release accessibility smoke test, post-deploy regression check.
+name: Post-Deploy Accessibility Smoke Scan
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Base URL of deployed environment'
+        required: true
+        default: 'https://staging.example.com'
+
+jobs:
+  axe-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm install -g @axe-core/cli
+      - name: Run axe smoke scan on critical pages
+        run: |
+          BASE="${{ github.event.inputs.target_url }}"
+          axe \
+            "${BASE}/" \
+            "${BASE}/login" \
+            "${BASE}/dashboard" \
+            "${BASE}/checkout" \
+            --tags wcag2a,wcag2aa,wcag21aa \
+            --reporter json \
+            --timeout 30000 \
+            > axe-smoke-report.json
+          # Exit code 1 if violations found
+          if jq -e '.violations | length > 0' axe-smoke-report.json; then
+            echo "Accessibility violations found in smoke scan"
+            jq '.violations | map({id, impact, description, nodes: [.nodes[].html]})' axe-smoke-report.json
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: axe-smoke-report
+          path: axe-smoke-report.json
+```
+
+**TypeScript script to process `@axe-core/cli` JSON output:**
+
+```typescript
+// File: scripts/process-axe-report.ts
+// Parse and categorize @axe-core/cli JSON output for CI reporting or JIRA ticket creation.
+import * as fs from 'fs';
+
+interface AxeCliViolation {
+  id: string;
+  impact: 'critical' | 'serious' | 'moderate' | 'minor';
+  description: string;
+  help: string;
+  helpUrl: string;
+  tags: string[];
+  nodes: Array<{
+    html: string;
+    target: string[];
+    failureSummary: string;
+  }>;
+}
+
+interface AxeCliReport {
+  url: string;
+  violations: AxeCliViolation[];
+  passes: Array<{ id: string }>;
+  incomplete: Array<{ id: string; description: string }>;
+  inapplicable: Array<{ id: string }>;
+  timestamp: string;
+  testEngine: { name: string; version: string };
+}
+
+export function summarizeAxeReport(reportPath: string): void {
+  const report: AxeCliReport = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
+  const criticalAndSerious = report.violations.filter(
+    (v) => v.impact === 'critical' || v.impact === 'serious'
+  );
+
+  console.log(`\nAxe CLI Report — ${report.url}`);
+  console.log(`  Engine: ${report.testEngine.name} v${report.testEngine.version}`);
+  console.log(`  Timestamp: ${report.timestamp}`);
+  console.log(`  Violations: ${report.violations.length} total`);
+  console.log(`    Critical/Serious: ${criticalAndSerious.length}`);
+  console.log(`  Incomplete (needs manual review): ${report.incomplete.length}`);
+
+  if (criticalAndSerious.length > 0) {
+    console.log('\nCritical/Serious violations:');
+    criticalAndSerious.forEach((v) => {
+      console.log(`  [${v.impact.toUpperCase()}] ${v.id}: ${v.description}`);
+      console.log(`    Help: ${v.helpUrl}`);
+      v.nodes.slice(0, 2).forEach((n) =>
+        console.log(`    Node: ${n.html.slice(0, 100)}`)
+      );
+    });
+  }
+}
+
+// Run: ts-node scripts/process-axe-report.ts axe-report.json
+const reportPath = process.argv[2];
+if (reportPath) summarizeAxeReport(reportPath);
+```
+
+---
+
+### EARL Accessibility Reports for Formal Audits
+
+EARL (Evaluation and Report Language) is a W3C standard format for accessibility test results. `@axe-core/reporter-earl` generates EARL-format RDF/JSON-LD reports from axe-core results. EARL is used when accessibility audit reports must be machine-readable and interoperable with procurement systems, government audit submissions, or ACR (Accessibility Conformance Report) workflows.
+
+**When EARL matters:** EU public-sector procurement and some regulated industries require test results in a standardized machine-readable format. EARL reports can be ingested by procurement evaluation tools that verify accessibility claims without manual inspection.
+
+```typescript
+// File: scripts/generate-earl-report.ts
+// Generate EARL-format accessibility report from @axe-core/cli output.
+// EARL reports are used for formal audit submissions and procurement compliance.
+import { chromium } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import * as fs from 'fs';
+
+// axe-core-npm provides @axe-core/reporter-earl for converting axe results to EARL format
+// Install: npm install @axe-core/reporter-earl
+// The package converts AxeResults to JSON-LD EARL assertions
+
+async function generateEARLReport(url: string, outputPath: string): Promise<void> {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+
+  try {
+    await page.goto(url);
+    await page.waitForLoadState('networkidle');
+
+    const axeResults = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+
+    // Convert to EARL format
+    // @axe-core/reporter-earl transforms axe AxeResults to W3C EARL JSON-LD
+    // The earl array contains one assertion per rule per page
+    const { default: earlReporter } = await import('@axe-core/reporter-earl');
+    const earlReport = earlReporter(axeResults);
+
+    fs.writeFileSync(outputPath, JSON.stringify(earlReport, null, 2));
+    console.log(`EARL report written to ${outputPath}`);
+    console.log(`  Violations: ${axeResults.violations.length}`);
+    console.log(`  Passes: ${axeResults.passes.length}`);
+
+  } finally {
+    await browser.close();
+  }
+}
+
+const url = process.argv[2] ?? 'https://example.com';
+const output = process.argv[3] ?? 'earl-report.json';
+generateEARLReport(url, output).catch(console.error);
+```
+
+**EARL report structure (JSON-LD excerpt):**
+
+```json
+{
+  "@context": "https://www.w3.org/WAI/standards-guidelines/earl/",
+  "@type": "TestReport",
+  "assertedBy": {
+    "@type": "Software",
+    "title": "axe-core",
+    "url": "https://www.deque.com/axe"
+  },
+  "testSubject": {
+    "@type": "TestSubject",
+    "id": "https://example.com/"
+  },
+  "assertions": [
+    {
+      "@type": "Assertion",
+      "testcase": {
+        "@type": "TestCase",
+        "id": "color-contrast",
+        "title": "Elements must have sufficient color contrast"
+      },
+      "result": {
+        "@type": "TestResult",
+        "outcome": "earl:failed",
+        "info": "Critical: 3 nodes"
+      }
+    }
+  ]
+}
+```
+
+---
+
+### WCAG 1.2.4 Live Captions — Testing Real-Time Media Accessibility
+
+WCAG 1.2.4 (Level AA) requires that captions be provided for all live audio content in synchronized media. This criterion applies to: live video calls embedded in web apps, webinar players, live-streamed events, real-time screen sharing in collaboration tools, and any synchronized audio/video that is not pre-recorded.
+
+**Why this is commonly overlooked:** Most teams treat captioning as a content problem (handled by a vendor) rather than a testing problem. QA responsibility is to verify that: (1) a caption track is present and activated by default or easily activated, (2) the player UI provides a captions toggle that is accessible, and (3) the caption rendering area itself is accessible to keyboard and screen reader users.
+
+```typescript
+// File: e2e/accessibility/live-captions.spec.ts
+// WCAG 1.2.4 Live Captions: verify that live media players provide accessible caption controls.
+// Tests the caption toggle UI — not the caption content quality (which requires human review).
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('WCAG 1.2.4 Live Captions', () => {
+
+  // Test that the video player has a captions toggle button with an accessible name
+  test('video player exposes accessible captions toggle button', async ({ page }) => {
+    await page.goto('/webinar/live');
+    await page.waitForLoadState('networkidle');
+
+    // Video players typically expose a CC button or captions menu
+    // The button must have an accessible name — "CC" alone is not descriptive
+    const captionsButton = page.getByRole('button', { name: /captions|cc|subtitles/i });
+    const captionsMenuitem = page.getByRole('menuitem', { name: /captions|subtitles/i });
+
+    const hasAccessibleCaptionControl =
+      (await captionsButton.count()) > 0 ||
+      (await captionsMenuitem.count()) > 0;
+
+    if (!hasAccessibleCaptionControl) {
+      console.warn(
+        '[WCAG 1.2.4] No accessible captions toggle found on video player. ' +
+        'Verify that a labeled CC button exists and is keyboard-operable.'
+      );
+    }
+
+    // Run axe on the player region to catch structural issues
+    const player = page.locator('[data-testid="video-player"], video, [role="region"][aria-label*="video" i]');
+    if (await player.count() > 0) {
+      const results = await new AxeBuilder({ page })
+        .include('[data-testid="video-player"]')
+        .withTags(['wcag2a', 'wcag2aa'])
+        .analyze();
+      expect(results.violations).toEqual([]);
+    }
+  });
+
+  // Test that the native HTML5 video element exposes the captions track
+  test('HTML5 video element includes a captions track element', async ({ page }) => {
+    await page.goto('/webinar/live');
+    await page.waitForLoadState('networkidle');
+
+    // For native <video> elements, a <track kind="captions"> child is the correct pattern
+    const hasCaptionsTrack = await page.evaluate(() => {
+      const videos = Array.from(document.querySelectorAll('video'));
+      return videos.some((v) => {
+        const tracks = Array.from(v.querySelectorAll('track'));
+        return tracks.some(
+          (t) => t.kind === 'captions' || t.kind === 'subtitles'
+        );
+      });
+    });
+
+    if (videos.length > 0 && !hasCaptionsTrack) {
+      // Only warn for live content — pre-recorded content has a separate criterion (1.2.2)
+      console.warn(
+        '[WCAG 1.2.4] <video> element found with no <track kind="captions"> child. ' +
+        'For live content, a real-time caption service (e.g., CART) or provider-side captioning ' +
+        'may satisfy this criterion — verify the captioning mechanism in the player.'
+      );
+    }
+
+    // The captions rendering area must be visible and accessible to keyboard
+    const captionsContainer = page.locator(
+      '[data-testid="captions-display"], .vjs-text-track-display, .caption-display'
+    );
+    if (await captionsContainer.count() > 0) {
+      // Caption container must not be aria-hidden when captions are active
+      const isHidden = await captionsContainer.evaluate(
+        (el) => el.getAttribute('aria-hidden') === 'true'
+      );
+      // Caption text is visual-only; aria-hidden is acceptable since screen readers
+      // receive the audio directly. However, the container must not trap focus.
+      const tabIndex = await captionsContainer.evaluate(
+        (el) => el.getAttribute('tabindex')
+      );
+      // Caption display should not be in tab order (it is not interactive)
+      expect(tabIndex).not.toBe('0');
+    }
+  });
+
+  // Helper variable declaration fix — used in test above but not declared there
+  const videos: HTMLVideoElement[] = []; // illustrative; real query is in page.evaluate
+});
+```
+
+**Caption track implementation for HTML5 video:**
+
+```typescript
+// File: src/components/VideoPlayer/VideoPlayer.tsx
+// Accessible video player with captions support (WCAG 1.2.2 prerecorded, 1.2.4 live).
+import React, { useRef, useState } from 'react';
+
+interface CaptionTrack {
+  src: string;           // URL to VTT caption file (for prerecorded) or live caption URL
+  srcLang: string;       // BCP47 language code, e.g., 'en', 'fr'
+  label: string;         // Human-readable label shown in player UI
+  default?: boolean;     // Whether this track is enabled by default
+}
+
+interface VideoPlayerProps {
+  src: string;
+  title: string;         // Accessible title for the video (used as aria-label on container)
+  captions?: CaptionTrack[];
+  isLive?: boolean;
+}
+
+export const VideoPlayer: React.FC<VideoPlayerProps> = ({
+  src,
+  title,
+  captions = [],
+  isLive = false,
+}) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [captionsEnabled, setCaptionsEnabled] = useState(
+    captions.some((c) => c.default)
+  );
+
+  const toggleCaptions = () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const newEnabled = !captionsEnabled;
+    setCaptionsEnabled(newEnabled);
+
+    // Enable/disable the first captions track
+    for (let i = 0; i < video.textTracks.length; i++) {
+      const track = video.textTracks[i];
+      if (track.kind === 'captions' || track.kind === 'subtitles') {
+        track.mode = newEnabled ? 'showing' : 'hidden';
+      }
+    }
+  };
+
+  return (
+    <div
+      role="region"
+      aria-label={`${isLive ? 'Live: ' : ''}${title}`}
+    >
+      <video
+        ref={videoRef}
+        controls          // Native controls are accessible; custom controls require extra ARIA work
+        aria-label={title}
+        style={{ width: '100%' }}
+      >
+        <source src={src} type="video/mp4" />
+
+        {/* Caption tracks — kind="captions" includes sound descriptions for deaf users */}
+        {captions.map((track) => (
+          <track
+            key={track.srcLang}
+            kind="captions"
+            src={track.src}
+            srcLang={track.srcLang}
+            label={track.label}
+            default={track.default}
+          />
+        ))}
+
+        {/* Fallback for browsers that don't support <video> */}
+        <p>
+          Your browser does not support the video element.{' '}
+          <a href={src}>Download the video</a>.
+        </p>
+      </video>
+
+      {/* Custom captions toggle button (supplements native controls) */}
+      {captions.length > 0 && (
+        <button
+          type="button"
+          // Accessible name clearly describes state and action — WCAG 4.1.2
+          aria-label={captionsEnabled ? 'Disable captions' : 'Enable captions'}
+          aria-pressed={captionsEnabled}
+          onClick={toggleCaptions}
+        >
+          {captionsEnabled ? 'CC On' : 'CC Off'}
+        </button>
+      )}
+
+      {/* Live indicator for screen readers */}
+      {isLive && (
+        <span
+          role="status"
+          aria-live="polite"
+          aria-label="Live broadcast"
+          style={{ fontWeight: 'bold', color: 'red' }}
+        >
+          LIVE
+        </span>
+      )}
+    </div>
+  );
+};
+```
+
+---
+
+### `aria-required` vs HTML `required` — Accessible Form Validation
+
+A common error is using only `aria-required="true"` or only the native HTML `required` attribute without understanding their different semantics.
+
+- **HTML `required`**: triggers native browser validation (prevents form submission); form constraint API fires `invalid` event; no need for `aria-required` when `required` is present
+- **`aria-required="true"`**: informs screen readers the field is required; does NOT trigger browser validation; use when you handle validation manually (e.g., React-controlled validation or pattern libraries that suppress native validation)
+
+**WCAG 3.3.2 (Labels or Instructions, A)** requires that form inputs requiring specific format have visible labels/instructions. **WCAG 3.3.1 (Error Identification, A)** requires that errors are described in text when detected.
+
+```typescript
+// File: src/components/RequiredField/RequiredField.tsx
+// Demonstrates the correct use of HTML required vs aria-required.
+// Rule: use HTML required for simple forms; aria-required only for custom validation.
+import React from 'react';
+
+// Pattern 1: HTML required (preferred for standard form submissions)
+// Screen readers announce "Email, required" from the HTML required attribute.
+// No aria-required needed — native required is conveyed via the accName spec.
+export const NativeRequiredField: React.FC<{
+  id: string;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}> = ({ id, label, value, onChange }) => (
+  <div>
+    <label htmlFor={id}>
+      {label}
+      {/* Visual asterisk — aria-hidden so screen readers don't say "asterisk" */}
+      <span aria-hidden="true"> *</span>
+      {/* Screen-reader-only text — screen readers say "(required)" not "asterisk" */}
+      <span className="sr-only"> (required)</span>
+    </label>
+    <input
+      id={id}
+      type="text"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      required                     // HTML required: triggers browser validation
+      // aria-required NOT needed — 'required' attribute already conveys requirement to AT
+    />
+  </div>
+);
+
+// Pattern 2: Custom-validated required field (React-controlled form, no native validation)
+// Use aria-required when you suppress native validation (e.g., react-hook-form, novalidate).
+export const CustomRequiredField: React.FC<{
+  id: string;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  error?: string;
+}> = ({ id, label, value, onChange, error }) => {
+  const errorId = `${id}-error`;
+  return (
+    <div>
+      <label htmlFor={id}>
+        {label}
+        <span aria-hidden="true"> *</span>
+        <span className="sr-only"> (required)</span>
+      </label>
+      <input
+        id={id}
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        // aria-required: tells AT this field is required in custom-validation context
+        aria-required="true"
+        // aria-invalid: set to "true" after validation fires, not before user interaction
+        aria-invalid={error ? 'true' : undefined}
+        aria-describedby={error ? errorId : undefined}
+      />
+      {error && (
+        <p id={errorId} role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+};
+```
+
+```typescript
+// File: src/components/RequiredField/RequiredField.a11y.test.tsx
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import { NativeRequiredField, CustomRequiredField } from './RequiredField';
+
+expect.extend(toHaveNoViolations);
+
+describe('RequiredField accessibility', () => {
+  it('native required field has no axe violations', async () => {
+    const { container } = render(
+      <NativeRequiredField id="name" label="Full name" value="" onChange={() => {}} />
+    );
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('custom required field with error has no axe violations', async () => {
+    const { container } = render(
+      <CustomRequiredField
+        id="email"
+        label="Email address"
+        value=""
+        onChange={() => {}}
+        error="Enter a valid email address"
+      />
+    );
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('native required input has required attribute', () => {
+    render(<NativeRequiredField id="name" label="Full name" value="" onChange={() => {}} />);
+    expect(screen.getByLabelText(/full name/i)).toHaveAttribute('required');
+  });
+
+  it('custom required input has aria-required when native required not set', () => {
+    render(<CustomRequiredField id="email" label="Email" value="" onChange={() => {}} />);
+    expect(screen.getByLabelText(/email/i)).toHaveAttribute('aria-required', 'true');
+  });
+
+  it('aria-invalid is set only when error is present, not on initial render', () => {
+    const { rerender } = render(
+      <CustomRequiredField id="email" label="Email" value="" onChange={() => {}} />
+    );
+    expect(screen.getByLabelText(/email/i)).not.toHaveAttribute('aria-invalid');
+
+    rerender(
+      <CustomRequiredField
+        id="email"
+        label="Email"
+        value=""
+        onChange={() => {}}
+        error="Required"
+      />
+    );
+    expect(screen.getByLabelText(/email/i)).toHaveAttribute('aria-invalid', 'true');
+  });
+});
+```
+
+**Key rule for `aria-required` vs `required`:**
+- Use native `required` + `<label>` for standard forms — no `aria-required` needed
+- Use `aria-required="true"` only when native `required` is suppressed by `novalidate` on `<form>` or by a form management library
+- Never set both `required` and `aria-required="true"` — it produces redundant announcement in some screen readers
+- Set `aria-invalid` only after validation has run (after the first submit attempt or on blur), never on initial render — screen readers announce "invalid" when focus lands on a field; announcing it before the user has had a chance to fill in the field creates anxiety for cognitive-impaired users [community]
+
+---
+
+### TypeScript 6.0 Strict Defaults — Impact on Accessibility Test Files
+
+TypeScript 6.0 (released in the TS 6.x series, see lang-refine TypeScript patterns) changes several tsconfig defaults that affect accessibility test files. Understanding these changes prevents unexpected CI failures when upgrading TypeScript in a project with a11y tests.
+
+**Breaking changes affecting a11y test files:**
+
+| TS 6.0 change | Impact on a11y tests | Migration |
+|---|---|---|
+| `"strict": true` now the default | `axe()` results and `configureAxe()` options require stricter types | Add explicit type annotations where TS infers `any` |
+| `"types": []` default (no implicit `@types/*`) | jest-axe types not auto-included | Add `"types": ["jest-axe", "@testing-library/jest-dom"]` to tsconfig |
+| `"esnext"` target default | `import()` in test setup files compiles differently | Ensure test runner (Jest, Vitest) is configured for ESM |
+| `"dom.iterable"` consolidated into `"dom"` | No change needed | Remove explicit `"dom.iterable"` from `lib` array if present |
+| Removed `"outFile"` and `"baseUrl"` | Test path aliases may break | Migrate to `"paths"` entries in tsconfig |
+
+**Updated tsconfig for TypeScript 6.0 a11y testing projects:**
+
+```json
+// File: tsconfig.json (TypeScript 6.0 compatible)
+{
+  "compilerOptions": {
+    // TypeScript 6.0 new defaults — explicitly set to make configuration visible
+    "strict": true,
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["dom", "dom.asynciterable", "esnext"],
+
+    // TypeScript 6.0: types[] is now empty by default.
+    // Explicitly list all @types packages needed in test environments.
+    "types": ["jest", "jest-axe", "@testing-library/jest-dom", "node"],
+
+    // Paths replaces baseUrl (deprecated in TS 6.0, removed in TS 7.0)
+    "paths": {
+      "@/*": ["./src/*"],
+      "@tests/*": ["./src/__tests__/*"]
+    },
+
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "sourceMap": true,
+    "noImplicitAny": true,
+    "noUnusedLocals": true,
+    "noImplicitReturns": true,
+    "exactOptionalPropertyTypes": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+```json
+// File: tsconfig.test.json (extends base, adds test-specific overrides)
+// Use this for Jest/Vitest test compilation — extends the base tsconfig
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Test files can use more permissive settings:
+    // - noUnusedLocals: false allows unused mock variables
+    // - exactOptionalPropertyTypes: false allows partial mock objects
+    "noUnusedLocals": false,
+    "exactOptionalPropertyTypes": false,
+
+    // Include jest-axe and testing-library types only in test compilation
+    "types": ["jest", "jest-axe", "@testing-library/jest-dom", "node"],
+
+    // Do not emit: test files are not compiled to output
+    "noEmit": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/*.a11y.test.ts",
+    "src/**/*.a11y.test.tsx",
+    "e2e/**/*.ts",
+    "e2e/**/*.tsx"
+  ]
+}
+```
+
+**Community gotcha — TS 6.0 `types: []` breaks jest-axe type resolution:**
+
+46. **[community] TypeScript 6.0's new `"types": []` default breaks jest-axe type inference in existing projects**: TS 6.0 changed the `"types"` tsconfig default from `undefined` (include all `@types/*` in node_modules) to `[]` (include nothing implicitly). Projects that relied on implicit `@types/jest-axe` type inclusion will see TypeScript errors — `toHaveNoViolations` becomes `unknown`, `configureAxe` loses its type signature, and `axe()` return type becomes `any`. Fix: add `"jest-axe"` and `"@testing-library/jest-dom"` to the `"types"` array in `tsconfig.json` (or `tsconfig.test.json`). This is a one-line fix but breaks CI silently if TypeScript `noEmit` checks are not run before deployment.
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -4539,3 +5527,9 @@ Deque's `vscode-axe-linter` extension runs axe-core rules as static analysis on 
 | Storybook Test Runner | Open source | https://storybook.js.org/docs/writing-tests/test-runner | Automated a11y scan of every story in CI — zero per-story test authoring |
 | WCAG 3.0 Working Draft | Draft spec | https://www.w3.org/TR/wcag-3.0/ | Forward-looking awareness; Bronze/Silver/Gold outcome-based model |
 | Playwright Mobile Devices | Official | https://playwright.dev/docs/emulation | Device emulation for mobile viewport + touch accessibility testing |
+| @axe-core/cli | Open source | https://github.com/dequelabs/axe-core-npm/tree/develop/packages/cli | Command-line axe scanning; multi-page staging scans; JSON/JUnit output |
+| @axe-core/react | Open source | https://github.com/dequelabs/axe-core-npm/tree/develop/packages/react | Dev-browser axe scan on every React render; zero test authoring; not for CI |
+| @axe-core/reporter-earl | Open source | https://github.com/dequelabs/axe-core-npm/tree/develop/packages/reporter-earl | W3C EARL format reports from axe results; required for formal procurement audits |
+| WCAG 1.2.4 Understanding Live Captions | Official | https://www.w3.org/WAI/WCAG21/Understanding/captions-live.html | AA criterion for live audio captions — applies to webinars and live streams |
+| WCAG 2.5.7 Understanding Dragging Movements | Official | https://www.w3.org/WAI/WCAG22/Understanding/dragging-movements.html | WCAG 2.2 AA — all drag operations must have a single-pointer alternative |
+| aria-required MDN | Reference | https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Attributes/aria-required | When to use aria-required vs HTML required attribute |

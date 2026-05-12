@@ -1,7 +1,8 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 17 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12) | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 18 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12) | community: production lessons -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
+<!-- new in iteration 18: contract_requiring_verification_published webhook (supersedes contract_content_changed, Pact Broker 2.82.0+), pact-js v16.2 withMatchingRules for async/sync interactions, pact-js v16.4 addInteractionReference, PactFlow Drift (spec-driven provider compliance CI), updated Pact Specification Version Reference table with v16.1–v16.4, community lesson 29 (deprecated webhook event), community lesson 30 (Drift for BDCT gap) -->
 
 ## Terminology (ISTQB CTFL 4.0 alignment)
 
@@ -2213,7 +2214,11 @@ Understanding which Pact specification version your pact files use affects compa
 | Pact V2 | pact-js v2–v9 | `term()` regex matchers, `eachLike` | `term()` replaced by `regex()` in V3 |
 | Pact V3 | pact-js v9–v12 | Provider states with params, `MatchersV3`, message pacts | Still widely used; stable |
 | Pact V4 | pact-js v13–v15 | Plugin architecture, auto-port, gRPC, Protobuf | Previously `PactV4`/`MatchersV3` |
-| Pact V4 | pact-js v16+ | Same spec + renamed default exports; Node ≥ 20; `addAsynchronousInteraction`, interaction metadata | `Pact`/`Matchers` are now the V4 aliases; v13-style `PactV4` still works via the versioned export |
+| Pact V4 | pact-js v16.0 | Same spec + renamed default exports; Node ≥ 20; `addAsynchronousInteraction` | `Pact`/`Matchers` are now the V4 aliases; v13-style `PactV4` still works via the versioned export |
+| Pact V4 | pact-js v16.1 | `withMatchingRules` on HTTP/async/sync interactions | Allows raw matching rule DSL for edge cases not covered by fluent matcher API |
+| Pact V4 | pact-js v16.2 | `withMatchingRules` extended to async message and synchronous message interactions | Full matching rule support across all interaction types |
+| Pact V4 | pact-js v16.3 | `.pending()`, `.withComment()`, `.withTestName()` per-interaction metadata | Per-interaction advisory-only flag; comments and test names visible in Broker UI |
+| Pact V4 | pact-js v16.4 | `addInteractionReference()` — external interaction reference support | Reuse interaction definitions stored outside the test file; v16.4.0 released 2026-05-04 |
 
 **Migration notes for TypeScript projects:**
 
@@ -2464,6 +2469,8 @@ describe('NotificationService consumes OrderCreated events (V4 async, pact-js v1
 | OpenAPI Specification | Spec | https://spec.openapis.org/oas/latest.html | For the lighter schema-validation alternative |
 | pact-js CHANGELOG | Repo | https://github.com/pact-foundation/pact-js/blob/master/CHANGELOG.md | Full version history; v16 breaking changes and migration notes |
 | pact-js v16 Migration Guide | Repo | https://github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md | Node ≥20 requirement, PactV4→Pact rename, MatchersV3→Matchers rename, addAsynchronousInteraction |
+| Pact Broker Webhooks | Official | https://docs.pact.io/pact_broker/webhooks | Webhook events: contract_requiring_verification_published (recommended, v2.82.0+) vs contract_content_changed (legacy) |
+| PactFlow Drift | Product | https://pactflow.io/blog/schemas-can-be-contracts/ | Provider spec-compliance CI — validates running service against OpenAPI spec; closes BDCT blind spot |
 | ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology reference |
 
 ---
@@ -2838,21 +2845,35 @@ Without webhooks, the provider team must manually trigger their CI pipeline afte
 # setup-pact-webhooks.sh
 # Creates Pact Broker webhooks to trigger provider verification CI automatically.
 # Run once during infrastructure setup (or from IaC/Terraform provider config).
+#
+# Requires Pact Broker >= 2.82.0 (or PactFlow) for contract_requiring_verification_published.
+# Older brokers: use "contract_content_changed" instead (see note below).
 
 BROKER_URL="${PACT_BROKER_URL:?PACT_BROKER_URL required}"
 BROKER_TOKEN="${PACT_BROKER_TOKEN:?PACT_BROKER_TOKEN required}"
 CI_TOKEN="${CI_API_TOKEN:?CI_API_TOKEN required}"
 
-# ── Webhook 1: Trigger provider CI when consumer publishes or changes a pact ──
+# ── Webhook 1: Trigger provider CI when a pact requires verification ──────────
+# RECOMMENDED: contract_requiring_verification_published (Pact Broker >= 2.82.0)
+# Supersedes: contract_content_changed + contract_published
+#
+# Smart deduplication: fires once per provider version that lacks verification,
+# targeting the latest main-branch version AND any version deployed to an environment.
+# Unlike contract_content_changed, it avoids redundant builds when content is republished
+# without changes.
+#
+# New template variables not available in contract_content_changed:
+#   ${pactbroker.providerVersionNumber}    — SHA of provider version to check out
+#   ${pactbroker.providerVersionBranch}    — branch of provider version
+#   ${pactbroker.providerVersionDescriptions} — human-readable description (e.g., "latest from main")
 curl --silent --show-error \
   -X POST "${BROKER_URL}/webhooks" \
   -H "Authorization: Bearer ${BROKER_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
-    "description": "Trigger InventoryService CI when OrderService pact changes",
+    "description": "Trigger InventoryService CI when OrderService pact requires verification",
     "events": [
-      { "name": "contract_content_changed" },
-      { "name": "contract_published" }
+      { "name": "contract_requiring_verification_published" }
     ],
     "consumer": { "name": "OrderService" },
     "provider": { "name": "InventoryService" },
@@ -2869,13 +2890,24 @@ curl --silent --show-error \
         "client_payload": {
           "pact_url": "${pactbroker.pactUrl}",
           "consumer_version": "${pactbroker.consumerVersionNumber}",
-          "provider": "${pactbroker.providerName}"
+          "consumer_branch": "${pactbroker.consumerVersionBranch}",
+          "provider": "${pactbroker.providerName}",
+          "provider_sha": "${pactbroker.providerVersionNumber}",
+          "provider_branch": "${pactbroker.providerVersionBranch}",
+          "description": "${pactbroker.providerVersionDescriptions}"
         }
       }
     }
   }' \
   && echo "Webhook created successfully" \
   || echo "ERROR: Webhook creation failed"
+
+# NOTE: If your Pact Broker is older than 2.82.0, use these events instead:
+#   "events": [
+#     { "name": "contract_content_changed" },
+#     { "name": "contract_published" }
+#   ]
+# Upgrade the Broker (or migrate to PactFlow) to access the smarter event.
 
 # ── Webhook 2: Notify Slack when verification fails (optional but recommended) ──
 curl --silent --show-error \
@@ -2899,6 +2931,7 @@ curl --silent --show-error \
 ```yaml
 # .github/workflows/pact-provider-dispatch.yml
 # Handles the `pact-verify` repository_dispatch event triggered by the Pact Broker webhook.
+# Uses the contract_requiring_verification_published event (Pact Broker >= 2.82.0).
 name: Provider Verification (Pact webhook-triggered)
 
 on:
@@ -2910,6 +2943,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Check out the exact provider SHA from the webhook payload,
+          # so verification runs against the correct provider version.
+          # Falls back to the default branch for manually triggered runs.
+          ref: ${{ github.event.client_payload.provider_sha || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -2922,14 +2960,15 @@ jobs:
           PACT_URL: ${{ github.event.client_payload.pact_url }}
           PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
           PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
-          GIT_COMMIT: ${{ github.sha }}
-          GIT_BRANCH: ${{ github.ref_name }}
+          GIT_COMMIT: ${{ github.event.client_payload.provider_sha || github.sha }}
+          GIT_BRANCH: ${{ github.event.client_payload.provider_branch || github.ref_name }}
           PUBLISH_VERIFICATION_RESULTS: 'true'
 ```
 
 **Key points:**
-- `contract_content_changed` (not just `contract_published`) is the critical event — it fires only when the pact content actually changes, avoiding redundant CI runs on identical re-publishes
-- `${pactbroker.pactUrl}` is a Pact Broker template variable that expands to the specific pact URL — pass this to the provider CI so it verifies only the changed pact, not all pacts
+- `contract_requiring_verification_published` (Pact Broker 2.82.0+) supersedes `contract_content_changed` + `contract_published` — it fires once per provider version that lacks verification results, targeting the latest main-branch version AND any deployed version. The older events trigger on every publish, causing redundant CI runs when a pact is republished with identical content
+- `${pactbroker.providerVersionNumber}` and `${pactbroker.providerVersionBranch}` are new template variables in this event — pass them in the webhook payload to the provider CI so it can check out the exact commit that needs verification rather than defaulting to HEAD
+- `${pactbroker.providerVersionDescriptions}` is a human-readable summary (e.g., "latest from main branch, deployed in test") — useful in Slack notification bodies for context
 - Webhooks are idempotent to create via the API — re-running `setup-pact-webhooks.sh` is safe if the Broker is reset or webhooks are lost
 - PactFlow (SaaS Pact Broker) provides a UI for creating and testing webhooks; the OSS Pact Broker requires CLI or API setup as shown above
 - `provider_verification_failed` webhook to Slack closes the feedback loop: the consumer team sees the failure immediately rather than discovering it days later when `can-i-deploy` blocks deployment
@@ -3066,3 +3105,263 @@ pact-broker record-release \
 27. **[community] Using `record-deployment` for library consumers breaks `deployedOrReleased` tracking.** A consumer that is an npm SDK or shared library has no concept of "deployed to an environment" — it can be used by thousands of downstream consumers at once. Teams that use `record-deployment` for such packages effectively overwrite each other's tracking. The correct command is `record-release`, which accumulates versions rather than replacing them. Switch as soon as a consumer package is published to a registry rather than deployed to a server.
 
 28. **[community] pact-js v16 export rename breaks `jest-pact` and `nestjs-pact` without a co-upgrade.** In pact-js v16, `Pact` and `Matchers` were renamed to alias `PactV4`/`MatchersV3`, while the old V2 DSL is now `PactV2`/`MatchersV2`. Wrapper libraries that proxy the old `Pact` export (`jest-pact`, `nestjs-pact`, `@pact-foundation/nest`) instantiated against the V2 class — after the v16 upgrade they silently instantiate a V4 class, causing unexpected behavior or type errors. **Fix:** co-upgrade the wrapper library and pact-js together; check the wrapper library's changelog for a v16-compatible release before running `npm update @pact-foundation/pact`. Also: pact-js v16 requires Node.js ≥ 20 — teams on Node 18 LTS must upgrade their CI runner image first (e.g., `node:20-alpine` in Docker, `node-version: '20'` in GitHub Actions).
+
+29. **[community] Using `contract_content_changed` webhook event causes redundant provider CI builds.** The older `contract_content_changed` event fires whenever a pact is published — even if the content is identical to the previous version (e.g., a re-publish during a CI retry). This triggers unnecessary provider verification runs that add pipeline noise. The correct event since Pact Broker 2.82.0 is `contract_requiring_verification_published`, which smart-deduplicates by provider version and fires only when a provider version actually needs new verification. Teams on self-hosted Pact Broker should check their version (`GET /diagnostic/status`) before upgrading the webhook; teams on PactFlow can switch immediately.
+
+30. **[community] Bi-directional contract testing (BDCT) has a blind spot: the running service may not match its OpenAPI spec.** BDCT verifies that the provider's OpenAPI spec is compatible with consumer pacts, but it does NOT verify that the running provider actually implements the spec. A provider can pass BDCT while having a route that returns 500 or a wrong field type in production. PactFlow's new Drift tool closes this gap: it generates a full test suite from the OpenAPI spec and runs it against the live service in CI. The combined strategy: Drift gates "spec conformance" (does the service do what the spec says?) and BDCT gates "consumer compatibility" (does the spec satisfy all consumer needs?). Both must pass before deployment.
+
+---
+
+### pact-js v16.2 — `withMatchingRules` for Async and Sync Interactions (TypeScript)
+
+pact-js v16.1–v16.2 added `withMatchingRules` to allow explicit matching rule DSL on HTTP, async message, and synchronous message interactions. This is an escape hatch for edge cases where the fluent `MatchersV3` API doesn't express the required matching rule — for example, complex nested `eachValue` rules on Protobuf-like structures or custom matching expressions.
+
+```typescript
+// notification-service.async.matching-rules.pact.spec.ts
+// Demonstrates withMatchingRules on an async message interaction (pact-js v16.2+).
+// Use case: the message payload contains a map field where both keys and values
+// need to be validated by regex — not directly expressible via MatchersV3 fluent API.
+import path from 'path';
+import { Pact, Matchers } from '@pact-foundation/pact';
+
+const { like, string } = Matchers;
+
+interface MetadataPayload {
+  eventId: string;
+  attributes: Record<string, string>; // map<string, string> — keys are tag names, values are tag values
+}
+
+const messagePact = new Pact({
+  consumer: 'AuditService',
+  provider: 'EventBus',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  logLevel: 'warn',
+});
+
+async function handleMetadataEvent(body: MetadataPayload): Promise<void> {
+  if (!body.eventId) throw new Error('Missing eventId');
+  if (typeof body.attributes !== 'object') throw new Error('attributes must be an object');
+}
+
+describe('AuditService consumes metadata events (withMatchingRules)', () => {
+  it('handles an event with dynamic map attributes', async () => {
+    await messagePact
+      .addAsynchronousInteraction()
+      .given('an event with dynamic attributes')
+      .uponReceiving('a metadata event with a key-value attributes map')
+      .withContent({
+        eventId: string('EVT-001'),
+        // attributes is a dynamic map — represent with like() for basic type assertion
+        attributes: like({ 'region': 'us-east-1' }),
+      })
+      // withMatchingRules: apply explicit matching rules that the fluent API cannot express.
+      // Here: eachKey validates key format; eachValue validates value format.
+      .withMatchingRules({
+        body: {
+          '$.attributes': {
+            combine: 'AND',
+            matchers: [
+              // All keys must be lowercase alphanumeric with hyphens
+              { match: 'eachKey', rules: [{ match: 'regex', regex: '^[a-z][a-z0-9-]*$' }] },
+              // All values must be non-empty strings
+              { match: 'eachValue', rules: [{ match: 'type' }] },
+              { match: 'values', rules: [{ match: 'notEmpty' }] },
+            ],
+          },
+        },
+      })
+      .withMetadata({ contentType: 'application/json' })
+      .executeTest(async (body: MetadataPayload) => {
+        await handleMetadataEvent(body);
+      });
+  });
+});
+```
+
+**Key points:**
+- `withMatchingRules({ body: { ... } })` accepts raw matching rule objects from the Pact V4 matching DSL — the same format that appears in the pact JSON file under `matchingRules`
+- Use `withMatchingRules` only when the fluent matcher API (`MatchersV3` / `Matchers`) cannot express the requirement — the fluent API is always preferred for readability
+- `eachKey` and `eachValue` matching rules are the most common reason to drop down to the raw DSL: they validate every key/value in a dynamic map, which has no direct `MatchersV3` equivalent
+- The `combine: 'AND'` tells Pact to apply all listed matchers together; use `'OR'` when any single matcher passing is sufficient
+- `withMatchingRules` is available on HTTP interactions (`.withRequest()` / `.willRespondWith()` step), async message interactions (`.addAsynchronousInteraction()`), and sync message interactions (`.addSynchronousInteraction()`) as of v16.2.0
+
+---
+
+### pact-js v16.4 — `addInteractionReference` (TypeScript — external interaction reuse)
+
+`addInteractionReference` was added in pact-js v16.4.0 (2026-05-04). It allows a consumer test to reference an interaction that is defined externally — in a shared package, a separate file, or a contract repository — rather than defining the interaction inline. This supports large teams that share interaction definitions across multiple consumer services.
+
+```typescript
+// shared/inventory-interactions.ts
+// Shared interaction definitions for the InventoryService contract.
+// Consumers import these rather than defining interactions inline.
+// Centralizes the contract definition; reduces duplication across consumer test files.
+import { PactV3, MatchersV3, InteractionObject } from '@pact-foundation/pact';
+
+const { like, string, integer } = MatchersV3;
+
+// Exported interaction definitions — consumers use addInteractionReference() to include them
+export const InventoryInteractions = {
+  getStockForKnownSku: (): InteractionObject => ({
+    state: 'SKU ABC-123 exists with 10 units in stock',
+    uponReceiving: 'a request for stock level of SKU ABC-123',
+    withRequest: {
+      method: 'GET',
+      path: '/inventory/ABC-123',
+      headers: { Accept: 'application/json' },
+    },
+    willRespondWith: {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: {
+        sku: string('ABC-123'),
+        available: integer(10),
+        warehouseId: like('WH-001'),
+      },
+    },
+  }),
+} as const;
+```
+
+```typescript
+// checkout-service.consumer.pact.spec.ts
+// Uses addInteractionReference to reuse the shared InventoryInteractions definition.
+// The checkout service also needs the same InventoryService endpoint as the order service.
+import path from 'path';
+import { PactV3 } from '@pact-foundation/pact';
+import { CheckoutClient } from '../src/checkout-client';
+import { InventoryInteractions } from '../shared/inventory-interactions';
+
+const provider = new PactV3({
+  consumer: 'CheckoutService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8093,
+  logLevel: 'warn',
+});
+
+describe('CheckoutService → InventoryService contract (shared interaction reference)', () => {
+  it('verifies stock level for checkout validation', async () => {
+    // addInteractionReference: include a pre-defined interaction object.
+    // The pact file records the interaction identically to an inline definition.
+    // Verification on the provider side is unchanged.
+    await provider
+      .addInteractionReference(InventoryInteractions.getStockForKnownSku())
+      .executeTest(async (mockServer) => {
+        const client = new CheckoutClient(mockServer.url);
+        const result = await client.checkInventory('ABC-123');
+        expect(result.available).toBeGreaterThanOrEqual(0);
+      });
+  });
+});
+```
+
+**Key points:**
+- `addInteractionReference(interactionObject)` accepts an `InteractionObject` (the same type used by `PactV3`'s interaction builder) and produces an identical pact file to inline definition — provider verification is unaffected
+- Primary use case: multiple consumer services that all depend on the same provider endpoint. Instead of duplicating the interaction definition in each test file, they import from a shared package — a rename or type change in the shared definition updates all consumers simultaneously
+- `addInteractionReference` is a V4 DSL addition (available in pact-js v16.4.0+, Pact V4 spec); it is not available in `PactV3`
+- Prefer inline interactions for simple test cases — `addInteractionReference` is most valuable when ≥3 consumers share an identical interaction with a single provider endpoint
+- The shared interactions module should be versioned alongside the provider contract (e.g., in a monorepo `packages/contracts/` directory or a published `@org/api-contracts` npm package)
+
+---
+
+### PactFlow Drift — Provider Compliance Testing (TypeScript / CI)
+
+PactFlow Drift (released 2026) closes the gap in bi-directional contract testing (BDCT): BDCT verifies that an OpenAPI spec is compatible with consumer pacts, but it does not verify that the running service actually implements the spec. Drift validates the running provider against its OpenAPI spec in CI.
+
+**Architecture:**
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Standard Pact CDC                                                    │
+│  Consumer pact → Broker → Provider verification → can-i-deploy       │
+│  ✓ Confirms: consumer expectations met by provider                   │
+│  ✗ Blind spot: provider may return wrong types / statuses in prod    │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  PactFlow BDCT + Drift (combined)                                     │
+│                                                                       │
+│  Drift:                                                               │
+│    OpenAPI spec → auto-generated test suite → run vs live service    │
+│    ✓ Confirms: running provider implements the spec correctly         │
+│                                                                       │
+│  BDCT (PactFlow):                                                     │
+│    Consumer pact + Provider OpenAPI spec → cross-validation          │
+│    ✓ Confirms: spec satisfies all consumer expectations              │
+│                                                                       │
+│  can-i-deploy:                                                        │
+│    Gate deployment: both Drift and BDCT must pass                    │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**When to use Drift vs standard Pact CDC:**
+
+| Scenario | Recommended |
+|---|---|
+| Multiple independent consumer teams, independent deployments | Standard Pact CDC (consumer-driven) |
+| Provider already has a well-maintained OpenAPI spec | BDCT + Drift |
+| Third-party API you don't control (cannot run provider verification) | BDCT with provider-uploaded spec |
+| Provider spec exists but running service may diverge (e.g., legacy, code-gen mismatch) | Drift |
+| New greenfield TypeScript API with typed route handlers | Standard Pact CDC (types and pacts both enforce contract) |
+
+**CI integration (GitHub Actions):**
+
+```yaml
+# .github/workflows/drift.yml
+# Runs PactFlow Drift to verify provider spec conformance on every provider push.
+name: PactFlow Drift — Provider Spec Compliance
+
+on:
+  push:
+    branches: [main, 'feature/**']
+
+jobs:
+  drift:
+    name: Drift — OpenAPI spec compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Start provider service
+        run: node dist/server.js &
+        env:
+          PORT: 3001
+          NODE_ENV: test
+
+      - name: Wait for provider to be ready
+        run: npx wait-on http://localhost:3001/health --timeout 30000
+
+      - name: Run Drift against OpenAPI spec
+        # Drift CLI: download from PactFlow docs / available as Docker image
+        # drift run --spec <openapi-file> --target <provider-url>
+        run: |
+          npx @pactflow/drift run \
+            --spec ./openapi/inventory.yaml \
+            --target http://localhost:3001 \
+            --report-format junit \
+            --output drift-results.xml
+        env:
+          PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
+
+      - name: Upload Drift results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-results
+          path: drift-results.xml
+```
+
+**Key points:**
+- Drift is available to PactFlow and Swagger Contract Testing customers (not the OSS Pact Broker)
+- It generates a test suite from the OpenAPI spec (including request/response validation, status codes, and required fields) and runs it against the actual running service — catching implementation drift that BDCT alone cannot detect
+- Drift + BDCT together enforce both "the spec is consumer-compatible" and "the service implements the spec" — providing full contract confidence before `can-i-deploy`
+- For teams using standard Pact CDC (not BDCT), Drift is complementary: add it to the provider CI to catch spec-implementation drift independently of consumer pacts
+- If your TypeScript provider uses code generation from OpenAPI (e.g., `openapi-typescript-codegen`), Drift serves as a regression test: a code-gen update that changes the generated route handler signatures will fail the Drift run before it reaches staging
+
+---

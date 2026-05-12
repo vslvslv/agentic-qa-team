@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -16,6 +16,10 @@
      Iter 26 (2026-05-12): added C# 14 User-Defined Compound Assignment Operators — void instance
        operator +=/-=/*= etc for in-place mutation, instance increment operators, override/new modifiers —
        sourced from learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/user-defined-compound-assignment
+     Iter 27 (2026-05-12): added FrozenDictionary/FrozenSet, SearchValues<T>, TimeProvider, OrderedDictionary<TKey,TValue>,
+       Dictionary.GetAlternateLookup, ServerSentEvents; added community gotchas: magic strings, early-return guard clauses,
+       PriorityQueue misuse — sourced from learn.microsoft.com/dotnet/core/whats-new/dotnet-9/libraries and
+       official async programming docs
 -->
 
 ## Core Philosophy
@@ -878,6 +882,220 @@ public sealed class MetricsFlushService(
 
 // Registration in Program.cs
 builder.Services.AddHostedService<MetricsFlushService>();
+```
+
+### `FrozenDictionary<TKey,TValue>` and `FrozenSet<T>` — Read-Only Lookup Tables (.NET 8+)
+
+`FrozenDictionary<TKey,TValue>` and `FrozenSet<T>` are immutable, read-optimized collections built for data that is written once at startup and read many millions of times afterwards. They trade slower construction (O(N) build with analysis) for faster lookups than `Dictionary<T>` and `HashSet<T>` at steady state. Use them for static lookup tables: allowed HTTP methods, country codes, feature flags, known command names.
+
+```csharp
+using System.Collections.Frozen;
+
+// Build once at startup — typically in DI registration or static constructor
+public static class AllowedCountryCodes
+{
+    // FrozenSet performs better than HashSet<T> for Contains checks in hot paths
+    private static readonly FrozenSet<string> _codes = new[]
+    {
+        "US", "CA", "GB", "AU", "DE", "FR", "JP", "SG"
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    public static bool IsAllowed(string code) => _codes.Contains(code);
+}
+
+// FrozenDictionary: read-only key-value lookup, faster than Dictionary for read-heavy use
+public class CommandDispatcher
+{
+    private static readonly FrozenDictionary<string, Func<Task>> _handlers =
+        new Dictionary<string, Func<Task>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ping"]    = () => Task.CompletedTask,
+            ["status"]  = GetStatusAsync,
+            ["restart"] = RestartAsync
+        }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+
+    public Task DispatchAsync(string command)
+    {
+        if (_handlers.TryGetValue(command, out var handler))
+            return handler();
+        throw new InvalidOperationException($"Unknown command: {command}");
+    }
+}
+
+// Performance comparison guideline:
+// FrozenDictionary/FrozenSet:   O(1) lookup, ~2–4x faster than Dictionary for Contains/TryGetValue
+// Dictionary/HashSet:           O(1) amortized lookup with resize overhead
+// Linear scan (List<T>.Contains): O(N) — never use for membership checks
+```
+
+**When to use:** application startup data (routing tables, permission sets, feature flag registries). Do NOT use for data that changes after initialization — `FrozenDictionary` is completely immutable once built.
+
+### `SearchValues<T>` — High-Performance Character and Substring Search (.NET 8+)
+
+`SearchValues<T>` (in `System.Buffers`) provides SIMD-accelerated searching for sets of characters or bytes within spans. It is significantly faster than `string.IndexOfAny` with multiple characters because it precomputes a lookup structure once and reuses it across many searches. .NET 9 extends `SearchValues` to support multi-string substring search.
+
+```csharp
+using System.Buffers;
+
+public static class InputSanitizer
+{
+    // Create once — SearchValues precomputes a SIMD-optimized lookup at creation time
+    private static readonly SearchValues<char> _specialChars =
+        SearchValues.Create(['<', '>', '"', '\'', '&', '\0']);
+
+    private static readonly SearchValues<string> _sqlKeywords =
+        SearchValues.Create(["DROP", "DELETE", "TRUNCATE", "INSERT", "--"],
+            StringComparison.OrdinalIgnoreCase);
+
+    // Check for any dangerous character — much faster than char-by-char scan
+    public static bool ContainsSpecialChar(ReadOnlySpan<char> input)
+        => input.IndexOfAny(_specialChars) >= 0;
+
+    // Check for SQL injection keywords — .NET 9 multi-string search
+    public static bool MightContainSql(string input)
+        => input.AsSpan().IndexOfAny(_sqlKeywords) >= 0;
+
+    // Example: tokenize without allocating using EnumerateSplits (.NET 9)
+    public static IEnumerable<string> SplitOnDelimiters(ReadOnlySpan<char> input)
+    {
+        var delimiters = SearchValues.Create([',', ';', '|', '\t']);
+        var results = new List<string>();
+        int start = 0;
+        int idx;
+        while ((idx = input[start..].IndexOfAny(delimiters)) >= 0)
+        {
+            results.Add(input.Slice(start, idx).ToString());
+            start += idx + 1;
+        }
+        results.Add(input[start..].ToString());
+        return results;
+    }
+}
+```
+
+### `TimeProvider` — Testable Time Abstraction (.NET 8+)
+
+`TimeProvider` (in `System.Threading`) is an abstract class that abstracts time (`UtcNow`, `LocalNow`), timer creation, and timestamp measurement. Inject it via DI instead of calling `DateTime.UtcNow` directly, so tests can control the current time without patching `DateTime` or using delays.
+
+```csharp
+using System.Threading;
+
+// Service: depend on TimeProvider instead of DateTime.UtcNow
+public class SubscriptionService(
+    ISubscriptionRepository repo,
+    TimeProvider timeProvider,
+    ILogger<SubscriptionService> logger)
+{
+    public async Task<bool> IsSubscriptionActiveAsync(
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        var subscription = await repo.GetAsync(userId, ct);
+        if (subscription is null) return false;
+
+        // Use timeProvider instead of DateTime.UtcNow — testable
+        DateTimeOffset now = timeProvider.GetUtcNow();
+        return subscription.ExpiresAt > now;
+    }
+
+    public ITimer CreateRenewalReminder(
+        Guid userId,
+        TimeSpan daysBeforeExpiry,
+        Func<Task> reminderAction)
+    {
+        // ITimer created via TimeProvider is also controllable in tests
+        return timeProvider.CreateTimer(
+            async _ => await reminderAction(),
+            state: null,
+            dueTime: daysBeforeExpiry,
+            period: Timeout.InfiniteTimeSpan);
+    }
+}
+
+// Registration in Program.cs — production uses the real time
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<SubscriptionService>();
+
+// In unit tests — use FakeTimeProvider (from Microsoft.Extensions.TimeProvider.Testing)
+// FakeTimeProvider fakeTime = new();
+// fakeTime.SetUtcNow(DateTimeOffset.Parse("2026-01-01"));
+// fakeTime.Advance(TimeSpan.FromDays(30));
+// var sut = new SubscriptionService(mockRepo, fakeTime, NullLogger<...>.Instance);
+```
+
+### `OrderedDictionary<TKey,TValue>` — Insertion-Order Key-Value Collection (.NET 9)
+
+`OrderedDictionary<TKey,TValue>` maintains insertion order while providing O(1) key lookups. It supports index-based access (`d.GetAt(i)`) and index-based removal (`d.RemoveAt(i)`). Use it when you need both ordered enumeration and fast key lookup — for example, processing pipelines, ordered configuration sections, or step-by-step workflow state.
+
+```csharp
+using System.Collections.Generic;
+
+// Build an ordered pipeline where steps execute in insertion order
+// but can also be retrieved by name
+var pipeline = new OrderedDictionary<string, Func<string, string>>(StringComparer.OrdinalIgnoreCase)
+{
+    ["trim"]      = s => s.Trim(),
+    ["lowercase"] = s => s.ToLowerInvariant(),
+    ["normalize"] = s => System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ")
+};
+
+// Enumerate in insertion order
+string Process(string input)
+{
+    foreach (var (name, step) in pipeline)
+        input = step(input);
+    return input;
+}
+
+// Fast key lookup — does this step exist?
+if (pipeline.ContainsKey("lowercase"))
+    Console.WriteLine("lowercase step is registered");
+
+// Index-based access — get the second step regardless of name
+var (stepName, stepFn) = pipeline.GetAt(1);
+
+// Insert at position — unlike Dictionary, order is deterministic
+pipeline.Insert(0, "sanitize", s => s.Replace("<", "&lt;"));
+
+// Remove by index — remove first step
+pipeline.RemoveAt(0);
+```
+
+### `Dictionary.GetAlternateLookup` — Zero-Allocation Span Lookups (.NET 9)
+
+In high-throughput code, looking up dictionary keys using a `ReadOnlySpan<char>` (from a split or slice) avoids the need to allocate a `string` for the key. `GetAlternateLookup<TAlternateKey>()` returns an `AlternateLookup` struct that performs the lookup using the span without materializing a string, provided the comparer implements `IAlternateEqualityComparer<TAlternateKey, TKey>`.
+
+```csharp
+// Word frequency counter without allocating a string per word
+static Dictionary<string, int> CountWords(ReadOnlySpan<char> text)
+{
+    var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+    // AlternateLookup: accepts ReadOnlySpan<char>, no string allocation per lookup
+    var lookup = counts.GetAlternateLookup<ReadOnlySpan<char>>();
+
+    int start = 0;
+    for (int i = 0; i <= text.Length; i++)
+    {
+        bool atBoundary = i == text.Length || !char.IsLetterOrDigit(text[i]);
+        if (atBoundary && i > start)
+        {
+            ReadOnlySpan<char> word = text[start..i];
+            lookup[word] = lookup.TryGetValue(word, out int count) ? count + 1 : 1;
+            // Key is only materialized to string when a new entry is created
+        }
+        if (atBoundary) start = i + 1;
+    }
+
+    return counts;
+}
+
+// Works with HashSet<T>.GetAlternateLookup too
+HashSet<string> allowedNames = new(["Alice", "Bob", "Carol"], StringComparer.OrdinalIgnoreCase);
+var setLookup = allowedNames.GetAlternateLookup<ReadOnlySpan<char>>();
+
+ReadOnlySpan<char> candidate = "alice".AsSpan();
+bool isAllowed = setLookup.Contains(candidate);  // no allocation
 ```
 
 ### `Task.WhenAny` — First-Completed Task Dispatch
@@ -1746,6 +1964,93 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default));
 ```
 
+### `System.Net.ServerSentEvents` — Streaming API Consumption (.NET 9)
+
+Server-sent events (SSE) is the protocol used by AI services (OpenAI, Azure AI) and other streaming APIs to push data to the client incrementally. .NET 9 adds `SseParser` in `System.Net.ServerSentEvents` for allocation-efficient SSE consumption using `IAsyncEnumerable<SseItem<T>>`.
+
+```csharp
+using System.Net.ServerSentEvents;
+using System.Net.Http;
+
+// Consume an SSE stream (e.g., from an AI chat endpoint)
+public async IAsyncEnumerable<string> StreamChatAsync(
+    string prompt,
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions");
+    request.Content = JsonContent.Create(new { prompt, stream = true });
+    request.Headers.Accept.Add(new("text/event-stream"));
+
+    using var response = await _httpClient.SendAsync(
+        request,
+        HttpCompletionOption.ResponseHeadersRead,
+        ct);
+
+    response.EnsureSuccessStatusCode();
+    await using var stream = await response.Content.ReadAsStreamAsync(ct);
+
+    // SseParser yields items as they arrive — no buffering of the full response
+    await foreach (SseItem<string> item in SseParser.Create(stream).EnumerateAsync(ct))
+    {
+        if (item.Data is "[DONE]") yield break;
+        if (!string.IsNullOrEmpty(item.Data))
+            yield return item.Data;
+    }
+}
+```
+
+**Why it matters:** before .NET 9, SSE consumption required manual line-by-line parsing of the response stream. `SseParser` handles the SSE protocol framing (event/data/id/retry fields) correctly, including multi-line data events.
+
+### Early-Return Guard Clauses — Flatten Nesting, Not Complexity
+
+Guard clauses validate preconditions at the top of a method and return early, eliminating the need for a deeply nested `if` tree. The main logic path then proceeds with all guarantees satisfied, making the code read top-to-bottom without rightward drift. Combine with `ArgumentNullException.ThrowIfNull` and pattern matching for the most expressive form.
+
+```csharp
+// BAD: deeply nested — must read all the way to the right to find the happy path
+public async Task<OrderDto?> ProcessOrderAsync(
+    OrderRequest? request,
+    CancellationToken ct)
+{
+    if (request != null)
+    {
+        if (request.Items.Count > 0)
+        {
+            if (await _inventory.HasStockAsync(request.Items, ct))
+            {
+                var order = await _repository.CreateAsync(request, ct);
+                return order.ToDto();
+            }
+        }
+    }
+    return null;
+}
+
+// GOOD: guard clauses — happy path runs at the left margin
+public async Task<OrderDto?> ProcessOrderAsync(
+    OrderRequest? request,
+    CancellationToken ct)
+{
+    if (request is null)          return null;
+    if (request.Items.Count == 0) return null;
+    if (!await _inventory.HasStockAsync(request.Items, ct)) return null;
+
+    var order = await _repository.CreateAsync(request, ct);
+    return order.ToDto();
+}
+
+// In public APIs — throw rather than return null for invalid arguments
+public async Task<Order> PlaceOrderAsync(
+    OrderRequest request,
+    CancellationToken ct = default)
+{
+    ArgumentNullException.ThrowIfNull(request);
+    ArgumentOutOfRangeException.ThrowIfZero(request.Items.Count);
+
+    // main logic — every precondition above is guaranteed
+    return await _repository.CreateAsync(request, ct);
+}
+```
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -2288,6 +2593,71 @@ var summaries = await _db.Orders
     .ToListAsync(ct);
 ```
 
+### **`DateTime.UtcNow` Called Directly in Services — Untestable Time**  [community]
+
+Calling `DateTime.UtcNow` or `DateTimeOffset.UtcNow` directly in service code makes time-dependent logic untestable without process-level time patching. WHY it causes problems: you cannot advance time, freeze it, or simulate "now is tomorrow" in a unit test without hacks. Services that schedule reminders, expire sessions, or enforce trial periods are implicitly coupled to the system clock. Fix: inject `TimeProvider` (available since .NET 8) and call `timeProvider.GetUtcNow()` instead. Tests inject `FakeTimeProvider` from the `Microsoft.Extensions.TimeProvider.Testing` package to control time deterministically.
+
+```csharp
+// BAD: direct clock call — no way to test "what happens in 30 days"
+public bool IsTrialExpired(User user)
+    => DateTime.UtcNow > user.TrialStartedAt.AddDays(30);
+
+// GOOD: inject TimeProvider — fake it in tests
+public bool IsTrialExpired(User user)
+    => _timeProvider.GetUtcNow() > user.TrialStartedAt.AddDays(30);
+```
+
+### **Magic Strings for Domain Constants — Silent Typo Bugs**  [community]
+
+Embedding string literals directly in conditionals, switch expressions, or dictionary keys creates silent typo bugs. WHY it causes problems: `"Admininstrator"` compiles and runs fine; the bug only surfaces at runtime when the permission check silently fails. In a codebase where the same string appears in 12 files, renaming it requires a grep-and-replace rather than a rename refactor. Fix: define domain constants as `const string`, `static readonly string`, or — better — as a `readonly record struct` or `enum` so the type system enforces correctness and rename is one keystroke.
+
+```csharp
+// BAD: magic string in multiple files — typo-prone and not refactorable
+if (user.Role == "Administrator") { }
+
+// GOOD: constant — single source of truth, typo caught at compile time
+public static class Roles
+{
+    public const string Administrator = "Administrator";
+    public const string Viewer         = "Viewer";
+    public const string Editor         = "Editor";
+}
+
+if (user.Role == Roles.Administrator) { }
+
+// BEST: strongly-typed enum prevents invalid values entirely
+public enum UserRole { Administrator, Viewer, Editor }
+if (user.Role == UserRole.Administrator) { }
+```
+
+### **`PriorityQueue<T,P>` Without `.Remove()` for Priority Updates — Stale Items**  [community]
+
+`PriorityQueue<TElement,TPriority>` does not support updating the priority of an already-enqueued item. WHY it causes problems: graph algorithms (Dijkstra, A*) need to lower the priority of a node when a shorter path is found. Without priority update support, the same node gets enqueued multiple times with different priorities, and the stale higher-priority copies are processed unnecessarily. In .NET 9, `.Remove()` enables the workaround pattern: remove then re-enqueue with the new priority. Fix: extend via an extension method; understand that `.Remove()` is O(N).
+
+```csharp
+// .NET 9: PriorityQueue.Remove enables priority updates (O(N) scan)
+public static class PriorityQueueExtensions
+{
+    public static void UpdatePriority<TElement, TPriority>(
+        this PriorityQueue<TElement, TPriority> queue,
+        TElement element,
+        TPriority newPriority)
+    {
+        queue.Remove(element, out _, out _);   // scan for element, remove if found
+        queue.Enqueue(element, newPriority);   // re-enqueue with new priority
+    }
+}
+
+// Simple Dijkstra-style usage:
+var pq = new PriorityQueue<string, int>();
+pq.Enqueue("NodeA", 10);
+pq.UpdatePriority("NodeA", 3);  // now "NodeA" has priority 3
+// pq.Dequeue() returns "NodeA" with priority 3
+
+// Caution: UpdatePriority is O(N) — fine for prototyping, not for large graphs
+// For production graph algorithms, use an indexed priority queue or a 3rd-party library
+```
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -2333,6 +2703,11 @@ var summaries = await _db.Orders
 | Regex compiled at runtime inside a method | New `Regex` object allocated on every call; parsing overhead per invocation | Use `[GeneratedRegex]` attribute with partial method for compile-time regex |
 | Records used as EF Core entity types | EF Core needs reference equality to track entity identity; records use value equality, causing duplicate inserts/corrupt change tracking | Use regular classes for EF entities; use records only for read-only DTOs/projections |
 | Mutable collection property on a record | Array/list contents can be mutated from outside — shallow immutability broken | Use `IReadOnlyList<T>` or `ImmutableArray<T>` for collection properties on records |
+| `DateTime.UtcNow` called directly in services | Untestable time — cannot simulate "tomorrow" in a unit test | Inject `TimeProvider` and call `timeProvider.GetUtcNow()` |
+| Magic strings for roles/commands/status | Typo-prone; breaking rename requires grep across entire codebase | Define `const string` or `readonly record struct` constants; prefer `enum` for closed sets |
+| `Dictionary<string,T>` for static lookup tables in hot paths | Resizable hash table has more overhead than needed for immutable data | Use `FrozenDictionary<K,V>.ToFrozenDictionary()` for read-only lookups |
+| `string.IndexOfAny(char[])` in tight loops | Allocates array on each call site; uses non-SIMD path | Use `SearchValues<char>.Create(...)` once, store in `static readonly` |
+| Calling `PriorityQueue.Enqueue` without removing old entry | Stale low-priority copy processed unnecessarily; N+1 dequeue iterations | Use `queue.Remove(element, ...)` before re-enqueue to update priority |
 
 ---
 

@@ -1,5 +1,5 @@
 # Learning Sources: Programming Languages
-<!-- updated: 2026-05-12 | entries: 78 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-12 | entries: 84 | skill-version: 1.12.0.0 -->
 
 Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 
@@ -67,6 +67,11 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | Go — Testing Flags | https://go.dev/blog/testing-flags | official-docs | Go | 2026-05-12 | ⭐ Go test flags: -run, -bench, -count, -parallel, -race; go test vs go test ./...; test binary flags |
 | Java Streams API | https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/package-summary.html | official-docs | Java | 2026-05-12 | ⭐ Java 21 Streams — sequential/parallel, collect, flatMap, reduce; Stream.gather() (preview Java 22+) |
 | Rust Clippy | https://doc.rust-lang.org/clippy/ | official-docs | Rust | 2026-05-12 | ⭐ Official Rust linter — 700+ lints across correctness, style, complexity, perf; pedantic / nursery categories |
+| .NET 9 What's New — Libraries | https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-9/libraries | official-docs | C# / .NET | 2026-05-12 | ⭐ FrozenDictionary, SearchValues, OrderedDictionary, LINQ CountBy/AggregateBy, ServerSentEvents, Regex.EnumerateSplits |
+| C# TimeProvider (.NET 8+) | https://learn.microsoft.com/en-us/dotnet/api/system.threading.timeprovider | official-docs | C# / .NET | 2026-05-12 | ⭐ Abstract time for testable services; FakeTimeProvider in Microsoft.Extensions.TimeProvider.Testing |
+| System.Collections.Frozen | https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen | official-docs | C# / .NET | 2026-05-12 | ⭐ FrozenDictionary<K,V> / FrozenSet<T> — read-optimized immutable collections for static lookup tables |
+| System.Buffers.SearchValues | https://learn.microsoft.com/en-us/dotnet/api/system.buffers.searchvalues | official-docs | C# / .NET | 2026-05-12 | ⭐ SIMD-accelerated char/byte/string set search in spans; multi-string extension in .NET 9 |
+| OrderedDictionary<TKey,TValue> (.NET 9) | https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ordereddictionary-2 | official-docs | C# / .NET | 2026-05-12 | ⭐ Insertion-order generic dict with O(1) key lookup and index-based access/removal |
 
 ---
 

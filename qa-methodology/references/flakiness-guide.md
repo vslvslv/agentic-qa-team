@@ -1,8 +1,9 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 45 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 46 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
 <!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
+<!-- Iteration 46: Pattern 59 (Vitest onTestFailed/onTestFinished hooks); Pattern 60 (Vitest repeats option); Pattern 61 (Playwright test.step.skip()); Pattern 62 (Playwright page.consoleMessages/page.pageErrors for flakiness diagnosis); Pattern 63 (Playwright test.abort() from fixtures); AP35 (Vitest onTestFailed in beforeAll); Gotcha 39 (captureGitInfo correlation); Gotcha 40 (Google TotT: DI for testability) -->
 <!-- Iter-43: AP23–AP25; extended Quick Reference table -->
 <!-- Iter-44: pytest flaky tests cross-reference (docs.pytest.org/en/stable/explanation/flaky.html, 2026-05-08); cross-language flakiness equivalents table -->
 <!-- Iter-45: Pattern 56 (Playwright failOnFlakyTests CI gate); Pattern 57 (trace retain-on-first-failure / retain-on-failure-and-retries); AP33 (failOnFlakyTests in dev mode); Gotcha 37 (Vitest 4 browser mode toMatchScreenshot); Key Resources additions (playwright.dev release notes, Vitest 4 blog) -->
@@ -4151,3 +4152,541 @@ annotations as a secondary signal visible in the test results artifact.
 | Playwright Release Notes | Official | https://playwright.dev/docs/release-notes | Full changelog: failOnFlakyTests (v1.52), retain-on-failure-and-retries (v1.59), trace modes |
 | Vitest 4.0 Blog | Official | https://vitest.dev/blog/vitest-4.html | Browser Mode stable, toMatchScreenshot, new tree reporter |
 | Playwright TestConfig API | Official | https://playwright.dev/docs/api/class-testconfig | Complete API reference for failOnFlakyTests, retries, trace configuration |
+
+---
+
+## Pattern 59 — Vitest `onTestFailed` / `onTestFinished` Hooks for Flakiness Debugging  [official]
+
+Vitest exposes two per-test lifecycle hooks — `onTestFailed` and `onTestFinished` — that allow
+test-local cleanup and diagnostic code to run without polluting `afterEach`. These are particularly
+useful for flakiness investigation because they can log or persist diagnostic state precisely when
+and only when a test case fails, without creating noise in passing runs.
+
+**`onTestFailed`** runs after all `afterEach` hooks, only when the test case failed. It receives
+the `TaskResult` including the full `errors` array. Use it to dump state, print stack traces, or
+write a diagnostic file when investigating intermittent failures.
+
+**`onTestFinished`** runs after every test case regardless of outcome. It guarantees execution even
+when the test body throws — making it safer than cleanup code at the end of the test body. Always
+runs in reverse registration order (LIFO).
+
+```typescript
+// vitest — onTestFailed: dump DB state only on failure for flakiness investigation
+import { describe, it, expect, onTestFailed, onTestFinished } from 'vitest';
+import { connectDb, closeDb, dumpTableState } from '../test-utils/db';
+
+describe('OrderRepository flakiness debugging', () => {
+  it('creates order and updates inventory atomically', async () => {
+    const db = connectDb(process.env.TEST_DATABASE_URL!);
+
+    // onTestFinished: always close the DB connection — prevents resource leak flakiness
+    // Safer than placing db.close() at end of test — runs even if assertion throws
+    onTestFinished(() => closeDb(db));
+
+    // onTestFailed: dump DB state for diagnosis — only runs when test fails
+    // Avoids noisy output in passing runs; captures the exact state that caused the failure
+    onTestFailed(async ({ task }) => {
+      const errors = task.result?.errors ?? [];
+      console.error('[FLAKINESS DEBUG] Test failed:', errors.map(e => e.message));
+      // Dump the relevant tables to a file for post-mortem analysis
+      const snapshot = await dumpTableState(db, ['orders', 'inventory']);
+      console.error('[FLAKINESS DEBUG] DB state at failure:\n', JSON.stringify(snapshot, null, 2));
+    });
+
+    const order = await db.orders.create({ userId: 'user-1', items: [{ sku: 'A001', qty: 2 }] });
+    const inventory = await db.inventory.findBySku('A001');
+
+    expect(order.id).toMatch(/^ORD-/);
+    // This assertion occasionally fails in parallel runs due to inventory count race
+    expect(inventory.available).toBe(8); // started at 10, ordered 2
+  });
+});
+```
+
+```typescript
+// vitest — onTestFailed with concurrent tests (context-based version required)
+// When using test.concurrent(), you MUST use the context-based version of onTestFailed
+// to avoid race conditions between concurrently-running test cases
+import { describe, it, expect } from 'vitest';
+
+describe.concurrent('PaymentService — concurrent runs', () => {
+  it('processes payment within timeout', async ({ onTestFailed, onTestFinished }) => {
+    // Context-based hooks — safe in concurrent tests
+    // The global onTestFailed() is NOT safe in concurrent tests (shared state)
+
+    onTestFailed(({ task }) => {
+      // This closure captures the specific test's context — no cross-test pollution
+      console.error(`[CONCURRENT FAIL] "${task.name}" errors:`, task.result?.errors);
+    });
+
+    onTestFinished(() => {
+      // Per-test cleanup — runs in the context of THIS test only
+      // Safe because each concurrent test gets its own context object
+    });
+
+    const result = await PaymentService.charge({ amount: 9999, currency: 'USD' });
+    expect(result.status).toBe('approved');
+  });
+});
+```
+
+**Key distinction:** `afterEach` runs for ALL tests in the describe block, which can become a
+maintenance burden when only a subset of tests need diagnostic output. `onTestFailed` and
+`onTestFinished` are test-local — they are registered inside the test body and scoped to that
+single test case. This makes them ideal for targeted flakiness investigation without global side
+effects.
+
+---
+
+## Pattern 60 — Vitest `repeats` Option for Flakiness Detection  [official]
+
+Vitest's `repeats` option reruns a test case a specified number of times within the same test
+run. Unlike `retry` (which reruns only on failure), `repeats` runs the test unconditionally N
+times — every run counts as a separate test result. This is the primary Vitest mechanism for
+surfacing low-frequency flakiness that doesn't appear in a single pass.
+
+**`retry` vs `repeats` distinction (critical):**
+- `retry: 2` — test runs once; if it fails, runs up to 2 more times; failure is reported only if all retries fail
+- `repeats: 4` — test runs 5 times (original + 4 repeats) regardless of pass/fail; any individual failure is reported
+
+Use `retry` in production CI to tolerate known infrastructure jitter. Use `repeats` during
+flakiness investigation to confirm a fix or measure a failure rate.
+
+```typescript
+// vitest.config.ts — global retry for CI stability; no global repeats (use per-test)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Global retry: rerun failed tests up to 2 times before marking as failed.
+    // This is the CI production setting — NOT for flakiness investigation.
+    retry: 2,
+
+    // DO NOT set global repeats — it multiplies total test count for ALL tests.
+    // Instead, set per-test repeats on suspect tests during investigation (see below).
+  },
+});
+```
+
+```typescript
+// Per-test repeats — use during investigation, remove before merging
+// Vitest counts each repeat as a separate test result in the HTML report
+import { describe, it, expect, onTestFailed } from 'vitest';
+
+describe('OrderService — flakiness investigation', () => {
+  // repeats: 9 means this test runs 10 times total (1 original + 9 repeats)
+  // Useful for measuring failure rate: 2 failures in 10 runs = 20% flakiness rate
+  it('creates order idempotently', { repeats: 9 }, async () => {
+    const order = await OrderService.create({
+      idempotencyKey: 'key-001',
+      items: [{ sku: 'SKU-A', qty: 1 }],
+    });
+    // This assertion may fail ~15% of the time due to a race in the DB sequence generator
+    expect(order.id).toMatch(/^ORD-[A-Z0-9]{8}$/);
+    expect(order.status).toBe('pending');
+  });
+});
+```
+
+```typescript
+// Investigation workflow: combine repeats + onTestFailed for failure rate measurement
+import { describe, it, expect, onTestFailed } from 'vitest';
+
+// Step 1: add repeats to the suspect test (do NOT commit this)
+// Step 2: run locally: vitest run --reporter=verbose order.test.ts
+// Step 3: count failures in output. If failure rate > 0, root-cause and fix.
+// Step 4: re-run with repeats to verify fix (should be 0/N failures)
+// Step 5: remove repeats before opening PR — it's a debugging tool, not a CI fixture
+
+describe('SuspectService — rate measurement', () => {
+  let failureCount = 0;
+  let totalRuns = 0;
+
+  it('processes request without race', { repeats: 19 }, async () => {
+    totalRuns++;
+
+    onTestFailed(() => {
+      failureCount++;
+      // After all repeats complete, the console output shows cumulative failure rate
+      console.warn(`[RATE] Failure ${failureCount}/${totalRuns} (${((failureCount/totalRuns)*100).toFixed(0)}%)`);
+    });
+
+    const result = await SuspectService.process({ requestId: `req-${Date.now()}` });
+    expect(result.status).toBe('ok');
+  });
+});
+```
+
+**When NOT to use `repeats`:**
+- In CI production config — it multiplies test suite runtime linearly
+- As a substitute for fixing the root cause — `repeats: 3` that passes 2/3 is still flaky
+- When the test touches external state (DB, file system) without rollback — state from repeat N
+  bleeds into repeat N+1, creating false failures that obscure the real flakiness pattern
+
+---
+
+## Pattern 61 — Playwright `test.step.skip()` for Known-Broken Steps  [official]
+
+Introduced in Playwright v1.55, `test.step.skip()` marks an individual step within a test case
+as skipped. Unlike `test.skip()` (which skips the entire test case) or `test.fixme()` (which
+skips it and marks it as intentionally broken), `test.step.skip()` allows the rest of the test
+to run while flagging the specific step as deferred. This is useful when a multi-step E2E flow
+has one intermittently broken step that would otherwise require quarantining the entire test case.
+
+```typescript
+// playwright — test.step.skip() for partially-working E2E flows
+import { test, expect } from '@playwright/test';
+
+test('full checkout flow', async ({ page }) => {
+  // Step 1: add item to cart — stable
+  await test.step('add product to cart', async () => {
+    await page.goto('/products/headphones');
+    await page.getByRole('button', { name: 'Add to Cart' }).click();
+    await expect(page.getByTestId('cart-count')).toHaveText('1');
+  });
+
+  // Step 2: apply coupon — known-broken since coupon API migration (PROJ-2847)
+  // test.step.skip() prevents this step from failing CI while preserving the rest of the test
+  // The step appears as 'skipped' in the HTML report — visible to the team, not silently ignored
+  await test.step.skip('apply discount coupon', async () => {
+    await page.getByTestId('coupon-input').fill('SUMMER20');
+    await page.getByRole('button', { name: 'Apply Coupon' }).click();
+    await expect(page.getByTestId('discount-line')).toContainText('-20%');
+    // PROJ-2847: coupon service returns 503 intermittently after migration — fix ETA 2026-05-20
+  });
+
+  // Step 3: checkout — stable; still runs even though step 2 was skipped
+  await test.step('proceed to checkout', async () => {
+    await page.getByRole('link', { name: 'Checkout' }).click();
+    await page.waitForURL('**/checkout');
+    await expect(page.getByRole('heading', { name: 'Checkout' })).toBeVisible();
+  });
+
+  await test.step('place order', async () => {
+    await page.route('**/api/orders', route =>
+      route.fulfill({ status: 201, json: { orderId: 'ORD-TEST-001', total: 89_99 } })
+    );
+    await page.getByRole('button', { name: 'Place Order' }).click();
+    await expect(page.getByTestId('confirmation-number')).toBeVisible({ timeout: 5_000 });
+  });
+});
+```
+
+**`test.step.skip()` vs quarantine with `test.skip()` — when to use each:**
+
+| Scenario | Use |
+|----------|-----|
+| Single step in a long E2E flow is broken; rest of flow tests valid behavior | `test.step.skip()` on the broken step |
+| Entire test case is non-deterministic (flaps across multiple steps) | Quarantine with `it.skip('[QUARANTINE] ...')` |
+| Known future feature not yet implemented | `test.fixme()` on the full test |
+| Step is slow but not broken | `test.step()` with no skip — consider extracting to separate test |
+
+---
+
+## Pattern 62 — Playwright `page.consoleMessages()` / `page.pageErrors()` for Flakiness Diagnosis  [official]
+
+Introduced in Playwright v1.56, `page.consoleMessages()` and `page.pageErrors()` provide
+post-test access to the last 200 console messages and uncaught page errors respectively. These
+APIs eliminate the need to set up `page.on('console')` event listeners upfront — you can query
+the captured log after a test fails, making them ideal for flakiness post-mortems.
+
+**Common flakiness patterns surfaced by these APIs:**
+- `page.pageErrors()` revealing uncaught `TypeError: Cannot read properties of undefined` — indicates a race between async state initialization and render
+- `page.consoleMessages()` showing repeated `[warning] fetch failed: network error` — indicates an unhandled external HTTP dependency
+- Console warnings about React's `act()` — confirms async state update flakiness
+
+```typescript
+// playwright — capture console/error log on test failure for flakiness diagnosis
+import { test, expect } from '@playwright/test';
+
+test('dashboard renders without errors', async ({ page }, testInfo) => {
+  await page.goto('/dashboard');
+
+  // Main assertions
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  await expect(page.getByTestId('user-widget')).toBeVisible();
+
+  // Post-assertion: check for silent errors that indicate future flakiness
+  // page.pageErrors() returns up to 200 uncaught JS errors from the page
+  const pageErrors = page.pageErrors();
+  if (pageErrors.length > 0) {
+    // Attach errors to the test report — visible in the HTML report even if test passed
+    await testInfo.attach('page-errors', {
+      body: pageErrors.map(e => `${e.name}: ${e.message}\n${e.stack ?? ''}`).join('\n---\n'),
+      contentType: 'text/plain',
+    });
+    // Fail the test if there are uncaught JS errors — they are flakiness precursors
+    // The dashboard rendered correctly but something is silently broken
+    expect(pageErrors).toHaveLength(0);
+  }
+});
+```
+
+```typescript
+// playwright — flakiness diagnosis helper: attach console + error log on every retry
+// Use this pattern to build a chronological log of what happened on each retry attempt
+import { test, expect } from '@playwright/test';
+
+// Custom fixture: automatically attaches console log + errors to the report on retry
+export const flakinessDiagnostics = test.extend<{
+  attachDiagnosticsOnRetry: void;
+}>({
+  attachDiagnosticsOnRetry: [async ({ page }, use, testInfo) => {
+    await use(); // run the test
+
+    // After test body: if this was a retry, capture diagnostics for the trace viewer
+    if (testInfo.retry > 0 || testInfo.status === 'failed') {
+      // Capture console messages (info, warning, error) from the page
+      const messages = page.consoleMessages();
+      if (messages.length > 0) {
+        const log = messages.map(m =>
+          `[${m.type().toUpperCase()}] ${m.text()}`
+        ).join('\n');
+        await testInfo.attach('console-log', { body: log, contentType: 'text/plain' });
+      }
+
+      // Capture uncaught page errors (JavaScript exceptions, unhandled promise rejections)
+      const errors = page.pageErrors();
+      if (errors.length > 0) {
+        const log = errors.map(e => `${e.name}: ${e.message}\n${e.stack ?? 'no stack'}`).join('\n---\n');
+        await testInfo.attach('page-errors', { body: log, contentType: 'text/plain' });
+      }
+    }
+  }, { auto: true }], // auto: true — runs for every test without explicit fixture request
+});
+```
+
+```typescript
+// Usage: extend base test with the diagnostics fixture
+// tests/e2e/checkout.spec.ts
+import { flakinessDiagnostics } from '../fixtures/flakiness-diagnostics';
+
+// Replace `import { test } from '@playwright/test'` with the extended version
+const { test, expect } = flakinessDiagnostics;
+
+test('checkout with payment', async ({ page }) => {
+  await page.goto('/checkout');
+  await page.fill('[name="card-number"]', '4111111111111111');
+  await page.getByRole('button', { name: 'Place Order' }).click();
+  await expect(page.getByTestId('confirmation')).toBeVisible({ timeout: 5_000 });
+  // No extra code needed — diagnostics auto-attach on retry or failure
+});
+```
+
+**Filter modes for both APIs:**
+- `page.consoleMessages()` — returns all messages since page creation (default)
+- `page.consoleMessages({ filter: 'since-navigation' })` — only messages since the last navigation
+- Same filter API applies to `page.pageErrors()`
+
+The `since-navigation` filter is especially useful in multi-page tests where only the messages
+from the current route are relevant to the failing assertion.
+
+---
+
+## Pattern 63 — Playwright `test.abort()` for Unrecoverable Test State  [official]
+
+Introduced in Playwright v1.60, `test.abort()` immediately terminates the current test case by
+throwing an error, marking it as failed with the provided message. It is designed to be called
+from inside **fixtures** or **route handlers** where detecting an unrecoverable misuse should
+immediately stop the test — unlike a normal `expect()` failure that may not be caught cleanly
+from within a callback.
+
+**Key difference from `test.skip()` and `test.fail()`:**
+- `test.skip()` — marks as skipped, no failure recorded
+- `test.fail()` — marks as "expected to fail"; if it passes, that itself is a failure
+- `test.abort(message)` — immediately terminates with a failure and a clear message; useful
+  when continuing the test would produce misleading subsequent failures
+
+```typescript
+// playwright — test.abort() from a route handler to prevent test pollution
+import { test, expect } from '@playwright/test';
+
+// Anti-pattern: a test that attempts to write to a shared production endpoint
+// test.abort() is called from inside the route handler to prevent data pollution
+test('does not leak writes to production API', async ({ page }) => {
+  // Register a route that intercepts any write to the production endpoint
+  await page.route('**/api.production.example.com/**', route => {
+    // test.abort() is safe to call from inside a route handler
+    // Normal throw would produce an unhandled rejection that is harder to diagnose
+    test.abort('Test attempted to call the production API — this is not allowed in tests.');
+    return route.abort();
+  });
+
+  // Test proceeds with the mock endpoint
+  await page.route('**/api.staging.example.com/orders', route =>
+    route.fulfill({ status: 201, json: { orderId: 'ORD-001' } })
+  );
+
+  await page.goto('/checkout');
+  await page.getByRole('button', { name: 'Place Order' }).click();
+  await expect(page.getByTestId('confirmation')).toBeVisible();
+});
+```
+
+```typescript
+// playwright — test.abort() from a custom fixture for prerequisite validation
+// Use when a fixture detects a setup condition that makes the test meaningless to run
+import { test as base, expect } from '@playwright/test';
+
+// Custom fixture: validates that the test database is seeded before running
+// If not seeded, abort immediately rather than letting tests fail with cryptic errors
+const test = base.extend<{ requiresSeededDb: void }>({
+  requiresSeededDb: async ({ request }, use) => {
+    // Check that the test database has the expected seed data
+    const check = await request.get('/api/test/seed-status');
+    const status = await check.json() as { seeded: boolean; count: number };
+
+    if (!status.seeded || status.count < 10) {
+      // Abort with a clear diagnostic message — prevents misleading failures downstream
+      test.abort(
+        `Database not seeded (found ${status.count} records, expected ≥ 10). ` +
+        `Run: npm run db:seed:test`
+      );
+    }
+
+    await use(); // fixture setup complete — proceed with test
+  },
+});
+
+test('creates order with correct pricing', { tag: '@requires-db' }, async ({ page, requiresSeededDb }) => {
+  await page.goto('/products');
+  await page.getByTestId('product-sku-A001').getByRole('button', { name: 'Add to Cart' }).click();
+  await expect(page.getByTestId('cart-total')).toHaveText('$49.99');
+});
+```
+
+**When NOT to use `test.abort()`:**
+- For normal assertion failures — use `expect()`, which provides better error messages and is
+  tracked correctly in the HTML report
+- To replace quarantine — a test that needs `test.abort()` in its normal flow is a sign the
+  test setup (fixtures, seed data, environment) is not properly isolated; fix the setup instead
+
+---
+
+## Anti-Patterns (additional)
+
+### AP35 — `onTestFailed` in `beforeAll` or `afterAll` Hooks  [community]
+**What:** Registering `onTestFailed` or `onTestFinished` inside a `beforeAll` or `afterAll` hook
+instead of inside the test body itself.
+**Why harmful:** Both hooks are test-local — they attach to the *currently running test case*.
+When called from `beforeAll` or `afterAll`, the "current test" context is ambiguous (there is no
+single test running). In practice, Vitest silently ignores the registration or attaches it to the
+last test in the describe block, producing diagnostics that appear to fire for the wrong test.
+Fix: register `onTestFailed` and `onTestFinished` inside the test body or inside a `beforeEach`
+hook where a test is unambiguously active.
+
+---
+
+## Real-World Gotchas (continued)  [community]
+
+**Gotcha 39 — `captureGitInfo` Reveals Flakiness Introduced by a Specific Commit**
+Playwright v1.54 added `testConfig.captureGitInfo` which embeds the current Git commit hash, branch,
+and diff summary into the HTML test report. Teams that enable this option and export JUnit results
+to a flakiness tracking dashboard (BuildPulse, Trunk) can correlate flakiness spikes directly with
+the commit that introduced them. Without commit correlation, a flakiness spike on Tuesday can be
+attributed to environment changes when it was actually a specific PR that mutated shared test
+fixtures. Fix: add `captureGitInfo: true` to your `playwright.config.ts` and ensure the JUnit
+reporter exports results — the commit hash is embedded in the XML output.
+
+```typescript
+// playwright.config.ts — enable git info capture for flakiness correlation
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  captureGitInfo: { revision: true, diff: false }, // capture commit hash, skip large diff
+  reporter: [
+    ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    // JUnit embeds the commit hash — parseable by BuildPulse, Trunk, and custom dashboards
+    ['junit', { outputFile: 'test-results/results.xml', includeProjectInTestName: true }],
+  ],
+  retries: process.env.CI ? 2 : 0,
+  failOnFlakyTests: !!process.env.CI,
+});
+```
+
+**Gotcha 40 — Google TotT: Dependency Injection Eliminates a Class of Flakiness**  [official]
+Google Testing Blog (May 2026, "Construct with Collaborators, Call with Work") reinforces a
+principle that directly prevents a common flakiness pattern: **separate object construction
+(collaborator wiring) from work (business logic execution)**. Tests that create their collaborators
+(DB clients, HTTP clients, clocks) inline in test helpers — rather than injecting them — cannot
+control the exact instance being used, making it impossible to substitute fakes or freeze time.
+The consequence is either real external calls (flakiness from network) or module-level singletons
+that bleed state between tests (shared-state flakiness). The fix is to inject all collaborators
+that have side effects, and construct them in test fixtures where they can be reset per test.
+
+```typescript
+// ANTI-PATTERN: collaborators created inside the function under test
+// Cannot be replaced with fakes in tests — produces either real network calls or mock leakage
+class OrderService {
+  async create(items: string[]): Promise<Order> {
+    // Hard dependency — cannot be replaced in tests without module mocking
+    const db = new PostgresDb(process.env.DATABASE_URL!);
+    const mailer = new SmtpMailer(process.env.SMTP_HOST!);
+    // ... business logic
+  }
+}
+
+// GOOD: inject all collaborators — each test provides its own isolated instances
+class OrderService {
+  constructor(
+    private readonly db: OrderRepository,   // injectable — tests pass InMemoryOrderRepository
+    private readonly mailer: Mailer,         // injectable — tests pass NoopMailer
+    private readonly clock: Clock,           // injectable — tests pass FakeClock
+  ) {}
+
+  async create(items: string[]): Promise<Order> {
+    // Uses injected collaborators — no ambient state, no hidden network calls
+  }
+}
+
+// Test: zero flakiness because all collaborators are controlled by the test
+import { describe, it, expect } from 'vitest';
+import { InMemoryOrderRepository } from '../test-utils/fakes/InMemoryOrderRepository';
+import { NoopMailer } from '../test-utils/fakes/NoopMailer';
+import { FakeClock } from '../test-utils/fakes/FakeClock';
+
+describe('OrderService — DI pattern', () => {
+  it('creates order with correct timestamp', async () => {
+    const clock = new FakeClock(new Date('2026-06-01T12:00:00Z'));
+    const db = new InMemoryOrderRepository();
+    const mailer = new NoopMailer();
+    const service = new OrderService(db, mailer, clock);
+
+    const order = await service.create(['sku-A', 'sku-B']);
+
+    // Deterministic assertions — FakeClock controls Date.now(), InMemoryDb controls IDs
+    expect(order.createdAt).toEqual(new Date('2026-06-01T12:00:00Z'));
+    expect(order.id).toMatch(/^ORD-/);
+    // No DB connection, no SMTP call, no network — 0% flakiness probability
+  });
+});
+```
+
+---
+
+## Quick Reference additions (iteration 46)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Need to dump DB state only on test failure | No targeted diagnostics hook | Pattern 59 (onTestFailed / onTestFinished) | AP35 (onTestFailed in beforeAll) |
+| Suspect test flakes ~10% — need to measure | Low-frequency flakiness | Pattern 60 (repeats: N for rate measurement) | Leaving repeats: N in CI config |
+| One E2E step is broken; rest of flow is valid | Step-level defect, not flow-level | Pattern 61 (test.step.skip()) | Quarantining the entire test case |
+| Need to see console errors that caused flakiness | Silent JS errors during test | Pattern 62 (page.consoleMessages/pageErrors) | Relying on manual page.on('console') setup |
+| Fixture or route handler detects unrecoverable state | Test precondition violated | Pattern 63 (test.abort() from fixture) | Normal throw inside route callback |
+| Flakiness spike appeared recently but root cause unknown | No commit correlation | Gotcha 39 (captureGitInfo) | No flakiness tracking with commit context |
+| Unit tests are flaky due to DB or HTTP calls inside service | Missing DI | Gotcha 40 (DI pattern, inject collaborators) | Module-level singleton clients |
+
+---
+
+## Key Resources (iteration 46 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest Hooks API | Official | https://vitest.dev/api/hooks | onTestFailed, onTestFinished, aroundEach — test-local lifecycle for cleanup and debugging |
+| Vitest repeats option | Official | https://vitest.dev/api/#test-repeats | Per-test repeat count for flakiness rate measurement |
+| Playwright test.step.skip() | Official | https://playwright.dev/docs/api/class-test#test-step-skip | Skip individual steps in multi-step E2E flows without quarantining the entire test |
+| Playwright page.consoleMessages() | Official | https://playwright.dev/docs/api/class-page#page-console-messages | Post-test access to last 200 console messages — no upfront event listener required |
+| Playwright page.pageErrors() | Official | https://playwright.dev/docs/api/class-page#page-page-errors | Post-test access to last 200 uncaught JS errors — surfaces silent flakiness precursors |
+| Playwright test.abort() | Official | https://playwright.dev/docs/api/class-test#test-abort | Immediate test termination from fixtures and route handlers (v1.60) |
+| Trunk Flaky Tests On-Premise | Community | https://trunk.io/flaky-tests | Auto-quarantine SaaS + on-premise preview (2026) — quarantined tests run but don't break CI |
+| Google TotT: Construct with Collaborators | Official | https://testing.googleblog.com/2026/05/construct-with-collaborators-call-with.html | DI pattern that eliminates a class of shared-state and network flakiness |

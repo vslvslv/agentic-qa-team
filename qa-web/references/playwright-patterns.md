@@ -1,5 +1,5 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown -->
 <!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage -->
 
@@ -5839,3 +5839,324 @@ const context = await browser.newContext({
 
 > Teams upgrading to v1.60 who relied on `videosPath` for CI failure videos found they silently had no video artifacts after the upgrade because the deprecated keys were dropped without a runtime warning. Always pin `playwright` and `@playwright/test` to the same version in `package.json` to catch these in a controlled upgrade. [community]
 - `page.coverage` (Chrome DevTools Protocol) collects V8 coverage and works without instrumentation, but reports line-level coverage without branch data. Use Istanbul for branch coverage. [community]
+
+---
+
+### 25. `locator.highlight()` requires `page.hideHighlight()` cleanup or highlights leak across tests [community]
+
+**What:** Debug highlight overlays added with `locator.highlight()` persist on the page between test steps — and across tests when using a shared page fixture — causing visual noise in traces and screenshots.
+**WHY:** `locator.highlight()` draws an overlay directly on the page DOM. Unlike `PWDEBUG` mode highlights that reset on navigation, these DOM-injected overlays survive page actions until explicitly removed.
+**Fix:** Always call `page.hideHighlight()` after a highlighting session, or scope it with `try/finally`. Do not commit `locator.highlight()` calls — add them to ESLint `no-restricted-syntax` alongside `page.pause()`.
+
+```typescript
+// Debug usage pattern — NEVER commit to main
+test('investigate locator', async ({ page }) => {
+  await page.goto('/checkout');
+  const submitBtn = page.getByRole('button', { name: 'Submit' });
+  try {
+    await submitBtn.highlight({ style: 'outline: 3px solid red' });
+    // ... inspect visually in headed mode
+  } finally {
+    await page.hideHighlight();  // always clean up overlays
+  }
+});
+```
+
+---
+
+### 26. `tracing.startHar()` HAR files missing responses when `urlFilter` is not set in large suites [community]
+
+**What:** HAR files recorded in large test suites include hundreds of third-party requests (fonts, analytics, CDN assets), making them multi-megabyte files that slow down test result archiving and are unusable for replay.
+**WHY:** `tracing.startHar()` without `urlFilter` records ALL network traffic including static assets and third-party requests that are irrelevant for replay tests.
+**Fix:** Use `urlFilter` to restrict HAR recording to your API origin. Also set `mode: 'minimal'` to omit response bodies for assets you don't need to replay.
+
+```typescript
+// Focused HAR recording — only capture API calls, not static assets
+test('network audit for checkout API', async ({ context }) => {
+  await using har = await context.tracing.startHar('test-results/checkout-api.har', {
+    urlFilter: /api\.example\.com/,  // only record requests to your API
+    mode:      'full',               // 'full' (default) | 'minimal' (headers only, no body)
+    content:   'attach',             // 'attach' (inline in HAR) | 'omit' | 'sha1' (reference)
+  });
+
+  const page = await context.newPage();
+  await page.goto('/checkout');
+  await page.getByRole('button', { name: 'Proceed to payment' }).click();
+  await expect(page.getByText('Payment form')).toBeVisible();
+  // HAR written automatically — only contains /api.example.com/* calls
+});
+```
+
+---
+
+### `locator.highlight()` with `style` Option and `page.hideHighlight()` (v1.60+)
+
+`locator.highlight()` draws a visible highlight overlay on the matched element. Useful during local debugging sessions to visually confirm which element a locator resolves to, especially in complex component hierarchies.
+
+```typescript
+// Debug: visualize which elements a locator matches (headed mode only — meaningful)
+test('verify locator targets correct element', async ({ page }) => {
+  await page.goto('/admin/users');
+
+  const activeRow = page
+    .getByRole('row')
+    .filter({ hasText: 'Alice' })
+    .filter({ has: page.getByRole('cell', { name: 'Active' }) });
+
+  // Highlight the row for visual inspection — custom style supported
+  await activeRow.highlight({ style: 'outline: 3px solid blue; background: rgba(0,0,255,0.1)' });
+
+  // ... interact and inspect manually in --headed mode
+  await page.waitForTimeout(2000);  // pause to see the highlight (debug only)
+
+  // Clear the highlight before continuing
+  await page.hideHighlight();
+
+  // Now interact with the confirmed locator
+  await activeRow.getByRole('button', { name: 'Edit' }).click();
+});
+```
+
+**Rules:**
+- Never commit calls to `locator.highlight()` — add to ESLint `no-restricted-syntax` alongside `page.pause()` and `page.pickLocator()`.
+- `page.hideHighlight()` removes ALL active highlights on the page (not per-locator).
+- In headless CI, highlights are applied but invisible — they do not cause test failures, just consume a few milliseconds.
+
+---
+
+### `ariaSnapshot()` with `boxes` Option for AI-Assisted Diagnostics (v1.60+)
+
+The `boxes` option appends each element's bounding box coordinates to the ARIA snapshot string. This enriches the snapshot for AI models that need spatial context to understand the page layout.
+
+```typescript
+// Capture ARIA tree with bounding box coordinates for LLM diagnostics
+test('AI-enriched ARIA snapshot', async ({ page }) => {
+  await page.goto('/dashboard');
+
+  // Standard AI mode — compact representation for LLMs
+  const aiTree = await page.ariaSnapshot({ mode: 'ai' });
+
+  // boxes: true adds [box=x,y,width,height] to each element
+  // Use when spatial layout context matters for the AI (e.g., "is the button above the form?")
+  const spatialTree = await page.ariaSnapshot({ mode: 'ai', boxes: true });
+  // Output: "- button 'Submit' [box=450,320,120,44]"
+
+  // Scoped to a region — reduces LLM token consumption
+  const navTree = await page.getByRole('navigation').ariaSnapshot({ mode: 'ai', boxes: true });
+});
+
+// Playwright Test Agents integration — feed spatial tree to Healer
+test('healer-friendly snapshot', async ({ page }) => {
+  await page.goto('/checkout');
+  const checkoutTree = await page.ariaSnapshot({ mode: 'ai', boxes: true });
+  // Pass to AI agent: "Given this layout with coordinates, which button is in the payment form?"
+  console.log(checkoutTree);
+});
+```
+
+> The `boxes` option is primarily useful for AI-assisted test generation and healing workflows. For regression testing, use `toMatchAriaSnapshot()` without coordinates — bounding boxes change on responsive resize and would cause spurious snapshot failures. [community]
+
+---
+
+### `tracing.start()` with `live` Option — Real-Time Trace Updates (v1.60+)
+
+The `live` option in `tracing.start()` enables real-time trace updates, allowing trace viewers and dashboards to see incremental progress before the test completes. Without `live`, the trace is finalized as a single write when `tracing.stop()` is called.
+
+```typescript
+// Enable live trace streaming — useful for long-running tests
+test('long checkout flow with live trace', async ({ context }) => {
+  await context.tracing.start({
+    screenshots: true,
+    snapshots:   true,
+    live:        true,  // flush trace data incrementally (v1.60+)
+  });
+
+  const page = await context.newPage();
+  await page.goto('/checkout/step-1');
+  await page.getByRole('button', { name: 'Next' }).click();
+  await page.goto('/checkout/step-2');
+  // Live trace is visible in trace viewer during test execution — no need to wait for stop()
+
+  await context.tracing.stop({ path: 'test-results/checkout-trace.zip' });
+});
+```
+
+> `live: true` is most useful for debugging long-running tests locally — you can open the trace viewer while the test is still running. In CI, skip `live` (leave it `false`) to minimize I/O overhead. [community]
+
+---
+
+### `consoleMessage.location()` — Source Location for Console Entries (v1.60+)
+
+`consoleMessage.location()` now returns `line` and `column` properties alongside the URL, enabling precise source mapping of console errors back to the originating code.
+
+```typescript
+// Assert no console errors AND log their precise source location
+test('no console errors with source context', async ({ page }) => {
+  const errors: Array<{ text: string; url: string; line: number; col: number }> = [];
+
+  page.on('console', msg => {
+    if (msg.type() === 'error') {
+      const loc = msg.location();
+      errors.push({
+        text: msg.text(),
+        url:  loc.url,
+        line: loc.lineNumber,
+        col:  loc.columnNumber,  // v1.60+
+      });
+    }
+  });
+
+  await page.goto('/dashboard');
+  await expect(page.getByRole('main')).toBeVisible();
+
+  if (errors.length > 0) {
+    const report = errors.map(e => `${e.text} (${e.url}:${e.line}:${e.col})`).join('\n');
+    throw new Error(`Console errors found:\n${report}`);
+  }
+});
+
+// Post-facto: use consoleMessages() API with location details
+test('post-navigation console audit with source mapping', async ({ page }) => {
+  await page.goto('/app');
+  await page.getByRole('button', { name: 'Load data' }).click();
+
+  const messages = await page.consoleMessages({ filter: 'since-navigation' });
+  const consoleErrors = messages.filter(m => m.type() === 'error');
+
+  if (consoleErrors.length > 0) {
+    const details = consoleErrors.map(m => {
+      const loc = m.location();
+      return `[error] ${m.text()} at ${loc.url}:${loc.lineNumber}:${loc.columnNumber}`;
+    });
+    throw new Error(details.join('\n'));
+  }
+});
+```
+
+> `msg.location().columnNumber` (v1.60+) enables source maps to resolve the exact character position of errors. Combine with a sourcemap library to trace minified errors back to TypeScript source. [community]
+
+---
+
+### `reporter.onError(error, workerInfo)` — Worker-Attributed Error Reporting (v1.60+)
+
+The `onError()` hook in custom reporters now receives `workerInfo` as a second argument, enabling worker-attributed error aggregation. Previously, `onError` fires for global errors outside tests (e.g., fixture setup crashes) but had no way to identify which worker caused them.
+
+```typescript
+// e2e/reporters/worker-error-reporter.ts
+import type { Reporter, TestError, WorkerInfo, FullResult } from '@playwright/test/reporter';
+
+class WorkerAwareErrorReporter implements Reporter {
+  private workerErrors: Map<number, string[]> = new Map();
+
+  // v1.60+: workerInfo is now passed to onError()
+  onError(error: TestError, workerInfo?: WorkerInfo) {
+    const workerIndex = workerInfo?.workerIndex ?? -1;
+    const existing = this.workerErrors.get(workerIndex) ?? [];
+    existing.push(`[worker ${workerIndex}] ${error.message ?? 'Unknown error'}`);
+    this.workerErrors.set(workerIndex, existing);
+  }
+
+  onEnd(result: FullResult) {
+    if (this.workerErrors.size > 0) {
+      console.error('\n=== Worker-Level Errors ===');
+      for (const [worker, errors] of this.workerErrors) {
+        console.error(`Worker ${worker}: ${errors.length} error(s)`);
+        errors.forEach(e => console.error(`  ${e}`));
+      }
+    }
+  }
+}
+
+export default WorkerAwareErrorReporter;
+```
+
+> Worker-level errors (fixture crashes, `globalSetup` failures) were previously reported without identity information, making it impossible to correlate them with failing test files. `workerInfo` in `onError` lets you build dashboards that show which worker crashed and which test files were assigned to it. [community]
+
+---
+
+### `testInfoError.errorContext` — Diagnostic Context in Failure Reports (v1.60+)
+
+When a test fails, `testInfoError.errorContext` provides additional diagnostic context captured at the point of failure — for example, the ARIA tree, the page URL, or custom diagnostic data.
+
+```typescript
+// Custom reporter using errorContext for richer failure reports
+import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
+
+class EnrichedFailureReporter implements Reporter {
+  onTestEnd(test: TestCase, result: TestResult) {
+    if (result.status === 'failed') {
+      for (const error of result.errors) {
+        if (error.errorContext) {
+          // errorContext contains diagnostic data from the point of failure
+          // e.g., page URL, ARIA tree snapshot, network log
+          console.log(`\nDiagnostic context for "${test.title}":`);
+          console.log(error.errorContext);
+        }
+      }
+    }
+  }
+}
+```
+
+> `errorContext` is populated automatically by Playwright's assertion framework. For custom assertions using `expect.extend()`, populate it via the `errorContext` field in the return value to provide structured failure context to report consumers. [community]
+
+---
+
+### `page.hideHighlight()` Key APIs Addition
+
+Update the Key APIs table — Navigation & Waiting section — to include:
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `locator.highlight(opts?)` | Draw a visible overlay on matched element (v1.60+) | Local debugging of locator resolution — never commit |
+| `page.hideHighlight()` | Remove all active highlight overlays (v1.60+) | Cleanup after `locator.highlight()` debugging |
+
+These are documented in the Key APIs section above under Locators; the table addition below applies to the debugging workflow:
+
+```typescript
+// ESLint rule to prevent committing debug helpers
+{
+  "rules": {
+    "playwright/no-page-pause": "error",
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "CallExpression[callee.property.name='highlight']",
+        "message": "locator.highlight() is a debug tool — remove before committing."
+      },
+      {
+        "selector": "CallExpression[callee.property.name='pickLocator']",
+        "message": "page.pickLocator() is a debug tool — remove before committing."
+      }
+    ]
+  }
+}
+```
+
+---
+
+## v1.60 API Summary Table
+
+Quick reference for all v1.60 additions not covered in earlier sections.
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `locator.highlight(opts?)` | Draw debug overlay on element | Local debugging — never commit |
+| `page.hideHighlight()` | Clear all highlight overlays | After `locator.highlight()` cleanup |
+| `locator.drop(data)` | Simulate external file/clipboard drop | File-drop zone testing |
+| `test.abort(msg?)` | Immediately fail test from any context | Guard against test environment violations |
+| `browser.on('context')` | Fire when new context is created | Audit context lifecycle in multi-tab flows |
+| `context.on('pageload')` | Fire on page load within context | Monitor all page activity from one listener |
+| `context.on('pageclose')` | Fire on page close within context | Detect orphaned pages / popup lifecycle |
+| `tracing.startHar(path, opts)` | HAR as first-class tracing API | Reproducible offline/HAR-based tests |
+| `page.ariaSnapshot({ boxes })` | ARIA tree with bounding coordinates | AI-assisted test healing and diagnostics |
+| `getByRole({ description })` | Match by accessible description | Disambiguate identically-named controls |
+| `toHaveCSS(prop, val, { pseudo })` | Assert pseudo-element CSS | Design system icon/tooltip CSS testing |
+| `expect(page).toMatchAriaSnapshot()` | Page-level aria assertion | Full-page accessibility structure regression |
+| `consoleMessage.location().columnNumber` | Precise error source column | Source-map-based error attribution |
+| `webSocketRoute.protocols()` | Get requested WS subprotocols | WebSocket protocol negotiation testing |
+| `context.setStorageState({ path })` | Reset auth in existing context | Role-switching without new browser context |
+| `tracing.start({ live: true })` | Incremental trace flushing | Real-time trace inspection on long tests |
+| `reporter.onError(err, workerInfo)` | Worker-attributed error reporting | Identify which worker crashed in CI |
+| `testInfoError.errorContext` | Structured diagnostic at failure point | Rich failure reports in custom reporters |
+| `{testFileBaseName}` snapshot token | Flat snapshot directory naming | Easier visual regression baseline management |

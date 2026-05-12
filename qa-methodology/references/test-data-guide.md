@@ -1,10 +1,11 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html); training-knowledge fallback for remaining gaps -->
+<!-- lang: TypeScript | topic: test-data | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
 <!-- iter-31: Neon DB copy-on-write branching for test isolation (neon.com/docs/guides/branching-test-queries, 2026-05-08); Testcontainers Cloud 8GB/session + Turbo mode (testcontainers.com/cloud/docs, 2026-05-08) -->
 <!-- iter-32: faker v10.0.0 ESM-only breaking change (2026-05-12); UUID v7 time-ordered keys for DB-performance test data; Self-Initializing Fake pattern (Fowler); Testing Resource Pools (pool-size-1 technique); updated checklist to reference faker v10; Key Resources updated -->
+<!-- iter-33: Vitest 4.0 pool config migration (poolOptions.vmForks → top-level isolate; singleFork → maxWorkers: 1; poolMatchGlobs/environmentMatchGlobs → projects; workspace → projects); community gotcha #21; Key Resources updated (2026-05-12) -->
 
 ---
 
@@ -1262,21 +1263,21 @@ export function buildUser(overrides: Partial<User> = {}): User {
 
 **Strategy 3 — Separate DB per worker (Vitest):**
 ```typescript
-// vitest.config.ts — vmForks pool (Vitest 2.x, strongly isolated workers)
+// vitest.config.ts — per-worker isolation (Vitest 4.x)
+// NOTE: Vitest 4.0 removed the poolOptions nesting — pool settings are now top-level.
+// Vitest 2.x/3.x style (DEPRECATED — do not use):
+//   pool: 'vmForks', poolOptions: { vmForks: { singleFork: false } }
+// Vitest 4.x style (current):
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    // 'vmForks' runs each worker in a fresh V8 VM context — strongest isolation,
-    // prevents module-level state leaking between worker processes.
-    // Use 'forks' for slightly faster startup with process isolation only.
-    pool: 'vmForks',
-    poolOptions: {
-      vmForks: {
-        // Each fork gets its own module registry — no shared singleton services
-        singleFork: false,
-      },
-    },
+    pool: 'vmForks',   // 'vmForks' runs each worker in a fresh V8 VM context
+    // In Vitest 4.x, isolation is controlled at the top level — not inside poolOptions:
+    isolate: true,     // true = each file gets its own module registry (default for vmForks)
+    // Previously: poolOptions: { vmForks: { singleFork: false } }  ← removed in Vitest 4.0
+    // If you need a single process (no isolation): set maxWorkers: 1 and isolate: false
+    // Previously: poolOptions: { vmForks: { singleFork: true } }  ← removed in Vitest 4.0
     globalSetup: './src/test/global-setup.ts', // provisions per-worker DB
   },
 });
@@ -1646,6 +1647,21 @@ export const LLMResponseFixtures = {
     afterAll(async () => {
       await testPool.end();
     });
+    ```
+
+21. **[community] Vitest 4.0 removed `poolOptions` nesting — test isolation configs written for Vitest 2.x/3.x silently revert to defaults.**
+    Vitest 4.0 restructured the pool configuration API: `poolOptions.vmForks.singleFork`, `poolOptions.forks.singleFork`, and `poolOptions.vmThreads.memoryLimit` are no longer recognised under `poolOptions`. Instead, `isolate` and `maxWorkers` are top-level `test` options. The `workspace` option was renamed `projects`, and `poolMatchGlobs`/`environmentMatchGlobs` were removed in favour of `projects`. Critically, the breakage is silent — Vitest 4.0 does not error on unknown config keys; it silently falls back to defaults. A team that relied on `poolOptions.vmForks.singleFork: true` (single-process, no module isolation) to share a singleton DB connection across tests will now run with full isolation (the default), causing each test file to attempt its own DB connection — exhausting the pool and causing `connection timeout` failures that look like infrastructure problems. Fix: audit `vitest.config.ts` before upgrading to Vitest 4.0 using the migration guide at vitest.dev/guide/migration.
+    ```typescript
+    // Vitest 2.x/3.x (BROKEN in Vitest 4.0 — options silently ignored):
+    // poolOptions: { vmForks: { singleFork: false }, forks: { singleFork: true } }
+
+    // Vitest 4.0 equivalents:
+    // "singleFork: false" (per-file isolation, each file its own module scope):
+    //   pool: 'vmForks', isolate: true  (default — no change needed if using defaults)
+    // "singleFork: true" (shared process, no module re-init between files):
+    //   pool: 'forks', maxWorkers: 1, isolate: false
+    // Check your Vitest version:
+    // npx vitest --version  →  4.x = new API; 2.x/3.x = old poolOptions API
     ```
 
 ---
@@ -2342,6 +2358,7 @@ creating `activeUser` or `adminUser`. `beforeEach` would run all setup regardles
 | Neon DB Branching | Official | https://neon.com/docs/guides/branching-test-queries | Copy-on-write Postgres branch per test run; schema-only branching; instant teardown |
 | Testcontainers Cloud | Official | https://testcontainers.com/cloud/docs/ | Cloud Docker daemon; 8GB/session; Turbo mode for parallel test isolation |
 | Testcontainers Guides | Official | https://testcontainers.com/guides/ | Getting-started guides: 11 languages, Spring Boot, Quarkus, ASP.NET, DB, Kafka, WireMock, LocalStack |
+| Vitest 4.0 migration guide | Official | https://vitest.dev/guide/migration | poolOptions restructuring (singleFork removed, isolate/maxWorkers top-level); workspace → projects migration |
 | @faker-js/faker v10 docs | Official | https://fakerjs.dev/api/ | v10 stable API reference; ESM-only; UUID v7 in faker.string.uuid({ version: 7 }) |
 | @faker-js/faker v10 migration guide | Official | https://next.fakerjs.dev/guide/upgrading | Breaking changes v9→v10: CommonJS removal, deprecated API cleanup |
 | Self-Initializing Fake (Fowler) | Official | https://martinfowler.com/bliki/SelfInitializingFake.html | Record-then-replay pattern for third-party API test data; drift detection via nightly re-recording |
@@ -4425,9 +4442,11 @@ export default defineConfig({
     // Per-file isolation: each test file runs against the shared container DB
     // Use transaction rollback per test (Strategy 1 from the isolation section)
     pool: 'forks',
-    poolOptions: {
-      forks: { singleFork: true },  // single process shares the container connection
-    },
+    // Vitest 4.x: isolate + maxWorkers replace the old poolOptions.forks.singleFork
+    isolate: false,    // share the container DB connection across files in the same worker
+    maxWorkers: 1,     // single worker process — container connection is shared
+    // Old Vitest 2.x/3.x config (DEPRECATED in 4.0):
+    // poolOptions: { forks: { singleFork: true } }
   },
 });
 ```

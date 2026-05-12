@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 42 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -1397,7 +1397,7 @@ stripDomain('Visit https://my.site.io/page', 'my.site.io');
 
 ## Internationalisation (Intl) Patterns
 
-The `Intl` namespace provides locale-aware formatting with zero external dependencies. Always prefer `Intl` over manual string concatenation for dates, numbers, lists, and relative time — manual approaches miss locale nuance and are a maintenance burden.
+The `Intl` namespace provides locale-aware formatting with zero external dependencies. Always prefer `Intl` over manual string concatenation for dates, numbers, durations, lists, and relative time — manual approaches miss locale nuance and are a maintenance burden.
 
 ```javascript
 // ── Intl.NumberFormat — currency, compact notation, unit formatting ──
@@ -1478,7 +1478,38 @@ itemCount(5); // "5 items"
 // Russian: pr.select(2) → 'few', pr.select(5) → 'many' — handled automatically
 ```
 
-**Rule of thumb:** build-time i18n libraries (i18next, formatjs) manage translation strings; `Intl` handles the _format_ of dates, numbers, and lists within those strings. They complement each other.
+```javascript
+// ── Intl.DurationFormat — human-readable durations (Baseline March 2025) ─
+const dur = new Intl.DurationFormat('en', { style: 'long' });
+dur.format({ hours: 1, minutes: 46, seconds: 40 });
+// "1 hour, 46 minutes, and 40 seconds"
+
+const shortDur = new Intl.DurationFormat('en', { style: 'short' });
+shortDur.format({ hours: 1, minutes: 46, seconds: 40 });
+// "1 hr, 46 min, and 40 sec"
+
+// Narrow style — compact, for tight UI spaces
+const narrowDur = new Intl.DurationFormat('pt', { style: 'narrow' });
+narrowDur.format({ hours: 1, minutes: 46, seconds: 40 });
+// "1 h 46 min 40 s"
+
+// formatToParts — get each component separately for custom rendering
+const parts = new Intl.DurationFormat('en').formatToParts({ hours: 2, minutes: 30 });
+// [ {type:'integer',value:'2',unit:'hour'}, {type:'literal',value:' hr, '},
+//   {type:'integer',value:'30',unit:'minute'}, {type:'literal',value:' min'} ]
+
+// Practical: "time remaining" countdown display
+function formatCountdown(totalSeconds) {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  return new Intl.DurationFormat(navigator.language, { style: 'long' })
+    .format({ hours: h, minutes: m, seconds: s });
+}
+formatCountdown(3720); // "1 hour, 2 minutes, and 0 seconds"
+```
+
+**Rule of thumb:** build-time i18n libraries (i18next, formatjs) manage translation strings; `Intl` handles the _format_ of dates, numbers, lists, and durations within those strings. They complement each other.
 
 ---
 

@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 35 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 36 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -26,6 +26,7 @@
      - Iter 32: defect prediction using exploration history; TypeScript ML-inspired defect predictor; community lessons #87-89
      - Iter 33: charter network analysis; inter-charter dependency mapping; TypeScript charter dependency graph; community lessons #90-92
      - Iter 35: AI-augmented session documentation pattern; TypeScript AI note synthesizer; community lessons #93-95; updated date to 2026-05-12
+     - Iter 36: Real-time/WebSocket exploration pattern; TypeScript WebSocket session harness; exploratory testing of AI-generated (vibe-coded) applications; TypeScript vibe-code oracle checker; community lessons #96-98; new anti-patterns (no latency oracle, passive AI acceptance)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -5438,5 +5439,407 @@ After a pair session, both testers independently write their top 3 observations 
 94. **[community] Pair testing finds defects that neither tester would have found alone specifically because of the social dynamic, not the combined skill.** Teams that study defect discovery logs from pair vs solo sessions find that a significant proportion of pair-session defects are discovered in the verbal exchange between testers ("wait, what did you just click?") rather than by either tester independently observing the behavior. The social dynamic of narrating your actions aloud creates a feedback loop that solo testing cannot replicate: verbalizing a test step often surfaces an assumption the tester was making unconsciously, which the partner then probes. This is why pair testing produces more defects than two independent sessions of equal total duration: defects found in the verbal exchange are not additive — they are only accessible in the paired context.
 
 95. **[community] The most common reason teams abandon AI-augmented documentation is over-reliance on LLM availability rather than graceful degradation to rule-based synthesis.** Teams that build their session documentation pipeline entirely around an LLM API face a reliability problem: when the LLM service is down, the documentation pipeline is down. The more resilient architecture is a two-tier fallback: rule-based synthesis (always available, deterministic) as the default, with LLM synthesis as an optional enrichment pass when the API is available. Teams that adopt this architecture report zero session documentation failures due to API unavailability, while still benefiting from richer synthesis when the LLM is accessible. The rule-based tier also provides a quality baseline that makes it easy to measure what the LLM pass actually adds — teams that measure this consistently find that LLM synthesis adds most value for follow-on charter suggestion (where structured reasoning about coverage gaps is non-trivial) and least value for defect classification (where keyword matching is already accurate).
+
+---
+
+## Advanced Patterns (Iteration 36)
+
+### Real-Time and WebSocket Exploration Pattern
+
+Real-time features — WebSocket connections, Server-Sent Events (SSE), live dashboards, collaborative editing, and push notifications — present a distinct category of exploratory challenges that neither standard REST API exploration nor UI exploration fully addresses. The core difficulty is that behavior depends on **temporal ordering** and **concurrent state** across multiple connected clients. Scripted tests can assert individual messages; exploratory testing probes the edges of the protocol: what happens when connections drop mid-stream, when the server sends an unexpected message type, or when two clients update the same resource simultaneously.
+
+**Real-time exploration heuristics (extends FEW HICCUPS):**
+
+| FEW HICCUPS dimension | Real-time adaptation |
+|----------------------|---------------------|
+| F — Function | Does the feature deliver messages as documented? Are all event types handled? |
+| E — Error | What happens on connection drop? On server-side error events? On malformed message payloads? |
+| W — Workload | Does the UI degrade gracefully with 100 events/second? Are messages dropped or queued? |
+| I — Interruptions | What happens if the user minimises the browser tab, puts the device to sleep, or loses network connectivity for 30 seconds then reconnects? |
+| C — Collaboration | Do two clients receive consistent state after a concurrent update? Is there a visible race condition window? |
+| C — Configuration | Does behavior hold across reconnection strategies (immediate, exponential backoff, manual)? |
+| P — Performance | Does latency stay acceptable under load? Does the UI freeze on bursts of messages? |
+| S — Stress | What happens when the server sends 10,000 rapid-fire messages? Is there memory leak in the client message buffer? |
+
+**Charter template for real-time features:**
+
+```yaml
+# charter: websocket-notification-exploration.yaml
+charter_id: "CHR-ws-notifications-20260512-01"
+tester: "<name>"
+timebox_minutes: 90
+mission:
+  explore: "the live notification WebSocket feed for the order status page"
+  using: >
+    browser DevTools Network panel (WS filter), two browser tabs with different
+    user sessions, a local mock WebSocket server for injecting malformed frames,
+    and Chrome offline/throttle simulation
+  to_discover: >
+    whether the notification UI handles connection drops gracefully (does it show
+    a reconnecting state?), whether concurrent updates to the same order from two
+    sessions cause UI divergence, and what happens when the server sends an
+    unexpected event type not in the documented schema
+
+priority_areas:
+  - "Reconnection UX after 30-second offline simulation"
+  - "Concurrent update from two browser tabs — same order, different users"
+  - "Malformed event type injection (send 'order.unknown' event via mock server)"
+  - "Message burst (100 events in 1 second) — UI response and memory"
+  - "Session expiry while WebSocket is live — is the socket closed cleanly?"
+
+out_of_scope:
+  - "REST order API (separate charter)"
+  - "Push notification delivery to mobile devices"
+
+oracles:
+  - "Claims: documented event schema and reconnection behavior spec"
+  - "Purpose: user should always know whether they are connected"
+  - "User expectations: spinner/badge for reconnecting; no silent data loss"
+  - "History: v1 had a known bug where socket closed on tab background — confirm fixed"
+```
+
+### TypeScript: WebSocket Session Harness  [community]
+
+A session harness for WebSocket exploration that logs all messages with timestamps, injects controlled delays, and captures reconnection sequences. Run alongside the manual session to produce a timestamped protocol log that supplements session notes.
+
+```typescript
+// src/testing/exploratory/websocket-harness.ts
+// WebSocket exploration session harness.
+// Wraps a native WebSocket to log all frames with timing, inject faults,
+// and produce a session-ready event log for debrief notes.
+
+export interface WsFrame {
+  direction: 'incoming' | 'outgoing';
+  timestamp: number;          // ms since session start
+  type: 'text' | 'binary' | 'ping' | 'pong' | 'close' | 'error' | 'open';
+  payload?: string;           // text frames only; truncated to 1000 chars
+  byteLength?: number;        // binary frames
+  errorMessage?: string;      // error events
+}
+
+export interface WsSessionConfig {
+  url: string;
+  protocols?: string[];
+  sessionLabel: string;         // e.g. 'CHR-ws-notifications-20260512-01'
+  /** Inject this many ms of artificial latency into outgoing messages */
+  artificialSendDelayMs?: number;
+  /** If set, auto-close and reconnect after this many ms to simulate a drop */
+  simulateDropAfterMs?: number;
+  /** Max frames to buffer before triggering a warning */
+  maxBufferFrames?: number;
+}
+
+export class WebSocketExplorationHarness {
+  private ws: WebSocket | null = null;
+  private frames: WsFrame[] = [];
+  private sessionStartMs = Date.now();
+  private reconnectCount = 0;
+  private readonly maxBuffer: number;
+
+  constructor(private readonly config: WsSessionConfig) {
+    this.maxBuffer = config.maxBufferFrames ?? 5000;
+  }
+
+  connect(): void {
+    this.sessionStartMs = Date.now();
+    this.ws = new WebSocket(this.config.url, this.config.protocols);
+
+    this.ws.addEventListener('open', () => {
+      this.log({ type: 'open', direction: 'incoming' });
+      if (this.config.simulateDropAfterMs) {
+        setTimeout(() => { this.simulateDrop(); }, this.config.simulateDropAfterMs);
+      }
+    });
+
+    this.ws.addEventListener('message', (event: MessageEvent) => {
+      const payload =
+        typeof event.data === 'string' ? event.data.slice(0, 1000) : undefined;
+      const byteLength =
+        event.data instanceof ArrayBuffer ? event.data.byteLength : undefined;
+      this.log({ type: 'text', direction: 'incoming', payload, byteLength });
+
+      if (this.frames.length > this.maxBuffer) {
+        console.warn(
+          `[WS-Harness] Buffer limit ${this.maxBuffer} reached — potential memory issue. ` +
+            `Charter: ${this.config.sessionLabel}`
+        );
+      }
+    });
+
+    this.ws.addEventListener('close', (event: CloseEvent) => {
+      this.log({
+        type: 'close',
+        direction: 'incoming',
+        payload: `code=${event.code} reason=${event.reason}`,
+      });
+    });
+
+    this.ws.addEventListener('error', (event: Event) => {
+      this.log({ type: 'error', direction: 'incoming', errorMessage: String(event) });
+    });
+  }
+
+  send(data: string): void {
+    const doSend = (): void => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(data);
+        this.log({ type: 'text', direction: 'outgoing', payload: data.slice(0, 1000) });
+      }
+    };
+    if (this.config.artificialSendDelayMs) {
+      setTimeout(doSend, this.config.artificialSendDelayMs);
+    } else {
+      doSend();
+    }
+  }
+
+  simulateDrop(): void {
+    console.warn(
+      `[WS-Harness] Simulating connection drop. Reconnect count: ${++this.reconnectCount}`
+    );
+    this.ws?.close(4000, 'harness-simulated-drop');
+    this.log({ type: 'close', direction: 'outgoing', payload: 'harness-simulated-drop' });
+  }
+
+  injectMalformedFrame(payload: string): void {
+    this.send(payload);
+    console.info(`[WS-Harness] Injected malformed frame: ${payload.slice(0, 80)}`);
+  }
+
+  exportSessionLog(): {
+    label: string;
+    frames: WsFrame[];
+    reconnectCount: number;
+    durationMs: number;
+  } {
+    return {
+      label: this.config.sessionLabel,
+      frames: this.frames,
+      reconnectCount: this.reconnectCount,
+      durationMs: Date.now() - this.sessionStartMs,
+    };
+  }
+
+  private log(partial: Omit<WsFrame, 'timestamp'>): void {
+    this.frames.push({ ...partial, timestamp: Date.now() - this.sessionStartMs });
+  }
+}
+
+// Usage during an exploratory session:
+// const harness = new WebSocketExplorationHarness({
+//   url: 'wss://app.example.com/orders/live',
+//   sessionLabel: 'CHR-ws-notifications-20260512-01',
+//   simulateDropAfterMs: 45_000,   // simulate drop at 45s mark
+//   artificialSendDelayMs: 200,    // emulate a slow client
+// });
+// harness.connect();
+// // ... run the session manually ...
+// // At debrief:
+// const log = harness.exportSessionLog();
+// console.table(log.frames.filter((f) => f.type === 'error' || f.type === 'close'));
+```
+
+---
+
+### Exploratory Testing of AI-Generated ("Vibe-Coded") Applications
+
+In 2025–2026, a growing proportion of production code is partially or wholly generated by AI coding assistants (GitHub Copilot, Cursor, Claude Code, Gemini Code Assist). This code — sometimes called "vibe code" — has a distinct defect profile compared to human-authored code, requiring targeted charter adjustments.
+
+**Why AI-generated code has a distinct defect profile:**
+
+| AI tendency | Why it manifests | Exploratory oracle |
+|-------------|-----------------|-------------------|
+| Over-confidence in happy-path correctness | LLMs are trained on documentation and examples, both of which describe success cases | Claims: check all error branches explicitly; do not trust that only the happy path was generated |
+| Hallucinated API method names and signatures | LLMs predict plausible code; adjacent methods with similar names are systematically confused | History: does the same call work in an older version of the library? Does the API actually exist? |
+| Missing idiomatic TypeScript patterns | LLMs mix patterns from multiple sources; the generated code may be syntactically valid but semantically wrong | Comparable products: would a senior TypeScript developer write it this way? |
+| Security boundary elision | Auth, CORS, input sanitisation, and rate limiting are often omitted from AI-generated scaffolding | Standards: OWASP Top 10; run security-focused exploration on any AI-generated endpoint |
+| Incorrect async/await error handling | LLMs frequently generate `await` without a try/catch or without `.catch()` chaining | Purpose: what happens when the awaited call rejects? Does the error propagate or disappear silently? |
+| Copy-paste drift between generated modules | When the same feature is generated in multiple files, subtle inconsistencies emerge (different validation logic, different error message wording) | Product: does this module contradict another module generated for the same feature? |
+
+**Vibe-code exploration charter template:**
+
+```yaml
+# charter: vibe-code-checkout-api.yaml
+charter_id: "CHR-vibe-checkout-20260512-01"
+context: >
+  The /api/v2/checkout endpoint was generated by GitHub Copilot from a single
+  natural-language prompt. No unit tests were written. Code review focused on
+  business logic, not security or error paths.
+mission:
+  explore: "the AI-generated POST /api/v2/checkout endpoint"
+  using: >
+    Insomnia REST client with a pre-built collection of edge-case payloads
+    (malformed JSON, missing required fields, oversized payloads, SQL injection
+    strings, negative quantities, currency mismatch), the OpenAPI spec, and
+    a local auth token for an unprivileged user
+  to_discover: >
+    whether error handling is complete (all 4xx paths return structured error
+    envelopes), whether input validation rejects known injection patterns,
+    whether the endpoint enforces the authenticated user scope check (can User A
+    checkout with User B's cart ID?), and whether rejected payloads leave partial
+    state in the database
+
+vibe_code_specific_checks:
+  - "IDOR: can I substitute another user's cart ID in the request body?"
+  - "Error envelope completeness: does every 4xx response include code+message?"
+  - "SQL injection via product SKU field (AI often omits parameterization)"
+  - "Async error propagation: does a failed Stripe call return 500 or silently succeed?"
+  - "Validation consistency: do client-side and server-side validation agree on rules?"
+```
+
+### TypeScript: Vibe-Code Oracle Checker  [community]
+
+A TypeScript utility that runs a structured set of oracle checks against an API endpoint generated by AI tooling. Focuses on the defect categories that AI-generated code most commonly misses: IDOR, incomplete error envelopes, missing auth scope checks, async error propagation gaps, and injection vulnerabilities.
+
+```typescript
+// src/testing/exploratory/vibe-code-oracle.ts
+// Structured oracle checker for AI-generated API endpoints.
+// Covers the five defect categories most commonly present in LLM-generated code:
+// IDOR, incomplete error envelopes, missing auth scope checks,
+// async error propagation gaps, and validation/injection gaps.
+
+export interface OracleCheckResult {
+  category: 'idor' | 'error-envelope' | 'auth-scope' | 'async-error' | 'validation' | 'injection';
+  passed: boolean;
+  observation: string;
+  oracleSource: string;  // Which HICCUPPS oracle triggered this check
+  severity: 'critical' | 'high' | 'medium' | 'low';
+}
+
+export interface ApiEndpointConfig {
+  baseUrl: string;
+  path: string;
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  authToken: string;
+}
+
+async function fetchJson(
+  config: ApiEndpointConfig,
+  body: unknown,
+  overrideToken?: string
+): Promise<{ status: number; body: unknown }> {
+  const response = await fetch(`${config.baseUrl}${config.path}`, {
+    method: config.method,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${overrideToken ?? config.authToken}`,
+    },
+    body: config.method !== 'GET' ? JSON.stringify(body) : undefined,
+  });
+  let responseBody: unknown;
+  try {
+    responseBody = await response.json();
+  } catch {
+    responseBody = null;
+  }
+  return { status: response.status, body: responseBody };
+}
+
+export async function runVibecodeOracleChecks(
+  endpoint: ApiEndpointConfig,
+  validPayload: Record<string, unknown>,
+  anotherUsersResourceId: string
+): Promise<OracleCheckResult[]> {
+  const results: OracleCheckResult[] = [];
+
+  // 1. IDOR: substitute another user's resource ID in the payload
+  const idorPayload = { ...validPayload, cartId: anotherUsersResourceId };
+  const idorResult = await fetchJson(endpoint, idorPayload);
+  results.push({
+    category: 'idor',
+    passed: idorResult.status === 403 || idorResult.status === 404,
+    observation: `Substituted foreign resource ID → HTTP ${idorResult.status}`,
+    oracleSource: 'Standards (OWASP A01:2021 Broken Access Control)',
+    severity: 'critical',
+  });
+
+  // 2. Error envelope completeness: remove a required field
+  const missingField = { ...validPayload };
+  delete missingField['cartId'];
+  const missingFieldResult = await fetchJson(endpoint, missingField);
+  const body = missingFieldResult.body as Record<string, unknown> | null;
+  const hasEnvelope =
+    missingFieldResult.status === 400 &&
+    body !== null &&
+    typeof body === 'object' &&
+    'code' in body &&
+    'message' in body;
+  results.push({
+    category: 'error-envelope',
+    passed: hasEnvelope,
+    observation: `Missing required field → HTTP ${missingFieldResult.status}, structured envelope: ${hasEnvelope}`,
+    oracleSource: 'Claims (API contract requires structured error envelope)',
+    severity: 'high',
+  });
+
+  // 3. Auth scope: unauthenticated request should return 401
+  const unauthResult = await fetchJson({ ...endpoint, authToken: '' }, validPayload, '');
+  results.push({
+    category: 'auth-scope',
+    passed: unauthResult.status === 401,
+    observation: `Unauthenticated request → HTTP ${unauthResult.status}`,
+    oracleSource: 'Purpose (endpoint must not be accessible without authentication)',
+    severity: 'critical',
+  });
+
+  // 4. Injection: SQL injection string in a text field
+  const injectionPayload = { ...validPayload, couponCode: "'; DROP TABLE orders; --" };
+  const injectionResult = await fetchJson(endpoint, injectionPayload);
+  results.push({
+    category: 'injection',
+    passed: injectionResult.status === 400 || injectionResult.status === 422,
+    observation: `SQL injection string in couponCode → HTTP ${injectionResult.status}`,
+    oracleSource: 'Standards (OWASP A03:2021 Injection)',
+    severity: 'critical',
+  });
+
+  // 5. Oversized payload: a field that exceeds any reasonable server limit
+  const oversizedPayload = { ...validPayload, notes: 'a'.repeat(100_000) };
+  const oversizedResult = await fetchJson(endpoint, oversizedPayload);
+  results.push({
+    category: 'validation',
+    passed: oversizedResult.status === 400 || oversizedResult.status === 413,
+    observation: `100 KB notes field → HTTP ${oversizedResult.status}`,
+    oracleSource: 'Purpose (server should reject payloads beyond documented limits)',
+    severity: 'medium',
+  });
+
+  return results;
+}
+
+export function printOracleSummary(results: OracleCheckResult[]): void {
+  const failures = results.filter((r) => !r.passed);
+  console.log(`\nVibe-code oracle: ${results.length - failures.length}/${results.length} passed`);
+  if (failures.length > 0) {
+    console.log('FAILED checks (file as defects):');
+    for (const f of failures) {
+      console.log(
+        `  [${f.severity.toUpperCase()}] ${f.category}: ${f.observation}\n` +
+          `    oracle: ${f.oracleSource}`
+      );
+    }
+  } else {
+    console.log('All oracle checks passed — add domain-specific checks for higher confidence.');
+  }
+}
+```
+
+---
+
+## Additional Anti-Patterns (Iteration 36)
+
+- **No latency oracle for real-time features**: Teams exploring WebSocket or SSE features routinely observe slow message delivery without flagging it as a defect because they have no documented latency budget. Before any real-time session, establish the latency oracle explicitly: "messages should appear within X ms of server emission on a standard connection." Without this, the tester has no basis for calling a 3-second message delay a defect versus acceptable behavior. The latency oracle belongs in the charter's "oracles" section, not the tester's head.
+
+- **Passive acceptance of AI-generated security scaffolding**: When an endpoint is known to be AI-generated, some teams skip security-focused exploration because "the AI knows OWASP." This is the most expensive anti-pattern in vibe-code testing: LLMs consistently omit authorization scope checks (IDOR), input size limits, and async error propagation because these require context about the specific data model, user roles, and existing attack surface that the LLM does not have. AI-generated endpoints require more security-focused exploration, not less.
+
+---
+
+## Additional Community Lessons (Iteration 36)
+
+96. **[community] Real-time features have a class of defect only discoverable with a second browser tab.** Teams exploring WebSocket or collaborative features routinely test with a single session. The class of defect that requires two concurrent sessions — UI divergence after a conflicting update, missing "someone else is editing" indicators, race-window defects in optimistic UI updates — is invisible with one tab. A standing rule that any real-time charter requires at least one "multi-tab" test condition catches this entire class. The cost is trivial (open another tab with a different test account before the session starts); the defect yield per session consistently outperforms single-tab exploration for any feature with shared server-side state.
+
+97. **[community] AI-generated TypeScript code passes type-checking and still has semantic defects the type system cannot catch.** Teams that adopt AI coding assistants and use `tsc --noEmit` as their primary quality gate discover that a significant proportion of AI-generated logic defects are type-correct: wrong business logic, incorrect conditional branches, missing edge-case handling. These defects are structurally identical to the defects exploratory testing has always targeted — but teams in AI-assisted codebases have a new cognitive bias: "the types pass, so it must be right." Exploratory testing of AI-generated code requires the tester to consciously override this bias and treat each logical branch as unverified until a session has exercised it. The charter's "with Y" and "to discover Z" must explicitly name the logical branches, not rely on the tester's intuition about which paths are risky.
+
+98. **[community] WebSocket reconnection logic is the single highest-defect-density area in real-time features across production incident reports.** Analysis of production incidents involving real-time features consistently implicates reconnection: the socket reconnects after a drop, but the client missed N events during the gap and shows stale state; or the client re-subscribes to the wrong channel after reconnect; or the reconnection exponential backoff has no maximum cap and the client eventually gives up silently. One exploratory session targeting reconnection behavior — simulate a 30-second offline period and observe what the UI shows before, during, and after reconnection — finds more production-equivalent defects per session-hour than any other real-time charter type.
 
 ---

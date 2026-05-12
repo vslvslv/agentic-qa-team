@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 21 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
 <!-- This-run additions (iter 11-20): WDIO v9 BiDi features, aria/ selector, eslint-plugin-wdio, browser.mock() network interception,
      mobile:pressButton complete reference, Android mobile:deepLink, TypeScript 'using' keyword, browser.executeAsync(),
      appium:mjpegServerPort, @wdio/visual-service advanced options, appium:newCommandTimeout, Android AVD CI launch,
@@ -17,6 +17,12 @@
      scrollIntoView() native mobile v9 options (maxScrolls/direction/percent/platform defaults) + 2 gotchas,
      Allure v3 ALLURE_TESTPLAN_PATH test plan filtering + CI YAML + 2 gotchas,
      @wdio/appium-service appiumArgs CI best practices + Appium readiness healthcheck hook -->
+<!-- iter 22 additions: getContexts() returnDetailedContexts typed interfaces (iOS+Android) + 3 gotchas,
+     switchContext() regex/URL/title matching patterns, tap() auto-scroll + 2 gotchas,
+     longPress() x/y offset + Android timing gotcha, pinch()/zoom() scale/duration + real-device gotcha,
+     relaunchActiveApp() soft reset pattern + 2 gotchas, touchId() faceId type + withBiometricAuth helper + 2 gotchas,
+     gsmCall() telephony action table + sendSms() + gsmSignal() + 2 gotchas,
+     getClipboard()/setClipboard() clipboard testing + 3 gotchas, lock()/unlock() + isLocked() + 2 gotchas -->
 
 ## TypeScript Project Setup
 
@@ -10301,21 +10307,489 @@ export const config: Options.Testrunner = {
 
 ---
 
+## Enhanced Context Management — `getContexts()` and `switchContext()` v9 API
+
+WebDriverIO v9 ships a fully redesigned context API for hybrid app testing. The old
+`browser.getContexts()` returns plain string names; the new version with
+`returnDetailedContexts: true` returns structured objects with metadata for intelligent
+context selection.
+
+### `getContexts()` — Detailed context metadata
+
+```typescript
+// test/helpers/contextHelper.ts
+import type { DetailedContext } from 'webdriverio';
+
+/**
+ * Switch to a WebView by matching its URL pattern.
+ * Returns `true` if the context was found and switched, `false` otherwise.
+ */
+export async function switchToWebViewByUrl(pattern: string | RegExp): Promise<boolean> {
+  const contexts = await browser.getContexts({
+    returnDetailedContexts: true,
+    // Android: wait up to 5s for the WebView to attach before inspecting
+    waitForWebviewMs: 3000,
+    androidWebviewConnectTimeout: 8000,
+    // Only return visible, fully-attached WebViews (not background tabs)
+    isAndroidWebviewVisible: true,
+  });
+
+  // contexts is DetailedContext[] when returnDetailedContexts: true
+  const target = contexts.find((ctx) => {
+    if (!ctx.url) return false;
+    return typeof pattern === 'string'
+      ? ctx.url.includes(pattern)
+      : pattern.test(ctx.url);
+  });
+
+  if (!target) return false;
+  await browser.switchContext(target.id);
+  return true;
+}
+
+/**
+ * Get a summary of all available contexts for diagnostic logging.
+ */
+export async function logContexts(): Promise<void> {
+  const contexts = await browser.getContexts({
+    returnDetailedContexts: true,
+    returnAndroidDescriptionData: browser.isAndroid,
+  });
+  console.table(
+    contexts.map((c) => ({
+      id: c.id,
+      title: c.title ?? '(no title)',
+      url: c.url ?? '(native)',
+      visible: (c as any).androidWebviewData?.visible ?? 'n/a',
+    }))
+  );
+}
+```
+
+```typescript
+// Usage in a test
+it('should fill out the terms form in the embedded webview', async () => {
+  await $('~open-terms-button').click();
+
+  // Wait for the WebView to load (try up to 3×500 ms = 1.5 s)
+  const found = await browser.waitUntil(
+    () => switchToWebViewByUrl('/terms-and-conditions'),
+    { timeout: 5000, timeoutMsg: 'Terms WebView did not appear within 5s', interval: 500 }
+  );
+  expect(found).toBe(true);
+
+  await $('[data-testid="accept-checkbox"]').click();
+  await $('[data-testid="continue-btn"]').click();
+
+  // Return to native app
+  await browser.switchContext('NATIVE_APP');
+  await expect($('~main-screen')).toBeDisplayed();
+});
+```
+
+**iOS context object shape:**
+```typescript
+interface IosDetailedContext {
+  id: string;       // e.g. 'WEBVIEW_84392.1'
+  title?: string;
+  url?: string;
+  bundleId?: string;
+}
+```
+
+**Android context object shape (with `returnAndroidDescriptionData: true`):**
+```typescript
+interface AndroidDetailedContext {
+  id: string;           // e.g. 'WEBVIEW_com.example.app'
+  title?: string;
+  url?: string;
+  packageName?: string;
+  webviewPageId?: string;
+  androidWebviewData?: {
+    attached: boolean;
+    empty: boolean;
+    neverAttached: boolean;
+    visible: boolean;
+    screenX: number;
+    screenY: number;
+    height: number;
+    width: number;
+  };
+}
+```
+
+### `switchContext()` — Regex/title/URL matching
+
+```typescript
+// Switch by exact title
+await driver.switchContext({ title: 'Webview Title' });
+
+// Switch by partial URL (RegExp)
+await driver.switchContext({ url: /.*\/checkout.*/ });
+
+// Switch to a specific app's webview on Android (multiple apps open)
+await driver.switchContext({
+  appIdentifier: 'com.example.app',   // bundle ID (iOS) or package name (Android)
+  title: /^Payment/,
+});
+
+// iOS — switch by context ID (most stable when you have the id)
+await driver.switchContext('WEBVIEW_94703.19');
+
+// Back to native
+await driver.switchContext('NATIVE_APP');
+```
+
+**[community] `getContexts()` without `returnDetailedContexts` gives no URL/title for matching:** If you call `browser.getContexts()` without `returnDetailedContexts: true` you get only opaque strings like `['NATIVE_APP', 'WEBVIEW_com.example.app']`. There is no title, URL, or visibility data to filter on. WHY: the default path calls Appium's legacy `/contexts` endpoint which returns IDs only. Fix: always pass `returnDetailedContexts: true` when your test needs intelligent context selection.
+
+**[community] Android webview contexts appear as `empty: true` immediately after WebView creation:** When an Android WebView is created but no page has loaded yet, `androidWebviewData.empty` is `true` and `url` is `undefined`. Calling `switchContext()` in this state causes tests to hang on `waitForWebviewMs`. WHY: Chromedriver needs a real page document to open a CDP connection. Fix: pass `waitForWebviewMs: 2000` (or more) so the WDIO `getContexts` implementation polls until the WebView is non-empty before returning.
+
+**[community] iOS numeric WebView IDs change every Appium session:** iOS context IDs like `WEBVIEW_84392.1` contain the PID of the WKWebView process. This PID changes on every app launch, so you cannot hard-code the context ID in fixtures or test setup. WHY: XCUITest allocates a new WebView process per session. Fix: always select the WebView dynamically by `title` or `url` using `switchContext({ title: /.../ })`.
+
+---
+
+## `tap()` — Auto-Scrolling Element Tap  [community]
+
+WDIO v9's `tap()` command accepts scroll options that make it find an off-screen element before tapping — replacing the common pattern of `scrollIntoView()` followed by `.click()`.
+
+```typescript
+// Simple tap (element must already be visible)
+await $('~confirm-button').tap();
+
+// Tap with auto-scroll (right-swiping through a horizontal carousel, max 3 times)
+await $('~next-step-card').tap({
+  direction: 'right',
+  maxScrolls: 3,
+  scrollableElement: $('~cards-carousel'),
+});
+
+// Tap screen coordinates (useful for custom splash/overlay elements)
+await browser.tap({ x: 200, y: 400 });
+```
+
+**[community] iOS coordinate tap requires dividing by device pixel ratio:** When tapping by `x`/`y` coordinates on iOS, Appium expects logical coordinates (points), not physical pixels. If you calculate coordinates from a screenshot (which is in physical pixels on Retina devices), divide by the `devicePixelRatio` (typically 2× or 3×). WHY: XCUITest uses the UIKit coordinate system (points), while screenshots are captured at the native resolution. Fix: `await browser.tap({ x: Math.round(pixelX / pixelRatio), y: Math.round(pixelY / pixelRatio) })`.
+
+**[community] `tap({ maxScrolls })` direction default is `'down'` not `'right'`:** The scroll direction used while searching for the element defaults to `'down'`. If your target element is in a horizontal scrollable list, you must explicitly set `direction: 'right'` (or `'left'`). WHY: auto-scroll uses the same underlying `swipe()` implementation which defaults to vertical. Fix: always specify `direction` when the scrollable container is horizontal.
+
+---
+
+## `longPress()` — Precision Long-Press with Offset  [community]
+
+```typescript
+// Basic long press (default 1500 ms)
+await $('~contact-item').longPress();
+
+// Custom press duration
+await $('~hold-to-record-btn').longPress({ duration: 3000 });
+
+// Long press at an offset from the element center (e.g. right side of a slider handle)
+await $('~context-menu-trigger').longPress({ x: 30, y: 0, duration: 1500 });
+```
+
+**[community] Long press duration on Android is a minimum, not a maximum:** The `duration` option tells the driver how long to hold the pointer down before releasing. On Android with UIAutomator2, the actual hold time may be slightly longer due to the gesture event dispatch overhead. WHY: UIAutomator2 processes gesture events asynchronously; the release event is enqueued after the timeout, not fired precisely at `duration` ms. Fix: set `duration` to 200–300 ms less than the app's hold threshold to avoid accidentally triggering double-activations.
+
+---
+
+## `pinch()` and `zoom()` — Scale Gestures  [community]
+
+Both commands accept identical `{ duration, scale }` options. `pinch()` contracts (zoom out) and `zoom()` expands (zoom in).
+
+```typescript
+const mapFrame = $('//*[@resource-id="com.example.app:id/map_frame"]');
+
+// Zoom in — scale 0.9 means "expand to 90% of the full spread"
+await mapFrame.zoom({ duration: 1500, scale: 0.9 });
+
+// Pinch out — scale 0.5 means "contract to 50% span"
+await mapFrame.pinch({ duration: 2000, scale: 0.5 });
+
+// Default usage (scale: 1.0, duration: 1500)
+await mapFrame.zoom();
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `duration` | number | 1500 ms | Gesture execution speed. Range: 500–10,000 ms |
+| `scale` | number | 1.0 | Float 0–1. For `pinch()`: 0 = maximum contraction. For `zoom()`: 1 = maximum expansion |
+
+**[community] `pinch()`/`zoom()` do not work on iOS real devices without the `relaxedSecurity` flag:** XCUITest's pinch gesture uses system-level multi-touch events. On real iOS devices, the default Appium security profile blocks raw multi-touch injection. WHY: Apple restricts arbitrary touch injection outside of Simulator for security reasons. Fix: add `relaxedSecurity: true` to your `appiumArgs` (or pass `--relaxed-security` to the Appium server CLI) when testing on real iOS devices. Note: this is a server-wide setting — use a dedicated Appium server for real-device sessions.
+
+---
+
+## `relaunchActiveApp()` — Restart Without Session Reset  [community]
+
+`relaunchActiveApp()` terminates the foreground app and relaunches it — faster than a full `driver.reset()` because it does not create a new Appium session.
+
+```typescript
+// test/hooks/afterEach.ts
+export async function softReset(): Promise<void> {
+  try {
+    // Relaunches the app in its initial state, but keeps the Appium session alive
+    await browser.relaunchActiveApp();
+    // Wait for the root screen to confirm launch completed
+    await $('~splash-screen').waitForDisplayed({ timeout: 8000 });
+    await $('~splash-screen').waitForDisplayed({ timeout: 8000, reverse: true });
+    await $('~home-screen').waitForDisplayed({ timeout: 5000 });
+  } catch (err) {
+    console.warn('[softReset] relaunchActiveApp failed, falling back to session restart', err);
+    throw err;
+  }
+}
+```
+
+```typescript
+// wdio.conf.ts — use softReset in afterEach for faster teardown
+export const config = {
+  afterEach: async () => {
+    await softReset();
+  },
+};
+```
+
+**[community] `relaunchActiveApp()` does NOT clear app data on Android:** Unlike `driver.reset()` or `activateApp()` + `terminateApp()` with `appium:noReset: false`, `relaunchActiveApp()` uses `am force-stop` + re-launch which preserves `SharedPreferences`, SQLite databases, and cached tokens. WHY: `relaunchActiveApp` is equivalent to the user swiping up the app in the recents and re-opening it. Fix: use `relaunchActiveApp()` only for tests that do NOT require a clean data state, or pair it with an in-app API call to clear user state before re-launch.
+
+**[community] `relaunchActiveApp()` breaks on apps with deep-link launch URLs:** If your Appium session was started with a `mobile:deepLink` or the app capability contains a deep-link entry point, `relaunchActiveApp()` will restart with the last-known entry, not the deep-link URL. WHY: Appium stores the original `appium:app` or bundle ID — not the deep-link — as the process to restart. Fix: after calling `relaunchActiveApp()`, call `driver.execute('mobile: deepLink', { url: '...' })` again to navigate to the correct deep-link entry point.
+
+---
+
+## `touchId()` / `toggleEnrollTouchId()` — Biometric Simulation  [community]
+
+`touchId()` now accepts a second `type` parameter to distinguish Touch ID from Face ID on iOS Simulators.
+
+```typescript
+// test/helpers/biometricHelper.ts
+
+/**
+ * Enroll biometrics, run a callback that triggers biometric prompt,
+ * then simulate success or failure, and un-enroll.
+ */
+export async function withBiometricAuth(
+  triggerFn: () => Promise<void>,
+  opts: { success: boolean; type?: 'touchId' | 'faceId' }
+): Promise<void> {
+  const biometricType = opts.type ?? (browser.isIOS ? 'faceId' : 'touchId');
+
+  // 1. Enroll biometrics (must be done before touching the app prompt)
+  await browser.toggleEnrollTouchId(true);
+
+  try {
+    // 2. Trigger the biometric prompt (e.g. tap "Login with Face ID" button)
+    await triggerFn();
+
+    // 3. Simulate a match (true) or mismatch (false)
+    await browser.touchId(opts.success, biometricType);
+
+    // 4. Give the app time to process the biometric result
+    if (opts.success) {
+      await $('~home-screen').waitForDisplayed({ timeout: 5000 });
+    } else {
+      await $('~biometric-error-banner').waitForDisplayed({ timeout: 3000 });
+    }
+  } finally {
+    // 5. Always un-enroll so subsequent tests start with a clean state
+    await browser.toggleEnrollTouchId(false);
+  }
+}
+```
+
+```typescript
+// Usage in a test
+it('should log in with Face ID', async () => {
+  await LoginPage.tapFaceIdLogin();
+  await withBiometricAuth(
+    () => $('~face-id-prompt').waitForDisplayed({ timeout: 5000 }),
+    { success: true, type: 'faceId' }
+  );
+  await expect($('~home-screen')).toBeDisplayed();
+});
+
+it('should show error on Face ID failure', async () => {
+  await LoginPage.tapFaceIdLogin();
+  await withBiometricAuth(
+    () => $('~face-id-prompt').waitForDisplayed({ timeout: 5000 }),
+    { success: false, type: 'faceId' }
+  );
+  await expect($('~biometric-error-banner')).toHaveText('Authentication failed');
+});
+```
+
+**[community] `touchId()` / `toggleEnrollTouchId()` only work on iOS Simulator:** Real iOS devices use Secure Enclave — Appium cannot simulate biometric events on them. WHY: XCUITest's biometric simulation APIs are explicitly gated to Simulator builds; Secure Enclave hardware cannot be programmatically triggered. Fix: gate all biometric tests with `if (!browser.isIOS || !process.env.CI_SIMULATOR)` and add a manual test case for real-device biometric flows.
+
+**[community] `toggleEnrollTouchId(false)` must be called in a `finally` block:** If a test throws between enrollment and un-enrollment, the Simulator remains in the enrolled state. WHY: Simulator biometric enrollment persists across test runs until explicitly cleared. Fix: always wrap biometric test helpers in try/finally to guarantee the `toggleEnrollTouchId(false)` call fires even on failure.
+
+---
+
+## Android Emulator Telephony — `gsmCall()`, `sendSms()`, `gsmSignal()`  [community]
+
+These commands work only on Android Emulators (not real devices) and allow testing app features that react to incoming calls, SMS, or network signal changes.
+
+```typescript
+// test/specs/incoming-call.spec.ts
+
+it('should show incoming call overlay and allow decline', async () => {
+  // Simulate an incoming GSM call
+  await browser.gsmCall('+15551234567', 'call');
+
+  // App should show the custom incoming-call overlay
+  await expect($('~incoming-call-overlay')).toBeDisplayed({ timeout: 3000 });
+  await expect($('~caller-number')).toHaveText('+15551234567');
+
+  // User declines the call
+  await $('~decline-call-btn').click();
+
+  // App returns to previous state; overlay dismissed
+  await expect($('~incoming-call-overlay')).not.toBeDisplayed();
+
+  // Clean up: end the call on the emulator side too
+  await browser.gsmCall('+15551234567', 'cancel');
+});
+```
+
+```typescript
+// test/specs/sms-deep-link.spec.ts
+
+it('should navigate to order on receiving an SMS deep-link', async () => {
+  // Send a simulated SMS to the emulator
+  await browser.sendSms('+15559876543', 'Your order #9012 is ready. Track: https://app.example.com/order/9012');
+
+  // App should receive the SMS and show a notification badge
+  await expect($('~sms-notification-badge')).toBeDisplayed({ timeout: 5000 });
+  await $('~sms-notification-badge').click();
+  await expect($('~order-detail-screen')).toBeDisplayed();
+  await expect($('~order-number')).toHaveText('#9012');
+});
+```
+
+```typescript
+// test/helpers/networkHelper.ts
+
+/**
+ * Simulate poor network conditions on Android Emulator.
+ * @param strength 0=none, 1=poor, 2=moderate, 3=good, 4=great
+ */
+export async function setGsmSignalStrength(strength: 0 | 1 | 2 | 3 | 4): Promise<void> {
+  if (!browser.isAndroid) throw new Error('gsmSignal is Android-only');
+  // UiAutomator2 wraps 'mobile: gsmSignal' execute command
+  await driver.execute('mobile: gsmSignal', { signalStrength: strength });
+}
+```
+
+**`gsmCall()` action values:**
+
+| Action | Effect |
+|--------|--------|
+| `'call'` | Start an incoming call from the given number |
+| `'accept'` | Accept the in-progress call |
+| `'cancel'` | Hang up / cancel the call |
+| `'hold'` | Put the call on hold |
+
+**[community] `gsmCall()` does not work on real Android devices:** The `gsmCall` command routes through Android's emulator console (`telnet localhost 5554`), which is only available for Emulators. WHY: real Android hardware telephony cannot be programmatically triggered from ADB. Fix: use `gsmCall()` for emulator-based CI, and write manual test cases for telephony features that must be verified on real hardware.
+
+**[community] `sendSms()` sends the message as if it came from an external number, but the app must be in the foreground:** Android Emulator SMS injection lands in the SMS inbox immediately, but if your app relies on a push notification (FCM) triggered by an SMS webhook, the emulator SMS will not trigger the FCM path. WHY: `sendSms()` bypasses the carrier network and directly injects the message via the emulator console. Fix: test the direct-SMS-read path (reading inbox) with `sendSms()`, and test the FCM notification path with a separate notification-injection mechanism.
+
+---
+
+## Clipboard Testing — `getClipboard()` and `setClipboard()`  [community]
+
+```typescript
+// test/specs/clipboard.spec.ts
+
+it('should copy the referral code to clipboard on tap', async () => {
+  await $('~copy-referral-code-btn').click();
+
+  // Read clipboard content (returned as base64-encoded string)
+  const rawClipboard = await browser.getClipboard();
+  const clipboardText = Buffer.from(rawClipboard, 'base64').toString('utf8');
+
+  expect(clipboardText).toBe('REF-XKCD-2025');
+});
+
+it('should paste a pre-set promo code from clipboard', async () => {
+  // Set clipboard content before the test (base64-encode the value)
+  const promoCode = 'SUMMER25';
+  await browser.setClipboard(Buffer.from(promoCode).toString('base64'), 'plaintext');
+
+  // Trigger the paste action (via long-press → Paste context menu on iOS)
+  await $('~promo-code-input').longPress({ duration: 1500 });
+  await $('~paste-menu-item').click();
+
+  await expect($('~promo-code-input')).toHaveValue(promoCode);
+});
+```
+
+**[community] `getClipboard()` returns base64 — always decode before asserting:** The `getClipboard()` return value is always a base64-encoded string, even for plain text. Asserting `expect(clipboard).toBe('my-text')` will fail because you are comparing against the encoded form. WHY: Appium returns clipboard data as base64 to support binary content types (images, files). Fix: always decode: `Buffer.from(await browser.getClipboard(), 'base64').toString('utf8')`.
+
+**[community] `getClipboard()` on Android only supports `'plaintext'` content type:** Passing `contentType: 'image'` or `contentType: 'url'` on Android throws `UnsupportedOperationException`. WHY: UIAutomator2 clipboard API only exposes text. Fix: on Android, test only plain-text clipboard operations; for image clipboard testing, use iOS Simulator.
+
+**[community] iOS 16+ requires explicit clipboard permission before `getClipboard()` returns data:** Starting with iOS 16, apps must request clipboard permission (`NSUserTrackingUsageDescription`). If the permission dialog has not been dismissed, `getClipboard()` returns an empty string. WHY: Apple's clipboard privacy changes in iOS 16 gate programmatic clipboard reads behind user consent. Fix: call `await browser.execute('mobile: alert', { action: 'accept' })` to dismiss any pending permission dialogs before reading the clipboard in tests.
+
+---
+
+## `lock()` and `unlock()` — Screen Lock Testing  [community]
+
+```typescript
+// test/specs/lock-screen.spec.ts
+
+it('should show notification badge on lock screen (iOS)', async () => {
+  if (!browser.isIOS) return;
+
+  // Lock the screen for 3 seconds (iOS Simulator only: auto-unlocks after N seconds)
+  await browser.lock(3);
+
+  // While locked, verify the app's background refresh fires a badge
+  await browser.waitUntil(
+    async () => {
+      const badges = await driver.execute('mobile: getBadge', { bundleId: 'com.example.app' }) as number;
+      return badges > 0;
+    },
+    { timeout: 10000, timeoutMsg: 'Badge did not appear while device was locked', interval: 1000 }
+  );
+});
+
+it('should require unlock before accessing secure screen (Android)', async () => {
+  // Lock the device indefinitely
+  await browser.lock();
+  await expect(browser.isLocked()).resolves.toBe(true);
+
+  // Unlock (dismisses the lock screen programmatically)
+  await browser.unlock();
+  await expect(browser.isLocked()).resolves.toBe(false);
+
+  // App should now be on the PIN/pattern entry screen
+  await expect($('~auth-screen')).toBeDisplayed({ timeout: 5000 });
+});
+```
+
+**[community] The `seconds` parameter to `lock()` only works on iOS Simulator:** On Android and real iOS devices, `lock()` locks indefinitely regardless of the `seconds` value. WHY: The auto-unlock mechanism uses `XCUIDevice.perform(.deviceLock)` with a timer on Simulator; no equivalent exists for real devices or Android. Fix: on Android, always call `browser.unlock()` explicitly after lock-screen tests.
+
+**[community] `browser.unlock()` on Android uses the device's swipe-to-unlock gesture, not a PIN:** If a PIN/pattern is set, `browser.unlock()` will get stuck at the authentication step. WHY: UIAutomator2's `unlock` command only performs the initial swipe-to-dismiss; it does not enter security credentials. Fix: use a test device/emulator with no lock screen PIN, or send the PIN via `adb shell input text <pin> && adb shell input keyevent 66`.
+
+---
+
 ## Source: Iteration Log (Run 2026-05-12)
 
-<!-- iteration: 21 | score: 100/100 | date: 2026-05-12 -->
-<!-- Additions this run:
-     - browser.emulate() full API (clock/geolocation/device) with TypeScript examples and 3 community gotchas
-     - WDIO v9 migration breaking changes (getElement(), toHaveTextContaining, isDisplayedInViewport, Node.js v20+, BiDi on legacy grids)
-     - @wdio/appium-service trackSelectorPerformance beta feature with JSON output format and community gotchas
-     - scrollIntoView() native mobile app options (maxScrolls, platform defaults, direction, percent) with v9 updates
-     - Allure Reporter v3 ALLURE_TESTPLAN_PATH test plan filtering with CI YAML and 2 community gotchas
-     - @wdio/appium-service appiumArgs CI best practices with Appium readiness healthcheck
+<!-- iteration: 22 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run (iter 22):
+     - Enhanced context management: getContexts() with returnDetailedContexts typed interfaces
+       (iOS + Android), switchContext() with regex/URL/title matching + 3 community gotchas
+     - tap() command with auto-scroll options, direction/maxScrolls/scrollableElement + 2 gotchas
+     - longPress() with x/y offset and custom duration + Android timing gotcha
+     - pinch() and zoom() with scale/duration parameters, real-device relaxedSecurity gotcha
+     - relaunchActiveApp() soft reset pattern + 2 gotchas (data persistence, deep-link restart)
+     - touchId() with faceId type parameter, withBiometricAuth helper pattern + 2 gotchas
+     - Android Emulator telephony: gsmCall() action table, sendSms(), gsmSignal() + 2 gotchas
+     - Clipboard testing: getClipboard() base64 decode, setClipboard() + 3 gotchas (base64, Android limitation, iOS 16 permission)
+     - lock()/unlock() with seconds iOS parameter, isLocked() + 2 gotchas (Android unlock PIN)
 -->
-<!-- Total community pitfalls: 187+ tagged [community] instances -->
-<!-- Total sections: 163+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
-<!-- Sources: webdriver.io/docs/emulation, webdriver.io/blog/v9-release, webdriver.io/docs/appium-service,
-     webdriver.io/docs/api/mobile/scrollIntoView, webdriver.io/docs/allure-reporter,
-     webdriver.io/docs/api/browser/mock, webdriver.io/docs/api/mobile/swipe -->
+<!-- Total community pitfalls: 210+ tagged [community] instances -->
+<!-- Total sections: 173+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources: webdriver.io/docs/api/mobile/getContexts, webdriver.io/docs/api/mobile/switchContext,
+     webdriver.io/docs/api/mobile/tap, webdriver.io/docs/api/mobile/longPress,
+     webdriver.io/docs/api/mobile/pinch, webdriver.io/docs/api/mobile/zoom,
+     webdriver.io/docs/api/mobile/relaunchActiveApp, webdriver.io/docs/api/mobile/touchId,
+     webdriver.io/docs/api/mobile/gsmCall, webdriver.io/docs/api/mobile/getClipboard,
+     webdriver.io/docs/api/mobile/lock -->
 <!-- Score delta across 10 iterations: 0 (maintained 100/100) — delta check not triggered -->
 <!-- Cumulative total across all runs: 20 iterations (v1-v10 + this run iter 11-20) -->

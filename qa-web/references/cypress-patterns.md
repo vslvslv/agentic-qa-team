@@ -1,7 +1,7 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0 -->
-<!-- new in this iteration: cy.press() (Cy 14.3), cy.env() async secure vars (Cy 15.10), Cypress.expose() public config, Cy 15 breaking changes (exitCode/Vite ESM/Firefox CDP/Node), Angular 21 zoneless CT, cy.readFile() query promotion, TypeScript 6 + Vite 8 setup -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests -->
+<!-- new in this iteration: Svelte 5 component testing (Svelte 5 runes/event API), React 19 CT patterns, GitHub Actions v7 upgrade (ubuntu-24.04 + cypress-io/github-action@v7), Node.js 24 support in Cy 15, Angular 18 minimum for CT, Cy 15 Selector Playground → ElementSelector rename, route order importance for cy.intercept(), 8 new community gotchas (Node 24 glibc, Docker container mismatch, GITHUB_TOKEN reruns, route order, Svelte 5 $props runes, React 19 act() warning, TS6 verbatimModuleSyntax, cy.env() .then() nesting) -->
 
 ## Core Principles
 
@@ -4326,6 +4326,22 @@ declare global {
 
 69. **`cy.origin()` requires the `experimentalModifyObstructiveThirdPartyCode` option for some SSO flows** [community] — When testing third-party SSO providers (Okta, Azure AD, Google) with `cy.origin()`, some providers serve pages with Content-Security-Policy or X-Frame-Options headers that block Cypress from instrumenting the page. `experimentalModifyObstructiveThirdPartyCode: true` in `cypress.config.ts` rewrites these security headers during testing so Cypress can modify the JavaScript context. Be aware this option also strips CSP headers from all third-party origins — never enable it in production builds, and confine it to the `e2e` configuration block only. For production-safe SSO testing, use `cy.session()` to cache the authenticated state after a single manual sign-in.
 
+70. **Cypress 15 fails to launch on Ubuntu 20.04 (glibc < 2.31)** [community] — Cypress 15 prebuilt binaries require glibc 2.31 or higher. Ubuntu 20.04 ships glibc 2.31 but is approaching end-of-life; Ubuntu 18.04 (glibc 2.27) will not work at all. Teams still using `runs-on: ubuntu-20.04` in GitHub Actions may see a cryptic binary launch failure: `error while loading shared libraries: libm.so.6: GLIBC_2.33 not found`. Upgrade to `ubuntu-22.04` (glibc 2.35) or `ubuntu-24.04` (glibc 2.39). In Docker-based pipelines, update from `cypress/included:14.x` to `cypress/included:15.x` images — they are built on Node 22/Debian 12 which satisfies the glibc requirement.
+
+71. **`cy.intercept()` route order matters — more specific routes must be registered first** [community] — Cypress matches intercepts in registration order; the first matching route wins for a given request. If you register `cy.intercept('GET', '/api/**')` before `cy.intercept('GET', '/api/products*')`, the wildcard catches all API calls including `/api/products`, and the specific stub is never reached. Register specific routes BEFORE generic wildcards to ensure priority. This is particularly subtle in shared `beforeEach` blocks that register a global catch-all, then individual tests try to register specific stubs that are silently outrun by the earlier wildcard.
+
+72. **Docker container mismatch between install job and parallel workers causes binary not found** [community] — When using a two-job GitHub Actions pattern (install → workers), the install job must use the same Docker image as the worker jobs. If the install job runs on `ubuntu-24.04` (bare runner) but workers use `cypress/browsers:22.15.0` (Docker container), the Cypress binary is cached at a different path and is not found in the container. Cypress then downloads the binary fresh in every parallel worker, defeating the entire caching strategy and adding 1-2 minutes per worker. Always match the runtime environment: if workers use Docker containers, the install job must also use the same Docker container.
+
+73. **Svelte 5 `$props()` runes are not accessible via `extensions.on` in Cypress CT** [community] — In Svelte 4, components that used `createEventDispatcher()` could have their events intercepted via `extensions.on.eventName` in the `cy.mount()` options. In Svelte 5, events are replaced by callback props (`on:click` → `onclick`), and the `createEventDispatcher()` API is deprecated. The `extensions.on` mount option silently does nothing for Svelte 5 callback props — stubs registered there are never called, and the test passes (or fails) without ever receiving the event. Always pass event handler stubs as component props: `mount(MyComponent, { props: { onActionName: cy.stub().as('handler') } })` in Svelte 5.
+
+74. **React 19 `act()` warnings in Cypress CT do not fail tests but indicate state update timing issues** [community] — Cypress Component Testing does not wrap commands in `React.act()` — it relies on its own retry mechanism. React 19 logs `Warning: An update to X was not wrapped in act(...)` when a state update is triggered from outside React's scheduler (e.g., a timer callback, a WebSocket message, or a third-party library that directly calls `setState`). These warnings appear in the browser console but do NOT fail Cypress tests. However, they indicate that your assertion may be racing the state update. Fix by: (1) asserting on the final rendered state with `.should()` (which retries) rather than immediately after the trigger, (2) using `cy.clock()` to control timer-driven state updates, or (3) using `cy.intercept()` to wait for the network trigger that drives the state change.
+
+75. **TypeScript 6 `verbatimModuleSyntax: true` breaks Cypress support file imports that mix type and value imports** [community] — TypeScript 6 enables `verbatimModuleSyntax` by default in strict mode, requiring all type-only imports to use `import type`. In Cypress support files, it is common to write `import { CypressTasks } from './task-types'` where `CypressTasks` is a type-only export. Under `verbatimModuleSyntax`, this causes a compile error: `This import is never used as a value and must use 'import type'`. Running `npx tsc --noEmit` on your `cypress/` directory after enabling TypeScript 6 reveals all affected imports. Fix: replace `import { Type }` with `import type { Type }` throughout `cypress/support/`, `cypress/pages/`, and `cypress/plugins/` directories. This is a purely mechanical change and can be automated with the TypeScript language server's "add import type" quick fix or `npx ts-expect-error --fix`.
+
+76. **`cy.env(['KEY']).then()` nesting leads to excessively deep callback pyramids** [community] — The async nature of `cy.env()` (Cypress 15.10+) means that any test logic requiring multiple env vars must be nested inside a `.then()`. Teams that naively migrate from `Cypress.env()` to `cy.env()` end up with deeply nested code: `cy.env(['A']).then(({ A }) => { cy.env(['B']).then(({ B }) => { cy.request(...) }) })`. Instead, request all required keys in a single `cy.env()` call: `cy.env(['API_TOKEN', 'BASE_URL', 'TEST_EMAIL']).then(({ API_TOKEN, BASE_URL, TEST_EMAIL }) => { /* all vars available here */ })`. For suites that use the same vars across many tests, create a typed helper command (e.g., `cy.loginSecure()`) that calls `cy.env()` internally — callers never see the `.then()` nesting.
+
+77. **`ElementSelector` API replaces Selector Playground API in Cypress 15** [community] — The Selector Playground (the crosshair icon in the Cypress App that suggested selectors) was renamed to the **ElementSelector** in Cypress 15 as part of the UI redesign. If you have plugin code or documentation referencing `Cypress.SelectorPlayground`, the API was renamed to `Cypress.ElementSelector`. The behavior and method signatures remain identical: `Cypress.ElementSelector.defaults({ selectorPriority: ['data-cy', 'data-testid', 'id'] })` still works. Teams using third-party plugins that extend the selector playground may need to update plugin versions if they reference the old API name.
+
 ---
 
 ## CI Considerations
@@ -4334,16 +4350,18 @@ declare global {
 - **Parallelise with Cypress Cloud** — Use `--parallel --record --ci-build-id $CI_BUILD_ID` to split specs across machines. Requires a Cypress Cloud project key in `CYPRESS_RECORD_KEY`.
 - **Artifact retention** — Set `screenshotsFolder` and `videosFolder` in `cypress.config.ts`; upload to CI artifact store on failure only to save storage.
 - **`baseUrl` via env** — Never hardcode URLs. Set `baseUrl` in `cypress.config.ts` and override with `CYPRESS_BASE_URL=https://staging.example.com` in CI.
-- **Docker image** — Use the official `cypress/included` image; it bundles all browser deps and avoids missing shared-library issues on stripped CI images.
+- **Docker image** — Use the official `cypress/included` or `cypress/browsers` image; it bundles all browser deps and avoids missing shared-library issues on stripped CI images. Ensure install job and worker jobs use the same Docker image.
 - **Retry flaky tests** — Add `"retries": { "runMode": 2, "openMode": 0 }` in `cypress.config.ts` to automatically re-attempt failed tests in CI without masking real failures locally.
 - **`--spec` flag for targeted runs** — In monorepos or large suites, run only changed specs with `--spec "cypress/e2e/checkout/**"` to keep PR feedback loops fast.
-- **Node version pinning** — Pin the Node.js version in CI to match the dev environment. Cypress is sensitive to Node.js ABI changes that affect native modules.
+- **Node version pinning** — Pin Node.js to 20 or 22 (LTS) or 24 for Cypress 15+. Node.js 18 support was dropped in Cypress 15. Node.js 24 is supported from Cypress 15.0. Cypress 15 also requires glibc 2.31+ — use `ubuntu-22.04` or `ubuntu-24.04` in GitHub Actions (not `ubuntu-20.04`).
 - **`experimentalOriginDependencies`** — Set to `true` in `cypress.config.ts` to allow `cy.origin()` to load custom commands defined in the support file inside origin callbacks; without it, commands like `cy.loginViaApi()` are not available inside `cy.origin()`.
 - **Flakiness root-cause beyond retries** — Retries mask symptoms; fix root causes: (1) ensure `cy.intercept()` is registered before `cy.visit()`; (2) replace `cy.wait(ms)` with `cy.wait('@alias')`; (3) use `beforeEach` state resets; (4) avoid `cy.get().then()` snapshot patterns for assertions.
 - **Cypress Cloud Flaky Test Detection** — Cypress Cloud automatically marks tests as "flaky" when they pass on retry. Review the Flaky Tests dashboard weekly; a test flaking in CI 3+ times signals a test design issue, not just infrastructure noise.
 - **Spec grouping for monorepos** — Use `--group` to label parallel runs by app/service: `npx cypress run --record --parallel --group "app-checkout"`. View separate dashboards per group in Cypress Cloud without merging results.
 - **`--auto-cancel-after-failures N`** — Cancel the entire parallel run after N failures to save CI minutes on catastrophic regressions. Set N to 5-10 for large suites; too low causes false cancellations on known-flaky tests.
 - **Memory leak detection in long runs** — Large suites (200+ tests) can accumulate memory. Use `experimentalMemoryManagement: true` and `numTestsKeptInMemory: 5` together. Watch for browser crashes in CI — they typically signal memory pressure, not test logic failures.
+- **`GITHUB_TOKEN` in GitHub Actions** — Always pass `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` to the Cypress action step. Without it, Cypress Cloud misidentifies reruns as new builds and Smart Orchestration cancels them immediately (zero tests run). Also pass `COMMIT_INFO_MESSAGE` and `COMMIT_INFO_SHA` for correct PR commit context in Cloud dashboards.
+- **`cypress-io/github-action@v7`** — The current major version of the official GitHub Action is `v7` (updated 2026). It supports `ubuntu-24.04`, the `build` shorthand for pre-test build steps, and improved artifact caching. The previous `v6` action is still functional but does not receive new features.
 - **Cypress Dashboard API for custom reporting** — Use the Cypress Cloud REST API (`GET /projects/:id/runs`) to pull flakiness rates into internal dashboards or Slack alerts. Token auth via `CYPRESS_API_KEY`.
 - **Cache `node_modules` and Cypress binary in CI** — The Cypress binary (~200 MB) and `node_modules` are the main sources of slow CI setup. Cache both using the CI system's cache step: cache `node_modules` by `package-lock.json` hash, and the Cypress binary by `CYPRESS_CACHE_FOLDER` path (defaults to `~/.cache/Cypress`). A warm cache reduces setup time from 2-3 min to ~10 s.
 - **Use `cy.origin()` over `chromeWebSecurity: false`** — The `chromeWebSecurity: false` config flag disables cross-origin restrictions globally, enabling cross-domain navigation without errors. However, it also disables CORS, mixed-content blocking, and CSP — making your test environment unrealistically permissive. Prefer `cy.origin()` for multi-domain flows; it correctly simulates the real browser security model.
@@ -4393,23 +4411,25 @@ name: E2E Tests
 on: [push, pull_request]
 jobs:
   cypress:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04       # glibc 2.39 — satisfies Cypress 15 minimum (2.31)
     container:
-      image: cypress/included:13.6.0   # pin major version
+      image: cypress/browsers:22.15.0   # pin browser versions for consistency
     strategy:
       matrix:
         # Run 3 parallel machines
         containers: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
-      - name: Run Cypress
-        run: npx cypress run
-          --record --parallel
-          --ci-build-id "${{ github.run_id }}-${{ github.run_attempt }}"
-          --browser chrome
+      - uses: cypress-io/github-action@v7  # v7 is the current major (2026)
+        with:
+          record: true
+          parallel: true
+          ci-build-id: "${{ github.run_id }}-${{ github.run_attempt }}"
+          browser: chrome
         env:
           CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
           CYPRESS_BASE_URL: ${{ vars.STAGING_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # required for Cloud PR detection
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -5224,6 +5244,262 @@ it('asserts that a new tab URL was requested without navigating', () => {
 | `result.exitCode` in cy.exec() | Exit code from shell command (Cy 15+) | Renamed from `result.code` in Cypress 15; TypeScript error guides migration |
 | `provideExperimentalZonelessChangeDetection()` | Enable Angular zoneless mode in CT | Mount Angular 21+ zoneless components without Zone.js dependency |
 | `cy.readFile(path).should(...)` | Retrying file query (Cy 15+ query promotion) | Assert on generated/downloaded files; retries until assertion passes |
+| `mount(SvelteComponent, { props: { onEventName: handler } })` | Svelte 5 callback prop event handler | Pass event stubs as props (replaces `extensions.on` from Svelte 4) |
+| `mount(Component, { props: { initialCount: 5 } })` | React 19 / Svelte 5 / Vue 3 prop injection | Unified `props` key works across all framework adapters in Cypress CT |
+| `cy.env(['A', 'B']).then(({ A, B }) => {...})` | Batch multiple env keys in one call | Avoid nested `.then()` pyramids when multiple secrets are needed |
+| `Cypress.ElementSelector.defaults({ selectorPriority: [...] })` | Configure element selector priority (Cy 15+, renamed from SelectorPlayground) | Control which attributes the Element Selector UI suggests in the Cypress App |
+| `cypress-io/github-action@v7` | Official GitHub Action for Cypress (v7, 2026) | Handles caching, browser install, parallelization with `ubuntu-24.04` |
+| `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` | Required env var for Cypress Cloud PR detection | Prevents Smart Orchestration from cancelling reruns as empty builds |
+| `COMMIT_INFO_MESSAGE: ${{ github.event.pull_request.title }}` | Pass PR title to Cypress Cloud | Correct PR context in Cloud dashboards for pull_request triggered runs |
+
+### 101. Svelte 5 Component Testing  [community]
+
+Cypress Component Testing supports Svelte 5 (currently in Alpha tier). Svelte 5 introduced the **runes** API (`$props()`, `$state()`, `$effect()`) and replaced event directives (`on:click`) with the `onclick` HTML attribute convention. The `extensions.on` mount option from Svelte 4 is replaced by prop-based callbacks in Svelte 5.
+
+```typescript
+// cypress.config.ts — Svelte 5 component testing setup
+import { defineConfig } from 'cypress';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
+
+export default defineConfig({
+  component: {
+    devServer: {
+      framework: 'svelte',
+      bundler: 'vite',
+      viteConfig: {
+        plugins: [svelte()],
+      },
+    },
+    specPattern: 'src/**/*.cy.{ts,svelte}',
+  },
+});
+```
+
+```typescript
+// Counter.svelte (Svelte 5 — runes API)
+// <script lang="ts">
+//   let { initialCount = 0, onCountChange }: { initialCount?: number; onCountChange?: (n: number) => void } = $props();
+//   let count = $state(initialCount);
+//   function increment() { count++; onCountChange?.(count); }
+// </script>
+// <p data-cy="count">{count}</p>
+// <button data-cy="increment" onclick={increment}>+</button>
+
+// Counter.cy.ts — Svelte 5 component test (runes API)
+import { mount } from 'cypress/svelte';
+import Counter from './Counter.svelte';
+
+describe('Counter component (Svelte 5 runes)', () => {
+  it('renders with initial count from $props()', () => {
+    mount(Counter, { props: { initialCount: 5 } });
+    cy.get('[data-cy="count"]').should('have.text', '5');
+  });
+
+  it('increments $state on button click', () => {
+    mount(Counter, { props: { initialCount: 0 } });
+    cy.get('[data-cy="increment"]').click();
+    cy.get('[data-cy="count"]').should('have.text', '1');
+    cy.get('[data-cy="increment"]').click();
+    cy.get('[data-cy="count"]').should('have.text', '2');
+  });
+
+  it('calls onCountChange prop callback on increment', () => {
+    const onCountChange = cy.stub().as('countChanged');
+
+    // Svelte 5: pass callback as a prop (not via extensions.on)
+    mount(Counter, {
+      props: { initialCount: 0, onCountChange },
+    });
+
+    cy.get('[data-cy="increment"]').click();
+    cy.get('@countChanged').should('have.been.calledWith', 1);
+
+    cy.get('[data-cy="increment"]').click();
+    cy.get('@countChanged').should('have.been.calledWith', 2);
+  });
+});
+```
+
+**Svelte 4 vs Svelte 5 mount differences:**
+
+| Feature | Svelte 4 | Svelte 5 |
+|---------|----------|----------|
+| Props | `mount(Cmp, { props: { count: 0 } })` | Same — no change |
+| Event dispatch | `extensions: { on: { eventName: handler } }` | Pass handler as prop: `props: { onEventName: handler }` |
+| Reactivity | `let count = 0` + `$:` reactive statements | `let count = $state(0)` |
+| Component events | `createEventDispatcher()` | Callback props |
+
+**[community]** WHY: Svelte 5's `$props()` and `$state()` runes are compiled differently from Svelte 4's reactive declarations. The `extensions.on` mounting option that worked for Svelte 4 `createEventDispatcher()` events does not work for Svelte 5 callback props — the mount option is simply ignored without throwing an error, causing tests to silently never receive the callback. Always migrate event handler assertions to prop-based stubs when upgrading a Svelte 4 CT suite to Svelte 5.
+
+### 102. React 19 Component Testing
+
+Cypress Component Testing fully supports React 19. The key change is that React 19 removed the `act()` automatic batching from the test environment — Cypress's built-in retry-ability handles this transparently, but some patterns require updating.
+
+```typescript
+// cypress/support/component.tsx — React 19 mount with providers
+import React from 'react';
+import { mount } from 'cypress/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+// React 19 requires a fresh QueryClient per test to avoid state bleed
+Cypress.Commands.add('mount', (component, options = {}) => {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,          // disable retries in tests
+        staleTime: Infinity,   // prevent auto-refetch
+      },
+    },
+  });
+
+  const wrapped = (
+    <QueryClientProvider client={queryClient}>
+      {component}
+    </QueryClientProvider>
+  );
+
+  return mount(wrapped, options);
+});
+
+// product-card.cy.tsx — React 19 component test
+import React from 'react';
+import { ProductCard } from '../../src/components/ProductCard';
+
+describe('ProductCard (React 19)', () => {
+  it('renders product name and price', () => {
+    cy.mount(
+      <ProductCard
+        product={{ id: 'prod_1', name: 'Widget', price: 9.99, inStock: true }}
+        onAddToCart={cy.stub().as('addToCart')}
+      />
+    );
+
+    cy.get('[data-cy="product-name"]').should('have.text', 'Widget');
+    cy.get('[data-cy="product-price"]').should('have.text', '$9.99');
+  });
+
+  it('emits onAddToCart when Add button is clicked', () => {
+    const onAddToCart = cy.stub().as('addToCart');
+    cy.mount(
+      <ProductCard
+        product={{ id: 'prod_1', name: 'Widget', price: 9.99, inStock: true }}
+        onAddToCart={onAddToCart}
+      />
+    );
+
+    cy.get('[data-cy="add-to-cart"]').click();
+    cy.get('@addToCart').should('have.been.calledWith', 'prod_1');
+  });
+
+  it('disables Add button when out of stock', () => {
+    cy.mount(
+      <ProductCard
+        product={{ id: 'prod_2', name: 'Gadget', price: 24.99, inStock: false }}
+        onAddToCart={cy.stub()}
+      />
+    );
+
+    cy.get('[data-cy="add-to-cart"]').should('be.disabled');
+    cy.get('[data-cy="out-of-stock-label"]').should('be.visible');
+  });
+
+  // React 19 Server Component: use cy.visit() not cy.mount() for RSC
+  // Server Components cannot be mounted in isolation — they require the full
+  // Next.js runtime. Test RSC behavior via cy.visit() with a local dev server.
+});
+```
+
+**[community]** WHY: React 19 changed how `act()` wraps state updates — some community plugins that called `ReactDOM.act()` directly break because React 19's concurrent mode handles batching differently. Cypress Component Testing uses its own retry loop rather than wrapping commands in `act()`, so it is not affected by this change. However, if you see `Warning: An update to X inside a test was not wrapped in act(...)` in the browser console during Cypress CT, it means a third-party component is directly scheduling state updates outside React's scheduler. Use `cy.get('[data-cy="..."]').should(...)` (which retries) instead of asserting immediately after the action.
+
+### 103. GitHub Actions v7 Upgrade and Node.js 24 Support
+
+Cypress 15 added Node.js 24 support and changed the minimum Linux glibc requirement to 2.31. Update CI configurations accordingly.
+
+```yaml
+# .github/workflows/e2e.yml — Cypress 15 + GitHub Actions v7 (2026 pattern)
+name: E2E Tests
+on: [push, pull_request]
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04    # ubuntu-24.04 has glibc 2.39 (satisfies Cy 15 minimum of 2.31)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cypress-io/github-action@v7    # v7 is the current major (was v6 in 2025)
+        with:
+          runTests: false                     # install only — do not run tests
+          build: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: dist
+          retention-days: 1
+
+  cypress-run:
+    runs-on: ubuntu-24.04
+    needs: install
+    strategy:
+      fail-fast: false          # don't cancel other containers if one fails
+      matrix:
+        containers: [1, 2, 3]   # 3 parallel machines
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: dist
+      # Use Docker for browser version consistency across parallel workers
+      - uses: cypress-io/github-action@v7
+        with:
+          record: true
+          parallel: true
+          group: 'E2E Chrome'
+          browser: chrome
+          ci-build-id: '${{ github.run_id }}-${{ github.run_attempt }}'
+          start: npm start
+        env:
+          CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # REQUIRED: prevents PR re-run detection failures
+          CYPRESS_BASE_URL: ${{ vars.STAGING_URL }}
+          COMMIT_INFO_MESSAGE: ${{ github.event.pull_request.title }}  # correct PR title in Cloud
+          COMMIT_INFO_SHA: ${{ github.event.pull_request.head.sha }}   # correct SHA for PR runs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cypress-screenshots-${{ matrix.containers }}
+          path: cypress/screenshots/
+          retention-days: 7
+```
+
+```yaml
+# Docker-based CI for deterministic browser versions (recommended for large teams)
+# Uses cypress/browsers image to pin Chrome version across all workers
+  cypress-docker:
+    runs-on: ubuntu-24.04
+    container:
+      image: cypress/browsers:22.15.0          # Node 22 LTS; Chrome and Firefox included
+      # For Node 24: cypress/browsers:24.x.x (check Docker Hub for latest)
+    needs: install
+    strategy:
+      matrix:
+        containers: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+      - uses: cypress-io/github-action@v7
+        with:
+          record: true
+          parallel: true
+          browser: chrome
+          ci-build-id: '${{ github.run_id }}'
+        env:
+          CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**[community]** WHY: Three common CI failures in 2026 stem from this upgrade path: (1) `ubuntu-20.04` images have glibc 2.31 but are end-of-life — Cypress 15's binary may fail to launch; switch to `ubuntu-24.04` which ships glibc 2.39. (2) Mixing Docker containers between the install job and worker jobs causes the binary paths to differ, breaking the cached binary lookup — always use the same Docker image in both. (3) Omitting `GITHUB_TOKEN` causes Cypress Cloud to misidentify reruns and conflate them with the original run — Smart Orchestration sees a "new build" with zero specs remaining and cancels immediately, making all parallel workers show zero tests run.
 
 ---
 

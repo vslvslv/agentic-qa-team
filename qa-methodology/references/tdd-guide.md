@@ -1,6 +1,6 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 13 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 14 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.8-5.9 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) | ISTQB CTFL 4.0 terminology applied -->
 
 ## Core Principles
 
@@ -2257,6 +2257,271 @@ it('rejects orders with negative quantities', () => {
 
 ---
 
+### TypeScript 5.8 + 5.9 — TDD-Relevant Compiler Improvements [community]
+
+TypeScript 5.8 and 5.9 (released 2025–2026) each include changes that affect TDD workflows directly.
+
+#### TypeScript 5.8: Granular Return Branch Checks and `--erasableSyntaxOnly`
+
+**Granular return expression branch checks (TS 5.8):** TypeScript now checks each branch of a conditional `return` expression independently against the declared return type, instead of widening the union first. This catches bugs that previously hid behind `any`.
+
+```typescript
+// BEFORE TypeScript 5.8: silent bug — union of `any | string` widened to `any`
+declare const cache: Map<any, any>;
+
+function resolveUser(id: string): User {
+  return cache.has(id)
+    ? cache.get(id)  // any — escapes the return type check
+    : id;            // string — type error silently hidden by any branch
+}
+
+// AFTER TypeScript 5.8: each branch checked against User
+function resolveUser(id: string): User {
+  return cache.has(id)
+    ? cache.get(id)  // still any — but the string branch now errors:
+    : id;
+  //  ~~
+  // error! Type 'string' is not assignable to type 'User'.
+}
+```
+
+**Why this matters for TDD:** The Red phase now catches more type-level defects during test authoring. In TDD, writing the test case first forces you to annotate return types precisely; TypeScript 5.8's stricter branch checking makes those annotations trustworthy — conditional return paths that would have silently returned `any` now produce a Red (compile-time) signal immediately.
+
+**`--erasableSyntaxOnly` and Node.js native type-stripping (TS 5.8):** Node.js 23.6+ supports running `.ts` files directly via `--experimental-strip-types`. This requires all TypeScript syntax to be _erasable_ — removable without runtime consequence. TypeScript 5.8's `--erasableSyntaxOnly` flag enforces this at compile time.
+
+```typescript
+// tsconfig.json additions for Node.js-native type-stripping workflows
+{
+  "compilerOptions": {
+    "erasableSyntaxOnly": true,   // Block non-erasable TypeScript syntax
+    "verbatimModuleSyntax": true  // Required alongside --erasableSyntaxOnly
+
+    // ❌ Non-erasable constructs now rejected at compile time:
+    // - enum declarations (emit runtime JS)
+    // - namespace with runtime code
+    // - parameter properties: constructor(public x: number)
+    // - import = and export = syntax
+  }
+}
+
+// ❌ Blocked by erasableSyntaxOnly
+enum Direction { Up, Down, Left, Right }
+
+class Point {
+  constructor(public x: number, public y: number) {}
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  // error! Parameter properties are not allowed with erasableSyntaxOnly
+}
+
+// ✅ TDD-friendly alternative — explicit class fields (erasable)
+class Point {
+  x: number;
+  y: number;
+  constructor(x: number, y: number) { this.x = x; this.y = y; }
+}
+```
+
+**TDD impact of type-stripping:** TDD watch loops that run test files directly via `node --experimental-strip-types` bypass the TypeScript compilation step entirely, delivering sub-100ms Red→Green feedback on file save — faster than even esbuild-based Vitest runs. The tradeoff: no full type-checking during the watch loop; run `tsc --noEmit` separately in CI.
+
+```bash
+# TDD watch loop via Node.js native type stripping (Node 23.6+, TS 5.8+)
+# Fastest possible feedback — no compilation, no esbuild, raw JS execution
+node --experimental-strip-types --watch src/domain/cart/Cart.test.ts
+
+# Separate type-check job in CI (does not block test execution)
+npx tsc --noEmit --erasableSyntaxOnly
+```
+
+**[community] Teams adopting `--erasableSyntaxOnly` report that refactoring away from `enum` and parameter properties, while initially painful, produces cleaner TypeScript: plain const objects replace enums (preserving tree-shakability), and explicit constructor body assignment replaces parameter properties (making the assignment visible and debuggable). The TDD test suite catches any regressions during the migration.**
+
+#### TypeScript 5.9: TDD-Friendly `tsc --init` Defaults
+
+TypeScript 5.9 updated `tsc --init` to generate a prescriptive minimal `tsconfig.json` that matches modern TDD best practices out of the box:
+
+```jsonc
+// tsconfig.json generated by `tsc --init` in TypeScript 5.9+
+{
+  "compilerOptions": {
+    "strict": true,                    // ← previously off by default; now on
+    "noUncheckedIndexedAccess": true,  // ← new in 5.9 baseline
+    "exactOptionalPropertyTypes": true,// ← new in 5.9 baseline
+    "moduleDetection": "force",        // ← prevents accidental global scripts
+    "module": "nodenext",              // ← ESM-first
+    "target": "esnext"
+  }
+}
+```
+
+**Why TDD benefits from the 5.9 baseline:** New projects initialized with `tsc --init` now start with the same strict settings that this guide has recommended since the first iteration. Teams no longer need to manually add `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` — the default scaffold enforces TDD-quality type precision from the first test case.
+
+**`import defer` (TypeScript 5.9):** Lazy module evaluation defers a module's side effects until first use. In TDD, this reduces test isolation failures caused by module-level side effects (e.g., database connections opened on import):
+
+```typescript
+// import defer: module is evaluated lazily — no side effects at import time
+import defer * as db from './db.js';
+
+// Only when db.query() is first called does db.ts execute its module-level code.
+// TDD benefit: test files that import this module do NOT open a DB connection
+// unless the specific test case that calls db.query() runs.
+// Compare with the eager-import problem documented in gotcha #11 above.
+```
+
+**[community] `import defer` is not yet widely supported at runtime (requires Node.js with `--experimental-vm-modules` or a compatible bundler). Treat it as a future-proof design signal rather than an immediate production tool in 2026. The TDD test suite remains the safety net when adopting it.**
+
+---
+
+### Vitest 4.0 — New Matchers and TDD-Relevant Changes [community]
+
+Vitest 4.0 (released 2025–2026) brings several new features that improve TDD workflows in TypeScript projects.
+
+**Requirements:** Vitest 4.0 requires Vite ≥ 6.0 and Node.js ≥ 20.
+
+#### `expect.schemaMatching` — Schema-Validated TDD Test Cases
+
+Vitest 4.0 adds `expect.schemaMatching`, an asymmetric matcher that validates a value against a Standard Schema v1-compatible schema (Zod, Valibot, ArkType). This enables TDD test cases that specify both the _shape_ and the _validation rules_ of a response in a single assertion.
+
+```typescript
+// vitest 4.0 — schema-validated TDD test case
+import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
+import { createUserHandler } from './createUserHandler.js';
+
+// Step 1: RED — define the schema first (this IS the test basis / specification)
+const UserResponseSchema = z.object({
+  id:        z.string().uuid(),
+  email:     z.string().email(),
+  createdAt: z.string().datetime(),
+  role:      z.enum(['admin', 'member', 'viewer']),
+});
+
+type UserResponse = z.infer<typeof UserResponseSchema>;
+
+describe('createUserHandler', () => {
+  it('returns a valid user response shape', async () => {
+    const res = await createUserHandler({
+      email: 'alice@example.com',
+      role:  'member',
+    });
+
+    // expect.schemaMatching validates against the Zod schema — no manual field assertions
+    expect(res).toMatchObject(expect.schemaMatching(UserResponseSchema));
+  });
+
+  it('generates a UUID id', async () => {
+    const res = await createUserHandler({ email: 'bob@example.com', role: 'admin' });
+    // Combine schemaMatching with explicit field checks for precision
+    expect(res).toEqual(expect.schemaMatching(UserResponseSchema));
+    expect(res.id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+});
+```
+
+**Why `expect.schemaMatching` improves TDD:** In traditional TDD, specifying a complex response shape requires many individual `expect(res.field).toBe(...)` assertions. With schema-first TDD, the Zod schema IS the failing test specification — you write the schema, run the test (Red), implement the handler (Green), and the schema serves as both a runtime validator and a Vitest assertion. The test case is shorter and the specification is machine-verifiable.
+
+#### `expect.assert` — Type-Narrowing in TDD Test Cases
+
+`expect.assert` provides direct access to Chai's assertion interface when Vitest's `expect.to*` matchers do not produce the right TypeScript narrowing:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { parseOrderId } from './parseOrderId.js';
+
+describe('parseOrderId', () => {
+  it('narrows the result type with expect.assert', () => {
+    const result = parseOrderId('ORD-001');
+
+    // Traditional approach — no TypeScript narrowing after expect()
+    expect(result.success).toBe(true);
+    // result.value is still Result<string, Error> — TypeScript doesn't narrow here
+
+    // Vitest 4.0 — expect.assert provides Chai assertion that narrows in TypeScript
+    expect.assert(result.success === true);
+    // TypeScript now knows result is { success: true; value: string }
+    expect(result.value).toBe('ORD-001'); // ← TypeScript-safe after narrowing
+  });
+});
+```
+
+#### `spyOn` Constructor Support
+
+Vitest 4.0 allows `vi.spyOn` to intercept class constructor calls. In TDD, this enables test cases that verify a collaborator is instantiated with the correct arguments — useful when refactoring legacy code that uses `new` internally before dependency injection is in place:
+
+```typescript
+import { vi, describe, it, expect } from 'vitest';
+import { ReportService } from './ReportService.js';
+import { PdfRenderer } from './PdfRenderer.js';
+
+describe('ReportService', () => {
+  it('constructs a PdfRenderer with the correct paper size', () => {
+    // Vitest 4.0: spy on the PdfRenderer constructor
+    const constructorSpy = vi.spyOn(PdfRenderer, 'constructor' as 'prototype');
+
+    const service = new ReportService({ format: 'A4' });
+    service.generate();
+
+    // Verify the constructor was called with the correct config
+    expect(constructorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ paperSize: 'A4' })
+    );
+
+    constructorSpy.mockRestore();
+  });
+});
+
+// Note: constructor spying is a stepping stone — the end goal is still
+// to refactor toward dependency injection and replace the spy with a typed fake.
+// Use constructor spying when working with legacy code, not new TDD'd code.
+```
+
+**[community] Vitest 4.0's `spyOn` constructor support bridges the gap between legacy TypeScript code that uses `new` internally and the TDD ideal of dependency injection. Teams using constructor spies should treat each spy as a TODO: "refactor to inject this dependency." Track these as technical debt items.**
+
+#### Visual Regression TDD with `toMatchScreenshot`
+
+Vitest 4.0 Browser Mode (now stable, no longer experimental) adds `toMatchScreenshot` for visual regression test cases. In TDD, this supports a visual-first Red step for UI components:
+
+```typescript
+// vitest.config.ts — Browser Mode with visual regression
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    browser: {
+      enabled: true,
+      provider: { name: 'playwright' }, // Now an object, not a string (Vitest 4.0)
+      name: 'chromium',
+    },
+  },
+});
+
+// button.browser.test.ts — visual TDD test case
+import { page } from '@vitest/browser/context';
+import { describe, it, expect } from 'vitest';
+
+describe('Button component (visual TDD)', () => {
+  it('matches the approved visual design for primary variant', async () => {
+    await page.goto('/components/button?variant=primary');
+    const button = page.locator('[data-testid="primary-button"]');
+
+    // RED: first run creates the baseline screenshot
+    // GREEN: implementation matches the screenshot
+    // REFACTOR: update screenshot when design intentionally changes
+    await expect(button).toMatchScreenshot('button-primary.png');
+  });
+
+  it('button is visible in viewport on initial render', async () => {
+    await page.goto('/components/button');
+    const button = page.locator('[data-testid="primary-button"]');
+
+    // Vitest 4.0 new matcher: toBeInViewport
+    await expect(button).toBeInViewport();
+  });
+});
+```
+
+**[community] Visual TDD with `toMatchScreenshot` works best when combined with component-level acceptance criteria: write the screenshot test case before implementing the component (Red = no screenshot exists yet), implement the component (Green = screenshot generated and matches), then lock in the baseline. Teams using Storybook can point Vitest Browser Mode at Storybook story URLs for consistent isolation.**
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -2276,6 +2541,9 @@ it('rejects orders with negative quantities', () => {
 | Martin Fowler — Testing Guide | Article | https://martinfowler.com/testing/ | Production patterns, Test Cancer failure mode, self-testing code principles |
 | TypeScript 5.5 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html | Inferred type predicates — TDD-friendly filter functions with automatic narrowing |
 | TypeScript 5.7 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-7.html | `--noCheck` flag for CI parallelisation of type-check vs test jobs |
+| TypeScript 5.8 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html | Granular return branch checks; `--erasableSyntaxOnly` for Node.js type-stripping TDD loops |
+| TypeScript 5.9 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html | TDD-friendly `tsc --init` defaults; `import defer` for lazy module evaluation; `noUncheckedSideEffectImports` |
+| Vitest 4.0 Release Notes | Docs | https://vitest.dev/blog/vitest-4.html | Stable Browser Mode; `expect.schemaMatching` (Zod/Valibot/ArkType); `expect.assert` for type narrowing; `spyOn` constructor; `toMatchScreenshot` |
 | "Is TDD Dead?" video series | Video series | https://martinfowler.com/articles/is-tdd-dead/ | Kent Beck, DHH, Fowler debate; introduces Frequency/Fidelity/Overhead/Lifespan framework |
 | Self-Testing Code — Martin Fowler | Article | https://martinfowler.com/bliki/SelfTestingCode.html | The foundational goal behind TDD; explains why automated test suites matter more than methodology |
 | Google Testing Blog — "The Way of TDD" | Blog post | https://testing.googleblog.com/2026/03/the-way-of-tdd.html | 2026 Google TotT post on TDD practice and discipline |

@@ -1,6 +1,13 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 27 (2026-05-12): added TypeScript 6.0 language features — Subpath Imports starting with `#/`,
+       Less Context-Sensitivity on `this`-less Functions (improved inference for method-syntax callbacks),
+       `--moduleResolution bundler` + `--module commonjs` combination as a migration path, and ES2025
+       Set composition methods (union/intersection/difference/symmetricDifference/isSubsetOf/isSupersetOf/
+       isDisjointFrom) and `Promise.try` — sourced from
+       typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html and
+       developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set
      Iter 26 (2026-05-12): added Template Literal Types deep-dive (type-safe property event source pattern,
        cross-multiplication, intrinsic string utilities with examples, performance anti-pattern for large unions)
        and Utility Types complete reference (ConstructorParameters, ThisParameterType, OmitThisParameter,
@@ -63,7 +70,7 @@
 | 5.7 | `--noCheck`, path rewriting, relative import completions | — |
 | 5.8 | Granular return expression branch checks, `--erasableSyntaxOnly`, `require()` of ESM in `nodenext`, `--module node18`, `--libReplacement` | `"module": "node18"` or `"nodenext"` |
 | 5.9 | `import defer`, `--module node20`, minimal `tsc --init`, `noUncheckedSideEffectImports`, `verbatimModuleSyntax`, DOM summary hovers | `"moduleDetection": "force"`, `"verbatimModuleSyntax": true` |
-| 6.0 | **Breaking:** `strict`/`esnext`/`es2025` defaults; `types: []`; `outFile`, `baseUrl`, `module amd/umd` removed; Temporal API, `RegExp.escape`, `Map.getOrInsert`; `--stableTypeOrdering`; DOM lib consolidates `dom.iterable` | Update `tsconfig.json` — set `"types": ["node"]`, `"rootDir": "./src"`, migrate `baseUrl` → `paths` |
+| 6.0 | **Breaking:** `strict`/`esnext`/`es2025` defaults; `types: []`; `outFile`, `baseUrl`, `module amd/umd` removed; Temporal API, `RegExp.escape`, `Map.getOrInsert`; `--stableTypeOrdering`; DOM lib consolidates `dom.iterable`; Subpath imports `#/`; `this`-less function inference; ES2025 `Set` composition methods; `Promise.try` | Update `tsconfig.json` — set `"types": ["node"]`, `"rootDir": "./src"`, migrate `baseUrl` → `paths` |
 
 Keep `tsconfig.json` at `"strict": true` regardless of version; new strict sub-flags are only added to the umbrella flag after a deprecation period.
 
@@ -1707,6 +1714,27 @@ const safeRegex = new RegExp(RegExp.escape(userInput));
 const cache = new Map<string, string[]>();
 const list = cache.getOrInsert("key", []);        // returns existing or inserts []
 const computed = cache.getOrInsertComputed("key2", k => [k]); // lazy computation
+
+// Set composition methods (ES2025 — requires "target": "es2025" or "esnext")
+const setA = new Set([1, 2, 3, 4]);
+const setC = new Set([3, 4, 5, 6]);
+
+const union           = setA.union(setC);             // Set {1, 2, 3, 4, 5, 6}
+const intersection    = setA.intersection(setC);      // Set {3, 4}
+const difference      = setA.difference(setC);        // Set {1, 2}
+const symDiff         = setA.symmetricDifference(setC); // Set {1, 2, 5, 6}
+
+const setB = new Set([2, 3]);
+const isSubset        = setB.isSubsetOf(setA);        // true  (B ⊆ A)
+const isSuperset      = setA.isSupersetOf(setB);      // true  (A ⊇ B)
+const isDisjoint      = setA.isDisjointFrom(new Set([10, 11])); // true
+
+// Promise.try — wrap a potentially-throwing sync function as a Promise (ES2025)
+// Avoids the split between `new Promise()` for async and try/catch for sync
+async function loadConfig(path: string): Promise<Config> {
+  return Promise.try(() => JSON.parse(fs.readFileSync(path, 'utf-8')) as Config);
+  // If JSON.parse throws, Promise.try returns a rejected promise — no separate try/catch
+}
 ```
 
 **Removed / deprecated options requiring action:**
@@ -1746,6 +1774,79 @@ const computed = cache.getOrInsertComputed("key2", k => [k]); // lazy computatio
 ```
 
 **`--stableTypeOrdering` flag (migration bridge to TS 7.0):** TypeScript 7.0 will introduce deterministic union type ordering. Enable this flag in TypeScript 6.0 to match TS 7.0 behavior now (at up to 25% compile slowdown). Useful for catching declaration emit ordering differences before upgrading.
+
+---
+
+### TypeScript 6.0 — Subpath Imports `#/` and `this`-less Function Inference
+
+**Subpath imports starting with `#/` (TypeScript 6.0 + Node.js 20+):**
+
+Node.js supports a shorthand form for subpath imports — `"#/*"` — that maps all paths directly under `#/` without requiring an extra named segment. TypeScript 6.0 supports this under `--moduleResolution nodenext` and `--moduleResolution bundler`.
+
+```json
+// package.json — before: required named segment (e.g., #root/)
+{
+  "name": "my-package",
+  "type": "module",
+  "imports": {
+    "#root/*": "./dist/*.js"
+  }
+}
+```
+
+```typescript
+// Before: import * as utils from "#root/utils.js";
+```
+
+```json
+// package.json — after: simpler #/ prefix (Node.js 20 + TypeScript 6.0)
+{
+  "name": "my-package",
+  "type": "module",
+  "imports": {
+    "#/*": "./dist/*.js"
+  }
+}
+```
+
+```typescript
+// After: shorter path, same effect
+import * as utils from "#/utils.js";
+import { createLogger } from "#/logger.js";
+```
+
+This also provides a clean alternative to `paths`-based aliases — `#/` imports are part of the Node.js module resolution spec, so they work without additional bundler configuration, unlike `tsconfig.json` `paths` entries.
+
+**Less context-sensitivity on `this`-less functions (TypeScript 6.0):**
+
+Previously, when you wrote method-syntax functions inside object literals passed to generic APIs, TypeScript treated those methods as "contextually sensitive" (because they could reference `this`). This blocked contextual type inference for sibling methods — even when `this` was never actually used.
+
+TypeScript 6.0 detects when a method does not reference `this` and skips the contextual sensitivity restriction, enabling full bidirectional type inference across the object's properties.
+
+```typescript
+declare function callIt<T>(obj: {
+  produce: (x: number) => T;
+  consume: (y: T) => void;
+}): void;
+
+// ❌ TypeScript 5.x error: 'y' implicitly has type 'unknown'
+//    because consume's method syntax made it contextually sensitive,
+//    blocking inference of T from produce
+callIt({
+  produce(x: number) { return x * 2; },
+  consume(y) { return y.toFixed(); },  // y: unknown in 5.x
+});
+
+// ✅ TypeScript 6.0: 'y' is correctly inferred as 'number'
+//    Because consume() never references 'this', TypeScript treats it
+//    the same as an arrow function — enabling full inference
+callIt({
+  produce(x: number) { return x * 2; },
+  consume(y) { return y.toFixed(); },  // y: number ✓
+});
+```
+
+[community] **Pitfall:** This change can surface previously-suppressed type errors. Code that previously compiled with `this`-using methods inside object literals may now have those methods correctly identified as contextually sensitive — and their sibling methods correctly typed. If `y` was silently `unknown` before and your code operated on it unsafely, TypeScript 6.0 will now surface the error. This is a correctness improvement, not a regression.
 
 ---
 
@@ -1958,6 +2059,9 @@ Without `exactOptionalPropertyTypes`, TypeScript treats `{ name?: string }` as e
 | Missing `verbatimModuleSyntax` | Implicit type-import elision causes hard-to-diagnose circular import issues | Enable `verbatimModuleSyntax: true`; use `import type` for all type-only imports |
 | `moduleDetection: "auto"` (default) | Files without `import`/`export` are treated as scripts, polluting global scope | Set `"moduleDetection": "force"` to treat all files as modules |
 | `types: []` not set | Every installed `@types/*` package is auto-included, causing duplicate globals | Explicitly list only needed `@types` in `"types": [...]` |
+| Manual set operations (filter/reduce) instead of Set composition methods | Verbose, allocation-heavy, error-prone compared to built-in ES2025 Set methods | Use `.union()`, `.intersection()`, `.difference()` etc. (`"target": "es2025"+`) |
+| `new Promise()` wrapper around sync throw instead of `Promise.try()` | Requires try/catch inside the constructor callback; error propagation is non-obvious | Use `Promise.try(() => syncThrowingFn())` to convert sync throws to rejected promises (ES2025) |
+| `#root/*` subpath import pattern when `#/*` is available | Extra naming indirection; `#root/` is a legacy Node.js workaround | Use `"#/*": "./dist/*.js"` in `package.json` imports with `--moduleResolution nodenext/bundler` |
 
 
 
@@ -2211,6 +2315,7 @@ Choosing the wrong `module`/`moduleResolution` pair is the most common tsconfig 
 | Legacy CommonJS | `commonjs` | `node10` | `ES2017`+ |
 | Browser SPA (bundler) | `preserve` | `bundler` | `ES2020`+ |
 | Library (dual CJS+ESM) | `nodenext` | `nodenext` | `ES2020` |
+| Migrating from `node` → modern (TS 6.0+) | `commonjs` | `bundler` | `ES2020`+ |
 
 **`nodenext` key behaviour:** automatically selects CJS or ESM output based on the file extension (`.cjs`/`.mjs`) and the `"type"` field in `package.json`. Relative imports in ESM must include the `.js` extension even when the source is `.ts`.
 
@@ -2224,6 +2329,7 @@ Choosing the wrong `module`/`moduleResolution` pair is the most common tsconfig 
 | `"skipLibCheck": false` | Much slower type-checking; fails on bad third-party `.d.ts` files | Use `"skipLibCheck": true` in app projects |
 | Missing `"noUnusedLocals"`/`"noUnusedParameters"` | Dead code accumulates silently | Add both flags to catch cleanup opportunities |
 | `"noPropertyAccessFromIndexSignature": false` | Dot notation allowed on index signatures — hides typos | Enable to enforce bracket notation for dynamic keys |
+| `"moduleResolution": "node"` (legacy) | Deprecated in TS 6.0; silently resolves paths that bundlers won't | Migrate to `"bundler"` (with `"module": "commonjs"` or `"preserve"`) as the first step |
 
 ---
 

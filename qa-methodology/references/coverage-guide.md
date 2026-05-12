@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -874,11 +874,12 @@ const config: PartialStrykerOptions = {
   tsconfigFile: 'tsconfig.json',
 
   // TypeScript checker performance option:
-  // 'prioritizePerformanceOverAccuracy' accepts mutants that fail to compile with a
-  // "possible" verdict rather than re-checking them individually. In large TS projects,
-  // this saves 20–40% of type-check overhead at the cost of a few false survivors.
-  // Use for PR runs; use the accurate default for nightly runs.
-  // TypeScript.checkerOptions: { prioritizePerformanceOverAccuracy: true },
+  // 'prioritizePerformanceOverAccuracy' (default: true) accepts mutants that fail to compile
+  // with a "possible" verdict rather than re-checking them individually. In large TS projects,
+  // this saves 20–40% of type-check overhead at the cost of a few false survivors (mutants
+  // marked "survived" that should be "CompileError"). The DEFAULT is `true` — performance-first.
+  // For nightly audit runs where full accuracy is required, set it to `false`:
+  typescriptChecker: { prioritizePerformanceOverAccuracy: false },  // accurate mode for nightly
 
   // Prevent Stryker from failing on TypeScript errors in mutated source.
   // Mutants that introduce type errors are discarded before test execution:
@@ -907,7 +908,7 @@ export default config;
 **When each option applies:**
 - `ignoreStatic: true` — always enable when using `coverageAnalysis: 'perTest'`; static mutants negate perTest savings
 - `disableTypeChecks` — restrict to generated files and mocks; applying it to `src/**` defeats the TypeScript checker's purpose
-- `prioritizePerformanceOverAccuracy` — safe for PR mutation runs where speed matters; disable for nightly audit runs where full accuracy is required
+- `prioritizePerformanceOverAccuracy` — **default is `true`** (performance-first). For PR runs this is correct: accept a few CompileError false survivors for speed. Set to `false` for nightly audit runs where every mutant classification must be precise. The configuration key is `typescriptChecker: { prioritizePerformanceOverAccuracy: false }` — NOT `TypeScript.checkerOptions` (that key does not exist).
 
 ### Pattern 18 — Discovering entirely untested files with `all: true` (Istanbul/Vitest)  [community]
 
@@ -1569,6 +1570,98 @@ experimental programmatic API. They are most useful in monorepo setups where tes
 infrastructure modules (database seeders, mock servers, fixture loaders) would otherwise
 inflate coverage numbers. For most projects, standard config-based coverage (Patterns 1–2)
 is sufficient and less complex.
+
+### Pattern 25 — Stryker `ignorers` plugin: custom mutation suppression patterns  [community]
+
+Stryker 7.3+ introduced a plugin-based `ignorers` system for suppressing mutations across
+entire code patterns — more powerful than per-line `// Stryker disable` comments when you
+need to exclude recurring patterns across many files. The built-in Angular ignorer ships
+with `@stryker-mutator/core`; custom ignorers can be written for any framework.
+
+Unlike `// Stryker disable` line comments (which suppress single lines) or `disableTypeChecks`
+(which prevents TypeScript compilation checks on mutants in matched files), `ignorers`
+operate at the AST node level — you specify a visitor that returns `true` to exclude
+a node from mutation.
+
+```typescript
+// stryker.config.ts — using a custom ignorer for dependency injection containers
+import type { PartialStrykerOptions } from '@stryker-mutator/api/core';
+
+const config: PartialStrykerOptions = {
+  testRunner: 'vitest',
+  vitest: { configFile: 'vitest.config.ts' },
+  checkers: ['typescript'],
+  tsconfigFile: 'tsconfig.json',
+  mutate: [
+    'src/**/*.ts',
+    '!src/**/*.spec.ts',
+    '!src/**/*.test.ts',
+    '!src/**/__mocks__/**',
+    '!src/**/index.ts',
+  ],
+  thresholds: { high: 80, low: 60, break: 50 },
+  reporters: ['html', 'progress', 'json'],
+  timeoutMS: 5000,
+  concurrency: 4,
+  incremental: true,
+  incrementalFile: '.stryker-tmp/incremental.json',
+  // The ignorers plugin is most commonly needed for Angular (built-in):
+  // plugins: ['@stryker-mutator/core/angular-ignorer'],
+  // For custom ignorers: plugins: ['./stryker-ignorers/di-container-ignorer.js'],
+};
+
+export default config;
+```
+
+```typescript
+// stryker-ignorers/di-container-ignorer.ts — suppress mutations inside DI container registrations
+// Mutations inside container.register() calls rarely represent testable logic:
+// they configure wiring, not behaviour. Mutating them produces timeouts, not failures.
+import type { Ignorer, NodePath } from '@stryker-mutator/api/ignore';
+
+export class DiContainerIgnorer implements Ignorer {
+  shouldIgnore(path: NodePath): string | undefined {
+    // Ignore mutations inside InversifyJS/Awilix/NestJS provider registration calls:
+    if (
+      path.isCallExpression() &&
+      path.node.callee &&
+      'property' in path.node.callee &&
+      typeof (path.node.callee as any).property?.name === 'string' &&
+      ['register', 'bind', 'provide', 'useClass', 'useFactory'].includes(
+        (path.node.callee as any).property.name
+      )
+    ) {
+      return 'DI container registration — mutating provider wiring tests infrastructure, not behaviour';
+    }
+    return undefined;  // undefined = allow mutation
+  }
+}
+```
+
+```bash
+# Install and configure custom ignorer (Stryker 7.3+)
+# 1. Write the ignorer class (see above)
+# 2. Add to plugins array in stryker.config.ts
+# 3. Run normally — Stryker will load the ignorer at startup:
+npx stryker run
+
+# Verify which mutants are being ignored (use HTML report):
+# Open reports/mutation/index.html → filter by status "Ignored"
+```
+
+**When to use `ignorers` vs `// Stryker disable`:**
+- `ignorers` — recurring structural patterns (decorator registrations, DI containers,
+  generated enum mappings) that appear in dozens of files. Write once, apply everywhere.
+- `// Stryker disable all` — one-off suppression for a specific function or block whose
+  mutants are genuinely untestable (e.g., Vitest in-source test blocks, see G25).
+- `disableTypeChecks: '<glob>'` — suppress TypeScript compilation checks on generated files
+  where type errors are expected (mocks, generated protobuf output). Not a mutation suppressor.
+
+**Stryker 9.6.0 note**: the string-literal mutator now automatically excludes dynamic
+import call expressions from mutation (`import('./module')`). Dynamic imports were
+previously mutated to empty strings, causing module-not-found errors that inflated
+timeout counts. This change reduces noise in projects using dynamic imports for
+code splitting.
 
 ---
 
@@ -2257,6 +2350,8 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 - **Stryker initial setup for TypeScript**: `@stryker-mutator/typescript-checker` + Jest/Vitest
   preset alignment typically requires 2–4 hours of initial configuration on a real-world codebase.
   TypeScript path aliases (`@/...`) must be configured in both `tsconfig.json` and Stryker config.
+  Use the `ignorers` plugin (Stryker 7.3+) to suppress recurring structural patterns (DI container
+  registrations, decorator wiring) across many files — avoids per-file `// Stryker disable` sprawl.
 - **Sharded coverage in CI**: parallel sharding requires a dedicated merge job (`vitest --merge-reports`)
   and threshold checks only on the merged output — per-shard threshold checks produce false positives.
 - **Vitest 3.2 baseline reset**: upgrading to Vitest 3.2+ resets V8 branch coverage baselines
@@ -2271,7 +2366,7 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Martin Fowler — Test Coverage | Official | https://martinfowler.com/bliki/TestCoverage.html | Defines the smell-detector framing; explains why 100 % is not the goal |
 | Stryker Mutator docs | Official | https://stryker-mutator.io/docs/ | Full configuration reference for Stryker JS/TS and Stryker.NET |
 | Stryker — Getting started (TypeScript) | Official | https://stryker-mutator.io/docs/stryker-js/getting-started/ | Step-by-step Jest/Vitest setup for TypeScript projects |
-| Stryker TypeScript checker | Official | https://stryker-mutator.io/docs/stryker-js/typescript-checker/ | TypeScript-specific mutant validation before test execution |
+| Stryker TypeScript checker | Official | https://stryker-mutator.io/docs/stryker-js/typescript-checker/ | TypeScript-specific mutant validation before test execution; `prioritizePerformanceOverAccuracy` (default: `true`) |
 | Stryker Vitest runner | Official | https://stryker-mutator.io/docs/stryker-js/vitest-runner/ | Vitest-specific Stryker runner for TypeScript/ESM projects |
 | Jest coverage configuration | Official | https://jestjs.io/docs/configuration#coveragethreshold-object | coverageThreshold schema with per-file and per-directory support |
 | Vitest coverage docs | Official | https://vitest.dev/guide/coverage.html | Threshold config, V8 AST remapping (v3.2+), per-file thresholds, TypeScript support |
@@ -2289,7 +2384,7 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | c8 — V8 coverage CLI (bcoe) | Official | https://github.com/bcoe/c8 | Lightweight V8 coverage wrapper for any Node test runner including ESM TypeScript |
 | Meta ACH: Mutation-Guided LLM Test Generation | Research | https://arxiv.org/abs/2501.12862 | arXiv:2501.12862 — selective mutant generation + LLM synthesis; 73 % engineer acceptance at Meta scale |
 | Jest 30 configuration docs | Official | https://jestjs.io/docs/configuration | Jest 30 (Oct 2025) reference; negative thresholds, moduleFileExtensions optimisation |
-| Stryker configuration reference | Official | https://stryker-mutator.io/docs/stryker-js/configuration/ | Full config reference: ignoreStatic, disableTypeChecks, coverageAnalysis, timeoutFactor, concurrency, testFiles |
+| Stryker configuration reference | Official | https://stryker-mutator.io/docs/stryker-js/configuration/ | Full config reference: ignoreStatic, disableTypeChecks, coverageAnalysis, timeoutFactor, concurrency, testFiles, typescriptChecker, ignorers |
 | Stryker Dashboard | Official | https://dashboard.stryker-mutator.io/ | Track mutation scores over time, generate badges, integrate with CI |
 | Stryker GitHub Releases | Official | https://github.com/stryker-mutator/stryker-js/releases | Release notes for Stryker 9.x: Node 20+ requirement, Vitest v2+/v4, percentage-based concurrency, testFiles option (9.5.1) |
 | Vitest 4 release notes | Official | https://vitest.dev/blog/vitest-4.html | Vitest 4 new features: stable Browser Mode, dynamic enableCoverage/disableCoverage API, expect.schemaMatching |

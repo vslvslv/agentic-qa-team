@@ -1,13 +1,14 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
 <!-- new (2026-05-12): Fowler 5-layer microservice strategy (component test level), Neon DB branch isolation, Vitest defineProject + extends API, Google "Construct with Collaborators" principle, "Fantastical Shapes" quality-over-ratio insight -->
+<!-- new (2026-05-12 iter 33): Vitest 3.x inline workspace config, multi-browser instances API, Playwright 1.50+ Clock API + tsconfig option + Aria Snapshots, TypeScript 7.0 migration implications for test pipelines, Test Double taxonomy per pyramid level (Classical vs Mockist TDD), Fowler TestDouble taxonomy at pyramid layers -->
 
 ---
 
-> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
+> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
 
 ---
 
@@ -1193,6 +1194,12 @@ export const orderFactory = Factory.define<Order>(() => ({
 
 23. **Passing real collaborators at the wrong test level defeats isolation** [community] — Google Engineering (2026, "Construct with Collaborators, Call with Work") distinguishes between constructing objects with real collaborators (appropriate for integration and component test levels) vs. calling methods with real work (appropriate for unit tests where the work should be stubbed). Teams that violate this boundary — e.g., passing a live `OrdersService` with a real DB connection into a unit test — accidentally raise their unit tests to the integration test level, with all the attendant start-up cost and flakiness, without any of the explicit lifecycle management (beforeAll/afterAll, container cleanup) that integration tests require. Fix: in TypeScript, define collaborators as interfaces and inject real implementations at the integration test level; inject `vi.fn()` doubles at the unit test level. The structural signal: if your unit test's `beforeAll` connects to a database, it is an integration test and should be in `*.integration.test.ts`. [community: testing.googleblog.com — "Construct with Collaborators, Call with Work", May 2026]
 
+24. **Classical vs Mockist TDD mismatch within a team causes test suite incoherence** [community] — Teams where some engineers apply Classical TDD (use real collaborators; prefer fakes) and others apply Mockist TDD (mock every collaborator) in the same test suite produce an incoherent pyramid: some files have real DB connections marked as unit tests (`*.unit.test.ts`), others have every dependency mocked marked as integration tests (`*.integration.test.ts`). The naming convention becomes meaningless, pyramid shape metrics are unreliable, and CI fail-fast ordering breaks. Fix: define an explicit team policy — Classical at integration level, Mockist at unit level — and add a lint rule or code review checklist item that flags unit test files importing `DataSource`, `Pool`, or network client constructors directly (a sign of Classical-style test in a Mockist-labelled file). [community: Fowler — Mocks Aren't Stubs; martinfowler.com/articles/mocksArentStubs.html]
+
+25. **Vitest 3.x inline workspace config and legacy `vitest.workspace.ts` coexistence** [community] — Vitest 3.0 supports both the old `vitest.workspace.ts` file and the new inline `test.projects` array. Teams that have both simultaneously get surprising precedence behaviour: if both exist, Vitest 3.x prefers the `test.projects` inline config and silently ignores the workspace file — without a warning. Teams migrating incrementally may end up running a different set of test projects than expected. Fix: delete `vitest.workspace.ts` after migrating to inline `test.projects`; add a CI check that fails if both files exist (a simple `ls vitest.workspace.* 2>/dev/null | wc -l` check in `.github/workflows` suffices). [official: vitest.dev/guide/projects — "workspace file is no longer needed when using inline projects configuration"]
+
+26. **TypeScript 7.0 `--stableTypeOrdering` adds 25% tsc overhead before it removes 90%** [community] — Teams enabling `--stableTypeOrdering` in tsconfig to prepare for TS 7.0's parallel checker find that the CI type-check step slows noticeably — the stable ordering trades a small overhead now for the performance leap of TS 7.0's native parallel checker later. If the team is not close to upgrading to TS 7.0, deferring this flag is reasonable. Add a TODO comment in `tsconfig.json` with the target TS 7.0 migration date so the flag is not forgotten. The performance impact varies: small codebases (<20k lines) may see no measurable difference; codebases >200k lines see the 25% increase most clearly. [official: typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html]
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -1247,6 +1254,269 @@ The pyramid assumes: (1) test cases can be written and run independently, (2) un
 
 ---
 
+### Test Double Selection by Pyramid Level  [community]
+
+Choosing the wrong type of test double for a given test level is a major source of both over-mocking (at the unit level) and under-isolation (at the integration level). Martin Fowler's canonical taxonomy (from Gerard Meszaros) defines five test double types — each maps naturally to a pyramid level:
+
+| Test Double | What it does | Best pyramid level | TypeScript implementation |
+|-------------|-------------|-------------------|---------------------------|
+| **Dummy** | Fills a parameter slot; never called | Unit — satisfies required constructor params | `null as unknown as UserService` or typed placeholder |
+| **Stub** | Returns hardcoded responses to specific calls | Unit — control what a dependency returns | `vi.fn().mockResolvedValue(fakeUser)` |
+| **Fake** | Working implementation with production shortcuts | Integration — in-memory DB, local SMTP server | SQLite in-memory via `better-sqlite3`, `nodemailer` mock transport |
+| **Spy** | Records calls; real implementation still runs | Integration — verify side effects without stopping real behaviour | `vi.spyOn(mailer, 'send')` |
+| **Mock** | Pre-programmed expectations verified after the test | Unit — strict interaction testing | `vi.fn()` + `expect(fn).toHaveBeenCalledWith(...)` |
+
+**Classical vs. Mockist TDD and pyramid level selection:**
+
+- **Classical TDD** (default in Google's style guide): uses real collaborators at every level unless awkward (network I/O, time, randomness). Prefers fakes and spies. Leads naturally to a heavier integration test level because real collaborators need real data.
+- **Mockist TDD** (London School): mocks every collaborator to isolate the test object. Produces a heavier unit test level, but mocks must be kept in sync with real interfaces — the drift problem. TypeScript partially mitigates this: `vi.mocked()` wraps the real type, so interface changes produce compile errors.
+
+The **practical synthesis** used in production TypeScript codebases: use Classical TDD at the integration test level (real DB, real HTTP handlers, fakes for external APIs), use Mockist TDD only at the unit test level for pure business logic with complex dependency graphs. Never mix the two philosophies in the same test file — it produces tests that are expensive to maintain without the benefits of either approach.
+
+```typescript
+// Unit test case: Mockist style — mock the repository, test only service logic
+// src/orders/orders.service.unit.test.ts
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { OrdersService } from './orders.service.js';
+import type { OrderRepository } from './order.repository.js';
+import type { Order } from './order.entity.js';
+
+// Mockist: every collaborator is a mock — test only OrdersService logic in isolation
+const mockRepo: OrderRepository = {
+  create: vi.fn(),
+  findById: vi.fn(),
+  findAll: vi.fn(),
+  delete: vi.fn(),
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('OrdersService.create', () => {
+  it('calls repository.create with validated input and returns the saved order', async () => {
+    const service = new OrdersService(mockRepo);
+    const input = { customerId: 'c1', items: [{ sku: 'A1', qty: 2 }] };
+    const saved: Order = { id: 'ord_001', ...input, status: 'pending', createdAt: new Date() };
+
+    vi.mocked(mockRepo.create).mockResolvedValue(saved);
+
+    const result = await service.create(input);
+
+    // Verify interaction (Mockist: we care HOW the service used the repo)
+    expect(mockRepo.create).toHaveBeenCalledWith(input);
+    expect(result).toStrictEqual(saved);
+  });
+
+  it('throws DomainError when items array is empty', async () => {
+    const service = new OrdersService(mockRepo);
+    await expect(service.create({ customerId: 'c1', items: [] })).rejects.toThrow('items must not be empty');
+    // Repository never called for invalid input
+    expect(mockRepo.create).not.toHaveBeenCalled();
+  });
+});
+```
+
+```typescript
+// Integration test case: Classical style — real repository + real SQLite DB
+// tests/integration/orders.service.integration.test.ts
+import { beforeAll, afterAll, afterEach, it, expect } from 'vitest';
+import { DataSource } from 'typeorm';
+import { OrdersService } from '../../src/orders/orders.service.js';
+import { OrderRepository } from '../../src/orders/order.repository.js';
+import { Order } from '../../src/orders/order.entity.js';
+
+// Classical: real DB — test how service + repository work together
+let dataSource: DataSource;
+let service: OrdersService;
+
+beforeAll(async () => {
+  dataSource = new DataSource({ type: 'sqlite', database: ':memory:', entities: [Order], synchronize: true });
+  await dataSource.initialize();
+  service = new OrdersService(new OrderRepository(dataSource));
+});
+
+afterAll(() => dataSource.destroy());
+afterEach(() => dataSource.getRepository(Order).clear());
+
+it('persists an order and makes it findable by id', async () => {
+  const created = await service.create({ customerId: 'c1', items: [{ sku: 'A1', qty: 2 }] });
+  const found = await service.findOne(created.id);
+  // State verification: we don't care HOW the service called the DB — only that the state is correct
+  expect(found?.customerId).toBe('c1');
+  expect(found?.status).toBe('pending');
+});
+```
+
+The two examples use the same service class but opposite test double strategies. The unit test case verifies *interaction* (was `create` called with the right argument?). The integration test case verifies *state* (is the order persisted and retrievable?). Both are needed — the unit test runs in < 1 ms, the integration test takes 50–100 ms but catches ORM mapping defects the unit test cannot. [community: Fowler — Mocks Aren't Stubs, martinfowler.com/articles/mocksArentStubs.html]
+
+---
+
+### Vitest 3.x Inline Workspace Configuration  [community]
+
+Vitest 3.0 (released January 17, 2025) introduced inline workspace configuration, eliminating the need for a separate `vitest.workspace.ts` file. Projects are now defined directly in `vitest.config.ts` using the `test.projects` array with full TypeScript type support. The `extends: true` option from `defineProject` was introduced in Vitest 2.x and remains the recommended pattern; Vitest 3 additionally allows plain config objects without `defineProject` in the inline workspace array for brevity.
+
+Key Vitest 3.x changes relevant to the pyramid:
+
+- **Inline workspace**: `test.projects: [...]` in `vitest.config.ts` replaces `vitest.workspace.ts` — no separate workspace file needed for small monorepos.
+- **Reporter redesign**: Reduced visual flicker; stable output in CI environments where streaming reporters previously produced garbled logs in parallel runs.
+- **Multi-browser instances**: The `instances` array in browser mode lets you run the same integration-level component test cases across Chromium, Firefox, and WebKit in a single CI step, each with separate caching — Vite processes each file once regardless of browser count.
+- **Location-based test filtering**: `vitest run src/orders/orders.service.unit.test.ts:42` runs only the test case at line 42 — useful for debugging a single failing integration test case without running the full suite.
+- **Public node API redesign**: The `vitest/node` API is now stable and fully documented, enabling CI scripts to programmatically query test results (pyramid shape checks, coverage reports) without shelling out to the CLI.
+
+```typescript
+// vitest.config.ts — Vitest 3.x inline workspace (no separate vitest.workspace.ts needed)
+import { defineConfig, defineProject } from 'vitest/config';
+import tsconfigPaths from 'vite-tsconfig-paths';
+
+export default defineConfig({
+  plugins: [tsconfigPaths()],
+  test: {
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+      // Vitest 3: coverage is root-only; defineProject intentionally cannot override it
+    },
+    // Vitest 3: define all projects inline — no vitest.workspace.ts required
+    projects: [
+      defineProject({
+        extends: true,   // inherit root plugins + coverage config
+        test: {
+          name: 'unit',
+          include: ['src/**/*.unit.test.ts'],
+          environment: 'node',
+          testTimeout: 5_000,
+        },
+      }),
+      defineProject({
+        extends: true,
+        test: {
+          name: 'integration',
+          include: ['src/**/*.integration.test.ts', 'tests/integration/**/*.test.ts'],
+          environment: 'node',
+          testTimeout: 60_000,
+          pool: 'forks',
+        },
+      }),
+      defineProject({
+        extends: true,
+        test: {
+          name: 'e2e',
+          include: ['e2e/**/*.e2e.test.ts'],
+          environment: 'node',
+          testTimeout: 120_000,
+          bail: 1,
+        },
+      }),
+      // Vitest 3 multi-browser instances: run component tests in Chromium + Firefox
+      defineProject({
+        extends: true,
+        test: {
+          name: 'components',
+          include: ['src/**/*.ct.test.tsx'],
+          browser: {
+            enabled: true,
+            provider: 'playwright',
+            // instances array: Vite processes each file once; results merged per browser
+            instances: [
+              { browser: 'chromium' },
+              { browser: 'firefox' },
+            ],
+          },
+        },
+      }),
+    ],
+  },
+});
+```
+
+The multi-browser `instances` configuration is specifically valuable for the Playwright component test level (`.ct.test.tsx` files) where browser engine differences matter. Do not use `instances` for node-environment unit or integration test cases — the overhead is only justified when testing browser-specific behaviour. [official: vitest.dev/guide/projects]
+
+---
+
+### Playwright 1.50+ Test Level Enhancements  [community]
+
+Playwright's 2025 release series (1.45–1.59) introduced capabilities that affect how test cases at the integration and e2e levels are structured. Key additions for TypeScript projects:
+
+**Clock API (v1.45) — integration test level:** The `page.clock` API enables precise control of time (Date, setTimeout, setInterval) within Playwright test cases. This is particularly valuable at the e2e test level for testing time-dependent UI behaviour (countdown timers, session expiry, scheduled notifications) without real delays. At the component test level (Playwright CT), `mount` receives a `clock` fixture for synchronous time control — no `await vi.useFakeTimers()` workaround required.
+
+**`tsconfig` option (v1.50) — TypeScript monorepo support:** The `playwright.config.ts` now accepts a top-level `tsconfig` option pointing to a specific `tsconfig.json`. In monorepos with separate `tsconfig.app.json` and `tsconfig.test.json`, this ensures Playwright resolves path aliases and module resolution consistently with the test tsconfig rather than the root one — eliminating the "works in tsc, fails in Playwright" path alias defect.
+
+**Aria Snapshots (v1.49) — integration and e2e test levels:** The `toMatchAriaSnapshot()` assertion serialises the ARIA accessibility tree to YAML and diffs it like a snapshot. This provides a structured alternative to `toMatchSnapshot()` for testing semantic HTML changes: ARIA snapshots are human-readable, smaller than HTML snapshots, and directly linked to the accessibility contract of the test object.
+
+```typescript
+// e2e/checkout.e2e.test.ts — Playwright 1.50+ features
+import { test, expect } from '@playwright/test';
+
+// playwight.config.ts: tsconfig: './tsconfig.e2e.json' — path aliases resolved consistently
+test('countdown timer reaches zero and disables submit', async ({ page, clock }) => {
+  // Clock API: freeze time at a known point — no real delays in CI
+  await clock.install({ time: new Date('2026-06-01T00:00:00Z') });
+  await page.goto('/checkout');
+  // Advance the clock 5 minutes — triggers session warning in the UI
+  await clock.fastForward(5 * 60 * 1_000);
+  await expect(page.getByRole('alert', { name: /session expiring/i })).toBeVisible();
+  // Advance past the session timeout — submit button should disable
+  await clock.fastForward(10 * 60 * 1_000);
+  await expect(page.getByRole('button', { name: /place order/i })).toBeDisabled();
+});
+
+test('cart page matches accessibility tree snapshot', async ({ page }) => {
+  await page.goto('/cart');
+  await page.waitForLoadState('networkidle');
+  // toMatchAriaSnapshot: YAML diff of the ARIA tree — smaller and more meaningful than HTML snapshot
+  await expect(page.locator('main')).toMatchAriaSnapshot(`
+    - heading "Your Cart" [level=1]
+    - list:
+      - listitem: "TypeScript Handbook - $29.99"
+      - listitem: "Vitest in Action - $39.99"
+    - text: "Total: $69.98"
+    - button "Proceed to Checkout"
+  `);
+});
+```
+
+The ARIA snapshot pattern is particularly valuable as a regression guard for the e2e test level: it catches accessibility regressions (headings removed, buttons losing their role) that HTTP response assertions and standard locator assertions miss. Unlike HTML snapshots, ARIA snapshots are immune to CSS class and DOM structure changes that do not affect the accessibility tree. [official: playwright.dev/docs/release-notes]
+
+---
+
+### TypeScript 7.0 Migration: Test Pipeline Implications  [community]
+
+TypeScript 7.0 (the native Go-based compiler port) is targeted as the successor to the 6.x line. Teams building TypeScript test suites should prepare their pyramid configurations now to avoid a painful migration:
+
+**Deprecated options that break test pipelines in TS 7.0:**
+
+| Option removed in TS 7.0 | Common use in test configs | Replacement |
+|--------------------------|---------------------------|-------------|
+| `--baseUrl` | Root-relative imports in test files | Use `paths` entries; `vite-tsconfig-paths` syncs to Vitest |
+| `--moduleResolution node` | `tsconfig.jest.json` or `tsconfig.test.json` legacy configs | Migrate to `"moduleResolution": "bundler"` (Vitest/Vite) or `"node16"`/`"nodenext"` (pure Node.js tests) |
+| `--outFile` | CI scripts that compile test reporters to a single file | Use `esbuild` or Rollup; not relevant to Vitest/Jest which transpile on-the-fly |
+| `target: es5` | Some Jest config presets | Remove; minimum target is `es2016` in TS 7.0 |
+| `--downlevelIteration` | Polyfill for `for...of` in older targets | Remove with `target: es5` |
+
+**`--stableTypeOrdering` flag (TS 6.0, required for TS 7.0 parallel checker):** TypeScript 7.0's native parallel checker requires deterministic type ordering. The `--stableTypeOrdering` flag in TS 6.0 makes types stable across parallel workers at the cost of ~25% type-check overhead. Enable it in your `tsconfig.json` before upgrading to TS 7.0:
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "stableTypeOrdering": true,
+    "moduleResolution": "bundler",
+    "module": "esnext",
+    "target": "esnext",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}
+```
+
+**Native TS port performance impact on the test pyramid:** TypeScript 7.0's native compiler (written in Go) is projected to deliver 10-15× faster type checking. For large TypeScript monorepos, this directly benefits the test pyramid: the `tsc --noEmit` step that currently adds 30–60 s to the unit test level CI job should complete in 2–5 s. This makes pre-test type checking practical even in hot-path unit test runs, not just in nightly CI. Plan to re-enable `tsc --noEmit` as a blocking CI gate before unit tests once TS 7.0 is stable — teams that disabled it for speed reasons now have no reason to keep it disabled.
+
+**`--erasableSyntaxOnly` (TS 5.8) + Node.js native TypeScript stripping:** TS 5.8 introduced `--erasableSyntaxOnly`, which restricts TypeScript syntax to forms that can be stripped by a type-erasing tool (no `const enum`, no legacy namespace merging, no parameter property shorthand in constructor). Node.js 23.6+ ships a built-in TypeScript type-stripper. When `--erasableSyntaxOnly` is enabled, test files can be run directly with `node --experimental-strip-types` without a transpiler step — the fastest possible unit test execution path for TypeScript. This is now the recommended approach for unit test suites in Node.js 23+ environments where no bundler is involved. [official: typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html]
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -1279,4 +1549,8 @@ The pyramid assumes: (1) test cases can be written and run independently, (2) un
 | fishery | Tool | https://github.com/thoughtbot/fishery | Type-safe test data factory library for TypeScript; compile-time errors when factory misses required interface fields |
 | @faker-js/faker | Tool | https://fakerjs.dev/ | Realistic TypeScript test data generation; used with fishery for typed factories |
 | Playwright Component Testing | Tool | https://playwright.dev/docs/test-components | Integration-level browser component testing; covers browser APIs jsdom cannot emulate; `@playwright/experimental-ct-react` |
+| Playwright Release Notes | Tool | https://playwright.dev/docs/release-notes | Clock API (v1.45), Aria Snapshots (v1.49), tsconfig option (v1.50), screencast API (v1.59) |
 | How They Test | Community | https://abhivaikar.github.io/howtheytest/ | 108 companies, 797 resources — real-world test pyramid ratios, strategies, and culture from production engineering orgs |
+| Mocks Aren't Stubs (Fowler) | Community | https://martinfowler.com/articles/mocksArentStubs.html | Canonical taxonomy: Dummy/Fake/Stub/Spy/Mock; Classical vs Mockist TDD; when to use each at each pyramid level |
+| Vitest 3.0 Release | Tool | https://vitest.dev/blog/vitest-3.html | Inline workspace config, multi-browser instances, reporter redesign, public node API stabilisation |
+| TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `--stableTypeOrdering`, deprecated option removal path, TS 7.0 migration preparation; `--erasableSyntaxOnly` for Node.js type-stripping |

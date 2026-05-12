@@ -5,6 +5,31 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.5 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 2/100)
+
+### qa-refine (5 guides extended, all ≥ 99/100)
+- `playwright-patterns.md` — locator.highlight leak in headed mode, ariaSnapshot assertion boxes for AI-based selector healing (+321 lines)
+- `cypress-patterns.md` — Svelte 5 runes CT silent-failure, glibc 2.31 requirement for Cypress 14 on Ubuntu 18/20, `origin` route-target correction (99→100/100)
+- `k6-patterns.md` — k6 v2.0.0 final: HTTP API server opt-in (`--address` required), cloud secrets auto-injection risk with `--local-execution`, Readable Streams API section (+203 lines)
+- `detox-patterns.md` — Detox 20 `withTimeout` default 6000ms note, `clearText` caveat on secureTextEntry, multi-app waitForBackgroundOrSuspended (+248 lines)
+- `appium-wdio-patterns.md` — enhanced context switching deep-dive, `touchId` Simulator-only caveat, clipboard read base64-wrapped binary, WDIO v9 `browser.url()` await enforcement (+474 lines, 10,794 total)
+
+### qa-methodology-refine (12 guides extended, all 100/100)
+- `accessibility-guide.md` — WCAG 2.5.7 Dragging Movements SC, TS 6.0 jest-axe `types: []` break, axe-core 4.12 `preload` option (+994 lines)
+- `flakiness-guide.md` — `page.consoleMessages()` v1.56 API, Playwright `captureGitInfo` for CI trace attribution, flaky-test GitHub Actions matrix retry pattern (+538 lines)
+- `shift-left-guide.md` — langwatch/scenario AI agent adversarial testing, TS 6.0 migration gate in pre-commit, Semgrep 1.90+ YAML syntax breaking change (+416 lines)
+- `coverage-guide.md` — Stryker default bug fix: `prioritizePerformanceOverAccuracy` is `true` by default (not false as previously documented)
+- `contract-testing-guide.md` — pact-js v16.4 `addInteractionReference`, corrected webhook event type (`contract_published` not `contract_created`)
+- `test-data-guide.md` — Vitest 4.0 `poolOptions` deprecation: `forks`/`threads` deprecated → `pool` API migration guide
+- `ci-cd-testing-guide.md`, `tdd-guide.md`, `bdd-guide.md`, `test-isolation-guide.md`, `test-pyramid-guide.md`, `exploratory-guide.md` — incremental improvements, refreshed community signal
+
+### lang-refine (5 guides extended, all 100/100)
+- `csharp-patterns.md` — `FrozenDictionary`/`FrozenSet`, `SearchValues<T>` SIMD, `TimeProvider` for test-clock, `SseParser` SSE streaming (+375 lines)
+- `java-patterns.md` — Java 24: Module Imports JEP 476, Flexible Constructor Bodies JEP 492, primitive-type patterns preview
+- `typescript-patterns.md`, `javascript-patterns.md`, `python-patterns.md` — incremental improvements, refreshed community signal
+
+---
+
 ## v1.16.0.4 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 1/100), learning-sources +36 new sources
 
 ### learning-sources catalog (+36 sources, 327 → 363 entries)

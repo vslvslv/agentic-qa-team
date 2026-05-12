@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: testcontainers.com/cloud/docs/ (Testcontainers Cloud CI offload + Turbo mode) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/test-cli (--only-changed), playwright.dev/docs/test-global-setup-teardown (Project Dependencies), vitest.dev/guide/browser (Browser Mode CI), vitest.dev/guide/workspace (Projects/workspace mode) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 25 CI testing pillars covered in this guide:**
+**The 29 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -43,6 +43,10 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 23 | Deployment environments | GitHub Environments with reviewer gates + wait timers |
 | 24 | Docker BuildKit cache | GHA layer cache (`type=gha,mode=max`) for test images |
 | 25 | Testcontainers Cloud | Remote Docker daemon offload + Turbo mode for parallel Testcontainers suites |
+| 26 | `--only-changed` gate | Playwright fast PR feedback: run only spec files changed since origin/main |
+| 27 | Project Dependencies | Replace `globalSetup` with traceable, fixture-aware setup projects |
+| 28 | Vitest Browser Mode | Real Chromium component tests within Vitest — `fullyParallel`-compatible |
+| 29 | Vitest Workspace Projects | Monorepo: multi-env test orchestration in one Vitest process |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -3036,6 +3040,10 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 | GitHub Environment protection rule on production without a wait timer | "Approve under pressure" — reviewers click approve without reviewing e2e results | Add 10-minute wait timer; gives reviewers time to review results without being rushed |
 | Deployment health check using fixed sleep after deploy | Sleep is too long (wastes time) or too short (fails before app is ready) | Poll `/health` endpoint with exponential backoff until `{ status: "ok", version: <sha> }` |
 | TypeScript `--noCheck` without a mandatory parallel `tsc --noEmit` gate | Type errors pass transpile-only CI; discovered in production | Add `all-checks` gate job requiring BOTH transpile+test AND typecheck to pass |
+| Playwright `--only-changed` without a nightly full-suite run | Changed-file tests pass; indirectly affected tests never run; hidden defects | Always run full suite nightly or on push to main; use `--only-changed` as supplementary fast gate only |
+| Playwright `globalSetup` used instead of Project Dependencies | Setup failures appear as cryptic first-test errors — not traceable | Migrate to `dependsOn: ['setup']` for visible, traceable setup failures in HTML report |
+| Vitest Browser Mode test isolation assumed to be per-test | Global DOM state bleeds between tests in the same file; ordering-dependent flakiness | Add explicit `afterEach` cleanup for any browser global state; audit all `window.*` mutations |
+| Vitest workspace `include: ['**/*.test.ts']` without package prefix | All test files from all packages matched; Node-only tests fail in jsdom environment | Scope every project's `include` to `'packages/<name>/src/**/*.test.ts'` |
 
 ## Real-World Gotchas [community]
 
@@ -3165,6 +3173,14 @@ export default env;
 35. **GitHub Environment protection rule configured on staging but not on the jobs that deploy to production** [community]: Environment protection rules only apply to jobs that explicitly declare `environment: production`. A deployment pipeline that uses a reusable workflow for the production deploy step but does not pass `environment:` as a parameter will silently bypass all protection rules. Teams discover this after a bad production deploy — the deployment ran without waiting for reviewer approval because the environment was not declared on the job. Audit every deployment job in every workflow file for the correct `environment:` declaration.
 
 36. **TypeScript `--noCheck` adopted without a mandatory parallel `tsc --noEmit` gate** [community]: `--noCheck` is designed to be paired with a separate type-check job. Teams that adopt `--noCheck` for speed but treat the type-check job as optional discover the problem the same way that teams using `babel-jest` without `tsc --noEmit` discover it: type errors silently pass CI and are found in production. The `all-checks` gate job that requires BOTH `transpile-and-test` AND `typecheck` to pass is not optional — it is the safety invariant that makes `--noCheck` safe.
+
+37. **Using `--only-changed` without a nightly full-suite run** [community]: `--only-changed=origin/main` only runs test files that were directly modified — it does NOT detect tests in unchanged files whose subject code was indirectly changed. A test in `user.spec.ts` that exercises `payment.ts` will not be included in `--only-changed` if only `payment.ts` changed. Always run the full suite on a nightly schedule or on every push to `main`, and use `--only-changed` only as a fast supplementary gate on PRs.
+
+38. **Vitest Browser Mode test isolation assumed to be per-test** [community]: Unlike jsdom (per-test isolation via module registry reset), Vitest Browser Mode creates ONE browser context per test file. Global state mutations (CSS variables set by one test in a file) persist to subsequent tests in the same file. Teams that migrate jsdom tests expecting identical isolation behavior discover intermittent ordering-dependent failures. Add explicit `afterEach` cleanup for any browser global state modified during tests.
+
+39. **Playwright `globalSetup` used instead of Project Dependencies for CI** [community]: `globalSetup` runs outside the Playwright test runner context and is invisible to the HTML reporter and trace recorder. When setup fails (e.g., API seeding fails, auth token cannot be generated), CI reports the first test failing with a cryptic error instead of a setup failure. Migrate to Project Dependencies (`dependsOn: ['setup']`) so setup failures appear as distinct, traceable failures with correct error messages and trace links.
+
+40. **Vitest workspace projects using `**/*.test.ts` glob without package prefix** [community]: In a `defineWorkspace` config, an `include` pattern of `['**/*.test.ts']` at the workspace root matches test files from ALL packages. When a project runs with `environment: 'jsdom'`, all matched files (including Node-only API tests that import `node:crypto`, `node:fs`, etc.) will fail with DOM environment errors. Always scope `include` to `'packages/<name>/src/**/*.test.ts'` — never use the bare recursive glob in workspace projects.
 
 ## Tradeoffs & Alternatives
 |---|---|---|---|
@@ -4309,6 +4325,436 @@ jobs:
 
 > [community] LaunchDarkly's own engineering team recommends treating the `variation()` call in tests as a boundary — mock it at the LaunchDarkly client level, not by mocking the module that consumes flag values. Mocking at the client level ensures the flag-consumption code (the `if (newCheckoutFlow)` branch) is actually exercised in both states, while mocking at the module level can accidentally make both branches always return the same value.
 
+### Playwright `--only-changed` for Fast PR Feedback [community]
+
+The `--only-changed [ref]` flag restricts Playwright test execution to spec files that have been modified between `HEAD` and a given git reference (defaults to all uncommitted changes). In a PR workflow it limits the browser test run to files touched in the PR, providing sub-minute feedback for targeted changes without running the full e2e suite.
+
+> [community] Teams that add `--only-changed=origin/main` as a separate "fast gate" job run before full sharding report cutting median PR wait-time for e2e from 8–12 minutes to 90 seconds for PRs that touch a single feature area. The full sharded suite still runs in parallel — but the first signal arrives immediately from the changed-files run. The caveat: shared fixtures and page-object helpers are not detected as "changed" even when the tests that consume them change their assertions. Always pair with a nightly full-suite run that ignores `--only-changed`.
+
+```yaml
+# .github/workflows/ci.yml — fast e2e gate for changed tests only
+  e2e-fast:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }        # full history needed for git diff
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+      # Run only tests in files changed since origin/main — fast signal for focused PRs
+      - run: npx playwright test --only-changed=origin/main --reporter=list
+        name: E2E (changed files only)
+        continue-on-error: false
+
+  e2e-full:
+    needs: unit
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test --shard=${{ matrix.shard }}/4 --reporter=blob
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report/
+```
+
+**TypeScript playwright.config.ts with `fullyParallel` for even shard distribution:**
+
+```typescript
+// playwright.config.ts — optimized for even load distribution across shards
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests/e2e',
+  // fullyParallel: true distributes at test level, not file level
+  // This gives shards roughly equal workloads even if test files are unevenly sized
+  fullyParallel: true,
+  // With fullyParallel, more workers per shard can be used safely
+  workers: process.env['CI'] ? 2 : undefined,
+  retries: process.env['CI'] ? 2 : 0,
+  reporter: process.env['CI']
+    ? [['blob'], ['github']]
+    : [['html']],
+  use: {
+    ...devices['Desktop Chrome'],
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+  },
+  // Separate projects for different test levels — allows --only-changed per project
+  projects: [
+    { name: 'smoke', testMatch: /.*\.smoke\.spec\.ts/ },
+    { name: 'e2e',   testMatch: /.*\.spec\.ts/, testIgnore: /.*\.smoke\.spec\.ts/ },
+  ],
+});
+```
+
+> [community] `fullyParallel: true` is the single most impactful Playwright configuration change for sharded CI. Without it, Playwright distributes test files (not individual tests) across shards — one large file with 50 tests goes to one shard, while 10 files with 1 test each go to another. Shard load becomes imbalanced over time as large test files grow. With `fullyParallel: true`, every individual test is independently schedulable, achieving near-theoretical speedup from sharding.
+
+### Playwright Project Dependencies for CI Setup [community]
+
+Playwright's **project dependencies** (`dependsOn` in the project config) declare which projects must complete before a project begins — replacing the legacy `globalSetup` / `globalTeardown` hooks. Unlike `globalSetup`, project dependencies are fully integrated with the HTML reporter, trace recorder, and fixture system, making CI failures traceable to their root setup step.
+
+> [community] Teams that migrate from `globalSetup` to project dependencies report a significant improvement in CI diagnostics: when the `setup` project fails (e.g., database seeding, auth token generation), the HTML report shows the setup failure as a distinct entry with a trace link, rather than a confusing "Cannot find module" or undefined variable error inside the first test. The migration path is mechanical — extract the setup logic into a `setup.spec.ts` file and declare it as a `project` with `testMatch: /.*setup\.ts/`.
+
+```typescript
+// playwright.config.ts — project dependencies for CI setup/teardown
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests',
+  fullyParallel: true,
+  retries: process.env['CI'] ? 1 : 0,
+  workers: process.env['CI'] ? 2 : undefined,
+  projects: [
+    // Setup project: seeds database, generates auth tokens — must pass before e2e runs
+    {
+      name: 'setup',
+      testMatch: /.*\.setup\.ts/,
+      // Setup runs once per CI job, not per test
+      fullyParallel: false,
+    },
+    // Teardown project: cleans up ephemeral resources after all tests complete
+    {
+      name: 'teardown',
+      testMatch: /.*\.teardown\.ts/,
+      // Note: teardown project needs to be run explicitly or via dependsOn cleanup pattern
+    },
+    // All e2e tests depend on setup completing successfully
+    {
+      name: 'e2e-chromium',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: /.*\.spec\.ts/,
+      testIgnore: /.*\.(setup|teardown)\.ts/,
+      dependsOn: ['setup'],    // setup MUST pass before any e2e test starts
+    },
+  ],
+});
+```
+
+```typescript
+// tests/auth.setup.ts — database seeding and auth token generation
+import { test as setup, expect } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// File path where the auth state will be saved for reuse by all e2e tests
+const AUTH_FILE = path.join(__dirname, '.auth/user.json');
+
+// This setup spec runs as a Playwright test — visible in reports, traceable on failure
+setup('seed test data and authenticate admin user', async ({ page }) => {
+  // Seed database via API — runs against the deployed test environment
+  const seedRes = await page.request.post('/api/test/seed', {
+    headers: { 'X-Test-Secret': process.env['TEST_SECRET'] ?? '' },
+  });
+  expect(seedRes.status()).toBe(200);
+
+  // Authenticate and save browser storage state for reuse
+  await page.goto('/login');
+  await page.getByLabel('Email').fill(process.env['TEST_USER_EMAIL'] ?? 'admin@test.com');
+  await page.getByLabel('Password').fill(process.env['TEST_USER_PASSWORD'] ?? 'admin-password');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.waitForURL('/dashboard');
+
+  // Save auth state — all tests in the e2e project can restore this state
+  await page.context().storageState({ path: AUTH_FILE });
+});
+```
+
+```typescript
+// tests/user-management.spec.ts — test using saved auth state (no login overhead)
+import { test, expect } from '@playwright/test';
+import * as path from 'path';
+
+// Restore auth state from setup — skips login in every test
+test.use({
+  storageState: path.join(__dirname, '.auth/user.json'),
+});
+
+test.describe('User Management', () => {
+  test('admin can invite a new user', async ({ page }) => {
+    await page.goto('/users/invite');
+    await page.getByLabel('Email').fill('newuser@example.com');
+    await page.getByRole('button', { name: 'Send invitation' }).click();
+    await expect(page.getByRole('alert')).toContainText('Invitation sent');
+  });
+});
+```
+
+> [community] The most overlooked benefit of project dependencies: the `storageState` pattern. By running auth in the `setup` project once per CI job (not once per test), teams eliminate login time from every e2e test. On a 100-test e2e suite where login takes 2 seconds, this saves 200 seconds of test runtime and removes the most common source of timing-related e2e flakiness (auth token expiry mid-suite). The auth state file is saved to disk once and shared across all test workers.
+
+### Vitest Browser Mode as a CI Component Test Level [community]
+
+Vitest Browser Mode (`@vitest/browser`) executes tests in a real browser (Chromium, Firefox, Safari) via Playwright or WebDriverIO, without requiring a full application stack. Unlike jsdom (which simulates the DOM in Node.js), Browser Mode accesses native browser APIs, CSS layout, and `window` globals — making it suitable for component tests that require real rendering fidelity.
+
+Compared to Playwright Component Testing (`@playwright/experimental-ct-*`), Vitest Browser Mode integrates directly with Vitest's test runner, coverage provider, and workspace configuration — eliminating the need for a separate `playwright-ct.config.ts` for teams already using Vitest.
+
+> [community] Teams migrating from jsdom-based Vitest tests to Vitest Browser Mode for component tests report catching a class of defects invisible to jsdom: CSS-driven focus visibility (`:focus-visible` pseudo-class), pointer events blocked by overlapping elements, and scroll-container overflow. jsdom stubs these CSS interactions; Browser Mode runs them in real Chromium. Teams using `@testing-library/user-event` find that Browser Mode removes all jsdom-specific workarounds for pointer events and focus management that accumulated over time.
+
+```typescript
+// vitest.config.ts — separate unit (Node) and component (browser) projects
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    // Use projects to run unit tests in Node and component tests in browser
+    projects: [
+      {
+        // Unit tests: Node environment (fast, no browser overhead)
+        test: {
+          name: 'unit',
+          include: ['src/**/*.test.ts'],
+          exclude: ['src/**/*.browser.test.tsx'],
+          environment: 'node',
+          pool: 'threads',
+          coverage: {
+            provider: 'v8',
+            include: ['src/**/*.ts'],
+          },
+        },
+      },
+      {
+        plugins: [react()],
+        // Component tests: real Chromium browser (CSS layout, native events)
+        test: {
+          name: 'browser',
+          include: ['src/**/*.browser.test.tsx'],
+          browser: {
+            enabled: true,
+            provider: 'playwright',  // uses Playwright's Chromium
+            name: 'chromium',
+            headless: true,           // headless mode for CI
+            // Vitest automatically installs Playwright browsers if missing
+          },
+        },
+      },
+    ],
+  },
+});
+```
+
+```typescript
+// src/components/DatePicker.browser.test.tsx — component test in real Chromium
+import { render } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/dom';
+import { DatePicker } from './DatePicker';
+
+// Named .browser.test.tsx to distinguish from jsdom tests
+describe('DatePicker — browser rendering', () => {
+  it('opens the calendar on click and allows date selection', async () => {
+    render(<DatePicker value={null} onChange={() => {}} />);
+
+    const trigger = screen.getByRole('button', { name: 'Open calendar' });
+    // Real click in Chromium — triggers pointer events and focus correctly
+    await fireEvent.click(trigger);
+
+    // Popover must be visible in the DOM with correct position
+    const calendar = screen.getByRole('dialog', { name: 'Date picker calendar' });
+    expect(calendar).toBeVisible();
+
+    // Verify CSS layout — calendar must not be occluded by another element
+    const rect = calendar.getBoundingClientRect();
+    expect(rect.width).toBeGreaterThan(200);    // renders with real CSS dimensions
+    expect(rect.height).toBeGreaterThan(150);
+  });
+
+  it('closes on Escape key', async () => {
+    render(<DatePicker value={null} onChange={() => {}} />);
+    await fireEvent.click(screen.getByRole('button', { name: 'Open calendar' }));
+
+    // Real keyboard event — tests actual focus management, not jsdom simulation
+    await fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+```
+
+**GitHub Actions — Vitest Browser Mode with Playwright provider:**
+
+```yaml
+# .github/workflows/ci.yml — Vitest browser component tests
+  component-browser:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Install Playwright browsers (used by Vitest Browser Mode under the hood)
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+
+      # Run only browser project — unit tests run in separate job
+      - run: npx vitest run --project browser --reporter=verbose
+        name: Component tests (Vitest Browser Mode)
+```
+
+> [community] The critical gotcha for Vitest Browser Mode in CI: unlike jsdom, which inherits Node's process isolation per test file, Browser Mode creates ONE browser context per test file by default. This means test-level isolation is restricted to within a file — not between files. Teams with browser tests that mutate global CSS variables, inject `<style>` elements, or modify `window` properties must explicitly clean up in `afterEach`. Teams that miss this discover ordering-dependent failures only when running the full suite in CI.
+
+> [community] Vitest Browser Mode's coverage provider is V8 — the same as native Vitest. This means unified coverage reports across unit (Node) and component (browser) projects are possible from a single `vitest run` command with `--coverage`. Teams that previously maintained separate Jest + Playwright CT setups with separate coverage providers (V8 for Vitest, Playwright's own coverage for CT) gain a single coverage report without additional tooling. The catch: Playwright CT coverage and Vitest browser coverage use different instrumentation — do not mix them in the same project.
+
+### Vitest Workspace Projects for Monorepo Test Orchestration [community]
+
+Vitest's **workspace projects** (`vitest.config.ts` with a `projects` array) run multiple Vitest configurations within a single process, enabling a monorepo to execute unit tests, component tests, and API tests with different environments and configurations from one command. This differs from Nx/Turbo affected-graph execution — it is intra-tool orchestration within a single Vitest invocation.
+
+> [community] Teams with 5–15 packages in a monorepo report that Vitest workspace mode reduces CI configuration overhead by 60–70% compared to per-package Vitest configs triggered by Nx or Turbo. The entire monorepo's test suite launches in a single Vitest process, sharing the module cache across packages. The tradeoff: test isolation between packages is weaker (shared module registry for pure Node tests); teams with strong isolation requirements should still use separate processes per package via Nx/Turbo.
+
+```typescript
+// vitest.workspace.ts — orchestrate multiple packages in one vitest process
+import { defineWorkspace } from 'vitest/config';
+
+export default defineWorkspace([
+  // Package-level configs — each has its own environment and include pattern
+  {
+    extends: './packages/core/vitest.config.ts',
+    test: {
+      name: 'core',
+      root: './packages/core',
+      include: ['src/**/*.test.ts'],
+      environment: 'node',
+    },
+  },
+  {
+    extends: './packages/ui/vitest.config.ts',
+    test: {
+      name: 'ui',
+      root: './packages/ui',
+      include: ['src/**/*.test.tsx'],
+      environment: 'jsdom',
+      setupFiles: ['./packages/ui/tests/setup-dom.ts'],
+    },
+  },
+  {
+    extends: './packages/api/vitest.config.ts',
+    test: {
+      name: 'api',
+      root: './packages/api',
+      include: ['src/**/*.test.ts'],
+      environment: 'node',
+      // Integration-style: allow more time for DB connections
+      testTimeout: 15_000,
+    },
+  },
+]);
+```
+
+**GitHub Actions — workspace-based CI with project filtering:**
+
+```yaml
+# .github/workflows/ci.yml — filter by vitest project name for affected-only testing
+  unit-core:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Run only the 'core' project — scoped to packages/core changes
+      - run: npx vitest run --project core --coverage --reporter=verbose
+        name: Core package tests
+
+  unit-ui:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Run only the 'ui' project — scoped to packages/ui changes
+      - run: npx vitest run --project ui --reporter=verbose
+        name: UI package tests
+
+  unit-all:
+    # For main branch — run all workspace projects together
+    needs: lint
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npx vitest run --coverage --reporter=junit --outputFile=junit.xml
+        name: All workspace projects
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-results
+          path: junit.xml
+```
+
+**Coverage merging across workspace projects:**
+
+```typescript
+// vitest.workspace.ts — coverage configuration for unified report across all projects
+import { defineWorkspace } from 'vitest/config';
+
+export default defineWorkspace([
+  {
+    test: {
+      name: 'core',
+      root: './packages/core',
+      include: ['src/**/*.test.ts'],
+      environment: 'node',
+    },
+  },
+  {
+    test: {
+      name: 'ui',
+      root: './packages/ui',
+      include: ['src/**/*.test.tsx'],
+      environment: 'jsdom',
+    },
+  },
+  // Coverage is configured at root level only — applies to all projects
+  // (per-project coverage is not supported; use root vitest.config.ts for thresholds)
+]);
+
+// Root vitest.config.ts — coverage thresholds apply to the merged report
+// import { defineConfig } from 'vitest/config';
+// export default defineConfig({
+//   test: {
+//     coverage: {
+//       provider: 'v8',
+//       reporter: ['lcov', 'text', 'json-summary'],
+//       include: ['packages/*/src/**/*.ts', 'packages/*/src/**/*.tsx'],
+//       exclude: ['packages/*/src/**/*.d.ts', 'packages/*/src/**/*.test.*'],
+//       thresholds: { lines: 80, branches: 75 },
+//     },
+//   },
+// });
+```
+
+> [community] The most common Vitest workspace pitfall: expecting `--project ui` to automatically exclude all other project test files. It does exclude them from execution, but if a test file in `packages/core` is accidentally matched by the `ui` project's `include` glob (e.g., glob pattern too broad), it will run in the wrong environment. Always scope `include` patterns to the package's own `src/` directory, never use `**/*.test.ts` at the workspace root level without a package prefix.
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -4366,3 +4812,7 @@ jobs:
 | Playwright visual comparisons | Official docs | https://playwright.dev/docs/test-snapshots | Playwright screenshot-based visual regression testing |
 | GitHub Actions Environments | Official docs | https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment | Deployment protection rules, reviewer gates, wait timers |
 | TypeScript 5.7 --noCheck flag | Official docs | https://devblogs.microsoft.com/typescript/announcing-typescript-5-7/ | Transpile-only mode for ultra-fast CI builds |
+| Playwright --only-changed flag | Official docs | https://playwright.dev/docs/test-cli | Run only spec files changed since a git ref — fast PR feedback gate |
+| Playwright Project Dependencies | Official docs | https://playwright.dev/docs/test-global-setup-teardown | Replaces globalSetup with traceable, fixture-aware setup projects |
+| Vitest Browser Mode | Official docs | https://vitest.dev/guide/browser/ | Real Chromium component tests within Vitest — alternative to Playwright CT |
+| Vitest Workspace (Projects) | Official docs | https://vitest.dev/guide/workspace | Monorepo test orchestration: run multiple Vitest configs in one process |

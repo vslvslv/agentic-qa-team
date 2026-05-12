@@ -1,10 +1,10 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/ -->
 
-> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (latest stable; security patch for CVE-2026-33186 in gRPC); k6 v2.0.0-rc1 breaking changes documented below. Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Re-run `/qa-refine k6` to refresh.
 
-> **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section.
+> **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `--summary-mode=legacy`, `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section. **New in v2.0.0 final:** HTTP API server disabled by default, cloud secrets auto-injected in `--local-execution`, `k6 cloud project list` command, extension tab-completion.
 
 ## Core Principles
 
@@ -2051,6 +2051,36 @@ const userIdx = exec.scenario.iterationInTest % testUsers.length;
 const user = testUsers[userIdx];
 ```
 
+### 32. k6 v2.0 HTTP API server disabled by default — REST clients silently time out  [community]
+**What:** k6 v1.x always started a REST API server on `localhost:6565` by default. In k6 v2.0, the server does **not** start unless you explicitly pass `--address localhost:6565` or set `K6_ADDRESS=localhost:6565`. Teams using `k6 pause`, `k6 resume`, or any tool that calls the k6 REST API (e.g., Gatling Enterprise integrations, custom CI dashboards) silently lose the endpoint after upgrading.
+**WHY:** The v2.0 team disabled the default server because it consumed a socket even when never used, and the CLI commands that relied on it (`k6 pause`, `k6 resume`, `k6 scale`) were removed. Default-off reduces surface area for accidental exposure.
+**Fix:** If you rely on the k6 REST API in CI:
+```bash
+# Explicit server enable (v2.0 required)
+k6 run --address localhost:6565 k6/scripts/load.js
+
+# Or: K6_ADDRESS env var (CI-friendly — no script change needed)
+export K6_ADDRESS=localhost:6565
+k6 run k6/scripts/load.js
+
+# Audit CI pipelines that call the k6 REST API
+grep -r "6565\|k6 pause\|k6 resume\|k6 scale\|k6 status" .github/ .gitlab-ci.yml Jenkinsfile
+```
+
+### 33. Cloud secrets auto-injected in v2.0 `--local-execution` — accidental production credential use  [community]
+**What:** In k6 v2.0 final, cloud secrets are **automatically available** when running `k6 cloud run --local-execution`. If your Grafana Cloud k6 project stores production credentials and you run `--local-execution` against a staging environment, the production credentials are silently loaded without any explicit `--secret-source` flag.
+**WHY:** The design intent is convenience — you don't need to reconfigure secret sources when switching between local and cloud execution. The risk is that teams with separate staging/production secrets in Grafana Cloud may inadvertently use the wrong set.
+**Fix:** Use `--no-cloud-secrets` when running staging tests that should use only local/mock credentials:
+```bash
+# Staging — explicit mock secrets, no cloud injection
+k6 cloud run --local-execution --no-cloud-secrets \
+  --secret-source=mock=default,api_key="staging-key-1234" \
+  k6/scripts/load.js
+
+# Production — cloud secrets auto-injected (intended behavior)
+k6 cloud run --local-execution k6/scripts/load.js
+```
+
 ## Lesser-Known Options
 
 These `options` fields are valid in any k6 script but rarely appear in tutorials. Use them to solve specific production problems.
@@ -3975,6 +4005,7 @@ See the `Network Error Codes & Diagnostics` section (1600–1699 range) for k6 H
 | `open(path, 'b')` | Load local file as binary (ArrayBuffer) | Binary upload tests, WASM payloads |
 | `k6/experimental/fs` open | Memory-mapped file sharing across all VUs | Large files > 10 MB; avoids per-VU string copies |
 | `exec.test.fail(msg)` | Mark test failed (exit 110) without stopping | Flag pre-condition failures while collecting all metrics |
+| `ReadableStream` (k6/experimental/streams) | Define a producer-consumer data pipeline | Line-by-line processing of very large files without full in-memory load |
 
 ---
 
@@ -4771,6 +4802,7 @@ Note: Complex nested options (`scenarios`, `thresholds`) are NOT configurable vi
 | `K6_PROFILING_ENABLED` | `false` | Enable pprof endpoint at `localhost:6565/debug/pprof/` |
 | `K6_PAUSED` | `false` | Start test paused (resume via REST API or `k6 resume`) |
 | `K6_NO_COLOR` | `false` | Disable ANSI colors in output (always use in CI) |
+| `K6_ADDRESS` | `""` | Enable k6 REST API server at this address, e.g. `localhost:6565` (v2.0: disabled by default) |
 
 ```bash
 # Typical CI override — no script modifications needed
@@ -4823,6 +4855,7 @@ k6/
     chaos-load.js         # load + xk6-disruptor fault injection (k8s only)
     mfa-load.js           # TOTP MFA authentication load test
     browser-advanced.js   # browser module with iframe, navigation, request interception
+    streams-csv.js        # line-by-line CSV processing via k6/experimental/streams
   lib/
     auth.js               # shared setup() / getToken() helpers + token manager
     thresholds.js         # reusable threshold presets per environment
@@ -4885,9 +4918,13 @@ Audit your scripts and CI pipelines before upgrading.
 | `k6 cloud script.js` | `k6 cloud run script.js` |
 | `--upload-only` | `k6 cloud upload script.js` |
 | `--no-summary` | `--summary-mode=disabled` |
+| `--summary-mode=legacy` | Only `full`, `compact`, `disabled` remain valid |
 | `options.ext.loadimpact` | `options.cloud` |
 | `k6/experimental/redis` | `k6/x/redis` (xk6 extension) |
 | `browser_web_vital_fid` metric | `browser_web_vital_inp` (Interaction to Next Paint) |
+| HTTP API server starts by default | Pass `--address localhost:6565` or set `K6_ADDRESS` to re-enable |
+| `K6_BINARY_PROVISIONING` env var | Removed (deprecated since v1.2) |
+| `K6_ENABLE_COMMUNITY_EXTENSIONS` env var | Removed |
 
 ### Migration Checklist
 
@@ -4902,10 +4939,16 @@ grep -r "k6 cloud " .github/ .gitlab-ci.yml Jenkinsfile
 grep -r "browser_web_vital_fid" k6/
 
 # 4. Find scripts using --no-summary or options.ext.loadimpact
-grep -r "no-summary\|loadimpact" k6/
+grep -r "no-summary\|loadimpact\|summary-mode=legacy" k6/
 
 # 5. Find k6/experimental/redis imports
 grep -r "experimental/redis" k6/
+
+# 6. Find CI pipelines relying on the k6 REST API (disabled by default in v2.0)
+grep -r "6565\|k6 pause\|k6 resume\|k6 scale\|k6 status" .github/ .gitlab-ci.yml Jenkinsfile
+
+# 7. Check for K6_BINARY_PROVISIONING or K6_ENABLE_COMMUNITY_EXTENSIONS env vars
+grep -r "K6_BINARY_PROVISIONING\|K6_ENABLE_COMMUNITY_EXTENSIONS" .github/ .gitlab-ci.yml
 ```
 
 ### Before/After Examples
@@ -5412,6 +5455,55 @@ k6 cloud run --stack "$K6_CLOUD_STACK" k6/scripts/load.js
 k6 cloud upload --stack "$K6_CLOUD_STACK" k6/scripts/load.js
 ```
 
+### k6 v2.0.0 Final Release — Additional Changes (May 11, 2025)
+
+These items were introduced between v2.0.0-rc1 and the final v2.0.0 release. Update pipelines accordingly.
+
+| Change | Details |
+|--------|---------|
+| HTTP API server disabled by default | Previously started on `localhost:6565` automatically. Now requires `--address` flag or `K6_ADDRESS` env var to enable. |
+| Cloud secrets auto-injected | Cloud secrets are automatically available in `k6 cloud run --local-execution` — no `--secret-source=cloud` flag needed. Opt-out: `--no-cloud-secrets`. |
+| `k6 cloud project list` new command | Lists Grafana Cloud k6 projects in table or JSON format. |
+| Extension tab-completion | Press TAB after an extension name to auto-provision a custom binary with that extension. |
+| easyjson → stdlib `encoding/json` | Extension authors using easyjson-generated methods must update their serialization code. |
+| `--summary-mode=legacy` removed | Previously kept for backward compat. Now only `full`, `compact`, `disabled` are valid. |
+| Archive metadata `dependencies` field | `k6 archive` now embeds extension dependency info so `k6/x/` imports survive re-execution. |
+
+**HTTP API server migration:**
+```bash
+# v1.x — API server always started on localhost:6565 (no flag needed)
+# v2.0 — must explicitly enable the API server
+k6 run --address localhost:6565 k6/scripts/load.js
+
+# Or via env var
+K6_ADDRESS=localhost:6565 k6 run k6/scripts/load.js
+
+# CI pipelines that relied on the default REST endpoint (e.g., for k6 pause/scale)
+# will silently lose the server on upgrade — add --address or remove the REST client code
+```
+
+**Cloud secrets auto-injection (v2.0 final):**
+```bash
+# v2.0 final — cloud secrets are auto-injected when running with --local-execution
+k6 cloud run --local-execution k6/scripts/load.js
+# All secrets configured in Grafana Cloud k6 are automatically available via secrets.get()
+# without any --secret-source flag
+
+# To opt OUT (e.g., when using only local mock secrets for privacy)
+k6 cloud run --local-execution --no-cloud-secrets k6/scripts/load.js
+```
+
+> **[community]:** The auto-injection of cloud secrets is a convenience for teams that store all secrets in Grafana Cloud. However, if your local execution environment has different secret requirements (e.g., staging vs. production credentials), use `--no-cloud-secrets` and manage secrets explicitly via `--secret-source` or `K6_SECRET_SOURCE` to prevent accidentally using production credentials in staging tests.
+
+**New `k6 cloud project list` command:**
+```bash
+# List all k6 cloud projects (requires authentication)
+k6 cloud project list
+
+# JSON output for CI parsing
+k6 cloud project list --json | jq '.projects[].id'
+```
+
 ### k6 v1.6.0 — Key New APIs (Backport Reference)
 
 If you are on k6 v1.6.x and planning to migrate to v2.0, the following stable APIs were added in
@@ -5431,6 +5523,117 @@ v1.6 and are forward-compatible with v2.0:
 > **Note on `k6/crypto` deprecation (v1.6+):** The docs explicitly mark `k6/crypto` as deprecated
 > in favor of the standard WebCrypto API (`crypto.subtle`). Existing `k6/crypto` code continues
 > to work but will not receive new features. Migrate new cryptographic patterns to `crypto.subtle`.
+
+---
+
+## Readable Streams — Incremental Data Processing (`k6/experimental/streams`)
+
+The `k6/experimental/streams` module implements a subset of the Web Streams API. Unlike
+`open()` (which loads the entire file into a string per VU) or `k6/experimental/fs` (which
+streams binary chunks), the Streams API lets you define a **pipeline** with a producer
+(`start`/`pull` callbacks) and consume it incrementally via `getReader().read()`. This is
+ideal for processing very large files line-by-line without ever holding the full content in
+memory.
+
+**When to use which file API:**
+
+| API | Best for | Notes |
+|-----|---------|-------|
+| `open(path)` | Small JSON/CSV fixture (< 5 MB) | Simplest; loads entire file per VU |
+| `SharedArray` + `papaparse` | Medium CSV (5–100 MB), VU count any | Shared memory, JS-friendly objects |
+| `k6/experimental/csv` | Medium-large CSV (up to ~1 GB) | Go-native parser, ~3–5× faster than papaparse |
+| `k6/experimental/fs` + `read(buf)` | Large binary/text files > 100 MB | Chunked random access; async |
+| `k6/experimental/streams` | Very large files processed as a pipeline | Line-by-line producer/consumer; subset of W3C Streams spec |
+
+```javascript
+// k6/scripts/streams-csv.js — line-by-line CSV processing via Streams API
+// Use when: file is too large for SharedArray AND you need object-per-line processing
+import { open } from "k6/experimental/fs";
+import { ReadableStream } from "k6/experimental/streams";
+import http from "k6/http";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    streamed_load: {
+      executor: "constant-arrival-rate",
+      rate: 20,
+      timeUnit: "1s",
+      duration: "2m",
+      preAllocatedVUs: 10,
+      maxVUs: 30,
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<400"],
+    http_req_failed:   ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default async function () {
+  // Open the CSV file (shares memory across VUs via fs module)
+  const file = await open("./data/large-users.csv");
+
+  // Build a readable stream that reads one line at a time
+  const lineStream = new ReadableStream({
+    // start() fires once when the stream is created — connect to the data source
+    async start(controller) {
+      // Nothing to do here for a file-based source
+    },
+
+    // pull() fires repeatedly until the high-water mark is satisfied or stream closes
+    async pull(controller) {
+      const buf = new Uint8Array(4096);
+      const bytesRead = await file.read(buf);
+
+      if (bytesRead === null) {
+        // EOF — signal the consumer that there is no more data
+        controller.close();
+        return;
+      }
+
+      // Decode the chunk and enqueue each complete line
+      const text = new TextDecoder().decode(buf.subarray(0, bytesRead));
+      const lines = text.split("\n").filter((l) => l.trim().length > 0);
+      for (const line of lines) {
+        controller.enqueue(line);
+      }
+    },
+  });
+
+  // Consume the stream — read one line at a time
+  const reader = lineStream.getReader();
+  try {
+    let isFirstLine = true;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      // Skip header row
+      if (isFirstLine) { isFirstLine = false; continue; }
+
+      // Parse CSV fields: email, password, role
+      const [email, password] = value.split(",");
+      if (!email || !password) continue;
+
+      const res = http.post(
+        `${BASE}/api/auth/login`,
+        JSON.stringify({ email: email.trim(), password: password.trim() }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+      check(res, { "login ok": (r) => r.status === 200 });
+    }
+  } catch (err) {
+    console.error(`Stream read error [VU ${__VU}]:`, err);
+  }
+}
+```
+
+> **[community]:** `k6/experimental/streams` currently implements **only ReadableStream** — WritableStream and TransformStream are not yet supported. The `start()` callback is synchronous in the current implementation (async is planned). For most production use cases, `k6/experimental/csv` with its Go-native parser is faster and simpler; use `k6/experimental/streams` when you need a producer-consumer pipeline with custom data transformation logic embedded in the stream definition.
+
+> **[community]:** The Streams module is experimental and implements a subset of the W3C Streams specification. The API surface is stable enough for use in load tests but breaking changes may occur before it graduates to `k6/streams`. Monitor the k6 changelog for graduation announcements.
 
 ---
 

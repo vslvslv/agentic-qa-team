@@ -1,11 +1,15 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 11 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 12 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
 <!--          Google Testing Blog, Jest/Vitest docs, community production experience               -->
 <!--          Jest 30 blog (globalsCleanup, using spy, jest.onGenerateMock),                       -->
 <!--          Vitest vi.stubEnv/vi.stubGlobal/unstubEnvs/unstubGlobals (2025/2026)                 -->
+<!--          Vitest vi.hoisted() ESM isolation (vitest.dev/api/vi#vi-hoisted),                    -->
+<!--          Jest 30 upgrade guide (jestjs.io/docs/upgrading-to-jest30),                          -->
+<!--          Playwright fixtures docs (playwright.dev/docs/test-fixtures),                        -->
+<!--          martinfowler.com/articles/mocksArentStubs.html (classicist vs mockist)               -->
 
 ---
 
@@ -790,6 +794,17 @@ parallel workers.
   setup can be long. Shared *immutable* fixtures (defined once in `beforeAll` or as module-level
   `const`) are an acceptable tradeoff when the object is never mutated by tests.
 
+- **Mockist isolation breaks on internal refactors.** Tests that verify interaction sequences
+  (which methods were called, in what order) are coupled to the SUT's implementation. A pure
+  refactoring that preserves observable behavior but changes internal call sequences causes
+  mockist tests to fail — a false negative that erodes team confidence in the test suite.
+  Classicist tests (state verification) are immune to this class of false negative.
+
+- **vi.hoisted() adds cognitive overhead in Vitest ESM projects.** Teams migrating from Jest
+  to Vitest must understand why `vi.hoisted()` is needed. Without it, mock variables are
+  `undefined` in factory closures — a silent failure that produces no error at mock-setup time,
+  only incorrect behavior at test runtime. Document the pattern in the project's CONTRIBUTING.md.
+
 ### ISTQB CTFL 4.0 terminology alignment
 
 | Common informal term | ISTQB CTFL 4.0 preferred term | Notes |
@@ -826,6 +841,10 @@ parallel workers.
 | Vitest — vi.stubGlobal API | Official | https://vitest.dev/api/vi#vi-stubglobal | Global replacement isolation with `unstubGlobals: true` config — auto-restore between tests |
 | Vitest Config — unstubEnvs | Official | https://vitest.dev/config/#unstubenvs | Config flag: automatically call `vi.unstubAllEnvs()` before each test |
 | Martin Fowler — Non-Determinism (teardown section) | Official | https://martinfowler.com/articles/nonDeterminism.html | Teardown-exception contamination: if cleanup throws, downstream test state is corrupted |
+| Martin Fowler — Mocks Aren't Stubs | Official | https://martinfowler.com/articles/mocksArentStubs.html | Classicist vs mockist test strategies; interaction vs state verification; when each applies |
+| Vitest — vi.hoisted() API | Official | https://vitest.dev/api/vi#vi-hoisted | ESM-safe mock hoisting in Vitest — required when vi.mock factories need to reference outer variables |
+| Jest 30 Upgrade Guide | Official | https://jestjs.io/docs/upgrading-to-jest30 | Breaking changes: SpyInstance removal, case-sensitive mocks, genMockFromModule → createMockFromModule |
+| Playwright — Test Fixtures | Official | https://playwright.dev/docs/test-fixtures | page/browserContext are test-scoped by default; browser is worker-scoped — isolation scope reference |
 
 ---
 
@@ -858,6 +877,10 @@ parallel workers.
 | `process.env` boilerplate duplicated across files | Manual save/restore in every test file | Manual Pattern 5 (Pattern 5 in this guide) | `vi.stubEnv() + unstubEnvs: true` in vitest config |
 | Global browser API not restored | `window.fetch` or `navigator` stays mocked in next test | Manually restore in `afterEach` | `vi.stubGlobal() + unstubGlobals: true` |
 | Teardown throws and corrupts downstream state | Cascading failures after a resource cleanup error | Wrap teardown in `try/catch/finally`; always release in `finally` | Same |
+| ESM mock variable not accessible in vi.mock factory | `vi.mock` factory closure can't reference outer `let` variables | `vi.hoisted(() => { return { fn: vi.fn() } })` before `vi.mock` | N/A (Jest hoists automatically) |
+| `requestAnimationFrame` callbacks not advancing in tests | Timer tests with rAF never fire; animation tests timeout | `jest.advanceTimersToNextFrame()` (Jest 30+) | `vi.advanceTimersByTime(16)` |
+| `SpyInstance` TypeScript type error after Jest 30 upgrade | `jest.SpyInstance` removed; `Type 'SpyInstance' not found` | Replace with `jest.Spied<typeof fn>` or `jest.SpyInstance` → `jest.Spied` | N/A |
+| `jest.mock()` not matching due to filename casing | Module mock silently not applied; production code runs | Ensure `jest.mock('./path/Module')` matches exact filesystem casing (Jest 30) | N/A |
 
 ---
 
@@ -1590,3 +1613,208 @@ describe('buildOrderConfirmation snapshot', () => {
     The `finally` block ensures the connection handle is always released even when rollback
     fails, preventing connection pool exhaustion (Gotcha 26) as a secondary consequence.
 
+---
+
+## Additional Extended Patterns
+
+### Pattern 18: `vi.hoisted()` for ESM mock isolation in Vitest (TypeScript)  [community]
+
+In Vitest with native ESM, `vi.mock()` factories cannot close over `let`/`const` variables declared
+in the test file body because ES module `import` statements are hoisted above all other code —
+meaning the `let` variable declaration runs *after* the `vi.mock()` factory executes. `vi.hoisted()`
+solves this by running its callback before any import is evaluated, returning a value that is safe
+to reference inside `vi.mock()` factories.
+
+This is a Vitest-specific isolation concern: Jest automatically hoists `jest.mock()` calls via
+Babel/ts-jest transform. Vitest with `--experimental-vm-modules` or native ESM does not perform
+implicit hoisting — `vi.hoisted()` is the explicit opt-in.
+
+```typescript
+// emailService.test.ts (Vitest + native ESM)
+import { describe, it, expect, vi } from 'vitest';
+
+// WRONG — this pattern fails in native ESM Vitest:
+// const mockSend = vi.fn(); // declared after imports; vi.mock factory runs first
+// vi.mock('./emailService', () => ({ send: mockSend })); // mockSend is undefined here
+
+// CORRECT — vi.hoisted() runs before import evaluation:
+const { mockSend, mockGetLastDeliveredTo } = vi.hoisted(() => ({
+  mockSend: vi.fn<(to: string, subject: string, body: string) => Promise<void>>()
+    .mockResolvedValue(undefined),
+  mockGetLastDeliveredTo: vi.fn<() => string | null>().mockReturnValue(null),
+}));
+
+vi.mock('./emailService', () => ({
+  EmailService: vi.fn().mockImplementation(() => ({
+    send: mockSend,                         // safely references hoisted value
+    getLastDeliveredTo: mockGetLastDeliveredTo,
+  })),
+}));
+
+// Import AFTER vi.mock — gets the mocked version
+import { UserService } from './userService';
+
+describe('UserService (Vitest ESM)', () => {
+  beforeEach(() => {
+    // Reset call state between tests; hoisted mocks persist across tests
+    // in the same file so must be cleared explicitly
+    mockSend.mockClear();
+    mockGetLastDeliveredTo.mockClear();
+  });
+
+  it('sends a welcome email to the registered address', async () => {
+    const service = new UserService();
+
+    await service.registerUser('alice@example.com', 'Alice');
+
+    expect(mockSend).toHaveBeenCalledWith(
+      'alice@example.com',
+      'Welcome!',
+      expect.stringContaining('Alice'),
+    );
+  });
+
+  it('returns the created user with an id', async () => {
+    const service = new UserService();
+
+    const result = await service.registerUser('bob@example.com', 'Bob');
+
+    expect(result).toHaveProperty('id');
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+});
+```
+
+**Key rule:** `vi.hoisted()` values are safe to reference in `vi.mock()` factories. Variables
+declared outside `vi.hoisted()` are not. When migrating from Jest to Vitest with ESM, converting
+module-level `jest.fn()` declarations to `vi.hoisted()` blocks is the first step.
+
+### Pattern 19: `jest.advanceTimersToNextFrame()` for `requestAnimationFrame` isolation (TypeScript, Jest 30+)  [community]
+
+`requestAnimationFrame` callbacks run at ~60fps (every 16ms). Tests that exercise rAF-based
+animation code (e.g., React `useLayoutEffect` transitions, canvas renders, scroll animations)
+previously required `jest.advanceTimersByTime(16)` — a magic number that tightly coupled tests
+to the frame interval. Jest 30 adds `jest.advanceTimersToNextFrame()` as an explicit API that
+advances to the next rAF callback boundary without relying on a hardcoded interval.
+
+```typescript
+import { AnimationController } from './AnimationController';
+
+describe('AnimationController', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('does not invoke the frame callback before any frame has elapsed', () => {
+    const onFrame = jest.fn();
+    const controller = new AnimationController(onFrame);
+
+    controller.start();
+    // No advance — callback must not fire yet
+    expect(onFrame).not.toHaveBeenCalled();
+    controller.stop();
+  });
+
+  it('invokes the frame callback exactly once after one frame elapses', () => {
+    const onFrame = jest.fn();
+    const controller = new AnimationController(onFrame);
+
+    controller.start();
+    jest.advanceTimersToNextFrame(); // advances to next rAF boundary — no magic 16ms
+
+    expect(onFrame).toHaveBeenCalledTimes(1);
+    controller.stop();
+  });
+
+  it('invokes the frame callback three times after three frames', () => {
+    const onFrame = jest.fn();
+    const controller = new AnimationController(onFrame);
+
+    controller.start();
+    jest.advanceTimersToNextFrame();
+    jest.advanceTimersToNextFrame();
+    jest.advanceTimersToNextFrame();
+
+    expect(onFrame).toHaveBeenCalledTimes(3);
+    controller.stop();
+  });
+});
+```
+
+**WHY:** Using `jest.advanceTimersByTime(16)` embeds a frame-rate assumption that breaks when
+the rAF polyfill in the test environment uses a different interval, or when the production code
+switches to `requestIdleCallback`. `advanceTimersToNextFrame()` decouples the test from the
+timing implementation, keeping it stable across rAF polyfill changes.
+
+---
+
+## Community Lessons — Continued  [community]
+
+39. **`vi.hoisted()` is required for ESM module mock isolation in Vitest; `jest.mock()` hoisting is implicit in Jest.** [community]
+    Jest automatically hoists `jest.mock()` calls to the top of the file via Babel/ts-jest
+    transform, so closures over module-level `let` variables in mock factories work. In Vitest
+    with native ESM (`--experimental-vm-modules` or Vite's ESM pipeline), `vi.mock()` factories
+    execute before top-level variable declarations are evaluated. Code like:
+    ```typescript
+    const mockFn = vi.fn(); // runs AFTER vi.mock factory in native ESM
+    vi.mock('./service', () => ({ action: mockFn })); // mockFn is undefined here
+    ```
+    causes `mockFn` to be `undefined` inside the factory. The fix is `vi.hoisted()`:
+    ```typescript
+    const { mockFn } = vi.hoisted(() => ({ mockFn: vi.fn() }));
+    vi.mock('./service', () => ({ action: mockFn })); // safe — hoisted runs first
+    ```
+    WHY: teams migrating from Jest to Vitest encounter this silently — the mock silently uses
+    `undefined` rather than the intended stub, causing tests to pass when they should fail.
+
+40. **`jest.mock()` path matching is now case-sensitive in Jest 30.** [community]
+    Jest 30 uses `unrs-resolver` (standards-compliant module resolution) which enforces case-
+    sensitive path matching. On case-insensitive filesystems (macOS, Windows), calling
+    `jest.mock('./services/UserService')` when the file is `./services/userservice.ts` would
+    silently succeed in Jest 29 (the FS found the file regardless of casing). In Jest 30, the
+    mock is not applied — the real module is imported instead. This causes test cases that
+    previously mocked correctly to run against real implementations, producing unexpected real
+    side effects (network calls, DB writes). WHY: the fix is straightforward — ensure `jest.mock()`
+    paths match exact filesystem casing — but the failure mode is invisible on CI macOS runners
+    where the FS is case-insensitive, while it surfaces on Linux CI runners where it is not.
+    Always use consistent casing in import paths to prevent this from being environment-dependent.
+
+41. **`jest.SpyInstance` type is removed in Jest 30 — use `jest.Spied<typeof source>` instead.** [community]
+    Jest 30 removes the `jest.SpyInstance` TypeScript type (deprecated since Jest 29.2). Code
+    typed as `let spy: jest.SpyInstance` fails to compile after upgrading. The replacement type
+    is `jest.Spied<typeof originalFunction>`, which is more precise because it preserves the
+    original function's signature. For class method spies:
+    ```typescript
+    // OLD (Jest ≤ 29) — fails to compile in Jest 30
+    let spy: jest.SpyInstance;
+    spy = jest.spyOn(console, 'warn');
+
+    // NEW (Jest 30+) — type-safe, preserves warn signature
+    let spy: jest.Spied<typeof console.warn>;
+    spy = jest.spyOn(console, 'warn');
+    ```
+    WHY: `SpyInstance<R, A>` required manually specifying return type `R` and args array `A`,
+    which diverged from the actual overloaded types. `jest.Spied<T>` derives them from the
+    source type automatically, so TypeScript catches mismatched `.mockReturnValue()` calls.
+    Teams with large test suites should run `npx jest-codemods` to automate the migration.
+
+42. **Classicist vs mockist test isolation strategy is a team-wide decision, not a per-test one.** [community]
+    Fowler's "Mocks Aren't Stubs" distinguishes two test isolation philosophies:
+    **Classicist** (state verification): use real collaborators where possible; only replace
+    external I/O (DB, HTTP). Test suites are more resilient to internal refactoring but require
+    more complex fixture setup for stateful collaborators.
+    **Mockist** (interaction/behavior verification): replace all collaborators with mocks; verify
+    call sequences rather than final state. Tests run faster and point directly to the SUT when
+    they fail, but break when the internal call sequence changes — even if the observable behavior
+    is unchanged. The production lesson: mixing strategies within a single test suite creates
+    confusion about what constitutes a "passing" test. Agree on the default strategy per test
+    level (unit test level: classicist for pure logic / mockist for side-effectful code;
+    integration test level: always classicist + transaction rollback isolation). WHY: teams that
+    default to "mock everything" at the unit test level accumulate tests that pass despite
+    real integration bugs, while teams that default to "use real objects everywhere" suffer slow
+    suites and complex fixtures. The correct answer is contextual and should be documented in
+    the project's testing guidelines.

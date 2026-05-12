@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 22 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 23 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 23 additions: Cucumber.js v12 (current version as of 2026) — TypeScript config files, built-in sharding v12.2, plugin architecture v12.5, formatter redesign, includeAttachments option, Node 24/25; Gherkin Rule keyword practical usage with per-rule Background and TypeScript step binding example; v12 migration pitfalls [community] -->
 <!-- Iter 22 additions: two new official anti-patterns from cucumber.io/docs/guides/anti-patterns/ (Feature-Coupled Step Definitions, Conjunction Steps); discovery-first BDD model from cucumber.io/docs/bdd/ — both sources added to learning-sources catalog 2026-05-12 -->
 
 ## Core Principles
@@ -1319,7 +1320,7 @@ If fewer than 6 of these boxes are checked, start with **Example Mapping only** 
 |-------|---------------|
 | When to use BDD | Complex business domain + cross-functional team + stakeholder participation |
 | When NOT to use | Solo/small team, prototype, infrastructure code, team without PO buy-in |
-| Primary TypeScript framework | `@cucumber/cucumber` v9 (CommonJS) or v10+ (ESM) |
+| Primary TypeScript framework | `@cucumber/cucumber` v12 (current: TypeScript config, `--shard`, plugin API) |
 | Step parameterization | Prefer `{string}`, `{int}`, `{float}`, `{word}` over raw regex |
 | State sharing across steps | Use the World object — never module-level variables |
 | CI strategy | `@smoke` on every PR (< 2 min); `@regression` nightly (sharded) |
@@ -1327,8 +1328,9 @@ If fewer than 6 of these boxes are checked, start with **Example Mapping only** 
 | Suite health indicator | `@wip` count < 10% of total scenarios |
 | Avoiding step bloat | "Search before create" policy; max one step definition file per feature area |
 | Lightest BDD start | Example Mapping workshop first — no tooling needed |
-| Version gotcha | v9 → v10 migration requires ESM config change (`import:` not `require:`) |
+| Version gotcha | v9 → v10: ESM (`import:` not `require:`); v11 → v12: `includeAttachments`, node ≥ 20 |
 | Tag syntax | Boolean expressions: `"@smoke and not @wip"` (commas deprecated in v9+) |
+| Organizing business rules | Use `Rule` keyword to group scenarios per rule; per-rule `Background` for different setups |
 
 ---
 
@@ -2334,9 +2336,11 @@ if (result.wipPercentage > 10) process.exit(1); // Fail CI if @wip > 10%
 ## Key Resources
 
 - [Cucumber documentation](https://cucumber.io/docs/bdd/) — canonical BDD reference
-- [Gherkin reference](https://cucumber.io/docs/gherkin/reference/) — full keyword specification
+- [Gherkin reference](https://cucumber.io/docs/gherkin/reference/) — full keyword specification including `Rule`, `Background`, `DocString`, `DataTable`
 - [Cucumber anti-patterns guide](https://cucumber.io/docs/guides/anti-patterns/) — official pitfalls: feature-coupled steps, conjunction steps, testing implementation not behaviour
-- [@cucumber/cucumber npm package](https://www.npmjs.com/package/@cucumber/cucumber) — official JS/TS package (v11+)
+- [Better Gherkin guide](https://cucumber.io/docs/bdd/better-gherkin/) — official declarative vs imperative guidance
+- [@cucumber/cucumber npm package](https://www.npmjs.com/package/@cucumber/cucumber) — official JS/TS package (v12 current; v11 still supported)
+- [Cucumber.js CHANGELOG](https://github.com/cucumber/cucumber-js/blob/main/CHANGELOG.md) — version migration reference
 - [playwright-bdd](https://github.com/vitalets/playwright-bdd) — Playwright-native BDD runner for TypeScript
 - [Example Mapping (Matt Wynne)](https://cucumber.io/blog/bdd/example-mapping-introduction/) — pre-BDD discovery technique
 - [eslint-plugin-cucumber](https://github.com/nicholasgasior/eslint-plugin-cucumber) — step definition linting rules
@@ -3669,6 +3673,10 @@ as a guideline in your Gherkin review checklist.
 more than 8 scenarios, it is a signal that the business rule has too many edge cases to be
 expressed as a single scenario collection — it likely hides a sub-rule that should be
 elevated to its own `Rule` block or split into a separate feature file.
+
+**[community] `Rule` + `Background` as a refactoring signal**: If you find yourself writing `Given X is in state A` in half your scenarios and `Given X is in state B` in the other half, you have two implicit business rules. Split them into separate `Rule` blocks each with its own `Background` — this eliminates conditional `Given` steps and makes the rule boundary explicit. Teams that miss this refactoring accumulate scenarios with long `Given` sections that duplicate setup logic across the file.
+
+**[community] `Rule` and Example Mapping alignment**: In Example Mapping sessions, each blue card (business rule) maps to exactly one `Rule` block in the resulting feature file. The green cards (concrete examples) under each blue card map to `Scenario` / `Example` blocks within that `Rule`. This 1-to-1 mapping lets anyone verify that every rule surfaced in the Three Amigos session has scenario coverage — and surfaces scenarios that lack a corresponding rule (a sign they may be testing implementation rather than behavior).
 
 ---
 
@@ -5873,7 +5881,8 @@ failure is cleaner and produces a more informative CI failure message.
 ## Additional Resources (Iterations 11–20 Additions)
 
 **New framework references (2024–2026):**
-- [Gherkin `Rule` keyword reference](https://cucumber.io/docs/gherkin/reference/#rule) — `Rule` grouping for scenario organization by business rule
+- [Gherkin `Rule` keyword reference](https://cucumber.io/docs/gherkin/reference/#rule) — `Rule` grouping for scenario organization by business rule with per-rule `Background`
+- [Cucumber.js v12 CHANGELOG](https://github.com/cucumber/cucumber-js/blob/main/CHANGELOG.md) — TypeScript config files, built-in `--shard`, plugin architecture, Node 24/25 support
 - [Screenplay Pattern — Serenity/JS](https://serenity-js.org/handbook/design/screenplay-pattern/) — TypeScript-native Screenplay Pattern implementation
 - [WireMock Node client](https://github.com/Sairyss/wiremock-node-client) — HTTP service mocking for service-level BDD
 - [Detox — React Native E2E](https://github.com/wix/Detox) — iOS/Android automation for mobile BDD
@@ -5891,3 +5900,206 @@ failure is cleaner and produces a more informative CI failure message.
 - [Cucumber Discord community](https://discord.gg/cucumber) — active Q&A for Cucumber.js, step definition issues, tooling
 - [OWASP Web Security Testing Guide v4.2](https://owasp.org/www-project-web-security-testing-guide/) — security behavioral patterns for BDD scenarios
 - [Google Web Vitals documentation](https://web.dev/vitals/) — Core Web Vitals thresholds for performance BDD scenarios
+
+---
+
+### Cucumber.js v12: What Changed and Migration Notes (2025–2026)
+
+Cucumber.js v12 is the current major version as of 2025–2026. Teams running v11 face no
+urgent migration pressure (v11 remains supported), but v12 introduces production-relevant
+improvements that reduce configuration boilerplate and improve CI reporting.
+
+**Summary of v12 changes:**
+
+| Change | Version | Production Impact |
+|---|---|---|
+| TypeScript config files (`cucumber.ts`) | v12.4.0 | Eliminate JSON formatter escape issues; type-safe profiles |
+| Built-in execution sharding | v12.2.0 | Native `--shard N/M` flag — no matrix workarounds |
+| External plugin architecture | v12.5.0 | Custom formatters, reporters, and loaders without forking |
+| Redesigned summary/progress/pretty formatters | v12.0.0 | Cleaner output; legacy formatter classes deprecated |
+| `includeAttachments` replaces `printAttachments` | v12.0.0 | Breaking rename — CI scripts using old option name silently fail |
+| Named BeforeAll/AfterAll hooks | v12.0.0 | Hook-specific messages in reports aid debugging |
+| Node.js 24 and 25 support; Node 18 and 23 dropped | v12.x | Upgrade Node before upgrading Cucumber if on Node 18 |
+
+**TypeScript config file** (`cucumber.ts`) — v12.4+:
+
+```typescript
+// cucumber.ts — fully type-safe, no JSON escaping issues
+// Import is resolved automatically in v12.4+ when cucumber.ts exists
+import type { IConfiguration } from '@cucumber/cucumber/api';
+
+const smokeConfig: IConfiguration = {
+  import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+  tags: '@smoke and not @wip',
+  format: ['progress-bar', 'html:reports/smoke-report.html'],
+  retry: 1,
+  retryTagFilter: '@flaky',
+  parallel: 4,
+};
+
+const regressionConfig: IConfiguration = {
+  import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+  tags: 'not @wip',
+  format: [
+    'progress-bar',
+    '@cucumber/json-formatter:reports/results.json',  // explicit package in v11+
+    'html:reports/regression-report.html',
+  ],
+  retry: 1,
+  retryTagFilter: '@flaky',
+  parallel: 8,
+};
+
+// Named export per profile — replaces top-level "default" key
+export const smoke = smokeConfig;
+export const regression = regressionConfig;
+```
+
+**Benefits over `cucumber.json`:**
+- TypeScript types catch typos in option names at compile time (e.g., `paralel` → type error)
+- String interpolation works without JSON escaping: `tags: \`not @wip and ${process.env.EXTRA_TAGS ?? ''}\``
+- Shared constants between profiles (retry count, base imports) are DRY
+
+**Built-in sharding** (v12.2+) — `--shard`:
+
+```bash
+# v12.2+ native sharding — no matrix config needed
+npx cucumber-js --shard 1/4   # worker 1 of 4
+npx cucumber-js --shard 2/4
+npx cucumber-js --shard 3/4
+npx cucumber-js --shard 4/4
+```
+
+```yaml
+# .github/workflows/bdd.yml — using v12 native sharding
+jobs:
+  bdd-regression:
+    strategy:
+      matrix:
+        shard: ['1/4', '2/4', '3/4', '4/4']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'   # Node 18 dropped in v12; use 20, 22, or 24
+          cache: 'npm'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Run BDD shard ${{ matrix.shard }}
+        run: npx cucumber-js --profile regression --shard ${{ matrix.shard }}
+        env:
+          CI: true
+          BASE_URL: ${{ vars.TEST_BASE_URL }}
+```
+
+**Named hooks for better diagnostics** (`src/support/hooks.ts` — v12 style):
+
+```typescript
+import { Before, After, BeforeAll, AfterAll } from '@cucumber/cucumber';
+import { chromium, Browser } from '@playwright/test';
+import { AppWorld } from './world';
+
+// v12: named hooks appear by name in the HTML report timeline
+BeforeAll({ name: 'Launch browser' }, async function () {
+  // The hook name "Launch browser" appears in the report — easier to diagnose slow setups
+  (globalThis as { _browser?: Browser })._browser = await chromium.launch({
+    headless: process.env.CI === 'true',
+  });
+});
+
+AfterAll({ name: 'Close browser' }, async function () {
+  await (globalThis as { _browser?: Browser })._browser?.close();
+});
+
+Before({ name: 'Create browser context', tags: 'not @api-only' }, async function (this: AppWorld) {
+  const browser = (globalThis as { _browser?: Browser })._browser!;
+  this.context = await browser.newContext({
+    baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
+  });
+  this.page = await this.context.newPage();
+  this.testUserId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+});
+
+After({ name: 'Capture failure screenshot', tags: 'not @api-only' }, async function (this: AppWorld, scenario) {
+  if (scenario.result?.status === 'FAILED') {
+    const screenshot = await this.page?.screenshot({ fullPage: true });
+    if (screenshot) {
+      this.attach(screenshot, 'image/png');
+    }
+  }
+  await this.context?.close();
+});
+```
+
+**`includeAttachments` format option** (v12 breaking rename):
+
+```typescript
+// ❌ v11 option — deprecated in v12, silently ignored
+format: ['html:reports/report.html'],
+formatOptions: { printAttachments: true },
+
+// ✅ v12 option
+format: ['html:reports/report.html'],
+formatOptions: { includeAttachments: true },  // renamed
+```
+
+**[community] v12 migration pitfall — Node.js version requirement**: Cucumber.js v12 dropped
+Node.js 18 support. Teams that pin `node-version: '18'` in their CI workflows will get a
+cryptic installation error when upgrading. Check your CI `node-version` before upgrading
+`@cucumber/cucumber` to v12. Node.js 20 (LTS), 22 (LTS), and 24 are all supported.
+
+**[community] v12 formatter deprecations and CI breakage**: The `SummaryFormatter` and
+`ProgressFormatter` classes were deprecated in v12. Teams that extend these classes for
+custom CI reporting will see deprecation warnings in v12 and may see `Cannot read properties
+of undefined` errors if they rely on internal formatter APIs that changed. Migrate to the
+plugin architecture (v12.5+) for custom formatters instead of extending deprecated classes:
+
+```typescript
+// v12.5+ custom formatter via plugin architecture
+// src/plugins/custom-reporter.ts
+import type { IPlugin } from '@cucumber/cucumber';
+
+const customReporter: IPlugin = {
+  type: 'plugin',
+  coordinator({ on, options }) {
+    on('message', (message) => {
+      // Handle Cucumber messages directly — no class inheritance needed
+      if (message.testStepFinished?.testStepResult.status === 'FAILED') {
+        process.stdout.write(`FAIL: ${JSON.stringify(message.testStepFinished)}\n`);
+      }
+    });
+  },
+};
+
+export default customReporter;
+```
+
+```typescript
+// cucumber.ts — load custom plugin
+export const regression = {
+  import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+  plugin: ['src/plugins/custom-reporter.ts'],
+  format: ['progress-bar', 'html:reports/report.html'],
+};
+```
+
+**[community] v12 TypeScript config file discovery order**: Cucumber.js v12.4 looks for
+config files in this priority order: `cucumber.ts` → `cucumber.js` → `cucumber.mjs` →
+`cucumber.cjs` → `cucumber.json` → `.cucumberrc`. If a `cucumber.json` and a `cucumber.ts`
+both exist, the TypeScript file wins. Teams migrating incrementally should delete
+`cucumber.json` once `cucumber.ts` is verified — having both creates confusion about which
+file is active.
+
+**Version compatibility matrix:**
+
+| `@cucumber/cucumber` | Node.js | Key feature |
+|---|---|---|
+| v9.x | 14, 16, 18 | CommonJS default; `ts-node/register` for TypeScript |
+| v10.x | 16, 18, 20 | ESM migration; `import:` replaces `require:` |
+| v11.x | 18, 20, 22 | Typed World generics; `--retry` flag; native `--import` |
+| v12.x | 20, 22, 24, 25 | TypeScript config; built-in `--shard`; plugin API; named hooks |
+
+---
+
+## Additional Resources (Iterations 11–20 Additions)

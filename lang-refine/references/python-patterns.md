@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -38,6 +38,7 @@
      Iter 32 (2026-05-07): 100/100 (+0) — added Python 3.14 section: PEP 649/749 deferred annotations + annotationlib, PEP 750 t-strings, PEP 734 concurrent.interpreters, PEP 758 bracketless except, PEP 765 finally return warning, free-threaded improvements, pathlib.copy/move; community gotcha #28 (deferred annotation + get_type_hints); sourced from docs.python.org/3/whatsnew/3.14.html
      Iter 33 (2026-05-08): 100/100 (+0) — added factory_boy test factory patterns — basic Factory/DjangoModelFactory/SQLAlchemyModelFactory, LazyAttribute, SubFactory, RelatedFactory, Faker integration, sequences, create/build/stub strategies, batch operations; community gotcha #29 (create vs build strategy pitfalls); sourced from factoryboy.readthedocs.io/en/stable/ + practitioner synthesis
      Iter 34 (2026-05-12): 100/100 (+0) — added Concatenate + ParamSpec decorator typing pattern, TypeVar bounds vs constraints deep-dive, map() strict= mode (Python 3.14), pathlib.info attribute, asyncio call-graph introspection, float.from_number() / complex.from_number(); community gotcha #30 (TypeVar bound vs constraint confusion); sourced from docs.python.org/3/library/typing.html + docs.python.org/3/whatsnew/3.14.html
+     Iter 35 (2026-05-12): 100/100 (+0) — added dataclasses.KW_ONLY + field(doc=) + InitVar + weakref_slot patterns; TypeVar(infer_variance=True) (PEP 695); itertools.batched + math.sumprod (Python 3.12); typing.assert_type() for static testing; community gotcha #31 (TypeVar infer_variance misconception); sourced from docs.python.org/3/library/dataclasses.html + docs.python.org/3/whatsnew/3.12.html
 -->
 
 ## Core Philosophy
@@ -4660,3 +4661,412 @@ encode("hello", "pre_")       # ✓ str + str
 encode(b"hello", b"pre_")     # ✓ bytes + bytes
 # encode("hello", b"pre_")    # ✗ Type error: cannot mix str and bytes
 ```
+
+---
+
+### `dataclasses.KW_ONLY` — Keyword-Only Fields (Python 3.10+)
+
+The `KW_ONLY` sentinel (used as a pseudo-field with type annotation) forces all dataclass fields defined after it to be keyword-only in `__init__`. This is cleaner than using `field(kw_only=True)` on every field and works well when the first few fields should be positional (short, obvious) while the rest are optional configuration.
+
+```python
+from dataclasses import dataclass, KW_ONLY, field
+
+
+@dataclass
+class Connection:
+    """host is positional; all config options are keyword-only."""
+    host: str
+    _: KW_ONLY          # Everything after this is keyword-only
+    port: int = 5432
+    timeout: float = 30.0
+    ssl: bool = False
+    max_retries: int = 3
+
+
+# host is positional; rest must be keyword-only
+conn = Connection("db.prod.example.com", port=5433, ssl=True)
+# Connection("db", 5432)  — TypeError: __init__() takes 2 positional args
+
+# Field-level kw_only= — useful when only specific fields need the constraint
+@dataclass
+class SearchQuery:
+    term: str
+    page: int = 1
+    per_page: int = field(default=20, kw_only=True)   # Prevents positional confusion
+    include_archived: bool = field(default=False, kw_only=True)
+
+
+q1 = SearchQuery("python", 2, per_page=50)   # page positional, per_page keyword
+# q2 = SearchQuery("python", 2, 50)          # TypeError — per_page is kw_only
+```
+
+**When to use `KW_ONLY`:** Use when a dataclass has a mandatory identifier (e.g. `name`, `id`, `host`) that is short and obvious as positional, plus many optional configuration parameters that are too easily confused when positional. It documents the API contract: "the ID comes first; everything else is named."
+
+---
+
+### `dataclasses.InitVar` — Init-Only Parameters
+
+`InitVar[T]` creates a pseudo-field that appears in `__init__` as a parameter but is **not** stored as an instance attribute. It is passed to `__post_init__` for computed initialisation — the canonical pattern for fields derived from inputs rather than stored directly.
+
+```python
+from dataclasses import dataclass, InitVar, field
+from hashlib import pbkdf2_hmac
+import os
+
+
+@dataclass
+class User:
+    """password is never stored — only its salted hash is."""
+    username: str
+    email: str
+    raw_password: InitVar[str]           # Accepted in __init__, not stored
+    _password_hash: str = field(init=False, repr=False)
+    _salt: bytes = field(init=False, repr=False)
+
+    def __post_init__(self, raw_password: str) -> None:
+        """Called automatically by __init__ after field assignment."""
+        self._salt = os.urandom(16)
+        self._password_hash = pbkdf2_hmac(
+            "sha256",
+            raw_password.encode(),
+            self._salt,
+            iterations=260_000,
+        ).hex()
+
+    def check_password(self, candidate: str) -> bool:
+        return pbkdf2_hmac(
+            "sha256", candidate.encode(), self._salt, 260_000
+        ).hex() == self._password_hash
+
+
+u = User("alice", "alice@example.com", "s3cr3t!")
+# u.raw_password  # AttributeError — not stored!
+print(u)          # User(username='alice', email='alice@example.com') — no hash in repr
+
+print(u.check_password("s3cr3t!"))  # True
+print(u.check_password("wrong"))    # False
+
+
+# database: InitVar for ORM-style lazy init
+from typing import Optional
+
+@dataclass
+class Product:
+    sku: str
+    name: str
+    db: InitVar[Optional[object]] = None   # Injected at construction, not stored
+
+    description: str = field(init=False, default="")
+
+    def __post_init__(self, db) -> None:
+        if db is not None:
+            row = db.execute("SELECT description FROM products WHERE sku=?", (self.sku,))
+            self.description = row.fetchone()[0] if row else ""
+```
+
+**Key contract:** `InitVar` fields are excluded from `fields()`, `asdict()`, `astuple()`, and `replace()`. They are purely construction-time parameters — use them for passwords, database handles, configuration sources, and any value that produces other fields but must not be stored.
+
+---
+
+### `dataclasses.field(doc=)` — Field Documentation (Python 3.14+)
+
+Python 3.14 adds a `doc` parameter to `field()` that attaches a docstring to individual dataclass fields. This metadata is accessible at runtime via `fields()` and is used by documentation generators, IDEs, and frameworks.
+
+```python
+from dataclasses import dataclass, field, fields
+
+
+@dataclass
+class APIConfig:
+    base_url: str = field(
+        doc="Root URL of the API (e.g. 'https://api.example.com/v2')."
+    )
+    api_key: str = field(
+        doc="Authentication token. Obtain from the developer portal."
+    )
+    timeout: float = field(
+        default=30.0,
+        doc="Request timeout in seconds. Increase for slow endpoints.",
+    )
+    max_retries: int = field(
+        default=3,
+        doc="Number of retry attempts before raising an exception.",
+    )
+    verify_ssl: bool = field(
+        default=True,
+        doc="Set to False only in development (never in production).",
+    )
+
+
+# Access field docstrings at runtime
+for f in fields(APIConfig):
+    print(f"  {f.name}: {f.metadata.get('doc', '(undocumented)')}")
+# base_url: Root URL of the API ...
+# api_key: Authentication token ...
+# ...
+```
+
+**`weakref_slot=True`** (Python 3.11+): When using `slots=True`, classes cannot hold weak references by default because `__weakref__` is part of `__dict__`, which is absent with slots. Adding `weakref_slot=True` automatically inserts a `__weakref__` slot, enabling `weakref.ref()` and `weakref.WeakValueDictionary` on slotted dataclasses.
+
+```python
+import weakref
+from dataclasses import dataclass
+
+
+@dataclass(slots=True, weakref_slot=True)
+class CacheEntry:
+    key: str
+    value: object
+    ttl: int = 60
+
+
+entry = CacheEntry("user:42", {"name": "Alice"}, ttl=300)
+
+# Without weakref_slot=True, this would raise TypeError
+weak = weakref.ref(entry)
+print(weak())       # CacheEntry(key='user:42', ...)
+del entry
+print(weak())       # None — garbage collected
+```
+
+---
+
+### `TypeVar(infer_variance=True)` — Automatic Variance Inference (Python 3.12+)
+
+PEP 695 introduces variance inference for `TypeVar` instances created with `infer_variance=True`. Instead of manually marking covariance (`covariant=True`) or contravariance (`contravariant=False`), the type checker infers variance from how the type parameter is used in the class body. This eliminates a common source of incorrect manual variance annotations.
+
+```python
+from typing import TypeVar
+
+
+# Old style — manual variance, error-prone
+T_co = TypeVar("T_co", covariant=True)      # You must get this right
+T_contra = TypeVar("T_contra", contravariant=True)
+
+
+# New style (Python 3.12+) — infer_variance: type checker determines it
+T = TypeVar("T", infer_variance=True)
+
+
+class ReadOnlyList(list[T]):                  # T inferred as covariant
+    def get(self, i: int) -> T:
+        return self[i]
+    # T is never used in an input position → covariant
+
+
+class Writer(object):                         # Generic[T] inferred as contravariant
+    def write(self, value: T) -> None:        # T only used as input → contravariant
+        print(value)
+
+
+# PEP 695 syntax — infer_variance is the default for [T] syntax
+def first[T](items: list[T]) -> T:           # T variance inferred by checker
+    return items[0]
+
+
+class Stack[T]:                              # T variance inferred per usage
+    def __init__(self) -> None:
+        self._items: list[T] = []
+
+    def push(self, item: T) -> None:
+        self._items.append(item)
+
+    def pop(self) -> T:
+        return self._items.pop()
+```
+
+**Why variance inference matters:** Manually specifying `covariant=True` when a `TypeVar` is actually used in contravariant position (or both) causes confusing type errors. `infer_variance=True` (or the `[T]` syntax) delegates this mechanical decision to the type checker, which is both more accurate and self-documenting.
+
+---
+
+### `itertools.batched` — Fixed-Size Chunking (Python 3.12+)
+
+`itertools.batched(iterable, n)` yields fixed-size tuples from an iterable. The last batch may be smaller than `n`. It is the standard library replacement for the common "chunked" recipe (`zip_longest(*[iter(it)] * n)`).
+
+```python
+import itertools
+
+
+# Split a sequence into fixed-size batches (last may be smaller)
+data = range(10)
+for batch in itertools.batched(data, 3):
+    print(batch)
+# (0, 1, 2)
+# (3, 4, 5)
+# (6, 7, 8)
+# (9,)   ← last batch, shorter
+
+
+# Practical: process database rows in pages
+def process_in_pages(rows: list[dict], page_size: int = 100) -> None:
+    for page in itertools.batched(rows, page_size):
+        bulk_insert(page)   # Insert one page at a time
+
+
+# Pair with enumerate to track page numbers
+for page_num, batch in enumerate(itertools.batched(data, 3), start=1):
+    print(f"Page {page_num}: {batch}")
+
+
+# strict=True (Python 3.13+): raise ValueError if last batch is shorter
+try:
+    for chunk in itertools.batched(range(10), 3, strict=True):
+        process(chunk)
+except ValueError:
+    print("Data length is not a multiple of chunk size")
+
+
+# Pre-3.12 equivalent (ugly; easy to get wrong):
+def chunked_old(iterable, n):
+    it = iter(iterable)
+    return iter(lambda: tuple(itertools.islice(it, n)), ())
+```
+
+**Rule of thumb:** Use `batched` any time you process a sequence in fixed-size windows: bulk DB inserts, API request batching, progress reporting, multi-worker task distribution.
+
+---
+
+### `math.sumprod` — Dot Product in One Call (Python 3.12+)
+
+`math.sumprod(p, q)` computes `sum(p[i] * q[i] for i in range(len(p)))` — the dot product of two sequences — using extended precision arithmetic and without allocating an intermediate list. It is both more readable and more accurate than the `sum(a*b for a, b in zip(p, q))` recipe.
+
+```python
+import math
+
+
+# Dot product (weighted sum)
+prices   = [10.0, 25.0, 5.0]
+quantity = [3,    2,    10]
+
+total = math.sumprod(prices, quantity)
+print(f"Total: ${total:.2f}")   # Total: $130.00
+
+# vs the old recipe — sumprod has better numeric precision:
+# old = sum(p * q for p, q in zip(prices, quantity))  # loses bits on large sums
+
+
+# Weighted average
+def weighted_average(values: list[float], weights: list[float]) -> float:
+    return math.sumprod(values, weights) / sum(weights)
+
+
+scores = [85.0, 92.0, 78.0, 95.0]
+weights = [0.2, 0.3, 0.2, 0.3]
+avg = weighted_average(scores, weights)
+print(f"Weighted average: {avg:.1f}")   # 88.4
+
+
+# Cosine similarity — sumprod for dot product, then normalise
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = math.sumprod(a, b)
+    mag_a = math.sqrt(math.sumprod(a, a))
+    mag_b = math.sqrt(math.sumprod(b, b))
+    return dot / (mag_a * mag_b) if mag_a and mag_b else 0.0
+```
+
+**When to use:** Financial calculations (invoice totals, portfolio returns), statistics (weighted mean, variance), ML (manual dot products before numpy). The precision advantage is most noticeable with many small floating-point values.
+
+---
+
+### `typing.assert_type()` — Static Type Assertions in Tests (Python 3.11+)
+
+`assert_type(val, T)` is a no-op at runtime but tells type checkers to verify that `val` is exactly of type `T`. It is the preferred way to write type-level regression tests — confirming that a generic function, overload, or narrowing predicate returns the expected type at each call site.
+
+```python
+from typing import assert_type, TypeVar
+
+
+T = TypeVar("T")
+
+
+def first(items: list[T]) -> T:
+    return items[0]
+
+
+# Type-level assertions — no runtime cost; fails static analysis if wrong
+assert_type(first([1, 2, 3]), int)         # OK — first(list[int]) → int
+assert_type(first(["a", "b"]), str)        # OK — first(list[str]) → str
+# assert_type(first([1, 2, 3]), str)       # mypy/pyright ERROR: Expected str, got int
+
+
+# Useful after type narrowing — confirm both branches produce the right types
+from typing import TypeIs
+
+def is_int(val: object) -> TypeIs[int]:
+    return isinstance(val, int)
+
+
+def process(val: int | str) -> None:
+    if is_int(val):
+        assert_type(val, int)   # True branch — should be int
+    else:
+        assert_type(val, str)   # False branch — should be str (TypeIs narrows both)
+
+
+# Verify overload return types
+from typing import overload, Literal
+
+@overload
+def decode(data: bytes, encoding: Literal["utf-8"]) -> str: ...
+@overload
+def decode(data: bytes, encoding: Literal["raw"]) -> list[int]: ...
+
+def decode(data: bytes, encoding: str) -> str | list[int]:
+    if encoding == "utf-8":
+        return data.decode("utf-8")
+    return list(data)
+
+assert_type(decode(b"hello", "utf-8"), str)         # OK
+assert_type(decode(b"\x01\x02", "raw"), list[int])  # OK
+# assert_type(decode(b"hi", "utf-8"), bytes)         # ERROR — bytes not in overloads
+```
+
+**Best practice:** Place `assert_type` calls in test files or immediately after complex generic/overloaded function definitions. They serve as executable type documentation — if you later change a generic function's return type, the `assert_type` at every call site immediately fails in CI.
+
+---
+
+### 31. `TypeVar(infer_variance=True)` Misconception — "Free" Invariance  [community]
+
+**Problem:** Developers assume `TypeVar(infer_variance=True)` makes a `TypeVar` *invariant by default* or that it "automatically becomes covariant" everywhere. In practice, inference produces covariant, contravariant, or invariant based on usage — and a `TypeVar` used in BOTH covariant and contravariant positions is inferred as **invariant**, which is the most restrictive option and can cause unexpected type errors.
+
+**Why:** Variance is an algebraic property of how a type parameter appears. When `T` appears only in return positions (output), the type checker infers covariance — `Container[Dog]` is a subtype of `Container[Animal]`. When `T` appears only in parameter positions (input), it infers contravariance. When `T` appears in both (e.g., a `get()` method returning `T` AND a `set()` method accepting `T`), it must be invariant — `Container[Dog]` is NOT a subtype of `Container[Animal]`, breaking Liskov substitution for the container.
+
+**Fix:** Separate read and write interfaces if you need both covariance and a mutable interface. Use `Sequence[T]` (covariant read-only) and `MutableSequence[T]` (invariant read-write) as the standard library does.
+
+```python
+from typing import TypeVar, Protocol
+
+
+# GOTCHA — T inferred as invariant when used in both positions
+T = TypeVar("T", infer_variance=True)
+
+class Box:
+    def get(self) -> T: ...     # T in output position → covariant contribution
+    def set(self, v: T) -> None: ...  # T in input position → contravariant contribution
+    # Result: T is INVARIANT (both contributions conflict)
+
+# Box[Dog] is NOT a subtype of Box[Animal]
+# Box[Animal] is NOT a subtype of Box[Dog]
+
+
+# GOOD — split into read and write interfaces
+class ReadBox(Protocol[T]):
+    """Covariant — only reads T."""
+    def get(self) -> T: ...
+    # No set() here → T is covariant → ReadBox[Dog] IS a ReadBox[Animal]
+
+class WriteBox(Protocol[T]):
+    """Contravariant — only writes T."""
+    def set(self, v: T) -> None: ...
+    # No get() here → T is contravariant
+
+class MutableBox(ReadBox[T], WriteBox[T]):
+    """Invariant — reads and writes T."""
+    ...
+
+# Practical rule: if your container is read-only (Sequence, Iterator, Mapping values),
+# variance is inferred as covariant automatically. If it's mutable, it is invariant.
+# Don't fight this — use read-only types in function signatures where mutation isn't needed.
+```
+
+

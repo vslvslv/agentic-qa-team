@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 40 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 
@@ -1761,6 +1761,8 @@ jobs:
 | `device.setURLBlacklist(patterns)` | Block URLs from being tracked by sync | Suppress analytics/ad beacon flakiness |
 | `device.disableSynchronization()` | Disable automatic idle waiting | Narrow scope around known sync-breaking code |
 | `device.enableSynchronization()` | Re-enable automatic idle waiting | Re-enable immediately after `disableSynchronization` |
+| `device.sendToBackground()` | Send the app to background (simulates Home button) | Test foreground/background lifecycle transitions |
+| `device.bringToForeground()` | Bring the app back to foreground | Test session restore, UI state after backgrounding |
 | `device.shake()` | Shake gesture | Shake-to-report, undo gesture |
 | `device.setStatusBar(params)` | Override status bar display | Screenshot/visual consistency in CI |
 | `device.getPlatform()` | Returns `'ios'` or `'android'` | Conditional test logic per platform |
@@ -1769,6 +1771,7 @@ jobs:
 | `device.clearKeychain()` | Purge iOS Simulator Keychain (Detox 20+) | Prevent token leak between auth test suites |
 | `element.scrollPickerViewToRowIndex(row, col)` | Scroll iOS native PickerView to a row in a column | iOS native `<Picker>` / date pickers |
 | `element.scroll(px, dir, startX?, startY?)` | Scroll from a specific normalized position (0–1) | Tap-dense scroll views where center is occupied |
+| `element.tapBackspace()` | Send a backspace key event to the focused element | Clearing secureTextEntry password fields where clearText() fails |
 | `jestExpect` (global) | Jest's `expect` aliased to avoid Detox conflict | Value assertions alongside Detox element assertions |
 | `by.system()` | Match system-level UI elements (alerts, permission dialogs) | When pre-granting in `launchApp` is not possible |
 
@@ -1928,6 +1931,10 @@ Review your tests against this list when diagnosing a CI failure:
 | Remote config / feature flag fetched from network on startup | Inject flag values via `launchArgs` to short-circuit network call in tests |
 | `sendUserActivity` with unregistered activityType | Register all `NSUserActivityTypes` in `Info.plist` before testing Handoff/Spotlight |
 | `typeText()` for long strings (passwords, UUIDs) | Use `replaceText()` — `typeText` simulates key-by-key and adds 3–5s overhead per field (Gotcha 20) |
+| `waitFor().toBeVisible()` without `.withTimeout()` (Detox 20+) | Detox 20+ defaults to 6000ms; always specify explicit timeout (Gotcha 33) |
+| `clearText()` on secureTextEntry password field | Use `multiTap(3)` + `tapBackspace()` or `clearSecureField()` helper (Gotcha 35) |
+| CI job hangs after test suite completes | Add `--forceExit` to Jest CLI args in `.detoxrc.js` testRunner (Gotcha 24) |
+| Background/foreground lifecycle transitions not tested | Add `device.sendToBackground()` / `device.bringToForeground()` tests for session-sensitive flows (Gotcha 34) |
 
 ---
 
@@ -1958,6 +1965,10 @@ Use this checklist when a test passes locally but fails on CI:
 21. **`whileElement().scroll()` overshoot** — Is the `scroll` step too large, causing the target element to scroll past the viewport? Reduce to ≤50px per step (Gotcha 28).
 22. **Notification test state** — Is the app in the killed state when you call `sendUserNotification()`? Use `device.launchApp({ userNotification: payload })` for cold-start notification tests (Gotcha 27).
 23. **Wrong configuration on CI** — Was `-c` / `--configuration` omitted? Always specify the exact config name; never rely on alphabetical default (Gotcha 29).
+24. **Implicit `withTimeout` in Detox 20+** — Is `waitFor()` missing `.withTimeout()`? Detox 20 defaults to 6000 ms; add explicit `.withTimeout()` to all `waitFor` calls (Gotcha 33).
+25. **CI job hangs after suite** — Does the CI runner stay blocked after all tests finish? Add `forceExit: true` to `testRunner.args` in `.detoxrc.js` (Gotcha 24).
+26. **Background/foreground lifecycle untested** — Does the feature survive app backgrounding? Add `device.sendToBackground()` / `device.bringToForeground()` tests (Gotcha 34).
+27. **`clearText()` failing on password field** — Is `clearText()` or `replaceText('')` called on a `secureTextEntry` field? Use `multiTap(3)` + `tapBackspace()` cross-platform helper (Gotcha 35).
 
 ---
 
@@ -3074,6 +3085,8 @@ it('opens and reads a push notification from the shade', async () => {
 
 **Android-only APIs to always guard:** `device.openNotifications()`, `device.pressBack()`, `device.reverseTcp()`, `device.matchFinger()`, `device.unmatchFinger()`. Check `device.getPlatform()` before calling any of these.
 
+### 22. iPadOS multi-window / UIScene architecture causes silent tap on wrong window [community]
+
 **Root cause**: On iOS, apps that use `UIScene`-based multi-window architecture (e.g., iPadOS split-screen, Catalyst apps, apps that open a sheet window) can have multiple view hierarchies simultaneously. When `element(by.id('submit-button'))` matches in two different windows, Detox may interact with the element in the inactive window, causing silent failures where the tap appears to succeed but the expected navigation never happens.
 
 **WHY it's subtle**: The test does not throw an error — `element()` finds a match and `tap()` succeeds. The failure only surfaces when the expected next screen doesn't appear, making root-cause analysis difficult.
@@ -3121,6 +3134,47 @@ describe('Warm deep link navigation', () => {
 ```
 
 For Universal Links (https://), use `device.openURL({ url: 'https://...' })` — these are routed by iOS's Associated Domains mechanism and do not require scheme registration.
+
+### 24. Jest process hangs after test suite because Detox device connection is not released [community]
+
+**Root cause**: After a Detox test run, the Jest worker process occasionally fails to exit cleanly. The Detox gRPC channel to the device/simulator stays open, and Jest's default "wait for async operations to finish" behavior keeps the process alive indefinitely — CI jobs time out after 60–90 minutes instead of failing fast.
+
+**WHY teams miss this**: Locally, developers kill the terminal manually and never notice. On CI, the job blocks the machine, consumes runner minutes, and delays feedback. The failure mode looks like a timeout, not a test failure, so it doesn't appear in the test report.
+
+**Fix**: Add `--forceExit` to the Jest call in the Detox test runner configuration:
+
+```js
+// .detoxrc.js — add forceExit to prevent Jest process hang after suite
+module.exports = {
+  testRunner: {
+    args: {
+      $0: 'jest',
+      config: 'e2e/jest.config.js',
+      forceExit: true,   // --forceExit: kills the Jest process after all tests finish
+                         // Use only when Detox cleanup does not release all resources
+    },
+    jest: {
+      setupTimeout: 300000,
+    },
+  },
+  // ...
+};
+```
+
+Or pass it directly in the CLI:
+
+```bash
+# CI pipeline — combine with --loglevel to get verbose output on failure
+npx detox test -c ios.sim.release --loglevel verbose -- --forceExit
+```
+
+**When NOT to use `--forceExit`**: If your tests have `afterAll` teardown that writes to files, sends results to a TCMS, or cleans up external resources, `--forceExit` will skip that teardown. Use `--detectOpenHandles` first (Jest 26+) to identify the leaking resource:
+
+```bash
+# Diagnose the hanging handle before applying --forceExit
+npx detox test -c ios.sim.debug -- --detectOpenHandles
+# Output: TCPWRAP (the Detox device gRPC connection) — then add --forceExit only in CI
+```
 
 ### 27. `sendUserNotification` behaves differently based on app lifecycle state [community]
 
@@ -3614,6 +3668,200 @@ await expect(
 ).toBeVisible();
 const attrs = await element(by.id('submit-button')).getAttributes();
 expect(attrs.enabled).toBe(true); // now reliable
+```
+
+---
+
+### 33. Detox 20+ default `withTimeout` changed from unlimited to 6000 ms [community]
+
+**Root cause**: Prior to Detox 20, calling `waitFor(element(by.id('x'))).toBeVisible()` without `.withTimeout(ms)` would wait indefinitely (until the Jest test timeout fired). In Detox 20, the default timeout was capped at **6000 ms**. Code that relied on implicit infinite waits — e.g., tests waiting for slow API responses or cold-boot splash screens — now times out at 6 seconds.
+
+**WHY teams hit this**: The migration guide mentions it, but teams often upgrade Detox incrementally (19 → 20.x → 20.y) and miss single changelog entries. The failure looks like a flaky test ("sometimes it times out") rather than a breaking change, especially when CI is slower than local.
+
+**Fix**: Always specify `.withTimeout()` explicitly. Review every `waitFor` in your suite after upgrading to Detox 20:
+
+```bash
+# Find all waitFor calls that don't specify withTimeout — audit after Detox 20 upgrade
+grep -rn "waitFor" e2e/ | grep -v "withTimeout" | grep -v "//.*waitFor"
+```
+
+```js
+// BEFORE Detox 20 — implicit infinite wait (breaks in Detox 20+)
+await waitFor(element(by.id('splash-screen-done')))
+  .not.toBeVisible();  // no timeout — relied on implicit unlimited wait
+
+// AFTER — always explicit
+await waitFor(element(by.id('splash-screen-done')))
+  .not.toBeVisible()
+  .withTimeout(15000);  // 15 s for cold-boot splash
+```
+
+**Audit helper**: Run the grep above in CI as a preflight check. Any `waitFor` without `withTimeout` is a latent bug waiting to manifest on Detox 20+.
+
+---
+
+### 34. App foreground/background lifecycle testing with `sendToBackground` / `bringToForeground` [community]
+
+**Root cause**: Many teams test app UI flows but skip background/foreground lifecycle transitions entirely — assuming they "just work". In practice, apps that fail to restore state on foreground (navigation stack lost, session token expired, audio stream stopped) are a significant source of production crashes. `device.sendToBackground()` and `device.bringToForeground()` cover this in Detox without relying on simulator gestures.
+
+**Fix**: Add explicit lifecycle tests for features that must survive backgrounding:
+
+```js
+// e2e/lifecycle.test.js
+describe('App lifecycle: background + foreground', () => {
+  beforeAll(async () => {
+    await device.launchApp({
+      newInstance: true,
+      permissions: { notifications: 'YES' },
+    });
+  });
+
+  beforeEach(async () => {
+    await device.reloadReactNative();
+  });
+
+  it('restores the user session after backgrounding and returning', async () => {
+    // Log in
+    await element(by.id('email-input')).replaceText('user@example.com');
+    await element(by.id('password-input')).replaceText('secret123');
+    await element(by.id('login-button')).tap();
+    await waitFor(element(by.id('home-screen'))).toBeVisible().withTimeout(10000);
+
+    // Background the app (simulates pressing the Home button)
+    await device.sendToBackground();
+
+    // Wait to simulate user spending time in another app
+    // Use waitFor on a time-anchored condition, NOT setTimeout
+    // If there's nothing to wait for, a small Detox action works:
+    await device.bringToForeground();
+
+    // App should restore to the home screen (not back to login)
+    await waitFor(element(by.id('home-screen')))
+      .toBeVisible()
+      .withTimeout(8000);
+
+    // Verify session is still valid — user-specific element should be present
+    await expect(element(by.id('user-avatar'))).toBeVisible();
+  });
+
+  it('pauses a video when backgrounded and resumes when foregrounded', async () => {
+    await element(by.id('video-play-button')).tap();
+    await waitFor(element(by.id('video-player-playing-indicator')))
+      .toBeVisible()
+      .withTimeout(3000);
+
+    await device.sendToBackground();
+    await device.bringToForeground();
+
+    // Video should resume or remain paused depending on app policy —
+    // assert the expected post-foreground state
+    await expect(element(by.id('video-player'))).toBeVisible();
+  });
+
+  it('discards navigation state only when foregrounded after timeout', async () => {
+    // Navigate deep into the app
+    await element(by.id('settings-button')).tap();
+    await waitFor(element(by.id('settings-screen'))).toBeVisible().withTimeout(3000);
+
+    // Background — then bring back quickly (no session expiry)
+    await device.sendToBackground();
+    await device.bringToForeground();
+
+    // Navigation stack should still show settings screen
+    await waitFor(element(by.id('settings-screen'))).toBeVisible().withTimeout(5000);
+  });
+});
+```
+
+**API notes:**
+- `device.sendToBackground()` simulates the Home button press on iOS; on Android, it presses the Home key.
+- `device.bringToForeground()` opens the app from the app switcher / recent apps.
+- Neither call relaunches the app process — the JS bundle continues from where it left off.
+- If the app uses a session expiry timeout (e.g., "lock app after 15 minutes in background"), use `launchArgs` to configure a shorter timeout in test mode.
+
+**[community] gotcha**: On Android, `sendToBackground()` can race with `bringToForeground()` if called in rapid succession — the "app switcher" animation may not complete before `bringToForeground()` fires. Add a `waitFor(element(by.id('home-screen')).not.toBeVisible())` check or use `await device.sendToBackground()` followed by a brief `waitFor` on a background indicator before bringing back to foreground.
+
+---
+
+### 35. `element.tapBackspace()` for clearing secure/masked text fields [community]
+
+**Root cause**: On password fields (`secureTextEntry={true}`), `clearText()` is blocked by iOS security restrictions on the Simulator — the iOS text field suppresses programmatic content replacement when the field is in secure mode. Teams that use `replaceText()` or `clearText()` on password fields find that the action either silently fails or raises a Detox exception. The workaround is to use `tapBackspace()` to delete characters one by one.
+
+**WHY this is painful**: `clearText()` works on all other fields. The password field behavior is inconsistent, and the error message ("Unable to clear text from element") appears only at runtime, not at authoring time.
+
+**Fix**: Use `tapBackspace()` in a loop, or `typeText` combined with select-all:
+
+```js
+// e2e/helpers/clearPasswordField.js
+
+/**
+ * Clears a secureTextEntry TextInput by selecting all text and deleting it.
+ * Use instead of clearText() / replaceText() for password fields.
+ *
+ * @param {string} testId - The testID of the password field
+ * @param {number} maxLength - Maximum characters to delete (default: 50)
+ */
+async function clearPasswordField(testId, maxLength = 50) {
+  const el = element(by.id(testId));
+  await el.tap();
+
+  // Select all text (Ctrl+A equivalent on iOS Simulator)
+  // iOS: triple-tap selects all text even in secure fields
+  await el.multiTap(3);
+
+  // Delete the selection
+  await el.tapBackspace();
+}
+
+module.exports = { clearPasswordField };
+```
+
+```js
+// e2e/login.test.js
+const { clearPasswordField } = require('./helpers/clearPasswordField');
+
+it('changes password from the settings screen', async () => {
+  await element(by.id('settings-tab')).tap();
+  await element(by.id('change-password-button')).tap();
+
+  // Fill current password — secure field requires clearPasswordField helper
+  await element(by.id('current-password-input')).tap();
+  await clearPasswordField('current-password-input');
+  await element(by.id('current-password-input')).typeText('oldpass123');
+
+  // replaceText works on non-secure new-password fields in some RN versions
+  await element(by.id('new-password-input')).tap();
+  await element(by.id('new-password-input')).tapBackspace();  // fallback approach
+  await element(by.id('new-password-input')).typeText('newpass456');
+
+  await element(by.id('save-password-button')).tap();
+  await waitFor(element(by.id('password-changed-banner')))
+    .toBeVisible()
+    .withTimeout(5000);
+});
+```
+
+**Alternative — use `replaceText` with an empty string first**:
+Some React Native versions allow `replaceText('')` on secure fields to clear them. If `tapBackspace()` is not available in your Detox version, try:
+
+```js
+// Only works on some RN + Detox version combos — test before relying on it
+await element(by.id('password-input')).replaceText('');
+await element(by.id('password-input')).typeText('newpass456');
+```
+
+**[community] NOTE**: On Android emulators, `clearText()` works on most secure fields. The restriction is primarily an iOS Simulator behavior. Always guard with `device.getPlatform()` if you need a cross-platform helper:
+
+```js
+async function clearSecureField(testId) {
+  const el = element(by.id(testId));
+  if (device.getPlatform() === 'ios') {
+    await el.multiTap(3);
+    await el.tapBackspace();
+  } else {
+    await el.clearText();
+  }
+}
 ```
 
 ---

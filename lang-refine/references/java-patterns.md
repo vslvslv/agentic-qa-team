@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -1174,6 +1174,114 @@ public String fetchFromFastestReplica(List<String> replicaUrls) throws Exception
 }
 ```
 
+### Module Import Declarations (Java 24 standard — JEP 476)
+Module import declarations (`import module <name>;`) import all public top-level types exported by a module in a single statement, eliminating the boilerplate of dozens of individual type imports in files that use many classes from a module (e.g., `java.base`, `java.sql`, `java.xml`).
+
+```java
+// Before: explicit per-type imports (verbose for utility/glue code)
+import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Optional;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Files;
+
+// After: one line imports everything from java.base
+import module java.base;
+
+// Also useful for application modules in multi-module builds
+import module com.example.shared;   // imports all exported packages from your shared module
+
+public class DataProcessor {
+    // Can use ArrayList, HashMap, Optional, Path, Files, Stream, Collectors directly
+    public Map<String, List<String>> groupByPrefix(List<String> items) {
+        return items.stream()
+            .collect(Collectors.groupingBy(s -> s.substring(0, 1)));
+    }
+}
+```
+
+**Note:** Module imports are a convenience shorthand. Ambiguity is resolved by explicit single-type imports — a `import java.util.Date;` after `import module java.base;` selects `java.util.Date` over `java.sql.Date`.
+
+### Flexible Constructor Bodies (Java 22 preview → Java 23 preview — JEP 492/513, targeting Java 25 standard)
+Flexible constructor bodies allow statements to appear before the explicit `super()` or `this()` call in a constructor, provided those statements do not reference `this`. This enables argument validation and preparation (e.g., null checks, defensive copies) before delegating to the superclass, replacing the awkward static helper method workaround.
+
+```java
+// Before Java 22: argument validation before super() required a static helper
+public class BoundedIntRange extends IntRange {
+    public BoundedIntRange(int low, int high) {
+        super(validate(low, high));   // forced to use static helper — ugly
+    }
+    private static int[] validate(int low, int high) {
+        if (low > high) throw new IllegalArgumentException(low + " > " + high);
+        return new int[]{low, high};
+    }
+}
+
+// Java 22+ preview: statements before super() are now legal
+public class BoundedIntRange extends IntRange {
+    public BoundedIntRange(int low, int high) {
+        // Statements before super() — allowed as long as 'this' is not referenced
+        if (low > high) {
+            throw new IllegalArgumentException(
+                "low (%d) must be ≤ high (%d)".formatted(low, high));
+        }
+        int adjustedLow = Math.max(low, 0);   // clamp to non-negative
+        super(adjustedLow, high);              // super() still required, just not first
+    }
+}
+
+// Useful for records: compact canonical constructors already allow this,
+// but for plain classes it eliminates a significant design friction.
+public class NonNullList<E> extends ArrayList<E> {
+    public NonNullList(List<? extends E> source) {
+        Objects.requireNonNull(source, "source must not be null");  // before super()
+        super(source);
+    }
+}
+```
+
+### Parallel Stream Optimization — `unordered()` and `groupingByConcurrent()`
+Two underused optimizations for parallel streams: `unordered()` tells the stream pipeline that element order does not matter, enabling the runtime to skip buffering for order-sensitive operations (`distinct()`, `limit()`). `Collectors.groupingByConcurrent()` produces a `ConcurrentHashMap` directly using a concurrent merge algorithm — faster than `groupingBy()` in parallel because it avoids per-thread maps and a final merge step.
+
+```java
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+// groupingBy in parallel: creates per-thread maps, merges at the end
+Map<String, List<Order>> byStatus = orders.parallelStream()
+    .collect(Collectors.groupingBy(Order::status));   // ordered; sequential merge
+
+// groupingByConcurrent: writes directly into ConcurrentHashMap — no merge step
+// NOTE: result order within each group is non-deterministic
+Map<String, List<Order>> byStatusConcurrent = orders.parallelStream()
+    .collect(Collectors.groupingByConcurrent(Order::status));
+
+// unordered() + parallel: skip order-preservation buffering in distinct/limit
+long uniqueCount = largeStream
+    .parallel()
+    .unordered()        // hint: order irrelevant — allows optimised parallel distinct
+    .distinct()
+    .count();
+
+// Combining: fully unordered concurrent grouping — maximum parallelism
+ConcurrentHashMap<Department, List<Employee>> grouped = employees.parallelStream()
+    .unordered()
+    .collect(Collectors.groupingByConcurrent(
+        Employee::department,
+        ConcurrentHashMap::new,
+        Collectors.toList()
+    ));
+```
+
+**When to use:** `groupingByConcurrent()` wins on large datasets where merging per-thread maps is the bottleneck. `unordered()` helps when the pipeline contains `distinct()`, `sorted()`, or `limit()` and you don't need encounter order preserved. Always benchmark — for small collections, sequential is faster.
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -1832,6 +1940,53 @@ sf.getStatistics().setStatisticsEnabled(true);
 ```
 **WHY:** A page that renders 100 orders will fire 101 database queries with lazy loading and 1 with `JOIN FETCH`. At 1ms per query, that is the difference between a 1ms and 100ms response. Hibernate's default `FetchType.LAZY` is the right choice for fields you often don't need — but you must explicitly opt into eager loading when you know you'll access the association, not rely on the proxy to fetch it for you.
 
+**33. Using `Stream.reduce(String::concat)` for String Joining [community]**
+`Stream<String>.reduce("", String::concat)` appears to work but runs in **O(n²)** time because each `concat` call copies all characters accumulated so far into a new string. This is the classic quadratic string concatenation problem manifested in stream form. The root cause is that `reduce` is designed for values (integers, sums) — not for mutable StringBuilder-style accumulation. Fix: use `Collectors.joining()` which uses a `StringJoiner` internally, or `String.join()` for simple cases.
+
+```java
+List<String> parts = List.of("Hello", " ", "World", "!");
+
+// BAD — O(n²): each concat copies the growing prefix + next element
+String result = parts.stream().reduce("", String::concat);
+
+// GOOD — O(n): Collectors.joining uses StringJoiner, not string copies
+String result = parts.stream().collect(Collectors.joining());
+
+// GOOD — with delimiter/prefix/suffix
+String csv = parts.stream().collect(Collectors.joining(", ", "[", "]"));
+// → "[Hello,  , World, !]"
+
+// GOOD — for a simple fixed-delimiter join without a stream
+String joined = String.join(" ", parts);  // → "Hello  World !"
+```
+**WHY:** On a stream of 10,000 strings each averaging 50 characters, `reduce("", String::concat)` copies roughly 500,000 + 500,050 + 500,100 … ≈ 2.5 billion characters. `Collectors.joining()` copies each character exactly once. The Java Streams API documentation explicitly calls out this anti-pattern in its discussion of mutable reduction.
+
+**34. Calling `stream.parallel()` on a Spliterator With `SUBSIZED` Characteristic Missing [community]**
+`parallelStream()` works best when the stream's underlying `Spliterator` can accurately predict sub-split sizes (`SUBSIZED` characteristic). `ArrayList`, arrays, and `IntStream.range()` have `SUBSIZED` — the framework can partition work evenly. `LinkedList`, lazy-generated streams, and custom spliterators that lack this characteristic cause unbalanced work distribution: one thread gets 7/8 of the work and 7 threads sit idle. The root cause is that `parallelStream()` looks the same regardless of the underlying data source — there is no compile-time warning.
+
+```java
+// GOOD source for parallelStream — ArrayList is SIZED + SUBSIZED
+List<Widget> widgets = new ArrayList<>(loadWidgets());  // converts from LinkedList
+double sum = widgets.parallelStream()
+    .mapToDouble(Widget::weight)
+    .sum();   // even work distribution across ForkJoinPool
+
+// BAD source for parallelStream — LinkedList is ORDERED but not SUBSIZED
+List<Widget> linked = new LinkedList<>(loadWidgets());
+double sum = linked.parallelStream()    // uneven splits; often slower than sequential
+    .mapToDouble(Widget::weight)
+    .sum();
+
+// BAD source — lazy infinite stream: unordered sequential generation
+Stream<UUID> ids = Stream.generate(UUID::randomUUID);
+ids.parallel().limit(1000).forEach(...);  // cannot be split predictably
+
+// GOOD — use Arrays.stream() or IntStream.range() for index-based parallelism
+double[] values = fetchValues();
+double sum = Arrays.stream(values).parallel().sum();  // optimal splits
+```
+**WHY:** The `ForkJoinPool` work-stealing algorithm requires sub-split size estimates to balance tasks. Without `SUBSIZED`, the splitter guesses and often front-loads one worker. A `LinkedList.parallelStream()` over 1 million elements typically runs slower than `ArrayList.parallelStream()` over the same elements because the list cannot be split at arbitrary indices — it must traverse from the head.
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -1874,6 +2029,9 @@ sf.getStatistics().setStatisticsEnabled(true);
 | `String.format()` in log messages | Always builds string even when log level is disabled; adds GC pressure | Use SLF4J parameterised logging `log.debug("msg {}", arg)` |
 | Stateful lambda in `parallelStream()` | Data race on shared mutable state; non-deterministic results or corruption | Use `collect(Collectors.toList())` — collector handles thread-safety internally |
 | ORM lazy loading in a loop (N+1) | 1 + N database queries per request; invisible until production load | Use `JOIN FETCH` or `@EntityGraph` to load associations in a single query |
+| `stream.reduce("", String::concat)` for joining | O(n²) string copying; quadratic time on large streams | Use `Collectors.joining()` or `String.join()` |
+| `parallelStream()` on SUBSIZED-absent sources (LinkedList) | Unbalanced work splits; often slower than sequential | Use `ArrayList`, arrays, or `IntStream.range()` as parallel stream source |
+| Module imports (`import module`) misuse | Ambiguous type resolution when same name exists in two modules | Add explicit single-type import after module import to resolve ambiguity |
 
 ---
 
