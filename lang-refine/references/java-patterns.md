@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.14 release notes, JUnit 6.0-6.1 release notes, Mockito 5.x-5.23 release notes, AssertJ 3.27.7 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Boot 4.0 release notes and migration guide, Spring Framework 6.2-7.0 docs, MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass @SentenceFragment @ClassTemplate AutoCloseable-in-Store Kotlin-Sequence, JUnit 5.14 ResourceSupport OutputDirectoryCreator MediaType-relocation EnabledOnJre-JRE-OTHER ResourceLock-ClassTemplate, JUnit 6.1 @DefaultLocale @DefaultTimeZone @EmptySource-Iterable @CsvSource-commentCharacter @EnabledOnJre-int @TempDir-CleanupMode system-properties-extension Constants-class assertInstanceOf-cause trimStacktrace WorkerThreadPool org.junit.start dynamic-test-ExecutionMode memory-cleanup-mode, JUnit 6.0.3 NamespacedHierarchicalStore-deadlock, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, AssertJ 3.27.7 XXE CVE-2026-24400 XmlStringPrettyFormatter-deprecated, Spring Boot 3.5 SSL Testcontainers print-condition-evaluation-report, Spring Boot 4.0 @MockBean-removal @MockitoBean RestTestClient @AutoConfigureMockMvc-HtmlUnit MockitoTestExecutionListener-removal @PropertyMapping-relocation @WithMockUser-security-test, Mockito 5.20 generic-type-construction, Mockito 5.21 ReturnsEmptyValues-Future, Mockito 5.22 Kotlin singleton mocking, Mockito 5.23 @Nullable-when Android-mock-maker) | mixed | iteration: 35 | score: 99/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.14 release notes, JUnit 6.0-6.1 release notes, Mockito 5.x-5.23 release notes, AssertJ 3.27.7 release notes, AssertJ 4.0.0-M1 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Boot 4.0 release notes and migration guide, Spring Boot 4.1-RC1 release notes, Spring Framework 6.2-7.0 docs, MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass @SentenceFragment @ClassTemplate AutoCloseable-in-Store Kotlin-Sequence, JUnit 5.14 ResourceSupport OutputDirectoryCreator MediaType-relocation EnabledOnJre-JRE-OTHER ResourceLock-ClassTemplate, JUnit 6.1 @DefaultLocale @DefaultTimeZone @EmptySource-Iterable @CsvSource-commentCharacter @EnabledOnJre-int @TempDir-CleanupMode system-properties-extension Constants-class assertInstanceOf-cause trimStacktrace WorkerThreadPool org.junit.start dynamic-test-ExecutionMode memory-cleanup-mode, JUnit 6.0.3 NamespacedHierarchicalStore-deadlock, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, AssertJ 3.27.7 XXE CVE-2026-24400 XmlStringPrettyFormatter-deprecated, AssertJ 4.0.0-M1 Java17-min native-isSealed-isRecord, Spring Boot 3.5 SSL Testcontainers print-condition-evaluation-report, Spring Boot 4.0 @MockBean-removal @MockitoBean RestTestClient @AutoConfigureMockMvc-HtmlUnit MockitoTestExecutionListener-removal @PropertyMapping-relocation @WithMockUser-security-test spring-boot-resttestclient-module-4.0.6, Spring Boot 4.1-RC1 @GrpcAdvice @ServiceConnection-Ssl-fix OpenTelemetry-SDK-env-vars, Mockito 5.19 SequencedCollection-ReturnsEmptyValues, Mockito 5.20 generic-type-construction, Mockito 5.21 ReturnsEmptyValues-Future, Mockito 5.22 Kotlin singleton mocking, Mockito 5.23 @Nullable-when Android-mock-maker) | mixed | iteration: 36 | score: 99/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -6132,5 +6132,206 @@ Upgrading from Spring Boot 3.x to 4.0 without migrating `@MockBean` / `@SpyBean`
 
 **50. JUnit 6.1 @TempDir CleanupMode.NEVER Leaks Disk Space in CI [community]**
 `CleanupMode.NEVER` is intended for debugging and short-lived local runs. In CI pipelines with ephemeral agents, it is harmless — the agent is discarded. But on self-hosted runners or shared CI machines, accumulated `@TempDir(cleanup = NEVER)` directories fill disk over time. Use `CleanupMode.ON_SUCCESS` instead: failed test runs retain the directory for inspection while successful runs clean up. Add a CI cron job to purge stale temp directories older than 48 hours as a safety net. [community]
+
+---
+
+## Mockito 5.19 — `ReturnsEmptyValues` for Sequenced Collections (JEP 431)
+
+Mockito 5.19 (August 2025) extended `ReturnsEmptyValues` — the default answer for unstubbed mock methods — to support the three Sequenced Collection interfaces introduced by Java 21 (JEP 431). Before 5.19, calling an unstubbed method whose return type was `SequencedCollection`, `SequencedSet`, or `SequencedMap` returned `null`, causing `NullPointerException` in production code that called `.reversed()` or `.firstEntry()` on the result without null-checking.
+
+```java
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import java.util.SequencedCollection;
+import java.util.SequencedMap;
+import static org.assertj.core.api.Assertions.assertThat;
+
+@ExtendWith(MockitoExtension.class)
+class OrderRepositoryTest {
+
+    @Mock
+    OrderRepository repo;  // default answer = ReturnsEmptyValues (Mockito 5.19+)
+
+    @Test
+    void unstubbed_sequencedCollection_returnsEmptyList() {
+        // Before Mockito 5.19: repo.findRecentOrders() returned null
+        // After  Mockito 5.19: returns empty ArrayList (SequencedCollection)
+        SequencedCollection<Order> orders = repo.findRecentOrders();
+        assertThat(orders).isNotNull().isEmpty();
+
+        // Calling reversed() on the empty collection no longer throws NPE
+        assertThat(orders.reversed()).isEmpty();
+    }
+
+    @Test
+    void unstubbed_sequencedMap_returnsEmptyLinkedHashMap() {
+        // SequencedMap → empty LinkedHashMap; firstEntry()/lastEntry() return null
+        SequencedMap<String, Order> byId = repo.findOrdersById();
+        assertThat(byId).isNotNull().isEmpty();
+        assertThat(byId.firstEntry()).isNull();   // correct: empty map has no first entry
+    }
+}
+```
+
+**Return type mapping in Mockito 5.19+:**
+
+| Return type       | Default empty value   |
+|-------------------|-----------------------|
+| `SequencedCollection<T>` | `new ArrayList<>()` |
+| `SequencedSet<T>` | `new LinkedHashSet<>()` |
+| `SequencedMap<K,V>` | `new LinkedHashMap<>()` |
+
+**Gotcha — `SequencedCollection` supertype match:** If a mock returns `List<T>` (which `extends SequencedCollection<T>`), Mockito's existing `List` empty-value rule takes precedence; the `SequencedCollection` rule only applies when the declared return type is exactly one of the three Sequenced interfaces (not a subtype like `List` or `NavigableMap`). [community]
+
+---
+
+## AssertJ 4.0.0-M1 — Java 17 Minimum and Native `isSealed()` / `isRecord()` Checks
+
+AssertJ 4.0.0-M1 (milestone, early 2026) is the first release requiring **Java 17 as the minimum runtime**. The primary driver is replacing internal reflection hacks with JDK-native APIs for two frequently used assertions:
+
+- `isSealed()` / `isNotSealed()` — previously used `Class.getDeclaredMethod("isSealed")` via reflection to support Java 11 builds; now calls `Class.isSealed()` directly (Java 17+).
+- `isRecord()` / `isNotRecord()` — previously used reflection-based `Class.isRecord()`; now calls the JDK method directly, removing the bytecode dependency on Byte Buddy shims.
+
+```java
+import static org.assertj.core.api.Assertions.assertThat;
+
+// Sealed hierarchy under test
+public sealed interface Shape permits Circle, Rectangle {}
+public record Circle(double radius) implements Shape {}
+public record Rectangle(double width, double height) implements Shape {}
+
+class ShapeTypeAssertionsTest {
+
+    @Test
+    void shapeHierarchy_isSealed_andComponentsAreRecords() {
+        // AssertJ 4.0.0-M1+: uses Class.isSealed() directly — no reflection overhead
+        assertThat(Shape.class).isSealed();
+        assertThat(Object.class).isNotSealed();
+
+        // Uses Class.isRecord() directly — no Byte Buddy shim required
+        assertThat(Circle.class).isRecord();
+        assertThat(Rectangle.class).isRecord();
+        assertThat(Shape.class).isNotRecord();  // interfaces are not records
+    }
+
+    @Test
+    void permittedSubclasses_areVerifiable() {
+        // Assert the exact sealed permits set (assertj-core 3.x compat API retained)
+        assertThat(Shape.class.getPermittedSubclasses())
+            .extracting(Class::getSimpleName)
+            .containsExactlyInAnyOrder("Circle", "Rectangle");
+    }
+}
+```
+
+**Migration note:** All existing deprecations in AssertJ 3.x now carry `forRemoval = true` in 4.0.0-M1. Projects using deprecated assertions (e.g., `containsOnly` on maps with separate key/value lists) should migrate to the non-deprecated replacements before upgrading. The `@VisibleForTesting` annotation from `assertj-core` is also deprecated for removal — use your own or a Guava `@VisibleForTesting` instead. [community]
+
+---
+
+## Spring Boot 4.0.6 — `spring-boot-resttestclient` Module Now Required Explicitly
+
+Spring Boot 4.0.0 split REST test client support into a new `spring-boot-resttestclient` module, but the 4.0.0–4.0.5 `spring-boot-starter-test` POM did not declare the dependency, silently omitting `RestTestClient` from the classpath in some Maven/Gradle configurations. Spring Boot 4.0.6 fixed the POM to include it automatically.
+
+```xml
+<!-- Spring Boot 4.0.0 – 4.0.5: add this explicitly to fix RestTestClient ClassNotFound -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-resttestclient</artifactId>
+    <scope>test</scope>
+</dependency>
+
+<!-- Spring Boot 4.0.6+: included transitively via spring-boot-starter-test — no explicit dep needed -->
+```
+
+```java
+// Also fixed in 4.0.6: @Ssl on @Bean methods now works correctly with @ServiceConnection
+@Configuration(proxyBeanMethods = false)
+class TestContainersConfig {
+
+    @Bean
+    @ServiceConnection
+    @Ssl  // was ignored on @Bean methods before 4.0.6 — SSL properties not forwarded
+    PostgreSQLContainer<?> postgres() {
+        return new PostgreSQLContainer<>(DockerImageName.parse("postgres:16"))
+            .withUrlParam("sslmode", "require");
+    }
+}
+```
+
+**Gotcha — silent test failures on 4.0.0–4.0.5 with `@Ssl @ServiceConnection` [community]:** The `@Ssl` annotation on `@Bean` methods was processed correctly only when applied to the container field — not to `@Bean` methods — in Boot 4.0.0–4.0.5. Tests using SSL Testcontainers via `@Bean` factories passed locally (no SSL configured) but failed in CI with certificate validation errors. Upgrading to 4.0.6 or adding `@Ssl` to the field instead of the method was the workaround. [community]
+
+---
+
+## Spring Boot 4.1 RC1 — `@GrpcAdvice` and OpenTelemetry SDK Environment Variables
+
+Spring Boot 4.1 RC1 (April 2026) adds two testing-relevant features:
+
+### `@GrpcAdvice` — Exception Handling for gRPC Tests
+
+Spring Boot 4.1 added `@GrpcAdvice` as the gRPC analogue of `@ControllerAdvice`. This is surfaced in tests via the `@GrpcTest` slice (added in Boot 4.1), which loads only gRPC service beans, `@GrpcAdvice` classes, and their dependencies — analogous to how `@WebMvcTest` loads only MVC layers.
+
+```java
+import org.springframework.grpc.server.exception.GrpcAdvice;
+import org.springframework.grpc.server.exception.GrpcExceptionHandler;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+
+// Production exception handler for gRPC services
+@GrpcAdvice
+public class OrderGrpcAdvice {
+
+    @GrpcExceptionHandler(OrderNotFoundException.class)
+    public StatusRuntimeException handleNotFound(OrderNotFoundException ex) {
+        return Status.NOT_FOUND
+                .withDescription(ex.getMessage())
+                .asRuntimeException();
+    }
+}
+
+// Test — @GrpcTest slice loads the service + @GrpcAdvice but not the full Spring context
+@GrpcTest(OrderGrpcService.class)
+class OrderGrpcServiceTest {
+
+    @Autowired
+    OrderServiceGrpc.OrderServiceBlockingStub client;
+
+    @MockitoBean
+    OrderRepository orderRepository;
+
+    @Test
+    void getOrder_notFound_returnsGrpcNotFound() {
+        when(orderRepository.findById(99L)).thenReturn(Optional.empty());
+
+        StatusRuntimeException ex = assertThrows(StatusRuntimeException.class,
+            () -> client.getOrder(GetOrderRequest.newBuilder().setId(99L).build()));
+
+        assertThat(ex.getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND);
+    }
+}
+```
+
+### OpenTelemetry SDK Environment Variable Auto-Configuration
+
+Spring Boot 4.1 added auto-configuration support for OpenTelemetry SDK environment variables (`OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`, etc.) via the new `spring.otel.*` configuration properties namespace. In tests, override the exporter endpoint to point at a local collector container:
+
+```java
+@SpringBootTest
+@Testcontainers
+class TracingIntegrationTest {
+
+    @Container
+    @ServiceConnection  // auto-configures spring.otel.exporter.otlp.endpoint
+    static OtlpGrpcContainer otelCollector =
+        new OtlpGrpcContainer(DockerImageName.parse("otel/opentelemetry-collector:0.100.0"));
+
+    @Test
+    void orderProcessing_emitsTrace() {
+        // ... call order service, then assert spans arrived at collector
+    }
+}
+```
+
+**Note:** `@GrpcTest` and the `OtlpGrpcContainer` `@ServiceConnection` support are new in Spring Boot 4.1 and require `spring-boot-starter-grpc` and `spring-boot-starter-opentelemetry` respectively. [community]
 
 

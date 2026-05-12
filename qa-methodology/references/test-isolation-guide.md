@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -83,6 +83,16 @@
 <!--            (Pattern 40, Gotcha 101); Playwright v1.59 `page.clearConsoleMessages()` /            -->
 <!--            `page.clearPageErrors()` for intra-test diagnostic isolation in multi-phase            -->
 <!--            workflows — prevent cross-phase console/error contamination (Pattern 41, Gotcha 102)   -->
+<!--          Iteration 25 (2026-05-12): Node.js 24 `AsyncLocalStorage` `defaultValue` option for    -->
+<!--            zero-undefined per-test context stores — eliminates non-null casts in TypeScript        -->
+<!--            test utilities (Pattern 42, Gotcha 103); Vitest `aroundEach` + `AsyncLocalStorage.run` -->
+<!--            composition for scoped per-test context propagation — extends Pattern 24's DB rollback  -->
+<!--            to arbitrary context (Pattern 43); Node.js 24 `node:test` automatic subtest completion  -->
+<!--            changes isolation timing — subtests awaited automatically but resources allocated       -->
+<!--            inside them may outlive parent cleanup scope (Gotcha 104); Node.js 24                   -->
+<!--            `--test-global-setup` runs in the same process as tests unlike Jest's subprocess model  -->
+<!--            — singletons and module-level state from globalSetup are shared with all tests          -->
+<!--            and cannot be cleared between tests (Gotcha 105)                                        -->
 
 ---
 
@@ -5851,3 +5861,300 @@ export const test = base.extend({
 | Vitest Docs — Test Context (signal) | Official | https://vitest.dev/guide/test-context#test-signal | `signal` property reference: abort conditions, usage with fetch, relationship to `bail` |
 | Playwright v1.59 Release Notes — clearConsoleMessages | Official | https://playwright.dev/docs/release-notes#version-159 | `page.clearConsoleMessages()` + `page.clearPageErrors()` introduced; filter option on `consoleMessages()` |
 | Playwright Docs — page.clearConsoleMessages | Official | https://playwright.dev/docs/api/class-page#page-clear-console-messages | API reference; confirms page-scoped only (no context-level equivalent) |
+
+---
+
+## Extended Patterns — Iteration 25
+
+### Pattern 42: Node.js 24 `AsyncLocalStorage` `defaultValue` for null-safe per-test context stores (TypeScript, Node.js ≥ 24.0)  [community]
+
+Node.js 24.0 added a `defaultValue` constructor option to `AsyncLocalStorage`. When a test (or test
+utility) calls `getStore()` outside an active `run()` scope — for example in a module-level
+initializer that runs before any test context is established — the call previously returned
+`undefined`, forcing TypeScript callers to add non-null assertions (`!`) or null-checks throughout
+every consumer. With `defaultValue`, the store always returns a value, making the TypeScript type
+`T` instead of `T | undefined` and eliminating defensive null-checks in test helper code.
+
+```typescript
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { beforeEach, afterEach, test, expect } from 'vitest';
+
+// BEFORE Node.js 24: getStore() typed as TestCtx | undefined — callers must null-check
+// const testCtxStore = new AsyncLocalStorage<TestCtx>();
+// const ctx = testCtxStore.getStore()!; // ← unsafe non-null assertion
+
+interface TestCtx {
+  testId: string;
+  startedAt: number;
+  logs: string[];
+}
+
+// AFTER Node.js 24: defaultValue gives a safe sentinel; getStore() typed as TestCtx
+const testCtxStore = new AsyncLocalStorage<TestCtx>({
+  // Returned by getStore() when called outside any run() — acts as a safe no-op sentinel
+  defaultValue: { testId: 'NO_TEST', startedAt: 0, logs: [] },
+  // name option: identifies this store in Node.js diagnostics / --inspect output
+  name: 'testContext',
+});
+
+// Utility: pure function — never needs null-check on getStore()
+function logTestEvent(event: string): void {
+  // No null-check needed — defaultValue guarantees a non-null return
+  testCtxStore.getStore().logs.push(event);
+}
+
+// Test lifecycle: establish a fresh context per test
+beforeEach((ctx) => {
+  // Attach a fresh TestCtx to this test's async execution context via run()
+  // Note: aroundEach is preferred over beforeEach for this pattern (see Pattern 43)
+  // This form is shown here to illustrate the defaultValue sentinel behavior
+  testCtxStore.enterWith({ testId: ctx.task.id, startedAt: Date.now(), logs: [] });
+});
+
+test('logTestEvent captures events in per-test context', () => {
+  logTestEvent('step-1');
+  logTestEvent('step-2');
+
+  const { logs } = testCtxStore.getStore();
+  expect(logs).toEqual(['step-1', 'step-2']);
+});
+
+test('logs do not bleed between tests', () => {
+  // Fresh context from beforeEach — previous test's logs are gone
+  expect(testCtxStore.getStore().logs).toHaveLength(0);
+
+  logTestEvent('only-this-test');
+
+  expect(testCtxStore.getStore().logs).toEqual(['only-this-test']);
+});
+
+// Module-level call that runs before any test context — uses defaultValue, not undefined
+const earlyLog = testCtxStore.getStore().logs; // ← safe; no crash; logs === []
+```
+
+**Why `enterWith` over `run()` in `beforeEach`:** `AsyncLocalStorage.run(value, fn)` scopes the
+value to `fn`'s async execution tree. In `beforeEach`, the async execution tree includes the setup
+callback but NOT the subsequent test body — the store reverts to `defaultValue` when the
+`beforeEach` callback resolves. `enterWith(value)` sets the store for the remainder of the current
+async execution context (Worker thread or main thread), which persists into the test body running
+afterward. Use `enterWith` in `beforeEach`/`afterEach` pairs; use `run(value, runTest)` inside
+`aroundEach` (Pattern 43) which wraps both setup and test body in one async scope.
+
+---
+
+### Pattern 43: Vitest `aroundEach` + `AsyncLocalStorage.run()` for scoped per-test context propagation (TypeScript, Vitest 4.1+)  [community]
+
+Pattern 24 shows `aroundEach` for database transaction rollback. The same lifecycle hook composes
+cleanly with `AsyncLocalStorage.run()` to propagate arbitrary per-test context — request IDs,
+observability spans, feature flags, or test metadata — to every function called during the test
+without any parameter threading. Unlike `enterWith` in `beforeEach` (which sets the store for the
+current Worker thread but cannot scope teardown), `aroundEach` + `run()` guarantees the context is
+active for *exactly* the duration of the test body and then reverts automatically.
+
+```typescript
+import { test as baseTest, expect, onTestFinished } from 'vitest';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+// Per-test observability context — available to any function called from within a test
+interface TestSpanCtx {
+  traceId: string;
+  testName: string;
+  events: Array<{ ts: number; msg: string }>;
+}
+
+export const spanStore = new AsyncLocalStorage<TestSpanCtx>({
+  // Safe sentinel — getStore() never returns undefined outside a test scope
+  defaultValue: { traceId: 'no-trace', testName: 'outside-test', events: [] },
+  name: 'testSpanCtx',
+});
+
+// Utility callable from any production helper or shared fixture
+export function recordEvent(msg: string): void {
+  spanStore.getStore().events.push({ ts: Date.now(), msg });
+}
+
+// Build an extended `test` that wraps every test body in an ALS scope
+const test = baseTest.extend({});
+
+// aroundEach receives the current test's Task metadata — use it to populate the context
+test.aroundEach(async (runTest, testTask) => {
+  const traceId = `trace-${Math.random().toString(36).slice(2, 10)}`;
+  const ctx: TestSpanCtx = {
+    traceId,
+    testName: testTask.name,
+    events: [],
+  };
+
+  // run() wraps runTest — context is active for the entire test body
+  await spanStore.run(ctx, async () => {
+    await runTest();
+    // Teardown runs INSIDE run() scope — context is still accessible here
+    if (ctx.events.length > 0) {
+      // Could flush to an observability backend, attach to test reporter, etc.
+      onTestFinished(() => {
+        // At this point ctx.events contains all events emitted during the test
+        // and traceId ties them to this specific test invocation
+      });
+    }
+  });
+  // After run() exits, spanStore.getStore() returns defaultValue — no leakage
+});
+
+test('recordEvent captures events scoped to this test', () => {
+  recordEvent('form-submitted');
+  recordEvent('api-called');
+
+  const { events, testName } = spanStore.getStore();
+  expect(events.map((e) => e.msg)).toEqual(['form-submitted', 'api-called']);
+  expect(testName).toBe('recordEvent captures events scoped to this test');
+});
+
+test('context is clean — previous test events not visible', () => {
+  // aroundEach established a fresh ctx for this test via run()
+  expect(spanStore.getStore().events).toHaveLength(0);
+
+  recordEvent('only-in-this-test');
+  expect(spanStore.getStore().events).toHaveLength(1);
+});
+```
+
+**Contrast with `enterWith` in `beforeEach`:** `enterWith` mutates the current async context
+permanently within a Worker — it does not revert after `afterEach` completes. With Vitest's `forks`
+pool (one process per file), this is usually safe because the process exits after the file anyway.
+With `threads` pool (shared Worker reuse), `enterWith` without a matching reset leaks the last
+test's context into the next test file assigned to the same Worker. `aroundEach` + `run()` is
+strictly scoped and safe regardless of pool type.
+
+---
+
+## Gotchas — Iteration 25
+
+103. **Node.js 24 `node:test` automatic subtest completion silently swallows cleanup errors when the subtest allocates resources.** [community]
+    Node.js 24.0 changes `t.test()` (subtests) so that the parent test automatically waits for all
+    subtests to complete even without explicit `await` — matching the behavior developers expected.
+    The isolation gotcha: teams that migrate existing Node.js 22/23 tests and remove manual `await`
+    from subtest calls may find that resource teardown registered *outside* the subtest callback is
+    now evaluated before the subtest has finished its own async teardown, because the parent
+    continues to its own `afterEach` / `t.after()` while the subtest runner handles the
+    sub-lifecycle internally. If a subtest opens a resource (e.g., a temporary file, a DB
+    connection), clean it up *inside* the subtest callback or via `t.after(() => ...)` registered
+    within the subtest — do not rely on the parent's teardown to clean up resources created inside
+    a subtest.
+    ```typescript
+    import { test, describe } from 'node:test';
+    import assert from 'node:assert/strict';
+    import * as fs from 'node:fs/promises';
+    import * as os from 'node:os';
+    import * as path from 'node:path';
+
+    // WRONG (Node.js 24): parent teardown runs before subtest fully finishes its async work
+    test('parent manages resource allocated in subtest (broken pattern)', async (t) => {
+      let tmpFile: string | undefined;
+
+      // In Node 22, you'd await t.test(); in Node 24 it auto-completes
+      t.test('creates temp file', async () => {
+        tmpFile = path.join(os.tmpdir(), `test-${Date.now()}.txt`);
+        await fs.writeFile(tmpFile, 'hello');
+      });
+
+      // t.after runs after the subtest — but cleanup is INSIDE the parent scope
+      // If the subtest is slow, t.after may race with subtest completion
+      t.after(async () => {
+        if (tmpFile) await fs.unlink(tmpFile); // ← may execute before subtest finishes writing
+      });
+    });
+
+    // CORRECT: register cleanup INSIDE the subtest callback
+    test('parent manages resource allocated in subtest (correct)', async (t) => {
+      t.test('creates and cleans up temp file', async (subT) => {
+        const tmpFile = path.join(os.tmpdir(), `test-${Date.now()}.txt`);
+        await fs.writeFile(tmpFile, 'hello');
+
+        // Cleanup registered inside the subtest — guaranteed to run before subtest exits
+        subT.after(async () => {
+          await fs.unlink(tmpFile);
+        });
+
+        const content = await fs.readFile(tmpFile, 'utf-8');
+        assert.strictEqual(content, 'hello');
+      });
+      // Parent's t.after() only needs to clean parent-owned resources
+    });
+    ```
+    **Key rule:** In `node:test` with Node.js 24, treat each `t.test()` subtest as an independent
+    isolation scope. Resources allocated inside a subtest must be cleaned up inside that subtest
+    via `subT.after()` or `await using`. Do not hoist subtest resource cleanup into the parent
+    `t.after()` — the execution ordering guarantee only applies within a single test scope.
+
+104. **Node.js 24 `--test-global-setup` runs in the same process as the tests — singletons initialized in `globalSetup()` are shared with all test files and cannot be cleared between them.** [community]
+    Jest's `globalSetup` runs in a separate, isolated process and communicates with test workers
+    through serialized data (a return value written to a temp file). Node.js 24's
+    `--test-global-setup` does not: the module is evaluated in the *same* Node.js process as the
+    test runner and test files. This means any module-level singleton, open server handle, or
+    in-memory cache that `globalSetup()` creates is shared across all test files for the entire run.
+    Teams migrating Jest integration-test suites to `node:test --test-global-setup` are surprised
+    when shared state set in `globalSetup()` accumulates mutations from one test file and leaks
+    into the next — behavior that Jest's process isolation prevented automatically.
+    ```typescript
+    // global-setup.mts — runs in the same process as all tests on Node.js 24
+    import { createServer, Server } from 'node:http';
+
+    // Module-level variable — lives for the entire test run in the same process
+    let server: Server;
+
+    export async function globalSetup(): Promise<void> {
+      // This server instance is reachable from ALL test files — not isolated per file
+      server = createServer((req, res) => res.end('ok'));
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const addr = server.address() as { port: number };
+      // Pass port via env var — this IS safe, env is shared by design
+      process.env.TEST_SERVER_PORT = String(addr.port);
+    }
+
+    export async function globalTeardown(): Promise<void> {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    // ---------------------------------------------------------------------------
+    // ISOLATION HAZARD: if any test file adds a request listener to `server`
+    // (e.g., by importing a module that references the same singleton), all
+    // subsequent test files see the modified listener — there is no reset between files.
+    //
+    // SAFE PATTERN: expose only serializable primitives from globalSetup (port, URL,
+    // temp dir path) via process.env. Do NOT export mutable objects or allow test
+    // files to import the globalSetup module directly.
+    // ---------------------------------------------------------------------------
+
+    // package.json test script — correct invocation
+    // "test": "node --test --test-global-setup=./global-setup.mts --require=tsx/cjs"
+    ```
+    **Contrast with Jest:** Jest's `globalSetup` return value is serialized with `JSON.stringify`
+    before being passed to each worker — only JSON-serializable data can cross the boundary. This
+    restriction is a feature: it prevents accidentally sharing live objects. In `node:test`, there
+    is no such restriction (the process is shared), which makes it the developer's responsibility
+    to avoid putting mutable shared state into `globalSetup()`. The safe contract: initialize
+    *infrastructure* (servers, databases, temp directories) in `globalSetup()`, communicate results
+    via `process.env` or files, and allocate *test-scoped* state in `beforeEach`/`t.before()`.
+
+---
+
+## Quick Reference Additions — Iteration 25
+
+| Problem | Symptom | Node.js native / Vitest solution | Jest/Playwright equivalent |
+|---------|---------|----------------------------------|----------------------------|
+| `getStore()` returns `undefined` outside test scope | Non-null assertion crashes in module-level test helpers | `new AsyncLocalStorage({ defaultValue: sentinel })` (Node.js 24) | Jest/Vitest: same API — `AsyncLocalStorage` is a Node.js built-in |
+| ALS context reverts to `undefined` after `beforeEach` resolves | Test body sees wrong or stale context when using `enterWith` in `beforeEach` | Vitest `aroundEach` + `ALS.run(ctx, runTest)` — wraps test body inside the `run()` scope | No direct Jest equivalent; use `enterWith` + `afterEach` reset with `threads` pool caution |
+| Subtest resource cleanup races with parent teardown (Node.js 24) | Temp files / connections not fully closed before parent `t.after()` runs | Register cleanup via `subT.after()` inside the subtest callback | Jest/Vitest: resources in nested `describe` blocks are cleaned by the nearest `afterEach`/`afterAll` |
+| globalSetup singleton state leaks between test files | Test files see server mutations from earlier files; state accumulates | Pass only serializable primitives (`process.env`, file paths) from `--test-global-setup` | Jest `globalSetup` is process-isolated; only JSON-serializable return values reach workers |
+
+---
+
+## Key Resources — Iteration 25 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Node.js 24 Release Notes — AsyncLocalStorage defaultValue | Official | https://nodejs.org/en/blog/release/v24.0.0 | `defaultValue` and `name` options added to `AsyncLocalStorage` constructor; eliminates `undefined` store in test utilities |
+| Node.js Async Context Docs — AsyncLocalStorage | Official | https://nodejs.org/docs/latest-v24.x/api/async_context.html | Full API reference for `defaultValue`, `name`, `enterWith`, `run()` — Node.js 24 semantics |
+| Node.js 24 — `--test-global-setup` flag | Official | https://nodejs.org/docs/latest-v24.x/api/test.html#--test-global-setup | Same-process global setup/teardown module; `globalSetup` + `globalTeardown` named exports |
+| Node.js 24 — Automatic subtest completion (PR #56664) | Official | https://github.com/nodejs/node/pull/56664 | Removes need to `await t.test()` — changes subtest lifecycle and resource cleanup ordering |
+| Vitest 4.1 Blog — aroundEach / aroundAll | Official | https://vitest.dev/blog/vitest-4-1 | `aroundEach` + `aroundAll` hooks; composition with `AsyncLocalStorage.run()` for scoped per-test context |

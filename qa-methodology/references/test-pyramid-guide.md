@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 45 | score: 98/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 46 | score: 98/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
@@ -17,6 +17,7 @@
 <!-- new (2026-05-12 iter 43): Bun 1.3.x (2025) — `bun:test` adds `--parallel`/`--shard`/`--only-failures`/`--pass-with-no-tests`, `retry`+`repeats` options for flaky tests, `Symbol.dispose` for mock/spyOn automatic cleanup, global `vi` mock API without imports; MSW v2.14+ — WebSocket handler `ws.onUpgrade` for protocol upgrade interception, `finalize` cleanup API for handler resource management, `NetworkApi` TypeScript type exported; Pact-JS v16.0.0 (Oct 2025) — BREAKING: `PactV4`/`MatchersV3` exported as `Pact`/`Matchers` (old names become `PactV2`/`MatchersV2`), Node 20 minimum, GraphQL support for V3+V4; Pact-JS v16.3 — pending/comments/test-names on interactions; Pact-JS v16.4 — external interaction references; community gotcha #48: pact-js v16.0 silent API rename — TypeScript import `{ PactV3, MatchersV3 }` still resolves but `PactV3` is now an alias for the old V3 class while `Pact` is the new canonical name, causing confusion and inconsistent usage in codebases that mix old and new imports -->
 <!-- new (2026-05-12 iter 44): TypeScript 5.9 additional `tsc --init` strict defaults — `noUncheckedIndexedAccess:true`, `exactOptionalPropertyTypes:true`, `noUncheckedSideEffectImports:true`, `skipLibCheck:true` — silently break typed test fixtures and mock objects when inherited; `noUncheckedIndexedAccess` makes every `items[0]` in test fixtures type `T | undefined`, requiring null guards or `!`-assertions; `exactOptionalPropertyTypes` breaks test doubles where optional properties are assigned `undefined` explicitly; `noUncheckedSideEffectImports` blocks bare `import 'module'` in test setup files (vitest.setup.ts, jest.setup.ts); Bun 1.3.x additional: `--randomize`/`--seed` flags for order-dependency detection (analogous to Node.js 26 `--test-randomize`), `test.concurrent`/`test.serial` for within-file parallel/sequential control, `--concurrent`/`--max-concurrency` for file-level parallel execution, AI agent mode (CLAUDECODE=1/AGENT=1 env vars for minimal output suppressing passing tests — analogous to Vitest 4.1 agent reporter); community gotcha #49: TS 5.9 `noUncheckedIndexedAccess` default breaks typed test factory array access
 <!-- new (2026-05-12 iter 45): @fast-check/vitest `test.prop()` API — Vitest-native property-based testing replacing the verbose `fc.assert(fc.property(...))` pattern; `@fast-check/vitest` 0.4+ dropped CJS support (ESM-only), breaking CommonJS test projects; React Testing Library v16 (Dec 2024) + React 19 support — `act()` is now automatically wrapped by RTL so explicit `await act(...)` wrappers are no longer needed in RTL tests, fixing a widespread TypeScript async test pattern; RTL v16 moves `@testing-library/dom` and `@types/react-dom` to peer dependencies; community gotcha #50: fast-check 4.x (@fast-check/vitest 0.4+) drops CommonJS — vitest projects using `require('@fast-check/vitest')` break silently with ESM import errors when upgrading
+<!-- new (2026-05-12 iter 46): Vitest 5.0 beta.1 `createReport` API + exported ARIA tree utilities for browser-mode assertion testing — programmatic pyramid report assembly from separate environment runs; Bun 1.2 `--rerun-each` flag + `bunfig.toml` pyramid configuration for CI-level flakiness detection; Vitest 5.0 beta.1 `pretty-format` replaces `loupe.inspect` — inline snapshots at integration level change output format; community gotcha #51: Bun `mock.module()` declaration-order requirement vs Vitest hoisted `vi.mock()` — teams migrating from Vitest to Bun find mocks silently not applying when declared after imports; community gotcha #52: `test.failing.each` used as permanent flakiness management accumulates false-green integration test debt
 
 ---
 
@@ -3688,6 +3689,296 @@ Note: the `optimizeDeps.include` workaround applies only when running tests thro
 
 ---
 
+### Vitest 5.0 beta.1: `createReport` API and ARIA Tree Utilities for Browser-Mode Testing  [community]
+
+Vitest 5.0.0-beta.1 (April 23, 2026) added two features that affect pyramid-level reporting and browser-mode component test authoring beyond the breaking changes documented in the earlier Vitest 5.0 section.
+
+**`createReport` API for programmatic pyramid report assembly:**
+
+The `createReport` function (exported from `vitest/node`) enables CI pipelines to programmatically construct a merged test report from separate environment runs without using the CLI `--merge-reports` command. This is particularly useful in pyramid pipelines where unit, integration, and e2e levels run in separate jobs with separate reporters — `createReport` assembles them into a single structured object that can be serialised to HTML, JUnit XML, or a custom format.
+
+```typescript
+// scripts/assemble-pyramid-report.ts — Vitest 5.0 createReport API
+// Run after all pyramid levels complete in CI; assembles blobs from separate jobs
+// Requires: vitest@5.0.0-beta.1 or later; import from 'vitest/node'
+import { createReport } from 'vitest/node';
+import { writeFileSync } from 'node:fs';
+
+// Assumes each pyramid level wrote a blob report to .vitest/blob/<level>.blob
+// (set by --reporter=blob --outputFile=.vitest/blob/<level>.blob in each job)
+const report = await createReport({
+  // Glob matching all blob files from the three pyramid levels
+  include: ['.vitest/blob/*.blob'],
+});
+
+// Serialise to JUnit XML for test-management system ingestion
+const junitXml = await report.toJUnit({
+  // jest-junit-compatible naming (Vitest 5.0): classname uses test file path
+  classname: 'filepath',
+  suiteName: 'test-pyramid',
+  ancestorSeparator: ' > ',
+});
+
+writeFileSync('reports/pyramid-results.xml', junitXml, 'utf8');
+
+// Structured summary: total counts by project (unit/integration/e2e)
+for (const project of report.projects) {
+  const passed = project.results.filter((r) => r.status === 'passed').length;
+  const failed = project.results.filter((r) => r.status === 'failed').length;
+  console.log(`[${project.name}] pass=${passed} fail=${failed}`);
+  // Example output:
+  // [unit] pass=423 fail=0
+  // [integration] pass=87 fail=2
+  // [e2e] pass=14 fail=0
+}
+```
+
+The `createReport` API replaces the shell-level `vitest merge-reports` command for teams that need structured post-processing (e.g., cross-referencing failed tests against the test management system, or computing per-level pass rates for pyramid health metrics). The non-sharded multi-environment merge (also Vitest 5.0) enables this to work across unit, integration, and e2e blobs generated by separate CI jobs on separate runners.
+
+**Exported ARIA tree utilities for browser-mode integration tests:**
+
+Vitest 5.0 beta.1 exports low-level ARIA tree utilities (`getAriaTree`, `serializeAriaNode`, `matchAriaTree`) from `vitest/browser` that previously were internal implementation details of `toMatchAriaSnapshot()`. These utilities enable custom ARIA-based assertion helpers for browser-mode component tests at the integration level — for example, asserting that a component's accessible tree contains a specific pattern without committing to the full serialised snapshot:
+
+```typescript
+// src/components/DataTable.ct.test.tsx — Vitest 5.0 ARIA tree utilities
+// Demonstrates custom ARIA assertion using exported tree utilities
+import { test, expect, page } from 'vitest/browser';
+import { render } from 'vitest-browser-react';
+// Vitest 5.0 beta.1: ARIA tree utilities exported from vitest/browser
+import { getAriaTree, matchAriaTree } from 'vitest/browser';
+import { DataTable } from './DataTable.js';
+
+const sampleRows = [
+  { id: 'r1', name: 'Alice', role: 'Admin' },
+  { id: 'r2', name: 'Bob', role: 'Viewer' },
+];
+
+test('data table exposes correct accessible structure for screen readers', async () => {
+  await render(<DataTable rows={sampleRows} caption="Users" />);
+
+  // getAriaTree: returns the raw ARIA node tree for the current page
+  // — use for custom assertions that toMatchAriaSnapshot() cannot express
+  const tree = await getAriaTree(page.locator('table'));
+
+  // matchAriaTree: partial-match pattern, unlike toMatchAriaSnapshot() full snapshot
+  // — does not require the entire tree to be specified; only the asserted nodes
+  const matched = matchAriaTree(tree, `
+    - table "Users":
+      - rowgroup:
+        - row:
+          - columnheader "Name"
+          - columnheader "Role"
+  `);
+
+  expect(matched).toBe(true);
+
+  // Verify that dynamically added rows are reflected in the ARIA tree
+  const treeAfterRender = await getAriaTree(page.locator('tbody'));
+  const rows = treeAfterRender.children.filter((n) => n.role === 'row');
+  expect(rows).toHaveLength(2);
+  expect(rows[0]!.children.some((c) => c.name === 'Alice')).toBe(true);
+});
+```
+
+The partial-match approach with `matchAriaTree` is more maintainable than full ARIA snapshots at the integration level: it asserts the structural invariants (column headers, row count, cell names) without breaking when unrelated ARIA attributes change. Use `toMatchAriaSnapshot()` for full regression snapshots at the e2e level; use `matchAriaTree` for focused integration-level assertions on component accessibility contracts. [official: github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.1]
+
+---
+
+### Bun 1.2: `--rerun-each` Flag and `bunfig.toml` Pyramid Configuration  [community]
+
+Bun 1.2 (released January 2025) added test runner features that complement the `bun:test` pyramid documentation from earlier sections. The `--rerun-each` flag and `bunfig.toml` configuration are particularly useful at the integration test level where flakiness detection and CI-level test configuration matter most.
+
+**`--rerun-each` for integration-level flakiness detection:**
+
+The `--rerun-each` flag runs each test case N times in a single invocation. Unlike `--retry` (which re-runs failing tests on failure) and `--randomize` (which changes execution order), `--rerun-each` is a pure repetition tool — it runs a test N times in the same order and fails if any run produces a different result. This is the most direct mechanism for detecting non-deterministic flakiness at the integration test level, where timing, database state, and network stubs interact:
+
+```bash
+# Detect flaky integration tests by running each test 10 times
+# If a test passes in run 1 but fails in run 3, --rerun-each surfaces it
+bun test --rerun-each 10 tests/integration/**/*.test.ts
+
+# Combined with --randomize: catches both timing-based AND order-dependent flakiness
+bun test --rerun-each 5 --randomize tests/integration/**/*.test.ts
+```
+
+**Pyramid configuration via `bunfig.toml`:**
+
+Bun 1.2 formalised `bunfig.toml` as the project-level configuration surface for test pyramid settings. Teams can encode pyramid-level test defaults (timeouts, coverage reporters, retry counts) in `bunfig.toml` without requiring per-file configuration:
+
+```toml
+# bunfig.toml — pyramid-level test configuration for bun:test
+[test]
+# Unit test timeout: enforces the < 10 ms unit test principle loosely (5 s for debug headroom)
+timeout = 5000
+# Default retry count at all levels: 0 at unit (no retry = flakiness is always a bug)
+retry = 0
+# Coverage: LCOV for Codecov integration + text for CI terminal output
+coverage = true
+coverageReporter = ["lcov", "text"]
+coverageDir = "./coverage"
+
+# JUnit reporter for CI pyramid reporting (complements Vitest's JUnit output on other projects)
+[test.reporter]
+junit = "reports/bun-test-results.xml"
+```
+
+```typescript
+// Per-level override in test files — integration tests need longer timeouts
+// src/orders/orders.integration.test.ts — bun:test with per-test timeout override
+import { test, expect, beforeAll, afterAll } from 'bun:test';
+import { GenericContainer, type StartedTestContainer } from 'testcontainers';
+
+let container: StartedTestContainer;
+
+beforeAll(async () => {
+  container = await new GenericContainer('postgres:16')
+    .withEnvironment({ POSTGRES_PASSWORD: 'test', POSTGRES_DB: 'testdb' })
+    .withExposedPorts(5432)
+    .start();
+}, 60_000); // 60 s timeout for beforeAll — overrides the bunfig.toml default
+
+afterAll(async () => {
+  await container.stop();
+});
+
+// Integration test: per-test timeout override for slow DB operations
+test('creates and retrieves an order', { timeout: 30_000 }, async () => {
+  // ... test body using container
+  expect(true).toBe(true); // placeholder
+});
+
+// Unit-level logic in the same file: no timeout override needed (inherits bunfig.toml 5 s)
+test('order status transitions are valid', () => {
+  const validTransitions = new Set(['pending→confirmed', 'confirmed→cancelled']);
+  expect(validTransitions.has('pending→confirmed')).toBe(true);
+});
+```
+
+**Bun 1.2 `--bail` flag for integration pyramid fail-fast:**
+
+The `--bail` flag (Bun 1.2) aborts the test run after N failures. Combined with the pyramid-level invocation order (unit files first, then integration, then e2e), `--bail=1` at the integration level implements the "stop on first expensive failure" principle without a complex CI pipeline script:
+
+```bash
+# Pyramid fail-fast with bun:test — stop integration run after 1 failure
+bun test --bail=1 tests/integration/**/*.test.ts
+
+# E2e level: stop after any single failure (expensive tests shouldn't all run if one fails)
+bun test --bail=1 e2e/**/*.e2e.test.ts
+```
+
+The `bunfig.toml` coverage configuration is particularly valuable for teams adopting `bun:test` alongside Vitest in a monorepo: by standardising both test runners to emit LCOV reports to `./coverage/`, tools like Codecov can merge coverage from both runners into a single report without special configuration. [official: bun.sh/docs/cli/test, bun.sh/blog/bun-v1.2]
+
+---
+
+51. **Bun `mock.module()` declaration-order requirement silently breaks Vitest-ported test suites** [community] — When migrating from Vitest to `bun:test`, the most common silent failure is mock hoisting. Vitest's `vi.mock()` calls are automatically hoisted to the top of the module by Vitest's transform — a test file can declare `vi.mock('./service')` anywhere, and Vitest ensures it is evaluated before any imports. `bun:test`'s `mock.module()` runs at declaration order: if `mock.module()` is called after `import { serviceFunc } from './service'`, the import already resolved to the real module before the mock was registered. The test runs against the real implementation, producing a green test with incorrect coverage. The failure is especially treacherous because TypeScript compilation succeeds and the test passes — the mock just has no effect.
+
+```typescript
+// BROKEN: Vitest-ported test — mock.module() declared after import (bun:test)
+// The import runs first; mock.module() registers after the fact — no effect
+import { orderService } from '../../src/orders/order.service.js'; // resolved to REAL module
+import { mock } from 'bun:test';
+
+// This mock.module() call is too late — orderService already refers to the real module
+mock.module('../../src/orders/order.service.js', () => ({
+  orderService: { create: mock(() => ({ id: 'mocked_ord', status: 'pending' })) },
+}));
+
+// Test "passes" but uses the real orderService, not the mock
+test('creates an order (broken mock)', async () => {
+  const result = await orderService.create({ customerId: 'c1', items: [] });
+  // If the real service throws for empty items, this test fails for the wrong reason
+  expect(result.id).toBeDefined(); // may pass OR fail depending on real implementation
+});
+```
+
+```typescript
+// FIXED: mock.module() declared before all imports (bun:test declaration-order semantics)
+// In bun:test, mock.module() must precede ALL imports of the mocked module
+import { mock, test, expect } from 'bun:test';
+
+// Step 1: register the mock BEFORE importing anything that depends on the mocked module
+mock.module('../../src/orders/order.service.js', () => ({
+  orderService: {
+    create: mock(async () => ({ id: 'mocked_ord_001', status: 'pending' as const, customerId: 'c1' })),
+  },
+}));
+
+// Step 2: import the module AFTER the mock is registered — gets the mocked version
+const { orderService } = await import('../../src/orders/order.service.js');
+
+test('creates an order (correct mock — bun:test)', async () => {
+  const result = await orderService.create({ customerId: 'c1', items: [{ sku: 'A1', qty: 1 }] });
+  expect(result.id).toBe('mocked_ord_001');
+  expect(result.status).toBe('pending');
+});
+```
+
+The root cause: `bun:test` does not perform module transform hoisting — it executes the test file as-is, respecting JavaScript's module evaluation order. This is technically more correct semantics than Vitest's hoisting behaviour, but it breaks the implicit contract that Vitest migration guides often gloss over. A CI lint rule catches the pattern automatically:
+
+```bash
+# Detect mock.module() declared after any import statement in test files
+# (very rough approximation — a proper AST lint rule is more accurate)
+grep -rn "^import " tests/ --include="*.test.ts" \
+  | awk -F: '{print $1}' | sort -u \
+  | xargs -I{} sh -c 'grep -n "mock.module" {} | head -1; grep -n "^import" {} | head -1' \
+  | paste - - \
+  | awk -F: '{if ($2 > $4) print "WARNING: mock.module() after import in " $1}'
+```
+
+Fix: if a test file cannot be restructured to declare all `mock.module()` calls at the top (e.g., when mocks depend on test-level data), use Vitest instead of `bun:test` for that test file. Bun's module mock semantics are deliberate and will not change. [official: bun.sh/docs/test/mocks — mock.module() hoisting note]
+
+---
+
+52. **`test.failing.each` used as permanent flakiness management accumulates false-green integration test debt** [community] — Bun 1.x and Vitest both provide a `test.failing` modifier (Bun's `test.failing`, Vitest's `test.fails`) that marks a test as "expected to fail" — analogous to xfail in pytest and `expectFailure` in Node.js 24.14.0. When combined with `.each` in Bun, `test.failing.each` lets teams mark a parameterised integration test suite as expected to fail for specific inputs. The misuse pattern: teams adopt `test.failing.each` to suppress known-broken integration test cases for external dependencies (third-party APIs in degraded state, DB schema migrations in progress) without a bounded expiry plan. Unlike Vitest's `--tags-filter="!flaky"` quarantine (which keeps failing tests visible as a separate CI job), `test.failing` reports as a pass in the normal test output — making the pyramid appear green when it has known integration failures embedded in it.
+
+```typescript
+// MISUSE: test.failing.each as permanent external-dependency quarantine (bun:test)
+// This test was "quarantined" 3 months ago and never fixed
+import { test, expect } from 'bun:test';
+import { paymentService } from '../../src/payments/payment.service.js';
+
+// test.failing.each: each input is expected to fail
+// If a case suddenly passes, bun:test reports it as a test defect — correct intent
+// PROBLEM: 6 months later this is still "passing" even though the real service is now fixed
+test.failing.each([
+  [{ amount: 100, currency: 'USD' }, 'payment-provider-timeout'],
+  [{ amount: 50, currency: 'EUR' }, 'exchange-rate-unavailable'],
+])('payment fails for known-broken provider (%s)', async (input, _expectedErrorCode) => {
+  // This test silently becomes dead weight — the integration failure it was masking may be fixed
+  await paymentService.process(input);
+});
+```
+
+```typescript
+// CORRECT: time-boxed test.failing with explicit expiry tracking
+import { test, expect } from 'bun:test';
+import { paymentService } from '../../src/payments/payment.service.js';
+
+// EXPIRES: 2026-06-30 — see GH-2345 (payment provider v3 migration)
+// This is a TEMPORARY mask; the CI job 'integration-quarantine' also runs this file
+// with test.only to keep the failing cases visible and measured separately
+test.failing('payment provider v2 HMAC verification fails until GH-2345 is resolved', async () => {
+  // If this unexpectedly passes, bun:test reports it as a defect — prompting removal
+  const result = await paymentService.verifyHmacV2('payload', 'sig');
+  expect(result.valid).toBe(true); // currently fails: provider upgraded to HMAC v3
+});
+```
+
+The governance rule for `test.failing` / `test.fails` at the integration test level: treat them identically to `expectFailure` in Node.js (gotcha #41) and `x-prefixed` tests in Vitest. Add a CI step that counts all `test.failing`, `test.fails`, and `expectFailure` entries in integration test files and fails the build if the count exceeds a threshold or if any entry is older than 30 days:
+
+```bash
+# CI check: count test.failing entries in integration test files
+FAILING_COUNT=$(grep -rn "test\.failing\|test\.fails\|expectFailure" tests/integration/ --include="*.ts" | wc -l)
+if [ "$FAILING_COUNT" -gt 5 ]; then
+  echo "ERROR: $FAILING_COUNT expected-failure markers in integration tests (threshold: 5). Fix or remove them."
+  exit 1
+fi
+```
+
+The combined anti-pattern of `test.failing.each` + unchecked accumulation produces a test suite that always shows green CI while embedding an unknown number of broken integration test cases — the worst of both worlds: no visibility into the failures, and no pressure to fix them. Reserve `test.failing` / `test.fails` for time-boxed use with a linked issue URL and an expiry comment. [community: bun.sh/docs/test/writing-tests — test.failing; vitest.dev/api — test.fails]
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -3753,3 +4044,5 @@ Note: the `optimizeDeps.include` workaround applies only when running tests thro
 | Bun Test Runner (full docs) | Tool | https://bun.sh/docs/cli/test | Complete `bun:test` CLI reference: `--randomize`/`--seed` for order-dependency detection, `--concurrent`/`--max-concurrency`, `test.concurrent`/`test.serial`, AI agent mode (CLAUDECODE=1/AGENT=1), `--rerun-each` for flakiness detection |
 | React Testing Library v16 Release | Tool | https://github.com/testing-library/react-testing-library/releases/tag/v16.1.0 | React 19 support: automatic `act()` wrapping eliminates explicit `await act(...)` in tests; `@testing-library/dom` and `@types/react-dom` moved to peer dependencies |
 | fast-check v4 Changelog | Tool | https://github.com/dubzzz/fast-check/blob/main/CHANGELOG.md | v4.x ESM-only migration (March 2025); CommonJS bundles removed; `@fast-check/vitest` 0.4+ dropped CJS — add to `optimizeDeps.include` for CommonJS Vitest projects |
+| Vitest 5.0 beta.1 Release | Tool | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.1 | `createReport` programmatic API for assembling merged pyramid reports; ARIA tree utilities exported from `vitest/browser`; `pretty-format` replaces `loupe.inspect` in snapshot output |
+| Bun 1.2 Release Blog | Tool | https://bun.sh/blog/bun-v1.2 | `--rerun-each` for flakiness detection; `--bail` fail-fast; JUnit reporter (`--reporter=junit`); LCOV coverage; `test.only()` without `--only` flag; new Jest-compatible matchers |

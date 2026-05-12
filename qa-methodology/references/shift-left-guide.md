@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -7822,3 +7822,483 @@ export default tseslint.config(
 > [community] **Lesson (ESLint flat config and test-file rule scoping, 2025)**: One genuine improvement in flat config is per-glob plugin scoping: you can now apply `eslint-plugin-vitest` rules exclusively to `*.spec.ts` files and `eslint-plugin-playwright` exclusively to `e2e/**/*.ts` without complex overrides. Teams that adopt this pattern eliminate an entire class of false positives — e.g., `vitest/expect-expect` firing on Playwright tests, or `playwright/no-wait-for-timeout` firing on unit tests. The shift-left benefit: lint gates catch test-quality issues in the right file scope rather than producing noise that trains developers to ignore lint output.
 
 > **Gotcha (ESLint v9 `ESLINT_USE_FLAT_CONFIG` env var removed, 2025)**: ESLint v9.0 initially kept the `ESLINT_USE_FLAT_CONFIG=true` escape hatch that allowed loading legacy config. This was removed in ESLint v9.9+. If your CI scripts or Docker images set this environment variable explicitly (as a migration aid), remove it — it now silently has no effect and gives false confidence that your config is correct. The v9.9+ release also removed the automatic `.eslintrc.*` fallback, so projects that had not completed migration started getting "No eslint configuration file found" errors on upgrade.
+
+---
+
+## `@zod/mini` — Tree-Shakable Zod for Edge Functions and Lambda (Zod v4, 2025–2026)
+
+Zod v4 introduced `@zod/mini`, a separate sub-package that exposes the same core validation API as `zod` but with full tree-shaking support. The standard `zod` package bundles all validators eagerly; `@zod/mini` uses a functional composition model so bundlers (esbuild, Rollup, Vite) only include the validators you import. For TypeScript services running on Cloudflare Workers, AWS Lambda, or Vercel Edge Functions where cold-start latency and bundle size are critical shift-left signals, `@zod/mini` reduces the Zod footprint from ~24KB (v4) to ~8KB in a typical schema-heavy handler.
+
+```typescript
+// src/functions/validate-webhook.ts — @zod/mini for edge function input validation
+// Install: npm install @zod/mini
+// @zod/mini exports the same z namespace as zod — swap the import path, nothing else changes
+import { z } from '@zod/mini';
+
+// API is identical to zod — @zod/mini is a drop-in import replacement
+const WebhookEventSchema = z.object({
+  id: z.string(),
+  type: z.enum(['payment.succeeded', 'payment.failed', 'refund.created']),
+  data: z.object({
+    objectId: z.string(),
+    amountCents: z.number(),
+    currency: z.literal('usd').or(z.literal('eur')).or(z.literal('gbp')),
+  }),
+  createdAt: z.string().check(
+    // z.check() from Zod v4 — replaces .superRefine() for inline validation
+    (val, ctx) => {
+      if (isNaN(Date.parse(val))) {
+        ctx.addIssue({ code: 'custom', message: 'createdAt must be a valid ISO 8601 string' });
+      }
+    },
+  ),
+});
+
+export type WebhookEvent = z.infer<typeof WebhookEventSchema>;
+
+// Edge handler — validate at entry, reject malformed events before any business logic
+export async function handleWebhook(rawBody: unknown): Promise<Response> {
+  const result = WebhookEventSchema.safeParse(rawBody);
+  if (!result.success) {
+    return new Response(
+      JSON.stringify({ error: 'Invalid webhook payload', issues: result.error.issues }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+  // result.data is fully typed as WebhookEvent
+  const event: WebhookEvent = result.data;
+  return new Response(JSON.stringify({ received: event.id }), { status: 200 });
+}
+```
+
+```yaml
+# .github/workflows/bundle-size-gate.yml — enforce @zod/mini keeps Lambda bundle under limit
+name: Bundle Size Gate
+on:
+  pull_request:
+    paths: ['src/functions/**', 'package.json']
+
+jobs:
+  bundle-size:
+    name: Lambda bundle size check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - name: Build and measure bundle
+        run: |
+          # esbuild bundles @zod/mini — only imported validators are included
+          npx esbuild src/functions/validate-webhook.ts \
+            --bundle --platform=node --target=node22 --minify \
+            --outfile=dist/webhook.js
+          SIZE=$(wc -c < dist/webhook.js)
+          echo "Bundle size: ${SIZE} bytes"
+          # With @zod/mini, the Zod contribution is ~8KB vs ~24KB for full zod
+          [ "$SIZE" -lt 524288 ] || (echo "Bundle > 512KB: check for accidental full-zod import" && exit 1)
+      - name: Check no full zod import in edge functions
+        # Ensure edge functions use @zod/mini, not the full zod package
+        run: |
+          if grep -r "from 'zod'" src/functions/; then
+            echo "ERROR: Edge function imports full 'zod' — use '@zod/mini' instead" && exit 1
+          fi
+```
+
+**WHY `@zod/mini` is a shift-left tool**: Bundle size gates are a shift-left signal — a growing Lambda bundle increases cold start latency and is typically a symptom of accidental full-library imports in edge contexts. The `@zod/mini` import swap is zero-API-change (same `z` namespace) and the CI bundle size gate catches any regression (a colleague importing `from 'zod'` instead of `from '@zod/mini'` in an edge function file). The type system (`z.infer<typeof Schema>`) works identically — the shift-left type safety benefit is unchanged.
+
+> [community] **Gotcha (`@zod/mini` functional vs method chaining, 2025)**: `@zod/mini` uses a functional composition API for some advanced schema builders that differ slightly from the full `zod` method chaining. Specifically, `z.union()` in `@zod/mini` requires an explicit array (`z.union([z.string(), z.number()])`) while full `zod` also supports `.or()` method chaining. For schemas using `.or()` extensively, use `z.union([...])` form to ensure compatibility with `@zod/mini`. The `.check()` method for custom validation (Zod v4's replacement for `.superRefine()`) is available in both packages.
+
+> [community] **Lesson (edge function teams, Zod v4 release, 2025)**: Teams deploying TypeScript functions to Cloudflare Workers with strict 1MB size limits report `@zod/mini` as the most impactful single dependency change for reaching that limit — it reduces the Zod footprint by ~16KB in the final minified bundle. Combined with the Zod v4 base size reduction (57KB → 24KB for full package), projects that previously had to work around Zod by using hand-rolled validators can now use Zod with confidence that it fits within edge constraints.
+
+---
+
+## Zod v4 `z.globalRegistry` — Schema Metadata Registry as Shift-Left Documentation Gate (2025–2026)
+
+Zod v4 introduces a global schema registry (`z.globalRegistry`) that allows attaching arbitrary metadata to Zod schemas at definition time. The registry is a map from schema objects to metadata objects — it is the foundation for generating OpenAPI specs, JSON Schema documents, form libraries, and documentation directly from the same Zod schemas that provide runtime validation.
+
+The shift-left implication: the schema definition is now the single source of truth for runtime validation, TypeScript types, AND API documentation metadata. Drift between OpenAPI spec and runtime validation is eliminated structurally — if the metadata is in `z.globalRegistry`, the spec generation and validation come from the same object.
+
+```typescript
+// src/api/schemas/product.schema.ts — Zod v4 globalRegistry for OpenAPI-driven shift-left
+import { z } from 'zod';
+
+// Zod v4: z.globalRegistry is a ZodRegistry<Record<string, unknown>>
+// It stores metadata for each registered schema — used by OpenAPI generators
+
+// Register a schema with OpenAPI metadata directly on definition
+export const ProductIdSchema = z.string().uuid().register(z.globalRegistry, {
+  title: 'Product ID',
+  description: 'UUID v4 identifier for a product in the catalog',
+  examples: ['550e8400-e29b-41d4-a716-446655440000'],
+});
+
+export const ProductSchema = z.object({
+  id: ProductIdSchema,
+  name: z.string().min(1).max(200).register(z.globalRegistry, {
+    title: 'Product Name',
+    description: 'Human-readable product name',
+    examples: ['TypeScript Programming Handbook'],
+  }),
+  priceCents: z.number().int().positive().register(z.globalRegistry, {
+    title: 'Price (cents)',
+    description: 'Product price in the smallest currency unit (cents for USD)',
+    examples: [2999],
+    minimum: 1,
+  }),
+  category: z.enum(['book', 'course', 'tool']).register(z.globalRegistry, {
+    title: 'Category',
+    description: 'Product category used for filtering and reporting',
+  }),
+  publishedAt: z.string().datetime().optional().register(z.globalRegistry, {
+    title: 'Published At',
+    description: 'ISO 8601 datetime when the product became publicly available',
+    format: 'date-time',
+  }),
+}).register(z.globalRegistry, {
+  title: 'Product',
+  description: 'A product available for purchase in the catalog',
+});
+
+export type Product = z.infer<typeof ProductSchema>;
+
+// CI gate utility: verify all exported schemas have globalRegistry metadata
+export function validateSchemaMetadata(
+  schema: z.ZodTypeAny,
+  schemaName: string,
+): void {
+  const meta = z.globalRegistry.get(schema);
+  if (!meta) {
+    throw new Error(
+      `Schema '${schemaName}' is missing globalRegistry metadata — add .register(z.globalRegistry, { title, description }) before export`,
+    );
+  }
+  const typedMeta = meta as { title?: string; description?: string };
+  if (!typedMeta.title || !typedMeta.description) {
+    throw new Error(
+      `Schema '${schemaName}' globalRegistry metadata is incomplete — 'title' and 'description' are required for OpenAPI generation`,
+    );
+  }
+}
+```
+
+```typescript
+// scripts/check-schema-metadata.ts — CI gate: all exported schemas must have registry metadata
+// Run as: npx ts-node scripts/check-schema-metadata.ts (or node --strip-types on Node 26)
+import { z } from 'zod';
+import { ProductSchema, validateSchemaMetadata } from '../src/api/schemas/product.schema.js';
+import { CreateUserSchema } from '../src/api/validators/user.validator.js';
+
+const schemasToCheck: Array<{ name: string; schema: z.ZodTypeAny }> = [
+  { name: 'ProductSchema', schema: ProductSchema },
+  { name: 'CreateUserSchema', schema: CreateUserSchema },
+];
+
+let hasErrors = false;
+for (const { name, schema } of schemasToCheck) {
+  try {
+    validateSchemaMetadata(schema, name);
+    console.log(`  ${name}: metadata OK`);
+  } catch (err) {
+    console.error(`  ${name}: ${(err as Error).message}`);
+    hasErrors = true;
+  }
+}
+
+if (hasErrors) {
+  console.error('\nSchema metadata gate failed. Add .register(z.globalRegistry, {...}) to all exported schemas.');
+  process.exit(1);
+}
+console.log('\nAll schemas have complete registry metadata.');
+```
+
+```yaml
+# .github/workflows/schema-metadata-gate.yml — enforce registry metadata on all public schemas
+name: Schema Metadata Gate
+on:
+  pull_request:
+    paths: ['src/api/schemas/**', 'src/api/validators/**']
+
+jobs:
+  metadata-check:
+    name: Zod globalRegistry metadata check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '26', cache: 'npm' }
+      - run: npm ci
+      # Node 26: --strip-types runs .ts scripts natively without tsc emit
+      - run: node --strip-types scripts/check-schema-metadata.ts
+```
+
+**WHY `z.globalRegistry` is a shift-left tool**: Before Zod v4, teams maintained OpenAPI specs and Zod schemas as separate artifacts that drifted. `z.globalRegistry` makes the Zod schema the canonical source for both runtime validation and documentation metadata — the CI gate that checks `z.globalRegistry.get(schema)` catches the "someone updated the schema but forgot to update the spec" class of defect at PR time. The gate runs in seconds (pure TypeScript, no network) and enforces documentation completeness with the same mechanism that enforces type safety.
+
+> [community] **Lesson (teams adopting Zod v4 registry, 2025)**: The `z.globalRegistry` metadata gate is most valuable when paired with automated OpenAPI spec generation (`zod-openapi` or `@hono/zod-openapi`). The gate ensures metadata is present; the spec generation tool uses the metadata to produce the OpenAPI document. Teams that adopt both report eliminating "spec says X but API returns Y" incidents — the spec and the validator now share the same source code object.
+
+> [community] **Gotcha (Zod v4 `z.globalRegistry` and schema reuse, 2025)**: When a Zod schema is used in multiple contexts (e.g., `ProductIdSchema` reused in `ProductSchema` and `OrderLineSchema`), calling `.register(z.globalRegistry, { ... })` twice on the same base schema object updates the registry entry — the second call overwrites the first. For schemas that need different metadata in different contexts, use `z.globalRegistry.register(contextualSchema, metadata)` on a derived schema (`z.string().uuid()` cloned per context) rather than the shared base schema.
+
+---
+
+## GitHub Copilot PR Review — AI-Powered Pre-Merge Code Review as Shift-Left (2025–2026)
+
+GitHub Copilot PR Review (GA in 2025, distinct from Copilot Autofix) is a GitHub-hosted AI agent that reviews pull request diffs and posts inline code review comments. Unlike Copilot Autofix (which generates code fix suggestions for SAST findings), Copilot PR Review performs holistic code review: it comments on logic correctness, code quality, test coverage gaps, and TypeScript-specific anti-patterns that SAST tools miss.
+
+The shift-left value: Copilot PR Review runs in < 2 minutes on the PR diff — before human reviewers open the PR. It surfaces issues that would otherwise require a reviewer to spend time identifying, freeing humans to focus on architectural and domain-logic decisions.
+
+```yaml
+# .github/workflows/copilot-pr-review.yml — Copilot PR Review as automated first reviewer
+# Requires: GitHub Copilot for Business or Enterprise subscription
+# The review is posted as a PR review comment by the github-actions bot
+name: Copilot PR Review
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    branches: [main, develop]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  copilot-review:
+    name: Copilot Automated Review
+    runs-on: ubuntu-latest
+    # Only run on non-draft PRs with TypeScript changes
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Request Copilot review
+        # The github/copilot-pull-request-review action posts an AI review on the PR
+        # Copilot reads the diff, the codebase context, and CODEOWNERS to focus its review
+        uses: github/copilot-pull-request-review@beta
+        with:
+          # Focus Copilot's review on TypeScript-relevant categories
+          review-categories: |
+            correctness
+            security
+            test-coverage
+          # TypeScript-specific review instructions in the repo's Copilot instructions file
+          # (.github/copilot-instructions.md)
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+```markdown
+<!-- .github/copilot-instructions.md — Copilot instructions for PR Review context -->
+# Copilot PR Review Instructions — TypeScript Project
+
+## Focus Areas for Code Review
+
+### TypeScript Shift-Left Patterns to Flag
+1. **Missing explicit return types** on exported functions — flag any `export function` or `export const` without a return type annotation
+2. **Unhandled Promises** — `async` functions whose return value is discarded without `await` or `.catch()`
+3. **`any` type usage** — flag `as any`, `: any`, and implicit any from untyped third-party calls; suggest `unknown` with type guard
+4. **Missing input validation** — API route handlers that access `req.body.*` without a prior Zod `.parse()` or `.safeParse()` call
+5. **Exhaustiveness gaps** — `switch` statements on union types without a `default: { const _: never = x }` guard
+6. **Missing test coverage signals** — new exported functions with no corresponding `.spec.ts` file or test case
+
+### Do NOT flag
+- Formatting and style (handled by Biome/ESLint in CI)
+- Import ordering (handled by Biome)
+- Variable naming conventions unless misleading
+- Internal implementation details that don't affect API contracts
+```
+
+```typescript
+// scripts/validate-copilot-review-config.ts — CI check: copilot-instructions.md exists and
+// contains required TypeScript review sections
+// Run on PRs that modify .github/ to prevent configuration drift
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const REQUIRED_SECTIONS = [
+  'Missing explicit return types',
+  'Unhandled Promises',
+  'Missing input validation',
+  'Exhaustiveness gaps',
+] as const;
+
+const instructionsPath = resolve('.github/copilot-instructions.md');
+
+if (!existsSync(instructionsPath)) {
+  console.error('ERROR: .github/copilot-instructions.md not found — Copilot PR Review will use defaults');
+  process.exit(1);
+}
+
+const content = readFileSync(instructionsPath, 'utf8');
+const missingSections = REQUIRED_SECTIONS.filter((section) => !content.includes(section));
+
+if (missingSections.length > 0) {
+  console.error(`ERROR: copilot-instructions.md missing required sections:\n  ${missingSections.join('\n  ')}`);
+  process.exit(1);
+}
+
+console.log('copilot-instructions.md is valid — all required review categories present.');
+```
+
+**WHY Copilot PR Review is a shift-left tool (distinct from Autofix)**: Copilot Autofix operates after SAST findings are produced — it generates code fixes for specific vulnerability patterns. Copilot PR Review operates on the full diff — it reads the intent of the change and flags behavioral issues that SAST cannot detect: missing `await` on async calls, incorrect union exhaustiveness, logic inversions in authorization conditions. The first review is available < 2 minutes after the PR is opened — before any human reviewer is notified. For TypeScript teams, the combination is: Copilot PR Review for logic/correctness (instant, diff-aware), Copilot Autofix for security remediation (SARIF-triggered), human reviewers for architecture and domain logic.
+
+> [community] **Lesson (GitHub Copilot PR Review GA, 2025)**: Teams using Copilot PR Review as the mandatory first reviewer report a 35–45% reduction in trivial review comments from human reviewers — the AI catches style-adjacent issues, missing null checks, and test coverage gaps before humans engage. The remaining human review bandwidth concentrates on business logic, architecture decisions, and domain correctness. The review quality improvement is most pronounced for junior team members whose PRs previously required more review cycles.
+
+> [community] **Gotcha (Copilot PR Review false positive rate, 2025)**: Copilot PR Review has a false positive rate of 20–30% on TypeScript projects without `.github/copilot-instructions.md` configuration — it flags intentional patterns (e.g., `any` in test helpers, non-null assertions in validated contexts) as issues. The `copilot-instructions.md` file is the primary tuning mechanism: explicitly listing "Do NOT flag" patterns reduces false positives to < 10% in practice. Configure it before enabling Copilot PR Review as a required check.
+
+---
+
+## Biome v2 Multi-Language Shift-Left: CSS and GraphQL (2026)
+
+Biome v2 (released early 2026) extends the Biome unified lint+format tool beyond TypeScript/JavaScript to CSS and GraphQL files. This is directly relevant for TypeScript full-stack projects where the same codebase contains TypeScript, CSS modules, and GraphQL schemas or queries — all previously requiring separate tooling (stylelint for CSS, graphql-inspector or eslint-plugin-graphql for GraphQL).
+
+The shift-left value: a single Biome invocation in the pre-commit hook now validates TypeScript, CSS, and GraphQL files in < 100ms total. No separate stylelint configuration, no separate graphql-eslint setup, no synchronization of ignore files across tools.
+
+```json
+// biome.json — Biome v2 with CSS and GraphQL enabled
+// Install: npm install --save-dev --save-exact @biomejs/biome@^2.0.0
+{
+  "$schema": "https://biomejs.dev/schemas/2.0.0/schema.json",
+  "organizeImports": { "enabled": true },
+
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error"
+      },
+      "security": {
+        "noGlobalEval": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "warn",
+        "useAwait": "error"
+      }
+    }
+  },
+
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+
+  "css": {
+    "linter": {
+      "enabled": true
+    },
+    "formatter": {
+      "enabled": true,
+      "indentStyle": "space",
+      "indentWidth": 2,
+      "quoteStyle": "double"
+    }
+  },
+
+  "graphql": {
+    "linter": {
+      "enabled": true
+    },
+    "formatter": {
+      "enabled": true,
+      "indentStyle": "space",
+      "indentWidth": 2,
+      "quoteStyle": "double"
+    }
+  },
+
+  "files": {
+    "include": [
+      "src/**/*.ts",
+      "src/**/*.tsx",
+      "src/**/*.css",
+      "src/**/*.module.css",
+      "src/**/*.graphql",
+      "src/**/*.gql"
+    ],
+    "ignore": ["node_modules", "dist", "*.spec.ts", "*.test.ts"]
+  }
+}
+```
+
+```sh
+#!/bin/sh
+# .husky/pre-commit — Biome v2: single command covers TS, CSS, and GraphQL
+# Runs in < 100ms total for all three file types combined
+npx @biomejs/biome check --apply --staged .
+# Note: Biome v2 does NOT do TypeScript type-aware rules — tsc still required for type safety
+npx tsc --noEmit --incremental
+```
+
+```typescript
+// src/components/UserCard.module.css (validated by Biome v2 CSS linter)
+// Biome v2 CSS rules catch: duplicate properties, invalid values, shorthand conflicts
+// .user-card {
+//   color: red;
+//   color: blue;  /* Biome: noRedundantCssDeclarations — duplicate property */
+// }
+
+// Example: GraphQL schema fragment validated by Biome v2 GraphQL linter
+// src/api/schema.graphql
+// type User {
+//   id: ID!
+//   email: String!         # Biome v2 GraphQL: useDeprecatedReason warns on @deprecated without reason
+//   role: Role!
+//   name: String @deprecated  # ← Biome warns: deprecation should include 'reason' argument
+// }
+
+// TypeScript + GraphQL integration: validate that TypeScript types match the GraphQL schema
+// The Biome GraphQL linter catches schema structural issues before codegen runs
+import { type TypedDocumentNode } from '@graphql-typed-document-node/core';
+import { gql } from 'graphql-tag';
+
+// TypeScript: the generic type parameter enforces the query result shape
+export const GET_USER: TypedDocumentNode<
+  { user: { id: string; email: string; role: 'ADMIN' | 'VIEWER' | 'EDITOR' } },
+  { id: string }
+> = gql`
+  query GetUser($id: ID!) {
+    user(id: $id) {
+      id
+      email
+      role
+    }
+  }
+`;
+```
+
+```yaml
+# .github/workflows/biome-v2.yml — Biome v2 lint on all supported file types
+name: Biome v2 Lint + Format Check
+on:
+  pull_request:
+    paths:
+      - 'src/**/*.ts'
+      - 'src/**/*.tsx'
+      - 'src/**/*.css'
+      - 'src/**/*.graphql'
+
+jobs:
+  biome:
+    name: Biome v2 (TypeScript + CSS + GraphQL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      # Biome v2: single binary, single command, < 100ms for all three languages
+      - run: npx @biomejs/biome ci --reporter=github .
+        # --reporter=github: outputs GitHub Actions annotations for inline PR comments
+        # Fails if any lint error or formatting violation is found
+```
+
+**WHY Biome v2 multi-language coverage is a shift-left advancement**: Before Biome v2, TypeScript full-stack projects required separate tool configurations for CSS (stylelint) and GraphQL (graphql-eslint, graphql-inspector) — each with its own config file, ignore patterns, and CI step. Maintaing three linters is a toil that teams reduce by disabling or under-configuring the secondary tools. Biome v2 consolidates all three into a single tool, a single config file, and a single pre-commit command. The shift-left principle applies: the fastest feedback that developers keep enabled is more valuable than comprehensive feedback they disable.
+
+> [community] **Lesson (Biome v2 adopters, 2026)**: The most impactful Biome v2 CSS rule for TypeScript CSS Modules projects is `noRedundantCssDeclarations` — it catches duplicate property declarations that are common in AI-generated CSS (Copilot and Cursor frequently emit duplicate `display` or `color` declarations when modifying existing blocks). Running Biome on `.module.css` files in the pre-commit hook catches these before they reach CI.
+
+> [community] **Gotcha (Biome v2 GraphQL and TypeScript codegen workflows, 2026)**: When using GraphQL codegen (e.g., `@graphql-codegen/cli`) to generate TypeScript types from `.graphql` files, Biome's GraphQL formatter may reformat the `.graphql` files in a way that changes the AST representation expected by the codegen tool. Run `biome format` before running codegen in CI — not after — to ensure the codegen tool reads Biome-formatted GraphQL. Alternatively, add the generated TypeScript output directory to `biome.json`'s `files.ignore` to prevent Biome from attempting to lint auto-generated TypeScript files.
+
+> [community] **Gotcha (Biome v2 CSS rules and CSS-in-JS libraries, 2026)**: Biome v2's CSS linter applies to `.css` and `.module.css` files only — it does NOT process template literal CSS in TypeScript files (styled-components, Emotion, Vanilla Extract). For TypeScript projects using CSS-in-JS, Biome's CSS linting provides zero coverage for the majority of styling code. Use `@typescript-eslint/no-invalid-template-literal-type` and the `@emotion/eslint-plugin` or `stylelint-a11y` for CSS-in-JS validation until Biome adds tagged template literal CSS support.

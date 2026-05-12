@@ -1,6 +1,18 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 39 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 40 | score: 97/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 40 (2026-05-12): added Type-Level Testing with expectTypeOf / assertType section (Vitest
+       built-in expectTypeOf API, tsd / expect-type patterns, assertType helper, testing generic
+       return types, toEqualTypeOf vs toMatchTypeOf, common pitfalls); added TypeScript 6.0 —
+       Temporal API Patterns section (PlainDate/PlainDateTime/ZonedDateTime/Instant, date arithmetic
+       without mutation, timezone-safe comparisons, migration from Date, gotcha: Temporal not
+       polyfilled by Node.js by default); added Constrained infer with extends Bounds section
+       (infer X extends string, infer X extends number, conditional extraction without Exclude,
+       pattern applied to object union flattening); added TypeScript satisfies + as const chained
+       pattern for nested discriminated union configs (Pattern 5 — team pitfall about satisfies not
+       narrowing when combined with nested as const record) — sourced from
+       vitest.dev/guide/testing-types.html, typescriptlang.org/docs/handbook/2/conditional-types.html,
+       typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html (verified 2026-05-12)
      Iter 39 (2026-05-12): added TypeScript 5.5 — JSDoc @import Tag (type-only imports in .js files
        without comment clutter, works with @param/@returns in JSDoc typechecked JS, avoids polluting
        runtime module graph); added TypeScript 5.7 — Faster Composite Project Ownership (editor-only
@@ -5714,3 +5726,396 @@ const design = grouped.get('design'); // { name: string; dept: string }[] | unde
 |---|---|---|
 | `Object.groupBy(arr, fn)['key'].forEach(...)` without null guard | Return type is `Partial<Record<...>>` — key may be absent at runtime | Guard with `?? []` or `if (group)` before iterating |
 | Using `@import` in `.ts` files expecting type-only import behavior | `@import` is a JSDoc tag for `.js` files only — ignored in TypeScript source | Use `import type { X } from 'module'` in `.ts` files |
+
+---
+
+## Type-Level Testing — `expectTypeOf` and `assertType`
+
+TypeScript's type system is a program in its own right. Unit tests verify runtime behavior; type-level tests verify that the **types** your generics, utility types, and overloaded functions produce are correct. Without type-level tests, a refactor can silently change `ReturnType<typeof foo>` from `User` to `unknown` while all runtime tests still pass.
+
+### Vitest built-in: `expectTypeOf`
+
+Vitest ships `expectTypeOf` as a first-class API. It produces compile-time assertions that fail with a TypeScript error (not a runtime assertion) when the type expectation is wrong.
+
+```typescript
+import { expectTypeOf, it, describe } from 'vitest';
+
+// Function under test
+function wrapInArray<T>(val: T): T[] {
+  return [val];
+}
+
+describe('wrapInArray types', () => {
+  it('preserves element type', () => {
+    // ✅ Passes: wrapInArray('hello') produces string[]
+    expectTypeOf(wrapInArray('hello')).toEqualTypeOf<string[]>();
+
+    // ✅ Passes: wrapInArray(42) produces number[]
+    expectTypeOf(wrapInArray(42)).toEqualTypeOf<number[]>();
+
+    // ❌ TypeScript compile error (NOT a runtime failure):
+    // expectTypeOf(wrapInArray('hello')).toEqualTypeOf<number[]>();
+  });
+
+  it('toMatchTypeOf — subset check (structural compatibility)', () => {
+    interface Animal { name: string }
+    interface Dog extends Animal { breed: string }
+
+    // toMatchTypeOf passes if the actual type is assignable to the expected type
+    // (like 'extends' — looser than toEqualTypeOf which requires exact equality)
+    expectTypeOf({ name: 'Rex', breed: 'Labrador' }).toMatchTypeOf<Animal>();
+    // Dog is assignable to Animal — passes
+  });
+});
+
+// Utility type tests — test your custom type transformations
+type PickRequired<T, K extends keyof T> = Required<Pick<T, K>> & Partial<Omit<T, K>>;
+
+interface User {
+  id: number;
+  name: string;
+  email?: string;
+}
+
+it('PickRequired makes selected keys required', () => {
+  type IdRequired = PickRequired<User, 'id'>;
+
+  // Test that 'id' is required (number, not number | undefined)
+  expectTypeOf<IdRequired['id']>().toEqualTypeOf<number>();
+
+  // Test that 'name' becomes optional
+  expectTypeOf<IdRequired['name']>().toEqualTypeOf<string | undefined>();
+});
+```
+
+### Key `expectTypeOf` assertion methods
+
+| Method | What it checks |
+|---|---|
+| `.toEqualTypeOf<T>()` | Exact type equality (both directions assignable) |
+| `.toMatchTypeOf<T>()` | Structural compatibility (actual assignable to expected) |
+| `.toBeAssignableTo<T>()` | Same as `toMatchTypeOf` — preferred alias |
+| `.toBeAssignableFrom<T>()` | Expected type assignable to actual |
+| `.toBeString()` / `.toBeNumber()` | Shorthand for common primitives |
+| `.toBeNullable()` | Type includes `null` or `undefined` |
+| `.returns.toEqualTypeOf<T>()` | Check return type of a function |
+| `.parameter(n).toEqualTypeOf<T>()` | Check the nth parameter type |
+| `.resolves.toEqualTypeOf<T>()` | Check resolved type of a Promise |
+
+```typescript
+// Testing async functions
+async function fetchUser(id: string): Promise<User | null> {
+  return id ? ({ id: 1, name: 'Alice' } as User) : null;
+}
+
+it('fetchUser resolves to User | null', () => {
+  expectTypeOf(fetchUser).returns.resolves.toEqualTypeOf<User | null>();
+
+  // Check parameter type
+  expectTypeOf(fetchUser).parameter(0).toEqualTypeOf<string>();
+});
+```
+
+### `assertType` helper — inline type guard
+
+`assertType<T>(value)` is a compile-time assertion that `value` is assignable to `T`. It has zero runtime cost and produces a TypeScript error (not a thrown exception) when the assertion fails.
+
+```typescript
+import { assertType } from 'vitest';
+
+// assertType: compile-time only — no runtime check
+function parseId(raw: unknown): number | string {
+  return typeof raw === 'number' ? raw : String(raw);
+}
+
+const result = parseId('42');
+
+// ✅ Passes: string is assignable to number | string
+assertType<number | string>(result);
+
+// ❌ TypeScript compile error:
+// assertType<boolean>(result);
+// Argument of type 'string | number' is not assignable to parameter of type 'boolean'
+```
+
+**`tsd` and `expect-type` for standalone type tests:** For non-Vitest projects, `tsd` (npm: `tsd`) and `expect-type` (npm: `expect-type`) provide similar APIs. `tsd` runs `.test-d.ts` files as a separate type check; `expect-type` integrates with any test runner.
+
+```typescript
+// Using expect-type (jest/any test runner — npm install --save-dev expect-type)
+import { expectTypeOf } from 'expect-type';
+
+type DeepReadonly<T> = T extends (infer U)[]
+  ? ReadonlyArray<DeepReadonly<U>>
+  : T extends object
+  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+  : T;
+
+// Test the utility type
+type Input = { a: { b: string[] } };
+type Result = DeepReadonly<Input>;
+
+expectTypeOf<Result>().toEqualTypeOf<{ readonly a: { readonly b: readonly string[] } }>();
+```
+
+[community] **Pitfall: `toEqualTypeOf` checks structural type equality, not nominal.** Two different interfaces with identical shapes are considered equal by `expectTypeOf`. If you need to verify that a function returns a _specific named type_ (not just a type with the same shape), combine `toEqualTypeOf` with a branded type — use a `unique symbol` brand or test both the shape AND a discriminant property.
+
+[community] **Pitfall: `expectTypeOf` assertions only fail at compile time — they do not protect against runtime type errors.** A test file full of `expectTypeOf` assertions will pass Vitest's test runner even if the TypeScript compiler is not being run (e.g., `transpileOnly: true` or `vite-node` without `tsc`). Always pair type-level tests with a `tsc --noEmit` step in CI, otherwise the type assertions are silently skipped when the compiler is bypassed.
+
+---
+
+## TypeScript 6.0 — Temporal API Patterns
+
+TypeScript 6.0 ships built-in type definitions for the ECMAScript Temporal API (Stage 4 as of mid-2026), included automatically at `"target": "es2025"` or higher. Temporal replaces `Date` for date/time arithmetic, providing immutable, timezone-aware, and unambiguous date/time types.
+
+### Core Types
+
+| Temporal type | What it represents |
+|---|---|
+| `Temporal.Instant` | A fixed point in time (UTC epoch nanoseconds) — no timezone, no calendar |
+| `Temporal.ZonedDateTime` | An instant with a timezone and calendar — use for user-facing times |
+| `Temporal.PlainDate` | A calendar date with no time or timezone (e.g., a birthday, a holiday) |
+| `Temporal.PlainTime` | A wall-clock time with no date or timezone |
+| `Temporal.PlainDateTime` | Date + time with no timezone (local time, ambiguous across DSTs) |
+| `Temporal.Duration` | A span of time (years/months/weeks/days/hours/minutes/seconds/nanoseconds) |
+
+### Date Arithmetic Without Mutation
+
+```typescript
+// All Temporal objects are immutable — arithmetic returns a new value
+const today: Temporal.PlainDate = Temporal.Now.plainDateISO();
+
+// Add 30 days — returns a new PlainDate, today is unchanged
+const deadline: Temporal.PlainDate = today.add({ days: 30 });
+
+// Subtract 1 month
+const lastMonth: Temporal.PlainDate = today.subtract({ months: 1 });
+
+// Compare: use .compare() (returns -1, 0, 1 — same as Array.sort comparator)
+const isOverdue = Temporal.PlainDate.compare(deadline, today) < 0;
+
+// Duration between two dates
+const diff: Temporal.Duration = today.until(deadline, { largestUnit: 'day' });
+console.log(diff.days); // number of days remaining
+
+// ✅ Contrast with Date (mutable — common source of bugs):
+// const d = new Date(); d.setDate(d.getDate() + 30); // mutates d — easy to accidentally alias
+```
+
+### Timezone-Safe Comparisons
+
+```typescript
+// ZonedDateTime — use for scheduling, calendar apps, meeting times
+const meeting: Temporal.ZonedDateTime = Temporal.ZonedDateTime.from({
+  year: 2026, month: 5, day: 20,
+  hour: 14, minute: 30,
+  timeZone: 'America/New_York',
+});
+
+// Convert to another timezone — same instant, different wall-clock time
+const meetingInTokyo: Temporal.ZonedDateTime = meeting.withTimeZone('Asia/Tokyo');
+
+// Both represent the same instant
+const sameInstant: boolean =
+  Temporal.Instant.compare(meeting.toInstant(), meetingInTokyo.toInstant()) === 0;
+// true — same point in time
+
+// Format for display (locale-aware)
+const displayTime: string = meeting.toLocaleString('en-US', {
+  dateStyle: 'long',
+  timeStyle: 'short',
+});
+```
+
+### Migration from `Date`
+
+```typescript
+// Convert existing Date to Temporal.Instant
+const legacyDate = new Date('2026-05-12T10:00:00Z');
+const instant: Temporal.Instant = Temporal.Instant.fromEpochMilliseconds(
+  legacyDate.getTime()
+);
+
+// Convert back to Date (for APIs that still require it)
+const backToDate = new Date(instant.epochMilliseconds);
+
+// Parsing ISO strings
+const fromISO: Temporal.PlainDate = Temporal.PlainDate.from('2026-05-12');
+
+// Current time as ZonedDateTime in the system timezone
+const now: Temporal.ZonedDateTime = Temporal.Now.zonedDateTimeISO();
+```
+
+**TypeScript type safety benefits over `Date`:**
+
+```typescript
+// Date: no type distinction between calendar dates, instants, and local times
+function formatDate(d: Date): string { /* is this a local time? UTC? */ }
+
+// Temporal: types encode the semantic distinction
+function formatCalendarDate(d: Temporal.PlainDate): string { /* always a date, no time */ }
+function formatInstant(i: Temporal.Instant): string { /* always UTC epoch-based */ }
+function formatUserTime(z: Temporal.ZonedDateTime): string { /* timezone-aware */ }
+
+// ❌ Accidental mix prevented by the type system:
+// formatCalendarDate(new Temporal.ZonedDateTime(...));
+// Error: ZonedDateTime not assignable to PlainDate
+```
+
+[community] **Pitfall: Temporal is NOT automatically polyfilled by Node.js or browsers as of mid-2026.** TypeScript 6.0 includes the type definitions, but the runtime implementation requires the `@js-temporal/polyfill` package in environments that do not yet have native Temporal support. Verify your runtime's Temporal support before removing the polyfill — the TypeScript types will compile without error even if the runtime throws `Temporal is not defined`.
+
+[community] **Pitfall: `Temporal.PlainDate` and `Temporal.PlainDateTime` are intentionally timezone-unaware.** Teams that use `PlainDateTime` for event scheduling across timezones end up with DST bugs — the same reason `Date` fails for scheduling. Use `Temporal.ZonedDateTime` for any time that must be unambiguous across timezones (calendar events, meeting invitations, cron jobs). Reserve `PlainDate` and `PlainDateTime` for local-only contexts (birthdays, opening hours, display formatting in a known timezone).
+
+---
+
+## Constrained `infer` with `extends` Bounds (TypeScript 4.7+)
+
+TypeScript 4.7 added the ability to add an `extends` constraint directly to an `infer` type variable inside a conditional type. This eliminates a common two-step pattern where you infer a broad type and then use `Extract` or `Exclude` to narrow it down.
+
+### Basic Syntax
+
+```typescript
+// BEFORE 4.7: infer the type, then Exclude the non-matching cases
+type GetStringId_Old<T> =
+  T extends { id: infer U }
+    ? U extends string ? U : never
+    : never;
+
+// AFTER 4.7: constrain the infer directly — cleaner and faster to type-check
+type GetStringId<T> = T extends { id: infer U extends string } ? U : never;
+
+interface UserRecord { id: string; name: string; }
+interface ProductRecord { id: number; sku: string; }
+
+type UserIdType    = GetStringId<UserRecord>;    // string ✓
+type ProductIdType = GetStringId<ProductRecord>; // never (id is number, not string)
+```
+
+### Extracting Elements from Complex Structures
+
+```typescript
+// Extract element type from an array, constrained to objects
+type ElementOf<T> = T extends ReadonlyArray<infer U extends object> ? U : never;
+
+type Items = ElementOf<{ id: string; value: number }[]>;
+// { id: string; value: number }
+
+type Primitives = ElementOf<string[]>;
+// never (string does not extend object)
+
+// Extract the first element of a tuple, constrained to a specific type
+type FirstString<T> = T extends [infer First extends string, ...unknown[]] ? First : never;
+
+type A = FirstString<['hello', 1, true]>;  // 'hello'
+type B = FirstString<[1, 'hello']>;         // never (first element is not string)
+type C = FirstString<[]>;                   // never (no first element)
+
+// Extract union discriminant values constrained to literals
+type LiteralDiscriminant<T, K extends keyof T> =
+  T extends Record<K, infer V extends string | number> ? V : never;
+
+type ApiEventTypes = LiteralDiscriminant<
+  | { type: 'request';  url: string }
+  | { type: 'response'; status: number }
+  | { type: 'error';    code: string },
+  'type'
+>;
+// 'request' | 'response' | 'error' — the literal string values
+```
+
+### Constraining to Number for Tuple Length Extraction
+
+```typescript
+// Extract exact tuple length as a number literal type
+type TupleLength<T extends readonly unknown[]> =
+  T extends { length: infer L extends number } ? L : never;
+
+type ThreeLength  = TupleLength<[string, number, boolean]>; // 3 (literal, not number)
+type ZeroLength   = TupleLength<[]>;                         // 0
+
+// Use the literal length for conditional type dispatch
+type First<T extends readonly unknown[]> =
+  TupleLength<T> extends 0 ? never : T[0];
+
+type F1 = First<[string, number]>; // string
+type F2 = First<[]>;               // never
+```
+
+### Performance Benefit
+
+Constrained `infer X extends T` is not just syntax sugar — it allows the compiler to short-circuit evaluation more aggressively. Without the constraint, the compiler must fully infer `U`, then evaluate the nested `U extends T ? U : never` — two passes. With `infer U extends T`, the constraint is applied during inference itself, reducing the number of conditional type instantiations.
+
+[community] **Pitfall: `infer U extends string` does not widen `U` to `string` — it FILTERS to only match when `U` is a subtype of `string`.** If the inferred type is a wider type (like `string | number`), the extends constraint causes the entire conditional to resolve to the false branch (`never`), not to `string`. This is intentional but catches teams expecting the constraint to act as a cast. Use `Extract<U, string>` in the body if you need to extract the string portion from a mixed union.
+
+---
+
+## `satisfies` + `as const` — Pattern 5: Nested Discriminated Union Config
+
+The `satisfies` operator combined with `as const` enables a powerful pattern for configuration objects where you want both narrow literal types AND compile-time validation against a discriminated union schema. This is distinct from the basic `satisfies` patterns already covered — it specifically targets deeply nested configurations.
+
+```typescript
+// Scenario: a plugin registry where each plugin is typed by its "kind" discriminant
+type Plugin =
+  | { kind: 'transformer'; input: string; output: string; pure: boolean }
+  | { kind: 'validator';   schema: string; strict: boolean }
+  | { kind: 'reporter';    format: 'json' | 'text'; outputPath: string };
+
+// ✅ Pattern: as const gives narrow literals, satisfies validates each entry against Plugin
+const PLUGINS = {
+  csvTransformer: {
+    kind: 'transformer',
+    input: 'text/csv',
+    output: 'application/json',
+    pure: true,
+  },
+  schemaValidator: {
+    kind: 'validator',
+    schema: 'UserSchema',
+    strict: false,
+  },
+  jsonReporter: {
+    kind: 'reporter',
+    format: 'json',          // ← literal 'json', not 'json' | 'text'
+    outputPath: './reports',
+  },
+} as const satisfies Record<string, Plugin>;
+
+// PLUGINS.csvTransformer.kind is 'transformer' (literal) — not Plugin['kind']
+// PLUGINS.jsonReporter.format is 'json' (literal) — not 'json' | 'text'
+
+// ❌ Shape validation fires at compile time if a required field is missing:
+// const BAD_PLUGINS = {
+//   broken: { kind: 'transformer', input: 'text/csv' }  // missing 'output' and 'pure'
+// } as const satisfies Record<string, Plugin>;
+// Error: Property 'output' is missing in type ...
+
+// Deriving discriminated union keys from the registry
+type PluginKey = keyof typeof PLUGINS; // 'csvTransformer' | 'schemaValidator' | 'jsonReporter'
+type PluginKind = typeof PLUGINS[PluginKey]['kind']; // 'transformer' | 'validator' | 'reporter'
+```
+
+**Usage in typed factory functions:**
+
+```typescript
+// The narrow types from as const satisfies flow through correctly
+function getPlugin<K extends PluginKey>(key: K): typeof PLUGINS[K] {
+  return PLUGINS[key];
+}
+
+const reporter = getPlugin('jsonReporter');
+// reporter.format is 'json' — not 'json' | 'text'
+// reporter.kind is 'reporter' — not Plugin['kind']
+reporter.format.toUpperCase(); // ✅ string method available without type guard
+```
+
+[community] **Pitfall: `as const` must appear BEFORE `satisfies` — not after.** Writing `{ ... } satisfies Plugin as const` causes a TypeScript error because `satisfies` binds more tightly. Always use `{ ... } as const satisfies T`. Additionally, `as const` applied before `satisfies` means the literal types must exactly match the union member — `pure: true` must be in the union type definition, not just `pure: boolean`. If the union uses `boolean` but your literal is `true`, the satisfies check still passes (literal extends base type), but if the union uses a literal (`pure: true | false`), mismatches produce helpful errors.
+
+[community] **Pitfall: `as const satisfies` does not enforce exhaustiveness over union members.** The pattern validates that each entry in the record matches ONE member of the `Plugin` union — it does NOT require that all `Plugin` kinds appear in the registry. For exhaustiveness, use `satisfies Record<Plugin['kind'], Plugin>` instead, which keys the record by discriminant and errors on missing entries.
+
+| Anti-pattern | Why it's harmful | What to do instead |
+|---|---|---|
+| `expectTypeOf` without a `tsc --noEmit` CI step | Type assertions only fail at compile time — bypassed when using transpileOnly/vite-node | Always pair type-level tests with an explicit `tsc --noEmit` CI job |
+| `expectTypeOf(...).toMatchTypeOf<T>()` for exact type equality | `toMatchTypeOf` only checks assignability (like `extends`) — passes even if actual type is wider | Use `.toEqualTypeOf<T>()` for strict bidirectional type equality |
+| `Temporal.PlainDateTime` for cross-timezone scheduling | PlainDateTime has no timezone — DST transitions create ambiguous wall-clock times | Use `Temporal.ZonedDateTime` for any time that must be correct across timezones |
+| Using `Date` objects in new TypeScript 6.0+ code | `Date` is mutable, timezone-implicit, and millisecond-precision — all fixed by Temporal | Use Temporal API types; convert from `Date` via `Temporal.Instant.fromEpochMilliseconds()` |
+| `infer U extends string` as a cast | Constrained infer FILTERS — resolves to `never` when U is not a string subtype | Use `Extract<U, string>` in the body to extract the string portion from a mixed union |
+| `{ ... } satisfies T as const` (wrong order) | TypeScript parse error — `satisfies` binds before `as const` | Always write `{ ... } as const satisfies T` |

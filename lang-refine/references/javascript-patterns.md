@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 54 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 55 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -5866,3 +5866,318 @@ export default tseslint.config(
 | `"extends": "eslint:recommended"` string in flat config | Flat config has no string lookup — will throw `TypeError` | `import js from '@eslint/js'; js.configs.recommended` |
 | `"env": { "node": true }` in flat config | `env` key does not exist in flat config format | Use `languageOptions.globals` with a globals package or plugin environment |
 | Running `recommendedTypeChecked` in `--watch` mode | Type-checked rules trigger a full TS type pass per-file change — O(n) per keystroke | Use `recommended` (non-type-checked) for watch; run `recommendedTypeChecked` in CI only |
+
+---
+
+## `node:test` Snapshot Testing (Node.js 22.3+ / Stable in Node.js 24)
+
+Node.js 22.3.0 added built-in snapshot testing to `node:test` — no external snapshot library or framework required. Snapshots capture a serialised value on the first run and assert it stays identical on subsequent runs. Use `--test-update-snapshots` to regenerate stale snapshots.
+
+```javascript
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+// ── Basic snapshot assertion ───────────────────────────────────────────
+test('user object shape is stable', (t) => {
+  const user = {
+    id: 1,
+    name: 'Alice',
+    roles: ['viewer', 'editor'],
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  // First run: writes the snapshot to *.snap file next to the test file
+  // Subsequent runs: asserts actual deeply equals the stored snapshot
+  t.assert.snapshot(user);
+});
+
+// ── Snapshot for rendered output (e.g., HTML, SQL, CLI output) ────────
+test('SQL query matches snapshot', (t) => {
+  const query = buildSelectQuery({
+    table: 'orders',
+    where: { status: 'pending' },
+    orderBy: 'created_at DESC',
+    limit: 50,
+  });
+  // Captures the generated SQL string for regression detection
+  t.assert.snapshot(query);
+});
+
+// ── Snapshot with a custom name (multiple snapshots per test) ──────────
+test('component renders correctly for each theme', (t) => {
+  for (const theme of ['light', 'dark', 'high-contrast']) {
+    const html = renderComponent({ theme });
+    t.assert.snapshot(html, `renders-${theme}-theme`);
+  }
+});
+```
+
+```bash
+# First run — creates .snap file
+node --test "**/*.test.js"
+
+# Update stale snapshots after intentional output changes
+node --test --test-update-snapshots "**/*.test.js"
+
+# Run a single test file with verbose output
+node --test --test-reporter=spec "src/ui.test.js"
+```
+
+**Snapshot file location:** Node.js writes snapshots to `<testFile>.snap` alongside the test file. Each snapshot is keyed by test name + optional custom name, making diffs in code review easy to read.
+
+**Key differences from Jest/Vitest snapshots:**
+- No inline snapshots (`.toMatchInlineSnapshot()`) — file-only.
+- No `--updateSnapshot` / `-u` shorthand — use `--test-update-snapshots`.
+- Snapshot format is a flat text file (one entry per assertion) rather than Jest's embedded JS object syntax — simpler diffs.
+- `t.assert.snapshot()` is on the test context object, not a standalone `expect().toMatchSnapshot()` call.
+
+**Gotcha [community]:** snapshot files must be committed to version control. A CI run that regenerates snapshots should fail the build if any snapshot changed unexpectedly — configure your CI to treat uncommitted snapshot changes as a test failure (`git diff --exit-code *.snap`).
+
+---
+
+## `fetch()` Priority Hints and `keepalive` — Fine-Tuning Request Scheduling
+
+The Fetch API supports two options that are widely supported but frequently overlooked: `priority` controls where the request sits in the browser's resource scheduler, and `keepalive` allows a request to outlive the page lifecycle — essential for analytics beacons that must fire on page unload.
+
+```javascript
+// ── priority — influence resource scheduling (Baseline 2023) ─────────
+// Values: 'high' | 'low' | 'auto' (default)
+
+// High priority: critical data that blocks meaningful render
+const userData = await fetch('/api/user/profile', {
+  priority: 'high',
+}).then(r => r.json());
+
+// Low priority: non-critical background data (analytics, prefetch)
+fetch('/api/log/interaction', {
+  method: 'POST',
+  priority: 'low',
+  body: JSON.stringify({ action: 'hover', elementId: 'cta-button' }),
+  headers: { 'Content-Type': 'application/json' },
+});
+
+// ── keepalive — survives page unload (Baseline 2022) ──────────────────
+// Allows the request to complete even after the page is closed/navigated away
+// Replaces the deprecated navigator.sendBeacon() for structured JSON payloads
+
+// BAD — regular fetch dies on page unload
+window.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    fetch('/api/analytics/session-end', { method: 'POST', body: sessionData });
+    // ❌ Request is cancelled when the page unloads before it completes
+  }
+});
+
+// GOOD — keepalive ensures delivery even if the tab closes
+window.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    fetch('/api/analytics/session-end', {
+      method: 'POST',
+      keepalive: true,                       // ✅ survives page unload
+      priority: 'high',                      // send immediately
+      body: JSON.stringify(collectSessionData()),
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+});
+
+// ── Combining priority + keepalive for a reliable analytics beacon ────
+function sendBeacon(endpoint, payload) {
+  return fetch(endpoint, {
+    method: 'POST',
+    keepalive: true,
+    priority: 'high',
+    body: JSON.stringify(payload),
+    headers: { 'Content-Type': 'application/json' },
+  }).catch(() => {
+    // keepalive requests can't read the response body after unload;
+    // log the send attempt locally if needed
+  });
+}
+```
+
+**`keepalive` constraints:**
+- Maximum body size: **64 kB** across all `keepalive` requests in flight simultaneously.
+- The response body **cannot be consumed** after the page has started unloading — the Promise may never resolve.
+- Works in Node.js 18+ via the native `fetch` — useful for sending cleanup requests in serverless functions before the process exits.
+- Prefer `keepalive: true` over `navigator.sendBeacon()` when you need structured JSON and custom headers; `sendBeacon` only supports `Blob`/`FormData`/plain text.
+
+**`priority` notes:**
+- The hint is advisory — browsers may ignore it based on connection state and their own heuristics.
+- `priority: 'auto'` (default) uses the browser's standard priority algorithm (parser-blocking scripts = highest, images = low, etc.).
+- In Node.js fetch, `priority` is accepted but has no effect — it is a browser scheduling hint only.
+
+---
+
+## `structuredClone` with Transferables — Zero-Copy Deep Clone
+
+`structuredClone(value, { transfer: [...] })` was present in the initial spec but is rarely taught alongside the basic usage. The `transfer` option moves ownership of `ArrayBuffer`, `MessagePort`, `ReadableStream`, `WritableStream`, and `TransformStream` into the clone, making the originals detached (unusable). This produces a zero-copy deep clone — critical for Worker communication where you want to send large binary data without doubling memory.
+
+```javascript
+// ── Basic transfer: move ArrayBuffer ownership ─────────────────────────
+const original = new ArrayBuffer(1024 * 1024 * 32); // 32 MB
+const view     = new Uint8Array(original);
+view.fill(255);
+
+// structuredClone WITHOUT transfer: copies the 32 MB (both sides have data)
+const copy = structuredClone(original);
+console.log(original.byteLength); // 33554432 — original still alive
+
+// structuredClone WITH transfer: moves the 32 MB (no copy, original detached)
+const moved = structuredClone(original, { transfer: [original] });
+console.log(original.byteLength); // 0        — original is now detached!
+console.log(moved.byteLength);    // 33554432 — ownership transferred to clone
+
+// ── Practical: transfer data to a Web Worker without copying ──────────
+const worker = new Worker('./processor.worker.js', { type: 'module' });
+
+const inputBuffer = new ArrayBuffer(1024 * 1024 * 64); // 64 MB input
+// Fill buffer with data...
+
+// postMessage with transfer is equivalent to structuredClone({ transfer })
+// The following two patterns are identical in effect:
+
+// Pattern A: postMessage with transfer list (common in Worker code)
+worker.postMessage({ type: 'process', data: inputBuffer }, [inputBuffer]);
+// inputBuffer is now detached — worker owns it
+
+// Pattern B: structuredClone for same-thread object preparation before transfer
+function prepareForTransfer(largeData) {
+  // Deep-clone metadata (complex nested object), but transfer the binary payload
+  const metadata = structuredClone({ ...largeData, buffer: null });
+  const clone     = structuredClone(largeData.buffer, { transfer: [largeData.buffer] });
+  return { metadata, buffer: clone };
+}
+
+// ── Transfer MessagePort for bidirectional Worker communication ───────
+const { port1, port2 } = new MessageChannel();
+const transferred = structuredClone({ command: 'init', replyPort: port2 }, {
+  transfer: [port2],  // ownership of port2 moved; port1 stays here
+});
+worker.postMessage(transferred);
+// port2 is now owned by the worker; use port1 to receive worker replies
+
+// ── Streams: transfer ReadableStream to a worker ─────────────────────
+const [stream1, stream2] = new ReadableStream({ /* ... */ }).tee();
+const payload = structuredClone({ stream: stream1 }, { transfer: [stream1] });
+worker.postMessage(payload, [payload.stream]);
+```
+
+**What can be transferred:**
+- `ArrayBuffer` (and its TypedArray views via their `.buffer`)
+- `MessagePort`
+- `ReadableStream`, `WritableStream`, `TransformStream` (browser + Node.js 18+)
+- `AudioData`, `VideoFrame`, `OffscreenCanvas`, `ImageBitmap` (browser only)
+
+**Common gotcha [community]:** after transfer, the original object becomes **detached** — reading `.byteLength` on a detached `ArrayBuffer` returns `0`, and any `TypedArray` view over it throws `TypeError: Cannot perform %TypedArray%.prototype.set on a detached ArrayBuffer`. Always check `buf.detached` (ES2024 / Node.js 22+) before accessing a transferred buffer, especially in code paths that may receive the same buffer from multiple sources.
+
+```javascript
+// Check detachment before use (ES2024 ArrayBuffer.prototype.detached)
+function safeProcess(buf) {
+  if (buf.detached) throw new Error('Buffer was transferred and is no longer usable');
+  return new Uint8Array(buf);
+}
+```
+
+---
+
+## Temporal API in Testing — Mocking the Clock for Deterministic Tests
+
+The Temporal API is immutable by design — `Temporal.Now` is a namespace of functions that delegate to the system clock. To write deterministic tests, you must intercept `Temporal.Now` methods. Unlike `Date`, there is no built-in fake-timer support for `Temporal` yet in Vitest or Jest (as of 2026), so the idiomatic pattern is dependency injection.
+
+```javascript
+// ── Pattern 1: Inject a clock factory (recommended for production code) ─
+// Production code receives a clock object with the same interface as Temporal.Now
+
+function createInvoiceService(clock = Temporal.Now) {
+  return {
+    createInvoice(amount) {
+      return {
+        id: crypto.randomUUID(),
+        amount,
+        issuedAt:  clock.plainDateTimeISO('UTC'),
+        dueDate:   clock.plainDateISO('UTC').add({ days: 30 }),
+      };
+    },
+    isOverdue(invoice) {
+      return Temporal.PlainDate.compare(
+        invoice.dueDate,
+        clock.plainDateISO('UTC'),
+      ) < 0;
+    },
+  };
+}
+
+// ── In tests: inject a fake clock ─────────────────────────────────────
+function makeFakeClock(isoString) {
+  const fixed = Temporal.ZonedDateTime.from(`${isoString}[UTC]`);
+  return {
+    instant:          () => fixed.toInstant(),
+    plainDateISO:     () => fixed.toPlainDate(),
+    plainDateTimeISO: () => fixed.toPlainDateTime(),
+    zonedDateTimeISO: () => fixed,
+    timeZoneId:       () => 'UTC',
+  };
+}
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+test('invoice due date is 30 days after issuance', () => {
+  const clock   = makeFakeClock('2026-01-01T00:00:00');
+  const service = createInvoiceService(clock);
+
+  const invoice = service.createInvoice(100);
+  assert.equal(invoice.dueDate.toString(), '2026-01-31');
+});
+
+test('invoice is overdue after 30 days', () => {
+  const issueClock = makeFakeClock('2026-01-01T00:00:00');
+  const service    = createInvoiceService(issueClock);
+  const invoice    = service.createInvoice(100);
+
+  // Advance the clock past due date
+  const futureClock = makeFakeClock('2026-02-15T00:00:00');
+  const futureService = createInvoiceService(futureClock);
+
+  // isOverdue uses the clock injected at service creation
+  assert.equal(futureService.isOverdue(invoice), true);
+});
+
+// ── Pattern 2: Monkey-patch Temporal.Now (test-only, restore after) ────
+// Use only when DI is impractical (legacy code, third-party lib)
+function withFixedTime(isoString, fn) {
+  const fixed = Temporal.Instant.from(`${isoString}Z`);
+  const origInstant = Temporal.Now.instant.bind(Temporal.Now);
+  const origPlainDate = Temporal.Now.plainDateISO.bind(Temporal.Now);
+
+  Temporal.Now.instant    = () => fixed;
+  Temporal.Now.plainDateISO = () => fixed.toZonedDateTimeISO('UTC').toPlainDate();
+
+  try {
+    return fn();
+  } finally {
+    // Always restore — even if fn throws
+    Temporal.Now.instant    = origInstant;
+    Temporal.Now.plainDateISO = origPlainDate;
+  }
+}
+
+test('renders correct date in header', () => {
+  withFixedTime('2026-05-12T00:00:00', () => {
+    const header = renderPageHeader();
+    assert.ok(header.includes('May 12, 2026'));
+  });
+});
+
+// ── Vitest fake timers + Temporal polyfill ────────────────────────────
+// When using @js-temporal/polyfill, vi.useFakeTimers() controls Date and
+// therefore affects the polyfill's Temporal.Now since the polyfill delegates to Date.
+// Native Temporal (Node.js 24+) is NOT affected by vi.useFakeTimers() —
+// use DI or monkey-patching for native Temporal in Vitest tests.
+```
+
+**Why Temporal testing requires special care:**
+- `Temporal.Now` functions are not overridden by `vi.useFakeTimers()` or Jest fake timers — those only intercept `Date.now()`, `setTimeout`, and `setInterval`.
+- `Temporal.Instant`, `PlainDate`, `PlainDateTime`, and `ZonedDateTime` are **immutable value objects** — you cannot set them to a fixed value without replacing the `Temporal.Now` source.
+- Dependency injection is the cleanest long-term pattern; the monkey-patch approach is a short-term fix for untestable legacy code.
+- If your project uses `@js-temporal/polyfill`, `vi.useFakeTimers()` works because the polyfill reads from `Date.now()`. Once you migrate to native Temporal, switch to DI. [community]

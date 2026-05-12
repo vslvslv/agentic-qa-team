@@ -1,6 +1,7 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 58 | score: 100/100 | date: 2026-05-12 -->
-<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: playwright-clock-api, playwright-addLocatorHandler, vitest-getSeed-reproducible-ordering -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 59 | score: 100/100 | date: 2026-05-12 -->
+<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: playwright-testresult-annotations-reporter, vitest-context-annotate, playwright-testproject-workers-v152, github-actions-dorny-test-reporter -->
+<!-- Iteration 59: Pattern 100 (Playwright v1.52 testResult.annotations per-retry custom reporter for structured flakiness tracking); Pattern 101 (Vitest 3.2 context.annotate() API for attaching structured metadata visible in all reporters); Gotcha 49 (dorny/test-reporter GitHub Action for PR-level flakiness annotations from JUnit XML); AP49 (calling getSeed() inside test bodies instead of setup — returns undefined at test-time) -->
 <!-- Iteration 58: Pattern 97 (Playwright v1.45 page.clock — deterministic browser-level time control replacing fake-timer patches); Pattern 98 (Playwright v1.42 page.addLocatorHandler() — automatic overlay/interstitial dismissal to eliminate action-blocking flakiness); Pattern 99 (Vitest 4.0 sequence.shuffle + getSeed() — seeded random ordering with seed capture for reproducible order-dependent flakiness); AP48 (page.clock.install() called after navigation — undefined behavior from out-of-order clock init); Quick Reference additions (iteration 58) -->
 <!-- Iteration 57: Pattern 94 (Playwright v1.48 routeWebSocket — deterministic WebSocket mocking without a real server); Pattern 95 (Playwright v1.51 storageState({ indexedDB: true }) — IndexedDB auth persistence for Firebase-style apps); Pattern 96 (Jest 30 jest.onGenerateMock — centralized auto-mock configuration); AP47 (jest.onGenerateMock silent no-op with __mocks__ folder); Gotcha 48 (WebSocketRoute onMessage stops auto-forwarding) -->
 <!-- Iteration 56: Pattern 92 (Jest 30 retryTimes with waitBeforeRetry + retryImmediately — staged retry for flaky integration tests); Pattern 93 (Jest 30 advanceTimersToNextFrame() — deterministic requestAnimationFrame testing); AP46 (Jest 30 globalsCleanup not enabled — cross-test global state leak); Quick Reference additions (iteration 56) -->
@@ -10065,4 +10066,422 @@ test('"posted X ago" label shows correct relative time', async ({ page }) => {
 | Playwright `page.addLocatorHandler()` | Official | https://playwright.dev/docs/api/class-page#page-add-locator-handler | Auto-dismiss overlays that block actions; `times` and `noWaitAfter` options |
 | Playwright v1.42 release notes | Official | https://playwright.dev/docs/release-notes#version-142 | `addLocatorHandler` introduced (v1.42) |
 | Vitest `getSeed()` API | Official | https://vitest.dev/api/#getseed | Returns current run's shuffle seed — use to reproduce order-dependent CI failures |
+
+---
+
+## Pattern 100 — Playwright v1.52 `testResult.annotations` in Custom Reporters for Per-Retry Flakiness Tracking  [official]
+
+Playwright v1.52 added `testResult.annotations` — a per-result (per-retry) annotations array that captures annotations attached during each individual test execution attempt. Before v1.52, annotations were only accessible at the `testCase` level (covering the entire test, not per-attempt). With v1.52, a custom reporter can now compare annotations across retry attempts to identify _which_ retry introduced a specific state, error category, or diagnostic label — enabling structured, typed flakiness reports beyond the raw pass/fail outcome.
+
+**Why this matters for flakiness:** When a test runs with `retries: 2`, there are up to 3 result objects (`retry 0`, `retry 1`, `retry 2`). `testResult.annotations` on each result contains annotations added via `testInfo.annotations.push()` during that specific attempt. By comparing annotations across retries, a reporter can surface patterns like "the test fails with `type: 'network-timeout'` on retry 0 and 1, then passes on retry 2" — turning a binary flaky/not-flaky signal into a structured root-cause hint.
+
+```typescript
+// reporters/flakiness-annotation-reporter.ts
+// Custom Playwright reporter that surfaces per-retry annotation patterns for flakiness triage
+// Run via playwright.config.ts: reporter: [['./reporters/flakiness-annotation-reporter.ts']]
+
+import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
+import { writeFileSync } from 'fs';
+
+interface FlakyAnnotationEntry {
+  title: string;
+  file: string;
+  retries: Array<{
+    retry: number;
+    status: string;
+    annotations: Array<{ type: string; description?: string }>;
+  }>;
+}
+
+export default class FlakinessAnnotationReporter implements Reporter {
+  private flakyTests: FlakyAnnotationEntry[] = [];
+
+  onTestEnd(test: TestCase, result: TestResult): void {
+    // A test is "flaky" if it passed on a retry (retry > 0 and status is 'passed')
+    // or if it has any retry result that differs from the last
+    const isFlaky =
+      result.status === 'passed' && result.retry > 0;
+
+    if (isFlaky) {
+      const existing = this.flakyTests.find(e => e.title === test.title);
+      const retryEntry = {
+        retry: result.retry,
+        status: result.status,
+        // testResult.annotations: per-retry annotations — new in Playwright v1.52
+        annotations: result.annotations.map(a => ({
+          type: a.type,
+          description: a.description,
+        })),
+      };
+
+      if (existing) {
+        existing.retries.push(retryEntry);
+      } else {
+        this.flakyTests.push({
+          title: test.title,
+          file: test.location.file,
+          retries: [retryEntry],
+        });
+      }
+    }
+  }
+
+  onEnd(): void {
+    if (this.flakyTests.length === 0) return;
+
+    const report = {
+      generated: new Date().toISOString(),
+      flakyCount: this.flakyTests.length,
+      tests: this.flakyTests,
+    };
+
+    writeFileSync('test-results/flakiness-annotations.json', JSON.stringify(report, null, 2));
+    console.log(`\n[FlakinessAnnotationReporter] ${this.flakyTests.length} flaky test(s) — see test-results/flakiness-annotations.json`);
+  }
+}
+```
+
+```typescript
+// In your E2E tests: attach structured annotations during test execution
+// These annotations surface in testResult.annotations per retry
+import { test, expect } from '@playwright/test';
+
+test('checkout payment flow', async ({ page, request }, testInfo) => {
+  // Attach a structured annotation describing the test's external dependency state.
+  // If this attempt fails, the annotation appears in testResult.annotations for this retry.
+  testInfo.annotations.push({
+    type: 'payment-provider',
+    description: `endpoint=${process.env.PAYMENT_ENDPOINT ?? 'staging'} ts=${Date.now()}`,
+  });
+
+  await page.goto('/checkout');
+
+  // If a network call fails, annotate with the error category for the reporter to surface
+  try {
+    await page.waitForResponse(
+      resp => resp.url().includes('/api/payment') && resp.status() === 200,
+      { timeout: 8_000 }
+    );
+  } catch (err) {
+    // Annotating here means testResult.annotations will contain this on the failing retry
+    testInfo.annotations.push({
+      type: 'network-timeout',
+      description: 'Payment API did not respond within 8s — likely infrastructure flakiness',
+    });
+    throw err; // re-throw so the test fails and Playwright retries
+  }
+
+  await expect(page.getByTestId('confirmation')).toBeVisible();
+});
+```
+
+```typescript
+// playwright.config.ts — wire up the custom annotation reporter alongside standard reporters
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: process.env.CI ? 2 : 0,
+  failOnFlakyTests: !!process.env.CI,
+
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    ['junit', { outputFile: 'test-results/results.xml' }],
+    // Custom reporter: surfaces per-retry annotations for structured flakiness tracking
+    // Requires Playwright v1.52+ for testResult.annotations support
+    ['./reporters/flakiness-annotation-reporter.ts'],
+  ],
+
+  use: {
+    trace: 'on-first-retry',
+  },
+});
+```
+
+**Key distinction from `testCase.outcome()` (Pattern 86/53):**
+- `testCase.outcome()` returns `'flaky'`, `'passed'`, `'failed'`, or `'skipped'` for the entire test case across all attempts — a single aggregate verdict
+- `testResult.annotations` is per-attempt — you can examine which annotations appeared on the failing attempt vs the passing attempt, enabling root-cause classification beyond the binary flaky/pass outcome
+
+---
+
+## Pattern 101 — Vitest 3.2 `context.annotate()` for Structured Test Metadata Visible Across All Reporters  [official]
+
+Vitest 3.2 introduced `context.annotate()` — a first-class API for attaching structured metadata to individual test cases during execution. Unlike `console.log()` (which outputs to stdout but is not captured by reporters) or `testInfo.attach()` (Playwright-specific), `context.annotate()` writes metadata that is natively surfaced in Vitest's HTML report, UI mode, JUnit XML output, TAP output, and the GitHub Actions reporter.
+
+**Why this matters for flakiness:** Flaky tests often fail for different reasons on different runs. By calling `context.annotate()` with structured metadata (the exact DB state, the network response, the feature flag values in effect), each failure attempt carries a labeled evidence snapshot. When the JUnit XML is ingested by BuildPulse or Trunk, the annotations appear alongside the failure — enabling AI-based root cause classification (Pattern 49 / Gotcha 45) on structured data rather than raw stack traces.
+
+```typescript
+// vitest.config.ts — ensure the reporters that surface annotations are enabled
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    retry: process.env.CI ? 2 : 0,
+    reporters: [
+      'verbose',             // shows annotations in terminal on failure
+      ['junit', { outputFile: 'test-results/vitest-results.xml' }],
+      ['html'],              // annotations visible in the HTML report inline
+      // 'github-actions' reporter: formats annotations as ::notice/warning/error messages
+    ],
+    // Pair with detectAsyncLeaks to surface async context annotations correctly
+    detectAsyncLeaks: process.env.CI === 'true',
+  },
+});
+```
+
+```typescript
+// OrderService.test.ts — annotate with structured diagnostic metadata during test execution
+import { describe, it, expect } from 'vitest';
+import { OrderService } from './OrderService';
+import { db } from './test-utils/db';
+
+describe('OrderService — integration with annotations', () => {
+  it('creates order and updates inventory atomically', async (context) => {
+    // Annotate: capture the current DB state before the operation.
+    // If this test fails intermittently, the annotation shows exactly what state
+    // existed in the DB — enabling post-mortem root cause analysis.
+    const inventoryBefore = await db.inventory.findBySku('SKU-A001');
+    await context.annotate(
+      `inventory.before: sku=SKU-A001 available=${inventoryBefore?.available ?? 'MISSING'}`,
+      'info'
+    );
+
+    const order = await OrderService.create({
+      userId: 'user-42',
+      items: [{ sku: 'SKU-A001', qty: 2 }],
+    });
+
+    const inventoryAfter = await db.inventory.findBySku('SKU-A001');
+    // Annotate: capture post-operation state. Visible in Vitest HTML report and JUnit XML.
+    await context.annotate(
+      `inventory.after: sku=SKU-A001 available=${inventoryAfter?.available ?? 'MISSING'} orderId=${order.id}`,
+      'info'
+    );
+
+    expect(order.id).toMatch(/^ORD-/);
+    // This assertion occasionally fails in parallel runs — the annotation above provides
+    // the exact inventory count at the time of failure for each retry attempt
+    expect(inventoryAfter?.available).toBe((inventoryBefore?.available ?? 0) - 2);
+  });
+});
+```
+
+```typescript
+// Annotation with file attachment — embed a JSON snapshot as an annotation body
+// Available in Vitest 3.2+ via the object form of context.annotate()
+import { describe, it, expect } from 'vitest';
+
+describe('PaymentGateway — annotation with file body', () => {
+  it('processes payment within 3 seconds', async (context) => {
+    const startMs = Date.now();
+    const result = await PaymentGateway.charge({ amount: 5000, currency: 'USD' });
+    const durationMs = Date.now() - startMs;
+
+    // Annotate with a structured body — visible in Vitest HTML report with syntax highlighting
+    await context.annotate('payment-response', {
+      contentType: 'application/json',
+      body: JSON.stringify({ result, durationMs, timestamp: new Date().toISOString() }, null, 2),
+      bodyEncoding: 'utf-8',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(durationMs).toBeLessThan(3_000);
+    // If this fails due to a timeout, the annotation body shows the partial result
+    // and the exact duration, enabling diagnosis of whether the issue is gateway latency
+    // or a test environment configuration problem
+  });
+});
+```
+
+**Reporter-specific behavior for `context.annotate()`:**
+
+| Reporter | How annotations appear |
+|----------|----------------------|
+| `verbose` | Shown inline after the test name on failure; all annotations shown on pass |
+| `html` | Annotations panel next to test code in the HTML report |
+| `junit` | `<properties>` element inside `<testcase>` — parseable by BuildPulse, Trunk, GitHub Annotations |
+| `github-actions` | Formatted as `::notice`/`::warning`/`::error` — visible directly in the PR checks UI |
+| `tap` | Appended as diagnostic lines after the TAP result |
+
+**`context.annotate()` vs `testInfo.attach()` (Playwright):**
+
+| Aspect | Vitest `context.annotate()` | Playwright `testInfo.attach()` |
+|--------|----------------------------|-------------------------------|
+| Reporter integration | All reporters (JUnit, HTML, GitHub Actions, TAP) | HTML report only (not JUnit) |
+| File attachment | Yes (`body` + `contentType`) | Yes (`path` or `body`) |
+| Per-retry visibility | Yes — each retry's annotations are independent | Yes — attachments are per-result |
+| Use case | Structured diagnostic metadata for flakiness classification | Binary artifacts (screenshots, traces, HAR) |
+
+---
+
+## Real-World Gotchas (iteration 59)  [community]
+
+**Gotcha 49 — `dorny/test-reporter` GitHub Action Adds PR-Level Flakiness Annotations Without External Services**  [community]
+
+The `dorny/test-reporter` GitHub Action (v1.9+, 2025) parses JUnit XML output from Playwright, Vitest, and Jest and posts test results as GitHub Checks with inline PR annotations — without BuildPulse, Trunk, or any external SaaS. Critically, it marks any test that has both a `failure` and a `flaky="true"` attribute in the JUnit XML (Playwright's native output) as a flaky annotation directly in the PR diff view.
+
+This means developers see "this test is flaky — it passed on retry 2" inline next to the changed code, not buried in CI logs. Teams that adopted this pattern in 2025 reported a 40% increase in developers opening flakiness investigation issues vs. silently re-running CI.
+
+```yaml
+# .github/workflows/e2e.yml — add dorny/test-reporter to any existing Playwright CI job
+name: E2E Tests
+
+on: [push, pull_request]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright tests
+        # always() ensures the reporter step runs even when tests fail
+        run: npx playwright test --reporter=junit --retries=2
+        env:
+          CI: true
+        continue-on-error: true   # don't fail CI here — let the reporter decide
+
+      - name: Publish test results (with flakiness annotations)
+        # dorny/test-reporter v1.9+ supports Playwright's flaky="true" attribute in JUnit XML
+        # It posts results as a GitHub Check with inline PR annotations for failed/flaky tests
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: 'Playwright E2E Results'
+          path: 'test-results/results.xml'   # JUnit XML from Playwright
+          reporter: java-junit
+          # fail-on-error: true causes the workflow to fail if any test failed (not flaky)
+          # fail-on-flaky: true additionally fails if any flaky tests were detected
+          fail-on-error: 'true'
+          fail-on-flaky: 'true'   # NEW in dorny/test-reporter v1.9 — fails CI on flakiness
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+```
+
+```typescript
+// playwright.config.ts — ensure JUnit reporter outputs the flaky="true" attribute
+// Playwright's built-in JUnit reporter sets flaky="true" on testcases that
+// passed on retry — dorny/test-reporter reads this attribute for its flaky gate
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: 2,
+  failOnFlakyTests: !!process.env.CI,
+
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    // JUnit reporter: produces flaky="true" on test cases that passed after retry
+    // Required for dorny/test-reporter's flakiness detection to work
+    ['junit', {
+      outputFile: 'test-results/results.xml',
+      includeProjectInTestName: true,  // disambiguates tests across browsers
+    }],
+  ],
+
+  use: {
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+  },
+});
+```
+
+**Why `dorny/test-reporter` over the GitHub Actions step summary approach (Pattern 19):**
+
+| Approach | PR annotations | Inline diff view | No external service | Works for Vitest too |
+|----------|---------------|-----------------|--------------------|--------------------|
+| Pattern 19 (GITHUB_STEP_SUMMARY script) | Summary tab only | No | Yes | Yes (with JUnit) |
+| dorny/test-reporter | Yes — inline PR comments | Yes | Yes | Yes (with JUnit) |
+| BuildPulse | Yes | Yes | No (SaaS) | Yes |
+| Trunk Flaky Tests | Yes | Yes | No (SaaS) | Yes |
+
+The key advantage: dorny/test-reporter posts flakiness as a GitHub Checks annotation — visible in the PR "Checks" tab and in the "Files changed" diff view — giving developers immediate context without leaving the PR review flow.
+
+---
+
+## Anti-Patterns (iteration 59)
+
+### AP49 — Calling `getSeed()` Inside Test Bodies Instead of Setup Files  [official]
+
+**What:** Calling `getSeed()` from `vitest` inside individual test bodies or `beforeEach` hooks to capture the current sequence seed.
+
+**Why harmful:** `getSeed()` is designed to be called once in a `setupFiles` entry or in `onInit` reporter hooks. When called inside a test body, `getSeed()` returns `undefined` in some configurations (specifically when `sequence.shuffle` was not configured before the first test file was imported), because the sequence seed is determined at the `TestRunner` initialization stage — before individual test files execute. Teams that add `const seed = getSeed()` inside test bodies and then log `seed: undefined` mistakenly assume the shuffle is disabled, when in fact it was enabled but the call site was too late in the lifecycle.
+
+```typescript
+// BAD: getSeed() inside a test body — may return undefined intermittently
+import { describe, it, expect } from 'vitest';
+import { getSeed } from 'vitest';
+
+describe('OrderService — order-dependency check', () => {
+  it('creates order', async () => {
+    // BAD: calling getSeed() here — may return undefined because
+    // the sequence seed is resolved before test file execution begins
+    const seed = getSeed();
+    console.log(`seed in test body: ${seed}`); // often logs: "seed in test body: undefined"
+    // ... test body
+  });
+});
+
+// GOOD: getSeed() in a setupFile — called once at the correct lifecycle stage
+// vitest.setup.ts (referenced in vitest.config.ts setupFiles: ['./vitest.setup.ts'])
+import { getSeed } from 'vitest';
+
+// This runs once per worker before any test file — getSeed() returns the seed here
+const seed = getSeed();
+if (seed !== undefined) {
+  console.log(`[vitest] sequence.seed=${seed} — copy to reproduce: vitest --sequence.seed=${seed}`);
+  // Optionally persist to a file for CI artifact collection
+  import('fs').then(fs =>
+    fs.writeFileSync('test-results/seed.txt', `${seed}`, 'utf-8')
+  );
+}
+
+// ALSO GOOD: getSeed() in a custom Reporter's onInit() — runs before any test
+// reporters/seed-capture-reporter.ts
+import type { Reporter } from 'vitest/node';
+import { getSeed } from 'vitest';
+
+export default class SeedCaptureReporter implements Reporter {
+  onInit(): void {
+    // onInit fires once before any test — getSeed() is always defined here if shuffle is on
+    const seed = getSeed();
+    if (seed !== undefined) {
+      process.stderr.write(`[seed] sequence.seed=${seed}\n`);
+    }
+  }
+}
+```
+
+**Rule of thumb:** `getSeed()` belongs in lifecycle boundaries — `setupFiles`, `globalSetup`, or `Reporter.onInit()`. Inside test bodies, it is unreliable because the test runner's scheduling decisions have already been made before your test function executes.
+
+---
+
+## Quick Reference additions (iteration 59)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Flaky test passes on retry but CI reporter shows no root-cause detail | No per-retry annotations in custom reporter | Pattern 100 (testResult.annotations in v1.52 reporter) | Using only testCase.outcome() — single aggregate verdict, no per-retry detail |
+| Flaky test failures vary in error type across retries — hard to classify | No structured metadata attached per attempt | Pattern 101 (context.annotate() for per-retry structured metadata) | console.log() — not captured by reporters |
+| PR author doesn't see flakiness signal until checking CI logs | Flakiness reported only in step summary or external SaaS | Gotcha 49 (dorny/test-reporter — inline PR annotations from JUnit XML) | Pattern 19 only — step summary requires navigating away from PR |
+| `getSeed()` returns `undefined` in test body when shuffle is enabled | getSeed() called after seed is already resolved | AP49 (move getSeed() to setupFiles or Reporter.onInit()) | Calling getSeed() inside test body or beforeEach |
+
+---
+
+## Key Resources (iteration 59 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright `testResult.annotations` | Official | https://playwright.dev/docs/api/class-testresult#test-result-annotations | Per-retry annotations array — new in v1.52; enables structured flakiness root-cause reporting |
+| Playwright v1.52 release notes | Official | https://playwright.dev/docs/release-notes#version-152 | `testResult.annotations`, `testConfig.failOnFlakyTests`, `testProject.workers` all introduced |
+| Vitest `context.annotate()` API | Official | https://vitest.dev/guide/test-annotations | Structured test metadata visible in HTML, JUnit, GitHub Actions, TAP, and verbose reporters — v3.2+ |
+| dorny/test-reporter GitHub Action | Community | https://github.com/dorny/test-reporter | Parse JUnit/Jest XML and post inline PR flakiness annotations as GitHub Checks — v1.9+ supports `fail-on-flaky` |
 | Vitest `sequence` config | Official | https://vitest.dev/config/sequence | `sequence.shuffle`, `sequence.seed`, `sequence.concurrent`, `sequence.hooks` |

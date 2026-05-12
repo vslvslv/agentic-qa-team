@@ -1,5 +1,5 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training knowledge + iterative refinement pass | new: typescriptlang.org/docs/handbook/release-notes/typescript-5-9 (TS 5.9 May 2025: --module node20 stable — locked Node 20 semantics with no future behavior changes unlike nodenext; cache instantiations on mapper types — ~11% faster tsc on complex libraries like Zod/tRPC; types:[] in tsc --init default tsconfig blocks accidental @types/* ambient pollution; ArrayBuffer type hierarchy change — Uint8Array.buffer now returns SharedArrayBuffer|ArrayBuffer union, may produce new CI type errors on upgrade; moduleDetection:force default in tsc --init; import defer deferred module evaluation — requires --module preserve or esnext, NOT supported under node20/node18/nodenext, reduces test cold-start by deferring heavy fixture init to first property access; noUncheckedSideEffectImports — new strict flag errors on import 'polyfill' if module cannot be resolved or has no @types declarations, catches dead imports silently ignored before TS 5.9, enable as non-blocking audit first on polyfill-heavy codebases) | prev: typescriptlang.org/docs/handbook/release-notes/typescript-5-8 (TS 5.8 Feb 2025: --erasableSyntaxOnly validates Node.js type-stripping compatibility — errors on enums/namespaces/parameter-properties/import=/export=; --module node18 stable — disallows require() of ESM; --module nodenext allows require() of ESM on Node 22+; --libReplacement false skips @typescript/lib-* package lookups for faster CI; granular branch return type checking catches any-infected return expressions) | nodejs.org/blog/release/v24.0.0 (Node 24 LTS: --test-global-setup for zero-framework global setup/teardown, snapshot testing stable since Node 23.4, programmatic coverage thresholds lineCoverage/branchCoverage/functionCoverage in node:test run(), type stripping at RC status, npm 11 bundled: --ignore-scripts suppresses prepare, bulk audit endpoint fallback removed, requires Node ^20.17.0 || >=22.9.0) | prev: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
@@ -8518,6 +8518,517 @@ jobs:
 > [community] The `@flaky` tag with `retry: 3` is the most impactful use of tag-based shared options for CI quality governance: it creates a machine-readable quarantine list (tagged tests) with automatic retry behavior, while making it visible in the codebase exactly WHICH tests are being given extra chances to pass. Teams that use this tag consistently report that flaky tests get fixed faster — the presence of `@flaky` in code review is an immediate trigger for the reviewer to ask "why is this flaky and when will it be fixed?" whereas a `retryTimes(3)` call at the top of the test file is often overlooked.
 
 > [community] A common mistake when configuring `tags` with options: expecting the options to apply globally to all tests with that tag name regardless of where the tags array is defined. The `tags` configuration in `vitest.config.ts` applies to the specific project scope. Teams using Vitest workspace projects with separate `defineProject` configs need to either define the tag configuration at the root `defineConfig` level (where it applies to all projects) or repeat it in each `defineProject` file. Root-level tag configuration is applied first; project-level configuration for the same tag name overrides the root value.
+
+### Mutation Testing as a CI Gate with Stryker.js (TypeScript) [community]
+
+Mutation testing measures *test quality* rather than test quantity: it introduces deliberate bugs (mutants) into the source code and checks whether the existing test suite catches each one. The percentage of killed mutants is the **mutation score**. Unlike line coverage — which passes even when tests assert nothing — mutation score is a direct proxy for how many real bugs your suite would catch.
+
+> [community] Teams that add mutation score gates alongside coverage gates report catching entire classes of "green CI, broken production" bugs. The root cause is always the same: tests that exercise a branch but assert nothing meaningful — the test calls the function, coverage counts it as covered, but no assertion would fail if the function returned the wrong value. Mutation testing exposes these hollow tests directly. A mutation score of 70% means 30% of introduced bugs pass undetected through the test suite. Meta's arXiv:2501.12862 research confirms mutation-guided LLM prompting outperforms coverage-guided prompting specifically because mutation results identify the hollow tests that coverage cannot.
+
+**Install Stryker.js for TypeScript:**
+
+```bash
+npm install --save-dev @stryker-mutator/core @stryker-mutator/typescript-checker @stryker-mutator/vitest-runner
+# Or for Jest:
+# npm install --save-dev @stryker-mutator/core @stryker-mutator/typescript-checker @stryker-mutator/jest-runner
+```
+
+**`stryker.config.ts` — TypeScript mutation testing configuration:**
+
+```typescript
+// stryker.config.ts — Stryker.js for TypeScript projects (Vitest runner)
+import type { Config } from '@stryker-mutator/api/config';
+
+const config: Config = {
+  // Use Vitest as the test runner — faster than Jest for TypeScript projects
+  testRunner: 'vitest',
+  vitest: {
+    // Stryker wraps the existing Vitest config; no duplication needed
+    configFile: 'vitest.config.ts',
+  },
+  // TypeScript checker validates mutants compile before running tests
+  // Eliminates running tests against mutants that would not compile — saves 20–40% runtime
+  checkers: ['typescript'],
+  tsconfigFile: 'tsconfig.json',
+
+  // Scope mutation to source files only — never mutate tests or generated code
+  mutate: [
+    'src/**/*.ts',
+    '!src/**/*.d.ts',
+    '!src/**/*.test.ts',
+    '!src/**/*.spec.ts',
+    '!src/generated/**',
+  ],
+
+  // Thresholds: fail CI if mutation score drops below the gate
+  // break: hard gate — exits non-zero; low: warning only
+  thresholds: {
+    high: 80,    // mutation score > 80%: report green
+    low: 70,     // mutation score 70–80%: warn
+    break: 65,   // mutation score < 65%: exit non-zero (CI fails)
+  },
+
+  // Dashboard reporter: post mutation results to Stryker Dashboard (optional)
+  reporters: ['html', 'progress', 'clear-text'],
+  htmlReporter: { fileName: 'mutation-report/report.html' },
+
+  // concurrency: run mutants in parallel (set to # of available CPU cores - 1)
+  concurrency: 3,
+  // disableBail: collect all mutant results even on threshold breach
+  disableBail: false,
+};
+
+export default config;
+```
+
+**GitHub Actions — mutation score gate (runs on PR, not on every push):**
+
+```yaml
+# .github/workflows/mutation.yml — mutation score CI gate on pull requests
+name: Mutation Tests
+
+on:
+  pull_request:
+    # Only run when source files change — skip on docs/config-only PRs
+    paths:
+      - 'src/**/*.ts'
+      - 'tests/**/*.ts'
+      - 'stryker.config.ts'
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30    # mutation runs take 5–20× longer than normal test runs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Run mutation tests — exits non-zero if score < thresholds.break
+      - name: Run mutation tests
+        run: npx stryker run
+        # continue-on-error: true  ← set this to advisory-only during initial rollout
+
+      # Upload HTML mutation report for PR review
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report-${{ github.run_id }}
+          path: mutation-report/
+          retention-days: 14
+
+      # Post mutation score summary to GitHub Actions job summary
+      - name: Post mutation summary
+        if: always()
+        run: |
+          if [ -f mutation-report/mutation-score.txt ]; then
+            SCORE=$(cat mutation-report/mutation-score.txt)
+            echo "## Mutation Score: ${SCORE}%" >> $GITHUB_STEP_SUMMARY
+            echo "Full report attached as artifact." >> $GITHUB_STEP_SUMMARY
+          fi
+```
+
+**TypeScript helper to extract and gate on mutation score:**
+
+```typescript
+// scripts/mutation-gate.ts — parse Stryker JSON output and enforce threshold
+import * as fs from 'fs';
+
+interface StrykerMutationResult {
+  files: Record<string, { mutants: Array<{ status: string }> }>;
+}
+
+function computeMutationScore(reportPath: string): number {
+  const report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as StrykerMutationResult;
+  let killed = 0;
+  let total = 0;
+  for (const file of Object.values(report.files)) {
+    for (const mutant of file.mutants) {
+      total++;
+      if (mutant.status === 'Killed' || mutant.status === 'NoCoverage') {
+        killed++;
+      }
+    }
+  }
+  return total === 0 ? 100 : Math.round((killed / total) * 100);
+}
+
+const BREAK_THRESHOLD = parseInt(process.env['MUTATION_BREAK_THRESHOLD'] ?? '65', 10);
+const score = computeMutationScore('reports/mutation/json.json');
+fs.writeFileSync('mutation-report/mutation-score.txt', String(score));
+console.log(`[mutation-gate] Score: ${score}% (threshold: ${BREAK_THRESHOLD}%)`);
+if (score < BREAK_THRESHOLD) {
+  console.error(`[mutation-gate] FAIL — mutation score ${score}% is below break threshold ${BREAK_THRESHOLD}%`);
+  process.exit(1);
+}
+console.log('[mutation-gate] PASS');
+```
+
+> [community] Mutation testing is the single most computationally expensive CI step — it multiplies normal test runtime by the number of generated mutants (typically 500–5,000 for a mid-size TypeScript codebase). The TypeScript checker (`checkers: ['typescript']`) eliminates non-compiling mutants before running any tests, saving 20–40% of runtime. Teams without the checker report 30–45 minute mutation runs; teams with it report 12–20 minutes for the same codebase. Always enable the TypeScript checker for TypeScript projects.
+
+> [community] The rollout strategy that works: first run mutation testing on a single high-risk module (e.g., `src/services/payment-service.ts`) with a low threshold (50%). Fix the failing tests revealed by surviving mutants — this process reliably surfaces 3–8 tests that assert nothing meaningful per 500-line service. After one sprint of remediation, raise the threshold to 65% and expand the `mutate` glob to additional modules. Teams that try to enforce 80% mutation score across the entire codebase on day one abandon it within a week.
+
+---
+
+### GitHub Actions `workflow_run` for Cross-Workflow Test Gates [community]
+
+The `workflow_run` event triggers a workflow after another workflow completes. This enables a common pattern for fork PRs and security-sensitive CI: run tests in an untrusted context (the PR's code, no secrets), then trigger a reporting or deployment workflow with secrets only after tests pass.
+
+> [community] The most common motivation for `workflow_run`: forked PRs cannot access repository secrets in `pull_request` event workflows (a security restriction GitHub enforces). Teams that need to post coverage comments, update deployment environments, or upload results to a paid service (e.g., DataDog, Codecov) after fork PR tests complete use `workflow_run` to receive the test artifacts in a trusted context with access to secrets. Without this pattern, fork contributor CI either fails silently on the reporting step or teams must disable fork PRs.
+
+**Two-workflow pattern — untrusted test run + trusted reporting:**
+
+```yaml
+# .github/workflows/ci.yml — runs in fork context WITHOUT secrets
+name: CI (Tests)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm test -- --ci --coverage --json --outputFile=test-results/jest-results.json
+        name: Run tests with coverage
+
+      # Upload artifacts — accessible to the downstream workflow_run trigger
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ github.event.number }}
+          path: |
+            coverage/coverage-summary.json
+            test-results/jest-results.json
+          retention-days: 1   # short retention — consumed immediately by reporting workflow
+```
+
+```yaml
+# .github/workflows/ci-report.yml — runs after ci.yml completes WITH secrets
+name: CI Report (Post-Test)
+
+on:
+  workflow_run:
+    workflows: ['CI (Tests)']    # exact name of the triggering workflow
+    types: [completed]
+
+jobs:
+  report:
+    # Only run if the triggering workflow succeeded; skip on failure (no results to post)
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write    # needed to post PR comments
+      checks: write           # needed to update check status
+    steps:
+      - uses: actions/checkout@v4
+
+      # Download artifacts uploaded by the CI (Tests) workflow
+      - name: Download test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results-${{ github.event.workflow_run.pull_requests[0].number }}
+          path: downloaded-results/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      # Post coverage comment on the PR — requires pull-requests: write permission
+      - name: Post coverage to PR
+        uses: davelosert/vitest-coverage-report-action@v2
+        with:
+          json-summary-path: downloaded-results/coverage-summary.json
+          pr-number: ${{ github.event.workflow_run.pull_requests[0].number }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Update external service with test results (requires API key secret)
+      - name: Upload results to DataDog
+        run: |
+          npx datadog-ci junit upload \
+            --service my-app \
+            downloaded-results/jest-results.json
+        env:
+          DD_API_KEY: ${{ secrets.DD_API_KEY }}
+```
+
+**TypeScript utility to extract PR number from `workflow_run` context:**
+
+```typescript
+// scripts/workflow-run-context.ts — extract PR info from workflow_run event payload
+import * as fs from 'fs';
+
+interface WorkflowRunEvent {
+  workflow_run: {
+    id: number;
+    conclusion: string | null;
+    pull_requests: Array<{ number: number; head: { sha: string } }>;
+  };
+}
+
+// GitHub Actions sets GITHUB_EVENT_PATH to the event payload JSON
+const eventPath = process.env['GITHUB_EVENT_PATH'];
+if (!eventPath) throw new Error('GITHUB_EVENT_PATH not set');
+
+const event = JSON.parse(fs.readFileSync(eventPath, 'utf8')) as WorkflowRunEvent;
+const prNumber = event.workflow_run.pull_requests[0]?.number;
+const sha = event.workflow_run.pull_requests[0]?.head.sha;
+
+if (!prNumber) {
+  console.log('[workflow-run] No PR associated — skipping PR comment step');
+  process.exit(0);
+}
+
+// Export for downstream steps
+fs.appendFileSync(process.env['GITHUB_OUTPUT'] ?? '/dev/null', `pr_number=${prNumber}\nsha=${sha}\n`);
+console.log(`[workflow-run] PR #${prNumber} (SHA: ${sha})`);
+```
+
+> [community] The `workflow_run` event has a critical limitation: it only fires for workflows on the *default branch* of the repository, not for PR-branch workflows. However, the triggered workflow runs in the context of the default branch and can access secrets — it receives the triggering workflow's run ID, from which it can download artifacts. Teams that need to report on fork PRs always use this pattern; teams with internal PRs only (no forks) can skip it and use `pull_request_target` instead (simpler but carries different security implications).
+
+> [community] A subtle gotcha: `github.event.workflow_run.pull_requests` is an array but is often empty for fork PRs (GitHub does not populate it for security reasons). Use the artifact name to carry the PR number from the test workflow to the reporting workflow — embed it in the artifact name (e.g., `test-results-${{ github.event.number }}`) rather than relying on the `workflow_run` event payload to provide it.
+
+---
+
+### TypeScript 6 Strict-by-Default Impact on CI Gates [community]
+
+TypeScript 6 (released in beta Q1 2026, stable expected mid-2026) changes the default compiler options: `strict` mode is now **on by default** when no `tsconfig.json` is present, and `strictPropertyInitialization`, `noImplicitOverride`, and `exactOptionalPropertyTypes` are promoted to the `strict` umbrella. For CI pipelines, the most impactful change is that **`tsc --init` now generates a tsconfig with all strict flags enabled** — teams bootstrapping new CI jobs without an existing tsconfig or using `--noConfig` will see different type errors than under TS 5.x.
+
+> [community] Teams that upgrade `typescript` devDependency to `^6.0.0` without reviewing their tsconfig face two common CI failure patterns: (1) existing code that relied on implicit `strict: false` defaults now gets strict errors on first CI run after upgrade — typically 20–100 errors in a mid-size codebase; (2) CI scripts that invoke `tsc --noConfig` to do quick type-checks pick up TS 6 defaults and suddenly reject code that was valid before. The TS 6 upgrade guide recommends auditing all `tsc` invocations in CI scripts before upgrading.
+
+**Pre-upgrade audit script — count new errors introduced by TS 6 defaults:**
+
+```bash
+#!/usr/bin/env bash
+# scripts/ts6-upgrade-audit.sh — count TypeScript 6 strict errors before upgrading
+# Run with both TS 5.x and TS 6 installed to compare error counts
+set -euo pipefail
+
+echo "=== TypeScript 5.x error count (current tsconfig) ==="
+npx tsc --noEmit --project tsconfig.json 2>&1 | grep -c "error TS" || true
+
+echo ""
+echo "=== TypeScript 6 strict-by-default error count (simulated) ==="
+# Simulate TS6 defaults: add all new-default strict flags temporarily
+npx tsc --noEmit --strict --strictPropertyInitialization \
+    --noImplicitOverride --exactOptionalPropertyTypes \
+    --project tsconfig.json 2>&1 | grep -c "error TS" || true
+
+echo ""
+echo "Run 'tsc --noEmit --strict ... 2>&1 | grep \"error TS\"' to see specific errors"
+```
+
+**`tsconfig.json` migration for TypeScript 6 — explicit opt-in/opt-out:**
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": "src",
+    "noEmit": true,
+
+    // TypeScript 6: these are now ON by default when strict: true
+    // Explicitly listing them makes CI behavior stable regardless of TS version
+    "strict": true,
+    "strictPropertyInitialization": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
+
+    // TypeScript 6 newly promoted to strict umbrella — previously required explicit opt-in
+    // If your codebase has many index access patterns, migrate incrementally:
+    // "noUncheckedIndexedAccess": true,  // leave commented until audited
+
+    // TypeScript 6: useUnknownInCatchVariables is now true by default (was opt-in since 4.0)
+    // 'catch (e)' now types 'e' as 'unknown' not 'any' — explicit cast required
+    "useUnknownInCatchVariables": true,
+
+    "skipLibCheck": false,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+**GitHub Actions — TypeScript 6 compatibility gate (add before upgrading):**
+
+```yaml
+# .github/workflows/ts6-compat.yml — advisory pre-check before TypeScript 6 upgrade
+name: TypeScript 6 Compatibility Audit
+
+on:
+  workflow_dispatch:   # run manually when evaluating the upgrade
+
+jobs:
+  ts6-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Install TypeScript 6 alongside current version for comparison
+      - run: npm install --no-save typescript@6
+        name: Install TypeScript 6 for audit
+
+      # Run type-check with TS 6 — advisory, does not block CI
+      - name: TypeScript 6 audit (advisory)
+        run: |
+          npx tsc --version
+          # Count errors under TS 6 defaults
+          ERROR_COUNT=$(npx tsc --noEmit --project tsconfig.json 2>&1 | grep -c "error TS" || echo "0")
+          echo "TypeScript 6 errors: $ERROR_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "## TypeScript 6 Upgrade Audit" >> $GITHUB_STEP_SUMMARY
+          echo "Error count under TS 6: **${ERROR_COUNT}**" >> $GITHUB_STEP_SUMMARY
+          if [ "$ERROR_COUNT" -gt 0 ]; then
+            echo "::warning::TypeScript 6 introduces $ERROR_COUNT new type errors — review before upgrading"
+          fi
+        continue-on-error: true   # advisory only — does not block CI
+```
+
+> [community] The `useUnknownInCatchVariables` default change is the highest-frequency TS 6 breaking change in test files. Catch blocks in test helpers that access `error.message` directly (`console.error(e.message)`) now fail because `e` is `unknown` not `any`. The fix is mechanical: cast `e as Error` in the catch block. Teams with > 200 test files report 30–80 instances of this pattern. Run `grep -rn 'catch (e)' tests/ | wc -l` to estimate the scope before upgrading.
+
+> [community] TypeScript 6 also tightens `exactOptionalPropertyTypes` behavior for mapped types and interface merging — patterns common in test mock factories and Zod/tRPC schemas. Mock factories that use `Partial<T>` to create test objects often have optional fields set to `undefined` explicitly, which violates `exactOptionalPropertyTypes`. The audit script above will surface these. Consider using `Partial<T>` with a conditional spread in mock factories: `{ ...someFields } satisfies Partial<T>` rather than `{ optionalField: undefined }`.
+
+---
+
+### AI-Generated Test Quality Gate: Mutation Score Enforcement for LLM Tests [community]
+
+When LLM tools (GitHub Copilot, Cursor, or custom CI agents via the Anthropic/OpenAI API) auto-generate test cases for new code, the generated tests frequently achieve high line coverage but low mutation scores — the tests execute the code path but do not assert the output meaningfully. A mutation score gate applied specifically to AI-generated test files ensures that generated tests actually catch bugs rather than just covering lines.
+
+> [community] Teams using LLM test generation in CI report a consistent quality gap: coverage-only checks accept AI tests that pass with zero assertions (tests that call a function but never use `expect()`). Meta's mutation-guided synthesis research (arXiv:2501.12862) demonstrates that feeding surviving mutants back to the LLM as negative examples improves test quality dramatically — but this requires a mutation feedback loop in CI, not just a coverage gate. The pattern below closes that loop automatically.
+
+**TypeScript CI agent that generates tests then gates on mutation score:**
+
+```typescript
+// scripts/ai-test-quality-gate.ts — generate tests, run mutation check, enforce threshold
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+
+interface StrykerResult {
+  files: Record<string, { mutants: Array<{ status: string; mutatorName: string; location: { start: { line: number } } }> }>;
+}
+
+interface SurvivingMutant {
+  file: string;
+  line: number;
+  mutatorName: string;
+}
+
+// Step 1: Run Stryker against AI-generated test files
+function runMutationOnGeneratedTests(testGlob: string, sourceGlob: string): StrykerResult {
+  const config = {
+    testRunner: 'vitest',
+    mutate: [sourceGlob],
+    vitest: { configFile: 'vitest.config.ts' },
+    checkers: ['typescript'],
+    tsconfigFile: 'tsconfig.json',
+    reporters: ['json'],
+    jsonReporter: { fileName: 'mutation-ai-report.json' },
+    thresholds: { break: 0 },  // don't fail here — we gate manually
+    testRunnerNodeArgs: [`--testPathPattern=${testGlob}`],
+    concurrency: 2,
+  };
+
+  fs.writeFileSync('stryker-ai-temp.config.json', JSON.stringify(config, null, 2));
+  try {
+    execSync('npx stryker run --configFile stryker-ai-temp.config.json', { stdio: 'inherit' });
+  } catch {
+    // Stryker exits non-zero on threshold breach — ignore here, we gate below
+  } finally {
+    fs.unlinkSync('stryker-ai-temp.config.json');
+  }
+
+  return JSON.parse(fs.readFileSync('mutation-ai-report.json', 'utf8')) as StrykerResult;
+}
+
+// Step 2: Collect surviving mutants for LLM feedback loop
+function collectSurvivingMutants(report: StrykerResult): SurvivingMutant[] {
+  const survivors: SurvivingMutant[] = [];
+  for (const [file, data] of Object.entries(report.files)) {
+    for (const mutant of data.mutants) {
+      if (mutant.status === 'Survived') {
+        survivors.push({ file, line: mutant.location.start.line, mutatorName: mutant.mutatorName });
+      }
+    }
+  }
+  return survivors;
+}
+
+// Step 3: Gate on mutation score; emit surviving mutants as GitHub annotations
+function enforceGate(report: StrykerResult, threshold = 70): void {
+  const survivors = collectSurvivingMutants(report);
+  let total = 0;
+  let killed = 0;
+  for (const fileData of Object.values(report.files)) {
+    for (const mutant of fileData.mutants) {
+      total++;
+      if (mutant.status === 'Killed') killed++;
+    }
+  }
+  const score = total === 0 ? 100 : Math.round((killed / total) * 100);
+
+  // Emit surviving mutants as GitHub Actions warning annotations
+  for (const s of survivors) {
+    const relFile = path.relative(process.cwd(), s.file);
+    console.log(`::warning file=${relFile},line=${s.line}::Surviving mutant: ${s.mutatorName} — AI-generated test does not catch this change`);
+  }
+
+  console.log(`[ai-test-gate] Mutation score: ${score}% (threshold: ${threshold}%)`);
+  if (score < threshold) {
+    console.error(`[ai-test-gate] FAIL — AI-generated tests score ${score}% < ${threshold}%`);
+    process.exit(1);
+  }
+  console.log(`[ai-test-gate] PASS`);
+}
+
+const sourceGlob = process.env['SOURCE_GLOB'] ?? 'src/**/*.ts';
+const testGlob = process.env['AI_TEST_GLOB'] ?? 'tests/ai-generated/**/*.test.ts';
+const threshold = parseInt(process.env['MUTATION_THRESHOLD'] ?? '70', 10);
+
+const report = runMutationOnGeneratedTests(testGlob, sourceGlob);
+enforceGate(report, threshold);
+```
+
+**GitHub Actions — AI test quality gate step:**
+
+```yaml
+# .github/workflows/ci.yml — AI test quality gate after test generation
+  ai-test-quality:
+    needs: unit
+    runs-on: ubuntu-latest
+    # Only run if AI-generated test files exist in the PR changes
+    if: |
+      contains(github.event.pull_request.changed_files, 'tests/ai-generated/')
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Run mutation gate on AI-generated test files
+      - name: AI test mutation gate
+        run: npx ts-node scripts/ai-test-quality-gate.ts
+        env:
+          SOURCE_GLOB: 'src/**/*.ts'
+          AI_TEST_GLOB: 'tests/ai-generated/**/*.test.ts'
+          MUTATION_THRESHOLD: '70'   # lower than human-written threshold (80%) during ramp-up
+        continue-on-error: true   # advisory — promotes to required after 2-sprint ramp-up
+```
+
+> [community] The recommended rollout for AI test quality gates: set `MUTATION_THRESHOLD: '50'` as advisory (`continue-on-error: true`) for the first two sprints. This creates visibility without blocking — the GitHub annotations on surviving mutants show developers exactly which behaviors the AI-generated tests miss. After two sprints, raise to 65% and promote to required. Teams that jump straight to 80% with a hard gate find that AI test generation is disabled by the team within a week to avoid CI failures.
+
+> [community] Surviving mutants in AI-generated tests follow a predictable pattern: 60–70% are arithmetic operator mutations (changing `+` to `-`, `>` to `>=`) and boundary checks that the LLM skipped. Feeding the surviving mutant locations back into the LLM as "these specific lines are not tested: add an assertion that verifies X" produces targeted improvements in one generation. Teams that close this feedback loop report mutation scores improving from an initial 45–55% (cold LLM output) to 72–80% (after one feedback round) on the same source code.
 
 ---
 

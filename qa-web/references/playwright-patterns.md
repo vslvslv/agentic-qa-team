@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description/highlight), /api/class-apirequestcontext, /api/class-tracing (startHar/stopHar), /api/class-test (abort), /api/class-browser (on-context), /api/class-weberror (location), /api/class-testconfig (reportSlowTests/globalTimeout) -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed), eslint-plugin-playwright flat config (ESLint v9 migration, v1.6+ required), v1.60 webError.location() (JS error source location API), iteration-34 gap audit (page.on weberror and webError.location added to Key APIs table, testConfig.reportSlowTests + globalTimeout added to recommended config baseline), iteration-35 gap audit (fixed consoleMessages v1.56 section heading, added --fail-on-flaky-tests CLI flag, added clock.runFor/tick vs fastForward behavioral gotcha #48) -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description/highlight), /api/class-apirequestcontext, /api/class-tracing (startHar/stopHar), /api/class-test (abort), /api/class-browser (on-context), /api/class-weberror (location), /api/class-testconfig (reportSlowTests/globalTimeout), /api/class-browsertype (connectOverCDP noDefaults v1.60), /aria-snapshots (children matching modes contain/equal/deep-equal v1.52) -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed), eslint-plugin-playwright flat config (ESLint v9 migration, v1.6+ required), v1.60 webError.location() (JS error source location API), iteration-34 gap audit (page.on weberror and webError.location added to Key APIs table, testConfig.reportSlowTests + globalTimeout added to recommended config baseline), iteration-35 gap audit (fixed consoleMessages v1.56 section heading, added --fail-on-flaky-tests CLI flag, added clock.runFor/tick vs fastForward behavioral gotcha #48), iteration-36 gap audit (connectOverCDP noDefaults v1.60 dedicated pattern + gotcha #49, aria snapshot /children matching modes contain/equal/deep-equal + global config v1.52) -->
 
 ---
 
@@ -8898,3 +8898,136 @@ await page.clock.tick('05:00'); // string shorthand: "MM:SS" format also accepte
 ```
 
 > **WHY:** `fastForward()` is modelled after Sinon's `clock.tick()` with "skip to the end" semantics — it sets `Date.now()` to the target time and only fires timers whose *deadline* is at or before that target, but does so in a single evaluation pass. `runFor()` / `tick()` repeatedly advance the clock by the smallest pending timer interval, invoking each callback before moving forward, which mirrors how a real clock behaves. The distinction matters for any app that chains timers (e.g., `setTimeout` inside a `setInterval` callback) or that uses `requestAnimationFrame` sequences. When in doubt, prefer `runFor()`. [community]
+
+---
+
+### `connectOverCDP({ noDefaults: true })` — Attach to a Real Browser Without Overriding Its Settings (v1.60+)
+
+By default, `connectOverCDP()` applies Playwright's own defaults to the attached browser's existing default context: it forces `colorScheme: 'light'`, `reducedMotion: 'no-preference'`, `forcedColors: 'none'`, and `contrast: 'no-preference'`, and enables focus emulation. This is fine for automation-only browsers, but wrong when attaching to a user's daily-driver browser — their real system preferences get silently overridden.
+
+Set `noDefaults: true` to skip those overrides and preserve the real browser's existing settings.
+
+```typescript
+import { chromium, type Browser } from '@playwright/test';
+
+// ✅ Attach to a running Chrome instance without clobbering its settings
+const browser: Browser = await chromium.connectOverCDP('http://localhost:9222', {
+  noDefaults: true,  // v1.60+: skip Playwright's default context overrides
+});
+
+// The default context retains the user's real colorScheme, reducedMotion, etc.
+const [defaultContext] = browser.contexts();
+const page = defaultContext.pages()[0];
+
+// You can still create new contexts — those DO receive Playwright's defaults
+const isolatedCtx = await browser.newContext({ colorScheme: 'dark' });
+const isolatedPage = await isolatedCtx.newPage();
+await isolatedPage.goto('https://example.com');
+
+// Always close the isolated context; never close the default context
+await isolatedCtx.close();
+await browser.close();
+```
+
+> **WHY:** When writing tests that intentionally validate system-theme-dependent UI (dark-mode widgets, high-contrast ARIA landmarks, reduced-motion animations), you want the real OS/browser preference to flow through unchanged. Without `noDefaults: true`, Playwright resets everything to its built-in defaults the moment it connects — making theme-sensitive tests always pass even when they should detect a mismatch, or always fail because the theme was unexpectedly forced. [official]
+
+---
+
+### Gotcha \#49 — `connectOverCDP()` resets the default context's media settings unless `noDefaults: true` [community]
+
+When you attach Playwright to an existing Chromium process with `connectOverCDP()` and the target browser has `prefers-color-scheme: dark` or `prefers-reduced-motion: reduce` set (either by the OS or by browser flags), Playwright **overwrites** those values the instant it attaches — even before any test action runs.
+
+```typescript
+// ❌ connectOverCDP without noDefaults: media preferences silently overwritten
+import { chromium } from '@playwright/test';
+
+const browser = await chromium.connectOverCDP('http://localhost:9222');
+const [ctx] = browser.contexts();
+const page = ctx.pages()[0];
+
+// The user had dark mode enabled. But colorScheme is now 'light' — Playwright reset it.
+// This assertion will PASS when it should FAIL (or vice versa for dark-mode tests):
+await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+
+// ✅ Preserve the user's actual browser settings
+const browserWithDefaults = await chromium.connectOverCDP('http://localhost:9222', {
+  noDefaults: true,
+});
+const [realCtx] = browserWithDefaults.contexts();
+const realPage = realCtx.pages()[0];
+
+// Now colorScheme reflects what the OS/browser actually has set.
+// Theme-sensitive CSS assertions behave correctly.
+await expect(realPage.locator('body')).toHaveCSS('background-color', 'rgb(18, 18, 18)'); // dark bg
+```
+
+**Affected defaults reset by `connectOverCDP()` without `noDefaults`:**
+
+| Setting | Playwright default applied |
+|---------|---------------------------|
+| `colorScheme` | `'light'` |
+| `reducedMotion` | `'no-preference'` |
+| `forcedColors` | `'none'` |
+| `contrast` | `'no-preference'` |
+| `acceptDownloads` | enabled |
+| Focus emulation | enabled |
+
+> **[community]** WHY: This is a silent regression trap. Teams writing integration tests against a real staging browser (via `connectOverCDP`) and also running visual baseline tests against theme-sensitive components discover that their test environment never exercises the dark/high-contrast code paths — because Playwright quietly forced light mode at attach time. The fix is a one-line `noDefaults: true`; the difficulty is knowing the problem exists. [community]
+
+---
+
+### ARIA Snapshot `/children` Matching Modes — `contain`, `equal`, `deep-equal` (v1.52+)
+
+By default, `toMatchAriaSnapshot()` uses **partial matching**: as long as the specified children appear in the snapshot in the given order, additional unlisted children are allowed. You can tighten this with `/children` directives directly in the YAML template, or set a project-wide default in `playwright.config.ts`.
+
+```typescript
+// playwright.config.ts — set default children matching mode for all toMatchAriaSnapshot calls
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  expect: {
+    toMatchAriaSnapshot: {
+      children: 'equal',  // v1.52+: 'contain' (default) | 'equal' | 'deep-equal'
+    },
+  },
+});
+```
+
+```typescript
+// In tests — override per-assertion using inline /children directives in YAML
+test('navigation has exactly these three links and no others', async ({ page }) => {
+  await page.goto('/');
+
+  // ✅ /children: equal — top-level children must match exactly (no extras allowed)
+  await expect(page.getByRole('navigation')).toMatchAriaSnapshot(`
+    - navigation:
+      /children: equal
+      - link "Home"
+      - link "Products"
+      - link "Contact"
+  `);
+
+  // ✅ /children: deep-equal — exact match including ALL nested children at every level
+  await expect(page.getByRole('list')).toMatchAriaSnapshot(`
+    - list:
+      /children: deep-equal
+      - listitem:
+        /children: deep-equal
+        - link "Feature A"
+      - listitem:
+        /children: deep-equal
+        - link "Feature B"
+  `);
+
+  // ✅ /children: contain (default) — additional children beyond the listed ones are allowed
+  // Useful for components that inject decorative ARIA nodes (icons, badges, tooltips)
+  await expect(page.getByRole('menu')).toMatchAriaSnapshot(`
+    - menu:
+      /children: contain
+      - menuitem "Edit"
+      - menuitem "Delete"
+  `);
+});
+```
+
+> **WHY:** The default `contain` mode is intentionally lenient — it lets you snapshot only the parts of the ARIA tree you care about without being broken by decorative icons, tooltips, or dynamic badge counts injected alongside the real content. Use `equal` when you need to assert that a component renders *exactly* the expected items (e.g., a navigation menu that must never have ghost links). Use `deep-equal` for exhaustive regression tests of entire component subtrees — but expect more frequent update runs when the component evolves. Setting the global default to `equal` in `playwright.config.ts` trades off maintenance cost for tighter regression coverage. [official]

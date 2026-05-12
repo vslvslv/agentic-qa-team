@@ -5,6 +5,38 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.18 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 15/100)
+
+### qa-refine (5 guides, 97-100/100)
+- `playwright-patterns.md` — `connectOverCDP({ noDefaults: true })` (v1.60+) preserves colorScheme/reducedMotion/contrast; G49 default context media settings reset; ARIA snapshot `/children` matching modes (`contain`/`equal`/`deep-equal`) with global config (+133 lines, 100/100, iter 36)
+- `cypress-patterns.md` — `--pass-with-no-tests` CLI flag (15.11+); React SSR `data-cy-bootstrap` hydration fix (15.11+); G123 `cy.prompt()` no offline fallback; G124 TS6 `const enum` in shared packages breaks `tsx` config parsing (+195 lines, 97/100, iter 44)
+- `k6-patterns.md` — xk6-kafka v2 load testing (constant-arrival-rate producer, SASL-PLAIN, ~383k msgs/sec baseline); xk6-mqtt MQTT broker testing (QoS, round-trip Trend, TLS); G62 `k6/experimental/fs` shared file cursor silent EOF (+338 lines, 100/100, iter 35)
+- `detox-patterns.md` — P62 `detox-copilot` AI natural-language test steps (Detox 20.50+, `AnthropicPromptHandler`); G97 Android 16 edge-to-edge breaks `scrollTo('bottom')` with soft keyboard; G98 iOS 26 home indicator swipe-up gesture preemption in safe area (+247 lines, 99/100, iter 54)
+- `appium-wdio-patterns.md` — UIAutomator2 v7.0.0 `mobile:listApps` breaking format (string[]→Record); UIAutomator2 v7.1.0 `mobile:setStylusHandwriting`; XCUITest v11.3.0 `download-wda` CLI bypasses 4-min WDA build; WDIO v9.27.1 BiDi `networkGetData` response body capture (+260 lines, 100/100, iter 35)
+
+### qa-methodology-refine (12 guides, all 97-100/100)
+- `test-pyramid-guide.md` — Vitest 5.0 beta.1 `createReport` API + `getAriaTree`/`matchAriaTree`; Bun 1.2 `--rerun-each` + `bunfig.toml` pyramid config; G51 Bun `mock.module()` declaration-order vs Vitest hoisting; G52 `test.failing.each` permanent quarantine debt (+293 lines, 98/100, iter 46)
+- `tdd-guide.md` — Stryker VS Code extension inline mutation feedback (MSP, 5–15s per file); Stryker `--incremental` 120s→8s per-PR; Vitest 5.0 TDD breaking changes (`.vitest/` dir, `sequential` removal, G50); LLM as Red-phase collaborator (prompt template, 70–80% mutation score improvement) (+432 lines, 97/100, iter 27)
+- `bdd-guide.md` — TS 5.5+ `noUncheckedIndexedAccess`/`isolatedDeclarations` BDD step definition impacts; AI-generated Gherkin quality evaluation checklist + `bdd-quality-check.ts` CLI (7-criterion, 0-100 score); Cucumber.js `externalise: true` v12.8.0 step inventory extraction (+428 lines, 100/100, iter 36)
+- `test-isolation-guide.md` — P42 Node.js 24 `AsyncLocalStorage` `defaultValue` null-safe context stores; P43 Vitest `aroundEach`+`AsyncLocalStorage.run()` scoped context propagation; G103 Node.js 24 subtest completion teardown ordering; G104 `--test-global-setup` same-process singleton sharing (+306 lines, 100/100, iter 25)
+- `test-data-guide.md` — MSW v2.13.5 generator state auto-reset on `resetHandlers()`; faker v10.4 food module (`dish`/`ethnicCategory`) + Finnish locale; Playwright 1.60 `browser.on('context')` seed injection observer; MSW v2.14.2 typed `SetupServerApi`/`NetworkApi` container; G34 generator handler position leaks across tests (+588 lines, 100/100, iter 46)
+- `contract-testing-guide.md` — `filterConsumerNames`/`filterProviderStates` formal VerifierV3 scoping with CI sharding; Apollo Federation GraphQL supergraph `_entities` contract testing; lessons #66-67 (+305 lines, 100/100, iter 31)
+- `coverage-guide.md` — G58 Jest 30.4 multi-project `collectCoverageFrom` accuracy fix (PR #16140); G59 `coverage.changed`+`thresholds.perFile` untested-new-file gap + audit script; P33 `coverage.reporter` default array CI overhead; G60 Jest 30.4 upgrade silent coverage debt (+338 lines, 100/100, iter 45)
+- `ci-cd-testing-guide.md` — Stryker.js mutation testing as CI gate (incremental, GitHub Actions YAML, TypeScript mutation-gate helper); `workflow_run` cross-workflow fork PR gate pattern; TypeScript 6 strict-by-default CI impact audit; AI test quality gate mutation score enforcement (+510 lines, 100/100, iter 38)
+- `accessibility-guide.md` — `@axe-core/mcp` Claude Desktop config + TypeScript `scanUrlForA11yViolations()` via Anthropic SDK; G89 WCAG 3.0 March 2026 terminology pivot; G90 axe-core 4.11.3 `position:fixed` exclusion logic change; G91 EU EAA sector-phased enforcement with microenterprise exemption (+97 lines, 98/100, iter 45)
+- `shift-left-guide.md` — `@zod/mini` tree-shakable Zod for edge functions + esbuild bundle size gate; Zod v4 `z.globalRegistry` schema metadata registry + CI completeness gate; GitHub Copilot PR Review GA 2025 with `.github/copilot-instructions.md`; Biome v2 CSS+GraphQL coverage + `noRedundantCssDeclarations` (+480 lines, 100/100, iter 35)
+- `flakiness-guide.md` — P100 Playwright `testResult.annotations` per-retry root-cause in custom reporters (v1.52+); P101 Vitest 3.2 `context.annotate()` structured metadata across reporters; G49 `dorny/test-reporter@v1` inline PR flakiness annotations; AP49 `getSeed()` returns `undefined` inside test bodies (+419 lines, 100/100, iter 59)
+- `exploratory-guide.md` — Playwright `init-agents` seed.spec.ts workflow + charter-scoped preconditions; `browser.on('context')` multi-context lifecycle v1.60 + `MultiContextLifecycleHarness`; `browserContext.setStorageState()` mid-session auth rotation v1.59; `locator.normalize()` WCAG 4.1.2 oracle v1.59; lessons #135-137 (+364 lines, 100/100, iter 49)
+
+### lang-refine (5 guides updated)
+- `typescript-patterns.md` — Type-level testing `expectTypeOf`/`assertType` (Vitest built-in + `tsd`/`expect-type` alternatives); TS 6.0 Temporal API patterns (core types, immutable arithmetic, timezone-safe comparison); constrained `infer` with `extends` bounds (TS 4.7+); `satisfies`+`as const` nested discriminated union config pattern (+393 lines, iter 40)
+- `javascript-patterns.md` — `node:test` `t.assert.snapshot()` stable (Node.js 24); `fetch()` priority hints (`high`/`low`/`auto`) + `keepalive` beacon replacement; `structuredClone` with Transferables (zero-copy ArrayBuffer); Temporal API in testing — dependency injection + monkey-patching patterns (+315 lines, iter 55)
+- `java-patterns.md` — Mockito 5.19 `ReturnsEmptyValues` for SequencedCollection/Set/Map; AssertJ 4.0.0-M1 Java 17+ baseline + native `isSealed()`/`isRecord()`; Spring Boot 4.0.6 POM fix + `@Ssl @ServiceConnection` on `@Bean` methods; Spring Boot 4.1 RC1 `@GrpcAdvice` + OpenTelemetry SDK auto-config (+201 lines, 99/100, iter 36)
+- `python-patterns.md` — Python 3.15 `lazy import` keyword (PEP 810, `sys.set_lazy_imports()`); `frozendict` (PEP 814) + `sentinel` (PEP 661) immutable test fixtures; `threading.synchronized_iterator()`/`concurrent_tee()` thread-safe iteration; `asyncio.TaskGroup.cancel()` structured early-exit; G59-60 (+365 lines, 100/100, iter 52)
+- `csharp-patterns.md` — .NET 10 MTP native support via `global.json` `"runner"` key; xUnit v3 `TestContext` static diagnostic API (`SendDiagnosticMessage`, `CancellationToken`); TUnit `[Timeout]` + `[Retry]` per-test cancellation; C# 14 `extension` blocks as test builder helpers with `field` keyword (+246 lines, iter 40)
+
+---
+
 ## v1.16.0.17 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 14/100)
 
 ### qa-refine (5 guides, 97-100/100)

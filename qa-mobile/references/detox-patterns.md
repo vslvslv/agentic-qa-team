@@ -1,7 +1,8 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 53 | score: 99/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 54 | score: 99/100 | date: 2026-05-12 -->
 <!-- WebFetch live sources verified for Detox 20.47–20.51.1 (Jan–May 2026 releases) + PRs #4932 #4912 #4928 #4936 #4943 #4948 #4868 + Issues #4937 #4942 #4945 #4901 #4850 #4887 (May 2026) -->
-<!-- iteration 53 (2026-05-12) adds: Gotcha 94 (launchApp({ resetAppState: true, permissions: {} }) silently ignores permissions on Android — separate the reset and permissions calls, Issue #4850), Gotcha 95 (Node.js 20+ emits DEP0190 security deprecation warning during Detox test runs due to spawn(shell:true) with array args in TestRunnerCommand.js, Issue #4887 — benign but noisy), Gotcha 96 (device.appStatus() does not exist yet — workaround using private client.currentStatus() is unreliable when sync is disabled, Issue #4945), Pattern 61 (idle-aware polling with disableSynchronization + currentStatus() private API workaround — safe pattern for media/animation-heavy screens), anti-pattern checklist rows 94-96, Android 16 Espresso looper fix note (PR #4868, Detox 20.45+); 64 patterns total; ~10400+ lines -->
+<!-- iteration 54 (2026-05-12) adds: Pattern 62 (detox-copilot AI-assisted natural-language test steps — opt-in LLM layer in Detox 20.50+, AnthropicPromptHandler example, caching, CI job separation), Gotcha 97 (Android 16/API 36 enforced edge-to-edge breaks scrollTo('bottom') in open-keyboard forms — tapReturnKey() workaround), Gotcha 98 (iOS 26 extended home indicator zone preempts swipe('up') near bottom safe area — startNormalizedY workaround), anti-pattern checklist rows 97-100; 62 patterns total; ~10590+ lines -->
+<!-- iteration 53 (2026-05-12) adds: Gotcha 94 (launchApp({ resetAppState: true, permissions: {} }) silently ignores permissions on Android — separate the reset and permissions calls, Issue #4850), Gotcha 95 (Node.js 20+ emits DEP0190 security deprecation warning during Detox test runs due to spawn(shell:true) with array args in TestRunnerCommand.js, Issue #4887 — benign but noisy), Gotcha 96 (device.appStatus() does not exist yet — workaround using private client.currentStatus() is unreliable when sync is disabled, Issue #4945 — Pattern 61 for the safe helper), Pattern 61 (idle-aware polling with disableSynchronization + currentStatus() private API workaround — safe pattern for media/animation-heavy screens), anti-pattern checklist rows 94-96, Android 16 Espresso looper fix note (PR #4868, Detox 20.45+); 61 patterns total; ~10400+ lines -->
 <!-- iteration 51 (2026-05-12) adds: Gotcha 85 (iOS 26+ biometric API breaking change: --matchFace/--matchFinger deprecated, use --biometricMatch/--biometricNonmatch with --booted flag, Detox 20.51+, PR #4932), Gotcha 86 (Android <Modal> creates separate native Window — tap events silently bypass modal layer, Issue #4928), Gotcha 87 (RN 0.85 requires Detox 20.51+, version matrix update), Gotcha 88 (atIndex(N).getAttributes() on iOS returned ALL matching elements before fix in 20.51.x, PR #4912), Pattern 60 (Android Modal interaction workaround using restructured hierarchy), anti-pattern checklist rows 85-88, 4 new source links; 63 patterns total; ~9920+ lines -->
 <!-- iteration 44 (2026-05-12) adds: WebView testing (by.web() matchers, web element interactions, hybrid app patterns), visual regression with device.takeScreenshot() + external tools, JUnit XML CI reporting (jest-junit), React Native 0.78+ New Architecture strict mode notes, device.resetContentAndSettings() for deep iOS simulator reset, network activity tracking (NetworkSynchronizationEnabled per-configuration), 7 new community gotchas (44–50: by.web() IPC latency vs native sync, visual diff false positives from dynamic content, jest-junit path collision in sharded CI, device.resetContentAndSettings() permission re-grant pattern, Android API 35 predictive back gesture breaking by.system() back button, Hermes debugger port conflict on parallel CI jobs, and WebView URL not yet updated when Detox selector fires) -->
 <!-- iteration 45 (2026-05-12) adds: by.system() full dialog workflow (permissions/alerts/sheets), device.openURL() deep link testing pattern, parallel worker configuration for large suites, by.traits() iOS accessibility traits testing, element.getAttributes() extended inspection, device.shake() shake gesture testing, 6 new community gotchas (51–56: by.system() label locale mismatch, deep link cold-start race condition, parallel workers sharing global launchArgs, by.traits() not available on Android, getAttributes() returning null for off-screen elements, device.shake() no-op on physical devices without shake hardware) -->
@@ -10300,4 +10301,250 @@ it('media player shows chapter title after seek', async () => {
 - Detox DEP0190 Node.js deprecation warning (open issue): https://github.com/wix/Detox/issues/4887
 - Detox public appStatus() API proposal (open issue): https://github.com/wix/Detox/issues/4945
 - Detox Android 16 Espresso looper fix (merged Dec 2025): https://github.com/wix/Detox/pull/4868
+- Detox Copilot (AI-assisted test steps): https://github.com/wix/Detox/tree/master/src/copilot
+- Android 16 edge-to-edge enforcement: https://developer.android.com/about/versions/16/behavior-changes-16#edge-to-edge
 - React Navigation Testing: https://reactnavigation.org/docs/testing/
+
+---
+
+### Pattern 62 — `detox-copilot`: AI-assisted natural-language test steps [community]
+
+Wix shipped an experimental **Copilot** layer inside the Detox monorepo (available from Detox 20.50+) that allows tests to express individual steps in plain English. Under the hood it calls an LLM (configured via a `PromptHandler` adapter), receives a generated Detox action, validates it against the live view hierarchy, and executes it. Copilot is opt-in — existing tests are unaffected.
+
+**When to use it**: Exploratory smoke tests where the exact testID structure is unknown; rapid test authoring during prototyping; coverage of edge-case flows that would take many lines of Detox code to set up.
+
+**When NOT to use it**: Regression suites, performance-sensitive CI runs, or any test where determinism is a hard requirement — LLM outputs are non-deterministic by nature.
+
+```ts
+// e2e/helpers/copilot-setup.ts
+// Install: already bundled with detox >= 20.50 — no separate package needed
+
+import { copilot } from 'detox/internals';
+import Anthropic from '@anthropic-ai/sdk';
+
+// Implement the PromptHandler interface for your preferred LLM provider
+class AnthropicPromptHandler implements copilot.PromptHandler {
+  private client = new Anthropic();
+
+  async runPrompt(prompt: string, image?: string): Promise<string> {
+    const messages: Anthropic.MessageParam[] = [
+      { role: 'user', content: image
+        ? [
+            { type: 'image', source: { type: 'base64', media_type: 'image/png',
+              data: image.replace(/^data:image\/\w+;base64,/, '') } },
+            { type: 'text', text: prompt },
+          ]
+        : prompt,
+      },
+    ];
+    const response = await this.client.messages.create({
+      model: 'claude-opus-4-5',
+      max_tokens: 1024,
+      messages,
+    });
+    return (response.content[0] as Anthropic.TextBlock).text;
+  }
+
+  isSnapshotImageSupported(): boolean {
+    return true;  // enables visual context for the LLM
+  }
+}
+
+export function setupCopilot(): void {
+  copilot.init(new AnthropicPromptHandler());
+}
+```
+
+```ts
+// e2e/checkout.copilot.test.ts
+import { setupCopilot } from './helpers/copilot-setup';
+import { copilot } from 'detox/internals';
+
+describe('Checkout (Copilot smoke)', () => {
+  beforeAll(() => {
+    setupCopilot();
+  });
+
+  beforeEach(async () => {
+    await device.launchApp({ newInstance: true });
+    copilot.start();
+  });
+
+  afterEach(async () => {
+    await copilot.end();
+  });
+
+  it('completes a purchase flow in plain English', async () => {
+    await copilot.perform('Tap on the first product in the list');
+    await copilot.perform('Add the item to the cart');
+    await copilot.perform('Navigate to the checkout screen');
+    await copilot.perform('Fill in the email field with "test@example.com"');
+    await copilot.perform('Tap the "Place Order" button');
+    await copilot.perform('Verify the order confirmation message is visible');
+  });
+});
+```
+
+**Caveats and usage constraints**:
+
+| Constraint | Detail |
+|---|---|
+| LLM latency | Each `copilot.perform()` call round-trips to the LLM — add 1–4 s per step. Not suitable for high-volume regression runs. |
+| Non-determinism | The same prompt may generate different Detox actions on different runs. Gate Copilot tests in a separate CI job with `--testPathPattern copilot`. |
+| View hierarchy size | Very deep hierarchies (>500 nodes) can exceed the LLM context window. Enable `captureViewHierarchy` snapshots in artifacts to debug what is sent. |
+| API cost | Each test step makes an LLM API call. Use `copilot.cache(true)` (available in Detox 20.51+) to cache identical prompt/hierarchy pairs within a single test run. |
+
+```ts
+// .detoxrc.js — separate CI configuration for Copilot tests
+module.exports = {
+  configurations: {
+    'ios.sim.copilot': {
+      device: 'simulator',
+      app: 'ios.release',
+      // Longer timeout to account for LLM round-trips
+      testRunner: {
+        args: { $0: 'jest', config: 'e2e/jest.copilot.config.js' },
+        jest: { setupTimeout: 600000 },  // 10 minutes
+      },
+    },
+  },
+};
+```
+
+---
+
+## Gotcha 97 — Android 16 enforced edge-to-edge breaks `scrollTo('bottom')` when soft keyboard is open [community]
+
+**Background**: Android 16 (API 36) makes the edge-to-edge window mode **mandatory** for all apps — the system no longer allows `windowSoftInputMode="adjustResize"` to shrink the app window when the soft keyboard is shown. Instead, apps must use `WindowInsetsController` to handle keyboard insets manually. React Native 0.75+ propagates keyboard height via the `useKeyboardHandler` hook, but many existing apps rely on the legacy `KeyboardAvoidingView` with `behavior="height"`, which no longer resizes on Android 16+.
+
+**Impact on Detox tests**: When a test calls `element(by.id('form-scroll-view')).scrollTo('bottom')` after a text input has triggered the soft keyboard:
+
+1. The `ScrollView` container is still the full screen height (keyboard does not shrink the window)
+2. The keyboard visually overlaps the bottom of the `ScrollView`
+3. Detox's `scrollTo('bottom')` moves the scroll position to what React Native reports as the bottom — but that is now behind the keyboard
+4. The "Submit" button appears to be in view (from React Native's perspective) but the keyboard visually covers it
+5. The subsequent `tap()` silently fires into the keyboard overlay and does not reach the button
+
+**Affected versions**: Any Detox version on Android API 36 emulators or physical Android 16 devices when `KeyboardAvoidingView behavior="height"` is used.
+
+```js
+// SYMPTOM: scrollTo('bottom') succeeds, but subsequent tap() has no effect
+it('submits the form (BROKEN on Android 16)', async () => {
+  await element(by.id('email-input')).tap();
+  await element(by.id('email-input')).replaceText('user@example.com');
+  // Keyboard is now open. On Android 16, window is NOT resized.
+  await element(by.id('registration-scroll')).scrollTo('bottom');
+  // scrollTo reports success — but submit button is behind the keyboard
+  await element(by.id('submit-button')).tap();  // SILENTLY FAILS on Android 16
+});
+```
+
+**Workaround A — dismiss keyboard before scrolling**:
+
+```js
+// Dismiss keyboard, then scroll to the button
+it('submits the form (fixed for Android 16)', async () => {
+  await element(by.id('email-input')).tap();
+  await element(by.id('email-input')).replaceText('user@example.com');
+
+  // Dismiss the soft keyboard before scrolling to bottom
+  if (device.getPlatform() === 'android') {
+    await element(by.id('email-input')).tapReturnKey();  // submits keyboard
+    // OR: await device.pressBack();  — dismisses without submitting
+  }
+
+  await element(by.id('registration-scroll')).scrollTo('bottom');
+  await element(by.id('submit-button')).tap();
+  await waitFor(element(by.id('success-screen'))).toBeVisible().withTimeout(5000);
+});
+```
+
+**Workaround B — use `scrollTo` with explicit edge padding**:
+
+```js
+// Add normalizedScrollAmount offset to overshoot past the potential keyboard area
+it('submits the form (padding workaround)', async () => {
+  await element(by.id('email-input')).replaceText('user@example.com');
+  // Scroll past the standard bottom — keyboard overlay is typically 280-340dp
+  await element(by.id('registration-scroll')).scroll(400, 'down');
+  await element(by.id('submit-button')).tap();
+});
+```
+
+**App-side fix (recommended)**: Migrate from `KeyboardAvoidingView behavior="height"` to `behavior="padding"` with a `keyboardVerticalOffset` matched to the screen's bottom inset. This is the correct Android 16 pattern and eliminates the Detox workaround entirely.
+
+**Rule of thumb**: On Android 16 emulators (`API 36`), always dismiss the keyboard before calling `scrollTo('bottom')` in forms. Set a CI env check and apply the `tapReturnKey()` pattern when `process.env.ANDROID_API_LEVEL === '36'` until your app is migrated to edge-to-edge inset handling.
+
+---
+
+## Gotcha 98 — iOS 26 home indicator swipe-up preempts Detox `element.swipe('up')` near the bottom safe area [community]
+
+**Root cause**: iOS 26 introduced a revised gesture-priority model for the home indicator safe area. System swipe-up gestures for app switching and Control Center are now intercepted at a **lower touch Y offset** than in iOS 17/18 — the system gesture region now begins approximately 34 points from the bottom on both edge-to-edge iPhones and iPads (was ~20 points in iOS 17). When a Detox test issues `element.swipe('up', 'fast', 0.7)` on an element whose bottom edge is in this extended zone, the system intercepts the gesture before it reaches the app, and the swipe silently fails to trigger the intended app behavior.
+
+**Affected versions**: Detox with iOS 26 simulators (`iOS 26+` runtime). Physical device behavior may differ.
+
+**Symptom**: `element(by.id('bottom-drawer')).swipe('up', 'fast', 0.7)` passes without error but the bottom sheet does not open/close, and the subsequent `waitFor(...).toBeVisible()` times out.
+
+```js
+// BROKEN on iOS 26 — swipe start/end overlaps system gesture zone
+it('opens the bottom drawer (BROKEN on iOS 26)', async () => {
+  await element(by.id('bottom-drawer-handle')).swipe('up', 'fast', 0.7);
+  await waitFor(element(by.id('drawer-content')))
+    .toBeVisible()
+    .withTimeout(3000);  // TIMES OUT — swipe was intercepted by system
+});
+```
+
+**Workaround A — use `startNormalizedY` to start the swipe above the safe area zone**:
+
+```js
+// Fixed: start the swipe higher up to avoid the system gesture interception zone
+it('opens the bottom drawer (fixed for iOS 26)', async () => {
+  await element(by.id('bottom-drawer-handle')).swipe(
+    'up',
+    'fast',
+    0.7,
+    0.5,   // startNormalizedX (horizontal center)
+    0.3,   // startNormalizedY — start from 30% from top of element, well above home indicator zone
+  );
+  await waitFor(element(by.id('drawer-content')))
+    .toBeVisible()
+    .withTimeout(3000);
+});
+```
+
+**Workaround B — tap a dedicated open button instead of swiping**:
+
+```js
+// Add a testID'd trigger button alongside the swipe handle for test reliability
+// In your component:
+//   <TouchableOpacity testID="drawer-open-button" onPress={openDrawer}>
+//     <DrawerHandle />
+//   </TouchableOpacity>
+it('opens the bottom drawer via button (iOS 26 safe)', async () => {
+  await element(by.id('drawer-open-button')).tap();
+  await waitFor(element(by.id('drawer-content'))).toBeVisible().withTimeout(3000);
+});
+```
+
+**Workaround C — extend the element's touch target above the safe area and swipe from the extended region**:
+
+```js
+// hitSlop on the native side pushes the touchable region upward:
+// <DrawerHandle hitSlop={{ bottom: 0, top: 40 }} testID="bottom-drawer-handle" />
+// Then target the upper portion of the extended hit area in the swipe:
+await element(by.id('bottom-drawer-handle')).swipe('up', 'slow', 0.5, 0.5, 0.15);
+```
+
+**Rule of thumb**: On iOS 26 simulators, avoid `swipe('up')` gestures that start or end in the bottom ~15% of the screen. Provide an explicit tap-based trigger (Option B) as the canonical test entry point for bottom sheet / drawer components — it is more reliable across all iOS versions and device sizes.
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 54 additions)
+
+| Anti-Pattern | Fix |
+|---|---|
+| Using `copilot.perform()` steps in regression suites without a separate CI job | Gate Copilot tests with `--testPathPattern copilot`; LLM calls are slow and non-deterministic — they belong in a separate exploratory job, not in the blocking regression gate (Pattern 62) |
+| `copilot.perform()` on a large view hierarchy (>500 nodes) without caching | Enable `copilot.cache(true)` (Detox 20.51+) or simplify the screen before the step; deep hierarchies can exceed LLM context windows and produce incorrect actions (Pattern 62) |
+| `scrollTo('bottom')` in a form test after typing text on an Android 16 emulator | Dismiss the keyboard with `tapReturnKey()` or `pressBack()` before scrolling; Android 16 enforces edge-to-edge and the keyboard no longer shrinks the window (Gotcha 97) |
+| `element.swipe('up', 'fast', 0.7)` on an element near the bottom of the screen on iOS 26 | Start the swipe above `startNormalizedY = 0.3` or provide a tap-based trigger; iOS 26 extended the system home-indicator gesture zone to ~34pt from bottom (Gotcha 98) |

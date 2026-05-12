@@ -1,8 +1,8 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.3.0, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/, /javascript-api/k6-experimental/fs/, /javascript-api/k6-experimental/streams/, /javascript-api/k6-websockets/, /using-k6/scenarios/concepts/open-vs-closed/, release-notes/v1.7.0, release-notes/v1.7.1, /using-k6/secret-source/file/, /using-k6/secret-source/url/ -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.3.0, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/, /javascript-api/k6-experimental/fs/, /javascript-api/k6-experimental/streams/, /javascript-api/k6-websockets/, /using-k6/scenarios/concepts/open-vs-closed/, release-notes/v1.7.0, release-notes/v1.7.1, /using-k6/secret-source/file/, /using-k6/secret-source/url/, github.com/mostafa/xk6-kafka, github.com/grafana/xk6-mqtt -->
 
-> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Iteration 32 adds: page.waitForResponse() pattern (v1.3+), locator.contentFrame() for iframe navigation chains, locator.boundingBox() for layout testing, getBy* locators on frameLocator scope, community gotchas 57–59 (waitForResponse race condition, boundingBox null on hidden elements, locator.contentFrame() vs frameLocator() disambiguation). Iteration 33 adds: locator.locator() hierarchical scoping pattern (v1.3+), k6chaijs version updated to 4.5.0.1, K6_CLOUD_STACK env var corrected to K6_CLOUD_STACK_ID throughout cloud stack section, community gotcha #60 (k6 cloud login --stack persists default stack in credentials file — subsequent commands pick it up but K6_CLOUD_STACK_ID or --stack flag overrides it). Iteration 34 adds: `file` secret source with key=value file format and Docker volume-mount pattern, `url` secret source advanced options table (urlTemplate, responsePath, headers.*, timeout, requestsPerMinuteLimit, requestsBurst, maxRetries, retryBackoff), multi-source file+url combination pattern, community gotcha #61 (url source URL-encodes {key} — Vault path slashes become %2F and return 404; fix by flattening key names or using a proxy). Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Iteration 32 adds: page.waitForResponse() pattern (v1.3+), locator.contentFrame() for iframe navigation chains, locator.boundingBox() for layout testing, getBy* locators on frameLocator scope, community gotchas 57–59 (waitForResponse race condition, boundingBox null on hidden elements, locator.contentFrame() vs frameLocator() disambiguation). Iteration 33 adds: locator.locator() hierarchical scoping pattern (v1.3+), k6chaijs version updated to 4.5.0.1, K6_CLOUD_STACK env var corrected to K6_CLOUD_STACK_ID throughout cloud stack section, community gotcha #60 (k6 cloud login --stack persists default stack in credentials file — subsequent commands pick it up but K6_CLOUD_STACK_ID or --stack flag overrides it). Iteration 34 adds: `file` secret source with key=value file format and Docker volume-mount pattern, `url` secret source advanced options table (urlTemplate, responsePath, headers.*, timeout, requestsPerMinuteLimit, requestsBurst, maxRetries, retryBackoff), multi-source file+url combination pattern, community gotcha #61 (url source URL-encodes {key} — Vault path slashes become %2F and return 404; fix by flattening key names or using a proxy). Iteration 35 adds: xk6-kafka v2 full load-test pattern (JSON messages, SASL-PLAIN auth, ~383k msgs/s throughput baseline, teardown consumer pattern), xk6-mqtt full load-test pattern (IoT broker testing, pub/sub with QoS levels, event-driven VU loop), community gotcha #62 (k6/experimental/fs file handle opened at init context is shared across all VU iterations — the file cursor advances per iteration; call `file.seek(0, SeekMode.Start)` at the top of default() to reset it, or open inside default() for per-iteration independence). Re-run `/qa-refine k6` to refresh.
 
 > **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `--summary-mode=legacy`, `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section. **New in v2.0.0 final:** HTTP API server disabled by default, cloud secrets auto-injected in `--local-execution`, `k6 cloud project list` command, extension tab-completion.
 
@@ -9912,5 +9912,343 @@ These APIs were added in k6 v1.3.0 through v1.6.0 and complement the main Key AP
 | `page.waitForURL(url, opts?)` | Wait for page URL to match pattern after navigation | SPA routing assertions after click/submit |
 | `response.timing()` | Get `{ requestStart, responseEnd, ... }` timing breakdown | Measure API call latency from browser tests |
 | `response.json()` | Async JSON body parse from `waitForResponse` result | Assert API response body from browser tests |
+
+---
+
+## xk6-kafka — Kafka Load Testing  [community]
+
+`xk6-kafka` (maintained by [mostafa/xk6-kafka](https://github.com/mostafa/xk6-kafka)) extends k6
+with a Kafka producer and consumer. Version 2 delivers ~383,000 messages/sec with 50 VUs — roughly
+3× faster than the v1 branch. Use it to validate Kafka producer throughput, measure end-to-end
+consumer latency, and test schema-registry-enforced serialization under load.
+
+**Supported formats:** String, JSON, binary, Avro, JSON Schema, Protobuf (via Schema Registry).  
+**Auth:** SASL PLAIN/SCRAM, AWS IAM, Azure Entra OAuth, TLS/mTLS.
+
+```bash
+# Build a custom k6 binary with xk6-kafka v2
+xk6 build --with github.com/mostafa/xk6-kafka@v2.0.0 --output ./k6-kafka
+
+# Or via Docker (reproducible — pin the extension version)
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/xk6" grafana/xk6 \
+  build --with github.com/mostafa/xk6-kafka@v2.0.0
+```
+
+```javascript
+// k6/scripts/kafka-producer.js — JSON producer with SASL-PLAIN authentication
+// Requires: xk6 build --with github.com/mostafa/xk6-kafka@v2.0.0
+import { Producer, Consumer, SASL_PLAIN, SchemaRegistry } from "k6/x/kafka";
+import { check } from "k6";
+import { Counter, Trend } from "k6/metrics";
+
+const messagesProduced = new Counter("kafka_messages_produced");
+const producerLatency  = new Trend("kafka_producer_latency_ms", true);
+
+// Connection config — pass via env vars or CI secrets
+const brokers = [__ENV.KAFKA_BROKER || "localhost:9092"];
+
+const saslConfig = __ENV.KAFKA_USERNAME
+  ? {
+      mechanism:    SASL_PLAIN,
+      username:     __ENV.KAFKA_USERNAME,
+      password:     __ENV.KAFKA_PASSWORD,
+      ssl:          { enable: true },
+    }
+  : undefined; // omit for local broker without auth
+
+const producer = new Producer({
+  brokers,
+  sasl:     saslConfig,
+  topic:    __ENV.KAFKA_TOPIC || "k6-load-test",
+});
+
+export const options = {
+  scenarios: {
+    kafka_load: {
+      executor: "constant-arrival-rate",
+      rate: 1000,          // 1,000 messages/sec target
+      timeUnit: "1s",
+      duration: "2m",
+      preAllocatedVUs: 20,
+      maxVUs: 50,
+    },
+  },
+  thresholds: {
+    kafka_producer_latency_ms: ["p(95)<100"],   // 95th pct produce latency < 100 ms
+    kafka_messages_produced:   ["count>100000"], // at least 100k messages in 2m
+    checks:                    ["rate>0.99"],
+  },
+};
+
+export default function () {
+  const start = Date.now();
+
+  const msg = {
+    key:   `key-${__VU}-${__ITER}`,
+    value: JSON.stringify({
+      userId:    __VU,
+      iteration: __ITER,
+      ts:        new Date().toISOString(),
+      payload:   "synthetic-event",
+    }),
+  };
+
+  const err = producer.produce({ messages: [msg] });
+  const latency = Date.now() - start;
+
+  producerLatency.add(latency);
+  messagesProduced.add(1);
+  check(err, { "produce ok (no error)": (e) => e === undefined || e === null });
+}
+
+export function teardown() {
+  producer.close();
+}
+```
+
+**Consumer-side latency measurement pattern** (run as a separate scenario):
+
+```javascript
+// k6/scripts/kafka-e2e-latency.js — measure end-to-end produce→consume latency
+import { Producer, Consumer } from "k6/x/kafka";
+import { check } from "k6";
+import { Trend } from "k6/metrics";
+
+const e2eLatency = new Trend("kafka_e2e_latency_ms", true);
+
+const brokers = [__ENV.KAFKA_BROKER || "localhost:9092"];
+const topic   = __ENV.KAFKA_TOPIC || "k6-e2e-test";
+
+const producer = new Producer({ brokers, topic });
+const consumer = new Consumer({
+  brokers,
+  topic,
+  groupId: `k6-consumer-${Date.now()}`, // unique group per run
+});
+
+export const options = {
+  scenarios: {
+    e2e: { executor: "constant-vus", vus: 5, duration: "1m" },
+  },
+  thresholds: {
+    kafka_e2e_latency_ms: ["p(95)<500"],   // e2e < 500 ms for 95% of messages
+  },
+};
+
+export default function () {
+  const sentAt = Date.now();
+  producer.produce({ messages: [{ key: "e2e", value: String(sentAt) }] });
+
+  // Consume — each call blocks until a message arrives or timeout
+  const msgs = consumer.consume({ limit: 1 });
+  check(msgs, { "consumed message": (m) => m.length === 1 });
+
+  if (msgs.length > 0) {
+    const receivedAt  = Date.now();
+    const producedAt  = parseInt(new TextDecoder().decode(msgs[0].value), 10);
+    e2eLatency.add(receivedAt - producedAt);
+  }
+}
+
+export function teardown() {
+  consumer.close();
+  producer.close();
+}
+```
+
+> **[community]:** xk6-kafka `consumer.consume({ limit: N })` is a synchronous blocking call — it
+> waits up to the configured timeout (default 1 s) for messages. If the producer scenario runs
+> slower than the consumer, `consume()` will time out and return an empty array. Use separate
+> `producer` and `consumer` scenarios with `startTime` staggering to ensure the topic is populated
+> before consumers start. For multi-partition topics, set `groupId` to a unique value per test run
+> so consumers always start from the latest offset rather than replaying old messages from a
+> previous test run.
+
+---
+
+## xk6-mqtt — MQTT Broker Load Testing  [community]
+
+`xk6-mqtt` ([github.com/grafana/xk6-mqtt](https://github.com/grafana/xk6-mqtt)) adds MQTT v3.1.1
+support to k6. It uses an event-driven model: each VU's `default()` function runs once and blocks
+on the internal event loop until all registered event handlers close the connection. This makes it
+different from HTTP tests where `default()` loops — for MQTT, the VU lifecycle IS the connection
+lifecycle.
+
+**Supported URL schemes:** `mqtt://`, `mqtts://` (TLS), `ws://`, `wss://` (WebSocket transport).
+
+```bash
+# Build custom k6 binary with xk6-mqtt
+xk6 build --with github.com/grafana/xk6-mqtt --output ./k6-mqtt
+```
+
+```javascript
+// k6/scripts/mqtt-load.js — publish and subscribe with round-trip latency measurement
+// Requires: xk6 build --with github.com/grafana/xk6-mqtt
+import { Client } from "k6/x/mqtt";
+import { check } from "k6";
+import { Trend, Counter, Rate } from "k6/metrics";
+
+const roundTripLatency = new Trend("mqtt_round_trip_ms", true);
+const messagesPublished = new Counter("mqtt_messages_published");
+const deliveryRate      = new Rate("mqtt_delivery_success_rate");
+
+export const options = {
+  scenarios: {
+    mqtt_load: {
+      executor: "constant-vus",
+      vus: 50,
+      duration: "2m",
+    },
+  },
+  thresholds: {
+    mqtt_round_trip_ms:        ["p(95)<200"],   // 95th pct round-trip < 200 ms
+    mqtt_delivery_success_rate: ["rate>0.99"],  // >99% messages delivered back
+    checks:                    ["rate>0.99"],
+  },
+};
+
+const BROKER_URL = __ENV.MQTT_BROKER_URL || "mqtt://localhost:1883";
+const TOPIC      = __ENV.MQTT_TOPIC      || "k6/load-test";
+
+export default function () {
+  const client = new Client();
+  const sentAt = Date.now();
+  let   received = false;
+
+  client.on("connect", () => {
+    // QoS 1 = at-least-once delivery; 0 = fire-and-forget; 2 = exactly-once
+    client.subscribe(TOPIC, 1 /* QoS */);
+
+    const payload = JSON.stringify({ ts: sentAt, vu: __VU, iter: __ITER });
+    client.publish(TOPIC, payload, 1 /* QoS */, false /* retain */);
+    messagesPublished.add(1);
+
+    // Close after 3 seconds — gives server time to echo back
+    setTimeout(() => {
+      if (!received) {
+        deliveryRate.add(false);
+        console.warn(`[VU ${__VU}] No echo received within 3s`);
+      }
+      client.end();
+    }, 3000);
+  });
+
+  client.on("message", (topic, message) => {
+    received = true;
+    const latency = Date.now() - sentAt;
+    roundTripLatency.add(latency);
+    deliveryRate.add(true);
+
+    const text = new TextDecoder().decode(new Uint8Array(message));
+    check(text, { "echo contains ts": (t) => t.includes('"ts"') });
+    client.end();
+  });
+
+  client.on("error", (err) => {
+    console.error(`[VU ${__VU}] MQTT error:`, err);
+    deliveryRate.add(false);
+    client.end();
+  });
+
+  // connect() returns immediately — VU blocks on the event loop until client.end() is called
+  client.connect(BROKER_URL);
+}
+```
+
+> **[community]:** `client.connect()` is non-blocking — it initiates the TCP connection and
+> returns immediately. The VU then enters the xk6-mqtt internal event loop and stays there until
+> `client.end()` is called. Unlike `k6/websockets`, there is no global event loop: each VU has
+> its own MQTT connection lifecycle. Do NOT call `client.connect()` inside an `onopen` callback
+> or inside a `setTimeout` — put it at the end of `default()` after registering all event
+> handlers, otherwise the connection fires before handlers are registered and messages may be
+> missed.
+
+> **[community]:** xk6-mqtt currently supports **MQTT v3.1.1 only** — MQTT v5 (which adds
+> user properties, reason codes, and shared subscriptions) is not yet supported. For brokers
+> that only accept MQTT v5 connections (e.g., some cloud IoT hubs), this extension will fail
+> at the protocol handshake. Check broker compatibility before building your test binary.
+
+---
+
+## Additional Community Gotchas (Iteration 35)
+
+### 62. `k6/experimental/fs` file handle opened at init context shares a cursor across iterations — seeking required  [community]
+
+**What:** When you call `open(path)` at the module's top level (init context), the returned
+`FileHandle` is shared across **all iterations** of a VU. Each `read()` call on a `Parser` or
+`file.read(buf)` call advances the cursor. After the first iteration reads to EOF, every
+subsequent iteration immediately gets `done: true` or 0 bytes — silently skipping all rows.
+
+**WHY:** `k6/experimental/fs` uses memory-mapped file access for efficiency. A single file
+descriptor is shared across all VUs and iterations to avoid re-mapping the same data repeatedly.
+The `SharedArray` analogy breaks here: `SharedArray` returns immutable copies, but the `fs`
+file handle maintains a mutable cursor position.
+
+**Fix 1 (recommended for small-to-medium files):** Use `csv.parse()` with `asObjects` once at
+init time. The resulting array is immutable and safe to index per iteration.
+
+**Fix 2 (for large files):** Call `await file.seek(0, SeekMode.Start)` at the top of `default()`
+to reset the cursor before each iteration:
+
+```javascript
+// k6/scripts/fs-seek-reset.js — correct pattern for per-iteration file reads via fs
+import { open, SeekMode } from "k6/experimental/fs";
+import { Parser }         from "k6/experimental/csv";
+import http from "k6/http";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    load: { executor: "per-vu-iterations", vus: 5, iterations: 10 },
+  },
+};
+
+// File handle opened ONCE at init context — cursor is shared!
+const file = await open("./data/products.csv");
+
+export default async function () {
+  // REQUIRED: reset cursor to start of file before each iteration
+  // Without this, iteration 2+ reads from where iteration 1 left off
+  await file.seek(0, SeekMode.Start);
+
+  // Re-create the Parser each iteration (it wraps the reset file handle)
+  const parser = new Parser(file, { skipFirstLine: true });
+
+  const { done, value } = await parser.next();
+  if (done) {
+    console.error("CSV exhausted — seek may have failed or file is empty");
+    return;
+  }
+
+  const [productId, price] = value;
+  const res = http.get(`${__ENV.API_URL}/api/products/${productId}`);
+  check(res, { "product found": (r) => r.status === 200 });
+}
+```
+
+**Fix 3 (simplest — avoids the problem entirely):** Open the file handle inside `default()`. This
+creates a new handle per iteration — no shared cursor. The trade-off is a small overhead for
+handle creation:
+
+```javascript
+export default async function () {
+  // Open inside default() → fresh handle with cursor at position 0 every time
+  const iterFile = await open("./data/products.csv");
+  const parser   = new Parser(iterFile, { skipFirstLine: true });
+  const { done, value } = await parser.next();
+  // ... rest of iteration
+}
+```
+
+> **[community]:** This gotcha is especially insidious because the first VU's first iteration
+> succeeds perfectly, giving false confidence. The failure only appears when you run multiple
+> iterations (`per-vu-iterations` with > 1 iteration, or `ramping-vus` over a long duration)
+> and the file reaches EOF. Add an explicit EOF guard (`if (done) throw new Error("EOF")`) to
+> make the failure visible rather than silently skipping work.
+
+> **[community]:** `SeekMode.Start` (numeric value `0`) rewinds to the beginning of the file.
+> `SeekMode.Current` (value `1`) and `SeekMode.End` (value `2`) are also available for
+> partial-file reads (e.g., splitting a large file across VUs by seeking to a calculated offset).
+> Import `SeekMode` from `"k6/experimental/fs"` — it is a named export, not a default export.
 
 

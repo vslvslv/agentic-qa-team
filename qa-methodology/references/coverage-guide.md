@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 44 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 45 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -27,7 +27,10 @@
      github.com/jestjs/jest/blob/main/CHANGELOG.md (fetched 2026-05-12: Jest 30.3 defineConfig/mergeConfig; Jest 30.4 jest.config.mts, Babel .mts/.cts coverage, global threshold unmatched-files fix, projects coverage accuracy fix) |
      community: production experience patterns synthesized from training knowledge;
      vitest.dev/config/coverage (re-fetched 2026-05-12: coverage.skipFull — user-settable option; AI-agent auto-sets skipFull:true on text reporter; distinct from watermarks);
-     vitest.dev/blog/vitest-4-1 (re-fetched 2026-05-12: aroundEach/aroundAll hooks; coverage gap in transaction-wrapped tests) -->
+     vitest.dev/blog/vitest-4-1 (re-fetched 2026-05-12: aroundEach/aroundAll hooks; coverage gap in transaction-wrapped tests) |
+     vitest.dev/config/coverage#coverage-reporter (fetched 2026-05-12: default reporter array is ['text','html','clover','json']; clover overhead in CI; reporter array ordering is sequential) |
+     github.com/jestjs/jest/pull/16140 (fetched 2026-05-12: Jest 30.4 projects coverage accuracy fix — collectCoverageFrom resolved against globalRootDir; multi-project glob mismatch root cause) |
+     vitest.dev/config/coverage#coverage-changed (fetched 2026-05-12: coverage.changed + thresholds.perFile combined — per-file thresholds apply only to changed files) -->
 
 ## Core Principles
 
@@ -4075,6 +4078,341 @@ describe('createOrder — error paths (no transaction isolation)', () => {
 Failure path tests (catch blocks, rollback handlers, finally branches) require mock-injected
 failures that bypass the transaction wrapper. Maintain both test types for services with
 explicit error handling — coverage tools will show the gap if the failure paths are missing.
+
+### G58 — Jest 30.4 multi-project coverage accuracy fix: `collectCoverageFrom` silently missed files in projects configurations  [community]
+
+Jest 30.4.0 fixed a coverage accuracy bug (PR #16140) that affected any project using the `projects`
+array in `jest.config.ts`. Before the fix, `collectCoverageFrom` glob patterns were resolved relative
+to **each project's individual `rootDir`** rather than the global (root-level) config directory.
+In a monorepo with multiple projects, a `collectCoverageFrom: ['src/**/*.ts']` glob defined at the
+root level would fail to match source files in projects whose `rootDir` pointed to a sub-directory.
+The files were instrumented correctly for the project where `rootDir` matched, but silently excluded
+for other projects — coverage numbers appeared lower than reality, with no error message explaining why.
+
+**WHY it matters**: TypeScript monorepos using Jest's `projects` config to run multiple test suites
+(unit + integration, or cross-package) with a shared root `collectCoverageFrom` were affected. The
+symptom was lower-than-expected coverage numbers that did not improve regardless of how many tests
+were added — the files simply weren't being instrumented. After upgrading to Jest 30.4.0+, the
+`collectCoverageFrom` glob is resolved against `globalRootDir` (with fallback to `config.rootDir`),
+ensuring that root-level coverage patterns correctly match files across all project configurations.
+
+```typescript
+// jest.config.ts — root config: safe pattern after Jest 30.4 fix
+import { defineConfig } from 'jest';
+
+export default defineConfig({
+  // coverageThreshold must be at root level — projects array cannot override it
+  coverageThreshold: {
+    global: { lines: 80, branches: 75, functions: 80, statements: 80 },
+    './src/payments/': { lines: 95, branches: 90, functions: 95, statements: 95 },
+  },
+
+  // After Jest 30.4: these globs resolve against the global rootDir,
+  // not per-project rootDir — multi-project coverage is now accurate.
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    'packages/*/src/**/*.ts',   // cross-package coverage — was silently missing pre-30.4
+    '!**/*.d.ts',
+    '!**/__mocks__/**',
+    '!**/index.ts',
+  ],
+
+  projects: [
+    {
+      displayName: 'unit',
+      testMatch: ['<rootDir>/src/**/*.unit.test.ts'],
+      preset: 'ts-jest',
+    },
+    {
+      displayName: 'integration',
+      testMatch: ['<rootDir>/src/**/*.integration.test.ts'],
+      preset: 'ts-jest',
+      testEnvironment: 'node',
+    },
+  ],
+});
+```
+
+**Upgrade action**: if you were on Jest 30.3.x or earlier with a `projects` array, run `npx jest
+--coverage` after upgrading to 30.4.0+ and compare `coverage-summary.json` file counts before
+and after. An increase in instrumented file count means the pre-30.4 version was silently missing
+files. Re-establish your coverage baselines after the upgrade — thresholds may need adjustment
+since previously-excluded files will now appear in the report, potentially lowering aggregate percentages.
+
+### G59 — `coverage.changed` + `thresholds.perFile` combined: per-file checks apply only to changed files, not the full project  [community]
+
+Vitest 4.1's `coverage.changed` option (Pattern 26) and `thresholds.perFile` interact in a way
+that is not obvious from documentation: when both are active, `perFile` threshold enforcement
+applies **only to the files included in the `changed` scope**. Files outside the changed set are
+excluded from both coverage reporting AND per-file threshold evaluation.
+
+This is the correct behaviour for differential coverage workflows — you only want to enforce
+per-file thresholds on the code you are shipping — but it has a non-obvious implication:
+a PR that modifies 5 files and adds tests only for 3 of them will pass `perFile` thresholds
+if those 3 files are well-covered, even though 2 changed files have no tests at all. The
+`all: true` / `include` glob would normally reveal zero-coverage files, but `coverage.changed`
+overrides the file scope entirely.
+
+**WHY it matters**: teams treating `coverage.changed + perFile` as equivalent to "all changed
+files must have ≥ N% coverage" are vulnerable to this gap. A PR with new untested files passes
+as long as the changed files that happen to have tests are covered. The correct interpretation
+is: `coverage.changed + perFile` enforces the threshold on changed files that are importable
+during the test run; new files with zero test imports are excluded.
+
+```typescript
+// vitest.config.ts — coverage.changed + perFile: understand the scope
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/**/*.test.ts', 'src/**/__mocks__/**'],
+      reporter: ['text', 'json-summary', 'lcov'],
+      reportsDirectory: './coverage',
+
+      // coverage.changed: only report coverage for files changed vs main.
+      // All tests still run; only the report scope is filtered.
+      changed: 'main',
+
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+        // perFile: true applies these thresholds to each CHANGED file individually.
+        // A new file with zero imports (untested) is not included in the changed report
+        // and therefore does not trigger a per-file threshold failure.
+        // To catch fully untested new files: add a separate CI step that checks
+        // coverage-summary.json for any file at lines.pct === 0 AND lines.total > 0.
+        perFile: true,
+      },
+    },
+  },
+});
+```
+
+```typescript
+// scripts/check-new-untested-files.ts — catch new files with zero coverage
+// Run alongside vitest --coverage --coverage.changed=origin/main
+// to detect files that coverage.changed excludes (never imported by any test).
+import { execSync } from 'node:child_process';
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+interface FileCoverage {
+  lines: { total: number; covered: number; pct: number };
+}
+interface CoverageSummary {
+  total: FileCoverage;
+  [file: string]: FileCoverage;
+}
+
+// Find TS files changed vs main but absent from coverage-summary.json
+// (these are files that were never imported by any test).
+function findUntestedChangedFiles(): void {
+  const changedFiles = execSync('git diff --name-only origin/main HEAD -- "*.ts"')
+    .toString()
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .filter((f) => !f.endsWith('.d.ts') && !f.includes('.test.') && !f.includes('__mocks__'));
+
+  const summaryPath = resolve(process.cwd(), 'coverage/coverage-summary.json');
+  if (!existsSync(summaryPath)) {
+    console.log('No coverage-summary.json — skipping untested file check.');
+    return;
+  }
+
+  const summary: CoverageSummary = JSON.parse(readFileSync(summaryPath, 'utf-8'));
+  const coveredFiles = new Set(Object.keys(summary));
+
+  const untested = changedFiles.filter(
+    (f) => !coveredFiles.some((cov) => cov.endsWith(f)),
+  );
+
+  if (untested.length > 0) {
+    console.error(
+      `${untested.length} changed file(s) have zero test coverage (never imported by any test):\n` +
+        untested.map((f) => `  - ${f}`).join('\n'),
+    );
+    process.exit(1);
+  }
+  console.log('All changed files appear in coverage report.');
+}
+
+findUntestedChangedFiles();
+```
+
+**Rule of thumb**: use `coverage.changed + perFile` for enforcing per-file quality on touched files.
+Use a separate `check-new-untested-files` script (above) to catch entirely untested new files.
+The two checks are complementary — neither alone is sufficient for a complete differential coverage gate.
+
+### Pattern 33 — Vitest `coverage.reporter` default array includes `clover`: trim it for faster CI  [community]
+
+The default `coverage.reporter` value in Vitest is `['text', 'html', 'clover', 'json']`. In most
+TypeScript CI pipelines, `clover` (an XML format used by some enterprise CI systems like
+TeamCity and Bamboo) and `html` are unnecessary overhead — Codecov, GitHub Actions, and most
+modern CI tools only need `lcov` or `json-summary`. Each reporter in the array is processed
+**sequentially** before Vitest exits; leaving unused reporters in the array adds wall-clock time
+and disk writes with no benefit.
+
+**`clover` overhead**: the `clover` XML reporter writes a full XML document with per-line
+entry elements. On codebases with 200+ TypeScript source files, `clover.xml` can be 2–5 MB and
+takes 2–10 seconds to write. If no CI tool reads `clover.xml`, this is pure waste.
+
+**`html` in CI**: the `html` reporter generates a multi-file tree (one HTML file per source file,
+plus assets). On large codebases, this tree can be hundreds of files. In CI without artefact
+uploads, this is also waste. Replace `html` with `html-spa` (single file) only when you actually
+upload the HTML report as a CI artefact.
+
+**Reporter array ordering in terminal output**: the first reporter entry that writes to stdout
+(i.e., `text` or `text-summary`) determines what appears in the CI terminal log. Placing
+`text-summary` before `text` in a multi-reporter config causes the summary to appear first in
+the log — useful for CI systems that truncate long output from the bottom.
+
+```typescript
+// vitest.config.ts — minimal CI reporter set (replaces the bloated default)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: [
+        'src/**/*.d.ts',
+        'src/**/*.test.ts',
+        'src/**/*.spec.ts',
+        'src/**/__mocks__/**',
+        'src/**/index.ts',
+        'src/**/*.generated.ts',
+      ],
+
+      // Minimal reporter set for GitHub Actions + Codecov:
+      // - text-summary: one-line terminal summary (CI log friendly)
+      // - lcov: for Codecov/Coveralls upload
+      // - json-summary: for programmatic threshold checks (Pattern 17)
+      // NOT included: html (no-one reads it without artefact upload),
+      //               clover (no TeamCity/Bamboo in this pipeline),
+      //               json (large file; json-summary is sufficient for thresholds)
+      reporter: ['text-summary', 'lcov', 'json-summary'],
+
+      reportsDirectory: './coverage',
+      reportOnFailure: true,   // still write lcov/json-summary if tests fail (for Codecov)
+
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+        perFile: true,
+      },
+    },
+  },
+});
+```
+
+```typescript
+// vitest.config.local.ts — local developer config: full HTML report for browsing
+// git-ignored; import this file with VITEST_CONFIG=vitest.config.local.ts locally
+import { defineConfig, mergeConfig } from 'vitest/config';
+import baseConfig from './vitest.config';
+
+export default mergeConfig(baseConfig, defineConfig({
+  test: {
+    coverage: {
+      // Override reporter array for local development — add html-spa for browsing
+      reporter: ['text', 'html-spa', 'lcov', 'json-summary'],
+      skipFull: true,          // skip 100%-covered files in terminal output
+    },
+  },
+}));
+```
+
+**Reporter selection quick reference for TypeScript CI:**
+
+| Use case | Recommended reporters |
+|----------|-----------------------|
+| GitHub Actions + Codecov | `['text-summary', 'lcov', 'json-summary']` |
+| GitHub Actions only (no Codecov) | `['text-summary', 'json-summary']` |
+| Local development | `['text', 'html-spa', 'json-summary']` |
+| S3/blob upload | `['text-summary', 'html-spa', 'lcov']` |
+| TeamCity/Bamboo | `['text-summary', 'clover', 'json-summary']` |
+| Legacy nyc migration | `['text', 'lcov', 'json', 'json-summary']` |
+
+**When `clover` IS worth keeping**: CI systems that parse `clover.xml` for their own coverage
+dashboards (TeamCity built-in coverage UI, Bamboo code coverage gadget). For GitHub Actions,
+CircleCI, GitLab CI, and most modern pipelines, `lcov` is the correct format.
+
+### G60 — Jest 30.4 `projects` array coverage accuracy: upgrade silently reveals hidden coverage debt  [community]
+
+The Jest 30.4 coverage accuracy fix for `projects` configurations (G58 / PR #16140) corrects
+glob resolution from per-project `rootDir` to `globalRootDir`. For teams that were affected,
+the upgrade silently reveals previously invisible coverage gaps. **WHY it matters**: the fix
+is not merely a bugfix — it is a coverage baseline reset. After upgrading to Jest 30.4.0 in a
+`projects`-based monorepo, coverage file counts and percentages will change. The typical outcome:
+aggregate coverage drops because files that were silently excluded now appear in the report with
+their real (often low) coverage numbers.
+
+The symptom that indicates you were affected: after upgrading to 30.4.0, the number of files in
+`coverage/coverage-summary.json` increases, and aggregate line/branch coverage decreases. If
+coverage numbers stay the same and file count is identical, your `collectCoverageFrom` pattern was
+already matching correctly (possibly because all projects shared the same `rootDir`).
+
+```typescript
+// scripts/verify-coverage-file-count.ts — detect post-upgrade coverage baseline drift
+// Run before and after upgrading to Jest 30.4.0 to detect the projects coverage fix impact.
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+interface CoverageSummary {
+  total: { lines: { pct: number }; branches: { pct: number } };
+  [key: string]: unknown;
+}
+
+function reportCoverageSummary(): void {
+  const summaryPath = resolve(process.cwd(), 'coverage/coverage-summary.json');
+  const summary: CoverageSummary = JSON.parse(readFileSync(summaryPath, 'utf-8'));
+  const fileCount = Object.keys(summary).filter((k) => k !== 'total').length;
+  console.log(`Instrumented files:  ${fileCount}`);
+  console.log(`Global line coverage: ${summary.total.lines.pct}%`);
+  console.log(`Global branch coverage: ${summary.total.branches.pct}%`);
+  // Compare to pre-upgrade baseline — significant changes indicate the coverage fix applied.
+  // If file count increased: re-establish thresholds based on new (accurate) numbers.
+}
+
+reportCoverageSummary();
+```
+
+```bash
+# Safe upgrade procedure for Jest 30.4.0 in projects-based TypeScript repos:
+# 1. Save current coverage baseline:
+npx jest --coverage --coverageReporters=json-summary
+cp coverage/coverage-summary.json coverage/coverage-summary-pre-upgrade.json
+
+# 2. Upgrade Jest:
+npm install jest@30.4.x ts-jest@^30 --save-dev
+
+# 3. Re-run coverage:
+npx jest --coverage --coverageReporters=json-summary
+
+# 4. Compare file counts and percentages:
+node -e "
+  const before = require('./coverage/coverage-summary-pre-upgrade.json');
+  const after = require('./coverage/coverage-summary.json');
+  const beforeFiles = Object.keys(before).filter(k => k !== 'total').length;
+  const afterFiles = Object.keys(after).filter(k => k !== 'total').length;
+  console.log('Files before:', beforeFiles, '→ after:', afterFiles);
+  console.log('Lines before:', before.total.lines.pct + '%', '→ after:', after.total.lines.pct + '%');
+"
+```
+
+**If file count increases after upgrade**: the old numbers were inaccurate — the new numbers
+reflect reality. Update `coverageThreshold` values to reflect the actual (previously invisible)
+debt, then plan a sprint to improve coverage on the newly revealed files. Do NOT simply lower
+thresholds to match the new numbers and move on — the revealed files represent real uncovered code.
 
 ---
 

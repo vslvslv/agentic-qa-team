@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 44 | score: 98/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) + qa-methodology-refine extension run 2026-05-12 iter 41 (WebAIM Million 2025 published data, Playwright locator.normalize() Playwright 1.50 pattern, axe-core 4.11.4 anchor ancestry selector escaping fix, WCAG 3.0 task-level outcome testing pattern refinements, community gotchas 77-80) + qa-methodology-refine extension run 2026-05-12 iter 42 (ARIA-in-HTML W3C Rec April 2026 — selectedcontent element testing + role=none gotcha, label element ARIA permitted attributes July 2025 update, image role img synonym December 2024, community gotchas 81-83) + qa-methodology-refine extension run 2026-05-12 iter 43 (Jest v30 incompatibility with jest-axe v10, Playwright locator.describe() v1.53 accessibility workflow pattern, community gotchas 84-85) + qa-methodology-refine extension run 2026-05-12 iter 44 (Playwright 1.60 testInfoError.errorContext aria snapshot in failure output, cypress-axe v1.7.0 Cypress 15 support + retry option, Playwright 1.52 failOnFlakyTests for accessibility CI gates, community gotchas 86-88) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 45 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) + qa-methodology-refine extension run 2026-05-12 iter 41 (WebAIM Million 2025 published data, Playwright locator.normalize() Playwright 1.50 pattern, axe-core 4.11.4 anchor ancestry selector escaping fix, WCAG 3.0 task-level outcome testing pattern refinements, community gotchas 77-80) + qa-methodology-refine extension run 2026-05-12 iter 42 (ARIA-in-HTML W3C Rec April 2026 — selectedcontent element testing + role=none gotcha, label element ARIA permitted attributes July 2025 update, image role img synonym December 2024, community gotchas 81-83) + qa-methodology-refine extension run 2026-05-12 iter 43 (Jest v30 incompatibility with jest-axe v10, Playwright locator.describe() v1.53 accessibility workflow pattern, community gotchas 84-85) + qa-methodology-refine extension run 2026-05-12 iter 44 (Playwright 1.60 testInfoError.errorContext aria snapshot in failure output, cypress-axe v1.7.0 Cypress 15 support + retry option, Playwright 1.52 failOnFlakyTests for accessibility CI gates, community gotchas 86-88) + qa-methodology-refine extension run 2026-05-12 iter 45 (WCAG 3.0 March 2026 Outcomes→Requirements/Foundational→Core terminology pivot, @axe-core/mcp Claude Desktop configuration pattern with AxeResultsSchema TypeScript types, axe-core 4.11.3 position:fixed offscreen exclusion behavior, EU EAA post-June-2025 sector-phased enforcement in EU member states, community gotchas 89-91) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -9185,4 +9185,101 @@ import 'cypress-axe';
 87. **[community] cypress-axe `retries` option does NOT solve permanent violations — it is specifically for timing windows where content is mid-render**: The `retries` option in `checkA11y` (cypress-axe v1.4.0+) is designed to handle animated loading states, skeleton screens, and lazy-loaded content that may temporarily violate WCAG (e.g., a skeleton placeholder `<div>` with no accessible name). It retries the axe scan up to N times until the scan finds zero violations. If a real violation exists — e.g., an image with no `alt` attribute — retrying will not fix it; the test will fail after all retries are exhausted. Teams that set `retries: 5` to "make the accessibility test green" are masking violations. WHY: the retry mechanism was introduced because some valid pages have transient states during loading that produce false positives; it is not a flakiness suppressor for real violations.
 
 88. **[community] Playwright `testConfig.failOnFlakyTests` (v1.52+) is safe to enable for accessibility test suites — accessibility tests should not be flaky if written correctly**: Playwright 1.52 added `testConfig.failOnFlakyTests: true`, which marks a test run as failed if any test passed on a retry (indicating flakiness). Teams sometimes hesitate to enable this for accessibility suites because their `toMatchAriaSnapshot` tests retry against dynamic content. The correct fix is to await stable DOM state before taking a snapshot (`page.waitForLoadState('networkidle')`, `page.waitForSelector('[data-testid="content-loaded"]')`) rather than suppressing flakiness detection. An accessibility test that is flaky is almost always testing a race condition, not a genuine accessibility property. WHY: enabling `failOnFlakyTests: true` in CI forces teams to fix the race condition rather than hiding it — this produces more reliable accessibility coverage and exposes animation timing issues that may themselves be accessibility problems (WCAG 2.3.1 Three Flashes, WCAG 2.2.2 Pause, Stop, Hide).
+
+---
+
+### @axe-core/mcp — Claude Desktop Configuration and TypeScript Result Interpretation
+
+The `@axe-core/mcp` package (published by Deque as part of the `axe-core-npm` monorepo) exposes axe-core accessibility scanning as a **Model Context Protocol (MCP) server**. It allows AI coding assistants — notably Claude Desktop — to run axe-core scans against a URL and receive structured violation data as MCP tool responses, enabling AI-assisted triage of accessibility issues during development without switching to a test runner.
+
+**Claude Desktop `claude_desktop_config.json` setup:**
+
+```json
+{
+  "mcpServers": {
+    "axe-core": {
+      "command": "npx",
+      "args": ["-y", "@axe-core/mcp@latest"],
+      "env": {}
+    }
+  }
+}
+```
+
+Once configured, Claude can call the `axe_scan` MCP tool with a URL argument. The server launches a headless browser, runs `axe.run()` against the page, and returns a JSON payload with `violations`, `passes`, `incomplete`, and `inapplicable` arrays — identical to the `axe.AxeResults` shape from `axe-core`.
+
+**TypeScript: interpreting MCP tool call results in a custom MCP client:**
+
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+import type { AxeResults, Result } from 'axe-core';
+
+// Shape returned by the @axe-core/mcp axe_scan tool call
+// The MCP server serialises axe.AxeResults as JSON in tool_result content
+interface AxeMcpScanOutput extends Pick<AxeResults, 'violations' | 'incomplete' | 'passes' | 'inapplicable'> {
+  url: string;
+  timestamp: string;
+}
+
+function formatViolationSummary(output: AxeMcpScanOutput): string {
+  const criticalAndSerious = output.violations.filter(
+    (v: Result) => v.impact === 'critical' || v.impact === 'serious',
+  );
+  const lines: string[] = [
+    `URL: ${output.url}`,
+    `Total violations: ${output.violations.length} (${criticalAndSerious.length} critical/serious)`,
+  ];
+  for (const v of criticalAndSerious) {
+    lines.push(`  [${v.impact?.toUpperCase()}] ${v.id}: ${v.description} (${v.nodes.length} node(s))`);
+  }
+  return lines.join('\n');
+}
+
+// Example: call the MCP tool via Anthropic client with tool_choice
+async function scanUrlForA11yViolations(url: string): Promise<AxeMcpScanOutput> {
+  const client = new Anthropic();
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-5',
+    max_tokens: 4096,
+    tools: [
+      {
+        name: 'axe_scan',
+        description: 'Run axe-core accessibility scan on a URL',
+        input_schema: {
+          type: 'object' as const,
+          properties: { url: { type: 'string', description: 'URL to scan' } },
+          required: ['url'],
+        },
+      },
+    ],
+    tool_choice: { type: 'auto' },
+    messages: [{ role: 'user', content: `Scan ${url} for accessibility violations` }],
+  });
+  // Extract the tool result from the response
+  const toolUse = response.content.find((block) => block.type === 'tool_use');
+  if (!toolUse || toolUse.type !== 'tool_use') throw new Error('No tool_use block in response');
+  return toolUse.input as unknown as AxeMcpScanOutput;
+}
+```
+
+**When to use `@axe-core/mcp` vs. `@axe-core/playwright`:**
+
+| Use case | Recommended tool |
+|----------|-----------------|
+| AI assistant-assisted triage during development (no test runner) | `@axe-core/mcp` in Claude Desktop |
+| Automated CI pipeline accessibility gates | `@axe-core/playwright` or `jest-axe` |
+| Quick ad-hoc URL scan without writing a test file | `@axe-core/mcp` |
+| Structured regression testing with TypeScript fixtures | `@axe-core/playwright` |
+
+> **Limitation**: `@axe-core/mcp` scans the URL as a headless browser session without any authentication. Pages behind login walls cannot be scanned directly — use `@axe-core/playwright` with the `storageState` option for authenticated pages.
+
+---
+
+### New Community Gotchas (Iteration 45)
+
+89. **[community] WCAG 3.0 March 2026 Working Draft changed core terminology — "Outcomes" are now "Requirements" and "Foundational Requirements" are now "Core Requirements"**: The W3C WCAG 3.0 March 2026 Working Draft introduced a significant terminology pivot that affects how teams should document their WCAG 3.0 readiness plans and test strategies. What was previously called an "Outcome" (the testable unit of conformance) is now called a "Requirement". What was previously called a "Foundational Requirement" (the highest-priority subset required for minimum conformance) is now called a "Core Requirement". If your organisation has any internal documentation, policy templates, or test plan headers that reference "WCAG 3.0 Outcomes" or "Foundational Requirements" in the WCAG 3.0 context, those terms are now stale. WHY: the WCAG WG changed the terminology after finding that "Outcome" was confusing (implied a test result rather than a success criterion) and "Foundational" was ambiguous. The March 2026 draft is still several years from finalisation — treat WCAG 3.0 coverage in test suites as exploratory/supplemental until the standard stabilises.
+
+90. **[community] axe-core 4.11.3 changed how elements with `position: fixed` and offscreen coordinates are classified — this breaks some `visually-hidden` utility patterns that relied on the old behavior**: Prior to axe-core 4.11.3, elements styled with the common "visually hidden" pattern (`position: absolute; width: 1px; height: 1px; clip: rect(0,0,0,0); overflow: hidden`) were sometimes incorrectly reported as violations when also applying `position: fixed` with large negative coordinates (e.g., `left: -9999px`). axe-core 4.11.3 improved the offscreen detection logic specifically for `position: fixed` elements — it now correctly excludes elements that are positioned outside the visible viewport using fixed positioning. The side effect is that tests that previously passed by accident (the element was excluded via a different code path) may now fail if the element is considered on-screen under the new logic. WHY: if your `visually-hidden` CSS uses `position: fixed` (uncommon but present in some legacy component libraries), audit it against 4.11.3. The recommended modern visually-hidden pattern uses `position: absolute` — this is unaffected by the 4.11.3 change.
+
+91. **[community] EU EAA post-June 2025 enforcement is not uniform across all EU member states — some sectors have phased timelines extending to 2027, and B2B-only products in certain sectors may be exempt until re-assessed**: The European Accessibility Act deadline of June 28, 2025 was the transposition deadline for member states to have national laws in force. However, several EU member states legislated sector-specific transition periods: for example, some member states grant providers of self-service terminals (ATMs, ticketing kiosks) up to five years from the original EAA transposition date (extending to 2027) if replacement is disproportionately burdensome. The EAA also includes a microenterprise exemption (fewer than 10 employees and less than €2M turnover) for some service categories. For QA teams, this means: (1) do not assume that passing EN 301 549 v3.3.2 / WCAG 2.2 AA is legally required for every product in every EU market on the same date; (2) check the specific national implementing regulation for each target market; (3) document which standard version and which annex applies to your product category. WHY: B2B platform teams have incorrectly assumed EAA does not apply to them because their end customers are businesses — but if the business's customers are consumers, the EAA may still apply through the supply chain.
 

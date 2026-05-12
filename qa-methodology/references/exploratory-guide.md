@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 48 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + owasp-agentic-2026 + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 49 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + owasp-agentic-2026 + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -39,6 +39,7 @@
      - Iter 46: Playwright v1.57-v1.58 additions not yet covered — locator.description() getter for reading back describe() labels; Service Worker network routing and console interception via BrowserContext (Chromium); testConfig.webServer.wait regex for dynamic-port readiness; steps option for pointer actions (locator.click/dragTo); Speedboard Timeline chart in merged HTML reports (v1.58); OWASP Top 10 for Agentic Applications 2026 as charter framework for agentic-AI exploration; TypeScript agentic-session oracle harness; community lessons #126-128; new anti-pattern (exploring multi-agent pipelines without agentic OWASP charter)
      - Iter 47: Playwright v1.48-v1.52 tooling additions not yet covered — page.routeWebSocket()/WebSocketRoute API as framework-level WS interception oracle (v1.48); page.requestGC() + WeakRef pattern for memory-leak exploration (v1.48); storageState({ indexedDB: true }) for auth-state exploration in Firebase/IndexedDB apps (v1.51); toContainClass() assertion for CSS-state oracles during UI exploration (v1.52); failOnFlakyTests guard for session harness reliability (v1.52); TypeScript WebSocketRouteHarness; community lessons #129-131; new anti-pattern (replacing page.routeWebSocket() with a hand-rolled proxy for WS exploration)
      - Iter 48: Playwright v1.50-v1.56 tooling additions not yet covered — test.step() timeout + test.step.skip() for bounded step execution in session harnesses (v1.50); toHaveAccessibleErrorMessage() as form-error oracle (v1.50); locator.filter({ visible: true }) for disambiguation in dense UIs (v1.51); partitionKey cookie support + --user-data-dir for persistent exploratory sessions (v1.54); testStepInfo.titlePath for structured session step labelling (v1.55); page.consoleMessages() / page.pageErrors() / page.requests() as in-session diagnostic oracles (v1.56); TypeScript StepBoundedSessionHarness and DiagnosticSnapshotHarness; community lessons #132-134; new anti-pattern (polling page.on() event handlers instead of page.consoleMessages() for post-hoc session analysis)
+     - Iter 49: Playwright Test Agents init-agents setup workflow — npx playwright init-agents --loop=[vscode|claude|opencode], .github/ agent definition output, specs/+tests/ convention, seed.spec.ts as exploratory environment bootstrap, agent regeneration lifecycle; browser.on('context') + BrowserContext lifecycle mirroring (v1.60) as multi-context oracle; browserContext.setStorageState() for mid-session auth rotation (v1.59); locator.normalize() for locator hygiene after page.pickLocator() (v1.59); TypeScript MultiContextLifecycleHarness; community lessons #135-137; new anti-pattern (using the same seed.spec.ts across all charters without charter-scoped setup)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -11067,3 +11068,366 @@ The event listener pattern remains correct for:
 133. **[community] The `test.step()` timeout option changed the failure modes of session harnesses in a way that teams initially found counterintuitive: harnesses that had previously hung silently for the global test timeout (120 seconds) now failed loudly at 30 seconds, producing visible step-level `TimeoutError` entries in Trace Viewer that were easy to triage.** Before per-step timeouts, a hung step produced a timeout at the global test level with a generic "Test timeout of 120000ms exceeded" message and a Trace Viewer snapshot frozen at the hung state — no indication of which step hung or why. After adding `timeout: 30_000` to each session phase, the same hang produces a `TimeoutError` attached to the specific step ("Phase 3: payment submission — TimeoutError: step exceeded 30000ms"), with the Trace Viewer snapshot focused on the last action within that step. Triage time dropped from "replay the entire 2-minute trace to find the hang point" to "read the step error label and check the snapshot at that step." One team reported that their debrief meeting time dropped by approximately 20% after adopting per-step timeouts across all session harnesses — the trace artifacts were simply faster to read.
 
 134. **[community] `locator.filter({ visible: true })` solved a class of false-positive defect reports that teams had been filing for months: reports where a "broken" UI element turned out to be a hidden element in an inactive tab or closed panel that matched the locator used in the session harness.** The defect reports looked like "Button X is not responding to clicks" — the harness was clicking the button and the action was succeeding, but the wrong button was being clicked (a hidden one in an inactive tab). The visible button in the active tab was not being interacted with at all. When the team added `filter({ visible: true })` to their locators for tabbed interfaces, the false positives stopped immediately. The deeper lesson: in any UI with multiple visibility states sharing the same element types, an exploratory session harness without visibility filtering is not observing the UI the user sees — it may be interacting with the shadow structure behind the visible layer, producing results that do not reflect real user experience.
+
+---
+
+### Playwright Test Agents `init-agents` Setup and the `seed.spec.ts` Exploratory Bootstrap  [community]
+
+Iteration 44 introduced the Playwright Test Agents planner/generator/healer framework conceptually, including the CLI workflow (`npx playwright test-agent plan/generate/heal`). The `init-agents` setup command — and its implications for exploratory test methodology — was not covered there.
+
+**`npx playwright init-agents`** is the one-time initialization step that generates the AI loop-specific agent definition files into the `.github/` directory of the project. The `--loop` flag selects the target AI coding tool:
+
+```bash
+# Initialize for VS Code Copilot agent mode
+npx playwright init-agents --loop=vscode
+
+# Initialize for Claude Code
+npx playwright init-agents --loop=claude
+
+# Initialize for OpenCode
+npx playwright init-agents --loop=opencode
+```
+
+Each `--loop` value produces a different agent definition file format (VS Code's `.github/copilot-instructions.md`, Claude Code's `.claude/agents/playwright-*.md`, OpenCode's `.opencode/agents/*.md`), but all three produce definitions for the same three agents: Planner, Generator, and Healer. The agent definition files contain the instructions the AI tool follows when invoked as that agent — they must be **regenerated whenever Playwright updates**, because new Playwright versions add new tools and API instructions that the agent definitions reference.
+
+**Why regeneration matters for exploratory testing methodology:**
+
+Each Playwright minor release adds new locator strategies, assertion methods, and tooling APIs that the Planner agent can use during its autonomous application exploration. A stale agent definition pinned to v1.56 Playwright instructions will not use v1.60's `locator.drop()` for upload zone probing, `test.abort()` for unrecoverable state detection, or `locator.normalize()` for selector hygiene. The practical consequence: an outdated definition produces shallower exploration coverage, because the agent operates with an incomplete inventory of available tools. Regenerate after every `npm update @playwright/test`.
+
+**`seed.spec.ts` as an exploratory environment bootstrap:**
+
+The Planner agent does not autonomously navigate to the area under exploration from scratch. Instead, it runs a `seed.spec.ts` file that the tester writes to establish the environment: authentication state, test data preconditions, navigation to the entry point of the chartered area. The Planner treats the seed test as the starting context for its exploration.
+
+This has direct implications for charter design: the quality of the Planner's output is bounded by the precision of the seed file's preconditions. A seed that ends at `/checkout` without establishing a test cart produces a generic checkout exploration. A seed that establishes a cart with an international address, an expired card on file, and a promo code applied produces an exploration grounded in a specific, high-risk scenario — the Planner will explore edge cases around those preconditions.
+
+```typescript
+// src/testing/exploratory/seeds/checkout-intl-expired-card.seed.spec.ts
+// Charter-scoped seed for: "Explore checkout address validation
+//   using an international shipping address + expired card + promo code
+//   to discover locale formatting errors and payment retry edge cases."
+// Requires Playwright v1.56+ (Test Agents framework)
+
+import { test } from '@playwright/test';
+
+test.use({ baseURL: process.env.STAGING_URL ?? 'http://localhost:3000' });
+
+test('seed: checkout — intl address, expired card, promo code', async ({ page }) => {
+  // 1. Establish auth state (reuse storageState from auth fixture)
+  //    The Planner runs from this point, inheriting the authenticated session.
+  await page.goto('/checkout');
+
+  // 2. Set up specific preconditions that define this charter's scope
+  await page.getByRole('textbox', { name: 'Promo code' }).fill('SUMMER10');
+  await page.getByRole('button', { name: 'Apply' }).click();
+
+  // 3. Navigate to the address step with an international address pre-filled
+  await page.getByRole('radio', { name: 'New address' }).click();
+  await page.getByLabel('Country').selectOption('JP'); // Japan — non-US postal code
+  await page.getByLabel('Postal code').fill('100-0001'); // Tokyo central postal code
+
+  // The Planner agent takes over from here.
+  // It will explore form validation, error states, and the payment flow
+  // in the context of these specific preconditions.
+});
+```
+
+**Canonical directory structure produced by `init-agents`:**
+
+```
+.github/
+  copilot-instructions.md    # (or .claude/agents/ / .opencode/agents/)
+specs/
+  checkout-intl.md           # Planner output: human-readable Markdown plan
+tests/
+  checkout-intl.spec.ts      # Generator output: runnable TypeScript tests
+src/testing/exploratory/seeds/
+  checkout-intl-expired-card.seed.spec.ts  # Tester-written seed
+```
+
+The `specs/` directory is the key handoff artifact: it contains structured Markdown plans that can be reviewed by a non-technical stakeholder (product owner, team lead) to confirm coverage before the Generator produces executable tests. Teams that treat `specs/` as part of their sprint review artifacts report that product owners can more easily identify gaps in planned coverage than when reviewing TypeScript test files directly.
+
+**Tradeoffs and gotchas for exploratory use:**
+
+| Tradeoff | Detail |
+|----------|--------|
+| Agent definitions are AI-loop-specific | A team switching from VS Code Copilot to Claude Code must reinitialize with `--loop=claude`; definitions are not interchangeable |
+| Seed files accumulate per charter | Each distinct charter scenario should have its own seed file to preserve precondition isolation; a single generic seed produces a single generic plan that under-serves high-risk scenarios |
+| Planner autonomy is bounded by the seed's navigation depth | If the seed stops at `/checkout`, the Planner cannot discover bugs in the order confirmation page unless the seed navigates past the payment step |
+| Generator produces tests that pass on current build | Generator assertions reflect observable current behavior — treat as a draft skeleton requiring tester review before committing (reiterated from Iter 44, because this is the most commonly violated Agents workflow principle) |
+
+---
+
+### `browser.on('context')` + BrowserContext Lifecycle Mirroring — Multi-Context Session Oracle (v1.60)
+
+Playwright v1.60 introduced two complementary lifecycle additions that change how multi-context exploratory sessions can observe and validate context boundaries.
+
+**`browser.on('context')`** fires whenever a new `BrowserContext` is created within the browser instance. This includes contexts created by the test harness itself, contexts spawned by the application under test (via `window.open()` with `noopener`, popup targets that create their own contexts, OAuth redirect windows), and any programmatically created contexts. For exploratory sessions, this is a **new visibility layer into multi-context application flows** that previously required pre-registering listeners on known contexts.
+
+**BrowserContext lifecycle mirroring**: In v1.60, a `BrowserContext` instance now emits the same lifecycle events as individual pages within it: `download`, `frameattached`, `framedetached`, `framenavigated`, `pageclose`, `pageload`. These are the same events that previously required per-page listeners, but they fire at the context level, covering all pages spawned by that context. For a multi-tab application where new tabs are opened by user actions (new tab links, popups, OAuth), the context-level events provide a single listener point rather than requiring listener setup on each dynamically created page.
+
+**Exploratory testing value:**
+
+The combination of these two additions enables a new class of exploratory probe: **context-boundary verification**. In applications with strict context isolation requirements (multi-tenant dashboards, financial applications with session isolation guarantees, SSO flows that create a new context for the identity provider), the tester can verify that:
+
+1. No unexpected contexts are created during a session (oracle: Claims — the application claims to be single-context)
+2. All created contexts receive the correct lifecycle events in the expected order
+3. Context creation timing correlates with application actions (oracle: Purpose — OAuth should create a context when the user clicks "Sign in with Google")
+
+**TypeScript: Multi-Context Lifecycle Harness (v1.60+)**
+
+```typescript
+// src/testing/exploratory/multi-context-lifecycle-harness.ts
+// Monitors browser-level context creation and context-level lifecycle events
+// during an exploratory session. Used to probe applications with multi-context
+// flows (popups, OAuth, multi-tenant isolation).
+// Requires: @playwright/test ≥ 1.60
+
+import { test, expect, Browser, BrowserContext, Page } from '@playwright/test';
+
+export interface ContextLifecycleRecord {
+  contextId: string;
+  createdAt: number;
+  events: Array<{ event: string; url?: string; timestamp: number }>;
+  pages: string[];  // URLs of all pages seen in this context
+}
+
+/**
+ * Installs a browser-level context listener and context-level lifecycle listeners.
+ * Returns a function that retrieves all recorded context lifecycle events.
+ *
+ * Call in a test fixture or beforeEach to instrument a session harness.
+ */
+export function installMultiContextOracle(browser: Browser): () => ContextLifecycleRecord[] {
+  const records = new Map<BrowserContext, ContextLifecycleRecord>();
+  let contextCounter = 0;
+
+  // @ts-expect-error browser.on('context') requires Playwright v1.60+
+  browser.on('context', (ctx: BrowserContext) => {
+    const contextId = `ctx-${++contextCounter}`;
+    const record: ContextLifecycleRecord = {
+      contextId,
+      createdAt: Date.now(),
+      events: [],
+      pages: [],
+    };
+    records.set(ctx, record);
+
+    // Mirror context-level lifecycle events (v1.60: BrowserContext emits page lifecycle)
+    const trackEvent = (event: string) => (page: Page) => {
+      const url = page.url();
+      record.events.push({ event, url, timestamp: Date.now() });
+      if (!record.pages.includes(url)) record.pages.push(url);
+    };
+
+    ctx.on('pageload',      trackEvent('pageload'));
+    ctx.on('pageclose',     trackEvent('pageclose'));
+    ctx.on('framenavigated', trackEvent('framenavigated'));
+  });
+
+  return () => Array.from(records.values());
+}
+
+// Usage in a session harness:
+//
+// test('OAuth flow context boundary probe', async ({ browser }) => {
+//   const getContextRecords = installMultiContextOracle(browser);
+//
+//   const ctx = await browser.newContext();
+//   const page = await ctx.newPage();
+//   await page.goto('/dashboard');
+//   await page.getByRole('button', { name: 'Sign in with Google' }).click();
+//
+//   // Wait for OAuth popup (should create a new context)
+//   await page.waitForTimeout(2000);
+//
+//   const records = getContextRecords();
+//
+//   // Oracle: Claims — exactly 2 contexts: app context + OAuth context
+//   expect(records).toHaveLength(2);
+//
+//   // Oracle: Purpose — OAuth context should navigate to accounts.google.com
+//   const oauthContext = records.find(r => r.pages.some(p => p.includes('accounts.google.com')));
+//   expect(oauthContext).toBeDefined();
+//
+//   // Oracle: History — OAuth context should have been created after the button click
+//   const appContext = records[0];
+//   expect(oauthContext!.createdAt).toBeGreaterThan(appContext.createdAt);
+// });
+```
+
+**Gotcha — `browser.on('context')` fires for contexts created by the test runner itself:**
+
+In a standard Playwright test, the test runner creates a `BrowserContext` before the test body runs (the `page` fixture creates a context automatically). If the harness registers the browser-level listener in a `beforeAll` or fixture, the test runner's own context creation fires the listener before the session starts. Disambiguate by recording the timestamp of the listener registration and ignoring contexts created before that point, or by creating the monitored context explicitly after the listener is installed (as shown in the example above with `browser.newContext()`).
+
+---
+
+### `browserContext.setStorageState()` — Mid-Session Auth Rotation (v1.59)
+
+Before Playwright v1.59, rotating authentication roles during an exploratory session required creating a new `BrowserContext` (teardown existing context → create new context with target role's storage state → navigate back to the point of interest). For session harnesses exploring multi-role features, this produced a visible seam in the session trace: the context change was obvious in Trace Viewer as a full context teardown/setup sequence, and any in-progress DOM state (partially filled forms, in-flight XHR requests) was lost.
+
+Playwright v1.59 introduced `browserContext.setStorageState(state)`, which **replaces the storage state of an existing context in-place** without context teardown. Cookies, localStorage, and sessionStorage are all updated atomically. The current page DOM is not reset — the tester must navigate to the correct starting URL after the role switch, but the context itself (with its existing network routes, event listeners, and har recording) is preserved.
+
+**Exploratory testing value:**
+
+For multi-role feature exploration — "Explore the document approval workflow using an editor account, then verify what a viewer account sees" — `setStorageState()` eliminates the context-switch cost. The session can be structured as a continuous narrative:
+
+1. Session starts as an editor: upload a document and submit for approval
+2. Call `setStorageState()` with the approver role's storage state
+3. Reload to trigger the approver's view of the pending document
+4. Observe whether the approval action is correctly gated behind the approver role
+
+This captures a **cross-role interaction** that the old pattern (two separate sessions, one per role) could not — because in the old pattern, the document uploaded by the editor session existed in one session's network state and the approver session started fresh.
+
+```typescript
+// src/testing/exploratory/auth-rotation-harness.ts
+// Demonstrates mid-session auth rotation using browserContext.setStorageState() (v1.59).
+// Enables single-session exploration of multi-role workflows.
+// Requires: @playwright/test ≥ 1.59
+
+import { test, BrowserContext, Page } from '@playwright/test';
+import fs from 'node:fs';
+
+interface RoleStorageState {
+  roleName: string;
+  /** Path to a JSON file produced by context.storageState() for this role */
+  stateFile: string;
+}
+
+/**
+ * Switches the session to a new auth role without creating a new context.
+ * After calling, navigate to the correct entry URL for the new role.
+ *
+ * @param context - The current BrowserContext
+ * @param page    - The current Page (used to navigate after role switch)
+ * @param role    - The target role including the path to its storageState file
+ * @param entryUrl - The URL to navigate to after the role switch
+ */
+export async function switchAuthRole(
+  context: BrowserContext,
+  page: Page,
+  role: RoleStorageState,
+  entryUrl: string,
+): Promise<void> {
+  const state = JSON.parse(fs.readFileSync(role.stateFile, 'utf-8'));
+
+  // Replace storage state in-place — no context teardown, routes and listeners preserved.
+  // @ts-expect-error browserContext.setStorageState() requires Playwright v1.59+
+  await context.setStorageState(state);
+
+  // Navigate to role's entry URL to trigger the correct auth-gated view.
+  await page.goto(entryUrl);
+}
+
+// Usage — cross-role document approval exploration:
+//
+// test('cross-role: editor submits, approver reviews', async ({ context, page }) => {
+//   // Phase 1: Editor creates and submits a document
+//   await page.goto('/documents/new');
+//   await page.getByLabel('Title').fill('Q1 Budget Forecast');
+//   await page.getByRole('button', { name: 'Submit for approval' }).click();
+//   const docUrl = page.url(); // capture the document URL before role switch
+//
+//   // Phase 2: Rotate to approver role (no context teardown)
+//   await switchAuthRole(context, page,
+//     { roleName: 'approver', stateFile: './auth-states/approver.json' },
+//     docUrl,  // approver navigates directly to the same document URL
+//   );
+//
+//   // Oracle: Claims — approver should see "Approve" button; editor should not
+//   await expect(page.getByRole('button', { name: 'Approve' })).toBeVisible();
+//   await expect(page.getByRole('button', { name: 'Submit for approval' })).not.toBeVisible();
+// });
+```
+
+**Gotcha — `setStorageState()` does not reload the page automatically:**
+
+After calling `setStorageState()`, the page DOM reflects the previous role's auth state until the next navigation. If the application reads auth state from cookies on page load (standard server-side auth), the new role's session is not active in the current DOM — a call to `page.goto(entryUrl)` is required to trigger a server-side auth check with the new cookies. If the application reads auth from localStorage/sessionStorage without a page reload (common in SPA architectures with client-side auth), the new role's state is reflected immediately and a reload may not be necessary. Verify the application's auth mechanism before deciding whether `goto()` is required after `setStorageState()`.
+
+---
+
+### `locator.normalize()` — Locator Hygiene After `page.pickLocator()` Exploration Sessions  [community]
+
+`locator.normalize()` was introduced in Playwright v1.59 as a method that converts any locator to Playwright's "best practices" form. Specifically, it:
+
+- Converts CSS selector locators (`.my-class > input`) to role-based equivalents when a stable ARIA role is available
+- Replaces `page.locator('[data-testid="submit"]')` with `page.getByTestId('submit')` where applicable
+- Converts chained `.locator()` calls to the canonical form (e.g., `getByRole('dialog').getByRole('button', { name: 'OK' })`)
+
+**For exploratory session harnesses, `locator.normalize()` addresses a specific workflow friction point that arises when using `page.pickLocator()`:**
+
+`page.pickLocator()` (v1.59) returns the most stable locator for the element the tester clicks in the interactive overlay — but "most stable" is evaluated at the moment of the pick, and the resulting locator may still be a CSS path or an attribute selector that is not idiomatic Playwright. Running `locator.normalize()` on the picked locator produces the canonical form that is most legible in session debrief artifacts and most resistant to refactor-driven breakage.
+
+```typescript
+// src/testing/exploratory/locator-hygiene.ts
+// Demonstrates locator.normalize() for post-pick locator hygiene.
+// Use after page.pickLocator() to produce canonical locators for session defect reports.
+// Requires: @playwright/test ≥ 1.59
+
+import { Page, Locator } from '@playwright/test';
+
+/**
+ * Prompts the tester to pick a locator interactively (via page.pickLocator()),
+ * then normalizes it to the canonical Playwright form.
+ *
+ * Returns both the raw picked locator and the normalized form for comparison.
+ */
+export async function pickAndNormalizeLocator(
+  page: Page,
+): Promise<{ raw: Locator; normalized: Locator; normalizedString: string }> {
+  // @ts-expect-error page.pickLocator() requires Playwright v1.59+
+  const raw: Locator = await page.pickLocator();
+
+  // @ts-expect-error locator.normalize() requires Playwright v1.59+
+  const normalized: Locator = raw.normalize();
+
+  // Produce the string representation for inclusion in defect reports
+  const normalizedString = normalized.toString();
+
+  return { raw, normalized, normalizedString };
+}
+
+// Example output of normalize():
+//
+// raw:        page.locator('.checkout-form > .address-fields > input[type="text"]:nth-child(2)')
+// normalized: page.getByLabel('Street address line 2')
+//
+// raw:        page.locator('[data-testid="promo-apply-btn"]')
+// normalized: page.getByTestId('promo-apply-btn')
+//
+// raw:        page.locator('#modal-confirm button.primary')
+// normalized: page.getByRole('dialog').getByRole('button', { name: 'Confirm' })
+```
+
+**HICCUPPS mapping for normalized locators:**
+
+A locator that `normalize()` converts to a role-based form (`getByRole('button', { name: 'Confirm' })`) provides information about the element's accessible role and name — both of which are assertions about the application's accessibility tree. If `normalize()` cannot convert the locator because the element has no accessible role or name, that is itself an oracle signal on the **Standards** dimension (WCAG 2.2 Success Criterion 4.1.2 requires interactive elements to have programmatically determinable names). A picked locator that resists normalization is a candidate for an accessibility finding.
+
+**Gotcha — `locator.normalize()` is a synchronous method, but its output depends on runtime DOM state:**
+
+`normalize()` evaluates the locator's best-practices form at call time, based on the element's current accessible properties. If the element's ARIA role or accessible name changes dynamically (e.g., a button whose label changes from "Loading…" to "Submit" after an async operation), the normalized form reflects whichever state was active at call time. For dynamic elements, call `normalize()` only after the element has reached its stable state (after waiting for the expected text or state).
+
+---
+
+### New Anti-Pattern (Iteration 49): Using the Same `seed.spec.ts` Across All Charters Without Charter-Scoped Setup
+
+**Reusing a single generic `seed.spec.ts` file for all Playwright Test Agent charters, rather than writing a distinct seed per charter that establishes the specific preconditions for that charter's "Explore X with Y to discover Z" mission.**
+
+The symptom: teams write one seed file that navigates to the application's main authenticated landing page, then use it as the seed for every charter (checkout, admin panel, API surface, onboarding flow). The Planner agent runs from the landing page for every charter, so it must re-navigate to each target area autonomously before beginning its exploratory coverage of that area. This produces three failure modes:
+
+1. **Shallow precondition coverage**: The Planner reaches the chartered area from the generic landing page with default data (empty cart, no existing records, fresh admin state). Charters that require specific preconditions ("an account with an expired subscription," "a document in 'pending approval' state") are never explored against those conditions — the Planner cannot establish them from the generic landing page.
+2. **Nondeterministic exploration scope**: When multiple charters share a seed, the Planner's navigation path to each chartered area differs between runs (depending on which route the LLM chooses from the landing page). The resulting `specs/` files vary between runs for the same charter, making the plans non-reproducible.
+3. **Cross-charter contamination**: If the seed establishes any state (a promo code applied, a UI preference toggled), that state persists across all charters that reuse it. Charter A's exploration may inadvertently set up preconditions that Charter B's exploration then observes as unexpected behavior — a false positive that misattributes a Charter A side-effect as a Charter B defect.
+
+The correct pattern: one seed file per charter, named after the charter, establishing exactly the preconditions that the charter's "with Y" clause specifies. The seed is the machine-executable equivalent of the charter's "using" section — it ensures the Planner always starts with the right data, the right role, and the right application state.
+
+**HICCUPPS mapping**: The anti-pattern risks oracle accuracy on the **Purpose** dimension. The purpose of a charter's seed is to establish the conditions under which the chartered behavior should be observed. A generic seed fails to establish those conditions, meaning the Planner's exploration is not evaluating the feature's behavior under its intended use conditions — any findings from a generic-seed exploration cannot be reliably attributed to the chartered area.
+
+---
+
+## Additional Community Lessons (Iteration 49)
+
+135. **[community] Teams that adopted `npx playwright init-agents --loop=claude` and set up charter-scoped seed files discovered that the Planner agent's coverage quality varied significantly with the depth of the seed's precondition setup — and that the variance was predictable from the charter's "with Y" clause.** For charters where "with Y" described a specific test data state ("an account with 3 failed payment attempts"), seeds that established that state produced Planner outputs that directly targeted retry logic, error messaging, and lockout thresholds. Seeds that only navigated to the payment page without the failed-attempt state produced Planner outputs that covered the happy path and basic error validation — the same coverage the Generator would have produced from a scripted test. The team adopted a "seed quality gate" in their charter review process: before a seed is used with the Planner, the charter author verifies that the seed's final navigation state corresponds to the preconditions named in the charter's "with Y" clause. Charters where the seed could not establish the "with Y" preconditions were flagged as requiring manual exploration rather than Test Agents.
+
+136. **[community] The `browser.on('context')` event in v1.60 allowed a team to discover a context-isolation defect in their multi-tenant dashboard that had been present undetected for six months: when a user opened the "Switch tenant" modal and selected a new tenant, the application created a new context for the new tenant's session but also kept the original context alive with the original tenant's session.** The original context was not visible in the UI (its tab was overwritten), but it continued to receive WebSocket push events for the original tenant's data. This meant the application had two concurrent live sessions — one visible (new tenant) and one invisible (original tenant continuing to receive updates) — and the invisible session was incrementally persisting state to the browser's IndexedDB. The defect was discovered by an exploratory session that installed a `browser.on('context')` listener and observed that switching tenants produced a context creation event but no context close event for the original context. Before v1.60, there was no programmatic way to observe this condition from the test layer — the team would have needed a native browser devtools hook to see the context lifecycle.
+
+137. **[community] `locator.normalize()` revealed an accessibility gap in a production codebase that the team's WCAG audit had missed: a set of interactive card components that appeared to have accessible names (they had visible text labels) but whose normalized locators were CSS paths rather than role-based locators.** The absence of a role-based normalization outcome signalled that the elements had no ARIA role and no semantic HTML role — they were `<div>` elements with click handlers and visible text but no `role` attribute. Screen readers announced them as generic regions, not interactive elements. The WCAG audit had missed this because the audit tool (axe-core) does not flag generic click-handler elements unless they also fail specific axe rules (axe only flags elements that have a role but lack a name, not elements that lack a role entirely). The team added `locator.normalize()` output comparison to their accessibility exploration charter checklist: any picked locator that resists normalization to a role-based form is automatically escalated to an accessibility review. This produced 12 new accessibility findings in their first sprint using the technique — all previously invisible to their automated axe scan.

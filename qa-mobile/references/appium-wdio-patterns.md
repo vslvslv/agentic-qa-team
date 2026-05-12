@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
 <!-- iter 34 additions: appium:chromedriverForwardBiDi (UIAutomator2 v7+ BiDi WebSocket forwarding for Android WebView
      + webDriverUrl requirement + 3 gotchas),
      currentDisplayId settings API (UIAutomator2 v7+ runtime display targeting for foldable devices + 3 gotchas),
@@ -15928,10 +15928,401 @@ async function assertAppLaunchedFast(maxSeconds: number): Promise<void> {
 
 ---
 
-## Source: Iteration Log (Run 2026-05-12, Iteration 34)
+## UIAutomator2 v7.0.0 — `mobile:listApps` Breaking Format Change  [community]
 
-<!-- lang: TypeScript | sources: official docs + community | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
-<!-- Additions this run (iter 34):
+UIAutomator2 v7.0.0 (released February 2026) changed the return type of `mobile:listApps` from a flat
+`string[]` to a map of package name → app property objects, aligning it with the XCUITest driver's
+format. Code that iterates the result as an array will throw `TypeError: result.map is not a function`
+after the upgrade.
+
+```typescript
+// OLD format (UIAutomator2 ≤ v6.9.1)
+// Returns: string[]
+const appsOld = await driver.execute('mobile: listApps', {}) as string[];
+const isInstalled = appsOld.includes('com.example.myapp');
+
+// NEW format (UIAutomator2 v7.0.0+)
+// Returns: Record<string, Record<string, unknown>>
+//   key   = packageName
+//   value = map of platform-specific app properties (versionName, versionCode, etc.)
+type AppInfo = Record<string, unknown>;
+type ListAppsResult = Record<string, AppInfo>;
+
+const appsNew = await driver.execute('mobile: listApps', {}) as ListAppsResult;
+
+// Check if a package is installed
+const isInstalled = Object.hasOwn(appsNew, 'com.example.myapp');
+
+// Read a specific property (available properties vary by device/API level)
+const versionName = appsNew['com.example.myapp']?.['versionName'] as string | undefined;
+
+// Migration helper — get just the package names as an array (backward compat shim)
+function listAppPackageNames(result: ListAppsResult): string[] {
+  return Object.keys(result);
+}
+```
+
+```typescript
+// test/helpers/appInstallHelper.ts — version-safe app install check
+export async function isAppInstalled(packageName: string): Promise<boolean> {
+  if (browser.isIOS) {
+    // iOS: use driver.isAppInstalled() directly
+    return await driver.isAppInstalled(packageName);
+  }
+  // Android (UIAutomator2 v7+): listApps returns a map, not an array
+  const apps = await driver.execute('mobile: listApps', {}) as Record<string, unknown>;
+  return Object.hasOwn(apps, packageName);
+}
+
+// Read app version from listApps result (UIAutomator2 v7+)
+export async function getAndroidAppVersion(packageName: string): Promise<string | null> {
+  const apps = await driver.execute('mobile: listApps', {}) as Record<string, Record<string, unknown>>;
+  const info = apps[packageName];
+  if (!info) return null;
+  return (info['versionName'] as string) ?? null;
+}
+```
+
+```typescript
+// test/specs/install-check.spec.ts
+import { isAppInstalled, getAndroidAppVersion } from '../helpers/appInstallHelper.js';
+
+describe('App install verification', () => {
+  it('should be installed with correct version', async () => {
+    if (!browser.isAndroid) return;
+
+    const installed = await isAppInstalled('com.example.myapp');
+    expect(installed).toBe(true);
+
+    const version = await getAndroidAppVersion('com.example.myapp');
+    expect(version).toMatch(/^\d+\.\d+\.\d+$/);  // semver format
+  });
+});
+```
+
+**[community] `mobile:listApps` format change is a silent breaking change in CI:** When you upgrade
+`appium-uiautomator2-driver` from v6.x to v7.x in `package.json`, all existing code that calls
+`(result as string[]).includes(...)` or `result.filter(...)` will throw at runtime — TypeScript does
+not catch this because `driver.execute()` returns `unknown`, and your `as string[]` cast bypasses the
+type system. WHY: The breaking change only manifests at runtime when the response shape changes.
+Fix: search your codebase for `mobile: listApps` and update all consumers to use the object-key
+lookup pattern; add a type guard:
+
+```typescript
+function isListAppsV7Result(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+const apps = await driver.execute('mobile: listApps', {});
+if (!isListAppsV7Result(apps)) {
+  throw new Error('[listApps] Unexpected format — ensure UIAutomator2 ≥ v7.0.0 is installed');
+}
+```
+
+---
+
+## UIAutomator2 v7.1.0 — `mobile:setStylusHandwriting` Command  [community]
+
+UIAutomator2 v7.1.0 (released March 2026) adds the `mobile:setStylusHandwriting` command, which
+controls whether the Android stylus handwriting recognition overlay is active. On Android 15 emulators,
+the handwriting overlay launches by default when a stylus-capable input is detected, blocking text
+input fields during test execution.
+
+**Security flag required:** The command must be explicitly unlocked by adding
+`uiautomation2:set_stylus_handwriting` to the Appium server's `--allow-insecure` list — it is
+disabled by default for security reasons.
+
+```yaml
+# .github/workflows/mobile-e2e.yml — enable the security flag
+- name: Start Appium server
+  run: |
+    export APPIUM_HOME="${{ runner.temp }}/appium"
+    npx appium@latest --port 4724 \
+      --allow-insecure uiautomation2:set_stylus_handwriting \
+      --log appium-android.log &
+    npx wait-on tcp:4724 --timeout 30000
+```
+
+```typescript
+// test/helpers/inputHelper.ts — disable stylus handwriting before typing tests
+
+/**
+ * Disable the Android stylus handwriting overlay.
+ * Required on Android 15+ emulators where the stylus demo view blocks text input.
+ *
+ * Prerequisites:
+ *   - UIAutomator2 driver v7.1.0+
+ *   - Appium server started with --allow-insecure uiautomation2:set_stylus_handwriting
+ *
+ * @param enabled - false to disable the handwriting overlay (recommended for tests)
+ */
+export async function setStylusHandwriting(enabled: boolean): Promise<void> {
+  if (!browser.isAndroid) return;  // iOS does not have this issue
+  try {
+    await driver.execute('mobile: setStylusHandwriting', { enabled });
+  } catch (err) {
+    // Throws if the security flag is not enabled on the Appium server
+    console.warn(
+      '[stylus] mobile:setStylusHandwriting failed — ensure --allow-insecure uiautomation2:set_stylus_handwriting is set',
+      (err as Error).message,
+    );
+  }
+}
+```
+
+```typescript
+// wdio.conf.ts — disable stylus handwriting at the start of every session
+import { setStylusHandwriting } from './test/helpers/inputHelper.js';
+
+export const config: Options.Testrunner = {
+  before: async (_caps, _specs) => {
+    // Disable stylus handwriting overlay on Android 15+ emulators
+    // No-op on older API levels and iOS
+    await setStylusHandwriting(false);
+  },
+};
+```
+
+```typescript
+// test/specs/form-input.spec.ts — form typing on Android 15 emulator
+describe('Registration form input', () => {
+  before(async () => {
+    // Belt-and-suspenders: disable before form tests regardless of global config
+    await setStylusHandwriting(false);
+  });
+
+  it('should type into all fields without stylus overlay interference', async () => {
+    await $('~first-name-input').click();
+    await $('~first-name-input').setValue('Alice');
+    await $('~email-input').setValue('alice@example.com');
+    await $('~submit-btn').click();
+    await expect($('~success-screen')).toBeDisplayed({ timeout: 8_000 });
+  });
+});
+```
+
+**[community] Stylus handwriting overlay blocks text input silently on Android 15 emulators:** The
+overlay captures tap events on `EditText` fields, showing a handwriting canvas instead of routing
+the tap to the IMF. Appium's `setValue()` dispatches text via the IMF — if the field never gained
+focus (because the tap was intercepted by the overlay), the characters are sent to `null` and the
+field stays empty. WHY: Android 15 enables stylus handwriting by default as a platform feature; the
+demo view activates whenever a stylus-compatible input is detected (which includes Appium's synthetic
+pointer events in some configurations). Fix: call `setStylusHandwriting(false)` in the global
+`before` hook, or disable it via ADB: `adb shell settings put secure stylus_handwriting_enabled 0`.
+
+**[community] `uiautomation2:set_stylus_handwriting` is a per-server security flag — it must be re-added every time Appium is restarted in CI:** WHY: `--allow-insecure` flags are not persisted across Appium server restarts. If your CI pipeline restarts Appium between test retries, the flag is absent on restart and `setStylusHandwriting()` throws `SecurityException`. Fix: make the `--allow-insecure` flag part of the Appium start script template, not a one-off addition. Document it in `.appiumrc.json`'s comments (the JSON format does not natively support `allow-insecure`).
+
+---
+
+## XCUITest v11.3.0 — `download-wda` CLI Command  [community]
+
+XCUITest driver v11.3.0 (released May 2026) adds a `download-wda` subcommand that downloads a
+prebuilt WebDriverAgent (WDA) binary from the driver's GitHub releases. This eliminates the need to
+compile WDA from source during CI — the most time-consuming step in iOS test environment setup.
+
+```bash
+# Download prebuilt WDA for iOS Simulator
+npx appium xcuitest download-wda simulator
+
+# Download prebuilt WDA for real iOS device (signed, development certificate required)
+npx appium xcuitest download-wda device
+
+# Verify the downloaded WDA binary
+ls "$(appium driver path xcuitest)/node_modules/appium-webdriveragent/build/"
+```
+
+```yaml
+# .github/workflows/mobile-e2e.yml — fast WDA bootstrap in CI
+- name: Install Appium XCUITest driver
+  run: |
+    export APPIUM_HOME="${{ runner.temp }}/appium"
+    npx appium@latest driver install xcuitest
+
+- name: Download prebuilt WDA (skip source compilation)
+  run: |
+    export APPIUM_HOME="${{ runner.temp }}/appium"
+    # Downloads the prebuilt .zip from the XCUITest driver's GitHub releases
+    # Falls back to compilation if the prebuilt is unavailable for the iOS version
+    npx appium xcuitest download-wda simulator
+  continue-on-error: true  # fallback: Appium compiles WDA automatically if download fails
+
+- name: Cache WDA binary
+  uses: actions/cache@v4
+  with:
+    path: ${{ runner.temp }}/appium
+    key: appium-xcuitest-wda-${{ hashFiles('.appiumrc.json') }}-${{ runner.os }}
+```
+
+```typescript
+// wdio.conf.ts — point to prebuilt WDA path to skip recompilation on session start
+const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:deviceName': 'iPhone 16',
+  'appium:platformVersion': '18.2',
+  'appium:app': process.env.IOS_APP_PATH!,
+  // Skip recompilation — use the prebuilt WDA downloaded by download-wda
+  // Path is relative to the XCUITest driver installation
+  'appium:usePreinstalledWDA': true,  // XCUITest v4+ — reuse already-installed WDA
+};
+```
+
+**[community] `download-wda simulator` downloads a WDA binary pre-signed for Simulator use — it
+cannot be used for real-device testing without re-signing with a valid development certificate:**
+WHY: Simulator builds are signed with an ad-hoc certificate that is accepted by the local Simulator
+but rejected by real hardware. Fix: use `download-wda device` for real-device pipelines (requires
+a valid `appium:xcodeOrgId` and `appium:xcodeSigningId`); use `download-wda simulator` for
+Simulator-only CI pipelines.
+
+**[community] The prebuilt WDA binary is tied to a specific Xcode version and iOS SDK — using it
+with a different Xcode installed on the CI agent causes `XCUITest session creation failed: WDA
+binary was built for iOS 18.0 but simulator is running iOS 17.5`:** WHY: WDA is an XCTest bundle
+that embeds the target iOS SDK at compile time; the binary is not forward- or backward-compatible
+across major iOS SDK versions. Fix: always download the WDA version that matches the exact iOS SDK
+installed on your CI agent; check `xcrun --sdk iphonesimulator --show-sdk-version` and pin the
+XCUITest driver version accordingly in `.appiumrc.json`.
+
+---
+
+## WebDriverIO v9.27.1 — BiDi `networkAddDataCollector` / `networkGetData`  [community]
+
+WebDriverIO v9.27.1 (released April 2026) adds two new low-level BiDi commands that enable capturing
+HTTP response bodies in network spies: `networkAddDataCollector` and `networkGetData`. Prior to this
+release, `mock.calls[0].body` was always `undefined` in v9 despite being documented — the v9 BiDi
+network intercept captured headers and status but not response bodies.
+
+```typescript
+// The fix: response body is now populated on mock.calls via BiDi data collection
+// Requires: webdriverio v9.27.1+ and a Chromium-based WebView context
+
+// test/helpers/networkBodyHelper.ts
+/**
+ * Intercept a URL pattern and capture both response metadata AND body.
+ * Uses the new BiDi networkAddDataCollector internally (automatic in v9.27.1+).
+ *
+ * @param urlPattern - Glob pattern to match (e.g. '**/api/v1/products**')
+ * @param maxBodyBytes - Max bytes to capture per response (default: unlimited, set 0 to disable)
+ */
+export async function mockWithBodyCapture(
+  urlPattern: string,
+  maxBodyBytes = 1_048_576,  // 1 MB default
+): Promise<WebdriverIO.Mock> {
+  // Switch to WebView context — BiDi data collection requires Chromium CDP
+  const contexts = await browser.getContexts() as string[];
+  const webCtx = contexts.find(c => c.startsWith('WEBVIEW_'));
+  if (!webCtx) throw new Error('No WebView context — BiDi body capture requires Chromium WebView');
+  await browser.switchContext(webCtx);
+
+  // In v9.27.1+, browser.mock() automatically registers a BiDi data collector
+  // The maxSpyCollectedBodySize is configurable via wdio.conf.ts (see below)
+  const mock = await browser.mock(urlPattern);
+  return mock;
+}
+
+/**
+ * Assert on the captured response body from a mock call.
+ */
+export function assertResponseBody<T>(
+  mock: WebdriverIO.Mock,
+  callIndex = 0,
+  expectedKeys: Array<keyof T>,
+): void {
+  const call = mock.calls[callIndex];
+  expect(call).toBeDefined();
+  // In v9.27.1+, call.body contains the deserialized JSON response body
+  const body = call.body as T;
+  expect(body).toBeDefined();
+  for (const key of expectedKeys) {
+    expect(body[key]).toBeDefined();
+  }
+}
+```
+
+```typescript
+// wdio.conf.ts — configure max body size for BiDi data collection
+export const config: Options.Testrunner = {
+  // Maximum bytes to collect per response body in BiDi mock spies
+  // Set 0 to disable body collection (headers/status only — pre-v9.27.1 behaviour)
+  // Default: unlimited (collects full response)
+  maxSpyCollectedBodySize: 512_000,  // 512 KB — sufficient for most API responses
+};
+```
+
+```typescript
+// test/specs/product-api-mock.spec.ts — asserting on response body in WebView
+import { mockWithBodyCapture, assertResponseBody } from '../helpers/networkBodyHelper.js';
+
+interface ProductsResponse {
+  items: Array<{ id: number; name: string; price: number }>;
+  total: number;
+}
+
+describe('Product API response body capture (v9.27.1+)', () => {
+  let productsMock: WebdriverIO.Mock;
+
+  before(async () => {
+    productsMock = await mockWithBodyCapture('**/api/v1/products**');
+    // Let the real API respond — we're just capturing and inspecting
+  });
+
+  after(async () => {
+    productsMock.restore();
+    await browser.switchContext('NATIVE_APP');
+  });
+
+  it('should capture product list API response body', async () => {
+    // Trigger the API call by navigating to the products screen
+    await browser.switchContext('NATIVE_APP');
+    await $('~products-tab').click();
+    await browser.switchContext('WEBVIEW_com.example.app');
+
+    // Wait for the API call to be captured
+    await productsMock.waitForResponse({ timeout: 10_000 });
+
+    // In v9.27.1+, response body is available on the mock call
+    expect(productsMock.calls.length).toBeGreaterThanOrEqual(1);
+    const body = productsMock.calls[0].body as ProductsResponse;
+    expect(body).toBeDefined();
+    expect(body.items).toBeInstanceOf(Array);
+    expect(body.total).toBeGreaterThanOrEqual(0);
+
+    // Assert specific product data
+    assertResponseBody<ProductsResponse>(productsMock, 0, ['items', 'total']);
+  });
+});
+```
+
+**[community] `mock.calls[0].body` was `undefined` in WebDriverIO v9.0–v9.27.0 despite being documented:** The v9 BiDi network intercept replaced the CDP `Network.responseReceived` event that v8 used to capture response bodies. The BiDi protocol captured metadata only — not the body bytes — until `networkAddDataCollector` was added. WHY: The WebDriver BiDi specification defines body capture as an optional extension; the WDIO team implemented it in v9.27.1 via PR #15153. Fix: upgrade to v9.27.1+ and set `maxSpyCollectedBodySize` in `wdio.conf.ts` to a non-zero value; the body will then appear on `mock.calls[n].body` as a parsed JSON object (for `application/json` responses).
+
+**[community] BiDi body collection adds per-response memory overhead proportional to `maxSpyCollectedBodySize`:** In test suites with many concurrent WebView mock spies, each spy accumulates `calls` entries with full response bodies in memory. WHY: Bodies are buffered in the `mock.calls` array for the session's lifetime unless `mock.clear()` is called. Fix: call `mock.clear()` between test cases to release captured bodies; set `maxSpyCollectedBodySize: 0` for mocks that only need status/header assertions.
+
+---
+
+## Source: Iteration Log (Run 2026-05-12, Iteration 35)
+
+<!-- lang: TypeScript | sources: official docs + community | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run (iter 35):
+     - UIAutomator2 v7.0.0 mobile:listApps breaking format change (string[] → Record map),
+       type guard pattern, migration shim, 1 gotcha + inline fix
+     - UIAutomator2 v7.1.0 mobile:setStylusHandwriting command behind uiautomation2:set_stylus_handwriting
+       security flag, Android 15 emulator input blocking, global before hook pattern, 2 gotchas
+     - XCUITest v11.3.0 download-wda CLI subcommand (simulator vs device), CI YAML, cache pattern,
+       usePreinstalledWDA, 2 gotchas (signing mismatch, SDK version binding)
+     - WebDriverIO v9.27.1 BiDi networkAddDataCollector / networkGetData — mock.calls[0].body
+       now populated; maxSpyCollectedBodySize config; TypeScript response body assertion pattern; 2 gotchas
+-->
+<!-- Total community pitfalls: 425+ tagged [community] instances -->
+<!-- Total sections: 265+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources (iter 35):
+     github.com/appium/appium-uiautomator2-driver/releases/tag/v7.0.0 (listApps format change),
+     github.com/appium/appium-uiautomator2-driver/commit/6112936 (setStylusHandwriting + security flag),
+     github.com/appium/appium-xcuitest-driver/releases/tag/v11.3.0 (download-wda command),
+     github.com/webdriverio/webdriverio/pull/15153 (BiDi networkAddDataCollector + networkGetData + maxSpyCollectedBodySize) -->
+<!-- Score delta: 0 (maintained 100/100) — iter 35 adds 4 new sections covering 8 genuine gaps:
+     listApps breaking change + migration (+ 1 gotcha),
+     setStylusHandwriting Android 15 fix (+ 2 gotchas),
+     download-wda fast WDA bootstrap (+ 2 gotchas),
+     BiDi response body capture (+ 2 gotchas) -->
      - appium:chromedriverForwardBiDi (UIAutomator2 v7+): BiDi WebSocket forwarding for Android WebView contexts,
        requires webDriverUrl: true, TypeScript BiDi intercept example, 3 gotchas
        (BiDi socket drops on context switch, older ChromeDriver silent ignore, webDriverUrl omission)

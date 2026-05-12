@@ -1,6 +1,14 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 39 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 40 | score: 98/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 40 (2026-05-12): added .NET 10 MTP native dotnet test support via global.json (runner opt-in, compatibility
+       matrix, before/after workflow comparison); added xUnit v3 TestContext static API (TestContext.Current,
+       SendDiagnosticMessage, CancellationToken, TestState, thread-continuation gotcha); added TUnit [Timeout]
+       attribute patterns (per-test budget, Retry combination, assembly-level default, CT injection, swallowed
+       OperationCanceledException gotcha); added C# 14 extension blocks as test builder helpers (extension
+       properties and static factories for test setup, field keyword in test builder lazy init, static-class
+       requirement gotcha) — sourced from learn.microsoft.com/dotnet/core/whats-new/dotnet-10/sdk,
+       xunit.net/docs, github.com/thomhurst/TUnit, learn.microsoft.com/dotnet/csharp/whats-new/csharp-14
      Iter 39 (2026-05-12): added Code Coverage section (coverlet.collector, dotnet test --collect, coverlet.msbuild
        MSBuild integration, reportgenerator HTML reports, threshold enforcement, dotnet-coverage tool vs coverlet
        comparison); added Stryker.NET Mutation Testing (install, run, stryker-config.json thresholds high/low/break,
@@ -8216,6 +8224,244 @@ await notifications
 using var client = _app.CreateHttpClient("apiservice");
 var response = await client.GetAsync("/health");  // always reachable now
 ```
+
+---
+
+## .NET 10 — MTP Native Support in `dotnet test` via `global.json`
+
+Starting with .NET 10 SDK, `dotnet test` natively supports Microsoft.Testing.Platform (MTP) without wrapping the test project as an executable or using a separate runner entry point. Enable it solution-wide by adding a `test` section to `global.json`:
+
+```json
+{
+  "sdk": { "version": "10.0.100" },
+  "test": {
+    "runner": "Microsoft.Testing.Platform"
+  }
+}
+```
+
+With this setting, `dotnet test` routes all test discovery and execution through MTP instead of VSTest. All MTP extensions (Retry, Hot Reload, Crash/Hang Dump, code coverage) work without changing project files.
+
+**Before .NET 10 — the pre-MTP workflow:**
+
+```bash
+# Old: dotnet test used VSTest host; MTP projects ran via dotnet run
+dotnet test MyTests/MyTests.csproj                   # VSTest path
+dotnet run --project MyTests/MyTests.csproj -- --list-tests  # MTP path (workaround)
+
+# New (.NET 10): dotnet test works for both VSTest and MTP projects
+dotnet test MyTests/MyTests.csproj                   # MTP used when global.json opt-in present
+dotnet test MySolution.sln --filter "Category=Unit"  # solution-level filter works unchanged
+```
+
+**Compatibility matrix:**
+
+| Framework | MTP support | `dotnet test` .NET 10 native |
+|---|---|---|
+| xUnit v3 | Yes (MTP only — no VSTest) | Yes |
+| MSTest v3+ | Yes (opt-in `EnableMSTestRunner`) | Yes |
+| NUnit 4.x | Yes (via `NUnit.TestAdapter` 5+) | Yes |
+| TUnit | Yes (MTP native) | Yes |
+
+> **Source:** learn.microsoft.com/dotnet/core/whats-new/dotnet-10/sdk — "Support for Microsoft.Testing.Platform (MTP) in `dotnet test`"
+
+---
+
+## xUnit v3 — `TestContext` Static Diagnostic API
+
+xUnit v3 exposes a static `TestContext.Current` property that makes test metadata and cancellation available anywhere in the call stack without constructor injection. This is a major ergonomics improvement for deeply nested helper methods and shared utilities that previously needed `ITestOutputHelper` to be threaded through every method.
+
+```csharp
+using Xunit;
+
+public class OrderProcessingTests
+{
+    [Fact]
+    public async Task ProcessOrder_Succeeds()
+    {
+        // TestContext.Current is always set on the test thread
+        var ctx = TestContext.Current;
+
+        // Write diagnostic output — same as ITestOutputHelper.WriteLine
+        ctx.SendDiagnosticMessage("Starting order processing test at {0}", DateTime.UtcNow);
+
+        // CancellationToken from framework — honours test timeout + runner shutdown
+        var order = await OrderService.ProcessAsync(OrderBuilder.Default(), ctx.CancellationToken);
+
+        Assert.Equal(OrderStatus.Processed, order.Status);
+    }
+}
+
+// Deep helper — no need to pass ITestOutputHelper as a parameter
+public static class TestHelpers
+{
+    public static async Task SeedDatabaseAsync(AppDbContext db)
+    {
+        // Access output and cancellation from anywhere on the test thread
+        var ctx = TestContext.Current;
+        ctx?.SendDiagnosticMessage("Seeding database with test data...");
+
+        await db.Orders.AddRangeAsync(OrderFactory.CreateMany(10));
+        await db.SaveChangesAsync(ctx?.CancellationToken ?? CancellationToken.None);
+
+        ctx?.SendDiagnosticMessage("Database seed complete — {0} orders inserted", 10);
+    }
+}
+```
+
+**Key `TestContext` members:**
+
+| Member | Purpose |
+|---|---|
+| `TestContext.Current` | Static — returns the current test's context; `null` outside a test |
+| `ctx.CancellationToken` | Cancelled when test timeout fires or runner shuts down |
+| `ctx.SendDiagnosticMessage(format, args)` | Writes to test output (equivalent to `ITestOutputHelper.WriteLine`) |
+| `ctx.Test` | Metadata: test class, method name, display name, traits |
+| `ctx.TestState` | `Running`, `Passed`, `Failed`, `Skipped` — read after act phase to branch teardown logic |
+
+> **Gotcha [community]:** `TestContext.Current` is set on the synchronous continuation that xUnit dispatches. If you `await` and continue on a different `SynchronizationContext`, `Current` may return `null`. Always capture `var ctx = TestContext.Current` at the start of the test method and pass `ctx` to helpers rather than calling `TestContext.Current` inside the helper after an `await`.
+
+---
+
+## TUnit — `[Timeout]` Attribute and Per-Test Cancellation
+
+TUnit's parallel-by-default execution model makes test-level timeouts a first-class concern. The `[Timeout]` attribute accepts a duration in milliseconds and causes the test to fail (not just cancel) if it does not complete within that duration. Unlike xUnit's runner-level timeout, TUnit `[Timeout]` is composable — you can stack it with `[Retry]` and it applies per attempt, not across all retries.
+
+```csharp
+using TUnit.Core;
+using TUnit.Assertions;
+using TUnit.Assertions.Extensions;
+
+// 5-second timeout on a single test
+[Test]
+[Timeout(5_000)]
+public async Task FetchExternalRate_CompletesWithinSLA()
+{
+    var rate = await ExchangeRateClient.GetAsync("USD", "EUR");
+    await Assert.That(rate).IsGreaterThan(0m);
+}
+
+// Timeout + Retry: each attempt has its own 3-second budget
+[Test]
+[Timeout(3_000)]
+[Retry(3)]
+public async Task ProcessQueue_DrainsFiveItems()
+{
+    var processed = await QueueProcessor.DrainAsync(count: 5);
+    await Assert.That(processed).IsEqualTo(5);
+}
+
+// Assembly-wide timeout default: set in test class or assembly attribute
+[assembly: Timeout(10_000)]  // 10 s fallback for any test without its own [Timeout]
+
+// Access the injected CancellationToken that [Timeout] drives
+[Test]
+[Timeout(2_000)]
+public async Task StreamData_HonoursTimeout(CancellationToken cancellationToken)
+{
+    // TUnit injects a CT linked to the [Timeout] deadline
+    await foreach (var chunk in DataStream.ReadAsync(cancellationToken))
+    {
+        await ProcessChunkAsync(chunk, cancellationToken);
+    }
+}
+```
+
+**Combining `[Timeout]` with `[NotInParallel]` for sequential integration tests:**
+
+```csharp
+// Sequential group with per-test budget prevents suite-level timeout from masking hangs
+[Test]
+[NotInParallel("DatabaseMigration")]
+[Timeout(15_000)]
+public async Task RunMigration_V12_Succeeds()
+{
+    var result = await MigrationRunner.ApplyAsync("V12");
+    await Assert.That(result.Applied).IsTrue();
+}
+
+[Test]
+[DependsOn(nameof(RunMigration_V12_Succeeds))]
+[NotInParallel("DatabaseMigration")]
+[Timeout(5_000)]
+public async Task Schema_HasNewColumn()
+{
+    var columns = await SchemaInspector.GetColumnsAsync("orders");
+    await Assert.That(columns).Contains("discount_code");
+}
+```
+
+> **Gotcha [community]:** `[Timeout]` on TUnit uses `CancellationToken` cancellation internally, which surfaces as `OperationCanceledException`. If your code swallows `OperationCanceledException` (e.g., in a broad `catch (Exception)` block), the test may appear to hang until the runner's global timeout fires rather than failing at the `[Timeout]` boundary. Always re-throw `OperationCanceledException` or use `catch (Exception ex) when (ex is not OperationCanceledException)`.
+
+---
+
+## C# 14 `extension` Blocks as Test Builder Helpers
+
+C# 14 extension blocks are particularly ergonomic for test builder/assertion helper patterns. Instead of the classic `TestExtensions.cs` static class with `this`-parameter methods, an `extension` block co-locates the test helpers with a clear receiver type and can add both instance methods **and** instance properties — useful for fluent builders and custom assertion chains.
+
+```csharp
+// Classic approach — scattered static class, verbose invocation
+public static class OrderTestExtensions
+{
+    public static Order WithStatus(this Order o, string status)
+        => o with { Status = status };
+
+    public static bool IsExpired(this Order o)
+        => o.ExpiresAt < DateTime.UtcNow;
+}
+
+// C# 14 extension block — groups all Order test helpers together
+extension(Order order) // instance receiver named 'order'
+{
+    // Instance extension property — no () needed at call site
+    public bool IsExpiredForTest => order.ExpiresAt < DateTime.UtcNow;
+
+    // Instance extension method — builder-style mutation for test setup
+    public Order WithStatus(string status) => order with { Status = status };
+
+    // Static extension method — factory for default test instances
+    public static Order DefaultTest() => new(
+        Id: 1,
+        CustomerId: 42,
+        Status: "Pending",
+        Total: 99.99m,
+        ExpiresAt: DateTime.UtcNow.AddDays(30));
+}
+
+// Usage in xUnit test — reads as fluent production-code style
+[Fact]
+public void ShippedOrder_IsNotExpired()
+{
+    var order = Order.DefaultTest().WithStatus("Shipped");
+
+    Assert.False(order.IsExpiredForTest);
+    Assert.Equal("Shipped", order.Status);
+}
+
+// Using the field keyword for a lazy-computed test fixture property
+// (test helper class, not production code — field keyword avoids a backing field declaration)
+public class OrderTestBuilder
+{
+    public string Status { get; set; } = "Pending";
+    public decimal Total { get; set; } = 0m;
+
+    // field keyword: compiler synthesises the backing field; get/set adds custom logic
+    public IReadOnlyList<string> Tags
+    {
+        get => field ??= [];          // lazy init — no explicit backing field needed
+        set => field = value.ToList().AsReadOnly();
+    }
+
+    public Order Build() => new(
+        Id: Random.Shared.Next(1, 10_000),
+        CustomerId: 1,
+        Status: Status,
+        Total: Total,
+        ExpiresAt: DateTime.UtcNow.AddDays(1));
+}
+```
+
+> **Gotcha [community]:** The C# 14 `extension` block syntax (`extension(ReceiverType receiver) { ... }`) is only valid in `static` classes. If you place an `extension` block in a non-static class you get `CS9208`. Test helper classes that mix extension blocks with regular static helper methods should be declared `static` — which is already the idiomatic pattern for test extensions.
 
 ---
 

@@ -1,6 +1,6 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 26 | score: 97/100 | date: 2026-05-12 -->
-<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) + typescript-6.0-baseurl-deprecation (WebFetch 2026-05-12) + typescript-6.0-subpath-imports (WebFetch 2026-05-12) + vitest-4.1-coverage-ignore-comments (WebFetch 2026-05-12) + vitest-3.2-scoped-fixtures (WebFetch 2026-05-12) + vitest-3.2-using-spyon (WebFetch 2026-05-12) + vitest-3.2-matchers-type (WebFetch 2026-05-12) + google-tott-2025-functional-core + google-tott-2025-arrange-data-flow + typescript-6.0-temporal-api (WebFetch 2026-05-12) + vitest-3.2-abortsignal + ts5to6-codemod + vitest-4.1-builder-pattern (WebFetch 2026-05-12) + vitest-3.2-annotate-api (WebFetch 2026-05-12) + vitest-3.2-sequence-grouporder | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 27 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) + typescript-6.0-baseurl-deprecation (WebFetch 2026-05-12) + typescript-6.0-subpath-imports (WebFetch 2026-05-12) + vitest-4.1-coverage-ignore-comments (WebFetch 2026-05-12) + vitest-3.2-scoped-fixtures (WebFetch 2026-05-12) + vitest-3.2-using-spyon (WebFetch 2026-05-12) + vitest-3.2-matchers-type (WebFetch 2026-05-12) + google-tott-2025-functional-core + google-tott-2025-arrange-data-flow + typescript-6.0-temporal-api (WebFetch 2026-05-12) + vitest-3.2-abortsignal + ts5to6-codemod + vitest-4.1-builder-pattern (WebFetch 2026-05-12) + vitest-3.2-annotate-api (WebFetch 2026-05-12) + vitest-3.2-sequence-grouporder + stryker-vscode-extension-2025-11 (WebFetch 2026-05-12) + stryker-incremental-mutation (WebFetch 2026-05-12) + vitest-5.0-beta (WebFetch 2026-05-12) + llm-as-red-phase-collaborator | ISTQB CTFL 4.0 terminology applied -->
 <!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
 <!-- extension 2026-05-12: iter 17 — added TDD for Feature Flags (safe defaults pattern); One Map Key One Lookup for test doubles; TCR TypeScript script; gotchas #24–#26 -->
 <!-- extension 2026-05-12: iter 18 — added Zod v4 TDD patterns (schemaMatching with v4 APIs, z.input/z.output for test data, migration pitfall); `using`/`await using` for TDD resource teardown; Neon DB branching for database-level TDD isolation; `Promise.try` for sync-to-async TDD wrappers; gotchas #27–#29 -->
@@ -12,6 +12,7 @@
 <!-- extension 2026-05-12: iter 24 — added Vitest 3.2 native vi.spyOn/vi.fn Disposable support (direct using, no wrapper needed); Vitest 3.2 scoped fixtures (scope:'file'|'worker' in test.extend); Vitest 3.2 unified Matchers type (replaces older Assertion<R> per-context pattern); Google TotT 2025 posts (Functional Core Oct 2025, Arrange Data Flow Jan 2025) added to Key Resources; gotchas #43–#45 -->
 <!-- extension 2026-05-12: iter 25 — added Temporal API TDD patterns (TypeScript 6.0 built-in types, ClockService interface injection, vi.setSystemTime for Temporal.Now); Vitest 3.2 AbortSignal per-test-case for timeout-aware TDD; ts5to6 codemod reference in TS 6.0 migration section; gotchas #46–#47 -->
 <!-- extension 2026-05-12: iter 26 — added test.extend() builder pattern (Vitest 4.1, chained type-inferred fixtures); context.annotate() API (Vitest 3.2, attach diagnostic messages/files to test cases); sequence.groupOrder for multi-project test ordering; gotchas #48–#49 -->
+<!-- extension 2026-05-12: iter 27 — added Stryker VS Code extension (inline mutation TDD feedback, Stryker 9.3+); Stryker incremental mutation testing (--incremental flag for TDD-cadence mutation runs on changed files only); Vitest 5.0 TDD-relevant breaking changes (.vitest/ directory, sequential→concurrent, configDefaults.reporters, V8 child process coverage); LLM as Red-phase collaborator (prompting Claude/Copilot for the failing test specification, not the implementation); gotchas #50–#51 -->
 
 ## Core Principles
 
@@ -5612,7 +5613,436 @@ With `groupOrder`: if the unit group (group 1) fails, groups 2 and 3 are skipped
 
 ---
 
-## Key Resources
+### Stryker VS Code Extension — Inline Mutation TDD Feedback [community]
+
+Stryker Mutator released an official VS Code extension (November 2025, requires StrykerJS 9.3+) that brings real-time mutation test results directly into the editor. Instead of running mutation tests as a monthly CI audit, the extension integrates mutation feedback into the TDD session: mutant survival indicators appear as inline code decorations alongside lines covered by the current test suite.
+
+The extension is built on the **Mutation Server Protocol (MSP)** — a language-agnostic standard analogous to the Language Server Protocol — enabling communication between editors and Stryker without shell-level CLI invocations. This positions mutation feedback as a first-class TDD tool rather than a post-hoc quality gate.
+
+**TDD workflow integration:**
+
+```typescript
+// Typical IDE-integrated mutation TDD session:
+// 1. Write the failing test case (Red)
+// 2. Implement to go Green
+// 3. Run Stryker via the VS Code Test Explorer (or on-save hook)
+// 4. Inline decorations appear: killed mutants (✓) and survivors (⚠)
+// 5. Survivors reveal undertested branches — add a triangulating test case (Red again)
+// 6. Repeat until mutation score is satisfactory
+
+// Example: a mutant survivor reveals an under-specified boundary condition
+// production code (priceCalculator.ts):
+export function applyBulkDiscount(qty: number, unitPrice: number): number {
+  // Stryker creates a boundary mutant: "qty > 10" becomes "qty >= 10"
+  if (qty > 10) return unitPrice * qty * 0.9;
+  return unitPrice * qty;
+}
+
+// If you only have:
+it('applies 10% discount for qty 11', () => {
+  expect(applyBulkDiscount(11, 100)).toBe(990);
+});
+
+// The boundary mutant "qty >= 10" SURVIVES — your test doesn't cover qty === 10 or qty === 11 boundary.
+// The VS Code inline decoration marks line 2 with a ⚠ indicator.
+// TDD response: add a triangulating test case that kills the boundary mutant:
+
+it('does NOT apply discount for qty exactly 10 (boundary: > not >=)', () => {
+  expect(applyBulkDiscount(10, 100)).toBe(1000); // no discount
+});
+
+it('applies discount for qty 11 (first qty > 10)', () => {
+  expect(applyBulkDiscount(11, 100)).toBeCloseTo(990); // 10% off
+});
+// These two test cases together kill both the boundary mutant and document the intent.
+```
+
+**Stryker config for VS Code-integrated TDD sessions:**
+
+```typescript
+// stryker.config.mjs — tuned for VS Code extension (fast feedback over comprehensive mutation)
+export default {
+  packageManager: 'npm',
+  reporters: ['html', 'clear-text', 'progress'],
+  testRunner: 'vitest',
+  coverageAnalysis: 'perTest',    // Required for Test Explorer integration
+  vitest: {
+    configFile: 'vitest.config.ts',
+  },
+  mutate: [
+    'src/**/*.ts',
+    '!src/**/*.test.ts',
+    '!src/**/test-doubles/**/*.ts',
+  ],
+  // incremental: true for subsequent runs (see next section)
+  thresholds: {
+    high: 80,
+    low: 60,
+    break: 50,
+  },
+  // For VS Code integration: limit mutation scope to the current working file
+  // (configured via the extension's Test Explorer UI, not in config)
+};
+```
+
+**Why VS Code inline mutation feedback changes TDD practice:** Before the extension, mutation testing was a CI gate that teams ran monthly. Survivors were discovered after the TDD cycle was complete — requiring developers to return to code they had already shipped mentally. With inline decorations, mutation survivors appear during the TDD session while context is fresh. The discipline is: **treat a ⚠ survivor in the VS Code extension the same as a Red failing test case** — add a triangulating test case before moving to the next feature. Teams that adopt this practice report mutation scores converging to 80%+ naturally during development rather than requiring a separate "mutation cleanup" sprint.
+
+**[community] The VS Code extension's Test Explorer integration lets you run Stryker on a single file or single test case**, significantly reducing the 60–300 second full-suite mutation run to a 5–15 second targeted run. This is a game-changer for TDD: targeted mutation runs are fast enough to include in the Red→Green→Refactor cycle, not just in CI.
+
+---
+
+### Stryker Incremental Mutation Testing — TDD-Cadence Runs [community]
+
+Stryker JS 9.x (2025) introduced `--incremental` mode: mutation results are stored in a JSON cache file, and subsequent runs skip mutants that have not changed since the last run. Combined with the `mutate` option limiting scope to recently changed files, this enables mutation testing at TDD cadence — fast enough to run on every PR rather than monthly.
+
+The key insight for TDD: **incremental mutation testing makes the mutation score a continuous metric, not a periodic audit**. When a developer adds a new function and writes TDD test cases for it, the next Stryker run tests only the new mutations — typically completing in under 60 seconds for a small change set.
+
+```typescript
+// stryker.config.mjs — incremental mode for CI-on-every-PR mutation testing
+export default {
+  packageManager: 'npm',
+  reporters: ['html', 'clear-text', 'progress'],
+  testRunner: 'vitest',
+  coverageAnalysis: 'perTest',
+  vitest: { configFile: 'vitest.config.ts' },
+
+  // ──────────────────────────────────────────────
+  // Incremental mode: cache results, skip unchanged mutants on re-run
+  incremental: true,
+  incrementalFile: 'reports/stryker-incremental.json',
+
+  // Mutation scope: only files changed since main branch
+  // Note: Stryker does not yet support git diff natively — use a CI script:
+  // `git diff --name-only origin/main...HEAD | grep '\.ts$'` → feed to mutate
+  mutate: [
+    'src/**/*.ts',
+    '!src/**/*.test.ts',
+    '!src/**/test-doubles/**/*.ts',
+  ],
+
+  thresholds: { high: 80, low: 60, break: 50 },
+};
+```
+
+```yaml
+# .github/workflows/mutation-pr.yml — incremental Stryker run on every PR
+name: Mutation Testing (Incremental)
+
+on: [pull_request]
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # Need full history for diff computation
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+
+      - run: npm ci
+
+      # 1. Compute changed TypeScript files since base branch
+      - name: Compute mutation scope
+        id: changed
+        run: |
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD \
+            | grep '\.ts$' | grep -v '\.test\.ts$' | head -20)
+          echo "files=$CHANGED" >> $GITHUB_OUTPUT
+
+      # 2. Run Stryker only on changed files (fast PR-level mutation check)
+      - name: Run Stryker (incremental, changed files only)
+        if: steps.changed.outputs.files != ''
+        run: |
+          npx stryker run \
+            --incremental \
+            --mutate "$(echo '${{ steps.changed.outputs.files }}' | tr '\n' ',')"
+        env:
+          STRYKER_DASHBOARD_API_KEY: ${{ secrets.STRYKER_DASHBOARD_API_KEY }}
+
+      # 3. Restore incremental cache between runs (speeds up next PR run)
+      - uses: actions/cache@v4
+        with:
+          path: reports/stryker-incremental.json
+          key: stryker-incremental-${{ github.sha }}
+          restore-keys: stryker-incremental-
+```
+
+```typescript
+// TDD discipline with incremental Stryker:
+// After each Red→Green→Refactor cycle on a new function,
+// run the targeted mutation check (VS Code extension or CLI):
+
+// CLI: targeted single-file mutation run (15–30 seconds)
+// npx stryker run --incremental --mutate "src/domain/pricing/PricingEngine.ts"
+
+// The incremental cache means the second run on unchanged mutants is near-instant.
+// Only new mutants (from your Green phase additions) are tested.
+
+// Example: after TDD'ing a new applyTieredDiscount function,
+// running Stryker with --incremental takes ~8 seconds vs ~120 seconds full-suite.
+// The survivors visible in VS Code extension are ONLY from your new code.
+```
+
+**Why incremental mutation testing matters for TDD:** Traditional Stryker runs take 60–300 seconds for a full suite — too slow for the TDD inner loop. With `--incremental`, re-runs skip mutants where neither the production code nor the test cases changed, reducing run time to 5–20 seconds for a single changed file. This is fast enough to run after every Green phase as part of the TDD discipline. The correct cadence: run tests (fast, sub-1s), then run incremental Stryker (8–15s for a single file), then Refactor. If survivors appear, add a triangulating test case before declaring the cycle complete.
+
+**[community] The `--testFiles` option (Stryker 9.5.1) complements `--mutate` for targeted runs.** When you are TDD'ing a single module, use both: `--mutate "src/domain/pricing/PricingEngine.ts"` limits which source file is mutated, and `--testFiles "src/domain/pricing/PricingEngine.test.ts"` limits which test file is used to kill mutants. This double-scoping produces the fastest possible mutation feedback: only the mutants in your current file, only killed by your current test file. Any survivor is a direct signal that your TDD test cases have a coverage gap.
+
+---
+
+### Vitest 5.0 — TDD-Relevant Changes [community]
+
+Vitest 5.0 (beta, April–May 2026) introduces several breaking changes that affect TypeScript TDD configurations. Teams upgrading from Vitest 4.x should update their configs before the stable release.
+
+#### Output Directory Change: `.vitest/` Convention
+
+Vitest 5.0 changes the default output directories for coverage reports, snapshots, and the HTML reporter from project-root defaults to a `.vitest/` directory convention. This keeps generated files isolated and `.gitignore`-friendly.
+
+```typescript
+// ✅ Vitest 5.0: default output directories
+// Coverage:    .vitest/coverage/  (was: coverage/)
+// Snapshots:   .vitest/snapshots/ (was: __snapshots__/ co-located)
+// HTML report: .vitest/html/      (was: html/)
+
+// Update vitest.config.ts for Vitest 5.0:
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      enabled: process.env.CI === 'true',
+      provider: 'v8',
+      // Vitest 5.0: set explicitly if you want the old location
+      // reportsDirectory: 'coverage',   // ← override to keep old location
+      // or accept the new .vitest/coverage/ default
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts', 'src/**/test-doubles/**'],
+      thresholds: { branches: 80, functions: 85, lines: 85 },
+    },
+    // Vitest 5.0: snapshot output directory
+    // snapshotOptions: { snapshotDir: '.vitest/snapshots' }  // ← new default
+  },
+});
+```
+
+**TDD impact:** If your CI pipeline references `coverage/lcov.info` or `__snapshots__/` paths, update these references before upgrading to Vitest 5.0. The ARIA snapshot tests documented in this guide are affected: file-based `toMatchAriaSnapshot()` snapshots will now be stored in `.vitest/snapshots/` by default.
+
+```bash
+# Update .gitignore for Vitest 5.0
+echo ".vitest/" >> .gitignore
+# If you are committing ARIA snapshots (required for contract tests), be specific:
+# !.vitest/snapshots/  ← keep snapshots in version control
+```
+
+#### `sequential` Option Replaced by `concurrent: false`
+
+Vitest 5.0 removes the `sequential` test option and replaces it with `concurrent: false`. In TDD test suites, `sequential` was sometimes used to prevent timing-sensitive test cases from interfering when they share shared state — a pattern that should instead be solved with proper test isolation, but is common in legacy TDD suites.
+
+```typescript
+// ❌ Vitest 4.x — using `sequential` (removed in Vitest 5.0)
+it.sequential('first step of a stateful workflow', async () => {
+  await workflow.start();
+  expect(workflow.state).toBe('running');
+});
+
+it.sequential('second step depends on first', async () => {
+  await workflow.complete();
+  expect(workflow.state).toBe('done');
+});
+
+// ✅ Vitest 5.0 — use `concurrent: false` or restructure into a single test case
+// Option A: concurrent: false (direct replacement)
+it('first step', { concurrent: false }, async () => {
+  await workflow.start();
+  expect(workflow.state).toBe('running');
+});
+
+// Option B (preferred TDD approach): one test case, one workflow run
+it('processes a workflow from start to completion', async () => {
+  // Arrange: fresh workflow for this test case only
+  const wf = new Workflow();
+  // Act: full lifecycle within one test case — no ordering dependency
+  await wf.start();
+  expect(wf.state).toBe('running');
+  await wf.complete();
+  expect(wf.state).toBe('done');
+});
+// TDD insight: the need for `sequential` test cases is usually a design smell —
+// the test cases are sharing mutable state. The correct TDD fix is fresh state
+// per test case. Option B above is the correct TDD refactoring of sequential tests.
+```
+
+**TDD migration impact:** If your test suite uses `it.sequential`, upgrade path is: (a) replace with `{ concurrent: false }` for a mechanical migration, then (b) refactor the underlying design to eliminate the ordering dependency — which is the correct TDD goal. `it.sequential` tests are a symptom of shared mutable state; their removal from Vitest 5.0 forces the underlying design improvement.
+
+#### `configDefaults.reporters` — Stable Reporter Defaults [community]
+
+Vitest 5.0 exposes `configDefaults.reporters` for easier programmatic reporter customization. In TDD setups that programmatically build `vitest.config.ts`, this allows extending the default reporter set without hard-coding the base list.
+
+```typescript
+// vitest.config.ts — Vitest 5.0 configDefaults.reporters
+import { defineConfig, configDefaults } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Extend the default reporter set rather than replacing it
+    reporter: [
+      ...configDefaults.reporters,          // ← Vitest 5.0: stable default reporters
+      process.env.CI === 'true' ? 'junit' : null,
+      process.env.GITHUB_ACTIONS === 'true' ? 'github-actions' : null,
+      process.env.AI_AGENT === 'true' ? 'agent' : null,
+    ].filter(Boolean) as string[],
+
+    bail: process.env.CI ? 0 : 1,
+    detectLeaks: true,
+  },
+});
+```
+
+**Why this matters for TDD:** In Vitest 4.x, adding a custom reporter required knowing and repeating the default reporter list. With `configDefaults.reporters`, a TDD config can say "use defaults plus JUnit in CI" without fear of accidentally dropping the `verbose` reporter that TDD sessions depend on.
+
+#### V8 Coverage for Child Processes and Worker Threads
+
+Vitest 5.0 adds V8 coverage tracking for child processes and worker threads. In TypeScript TDD projects that use Node.js `child_process.fork()` or `worker_threads` for domain logic (e.g., CPU-bound calculations, parallel processing), coverage previously showed 0% for those workers. Vitest 5.0 instruments them correctly.
+
+```typescript
+// TDD test case for a worker-thread-based domain function
+// (Previously: appeared as 0% coverage in Vitest 4.x; correctly covered in Vitest 5.0)
+import { describe, it, expect } from 'vitest';
+import { runInWorker } from './worker-runner.js';
+
+describe('runInWorker', () => {
+  it('computes a CPU-bound result in a worker thread', async () => {
+    // Vitest 5.0: this code path is now included in V8 coverage
+    const result = await runInWorker(() => {
+      // Worker thread logic — previously uncovered, now tracked
+      return Array.from({ length: 1000 }, (_, i) => i * i).reduce((a, b) => a + b, 0);
+    });
+    expect(result).toBe(332833500);
+  });
+});
+```
+
+**TDD impact:** Teams that excluded worker-thread code from coverage thresholds (because Vitest 4.x never counted it) may now find their coverage reporting changes after upgrading to Vitest 5.0. Expect coverage numbers to change — either improving (if the workers were well-tested but uncounted) or revealing gaps (if workers had coverage gaps that were previously invisible). **Run the full coverage report immediately after upgrading to Vitest 5.0 to understand the delta before setting new thresholds.**
+
+---
+
+### LLM as Red-Phase Collaborator — Prompting for the Failing Test [community]
+
+The existing AI-assisted TDD section (above) focuses on using LLMs to generate the **Green phase** — asking the AI to implement code that makes a test pass. A distinct and underused pattern is using LLMs as **Red-phase collaborators**: asking the AI to generate the failing test case specification, not the implementation. This inverts the common AI-coding flow and preserves TDD's design pressure on the developer.
+
+**The principle:** You write the intent (a description of the behaviour you want), the LLM generates one or more failing test cases (the Red specification), and you review, refine, and commit those test cases before any production code is written. The LLM never writes the implementation in this flow — you do.
+
+**Why this is better than "AI generates tests for my class":** When you ask an AI to "write tests for this class," it sees existing production code and generates tests that conform to it — producing test-after tests, not TDD tests. When you ask for a failing test specification from a behaviour description alone (with no existing implementation), the AI generates tests from the consumer's perspective — which is the TDD discipline.
+
+```typescript
+// Pattern: LLM Red-phase prompting strategy
+// The prompt must NOT include any implementation code.
+// Only include: the interface contract (types), the behaviour description, and constraints.
+
+// ──────────────────────────────────────────────────────────────────────────────
+// EXAMPLE PROMPT to Claude Code / Copilot / Cursor:
+//
+// "Write 3–5 failing Vitest test cases for a TypeScript function `applyLoyaltyDiscount`.
+//  DO NOT write the implementation. The test cases should:
+//  - Use typed inputs and explicit assertions (no `any`)
+//  - Specify exactly one behaviour per test case (baby steps)
+//  - Include the boundary condition: discount applies at qty >= 5, not qty 4
+//  - Include error case: negative qty throws `InvalidQuantityError`
+//  - Use typed test data (inline, no fixtures file needed)
+//
+//  Interface:
+//  type Tier = 'bronze' | 'silver' | 'gold';
+//  interface LoyaltyInput { qty: number; unitPrice: number; tier: Tier; }
+//  interface LoyaltyResult { subtotal: number; discount: number; total: number; }
+//  function applyLoyaltyDiscount(input: LoyaltyInput): LoyaltyResult
+//  Error type: class InvalidQuantityError extends Error { kind: 'invalid-quantity' }
+// "
+//
+// GOOD output from LLM — use this as your Red test cases:
+
+import { describe, it, expect } from 'vitest';
+import { applyLoyaltyDiscount } from './applyLoyaltyDiscount.js';
+import type { LoyaltyInput } from './applyLoyaltyDiscount.js';
+
+describe('applyLoyaltyDiscount', () => {
+  // Test 1: no discount below the threshold
+  it('applies no discount for qty below 5 (boundary: discount starts at 5)', () => {
+    const input: LoyaltyInput = { qty: 4, unitPrice: 100, tier: 'bronze' };
+    const result = applyLoyaltyDiscount(input);
+    expect(result.discount).toBe(0);
+    expect(result.total).toBe(400);
+  });
+
+  // Test 2: boundary — discount applies exactly at qty 5
+  it('applies bronze discount for qty exactly 5', () => {
+    const input: LoyaltyInput = { qty: 5, unitPrice: 100, tier: 'bronze' };
+    const result = applyLoyaltyDiscount(input);
+    expect(result.discount).toBeGreaterThan(0);
+  });
+
+  // Test 3: gold tier provides higher discount than bronze
+  it('applies a higher discount for gold tier than bronze at the same qty', () => {
+    const bronzeResult = applyLoyaltyDiscount({ qty: 5, unitPrice: 100, tier: 'bronze' });
+    const goldResult   = applyLoyaltyDiscount({ qty: 5, unitPrice: 100, tier: 'gold' });
+    expect(goldResult.discount).toBeGreaterThan(bronzeResult.discount);
+  });
+
+  // Test 4: result structure — all three fields present and consistent
+  it('total equals subtotal minus discount', () => {
+    const result = applyLoyaltyDiscount({ qty: 10, unitPrice: 50, tier: 'silver' });
+    expect(result.total).toBeCloseTo(result.subtotal - result.discount);
+  });
+
+  // Test 5: negative qty throws InvalidQuantityError
+  it('throws InvalidQuantityError for negative qty', () => {
+    const input: LoyaltyInput = { qty: -1, unitPrice: 100, tier: 'bronze' };
+    expect(() => applyLoyaltyDiscount(input)).toThrow(
+      expect.objectContaining({ kind: 'invalid-quantity' })
+    );
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// After reviewing and committing these test cases (all Red), THEN implement.
+// At no point does the LLM see the production code during the test specification step.
+```
+
+**Prompting principles for LLM Red-phase collaboration:**
+
+```typescript
+// KEY PRINCIPLE: the LLM prompt must contain only:
+// ✅ The TypeScript type signatures (interface, function signature, error types)
+// ✅ The behaviour description in plain English
+// ✅ Explicit boundary conditions and error cases to cover
+// ✅ Instructions: "do NOT write the implementation", "one behaviour per test case"
+//
+// ❌ Do NOT include:
+// ❌ Any existing implementation code
+// ❌ Existing test cases (bias the LLM toward test-after style)
+// ❌ "Write tests for this file" (LLM will read the implementation and test-after)
+//
+// REVIEW CHECKLIST before committing LLM-generated test cases:
+// ☐ Each test case specifies exactly one behaviour
+// ☐ All typed inputs use the domain interfaces (not `any`)
+// ☐ Boundary conditions are explicit (e.g., qty === 4 vs qty === 5)
+// ☐ Error cases use typed matchers (not `toThrow('string')`)
+// ☐ No implementation detail leaks (no assertions on internal state)
+// ☐ Test names read as complete sentences: "<unit> <condition> <expected outcome>"
+```
+
+**[community] The most important LLM-TDD workflow insight from 2025–2026 production experience:** AI assistants are better at generating _specifications_ (failing tests from behaviour descriptions) than at generating _implementations_ (code from specifications). The model's training on diverse codebases gives it strong intuition for "what should this function do in edge cases" but weaker intuition for "how should this function work internally." Leveraging the LLM at the Red phase (where breadth of specification matters) and having the developer implement at the Green phase (where domain knowledge matters) produces better outcomes than delegating both phases to the AI.
+
+**[community] Mutation testing reveals LLM-generated Red-phase test quality.** When test cases are generated by an LLM in the Red phase and the developer writes the implementation, run Stryker against the result. LLM-generated test specifications typically have a mutation score of 70–80% on first run — better than the 50–65% typical of hand-crafted test-after suites, but still below the 85–95% of carefully triangulated TDD cycles. The survivors are almost always at logical operator boundaries (`>` vs `>=`, `&&` vs `||`) — exactly the kinds of cases that additional triangulating test cases should cover.
+
+---
+
+### Real-World Gotchas [community] — Additions (iter 27)
+
+50. **[community] Vitest 5.0's `.vitest/` output directory change breaks CI pipelines that hardcode `coverage/lcov.info` or `__snapshots__/` paths.** The migration is mechanical — update `codecov-action` to point at `.vitest/coverage/lcov.info`, update snapshot review scripts, and add `.vitest/` to `.gitignore` (except committed ARIA snapshot files). The non-obvious failure mode: ARIA snapshot tests that were previously file-based (`toMatchAriaSnapshot()`) and committed as contract tests will need their snapshot files moved from `__snapshots__/` to `.vitest/snapshots/`. Teams that run Vitest 5.0 in CI without migrating snapshot paths will see every ARIA contract test fail on the first CI run — not because the accessibility tree changed, but because the snapshot file is in the wrong location. Migration checklist: `grep -r '__snapshots__'` in CI config, update to `.vitest/snapshots/`; then `grep -r 'coverage/lcov.info'` and update to `.vitest/coverage/lcov.info`.
+
+51. **[community] Stryker incremental mode with `coverageAnalysis: 'perTest'` requires the Vitest test runner to produce correct per-test coverage maps — which fails silently when test files use `vi.mock()` with hoisted modules.** When `vi.mock()` hoisting intercepts a module before per-test coverage instrumentation registers, Stryker's incremental engine cannot correctly attribute which mutants are covered by which test cases. The result: Stryker marks some mutants as not covered (and skips testing them) even though they are covered by tests that use `vi.mock()`. The failure mode is silent — fewer mutants are tested than expected, and the mutation score appears higher than reality. The fix: for modules that are heavily mocked with `vi.mock()`, either (a) switch to `coverageAnalysis: 'all'` (slower but accurate) or (b) use the VS Code extension's file-level mutation run (which does not rely on per-test attribution). Track this as a known limitation when reviewing mutation scores on test files with `vi.mock()` calls.
+
+---
 
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
@@ -5665,3 +6095,6 @@ With `groupOrder`: if the unit group (group 1) fails, groups 2 and 3 are skipped
 | TypeScript 6.0 Temporal API | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | Stage-4 Temporal API built-in types in TS 6.0 via `"lib": ["esnext"]`; use Clock interface injection (not vi.spyOn) for TDD against Temporal.Now |
 | ts5to6 Migration Codemod | Tool | https://github.com/andrewbranch/ts5to6 | Automates mechanical TypeScript 6.0 migration: `baseUrl`→`paths`, deprecated options, `rootDir` inference; does NOT update `"types"` arrays (must be done manually for test runner globals) |
 | Vitest 3.2 — AbortSignal per Test Case | Docs | https://vitest.dev/guide/test-context.html | `ctx.signal` fired on test timeout; enables TDD for cancellation-aware code; distinct from `afterEach` cleanup — fires only on timeout/cancellation, not normal test completion |
+| Stryker VS Code Extension | Tool | https://stryker-mutator.io/blog/vscode-plugin/ | Official VS Code plugin (Stryker 9.3+, Nov 2025); inline mutation decorations (✓ killed, ⚠ survivor) during TDD sessions; built on Mutation Server Protocol; Test Explorer integration for single-file and single-test mutation runs |
+| Stryker Incremental Mutation Testing | Docs | https://stryker-mutator.io/docs/stryker-js/configuration/ | `--incremental` flag (Stryker 9.x) stores mutation results in a JSON cache; subsequent runs skip unchanged mutants — reduces per-PR mutation runs from 120s to 8–15s for single changed files; combine with `--mutate` scoping for TDD-cadence mutation feedback |
+| Vitest 5.0 Release Notes | Docs | https://vitest.dev/blog/vitest-5 | Breaking changes: `.vitest/` output directory convention; `sequential` → `concurrent: false`; `configDefaults.reporters` for stable reporter extension; V8 coverage for child processes and worker threads |

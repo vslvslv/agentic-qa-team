@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 51 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 52 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -55,6 +55,7 @@
      Iter 49 (2026-05-12): 100/100 (+~420 lines) — added patch.dict/patch.multiple patterns, pytest-mock plugin deep-dive (mocker fixture, spy, stopall), freezegun/time-machine datetime mocking with comparison table, responses HTTP mocking, pytest-httpx/aioresponses for async HTTP, st.register_type_strategy() for Hypothesis custom types, pytest-xdist parallel testing with xdist_group/worker isolation patterns, pytest-cov coverage configuration with branch coverage; community gotchas #50 (xdist session-fixture is per-worker), #51 (freezegun misses C-ext time), #52 (responses only intercepts requests); sourced from practitioner synthesis + docs
      Iter 50 (2026-05-12): 100/100 (+~330 lines) — added snapshot testing (syrupy + inline-snapshot); pytest-benchmark micro-benchmark testing; mutation testing with mutmut; pytest-timeout + pytest-randomly CI plugins; pytest-asyncio asyncio_default_fixture_loop_scope deprecation; community gotchas #53 (syrupy auto-update wipes human-reviewed baselines), #54 (pytest-benchmark warm-up vs measurement confusion), #55 (mutmut false positives from equivalent mutations), #56 (pytest-asyncio event_loop fixture deprecation); sourced from practitioner synthesis + official docs
      Iter 51 (2026-05-12): 100/100 (+~340 lines) — added Python 3.15 section: TypeForm (PEP 747), TypedDict closed/extra_items (PEP 728), re.prefixmatch() (soft-dep re.match()), profiling package (sampling + tracing profilers), UTF-8 default encoding (PEP 686), profile module deprecation; pytest 9.0 additions: faulthandler_exit_on_timeout, consider_namespace_packages, monkeypatch.syspath_prepend() deprecation; community gotchas #57 (assertWarns no longer swallows non-matching warnings, Python 3.15) and #58 (cProfile/profile module deprecated, migrate to profiling.tracing); sourced from docs.python.org/3.15/whatsnew + peps.python.org + docs.pytest.org/en/stable/changelog.html
+     Iter 52 (2026-05-12): 100/100 (+0) — added Python 3.15 lazy import keyword (PEP 810) with testing impact section; frozendict (PEP 814) + sentinel (PEP 661) for immutable test fixtures; threading.synchronized_iterator()/concurrent_tee() for lock-free concurrent iteration; asyncio.TaskGroup.cancel() for structured async cleanup; community gotchas #59 (TaskGroup.cancel() does not suppress already-completed task results) and #60 (lazy import + import-time side-effect ordering pitfall); sourced from docs.python.org/3.15/whatsnew + peps.python.org/pep-0810/ + peps.python.org/pep-0814/ + peps.python.org/pep-0661/
 -->
 
 
@@ -10464,3 +10465,367 @@ python -m profiling.sampling run --flamegraph script.py  # flamegraph output
 5. Add `filterwarnings = "error::DeprecationWarning"` to catch remaining usages early.
 
 ---
+
+### Python 3.15 — Lazy Imports (PEP 810), `frozendict`, `sentinel`, Thread-Safe Iterators, and `TaskGroup.cancel()`
+
+Python 3.15 ships four stdlib additions that directly affect testing patterns: explicit lazy import syntax, immutable built-in `frozendict` and `sentinel` types, `threading` utilities for concurrent iteration, and `asyncio.TaskGroup.cancel()` for early structured-concurrency exit.
+
+#### Lazy Imports — `lazy import` keyword (PEP 810, Python 3.15)
+
+PEP 690 (implicit global laziness) was rejected in 2022. PEP 810 takes the explicit, opt-in approach: a new `lazy` soft-keyword at module level defers loading until first attribute access, without cascading effects.
+
+```python
+# ── Basic syntax — module-level only ─────────────────────────────────────────
+lazy import json                         # json not loaded until first use
+lazy from pathlib import Path, PurePath  # loads pathlib on first access of either
+
+import sys
+print("json" in sys.modules)   # False — not imported yet
+data = json.loads('{"k":1}')   # First access triggers the real import
+print("json" in sys.modules)   # True
+
+# ── Programmatic control for large apps ──────────────────────────────────────
+sys.set_lazy_imports("all")    # Treat all subsequent module-level imports as lazy
+# or via env: PYTHON_LAZY_IMPORTS=all  / CLI: -X lazy_imports=all
+
+# Filter: force eager imports for modules with intentional import-time side effects
+def _keep_eager(importer: str, name: str, fromlist: tuple[str, ...]) -> bool:
+    """Return True to keep the import eager; False to allow lazy."""
+    return name in {"metrics_collector", "plugin_registry"}
+
+sys.set_lazy_imports_filter(_keep_eager)
+
+# ── Testing impact: import errors surface at first use, not at import time ───
+lazy import nonexistent_module          # No error here
+
+def compute() -> int:
+    return nonexistent_module.value     # ModuleNotFoundError raised HERE
+#   ↑ exception chaining shows both the lazy-import site and the access site
+
+# ── Backward compatibility shim for pre-3.15 ─────────────────────────────────
+# __lazy_modules__ at module level makes imports lazy on 3.15+, eager on older:
+__lazy_modules__ = ["heavy_analytics", "heavy_analytics.core"]
+import heavy_analytics  # lazy on 3.15+, eager on 3.14 and below
+```
+
+**importlib.util.LazyLoader vs PEP 810:**
+
+| Aspect | `LazyLoader` | PEP 810 `lazy import` |
+|---|---|---|
+| `from … import name` support | No | Yes |
+| Spec/loader boilerplate | Required | None |
+| Tooling (type checkers, linters) | Opaque | First-class syntax |
+| Scope of laziness | Per-loader | Per-statement |
+| Available since | Python 3.5 | Python 3.15 |
+
+**Testing rule:** Lazy imports defer `ImportError` and module-level side effects (logging setup, metric registration, signal handlers). In test suites, avoid `lazy import` inside test modules themselves — the deferred error will surface in the *first test that exercises the lazy module*, not at collection time, making failures harder to attribute.
+
+---
+
+#### `frozendict` (PEP 814) and `sentinel` (PEP 661) for Immutable Test Fixtures (Python 3.15)
+
+`frozendict` is a built-in immutable, hashable dictionary. `sentinel` creates unique opaque marker values — a typed, picklable alternative to `object()`.
+
+```python
+# ── frozendict: immutable, hashable dict ─────────────────────────────────────
+# No import needed — frozendict is a built-in like frozenset
+
+DEFAULT_CONFIG: frozendict = frozendict(
+    timeout=30,
+    retries=3,
+    backoff_factor=0.5,
+)
+
+# frozendict is hashable (when all values are hashable) → usable as dict key
+cache: dict[frozendict, str] = {}
+cache[DEFAULT_CONFIG] = "result"
+
+# Order-independent equality and hashing
+a = frozendict(x=1, y=2)
+b = frozendict(y=2, x=1)
+assert a == b
+assert hash(a) == hash(b)
+
+# Use in tests: freeze parameter dicts to prevent accidental mutation across cases
+def apply_config(cfg: frozendict) -> None:
+    # cfg["timeout"] = 0  # TypeError — mutation blocked
+    pass
+
+import pytest
+
+@pytest.fixture(scope="session")
+def base_config() -> frozendict:
+    """Session-scoped fixture: frozendict guarantees no test can mutate it."""
+    return frozendict(host="localhost", port=8080, debug=False)
+
+
+def test_config_unchanged(base_config: frozendict) -> None:
+    assert base_config["host"] == "localhost"
+    # base_config["host"] = "remote"  # TypeError — fixture stays clean
+
+
+# ── sentinel: unique opaque marker values (PEP 661) ──────────────────────────
+# Import from builtins (Python 3.15+)
+from builtins import sentinel
+
+# Create unique sentinels — better than bare object() because:
+# • Has a meaningful repr
+# • Preserved by copy.copy / copy.deepcopy (identity retained)
+# • Picklable when importable by module + name
+MISSING = sentinel("MISSING", module=__name__)
+NOT_PROVIDED = sentinel("NOT_PROVIDED", module=__name__)
+
+def get_value(d: dict, key: str, default=MISSING) -> object:
+    if key not in d and default is MISSING:
+        raise KeyError(key)
+    return d.get(key, default)
+
+# In tests: sentinels make "was this argument provided?" checks unambiguous
+assert get_value({"a": 1}, "a") == 1
+assert get_value({}, "a", default=None) is None
+
+# sentinel supports | operator in type expressions:
+from typing import Union
+Opt = int | type(MISSING)   # practical pattern before TypeForm
+```
+
+**Testing rules:**
+- Prefer `frozendict` over `dict` for session- or module-scoped pytest fixtures that hold configuration; mutation raises `TypeError` immediately rather than causing silent state leakage.
+- Prefer `sentinel("NAME", module=__name__)` over `object()` for "not provided" defaults in test helpers; picklability makes fixtures usable across `pytest-xdist` worker processes.
+
+---
+
+#### `threading.synchronized_iterator()` and `concurrent_tee()` (Python 3.15)
+
+Python 3.15 adds two threading utilities that eliminate manual locking when multiple threads consume the same iterator — a common pattern in concurrent tests.
+
+```python
+from threading import synchronized_iterator, concurrent_tee
+import threading
+import time
+
+
+# ── synchronized_iterator: thread-safe wrapper around any iterable ────────────
+def items() -> list[int]:
+    return list(range(10))
+
+safe = synchronized_iterator(items())
+
+results: list[int] = []
+lock = threading.Lock()
+
+def worker() -> None:
+    for item in safe:           # Each item delivered to exactly one thread
+        time.sleep(0.001)       # simulate work
+        with lock:
+            results.append(item)
+
+threads = [threading.Thread(target=worker) for _ in range(4)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+
+assert sorted(results) == list(range(10))   # every item processed exactly once
+
+
+# ── concurrent_tee: fan-out an iterator to N independent consumers ────────────
+# Unlike itertools.tee, concurrent_tee is safe for concurrent access
+iter1, iter2 = concurrent_tee(range(5), 2)
+
+out1: list[int] = []
+out2: list[int] = []
+
+t1 = threading.Thread(target=lambda: out1.extend(iter1))
+t2 = threading.Thread(target=lambda: out2.extend(iter2))
+t1.start(); t2.start()
+t1.join(); t2.join()
+
+assert sorted(out1) == [0, 1, 2, 3, 4]
+assert sorted(out2) == [0, 1, 2, 3, 4]   # both iterators see all items
+
+
+# ── Contrast with old pattern (pre-3.15): manual locking ─────────────────────
+import itertools
+
+_lock = threading.Lock()
+_base = iter(range(10))
+
+def _safe_next():
+    with _lock:
+        return next(_base, None)
+
+# New: synchronized_iterator(range(10)) replaces this boilerplate entirely.
+```
+
+**Testing rule:** In `pytest-xdist` tests that share a generator fixture across threads (e.g., a fixture returning a `Queue`-backed iterator), wrap it with `synchronized_iterator()` rather than protecting every `next()` call manually. Do not use `itertools.tee()` for concurrent consumption — it is not thread-safe (community gotcha #43 already covers this).
+
+---
+
+#### `asyncio.TaskGroup.cancel()` — Early Exit from Structured Concurrency (Python 3.15)
+
+Prior to Python 3.15, ending a `TaskGroup` early required raising a custom exception from inside the group body — which is both unintuitive and triggers the group's exception-handling machinery. `TaskGroup.cancel()` provides a clean, explicit exit.
+
+```python
+import asyncio
+import time
+
+
+async def fetch(url: str, delay: float) -> str:
+    await asyncio.sleep(delay)
+    return f"response:{url}"
+
+
+async def search_first(urls: list[str]) -> str | None:
+    """Return the first successful response; cancel remaining tasks."""
+    first_result: str | None = None
+
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(fetch(u, i * 0.1)) for i, u in enumerate(urls)]
+
+        # Poll until one task finishes, then cancel the rest
+        while not any(t.done() for t in tasks):
+            await asyncio.sleep(0.05)
+
+        for t in tasks:
+            if t.done() and not t.cancelled():
+                first_result = t.result()
+                break
+
+        tg.cancel()   # Cancel remaining running tasks — clean exit (Python 3.15)
+
+    return first_result
+
+
+# ── Testing TaskGroup.cancel() ────────────────────────────────────────────────
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_search_first_returns_fastest() -> None:
+    urls = ["http://slow.example.com", "http://fast.example.com", "http://medium.example.com"]
+    result = await search_first(urls)
+    assert result is not None
+    assert result.startswith("response:")
+
+
+@pytest.mark.asyncio
+async def test_taskgroup_cancel_does_not_raise() -> None:
+    """Verify that tg.cancel() exits cleanly without raising ExceptionGroup."""
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(asyncio.sleep(10))   # Long-running task
+        tg.cancel()                          # Should exit cleanly
+    # If TaskGroup.cancel() incorrectly raised, this line would not be reached
+    assert True
+```
+
+---
+
+### Community Gotcha #59: `TaskGroup.cancel()` Does Not Suppress Already-Completed Task Results  [community]
+
+**Problem:** Developers call `TaskGroup.cancel()` expecting it to discard all task results and exit silently. In fact, `cancel()` only cancels tasks that are **still running**. Tasks that already completed (successfully or with an exception) are not affected — their results or exceptions are still collected by the `TaskGroup`. If multiple already-finished tasks raised exceptions, `ExceptionGroup` is still raised after the `async with` block exits.
+
+**Why:** `TaskGroup.cancel()` sends `cancel()` to each pending task's `asyncio.Task` object. Tasks that have `done() == True` ignore the cancellation (they are done). The `TaskGroup` still processes all completed tasks' outcomes as normal. This mirrors `Task.cancel()` semantics: cancelling a done task is a no-op.
+
+**Bad pattern (assumes cancel() clears all exceptions):**
+
+```python
+import asyncio
+
+
+async def may_fail(should_fail: bool) -> str:
+    if should_fail:
+        raise ValueError("task failed")
+    await asyncio.sleep(0.01)
+    return "ok"
+
+
+async def run_with_early_exit() -> None:
+    async with asyncio.TaskGroup() as tg:
+        t1 = tg.create_task(may_fail(True))   # completes immediately with ValueError
+        t2 = tg.create_task(asyncio.sleep(5))
+        await asyncio.sleep(0)                 # yield — t1 has already failed
+        tg.cancel()   # cancels t2, but t1 already raised — ExceptionGroup still raised!
+    # WRONG assumption: tg.cancel() suppressed t1's ValueError
+```
+
+**Safe pattern — check for completed exceptions before cancelling:**
+
+```python
+async def run_safe() -> str | None:
+    result: str | None = None
+
+    async with asyncio.TaskGroup() as tg:
+        tasks = [
+            tg.create_task(may_fail(False)),
+            tg.create_task(asyncio.sleep(5)),
+        ]
+        await asyncio.sleep(0)   # Allow tasks to start
+
+        # Only cancel if no tasks have already failed
+        failed = [t for t in tasks if t.done() and not t.cancelled()
+                  and t.exception() is not None]
+        if not failed:
+            for t in tasks:
+                if t.done() and not t.cancelled():
+                    result = t.result()
+                    break
+            tg.cancel()
+
+    return result
+```
+
+**Rule:** Before calling `tg.cancel()`, check `task.done()` and `task.exception()` for each task. If any task already raised, `tg.cancel()` will not prevent `ExceptionGroup` propagation. Handle exceptions explicitly or use `asyncio.shield()` on tasks whose exceptions should not be forwarded to the group.
+
+---
+
+### Community Gotcha #60: `lazy import` Defers Import-Time Side Effects — Plugin Registration Order Breaks  [community]
+
+**Problem:** Modules that rely on import-time side effects (registering plugins, signal handlers, metrics collectors, logging configuration) become order-dependent when `lazy import` is combined with `sys.set_lazy_imports("all")`. In a test suite, the first test that *uses* a lazily imported module triggers its registration — which may happen after other tests that assumed the registration already occurred, causing non-deterministic failures.
+
+**Why:** Before Python 3.15, all module-level imports ran eagerly at startup, so import order was deterministic and predictable. With `lazy import` or `set_lazy_imports("all")`, modules load on demand. In `pytest-randomly` mode (randomised test order), the triggering test changes each run, producing intermittent failures that look like flaky tests.
+
+**Bad pattern:**
+
+```python
+# conftest.py — enables global lazy imports for startup speed
+import sys
+sys.set_lazy_imports("all")
+
+# plugin_auto_register.py — has import-time side effect
+import signal
+signal.signal(signal.SIGUSR1, lambda *_: dump_state())   # registered at import time
+
+# test_signal.py
+import plugin_auto_register  # lazy — module not actually loaded yet!
+
+def test_receives_sigusr1() -> None:
+    import os, signal
+    os.kill(os.getpid(), signal.SIGUSR1)
+    # Fails non-deterministically: signal handler may not be registered yet
+    # because plugin_auto_register's body hasn't run
+```
+
+**Safe pattern — force eager imports for side-effect modules:**
+
+```python
+# conftest.py
+import sys
+
+def _force_eager(importer: str, name: str, fromlist: tuple[str, ...]) -> bool:
+    """Force eager loading for modules with intentional side effects."""
+    SIDE_EFFECT_MODULES = frozenset({
+        "plugin_auto_register",
+        "metrics_collector",
+        "app_logging_setup",
+    })
+    return name in SIDE_EFFECT_MODULES  # True → keep eager
+
+sys.set_lazy_imports("all")
+sys.set_lazy_imports_filter(_force_eager)
+
+# Or: do NOT use lazy import/set_lazy_imports in conftest.py at all — keep test
+# startup predictable. Reserve lazy imports for application code only.
+```
+
+**Rule:** Never apply `sys.set_lazy_imports("all")` or `lazy import` to modules that perform side effects at import time (signal handlers, plugin registries, atexit hooks, logging configuration). Use `sys.set_lazy_imports_filter()` to create an allowlist. In test code, prefer explicit eager imports in `conftest.py` to preserve deterministic collection and fixture setup order.

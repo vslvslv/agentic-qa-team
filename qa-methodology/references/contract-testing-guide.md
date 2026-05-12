@@ -1,11 +1,12 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases/tag/v16.4.0 (WebFetch 2026-05-12 iteration 27), github.com/pact-foundation/pact-js/issues/1762 (WebFetch 2026-05-12 iteration 27), docs.pact.io/pact_broker/advanced_topics/consumer_version_selectors (WebFetch 2026-05-12 iteration 28), pactflow.io/blog (WebFetch 2026-05-12 iteration 28), github.com/pactflow/pact-protobuf-plugin/releases (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1585 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1634 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/issues/1696 (WebFetch 2026-05-12 iteration 30), github.com/pact-foundation/pact-js/pull/1767 (WebFetch 2026-05-12 iteration 30), pactflow.io/blog (WebFetch 2026-05-12 iteration 30) | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases/tag/v16.4.0 (WebFetch 2026-05-12 iteration 27), github.com/pact-foundation/pact-js/issues/1762 (WebFetch 2026-05-12 iteration 27), docs.pact.io/pact_broker/advanced_topics/consumer_version_selectors (WebFetch 2026-05-12 iteration 28), pactflow.io/blog (WebFetch 2026-05-12 iteration 28), github.com/pactflow/pact-protobuf-plugin/releases (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1585 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1634 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/issues/1696 (WebFetch 2026-05-12 iteration 30), github.com/pact-foundation/pact-js/pull/1767 (WebFetch 2026-05-12 iteration 30), pactflow.io/blog (WebFetch 2026-05-12 iteration 30), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 31), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 31), pactflow.io/blog (WebFetch 2026-05-12 iteration 31), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12 iteration 31) | community: production lessons -->
 <!-- new in iteration 24: extended MatchersV3 quick reference (atMostLike, constrainedArrayLike, includes, nullValue, equal, eachKeyMatches, eachValueMatches), InterfaceToTemplate<T> TypeScript utility, constrainedArrayLike bounded-array pattern, community lessons 47-49 (executeTest single-interaction-per-call constraint, constrainedArrayLike for bounded APIs, InterfaceToTemplate drift) -->
 <!-- new in iteration 26: Multipart form data / file upload contract testing pattern (multipartBody/binaryFile V4 DSL, official docs May 2026), SpecificationVersion enum for explicit spec version control, community lessons 54-57 (EADDRINUSE with provider.setup() missing finalize, Jest --watch tracing subscriber warning, multipart form data over-specification anti-pattern, SpecificationVersion enum usage) -->
 <!-- new in iteration 28: matchingBranch consumer version selector (parallel feature branch development, TypeScript pattern), extended ConsumerVersionSelector reference table (consumer, environment, deployed, released, matchingBranch, all 12 properties), PactFlow AI Code Review feature (August 2025 beta — automated pact quality analysis, distinct from MCP Server), pact-protobuf-plugin v0.7.0 (October 2025 — proto descriptor caching + nested message fix, upgrade guide), community lessons 58-61 (matchingBranch requires providerVersionBranch, consumer selector for scoping, AI Code Review semantic vs type gaps, descriptor cache is per-process) -->
 <!-- new in iteration 29: pact-js v16.0.2 state handler graceful error handling (PR #1585, Oct 2025 — state handler throws now surface at ERROR log level instead of HTTP 500), pact-js v16.0.4 mixed HTTP + async message provider verification fix (PR #1634, Dec 2025 — transports config now sent when no custom transports defined), updated Pact Specification Version Reference table with v16.0.1–v16.0.4 rows, community lessons 62-63 (state handler error diagnosis, mixed pact type provider verification) -->
 <!-- new in iteration 30: pact-js v16.3.0→v16.4.x DELETE request regression in jsdom (issue #1696, PR #1767 merged May 2026 — CORS preflight not enabled by pactffiCreateMockServerForTransport in pact-core v19; fix adds cors option to PactV3/Pact constructors), PactFlow AI Test Templates (May 2025 — custom test scaffolding for 7 languages including TypeScript), updated Pact Specification Version Reference table, community lessons 64-65 (DELETE requests fail in jsdom after upgrading to v16.3.0, PactFlow AI Test Templates for TypeScript) -->
+<!-- new in iteration 31: filterConsumerNames + filterProviderStates VerifierV3 scoping pattern for large provider suites (TypeScript), Apollo Federation / GraphQL supergraph contract testing boundary (what Pact can/cannot test with federated subgraphs), community lessons 66-67 (filterConsumerNames misuse vs consumer selector scoping, Server-Sent Events contract testing boundary) -->
 <!-- new in iteration 27: CORRECTON — addInteractionReference section replaced with accurate .reference(group, name, value) traceability annotation API (issue #1762, v16.4.0); previous section incorrectly described it as an interaction-reuse mechanism with a fabricated InteractionObject API; table entry and v16 API list updated to match actual function signature and purpose -->
 <!-- new in iteration 25: The Bug Catcher Rule (formal principle for interaction inclusion), BDD-style scenario sentence pattern, V4 statusCode class matching (success/clientError/serverError), mTLS client certificate workaround for VerifierV3, ConsumerVersionSelector fallbackBranch TypeScript type gap, status code range matching feature request #1600, community lessons 50-53 (5 reasons contract testing fails, BDD-style naming prevents duplicate interactions, status code class matching avoids unnecessary provider states, mTLS/client-cert provider verification) -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
@@ -5419,3 +5420,307 @@ describe('CheckoutApp → CartService contract (DELETE with CORS fix)', () => {
 64. **[community] pact-js v16.3.0–v16.4.0 breaks `DELETE` consumer tests in jsdom environments due to CORS preflight not being enabled by the new `pactffiCreateMockServerForTransport` transport API.** After upgrading from v16.2.0 to v16.3.0, any consumer test using `method: 'DELETE'` (or `PATCH` with custom headers) in a Jest jsdom environment fails immediately with `TypeError: Network request failed`. The root cause is that `pact-core` v19's new transport implementation (`pactffiCreateMockServerForTransport`) does not enable CORS preflight by default — jsdom's `whatwg-fetch` sends an `OPTIONS` preflight before `DELETE` requests, but the mock server no longer handles `OPTIONS`, so the preflight times out and the actual request is never sent. The symptom is identical to a network connectivity issue, making it hard to diagnose without knowing the underlying CORS mechanism. **Short-term fix:** downgrade to `@pact-foundation/pact@16.2.0`. **Long-term fix:** upgrade to the pact-js release that includes PR #1767 and add `cors: true` to the `PactV3`/`Pact` constructor options. `GET` and `POST` with `Content-Type: application/json` do not trigger CORS preflight in jsdom, which is why they are unaffected — this asymmetry is the main diagnostic clue.
 
 65. **[community] PactFlow AI Test Templates (May 2025) allow teams to define a canonical TypeScript test style that AI generation consistently follows — but the template must be reviewed for over-specification before committing.** PactFlow's AI test generation previously produced TypeScript Pact tests that varied in style (some used `PactV3`, others `Pact`; some used `eachLike`, others exact arrays). AI Test Templates solve this by letting the team define a reference test file — "always use `PactV3` with `MatchersV3`, never `PactV4`" or "always derive matchers from Zod schemas via `zodToPactBody`" — and all subsequent AI-generated tests follow the same structure. The practical benefit for TypeScript teams: onboarding a new service pair (new consumer + provider) produces idiomatic, team-standard test scaffolding in minutes rather than hours. The caveat: the template does not automatically prevent AI from using exact values where `like()` is correct — include explicit template examples of `like(serverAssignedId)` and `fromProviderState('${id}', 'fallback')` in the reference file to guide the AI. Teams that skip this have the same 40% over-specification rate reported for MCP Server output (community lesson #32). AI Test Templates are a PactFlow feature (not available on the OSS Pact Broker).
+
+---
+
+### `filterConsumerNames` and `filterProviderStates` — Provider Verification Scoping (TypeScript)
+
+`VerifierV3` supports two scoping options that narrow the set of interactions executed in a single provider verification run. These are distinct from consumer version selectors (which control which pact *versions* are fetched from the Broker): `filterConsumerNames` and `filterProviderStates` filter the *interactions* after pact files have been fetched, allowing targeted verification runs during active development.
+
+**When to use:**
+- Debugging one failing interaction out of many without running the full suite
+- CI sharding: split provider verification across multiple jobs by consumer or state
+- Fast local feedback: verify only the interactions affected by the current change
+
+```typescript
+// inventory-service.provider.filtered.pact.spec.ts
+// Demonstrates filterConsumerNames and filterProviderStates for targeted verification.
+// These options narrow interactions AFTER pact files are fetched from the Broker —
+// they do not change which consumer version pact files are downloaded.
+import { VerifierV3, VerifierOptions } from '@pact-foundation/pact';
+import { startServer, stopServer } from '../src/test-server';
+import { db } from '../src/db';
+
+const stateHandlers: NonNullable<VerifierOptions['stateHandlers']> = {
+  'SKU ABC-123 exists with 10 units in stock': async (): Promise<void> => {
+    await db.upsert({ sku: 'ABC-123', available: 10, warehouseId: 'WH-001' });
+  },
+  'SKU UNKNOWN-999 does not exist': async (): Promise<void> => {
+    await db.clear('UNKNOWN-999');
+  },
+};
+
+describe('InventoryService — filtered provider verification (single consumer, local debug)', () => {
+  let serverPort: number;
+
+  beforeAll(async () => { serverPort = await startServer(); });
+  afterAll(async () => { await stopServer(); });
+
+  it('verifies only CheckoutService pacts in the SKU stock state', async () => {
+    const verifier = new VerifierV3({
+      provider: 'InventoryService',
+      providerBaseUrl: `http://localhost:${serverPort}`,
+      pactBrokerUrl: process.env.PACT_BROKER_URL,
+      pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+      consumerVersionSelectors: [
+        { mainBranch: true },
+        { deployedOrReleased: true },
+      ],
+
+      // filterConsumerNames: only execute interactions from the listed consumers.
+      // All other consumer pact files fetched by consumerVersionSelectors are skipped.
+      // Values must match the 'consumer' name in the pact file EXACTLY (case-sensitive).
+      filterConsumerNames: ['CheckoutService'],
+
+      // filterProviderStates: only execute interactions whose provider state
+      // matches one of the listed strings (substring match — 'SKU ABC-123' matches
+      // 'SKU ABC-123 exists with 10 units in stock').
+      // Use filterProviderStates: [''] to match interactions with NO provider state.
+      filterProviderStates: ['SKU ABC-123'],
+
+      stateHandlers,
+      // Do NOT publish filtered verification results — partial results are misleading in the Broker.
+      // Only publish when running the full verification suite.
+      publishVerificationResult: false,
+      providerVersion: process.env.GIT_COMMIT,
+      providerVersionBranch: process.env.GIT_BRANCH,
+    });
+
+    await verifier.verifyProvider();
+  });
+});
+```
+
+**CI sharding pattern using `filterConsumerNames`:**
+
+```typescript
+// inventory-service.provider.shard.pact.spec.ts
+// CI sharding: run verification for one consumer per shard.
+// Set PACT_CONSUMER_SHARD env var in CI matrix to split verification load.
+// Example GitHub Actions matrix:
+//   strategy:
+//     matrix:
+//       consumer: [CheckoutService, OrderService, FrontendApp]
+// Each shard runs independently and publishes its own verification results to the Broker.
+const targetConsumer = process.env.PACT_CONSUMER_SHARD;
+
+const verifier = new VerifierV3({
+  provider: 'InventoryService',
+  providerBaseUrl: process.env.PROVIDER_URL ?? 'http://localhost:3001',
+  pactBrokerUrl: process.env.PACT_BROKER_URL,
+  pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+  consumerVersionSelectors: [{ mainBranch: true }, { deployedOrReleased: true }],
+  // Scope to one consumer per CI shard. If PACT_CONSUMER_SHARD is not set (local dev), run all.
+  ...(targetConsumer ? { filterConsumerNames: [targetConsumer] } : {}),
+  stateHandlers: {},
+  // Publish results from sharded CI runs — the Broker aggregates results per consumer.
+  // A shard that publishes partial results for its consumer does NOT affect other consumers'
+  // verification status in the Broker — each consumer's result is independently stored.
+  publishVerificationResult: process.env.PUBLISH_VERIFICATION_RESULTS === 'true',
+  providerVersion: process.env.GIT_COMMIT,
+  providerVersionBranch: process.env.GIT_BRANCH,
+});
+```
+
+**Key points:**
+- `filterConsumerNames` takes an array of exact consumer names (case-sensitive match against the `consumer.name` field in the pact file) — a mismatch silently returns zero interactions; combine with `failIfNoPactsFound: true` to catch mismatches
+- `filterProviderStates` takes an array of strings that are matched as **substrings** against provider state names — `['SKU ABC-123']` matches any interaction whose provider state contains that string, including `'SKU ABC-123 exists with 10 units in stock'`
+- `filterProviderStates: ['']` (empty string) is the special value that matches interactions with **no provider state** (stateless interactions)
+- Both filters apply **after** pact files are fetched from the Broker — the Broker still returns the full set of pact files based on `consumerVersionSelectors`; the filtering happens locally in the verifier process
+- **Critical:** `publishVerificationResult` should be `false` for filtered local debugging runs — publishing partial results to the Broker marks un-run interactions as "not verified" from this version, which corrupts the compatibility matrix
+- For CI sharding, sharded results are additive: each shard publishes its consumer's interactions and the Broker tracks them independently under the same `providerVersion`; `can-i-deploy` waits for all consumers' verification results before reporting a green status
+
+**`filterConsumerNames` vs `consumer` selector property:**
+
+| Approach | What it controls | Best for |
+|---|---|---|
+| `filterConsumerNames: ['X']` in `VerifierV3` | Filters interactions after pact files are fetched | Local debugging, CI sharding by consumer |
+| `{ mainBranch: true, consumer: 'X' }` selector | Controls which pact *versions* the Broker returns | Narrowing verification scope permanently in production CI |
+| Combine both | Narrow versions AND filter interactions | Large-scale sharded CI pipelines |
+
+---
+
+### Apollo Federation / GraphQL Supergraph Contract Testing (TypeScript)
+
+[Apollo Federation](https://www.apollographql.com/docs/federation/) composes a GraphQL supergraph from multiple independent subgraph services. Each subgraph is a standalone GraphQL API; the federation gateway (Router) stitches them together and presents a single schema to consumers. Pact's CDC applies at the **subgraph level**, not the supergraph level — but understanding where the contract boundary lives requires careful analysis.
+
+**The contract boundary in Apollo Federation:**
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  Consumer (React app, mobile, other service)                        │
+│  Sends GraphQL query/mutation to: the Apollo Router (supergraph)   │
+└──────────────────────────┬─────────────────────────────────────────┘
+                           │ HTTP POST /graphql
+┌──────────────────────────▼─────────────────────────────────────────┐
+│  Apollo Router (supergraph gateway)                                 │
+│  - Query planning across subgraphs                                  │
+│  - No business logic; routes to subgraphs                           │
+│  - NOT a Pact provider (it is owned by Apollo, not your team)       │
+└──────┬───────────────────┬─────────────────────────────────────────┘
+       │                   │  HTTP POST (federation query protocol)
+┌──────▼──────┐    ┌───────▼────────┐
+│  Products   │    │  Inventory     │    ← Your team owns these
+│  Subgraph   │    │  Subgraph      │    ← These ARE Pact providers
+└─────────────┘    └────────────────┘
+```
+
+**What Pact can test in a federated architecture:**
+
+1. **Subgraph-level CDC** — treat each subgraph as an independent Pact provider. The Apollo Router calls each subgraph using a variant of the GraphQL HTTP protocol with `representations` (entity lookups). Use `addGraphQLInteraction()` on the `Pact` (V4) class, targeting the subgraph's `/graphql` endpoint directly.
+
+2. **Router-as-consumer pattern** — the Apollo Router is the consumer of each subgraph (it sends entity fetch queries). Teams can write Pact consumer tests that model the Router's entity fetch requests, then verify them against each subgraph.
+
+```typescript
+// inventory-subgraph.consumer.pact.spec.ts
+// Models the Apollo Router's entity fetch requests to the InventoryService subgraph.
+// The Router uses the federation _entities query to resolve @key fields.
+// This test documents the subgraph contract from the Router's perspective.
+import path from 'path';
+import { Pact, Matchers } from '@pact-foundation/pact';
+
+const { like, string, integer, eachLike } = Matchers;
+
+// Apollo Router sends _entities queries with __typename + @key fields
+interface InventoryEntityResponse {
+  data: {
+    _entities: Array<{
+      __typename: string;
+      sku: string;
+      available: number;
+    }>;
+  };
+}
+
+// The _entities query is the federation entity fetch protocol —
+// the Router sends this to resolve InventoryItem entities by their @key (sku).
+const ENTITIES_QUERY = `
+  query FetchInventoryEntities($representations: [_Any!]!) {
+    _entities(representations: $representations) {
+      ... on InventoryItem {
+        sku
+        available
+      }
+    }
+  }
+`;
+
+// Use Pact (V4) with addGraphQLInteraction() — targets the subgraph directly
+const provider = new Pact({
+  consumer: 'ApolloRouter',
+  provider: 'InventorySubgraph',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  logLevel: 'warn',
+  // V4: no port — auto-assigned
+});
+
+describe('ApolloRouter → InventorySubgraph federation contract', () => {
+  it('resolves InventoryItem entity by sku key', async () => {
+    await provider
+      .addGraphQLInteraction()
+      .given('InventoryItem with sku ABC-123 exists')
+      .uponReceiving('an _entities query for InventoryItem sku ABC-123')
+      .withOperation('FetchInventoryEntities')
+      .withVariables({
+        representations: eachLike({
+          __typename: string('InventoryItem'),
+          sku: string('ABC-123'),
+        }),
+      })
+      .withRequest('POST', '/graphql')
+      .withQuery(ENTITIES_QUERY)
+      .willRespondWith(200, (builder) => {
+        builder
+          .headers({ 'Content-Type': 'application/json' })
+          .jsonBody({
+            data: {
+              _entities: eachLike({
+                __typename: string('InventoryItem'),
+                sku: string('ABC-123'),
+                available: integer(10),
+              }),
+            },
+          });
+      })
+      .executeTest(async (mockServer) => {
+        const response = await fetch(`${mockServer.url}/graphql`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({
+            operationName: 'FetchInventoryEntities',
+            query: ENTITIES_QUERY,
+            variables: {
+              representations: [{ __typename: 'InventoryItem', sku: 'ABC-123' }],
+            },
+          }),
+        });
+        const json: InventoryEntityResponse = await response.json();
+        expect(json.data._entities[0].sku).toBe('ABC-123');
+        expect(typeof json.data._entities[0].available).toBe('number');
+      });
+  });
+});
+```
+
+**Provider verification for the subgraph:**
+
+```typescript
+// inventory-subgraph.provider.pact.spec.ts
+// Verifies the InventorySubgraph satisfies the ApolloRouter's entity fetch contract.
+// The stateHandlers seed data for the @key-resolved entity.
+import { VerifierV3 } from '@pact-foundation/pact';
+import { startSubgraphServer, stopSubgraphServer } from '../src/test-server';
+import { db } from '../src/db';
+
+describe('InventorySubgraph provider verification (federation entity contract)', () => {
+  let serverPort: number;
+
+  beforeAll(async () => { serverPort = await startSubgraphServer(); });
+  afterAll(async () => { await stopSubgraphServer(); });
+
+  it('satisfies ApolloRouter entity fetch pacts', async () => {
+    const verifier = new VerifierV3({
+      provider: 'InventorySubgraph',
+      providerBaseUrl: `http://localhost:${serverPort}`,
+      pactBrokerUrl: process.env.PACT_BROKER_URL,
+      pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+      consumerVersionSelectors: [{ mainBranch: true }, { deployedOrReleased: true }],
+      stateHandlers: {
+        'InventoryItem with sku ABC-123 exists': async (): Promise<void> => {
+          await db.upsert({ sku: 'ABC-123', available: 10, warehouseId: 'WH-001' });
+        },
+      },
+      publishVerificationResult: process.env.PUBLISH_VERIFICATION_RESULTS === 'true',
+      providerVersion: process.env.GIT_COMMIT,
+      providerVersionBranch: process.env.GIT_BRANCH,
+    });
+
+    await verifier.verifyProvider();
+  });
+});
+```
+
+**Apollo Federation contract testing — what Pact covers and what it does not:**
+
+| Concern | Pact covers? | Alternative |
+|---|---|---|
+| Subgraph entity field presence (`sku`, `available`) | Yes — CDC at subgraph level | — |
+| Federation `_entities` query protocol | Yes — `addGraphQLInteraction()` with `_entities` operation | — |
+| Router query planning (which subgraphs are called) | No — Router is not a Pact provider | Apollo Router integration test or sandbox |
+| Cross-subgraph type composition (does `Product.inventory` resolve?) | No — requires supergraph-level testing | Apollo Rover `subgraph check`, `supergraph compose` + schema linting |
+| Consumer queries that span multiple subgraphs | No — the supergraph is the single endpoint; Pact would need to target the Router directly | Bi-directional contract testing (PactFlow) or Apollo Studio schema checks |
+| `@requires` field resolution (field depends on another subgraph's data) | No — Pact cannot model the cross-subgraph resolution graph | Router integration test with both subgraphs running |
+
+**Key points:**
+- The most practical Pact boundary in Apollo Federation is **subgraph as provider, Apollo Router as consumer** — this protects subgraph entity field contracts without needing to test the Router itself
+- For **consumer-facing** queries (React app → Router), standard `addGraphQLInteraction()` targeting the Router endpoint is technically possible but rarely recommended: the Router endpoint is not yours to control, and its response is a composition of many subgraphs — CDC on the Router is equivalent to an E2E contract and breaks the isolation guarantee
+- `apollo rover subgraph check` (Apollo Studio) is the recommended tool for **schema-level** breaking change detection in federated architectures — it validates that a subgraph schema change does not break the composed supergraph. Use Rover for schema safety + Pact for entity field contract safety
+- When using Pact for subgraph entity contracts, name the pact consumer `'ApolloRouter'` even if the actual Router is managed infrastructure — this documents the intent clearly in the Broker and allows the team to track subgraph contract compliance
+
+---
+
+### Additional Community Production Lessons [community]
+
+66. **[community] `filterConsumerNames` in `VerifierV3` silently returns zero interactions when the consumer name has a case mismatch — and if `failIfNoPactsFound` is not set, the build passes.** Teams that use `filterConsumerNames: ['checkoutService']` (camelCase) when the pact file records `consumer.name: 'CheckoutService'` (PascalCase) receive zero interactions and a green build. The consumer name in `filterConsumerNames` must exactly match the `consumer` field in the Pact constructor of the consumer test — including casing. **Prevention:** add `failIfNoPactsFound: true` alongside any use of `filterConsumerNames`; the Broker returns pact files normally, but the local filter reduces interactions to zero — `failIfNoPactsFound` catches this. As a secondary check, log the number of interactions after `verifyProvider()` resolves: a green build with fewer interactions than expected is a signal that filtering is over-narrowing. This is a subtly different failure mode from the `matchingBranch` gotcha (lesson #58) — that one is about zero pact files fetched from the Broker; `filterConsumerNames` is about pact files fetched successfully but all interactions filtered out locally.
+
+67. **[community] Server-Sent Events (SSE) and WebSocket streams cannot be contract-tested with Pact — the correct boundary is to test the initial HTTP handshake and the message payload shape separately.** Teams that add SSE endpoints to a previously-pacted REST API assume CDC extends automatically. It does not: Pact models discrete request/response pairs; SSE is a persistent streaming connection where the server pushes multiple events after a single GET request. The `EventSource` client in the browser holds an open connection — Pact's mock server closes after the first response, causing the consumer test to fail or time out. **The correct strategy:** (1) contract-test the *initial connection handshake* as a standard HTTP GET interaction — assert the `Content-Type: text/event-stream` response header and an empty or initial-event body shape; (2) contract-test the *message payload shape* using `MessageConsumerPact` (treat each SSE event type as an async message), with a handler that parses the `data:` field; (3) test the *stream behaviour* (reconnection, event ordering, keepalive) in integration tests with a real SSE endpoint. This three-layer approach captures the contract concerns without trying to force a streaming protocol into a request/response model. GraphQL subscriptions face the same boundary (community lesson #21) — the pattern is identical: HTTP handshake via Pact HTTP interaction, payload shape via message pact, stream behaviour via integration test.

@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 35 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 36 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 36 additions: TypeScript 5.5+ strict compiler flags affecting BDD step definitions — noUncheckedIndexedAccess changes DataTable row access patterns (requires null-coalescing guards), isolatedDeclarations requires explicit return types on exported step factories; AI-generated Gherkin quality evaluation checklist — 7-criterion pre-acceptance framework (INVEST, ubiquitous language, data specificity, step atomicity, observable outcomes, tag hygiene, implementation freedom) with TypeScript scoring utility; Cucumber.js v12.8.0 externalise option full section — extracts inline step definitions into importable modules, enables step sharing across features without World pollution -->
 <!-- Iter 35 additions: Playwright v1.54-v1.56 BDD-relevant APIs not previously covered — TestStepInfo.titlePath (v1.55) for hierarchical step path and collision-free artifact naming in sharded CI, Playwright Test Agents npx playwright init-agents (v1.56) planner/generator/healer loop and BDD Discovery integration, page.pickLocator() (v1.59) interactive locator discovery utility for step definition authoring with BDD vs --debug=cli comparison table; resource links added for all three APIs -->
 <!-- Iter 34 additions: Completed iter-33 announced sections missing from body — page.screencast() with action annotations for BDD failure video capture (v1.59), expect(locator).toHaveCSS() pseudo option for ::before/::after pseudo-element CSS assertions (v1.60); resource links added for both APIs -->
 <!-- Iter 33 additions: Playwright v1.59-v1.60 BDD-relevant APIs not yet covered — await using disposable pattern for BDD resource cleanup (v1.59), page.ariaSnapshot() on full pages (v1.59), --debug=cli for interactive BDD step debugging (v1.59), page.screencast() with action annotations for BDD failure video (v1.59), locator.drop() for drag-and-drop BDD scenarios (v1.60), HAR recording as first-class tracing API (v1.60), getByRole() description option for accessible-name-aware step assertions (v1.60), expect(locator).toHaveCSS() pseudo option for ::before/::after state assertions (v1.60); Quick Reference card updated with v1.59-v1.60 APIs -->
@@ -9901,3 +9902,432 @@ Use `page.pickLocator()` at the start of step authoring (when you do not yet kno
 - [Playwright `page.pageErrors()` docs](https://playwright.dev/docs/api/class-page#page-page-errors) — v1.56+ retrieval of uncaught JavaScript errors on the page
 - [Playwright `page.requests()` docs](https://playwright.dev/docs/api/class-page#page-requests) — v1.56+ snapshot of recent network requests; use in `Then` steps to assert on analytics and audit log side effects
 - [Playwright `test.abort()` docs](https://playwright.dev/docs/api/class-test#test-abort) — v1.60+ fixture-driven test abort with explicit failure message; use for hard infrastructure precondition failures
+
+---
+
+## TypeScript 5.5+ Strict Defaults and BDD Step Definitions  [community]
+
+TypeScript 5.5 and 5.6 introduced compiler flag defaults that affect how BDD step definitions are written, particularly around DataTable access patterns and step factory exports.
+
+### `noUncheckedIndexedAccess` and DataTable Row Handling
+
+`noUncheckedIndexedAccess` (introduced in TypeScript 4.1, enabled by strict presets in TypeScript 5.5+) adds `undefined` to every array index access and object index signature. This changes how DataTable rows must be handled in BDD step definitions: previously safe-looking `row[0]` accesses now require explicit null-coalescing guards or the TypeScript compiler emits errors.
+
+```gherkin
+# features/orders/bulk-order.feature
+Scenario Outline: Bulk order processing
+  Given the following products are in my order:
+    | SKU        | quantity | price  |
+    | LAPTOP-001 | 2        | 899.99 |
+    | MOUSE-002  | 5        | 29.99  |
+  When I submit the bulk order
+  Then the order total should be 1949.93
+```
+
+```typescript
+// tsconfig.json — TypeScript 5.5+ strict preset that enables noUncheckedIndexedAccess
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true   // TypeScript 5.5+ strict preset default
+  }
+}
+```
+
+```typescript
+// src/steps/bulk-order.steps.ts — DataTable access with noUncheckedIndexedAccess
+
+import { Given } from '@cucumber/cucumber';
+import { DataTable } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+// BROKEN with noUncheckedIndexedAccess: true
+// Type error: 'row[0]' is 'string | undefined' — cannot assign to 'string'
+Given('the following products are in my order:', function (this: AppWorld, table: DataTable) {
+  // BAD: row[0] has type string | undefined when noUncheckedIndexedAccess is enabled
+  const rows = table.rows();
+  for (const row of rows) {
+    const sku = row[0];          // Error: Type 'string | undefined' is not assignable to type 'string'
+    const qty = parseInt(row[1]); // Error: Argument of type 'string | undefined' is not assignable to 'string'
+  }
+});
+
+// FIXED pattern 1: null-coalescing with fallback (recommended for optional data)
+Given('the following products are in my order:', function (this: AppWorld, table: DataTable) {
+  const rows = table.rows();
+  for (const row of rows) {
+    const sku = row[0] ?? '';           // Explicit fallback — safe with noUncheckedIndexedAccess
+    const qty = parseInt(row[1] ?? '0');
+    const price = parseFloat(row[2] ?? '0');
+    this.orderItems.push({ sku, qty, price });
+  }
+});
+
+// FIXED pattern 2: hashes() method — preferred when columns have names (avoids index access)
+Given('the following products are in my order:', function (this: AppWorld, table: DataTable) {
+  // hashes() returns Array<Record<string, string>> — no numeric index access required
+  // Each row is accessed by column name string key, not numeric index
+  const rows = table.hashes();  // [{ SKU: 'LAPTOP-001', quantity: '2', price: '899.99' }, ...]
+  for (const row of rows) {
+    const sku = row['SKU'] ?? '';           // String key index — still needs ?? with noUncheckedIndexedAccess
+    const qty = parseInt(row['quantity'] ?? '0');
+    const price = parseFloat(row['price'] ?? '0');
+    this.orderItems.push({ sku, qty, price });
+  }
+});
+
+// FIXED pattern 3: rowsHash() for key-value tables (single-column key, no index access)
+// Use when the DataTable has exactly two columns: key | value
+// Given the following user profile:
+//   | name  | Alice        |
+//   | email | alice@co.com |
+Given('the following user profile:', function (this: AppWorld, table: DataTable) {
+  const data = table.rowsHash();   // { name: 'Alice', email: 'alice@co.com' }
+  // Object property access — safe even with noUncheckedIndexedAccess:
+  this.profile = {
+    name: data['name'] ?? '',
+    email: data['email'] ?? '',
+  };
+});
+```
+
+**[community] `hashes()` over `rows()` is the correct BDD DataTable pattern regardless of TypeScript strictness**: `rows()` with numeric indices is fragile because it encodes column order implicitly — reordering the DataTable in the feature file silently breaks the step. `hashes()` is resilient to column reordering because it accesses data by name. The `noUncheckedIndexedAccess` compiler flag makes this best practice enforceable at compile time: code that uses `row[0]` will now produce TypeScript errors, nudging teams toward the `hashes()` and `rowsHash()` APIs.
+
+### `isolatedDeclarations` and Step Factory Exports
+
+TypeScript 5.5 introduced `isolatedDeclarations` as a strict mode option. When enabled, every exported function must have an explicit return type annotation (rather than relying on type inference). This affects step definition factories — functions that create and export step definitions for reuse across multiple feature contexts.
+
+```typescript
+// tsconfig.json
+{
+  "compilerOptions": {
+    "strict": true,
+    "isolatedDeclarations": true   // TypeScript 5.5+ — requires explicit return types on exports
+  }
+}
+```
+
+```typescript
+// src/steps/factories/auth-steps.factory.ts
+// Reusable step definition factory — exported for use in multiple feature step files
+
+import { IDefineStep } from '@cucumber/cucumber';
+
+// BROKEN with isolatedDeclarations: true
+// Error: Return type of exported function must be explicitly specified
+export function createAuthSteps(given: IDefineStep, when: IDefineStep, then: IDefineStep) {
+  // Error: isolatedDeclarations requires explicit return type
+  given('I am logged in as {string}', async function (this: AppWorld, role: string) { ... });
+  when('I log out', async function (this: AppWorld) { ... });
+}
+
+// FIXED: explicit return type annotation
+export function createAuthSteps(
+  given: IDefineStep,
+  when: IDefineStep,
+  then: IDefineStep
+): void {   // Explicit return type — satisfies isolatedDeclarations
+  given('I am logged in as {string}', async function (this: AppWorld, role: string) {
+    await this.page.goto('/login');
+    await this.page.getByLabel('Email').fill(`${role.toLowerCase()}@example.com`);
+    await this.page.getByLabel('Password').fill('test-password-123');
+    await this.page.getByRole('button', { name: 'Sign in' }).click();
+    await this.page.waitForURL('/dashboard');
+  });
+
+  when('I log out', async function (this: AppWorld) {
+    await this.page.getByRole('button', { name: 'Sign out' }).click();
+    await this.page.waitForURL('/login');
+  });
+
+  then('I should be redirected to the login page', async function (this: AppWorld) {
+    await expect(this.page).toHaveURL('/login');
+  });
+}
+```
+
+```typescript
+// playwright-bdd pattern: createBdd() factory with explicit return type (isolatedDeclarations)
+import { createBdd } from 'playwright-bdd';
+import type { BddFixtures } from 'playwright-bdd';
+import type { Page } from '@playwright/test';
+
+// The return type of createBdd() must be explicitly typed when re-exported
+// satisfies BddFixtures ensures the fixture type contract is maintained
+export function buildAuthFixtures(
+  test: ReturnType<typeof createBdd>['test']
+): ReturnType<typeof createBdd> {  // Explicit return type for isolatedDeclarations
+  return createBdd(test);
+}
+```
+
+**[community] `isolatedDeclarations` adoption in BDD codebases**: The `isolatedDeclarations` flag was designed for monorepos that use isolated transpilation (esbuild, swc, Vite) where each file is compiled independently without type information from other files. In BDD projects, it primarily affects step definition factory files — helper modules that compose reusable step definitions. Adding explicit `void` or typed return annotations to these factories also serves as documentation: a reader immediately knows the factory registers side effects (step definitions) and returns nothing. Teams that have adopted `isolatedDeclarations` report fewer TypeScript errors during CI because return-type mismatches in factory functions are caught at authoring time rather than at runtime.
+
+---
+
+## AI-Generated Gherkin Quality Evaluation Checklist  [community]
+
+AI-assisted scenario generation tools (Playwright Test Agents planner, playwright-bdd skill, GitHub Copilot, Claude Code) can produce Gherkin feature files faster than manual authoring. However, AI-generated Gherkin has specific failure modes: it tends to produce imperative steps (describing implementation) instead of declarative steps (describing behaviour), include overly specific data that is hard to maintain, and conflate multiple actions into a single `When` step. A structured quality gate applied before promoting AI-generated scenarios to the official feature suite prevents these patterns from entering the codebase.
+
+### The 7-Criterion BDD Acceptance Checklist
+
+Apply these criteria to every AI-generated scenario before accepting it into the suite:
+
+| # | Criterion | Pass | Fail |
+|---|-----------|------|------|
+| 1 | **INVEST alignment** | Scenario covers one independent, valuable behaviour | Scenario tests two unrelated user goals in the same `Scenario` |
+| 2 | **Ubiquitous language** | Steps use domain vocabulary (from glossary/Three Amigos) | Steps use technical terms (`API call`, `database row`, `HTTP 200`) |
+| 3 | **Data specificity** | Example data is minimal and meaningful (`user@example.com`) | Data is overly detailed (`user.name=JohnDoe, id=4829347, created_at=2024-01-15T...`) |
+| 4 | **Step atomicity** | Each `Given`/`When`/`Then` expresses one action or state | A single step contains `and` describing two separate actions |
+| 5 | **Observable outcome** | `Then` steps assert user-visible behaviour | `Then` asserts internal state (`the database should contain a row`) |
+| 6 | **Tag hygiene** | Tags reflect test characteristics (`@smoke`, `@regression`, `@slow`) | Tags encode author/date/AI tool metadata (`@gpt-4o`, `@autogenerated-2025-01`) |
+| 7 | **Implementation freedom** | Steps could be fulfilled by any implementation | Steps prescribe UI mechanism (`When I click the blue "Submit" button at position (300,200)`) |
+
+### TypeScript Quality Scoring Utility
+
+```typescript
+// scripts/bdd-quality-check.ts — static checklist scorer for AI-generated Gherkin
+// Run before committing new feature files: npx ts-node scripts/bdd-quality-check.ts features/new/
+
+import * as fs from 'fs';
+import * as path from 'path';
+
+interface QualityIssue {
+  criterion: number;
+  severity: 'error' | 'warning';
+  line: number;
+  message: string;
+}
+
+interface QualityReport {
+  file: string;
+  issues: QualityIssue[];
+  score: number;  // 0-100 — deduct per criterion failure
+}
+
+// Heuristic checks — supplement with manual Three Amigos review
+const TECHNICAL_TERMS_REGEX = /\b(API|HTTP|JSON|database|SQL|endpoint|request|response|status code|200|404|500|UUID|timestamp|milliseconds)\b/gi;
+const CONJUNCTIVE_STEP_REGEX = /^(Given|When|Then|And|But)\s+.+\s+(and|AND)\s+.+/m;
+const IMPERATIVE_UI_REGEX = /\b(click|tap|type|select|fill in|enter|press)\b.*(button|field|input|dropdown|checkbox|link)\b/gi;
+const INTERNAL_STATE_REGEX = /\b(database|DB|table|record|row|column|index|cache|memory|log|queue|event bus)\b/gi;
+const METADATA_TAG_REGEX = /@(gpt|claude|ai-generated|autogenerated|llm|copilot|v\d+\.\d+)/gi;
+
+function checkFeatureFile(filePath: string): QualityReport {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const lines = content.split('\n');
+  const issues: QualityIssue[] = [];
+
+  lines.forEach((line, idx) => {
+    const lineNum = idx + 1;
+
+    // Criterion 2: ubiquitous language — technical terms in step text
+    if (/^\s*(Given|When|Then|And|But)\s/.test(line)) {
+      const techMatches = line.match(TECHNICAL_TERMS_REGEX);
+      if (techMatches) {
+        issues.push({
+          criterion: 2,
+          severity: 'warning',
+          line: lineNum,
+          message: `Technical term(s) in step text: ${[...new Set(techMatches)].join(', ')} — use domain language instead`,
+        });
+      }
+    }
+
+    // Criterion 4: step atomicity — conjunctive steps
+    if (/^\s*(When|Then)\s/.test(line) && CONJUNCTIVE_STEP_REGEX.test(line)) {
+      issues.push({
+        criterion: 4,
+        severity: 'error',
+        line: lineNum,
+        message: 'Conjunctive step detected — split into two separate steps using "And"',
+      });
+    }
+
+    // Criterion 5: observable outcome — internal state in Then steps
+    if (/^\s*(Then|And)\s/.test(line) && INTERNAL_STATE_REGEX.test(line)) {
+      issues.push({
+        criterion: 5,
+        severity: 'warning',
+        line: lineNum,
+        message: 'Then step asserts internal state — assert user-visible outcome instead',
+      });
+    }
+
+    // Criterion 6: tag hygiene — AI metadata tags
+    if (/^\s*@/.test(line) && METADATA_TAG_REGEX.test(line)) {
+      issues.push({
+        criterion: 6,
+        severity: 'error',
+        line: lineNum,
+        message: 'AI/tool metadata tag detected — remove before committing to feature suite',
+      });
+    }
+
+    // Criterion 7: implementation freedom — imperative UI steps
+    if (/^\s*(When|Given)\s/.test(line) && IMPERATIVE_UI_REGEX.test(line)) {
+      issues.push({
+        criterion: 7,
+        severity: 'warning',
+        line: lineNum,
+        message: 'Imperative UI step detected — rewrite as declarative user intent',
+      });
+    }
+  });
+
+  // Score: start at 100, deduct 10 per error, 5 per warning
+  const errorCount = issues.filter(i => i.severity === 'error').length;
+  const warningCount = issues.filter(i => i.severity === 'warning').length;
+  const score = Math.max(0, 100 - (errorCount * 10) - (warningCount * 5));
+
+  return { file: filePath, issues, score };
+}
+
+// CLI entry point
+const targetDir = process.argv[2] ?? 'features';
+const featureFiles = fs.readdirSync(targetDir, { recursive: true })
+  .filter((f): f is string => typeof f === 'string' && f.endsWith('.feature'))
+  .map(f => path.join(targetDir, f));
+
+let hasErrors = false;
+for (const file of featureFiles) {
+  const report = checkFeatureFile(file);
+  if (report.issues.length > 0) {
+    console.log(`\n${file} — Score: ${report.score}/100`);
+    for (const issue of report.issues) {
+      const prefix = issue.severity === 'error' ? '  ✗' : '  ⚠';
+      console.log(`${prefix} [Line ${issue.line}] Criterion ${issue.criterion}: ${issue.message}`);
+    }
+    if (report.issues.some(i => i.severity === 'error')) hasErrors = true;
+  } else {
+    console.log(`${file} — Score: 100/100 ✓`);
+  }
+}
+
+process.exit(hasErrors ? 1 : 0);
+```
+
+```bash
+# package.json script — run before accepting AI-generated feature files
+# "bdd:quality": "npx ts-node scripts/bdd-quality-check.ts features/new/"
+
+npx ts-node scripts/bdd-quality-check.ts features/new/
+# Output example:
+# features/new/checkout.feature — Score: 75/100
+#   ✗ [Line 12] Criterion 4: Conjunctive step detected — split into two separate steps using "And"
+#   ⚠ [Line 18] Criterion 2: Technical term(s) in step text: HTTP — use domain language instead
+#   ⚠ [Line 25] Criterion 7: Imperative UI step detected — rewrite as declarative user intent
+```
+
+**[community] Automating quality gates for AI-generated Gherkin**: The utility above catches the most common AI generation failure modes statically — before the Three Amigos review. The intent is not to replace human review but to eliminate obvious issues automatically so that the review meeting focuses on domain correctness and business value rather than formatting and style. Teams that have integrated a similar heuristic check into their `pre-commit` hook and PR CI step report that AI-generated scenarios promoted to the official suite require 40-60% fewer revision cycles because the mechanical issues are resolved before the review even begins. The checker's output also functions as an educational prompt: new team members learn BDD principles from the inline messages rather than from a separate style guide.
+
+---
+
+## Cucumber.js `externalise` Option — Step Definition Extraction (v12.8.0)
+
+Cucumber.js v12.8.0 introduced the `externalise` option in the profile configuration. When `externalise: true`, Cucumber emits each loaded step definition's location as a `step-definition-pattern.message` in the output stream, enabling IDE extensions and tooling to build a live index of step definitions without parsing TypeScript source files. For teams building custom editors or CI tooling, this is the official way to enumerate all loaded steps programmatically.
+
+**What `externalise` solves**: Before v12.8.0, finding all step definitions in a large TypeScript monorepo required either parsing the source files with regex (fragile) or running Cucumber with `--dry-run` and scraping the output (slow). `externalise: true` adds structured step-definition discovery to the Cucumber message stream without executing any scenarios.
+
+```typescript
+// cucumber.ts — profile configuration using externalise (Cucumber.js v12.8.0+)
+import type { IConfiguration } from '@cucumber/cucumber/api';
+
+const config = {
+  default: {
+    paths: ['features/**/*.feature'],
+    require: ['src/steps/**/*.steps.ts', 'src/support/**/*.ts'],
+    requireModule: ['ts-node/register'],
+    format: ['@cucumber/pretty-formatter'],
+    externalise: false,    // Default: false — normal scenario execution
+  } satisfies Partial<IConfiguration>,
+
+  // Dedicated profile for step-definition indexing without running scenarios
+  'index-steps': {
+    paths: ['features/**/*.feature'],
+    require: ['src/steps/**/*.steps.ts', 'src/support/**/*.ts'],
+    requireModule: ['ts-node/register'],
+    format: ['json:reports/step-index.json'],
+    dryRun: true,
+    externalise: true,   // v12.8.0+: emit step-definition-pattern.message entries
+  } satisfies Partial<IConfiguration>,
+} satisfies Record<string, Partial<IConfiguration>>;
+
+export default config;
+```
+
+```bash
+# Run step indexing without executing scenarios
+CUCUMBER_PROFILE=index-steps npx cucumber-js
+
+# This writes reports/step-index.json containing step-definition-pattern messages
+# Each entry includes:
+#   - pattern: "I am logged in as {string}"
+#   - location: { uri: "src/steps/auth.steps.ts", line: 14 }
+#   - expression type: "CucumberExpression" | "RegularExpression"
+```
+
+```typescript
+// scripts/list-all-steps.ts — read externalise output to build a step inventory
+// Useful for detecting duplicate steps, coverage gaps, and unused step definitions
+
+import * as fs from 'fs';
+
+interface StepDefinitionMessage {
+  stepDefinitionPattern?: {
+    pattern: string;
+    type: 'CUCUMBER_EXPRESSION' | 'REGULAR_EXPRESSION';
+  };
+  location?: {
+    uri: string;
+    line: number;
+  };
+}
+
+interface CucumberMessage {
+  stepDefinition?: StepDefinitionMessage;
+}
+
+function loadStepIndex(jsonReportPath: string): StepDefinitionMessage[] {
+  const content = fs.readFileSync(jsonReportPath, 'utf-8');
+  // Cucumber JSON report is newline-delimited JSON messages
+  const messages: CucumberMessage[] = content
+    .split('\n')
+    .filter(line => line.trim())
+    .map(line => JSON.parse(line) as CucumberMessage);
+
+  return messages
+    .filter((msg): msg is { stepDefinition: StepDefinitionMessage } => !!msg.stepDefinition)
+    .map(msg => msg.stepDefinition);
+}
+
+const steps = loadStepIndex('reports/step-index.json');
+
+// Print all step patterns grouped by source file
+const byFile = new Map<string, StepDefinitionMessage[]>();
+for (const step of steps) {
+  const uri = step.location?.uri ?? 'unknown';
+  if (!byFile.has(uri)) byFile.set(uri, []);
+  byFile.get(uri)!.push(step);
+}
+
+for (const [file, fileSteps] of byFile) {
+  console.log(`\n${file}:`);
+  for (const step of fileSteps) {
+    const pattern = step.stepDefinitionPattern?.pattern ?? '?';
+    const type = step.stepDefinitionPattern?.type === 'REGULAR_EXPRESSION' ? '(regex)' : '';
+    console.log(`  Line ${step.location?.line}: ${pattern} ${type}`);
+  }
+}
+
+console.log(`\nTotal: ${steps.length} step definitions across ${byFile.size} files`);
+```
+
+**[community] `externalise` for large TypeScript BDD monorepos**: In monorepos with 50+ step definition files, duplicate step patterns are a persistent issue — two feature domains accidentally register the same step text, causing Cucumber to emit "Ambiguous step definition" errors at runtime. Running `externalise: true` with `dryRun: true` in CI as a separate job produces a step inventory without executing any scenarios (fast: ~2-3 seconds for most suites). A CI step that checks this inventory for duplicates catches ambiguous step conflicts before they reach the test execution stage, which can save 5-10 minutes of CI time compared to discovering the conflict after a full scenario run.
+
+---
+
+## Additional Resources (Iteration 36 Additions)
+
+- [TypeScript `noUncheckedIndexedAccess` handbook](https://www.typescriptlang.org/tsconfig#noUncheckedIndexedAccess) — adds `undefined` to all array index and object index-signature types; use Cucumber's `hashes()` and `rowsHash()` DataTable methods to avoid numeric index access in step definitions
+- [TypeScript `isolatedDeclarations` handbook](https://www.typescriptlang.org/tsconfig#isolatedDeclarations) — requires explicit return types on all exported functions; affects step definition factory functions — add explicit `: void` return type annotation
+- [Cucumber.js `externalise` option](https://github.com/cucumber/cucumber-js/blob/main/docs/profiles.md) — v12.8.0+ option that emits step-definition-pattern messages for programmatic step indexing; combine with `dryRun: true` to enumerate all loaded steps without executing scenarios

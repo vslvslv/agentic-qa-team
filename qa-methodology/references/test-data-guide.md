@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 45 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 46 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes, playwright.dev/docs/api/class-websocketroute, playwright.dev/docs/test-global-setup-teardown, playwright.dev/docs/api/class-test#test-abort, github.com/mswjs/msw/releases, playwright.dev/docs/release-notes#version-157, playwright.dev/docs/release-notes#version-159, playwright.dev/docs/release-notes#version-160, vitest.dev/blog/vitest-3-2, vitest.dev/blog/vitest-4-1); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
@@ -13,6 +13,7 @@
 <!-- iter-43: MSW defineNetwork() RFC — unified network mock API separating sources from handlers; Playwright 1.52 failOnFlakyTests as factory isolation quality signal (community gotcha #31); Playwright 1.53 locator.describe() for fixture element annotation in traces; Playwright 1.56 page.requests() for asserting factory-driven request patterns; Playwright 1.56 LLM Test Agents applied to factory scaffolding; corrected testProject.workers attribution to v1.52 (not v1.57); updated Playwright checklist; 4 new Key Resources (2026-05-12) -->
 <!-- iter-44: Playwright 1.57 testConfig.webServer.wait (regex + named capture groups for dynamic port injection into test data fixtures); Playwright 1.60 locator.drop() for binary/clipboard test data delivery to dropzone elements; webSocketRoute.protocols() for subprotocol-aware WebSocket mock factories (dispatch different message factories per negotiated protocol); community gotcha #32 (locator.drop() needs explicit mimeType in file descriptor — omitting it silently drops the drop event); 3 new Key Resources (2026-05-12) -->
 <!-- iter-45: Vitest 3.2 scope:'file' fixture scope (between test-scoped and worker-scoped — lazy beforeAll equivalent); Vitest 3.2 Test Signal AbortSignal in test context for timeout-aware factory teardown; Vitest 3.2 using vi.spyOn() for automatic mock restoration; Vitest 4.1 mockThrow()/mockThrowOnce() for factory error-path testing; Vitest 4.1 Chai-style mock assertions as alternative to Jest-style toHaveBeenCalled; community gotcha #33 (scope:'file' fixture requires test.extend() on a non-isolated file — isolation:false — otherwise the fixture reinitialises per file); 5 new Key Resources (2026-05-12) -->
+<!-- iter-46: MSW v2.13.5 generator state reset on resetHandlers()/restoreHandlers() — stateful sequence handlers now properly isolated between tests; faker v10.4 food module plant-based data and Finnish phone locale — new realistic data for diet-preference and Nordic-market test suites; Playwright 1.60 browser.on('context') observer for dynamic fixture injection at context creation; MSW v2.14.2 NetworkApi type export — typed handler container pattern for TypeScript-first mock organisation; community gotcha #34 (MSW stateful generator handlers retain position across test.use() overrides if resetHandlers() is not called explicitly after each override); 4 new Key Resources (2026-05-12) -->
 <!-- iter-40: faker v10 new APIs for factory authors (word error strategy 'fail', BigInt number generation, book module, UPC barcodes, simple coordinate methods, generic sex type); Playwright 1.46 component testing router fixture for MSW test data injection; community gotcha #28 (faker.word default 'fail' error strategy breaks word-based factories); updated Key Resources (2026-05-12) -->
 <!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-37: Vitest 4.0 expect.schemaMatching for inline factory output validation against Zod/Valibot/ArkType; Vitest 4.0 getSeed() API for programmatic seed access; Vitest 4.1 experimental viteModuleRunner:false for native Node.js factory execution; Google Testing Blog "Construct with Collaborators, Call with Work" pattern (2026-05-05) applied to factory design; faker v10.4.0 latest stable (2026-03-23); fishery v2.4.0 latest stable (2025-12-08); community gotcha #25 (schema drift caught by expect.schemaMatching); updated Key Resources (2026-05-12) -->
@@ -10350,3 +10351,590 @@ it('data pipeline applies transformations in the correct order', () => {
 | Vitest 4.1 blog post | Official | https://vitest.dev/blog/vitest-4-1 | `mockThrow`/`mockThrowOnce`; Chai-style mock assertions; builder pattern fixtures; `aroundEach`; `vi.defineHelper()` |
 | Vitest mock API reference | Official | https://vitest.dev/api/mock | `mockThrow`, `mockThrowOnce`, `mockReturnValueOnce` chaining — error-path test data setup |
 | TC39 Explicit Resource Management proposal | Community | https://github.com/tc39/proposal-explicit-resource-management | Spec behind `using` / `await using` — required reading before adopting `using vi.spyOn()` in shared factory helpers |
+
+---
+
+## MSW v2.13.5 Generator State Reset — Stateful Sequence Handlers Between Tests  [community]
+
+MSW v2.13.5 (released 2025) fixed a bug where stateful generator-based handlers did **not**
+reset their internal position when `resetHandlers()` or `restoreHandlers()` was called.
+Before this fix, a generator handler that had already yielded its first response would
+continue from its current position in the sequence after a reset — causing test ordering
+to affect the responses received by subsequent tests.
+
+**Why it matters for test data:** Stateful sequence handlers are a common pattern for testing
+pagination, retry logic, and multi-step API flows — scenarios where the first call returns
+one response and the second call returns a different one. A handler that does not reset
+across tests causes test pollution: the Nth test starts mid-sequence rather than at the
+beginning, receiving an unexpected response variant.
+
+```typescript
+// mocks/handlers.ts — MSW stateful generator handler for sequential responses
+import { http, HttpResponse } from 'msw';
+
+// Generator: yields different responses on successive calls to the same endpoint
+// Use case: test pagination, retry-on-failure, or multi-step onboarding flows
+function* userOnboardingResponses() {
+  // First call: not-yet-onboarded user
+  yield HttpResponse.json({ status: 'pending_verification', step: 1 });
+  // Second call: email verified
+  yield HttpResponse.json({ status: 'email_verified', step: 2 });
+  // Third call: onboarding complete
+  yield HttpResponse.json({ status: 'active', step: 3 });
+  // Subsequent calls: steady state (generator exhausted → default response)
+  while (true) {
+    yield HttpResponse.json({ status: 'active', step: 3 });
+  }
+}
+
+// Create a generator instance — shared across all requests to this handler
+let onboardingGen = userOnboardingResponses();
+
+export const handlers = [
+  http.get('/api/user/status', () => {
+    return onboardingGen.next().value;
+  }),
+];
+
+// CRITICAL (MSW v2.13.5+): resetHandlers() now resets the generator state internally
+// for generators declared with the new handler generator API (yield-based http handlers).
+// For manually-managed generators (like onboardingGen above), you must reset them yourself:
+export function resetOnboardingGenerator(): void {
+  onboardingGen = userOnboardingResponses();
+}
+```
+
+```typescript
+// vitest.setup.ts — proper generator reset in MSW setup
+import { setupServer } from 'msw/node';
+import { handlers, resetOnboardingGenerator } from './mocks/handlers';
+
+const server = setupServer(...handlers);
+
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+
+afterEach(() => {
+  // MSW v2.13.5+: resetHandlers() resets built-in generator handler state automatically.
+  // For manually-managed generators (as above), call the reset helper explicitly.
+  server.resetHandlers();
+  resetOnboardingGenerator();  // ← required for manually-managed generators
+});
+
+afterAll(() => server.close());
+```
+
+```typescript
+// specs/onboarding.test.tsx — tests relying on sequential generator responses
+import { test, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { OnboardingStatus } from '../../components/OnboardingStatus';
+
+// Each test gets a fresh generator sequence — no ordering dependency
+test('shows step 1 (pending_verification) on first load', async () => {
+  render(<OnboardingStatus userId="usr-001" />);
+  // Generator at position 0 → yields { status: 'pending_verification', step: 1 }
+  await expect(screen.findByText(/pending verification/i)).resolves.toBeInTheDocument();
+});
+
+test('shows step 1 again (generator reset between tests)', async () => {
+  render(<OnboardingStatus userId="usr-001" />);
+  // resetHandlers() + resetOnboardingGenerator() in afterEach guarantees fresh sequence
+  await expect(screen.findByText(/pending verification/i)).resolves.toBeInTheDocument();
+});
+```
+
+**MSW v2.13.5 native generator handler API (built-in reset support):**
+
+```typescript
+// mocks/native-generator-handler.ts — using MSW's native yield-based handler
+// This pattern DOES get reset automatically by resetHandlers() in v2.13.5+
+import { http, HttpResponse } from 'msw';
+
+// Native generator handler: no external generator variable — MSW manages the state
+export const handlers = [
+  http.get('/api/products', function* () {
+    // First call: page 1 results
+    yield HttpResponse.json({ items: ['product-1', 'product-2'], nextPage: 2 });
+    // Second call: page 2 results
+    yield HttpResponse.json({ items: ['product-3', 'product-4'], nextPage: null });
+    // Third and later calls: empty (end of catalogue)
+    while (true) {
+      yield HttpResponse.json({ items: [], nextPage: null });
+    }
+  }),
+];
+
+// When server.resetHandlers() is called (MSW v2.13.5+):
+// → The generator's internal position is reset to position 0
+// → The next test call to GET /api/products returns page 1 again
+// → No manual reset helper needed for this pattern
+```
+
+**[community] Production gotcha:** Before upgrading to v2.13.5, teams that had worked around
+the missing reset by adding manual generator recreation in each test's `beforeEach` may now
+get double-resets if they also call `server.resetHandlers()`. After upgrading, audit test
+setups that both manually reset generators AND call `resetHandlers()` — the manual reset
+becomes redundant for native generator handlers, though it remains necessary for the
+manually-managed generator variable pattern shown above.
+
+---
+
+## faker v10.4 Food Module and Nordic Locale Expansions for Test Data Factories  [community]
+
+`@faker-js/faker` v10.4.0 (released March 23, 2026) expanded the **food module** with
+plant-based dish variety and added significant locale data for **Finnish** (fi) phone numbers
+and Norwegian (nb_NO) demographics. These additions are directly relevant to factories
+testing diet-preference features, Nordic market localisation, and food-category test data.
+
+**New food module: `faker.food.dish()` plant-based variant**
+
+The food module's dish generation now includes a broader variety of plant-based dishes.
+This matters for test data in applications that manage dietary preferences, restaurant menus,
+subscription meal kits, or food delivery platforms where plant-based/vegan filtering is
+a feature under test.
+
+```typescript
+// factories/food.factory.ts — faker v10.4 food and locale features
+import { faker, fakerFI, fakerNB_NO } from '@faker-js/faker'; // requires faker >= 10.4.0
+
+// Dietary preference test data for food delivery / meal-planning apps
+export type DietaryProfile = {
+  userId: string;
+  preferences: ('vegan' | 'vegetarian' | 'omnivore')[];
+  favoriteDishe: string;
+  allergies: string[];
+};
+
+// Generate a vegan user profile with plant-based dish preferences
+export function buildVeganProfile(
+  overrides: Partial<DietaryProfile> = {}
+): DietaryProfile {
+  return {
+    userId: faker.string.uuid(),
+    preferences: ['vegan'],
+    // faker.food.dish() in v10.4 returns realistic plant-based dishes for vegan profiles
+    favoriteDishe: faker.food.dish(),
+    allergies: ['dairy', 'eggs'],
+    ...overrides,
+  };
+}
+
+// Finnish market localisation: realistic Finnish phone numbers (faker v10.4 addition)
+export type FinnishUserContact = {
+  name: string;
+  phoneNumber: string;  // Finnish format: +358 XX XXXXXXX
+  city: string;
+};
+
+export function buildFinnishContact(
+  overrides: Partial<FinnishUserContact> = {}
+): FinnishUserContact {
+  return {
+    name: fakerFI.person.fullName(),
+    // fakerFI.phone.number() now returns valid Finnish format numbers (v10.4 addition)
+    // Format: +358 50 1234567 or +358 40 9876543 (Finnish mobile prefixes)
+    phoneNumber: fakerFI.phone.number(),
+    city: fakerFI.location.city(),
+    ...overrides,
+  };
+}
+
+// Norwegian (nb_NO) expanded demographics: zodiac signs, sex definitions, vehicle data
+// New in v10.4 — useful for Nordic compliance and cultural localisation tests
+export function buildNorwegianUserProfile(
+  overrides: Partial<{ name: string; gender: string; vehicle: string }> = {}
+) {
+  return {
+    name: fakerNB_NO.person.fullName(),
+    // nb_NO sex definitions now include correct Norwegian terminology
+    gender: fakerNB_NO.person.sexType(),
+    // Norwegian vehicle data added in v10.4
+    vehicle: fakerNB_NO.vehicle.vehicle(),
+    zodiacSign: fakerNB_NO.person.zodiacSign?.() ?? faker.person.zodiacSign?.(),
+    ...overrides,
+  };
+}
+```
+
+```typescript
+// factories/menu.factory.ts — food module for restaurant/menu test data
+import { faker } from '@faker-js/faker'; // faker >= 10.4.0
+
+export type MenuItem = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  price: number;
+  isVegan: boolean;
+  isGlutenFree: boolean;
+};
+
+// Build a menu item using the expanded faker.food module
+export function buildMenuItem(overrides: Partial<MenuItem> = {}): MenuItem {
+  const isVegan = overrides.isVegan ?? faker.datatype.boolean(0.3); // 30% chance vegan
+  return {
+    id: faker.string.uuid(),
+    // faker.food.dish() — returns diverse, realistic dish names including plant-based
+    name: faker.food.dish(),
+    // faker.food.description() — returns plausible ingredient descriptions
+    description: faker.food.description?.() ?? faker.lorem.sentence(),
+    // faker.food.ethnicCategory() — categorizes by cuisine type (Italian, Japanese, etc.)
+    category: faker.food.ethnicCategory?.() ?? faker.food.dish(),
+    price: faker.number.float({ min: 5.99, max: 45.00, fractionDigits: 2 }),
+    isVegan,
+    isGlutenFree: faker.datatype.boolean(0.2),
+    ...overrides,
+  };
+}
+
+// Parametric test dataset for dietary filter feature
+export function buildMenuWithDietaryVariants(): MenuItem[] {
+  return [
+    buildMenuItem({ isVegan: true,  isGlutenFree: false, name: faker.food.dish() }),
+    buildMenuItem({ isVegan: false, isGlutenFree: true,  name: faker.food.dish() }),
+    buildMenuItem({ isVegan: true,  isGlutenFree: true,  name: faker.food.dish() }),
+    buildMenuItem({ isVegan: false, isGlutenFree: false, name: faker.food.dish() }),
+  ];
+}
+```
+
+**Finnish locale use case — phone number validation testing:**
+```typescript
+// specs/phone-validation.test.ts — Finnish phone number format validation
+import { test, expect } from 'vitest';
+import { buildFinnishContact } from '../factories/food.factory';
+import { phoneValidator } from '../services/phone-validator';
+
+// Test that Finnish phone numbers pass the validator (regression: Finnish format was rejected)
+test.each(
+  Array.from({ length: 5 }, buildFinnishContact)
+)(
+  'Finnish phone number $phoneNumber passes format validation',
+  ({ phoneNumber }) => {
+    const result = phoneValidator.validate(phoneNumber, 'FI');
+    expect(result.valid).toBe(true);
+    expect(result.countryCode).toBe('FI');
+  }
+);
+```
+
+**When to use the food module over `faker.commerce`:**
+| Use case | Recommended faker module |
+|---|---|
+| Menu item names, dish descriptions | `faker.food.dish()`, `faker.food.description()` |
+| Generic product names (non-food) | `faker.commerce.productName()` |
+| Food category classification | `faker.food.ethnicCategory()` |
+| Ingredient lists | `faker.food.ingredient()` |
+| Price generation | `faker.commerce.price()` or `faker.number.float()` |
+
+---
+
+## Playwright 1.60 `browser.on('context')` — Factory Observer for Dynamic Context Injection  [community]
+
+Playwright 1.60 (2025) added a `browser.on('context')` event that fires whenever a new
+`BrowserContext` is created within the browser instance — whether by the test fixture,
+by `browser.newContext()`, or by popup windows that open as a new context. This enables
+a **factory observer pattern**: a worker-scoped fixture that reacts to every new context
+creation and injects baseline test data (cookies, localStorage, route handlers) automatically.
+
+**Why it matters for test data factories:** In suites with worker-scoped browser fixtures,
+tests that open popups or new tabs get fresh `BrowserContext` instances without the
+baseline route handlers and auth state injected by the test's own context. Without the
+`browser.on('context')` observer, factory test data injected into the primary context
+does not propagate to popup contexts — a silent gap that causes popup-based workflows
+(OAuth redirects, payment modal flows, embedded iframes as contexts) to test against
+raw application state rather than factory-seeded state.
+
+```typescript
+// fixtures/context-observer-fixtures.ts — Playwright 1.60 browser.on('context') observer
+import { test as base } from '@playwright/test';
+import { buildUser } from '../factories/user.factory';
+import { handlers } from '../mocks/handlers';
+import { setupWorker } from 'msw/browser';
+
+// Type: factory configuration injected into every new context
+type ContextSeedConfig = {
+  authCookies: { name: string; value: string; domain: string }[];
+  mswHandlers: typeof handlers;
+  localStorageSeeds: Record<string, string>;
+};
+
+export const test = base.extend<
+  { seedConfig: ContextSeedConfig },
+  { contextObserver: void }
+>({
+  // Default seed config — overridable per test
+  seedConfig: async ({}, use) => {
+    const user = buildUser({ status: 'active' });
+    await use({
+      authCookies: [
+        { name: 'session_token', value: `session-${user.id}`, domain: 'localhost' },
+      ],
+      mswHandlers: handlers,
+      localStorageSeeds: {
+        'current_user_id': user.id,
+        'feature_flags': JSON.stringify({ newCheckoutFlow: true }),
+      },
+    });
+  },
+
+  // Worker-scoped: one observer per worker — reacts to ALL context creations in that worker
+  contextObserver: [async ({ browser, seedConfig }, use) => {
+    // Playwright 1.60: browser.on('context') fires when any context is created
+    const injectSeedData = async (ctx: import('@playwright/test').BrowserContext) => {
+      // Inject auth cookies into the new context
+      if (seedConfig.authCookies.length > 0) {
+        await ctx.addCookies(seedConfig.authCookies);
+      }
+
+      // Inject route handlers (MSW-equivalent at the network layer)
+      // Note: addInitScript runs before page load — valid for localStorage seeds
+      await ctx.addInitScript((seeds: Record<string, string>) => {
+        for (const [key, value] of Object.entries(seeds)) {
+          window.localStorage.setItem(key, value);
+        }
+      }, seedConfig.localStorageSeeds);
+    };
+
+    // Register the observer — fires for every new context in this worker's browser
+    browser.on('context', injectSeedData);
+
+    await use();
+
+    // Cleanup the observer when the worker exits
+    browser.off('context', injectSeedData);
+  }, { scope: 'worker' }],
+});
+
+export { expect } from '@playwright/test';
+```
+
+```typescript
+// specs/popup-flow.spec.ts — popup context automatically receives factory seed data
+import { test, expect } from '../fixtures/context-observer-fixtures';
+
+test('OAuth popup receives the same session state as the main page', async ({ page, contextObserver }) => {
+  await page.goto('/settings/integrations');
+
+  // Click triggers a popup — new BrowserContext created automatically
+  const popupPromise = page.waitForEvent('popup');
+  await page.click('[data-testid="connect-github"]');
+  const popup = await popupPromise;
+
+  // Playwright 1.60: browser.on('context') fired when popup's context was created
+  // → auth cookies and localStorage seeds were injected automatically
+  // → popup starts with the same factory-seeded session state as the main page
+  await popup.waitForLoadState();
+
+  // Verify the popup has the factory-seeded feature flag
+  const flagValue = await popup.evaluate(() =>
+    window.localStorage.getItem('feature_flags')
+  );
+  expect(JSON.parse(flagValue!).newCheckoutFlow).toBe(true);
+});
+```
+
+**When `browser.on('context')` is useful vs Playwright fixture teardown:**
+
+| Pattern | When to use |
+|---|---|
+| `browser.on('context')` observer | When popups, embedded iframes as contexts, or dynamically opened contexts must inherit factory test data |
+| `test.extend()` fixture per context | When only the primary test context needs factory data — simpler, lower overhead |
+| `mergeTests()` fixture composition | When multiple fixture modules need to contribute to the same context setup |
+
+**Limitation:** The `browser.on('context')` event does not fire for `BrowserContext` instances
+created in a different `browser` object. Worker-scoped browser fixtures that share one
+`browser` instance work correctly; suites that use multiple `browser.newPage()` calls in
+parallel with separate `browser` instances each need their own observer.
+
+---
+
+## MSW v2.14.2 `NetworkApi` Type — Typed Handler Container Pattern  [community]
+
+MSW v2.14.2 (released 2025) exported the `NetworkApi` type and default handler
+controller interfaces. Previously, teams organising MSW handlers into modular
+containers had to infer the type from `typeof server` or use `any`. The exported
+`NetworkApi` type enables a **typed handler container pattern** where handler modules
+declare their type contract explicitly — making large MSW setups self-documenting
+and refactoring-safe.
+
+**Why it matters for test data:** In large test suites with 50+ MSW handlers organized
+into domain modules (auth handlers, order handlers, payment handlers), the handler
+container passed between setup and test helpers previously had no declared type.
+TypeScript accepted any object in its place. The `NetworkApi` type closes this gap:
+handler containers are now typed, and accidentally passing the wrong handler module
+(e.g., production handlers instead of test handlers) becomes a TypeScript error.
+
+```typescript
+// mocks/network-api-container.ts — typed handler container using MSW NetworkApi type
+// Requires: msw >= 2.14.2
+import { setupServer } from 'msw/node';
+import type { SetupServerApi } from 'msw/node';
+import { handlers as authHandlers } from './handlers/auth';
+import { handlers as orderHandlers } from './handlers/orders';
+import { handlers as paymentHandlers } from './handlers/payments';
+
+// All domain handler modules export typed handler arrays
+// NetworkApi type (exported in v2.14.2) describes the shape of the setup server
+export type TestNetworkApi = SetupServerApi;
+
+// Build the server with all domain handler modules
+const server: TestNetworkApi = setupServer(
+  ...authHandlers,
+  ...orderHandlers,
+  ...paymentHandlers,
+);
+
+export { server };
+```
+
+```typescript
+// test/setup-network.ts — typed handler injection for test files
+import type { SetupServerApi } from 'msw/node';
+
+// Function typed against SetupServerApi — accepts only a valid MSW server instance
+// Previously: accept `any` and silently fail if the wrong object was passed
+export function setupNetworkInterception(
+  server: SetupServerApi,
+  options?: { onUnhandledRequest?: 'error' | 'warn' | 'bypass' }
+): void {
+  beforeAll(() => server.listen(options ?? { onUnhandledRequest: 'error' }));
+  afterEach(() => server.resetHandlers());
+  afterAll(() => server.close());
+}
+```
+
+```typescript
+// mocks/handlers/orders.ts — domain-scoped handler module with typed exports
+import { http, HttpResponse } from 'msw';
+import type { HttpHandler } from 'msw';
+import { buildOrder, buildOrderList } from '../../factories/order.factory';
+
+// Explicit return type: HttpHandler[] — verifiable by TypeScript against SetupServerApi
+export const handlers: HttpHandler[] = [
+  http.get('/api/orders', () => {
+    return HttpResponse.json({ orders: buildOrderList(5) });
+  }),
+
+  http.get('/api/orders/:id', ({ params }) => {
+    const order = buildOrder({ id: params.id as string });
+    return HttpResponse.json(order);
+  }),
+
+  http.post('/api/orders', async ({ request }) => {
+    const body = await request.json() as { userId: string; items: unknown[] };
+    const newOrder = buildOrder({ userId: body.userId });
+    return HttpResponse.json(newOrder, { status: 201 });
+  }),
+];
+```
+
+```typescript
+// specs/order-management.test.ts — using typed network setup
+import { test, expect } from 'vitest';
+import { server } from '../mocks/network-api-container';
+import { setupNetworkInterception } from '../test/setup-network';
+import { http, HttpResponse } from 'msw';
+import { buildOrder } from '../factories/order.factory';
+import { OrderList } from '../../components/OrderList';
+import { render, screen } from '@testing-library/react';
+
+// Typed setup: TypeScript validates that `server` satisfies SetupServerApi
+setupNetworkInterception(server, { onUnhandledRequest: 'error' });
+
+test('displays orders from the API', async () => {
+  render(<OrderList userId="usr-001" />);
+  // MSW intercepts /api/orders and returns factory-generated orders
+  expect(await screen.findAllByRole('listitem')).toHaveLength(5);
+});
+
+test('shows error state when API returns 500', async () => {
+  // Override with an error handler for this test — TypeScript validates the override
+  server.use(
+    http.get('/api/orders', () =>
+      HttpResponse.json({ error: 'Internal Server Error' }, { status: 500 })
+    )
+  );
+
+  render(<OrderList userId="usr-001" />);
+  expect(await screen.findByRole('alert')).toBeInTheDocument();
+});
+```
+
+**`SetupServerApi` as a factory test helper parameter type:**
+```typescript
+// test/helpers/override-factory.ts — factory for test-specific handler overrides
+import type { SetupServerApi } from 'msw/node';
+import { http, HttpResponse } from 'msw';
+import { buildUser } from '../factories/user.factory';
+
+// Typed helper: only accepts a valid MSW setup server — not any object
+export function injectSuspendedUserResponse(server: SetupServerApi, userId: string): void {
+  server.use(
+    http.get(`/api/users/${userId}`, () =>
+      HttpResponse.json(buildUser({ id: userId, status: 'suspended' }))
+    )
+  );
+}
+
+// TypeScript error if called with the wrong server type:
+// injectSuspendedUserResponse(wrongObject, 'usr-001'); // ← TS error
+```
+
+**Key benefits of `NetworkApi` / `SetupServerApi` type exports:**
+1. **Refactoring safety:** Renaming or reorganising handler modules is caught at compile time, not at test runtime
+2. **Autocomplete support:** `server.use(...)`, `server.resetHandlers()`, etc. now have full IDE autocomplete in handler helpers
+3. **Explicit contracts:** Handler container files that export `handlers: HttpHandler[]` document their contract; callers that expect this type get immediate feedback on mismatches
+
+---
+
+34. **[community] MSW stateful generator handlers retain their position across `test.use()` handler overrides if `resetHandlers()` is not called after each `server.use()`.**
+    When a test overrides a stateful generator handler mid-suite using `server.use(overrideHandler)`, the original generator handler is suspended (not reset). After calling `server.resetHandlers()` in `afterEach`, MSW restores the original handler — but in versions before v2.13.5, the generator's internal position was **not** reset to the beginning. This caused the first test after the override to receive the generator response at position N rather than position 0. In v2.13.5+, `resetHandlers()` resets the generator state for native generator handlers automatically. However, when using **`test.use()` per-describe overrides** (not `server.use()`), the handler override is applied for the describe block and then removed — `resetHandlers()` is NOT called between tests in that describe block. This means a generator handler used inside a `test.use()` block still accumulates position across tests within the describe block.
+
+    ```typescript
+    // Problematic pattern: generator inside test.use() does NOT reset between tests
+    describe('order pagination (test.use scope)', () => {
+      // test.use() applies for all tests in this describe — no resetHandlers between tests
+      test.use({
+        extraHTTPHeaders: { 'X-Test-Mode': 'pagination' },
+      });
+
+      // The generator handler is shared across all tests in this describe block
+      // After test 1 calls GET /api/orders, the generator advances to position 1
+      // test 2 sees position 1 response, not position 0 — unexpected behaviour
+
+      test('first page returns products 1–5', async ({ request }) => {
+        const response = await request.get('/api/orders?page=1');
+        // Gets generator position 0 ✓
+      });
+
+      test('first page response is same for independent test', async ({ request }) => {
+        const response = await request.get('/api/orders?page=1');
+        // BUG: Gets generator position 1 ✗ — should be position 0
+      });
+    });
+
+    // FIX: call server.resetHandlers() in a beforeEach within the describe block
+    describe('order pagination (fixed)', () => {
+      beforeEach(() => {
+        server.resetHandlers();  // explicit reset before each test — resets generator state
+      });
+
+      test('first page returns products 1–5', async ({ request }) => { /* ... */ });
+      test('first page response is same for independent test', async ({ request }) => { /* ... */ });
+    });
+    ```
+
+    **Root cause:** `test.use()` is a Playwright fixture mechanism, not an MSW mechanism. It does not trigger MSW's `resetHandlers()`. Teams that rely on `test.use()` to scope handler variants within a describe block must add an explicit `beforeEach(() => server.resetHandlers())` inside that block to guarantee generator state is fresh for each test.
+
+---
+
+## Key Resources (iter-46 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| MSW v2.13.5 release notes | Official | https://github.com/mswjs/msw/releases/tag/v2.13.5 | Generator state reset on `resetHandlers()` / `restoreHandlers()` — prevents stateful handler test pollution |
+| MSW v2.14.2 release notes | Official | https://github.com/mswjs/msw/releases/tag/v2.14.2 | `NetworkApi` type and handler controller exports — typed handler container pattern for TypeScript-first MSW setups |
+| faker v10.4.0 release notes | Official | https://github.com/faker-js/faker/releases/tag/v10.4.0 | Food module plant-based variety; Finnish phone numbers (`fakerFI.phone.number()`); Norwegian (nb_NO) zodiac, sex, vehicle data |
+| Playwright 1.60 release notes | Official | https://playwright.dev/docs/release-notes#version-160 | `browser.on('context')` observer event; `test.abort()` for fixture precondition enforcement; HAR as first-class tracing API |
