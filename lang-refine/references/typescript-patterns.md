@@ -1,5 +1,16 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- iteration trace (latest):
+     Iter 33 (2026-05-12): added Generic Parameter Defaults as Overload Replacement section
+       (rules, patterns, team pitfalls — replaces multi-overload APIs with single typed declaration);
+       added TypeScript 7.0 — Parallel Type Checking and Deterministic Ordering section
+       (stableTypeOrdering code example showing ordering divergence, migration timeline, recommended
+       practices for preparing today); added community pitfall: variance annotation does not change
+       structural type behavior (official docs' own warning, practitioners frequently misapply);
+       sourced from typescriptlang.org/docs/handbook/2/generics.html,
+       typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html, and
+       github.com/microsoft/typescript-go
+     Iter 32 (2026-05-12): added two missing TS 6.0 default changes to the defaults table
 <!-- iteration trace (latest):
      Iter 32 (2026-05-12): added two missing TS 6.0 default changes to the defaults table
        (noUncheckedSideEffectImports → true by default; libReplacement → false by default);
@@ -2097,6 +2108,30 @@ Because TypeScript is structurally typed, any object with the right shape satisf
 **`exactOptionalPropertyTypes` changes what `undefined` means.** [community]
 Without `exactOptionalPropertyTypes`, TypeScript treats `{ name?: string }` as equivalent to `{ name: string | undefined }` — you can explicitly set `name: undefined`. With the flag enabled, `name?: string` means "the key may be absent" but you cannot set it to `undefined` explicitly. This matters for JSON serialisation (`JSON.stringify` omits absent keys but includes `undefined`-valued keys as nothing) and for `Object.assign` / spread operations that treat absent vs `undefined` differently. **Fix:** Enable `exactOptionalPropertyTypes: true` in `tsconfig.json` and use `Partial<T>` explicitly only when you mean "might be absent"; use `T | undefined` only when you mean "present but undefined".
 
+**Variance annotations do not change structural type behavior.** [community]
+TypeScript's `in`/`out`/`in out` variance annotations on generic parameters are widely misunderstood. They are a documentation and performance tool — they do NOT change structural assignability. The official handbook states: _"Don't try to use variance annotations to change typechecking behavior; this is not what they are for."_ Developers add `<out T>` expecting it to block writes, then discover that object-literal structural comparison ignores the annotation entirely:
+
+```typescript
+interface ReadOnlyBox<out T> {
+  get(): T;
+}
+
+// ❌ Does NOT enforce read-only behavior structurally
+const box: ReadOnlyBox<string | number> = {
+  get(): number { return 42; }
+  // This compiles despite the 'out' annotation — structural comparison wins
+};
+
+// 'out' only affects instantiation-based comparison (not structural literal comparison)
+// The annotation is useful for:
+// (a) explicit documentation of variance intent
+// (b) performance: bypasses the full structural walk for known covariant positions
+//     in large union hierarchies where TypeScript's structural check is expensive
+// It does NOT enforce read/write constraints at runtime or compile time.
+```
+
+**When they DO help:** On interfaces with large union hierarchies, adding `out T` lets the compiler short-circuit the structural walk and use the declared variance instead. This is a pure build-performance optimization, not a correctness guarantee. Measure with `tsc --extendedDiagnostics` before adding annotations — they add annotation complexity for no benefit in most codebases. **Fix:** Only add variance annotations after profiling confirms a type-checking bottleneck in that specific interface, and document WHY the annotation was added. Never add them to "make code cleaner" or "enforce immutability."
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -2141,6 +2176,9 @@ Without `exactOptionalPropertyTypes`, TypeScript treats `{ name?: string }` as e
 | Manual set operations (filter/reduce) instead of Set composition methods | Verbose, allocation-heavy, error-prone compared to built-in ES2025 Set methods | Use `.union()`, `.intersection()`, `.difference()` etc. (`"target": "es2025"+`) |
 | `new Promise()` wrapper around sync throw instead of `Promise.try()` | Requires try/catch inside the constructor callback; error propagation is non-obvious | Use `Promise.try(() => syncThrowingFn())` to convert sync throws to rejected promises (ES2025) |
 | `#root/*` subpath import pattern when `#/*` is available | Extra naming indirection; `#root/` is a legacy Node.js workaround | Use `"#/*": "./dist/*.js"` in `package.json` imports with `--moduleResolution nodenext/bundler` |
+| Variance annotations (`in`/`out`) to enforce immutability or change behavior | Annotations only affect instantiation-based comparison; structural comparisons ignore them | Use `Readonly<T>` / `readonly` modifiers for actual read-only enforcement; add variance annotations only after profiling confirms a type-check bottleneck |
+| Multiple overloads for the same generic function | Overload sprawl; each overload must be maintained separately | Use generic parameter defaults (`<T = DefaultType>`) to make parameters optional while preserving type inference |
+| `"stableTypeOrdering": true` in production `tsconfig.json` | Adds ~25% compile overhead; intended only as a TS 7.0 migration diagnostic | Keep in a separate `tsconfig.check-7.0.json`; remove before merging to main |
 
 
 
@@ -4178,3 +4216,164 @@ const values = [...range(0, 5)]; // emitted complex __spreadIterable helper
 // babel.config.json — Babel handles ES5 downleveling if needed
 // { "presets": [["@babel/preset-env", { "targets": "defaults" }]] }
 ```
+
+---
+
+## Generic Parameter Defaults — Replacing Overload Sprawl
+
+TypeScript supports default types on generic type parameters (`T = DefaultType`), letting you make type parameters optional without writing multiple function overloads. This pattern is underused in team codebases but dramatically reduces API surface area in libraries and shared utilities.
+
+### Rules (enforced by the compiler)
+
+1. **Required parameters must precede optional ones** — a generic parameter with a default cannot appear before one without a default.
+2. **Defaults must satisfy any constraint** — `<T extends string = 123>` is a compiler error; the default must be assignable to the constraint.
+3. **Inference takes precedence over defaults** — when TypeScript can infer `T` from arguments, the default is not used.
+4. **When inference cannot choose a candidate, the default applies** — calling a function with no arguments triggers the default.
+
+### Replacing overloads with a single declaration
+
+```typescript
+// ❌ Before: three overloads, duplicated return type, maintenance burden
+declare function createElement(): Container<HTMLDivElement, HTMLDivElement[]>;
+declare function createElement<T extends HTMLElement>(
+  element: T
+): Container<T, T[]>;
+declare function createElement<T extends HTMLElement, U extends HTMLElement[]>(
+  element: T,
+  children: U
+): Container<T, U>;
+
+// ✅ After: one declaration with defaults — all three overload cases work
+declare function createElement<
+  T extends HTMLElement = HTMLDivElement,
+  U extends HTMLElement[] = T[]
+>(
+  element?: T,
+  children?: U
+): Container<T, U>;
+
+const div = createElement();
+// Container<HTMLDivElement, HTMLDivElement[]>  — defaults applied
+
+const para = createElement(new HTMLParagraphElement());
+// Container<HTMLParagraphElement, HTMLParagraphElement[]>  — T inferred, U derived
+
+const custom = createElement(new HTMLSpanElement(), [new HTMLButtonElement()]);
+// Container<HTMLSpanElement, HTMLButtonElement[]>  — both inferred
+```
+
+### Practical query/state pattern (React Query style)
+
+```typescript
+// Generic defaults make library APIs dramatically easier to use
+interface AsyncState<
+  TData   = unknown,
+  TError  = Error,
+  TMeta   = Record<string, never>
+> {
+  data:    TData    | undefined;
+  error:   TError   | null;
+  meta:    TMeta;
+  status:  'idle' | 'loading' | 'success' | 'error';
+}
+
+// Consumer code for the 80% case — no type arguments needed
+function createState(): AsyncState { /* ... */ }
+
+// Consumer code when specific types matter
+function createTypedState(): AsyncState<User[], ApiError, RequestMeta> { /* ... */ }
+```
+
+### Cascading defaults (dependent type parameters)
+
+```typescript
+// Second default references the first type parameter
+interface KeyedSet<
+  TKey   = string,
+  TValue = TKey[]   // defaults to an array of the key type
+> {
+  get(key: TKey): TValue | undefined;
+  set(key: TKey, value: TValue): void;
+}
+
+// Usage without arguments uses cascading defaults: TKey=string, TValue=string[]
+declare const store: KeyedSet;
+store.set('tags', ['alpha', 'beta']); // TValue is string[] — correct
+```
+
+[community] **Pitfall: defaults apply only when inference fails — not when you omit the type argument.** If TypeScript can infer `T` from a function argument, it will use the inferred type even if the inference is narrower than you intended. Example: `function wrap<T = string>(value: T): T { return value; }` — calling `wrap(123)` gives `T = 123` (literal number), not `T = string`. The default only kicks in when the compiler has no other evidence. If your intention is to widen `123` to `number`, you must annotate explicitly: `wrap<number>(123)`.
+
+[community] **Pitfall: merging declarations can silently introduce a default on a previously required parameter.** If a library's `interface Plugin<T> {}` is augmented in a `.d.ts` file with `interface Plugin<T = any> {}`, TypeScript merges the declarations and `T` becomes optional in all code that uses `Plugin`. This can hide bugs where consumers relied on `T` being required for correct type checking. Always check augmentation `.d.ts` files when debugging unexpected `any` types in generic interfaces.
+
+---
+
+## TypeScript 7.0 — Parallel Type Checking and Deterministic Ordering
+
+TypeScript 7.0 (in development as of mid-2026) introduces two architectural changes that teams should prepare for now.
+
+### 1. Deterministic Union Type Ordering
+
+Currently, TypeScript's union type member ordering depends on **when** types are encountered during the type check pass — a non-deterministic artifact of traversal order. TypeScript 7.0 will sort union members canonically by their type structure, making declaration emit stable across compiler runs and machines.
+
+```typescript
+// Illustration of ordering divergence between TS 6.x and TS 7.0
+// (simplified — actual ordering depends on many internal factors)
+
+export function getStatus(active: boolean) {
+  return active ? 'online' : 'offline';
+}
+// TS 6.0 emitted: 'online' | 'offline'
+// TS 7.0 emitted: 'offline' | 'online'  (lexicographic, stable)
+
+// Why it matters for your team:
+// 1. snapshot tests that assert on emitted .d.ts content may change
+// 2. tools that consume compiler API output expecting a fixed union order will break
+// 3. teams using --declaration + tsc to generate API docs may see reshuffled output
+
+// To test your codebase against TS 7.0 ordering now (TS 6.0+):
+// Add "stableTypeOrdering": true to tsconfig.json
+// Warning: adds ~25% compile time — use only for migration validation, not production builds
+```
+
+**Migration actions:**
+
+```json
+// tsconfig.json — enable 7.0 type ordering in TS 6.x to catch issues early
+{
+  "compilerOptions": {
+    "stableTypeOrdering": true   // matches TS 7.0 behavior; ~25% slower
+  }
+}
+```
+
+Steps:
+1. Enable `"stableTypeOrdering": true` on a branch.
+2. Run `tsc --noEmit` and fix any new inference errors (these are real correctness issues).
+3. Audit snapshot tests and CI scripts that assert on `.d.ts` content.
+4. Disable the flag before merging — it is a migration diagnostic, not a production flag.
+5. Remove the flag and upgrade to TypeScript 7.0 when it releases.
+
+### 2. Parallel Type Checking Architecture
+
+TypeScript 7.0 will parallelize type checking across project references, enabling each package in a composite project to be checked concurrently. This is the main performance goal of the TypeScript Go rewrite (`typescript-go` / `@typescript/native-preview`).
+
+**What it requires of your code:**
+
+- **`isolatedDeclarations: true`** becomes more important: parallel checking cannot cross package boundaries without pre-computed `.d.ts` files. Packages without `isolatedDeclarations` become serial bottlenecks.
+- **Explicit return type annotations on all exported functions** — required by `isolatedDeclarations` and essential for the parallel checker to work without waiting for cross-file inference.
+- **No circular `import` chains across project references** — parallel checking breaks on cycles between composite packages.
+
+```typescript
+// ✅ Parallel-checker-friendly: explicit annotation, no cross-module inference needed
+export function parseConfig(raw: string): AppConfig {
+  return JSON.parse(raw) as AppConfig;
+}
+
+// ❌ Serial bottleneck: inference requires reading the full function body
+//    The parallel checker must wait for this file to complete before .d.ts is emitted
+export function parseConfig(raw: string) {
+  return JSON.parse(raw) as AppConfig;  // return type must be inferred
+}
+```
+
+[community] **Pitfall: enabling `stableTypeOrdering` in a production `tsconfig.json` accidentally.** Teams test with this flag and forget to remove it before shipping. The 25% compile slowdown is invisible in small projects but significant in large monorepos — it appears as a regression in CI build time with no obvious cause. Keep `stableTypeOrdering` in a separate `tsconfig.check-7.0.json` and never merge it into the main `tsconfig.json`.

@@ -1,8 +1,8 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/ -->
 
-> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Re-run `/qa-refine k6` to refresh.
 
 > **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `--summary-mode=legacy`, `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section. **New in v2.0.0 final:** HTTP API server disabled by default, cloud secrets auto-injected in `--local-execution`, `k6 cloud project list` command, extension tab-completion.
 
@@ -7907,4 +7907,584 @@ export default function () {
 
 ---
 
+## WebSocket Close Code and Reason Tracking (k6 v1.5+)  [community]
+
+k6 v1.5.0 added **close code and reason string** capture to the WebSocket `onclose` event.
+This allows tests to distinguish clean closes (code 1000) from server-driven closes
+(code 1001/1006/4xxx) and validate that reconnect logic handles specific close semantics.
+
+```javascript
+// k6/scripts/ws-close-code.js — assert clean close vs server-initiated close
+import { WebSocket } from "k6/websockets";
+import { check } from "k6";
+import { Counter } from "k6/metrics";
+
+const serverClosedAbnormally = new Counter("ws_abnormal_close");
+
+export const options = {
+  scenarios: {
+    ws_test: {
+      executor: "constant-vus",
+      vus: 10,
+      duration: "30s",
+    },
+  },
+  thresholds: {
+    "ws_abnormal_close": ["count==0"],  // zero abnormal closes expected
+  },
+};
+
+const BASE_WS = (__ENV.WS_URL || "ws://localhost:3001");
+
+export default function () {
+  const ws = new WebSocket(`${BASE_WS}/ws/session`);
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: "ping" }));
+    setTimeout(() => ws.close(1000, "normal closure"), 5000);
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    check(msg, { "pong received": (m) => m.type === "pong" });
+  };
+
+  // k6 v1.5+: onclose receives an event object with .code and .reason
+  ws.onclose = (event) => {
+    if (event.code !== 1000) {
+      console.warn(`Unexpected WS close: code=${event.code} reason="${event.reason}"`);
+      serverClosedAbnormally.add(1);
+    }
+  };
+
+  ws.onerror = (e) => {
+    if (e.error() !== "websocket: close sent") {
+      console.error("WS error:", e.error());
+    }
+  };
+}
+```
+
+> **[community]:** Before k6 v1.5, `onclose` received the raw `CloseEvent` but `.code` and
+> `.reason` were not surfaced — you got `undefined` for both. In v1.5+ they are populated
+> properly. If your test runs on older k6 versions, guard with `typeof event.code !== 'undefined'`.
+> **Close code reference:**
+> - `1000` — Normal closure
+> - `1001` — Going away (server restart)
+> - `1006` — Abnormal closure (no close frame sent — e.g. connection dropped)
+> - `4000–4999` — Application-defined codes (e.g. 4001 = auth expired)
+
+---
+
+## CSV Parsing — `asObjects` Option and `skipFirstLine` (k6/experimental/csv)  [community]
+
+The `k6/experimental/csv` module has two convenience options that significantly simplify
+test data access when your CSV has a header row:
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `asObjects: true` | `false` | Returns each row as `{ col_name: value }` instead of a string array; assumes first row is headers |
+| `skipFirstLine: true` | `false` | Skips the header row but returns rows as string arrays (not objects) |
+| `delimiter` | `","` | Field delimiter character |
+
+**When to use which:**
+
+- `asObjects: true` — cleanest for CSV files with descriptive headers; auto-skips header row
+- `skipFirstLine: true` + array access — slightly faster, useful when headers don't need to be property names
+- Neither — raw mode; every row including the header becomes an array element
+
+```javascript
+// k6/scripts/csv-as-objects.js — header-row CSV using asObjects
+import { open } from "k6/experimental/fs";
+import { parse } from "k6/experimental/csv";
+import http from "k6/http";
+import { check } from "k6";
+import exec from "k6/execution";
+
+export const options = { iterations: 20 };
+
+// CSV file: email,password,role
+// alice@test.com,pw1,admin
+// bob@test.com,pw2,user
+let users;
+
+export async function setup() {
+  const file = await open("./data/users.csv");
+  // asObjects: true → rows become { email, password, role }
+  // header row is automatically skipped
+  users = await parse(file, { asObjects: true });
+  return { users };
+}
+
+export default async function (data) {
+  const user = data.users[exec.scenario.iterationInTest % data.users.length];
+
+  const res = http.post(
+    `${__ENV.API_URL}/api/auth/login`,
+    JSON.stringify({ email: user.email, password: user.password }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+  check(res, {
+    "login ok":         (r) => r.status === 200,
+    "role in response": (r) => r.json("role") === user.role,
+  });
+}
+```
+
+```javascript
+// k6/scripts/csv-streaming-objects.js — streaming large CSV with asObjects
+import { open } from "k6/experimental/fs";
+import { Parser } from "k6/experimental/csv";
+import http from "k6/http";
+import { check } from "k6";
+
+export const options = { vus: 5, iterations: 50 };
+
+export default async function () {
+  // Parser is re-created per VU iteration — no shared state across VUs
+  const file = await open("./data/products.csv");
+  // skipFirstLine: true → discard header row, get arrays (faster than asObjects)
+  const parser = new Parser(file, { skipFirstLine: true, delimiter: ";" });
+
+  const { done, value } = await parser.next();  // read one row per VU iteration
+  if (done) {
+    console.warn("CSV exhausted — increase iterations limit or data file size");
+    return;
+  }
+
+  const [productId, category, price] = value;  // string array
+  const res = http.get(
+    `${__ENV.API_URL}/api/products/${productId}`,
+    { tags: { category } }
+  );
+  check(res, {
+    "product found": (r) => r.status === 200,
+    "price matches":  (r) => r.json("price") === parseFloat(price),
+  });
+}
+```
+
+> **[community]:** `csv.parse()` with `asObjects: true` **loads the entire CSV into memory at
+> init time** (like `SharedArray`). For files over ~50 MB, prefer `new csv.Parser()` with
+> `skipFirstLine: true` for streaming access. Also note that `asObjects` uses the first row's
+> header values verbatim as JavaScript property names — headers with spaces or special chars
+> (e.g. `"user email"`) become awkward keys (`user["user email"]`); sanitize your CSV headers.
+
+---
+
+## Environment Variable Precedence: `-e` vs `K6_` Prefix  [community]
+
+There are two distinct ways to pass values to k6. Confusing them silently breaks test config.
+
+| Method | Controls | Example |
+|--------|----------|---------|
+| `-e VAR=value` | Script access only via `__ENV` | `-e API_URL=https://staging.api.io` |
+| `K6_VAR=value` (system env) | k6 option **and** `__ENV` | `K6_VUS=100 k6 run ...` |
+| `--vus 100` (CLI flag) | k6 option only | Takes highest precedence |
+
+**The trap:** `-e K6_ITERATIONS=50` does NOT set `options.iterations`. The `-e` flag
+passes variables only to the script; it does not configure k6 options. Only the
+`K6_` prefix in the *system environment* (or CLI flags) configures k6.
+
+```javascript
+// k6/scripts/env-config.js — correct patterns for environment-driven config
+import http from "k6/http";
+import { check, sleep } from "k6";
+
+export const options = {
+  // PATTERN A: read options from __ENV (script-layer)
+  // Set with: k6 run -e TARGET_VUS=50 -e TARGET_DURATION=2m script.js
+  // (options are resolved at parse time, __ENV is available)
+  vus: parseInt(__ENV.TARGET_VUS || "10"),
+  duration: __ENV.TARGET_DURATION || "1m",
+  thresholds: {
+    http_req_duration: [`p(95)<${parseInt(__ENV.SLA_MS || "500")}`],
+  },
+};
+
+export default function () {
+  // PATTERN B: use __ENV for runtime values (base URL, secrets, flags)
+  const base = __ENV.API_URL || "http://localhost:3001";
+
+  const res = http.get(`${base}/api/health`);
+  check(res, { "healthy": (r) => r.status === 200 });
+  sleep(1);
+}
+```
+
+```bash
+# CORRECT — K6_ prefix in system env configures k6 options:
+K6_VUS=100 K6_DURATION=5m k6 run script.js
+
+# CORRECT — CLI flags take highest priority:
+k6 run --vus 100 --duration 5m script.js
+
+# INCORRECT — -e flag does NOT configure k6 options:
+k6 run -e K6_VUS=100 script.js    # K6_VUS silently ignored as option config
+
+# CORRECT — pass script-readable env via -e, configure k6 via K6_:
+K6_VUS=100 k6 run -e API_URL=https://staging.api.io script.js
+```
+
+> **[community]:** The most common CI mistake is piping Vault/AWS Secrets Manager values via
+> `-e` and then wondering why `k6` ignores the VU or iteration counts. The fix is always:
+> *script-visible* vars → `-e`; *k6 option* vars → system environment `K6_` prefix or CLI flag.
+> Note that `K6_` system env vars also appear in `__ENV`, so scripts can read them too — unlike
+> CLI flags which are opaque to the script.
+
+---
+
+## Extension Ecosystem — Production-Ready xk6 Packages  [community]
+
+k6's extension system enables protocol and data generation integrations beyond the built-ins.
+These four extensions are widely used in production test suites.
+
+### xk6-faker — Synthetic Test Data Generation
+
+`xk6-faker` wraps the Faker.js API for generating realistic test data (names, emails, addresses,
+UUIDs, credit cards) directly inside k6 scripts — no external data file needed.
+
+```javascript
+// k6/scripts/faker-data.js — requires xk6 build --with github.com/szkiba/xk6-faker
+import { Faker } from "k6/x/faker";
+import http from "k6/http";
+import { check } from "k6";
+
+const faker = new Faker(12345);   // seed for reproducibility (omit for random)
+
+export const options = {
+  scenarios: {
+    registration: {
+      executor: "constant-arrival-rate",
+      rate: 20, timeUnit: "1s", duration: "2m",
+      preAllocatedVUs: 10, maxVUs: 30,
+    },
+  },
+  thresholds: { "http_req_duration": ["p(95)<800"] },
+};
+
+export default function () {
+  const payload = {
+    name:     faker.person.firstName() + " " + faker.person.lastName(),
+    email:    faker.internet.email(),
+    password: faker.internet.password(),
+    address: {
+      street: faker.address.streetAddress(),
+      city:   faker.address.city(),
+      zip:    faker.address.zipCode(),
+    },
+  };
+
+  const res = http.post(
+    `${__ENV.API_URL}/api/users/register`,
+    JSON.stringify(payload),
+    { headers: { "Content-Type": "application/json" } }
+  );
+  check(res, { "registered": (r) => r.status === 201 });
+}
+```
+
+> **[community]:** xk6-faker calls are fast but not free — at >10,000 RPS the Faker
+> RNG overhead is measurable. Cache generated values in a `SharedArray` during `setup()`
+> if you need max throughput. Seeding with a fixed integer makes test data reproducible
+> for debugging; omit the seed in production load tests for full variance.
+
+### xk6-sql — Database Validation Inside Load Tests
+
+`xk6-sql` lets k6 VUs execute SQL queries to validate database state during or after load
+tests — useful for verifying that order creation under load doesn't produce duplicate rows.
+
+```javascript
+// k6/scripts/sql-validate.js — requires xk6 build --with github.com/grafana/xk6-sql
+// with the appropriate driver: --with github.com/grafana/xk6-sql-driver-postgres
+import sql from "k6/x/sql";
+import http from "k6/http";
+import { check } from "k6";
+import driver from "k6/x/sql/driver/postgres";
+
+const db = sql.open(driver, __ENV.DB_URL);  // e.g. postgres://user:pw@host/dbname
+
+export function teardown() {
+  // Validate: no duplicate orders created during the load test
+  const rows = db.query(
+    "SELECT order_id, COUNT(*) AS cnt FROM orders GROUP BY order_id HAVING COUNT(*) > 1"
+  );
+  check(rows, { "no duplicate orders": (r) => r.length === 0 });
+  db.close();
+}
+
+export const options = {
+  scenarios: {
+    order_load: {
+      executor: "constant-arrival-rate",
+      rate: 50, timeUnit: "1s", duration: "2m",
+      preAllocatedVUs: 20, maxVUs: 50,
+    },
+  },
+  thresholds: {
+    "http_req_duration": ["p(95)<1000"],
+    "http_req_failed":   ["rate<0.01"],
+  },
+};
+
+export default function () {
+  const res = http.post(
+    `${__ENV.API_URL}/api/orders`,
+    JSON.stringify({ item: "widget", qty: 1 }),
+    { headers: { "Content-Type": "application/json", Authorization: `Bearer ${__ENV.TOKEN}` } }
+  );
+  check(res, { "order created": (r) => r.status === 201 });
+}
+```
+
+> **[community]:** xk6-sql queries run **synchronously in the VU goroutine** — a slow DB
+> query (>500 ms) inflates VU utilization and distorts your load test results. Only use
+> xk6-sql in `setup()` or `teardown()` for validation, not in the hot `default()` loop.
+> Supported drivers: Postgres (`xk6-sql-driver-postgres`), MySQL (`xk6-sql-driver-mysql`),
+> SQLite3 (`xk6-sql-driver-sqlite3`), MSSQL (`xk6-sql-driver-sqlserver`).
+
+### xk6-dns — Custom DNS Resolver for Multi-Region Tests
+
+`xk6-dns` exposes k6's internal DNS configuration so tests can pin hostnames to specific
+IPs or use custom resolvers — useful for blue/green deployment testing where you want to
+direct traffic to specific backend instances without changing `/etc/hosts`.
+
+```javascript
+// k6/scripts/dns-pinning.js — requires xk6 build --with github.com/szkiba/xk6-dns
+import { Resolver } from "k6/x/dns";
+import http from "k6/http";
+import { check } from "k6";
+
+// Pin api.internal → specific blue/green IPs for canary validation
+const resolver = new Resolver({
+  hosts: {
+    "api.internal": __ENV.TARGET_IP || "10.0.1.100",
+  },
+});
+
+export const options = {
+  scenarios: {
+    canary: {
+      executor: "constant-vus",
+      vus: 20,
+      duration: "1m",
+    },
+  },
+};
+
+export default function () {
+  // Requests to api.internal are resolved by xk6-dns, not system DNS
+  const res = http.get("https://api.internal/health", {
+    // associate the custom resolver with this VU's HTTP requests
+    dns: resolver,
+  });
+  check(res, { "healthy": (r) => r.status === 200 });
+}
+```
+
+> **[community]:** xk6-dns is particularly valuable for blue/green load tests where you
+> want to target `10.0.1.100` (blue) vs `10.0.1.101` (green) without modifying system DNS
+> or hardcoding IPs in script URLs. Combine with `-e TARGET_IP=$BLUE_IP` / `-e TARGET_IP=$GREEN_IP`
+> in CI to parameterize the target.
+
+---
+
+## Additional Community Gotchas (Iteration 29)
+
+### 48. `csv.parse()` inside `default()` re-reads the file on every iteration — memory explosion  [community]
+
+**What:** Moving `await csv.parse(file)` inside the `default()` function (instead of `setup()`)
+causes k6 to re-parse the entire CSV file on every VU iteration — leading to memory exhaustion
+and dramatically skewed response-time metrics as the test progresses.
+
+**WHY:** `csv.parse()` returns a `Promise` that performs Go-native file parsing. Each call
+allocates a new buffer for the entire CSV content. With 100 VUs each iterating every 1 s,
+a 10 MB CSV is re-allocated 100 times per second. This is analogous to calling `open()` in
+the hot loop — explicitly prohibited by k6's VU lifecycle rules.
+
+**Fix:** Always call `csv.parse()` in `setup()` and pass the result via the `data` argument,
+or call it at module init level with `await` (k6 allows top-level `await` in ES module scripts):
+
+```javascript
+// WRONG — re-parses on every iteration
+export default async function () {
+  const file = await open("./data/users.csv");         // ← opens fresh each time
+  const records = await csv.parse(file, { asObjects: true }); // ← parses fresh each time
+  const user = records[exec.scenario.iterationInTest % records.length];
+  // ...
+}
+
+// CORRECT — parse once in setup(), pass via data
+export async function setup() {
+  const file = await open("./data/users.csv");
+  const users = await csv.parse(file, { asObjects: true });
+  return { users };   // users is deep-copied to each VU — but only parsed once
+}
+
+export default function (data) {
+  const user = data.users[exec.scenario.iterationInTest % data.users.length];
+  // ...
+}
+```
+
+> **[community]:** `csv.parse()` result is a SharedArray-compatible structure. When returned
+> from `setup()`, k6 shares the underlying memory across VUs rather than deep-copying the full
+> array. If your CSV is > 50 MB, even `setup()` allocation may cause timeout — use `csv.Parser`
+> streaming instead.
+
+### 49. Browser tests fail with `"browserType is not set"` when `--browser.type` is omitted  [community]
+
+**What:** Browser scenarios require the `--browser.type` option. If omitted in CI (e.g., when
+running with a generic k6 Docker image), the test fails immediately with:
+`GoError: browserType is not set; please set browser.type in scenario options`.
+
+**WHY:** k6 browser scenarios require an explicit `chromium` (the only currently supported type)
+to be set in `options.scenarios.<name>.options.browser.type`. Unlike `--headless`, there is no
+default — the absence of this key is a hard error, not a warning.
+
+```javascript
+// WRONG — missing browser.type causes immediate GoError
+export const options = {
+  scenarios: {
+    ui: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 1,
+      options: { browser: {} },  // ← missing .type
+    },
+  },
+};
+
+// CORRECT — always specify browser.type: "chromium"
+export const options = {
+  scenarios: {
+    ui: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 1,
+      options: {
+        browser: {
+          type: "chromium",      // ← required; only "chromium" is supported
+          headless: true,        // ← set false for local debugging
+        },
+      },
+    },
+  },
+};
+```
+
+```bash
+# CI: make sure Chromium is installed in the k6 image
+# Official Grafana k6 browser image includes Chromium:
+docker run --rm -v "$PWD:/scripts" grafana/k6:latest-with-browser \
+  run --env API_URL=http://host.docker.internal:3001 /scripts/browser-test.js
+```
+
+> **[community]:** The official `grafana/k6:latest-with-browser` Docker image bundles
+> Chromium. The plain `grafana/k6:latest` image does NOT include Chromium — running browser
+> scenarios with it will fail with a `chromium not found` error, not the `browserType` error.
+> Always use the `-with-browser` variant for browser test CI jobs.
+
+### 50. `K6_CLOUD_STACK_ID` required for non-default Grafana Cloud stacks — tests run against wrong org silently  [community]
+
+**What:** When teams manage multiple Grafana Cloud orgs (e.g., one per product, or prod vs
+staging), `k6 cloud run` always defaults to the *first* org/stack associated with the API token.
+Scripts run successfully but results land in the wrong organization.
+
+**WHY:** The `k6 cloud login --token <TOKEN>` command stores the token but does not record a
+default stack ID. When running `k6 cloud run`, k6 picks the first stack returned by the Cloud
+API — which may not be the intended target environment.
+
+```bash
+# WRONG — sends results to whichever stack is first for this token
+k6 cloud run script.js
+
+# CORRECT — explicitly specify the target stack
+k6 cloud run --stack my-product-stack script.js
+
+# ALSO CORRECT — use env var (safer for CI secrets injection)
+K6_CLOUD_STACK_ID=my-product-stack k6 cloud run script.js
+```
+
+```yaml
+# CI: GitHub Actions — explicit stack per environment
+- name: Run k6 cloud load test
+  env:
+    K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+    K6_CLOUD_STACK_ID: ${{ vars.K6_STACK_STAGING }}   # per-env variable
+  run: k6 cloud run k6/scripts/load.js
+```
+
+> **[community]:** The `K6_CLOUD_STACK_ID` / `--stack` requirement became more visible in
+> v2.0.0 where the CLI enforces it for some commands. However, `k6 cloud run` silently
+> falls back to a default stack even in v2.0 — the gotcha is *correctness*, not a crash.
+> Always pin `--stack` in CI pipelines to prevent cross-environment result contamination.
+
+### 51. xk6-disruptor requires cluster-admin RBAC — silently fails in restricted namespaces  [community]
+
+**What:** `xk6-disruptor`'s `PodDisruptor` and `ServiceDisruptor` inject a proxy sidecar into
+the target pods. This requires `create pods/exec`, `get pods`, and `watch services` permissions
+in the target namespace. Running the disruptor in a restricted namespace (e.g., a dev namespace
+with read-only service accounts) causes the test to hang or fail with a cryptic timeout error
+rather than a clear RBAC denial.
+
+**WHY:** The disruptor communicates with the Kubernetes API server using the default service
+account of the pod running k6. In many production clusters, pods cannot `exec` into other pods
+by default (PodSecurityPolicy / OPA Gatekeeper / Kyverno may block it).
+
+```bash
+# Check if the k6 pod has the required permissions before running
+kubectl auth can-i exec pods --namespace=target-ns --as=system:serviceaccount:k6-ns:k6-runner
+# Expected: yes
+
+# Create minimal RBAC for xk6-disruptor
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: xk6-disruptor
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/exec", "services", "endpoints"]
+  verbs: ["get", "list", "watch", "create"]
+EOF
+kubectl create clusterrolebinding xk6-disruptor \
+  --clusterrole=xk6-disruptor \
+  --serviceaccount=k6-ns:k6-runner
+```
+
+> **[community]:** xk6-disruptor is Kubernetes-only; it has no support for Docker Compose
+> or bare-metal deployments. Always validate RBAC with `kubectl auth can-i` before scheduling
+> a fault-injection run in CI — the disruptor timeout error (`context deadline exceeded`) gives
+> no indication of a permissions problem.
+
+### 52. `-e` flag with `K6_`-prefixed var name does NOT configure k6 options — silent test misconfiguration  [community]
+
+**What:** Running `k6 run -e K6_ITERATIONS=50 script.js` passes `K6_ITERATIONS` as a
+script-visible `__ENV` variable **but does not configure `options.iterations`**. The `-e` flag
+is exclusively for script-visible variables; it never drives k6's option resolution engine.
+k6 continues with its default iterations (infinite) or whatever is in the `options` object.
+
+**WHY:** k6's option resolution chain is: CLI flags → `K6_` system env vars → `options` object
+→ config file → defaults. The `-e` flag injects into `__ENV` only — it bypasses the option
+resolution chain entirely, regardless of the variable name.
+
+```bash
+# WRONG — K6_ITERATIONS via -e is ignored by k6 options engine
+k6 run -e K6_ITERATIONS=50 -e K6_VUS=10 script.js
+# → test runs with default/options-object config, NOT 50 iterations / 10 VUs
+
+# CORRECT — K6_ in system environment configures k6 options
+K6_ITERATIONS=50 K6_VUS=10 k6 run script.js
+
+# CORRECT — explicit CLI flags always work
+k6 run --iterations 50 --vus 10 script.js
+
+# CORRECT — dynamic config via __ENV in options object (with -e):
+# In script: export const options = { iterations: parseInt(__ENV.ITERS || "100") };
+# Then: k6 run -e ITERS=50 script.js   ← uses custom var name, not K6_ prefix
+```
+
+> **[community]:** This is the single most common k6 CI misconfiguration. The tell is that
+> CI runs take much longer than expected (or don't stop) — the VU and iteration counts are
+> wrong. The fix: grep CI configs for `-e K6_` patterns and replace with system env `K6_`
+> exports or explicit CLI flags.
 

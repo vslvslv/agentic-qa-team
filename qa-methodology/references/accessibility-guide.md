@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -7299,3 +7299,138 @@ test.describe('WCAG-EM 2.0 user flow — Checkout process', () => {
 **Why user-flow scanning catches issues page scanning misses:** A checkout confirmation page only exists after a user has completed the previous steps. A static URL scan at `/checkout/confirmation` without state will show an empty or error page. User-flow scanning captures the real accessible state of the confirmation page after a completed transaction — the state screen reader users encounter. This is the core insight behind WCAG-EM 2.0's user-flow model.
 
 ---
+
+### axe-core-npm v4.11.1 TypeScript Export Reorder Fix
+
+axe-core-npm v4.11.1 (released March 2026) included a **TypeScript export reordering fix** (`reorder exports to place types first`) in the `@axe-core/playwright` package. This fix resolves a class of TypeScript compilation errors that affect projects using certain `moduleResolution` settings (`bundler`, `NodeNext`, `Node16`).
+
+**The problem (before 4.11.1):**
+
+TypeScript projects with `"moduleResolution": "NodeNext"` or `"bundler"` in their `tsconfig.json` import types via `import type` and resolve type exports from the package entry point. When value exports (functions, classes) appear before type exports in the package's index, TypeScript's strict module resolution can fail to find the type definitions, emitting errors like:
+
+```
+error TS2305: Module '@axe-core/playwright' has no exported member 'AxeBuilder'.
+error TS2305: Module '@axe-core/playwright' has no exported member 'Result'.
+```
+
+This would occur at compile time even though runtime imports worked fine (because Node.js module resolution differs from TypeScript's strict type resolution in `NodeNext` mode). The fix reorders all type exports to appear before value exports in the package entry point, which satisfies TypeScript's `NodeNext` / `bundler` resolution requirements.
+
+**Affected version range:** `@axe-core/playwright` versions before 4.11.1 with TypeScript `moduleResolution: NodeNext` or `bundler`.
+
+**Upgrade path:**
+
+```bash
+npm install @axe-core/playwright@^4.11.1
+# or
+npm install @axe-core/playwright@latest
+```
+
+**Why this matters for QA teams:** The error appeared non-deterministically — it surfaced on fresh CI runs (where the TypeScript language server cache was cold) or after changing `tsconfig.json`. Teams that added `@ts-ignore` workarounds or downgraded their `moduleResolution` should remove those workarounds after upgrading to 4.11.1+.
+
+```typescript
+// File: tsconfig.json — configuration that triggered the bug before 4.11.1
+// These moduleResolution settings expose the export ordering issue:
+{
+  "compilerOptions": {
+    "module": "NodeNext",         // ← This setting
+    "moduleResolution": "NodeNext", // ← OR this setting
+    // OR:
+    "moduleResolution": "bundler"   // ← OR this setting (Vite projects)
+  }
+}
+
+// After upgrading to @axe-core/playwright 4.11.1+, these tsconfigs work correctly
+// and the following import pattern compiles without error:
+import AxeBuilder from '@axe-core/playwright';
+import type { AxeResults, Result, NodeResult } from 'axe-core';
+// ↑ Named type imports from the axe-core package (peer dep) still work
+//   because axe-core's own types are unaffected — only the playwright wrapper was fixed.
+```
+
+---
+
+### @axe-core/playwright — Deferred Iframe Skip Fix
+
+`@axe-core/playwright` v4.9.1 (maintained across the 4.11.x release line) introduced a fix that **silently skips iframes that have not yet loaded** rather than throwing an unhandled error. This matters for pages using lazy-loaded or deferred iframes (e.g., embedded maps, payment widgets, chat widgets loaded after the main content).
+
+**The problem (before the fix):**
+
+When `AxeBuilder.analyze()` ran on a page containing an `<iframe>` whose `src` had not yet resolved, axe-core's iframe injection would fail with an unhandled promise rejection. Depending on the axe-core version and whether the Playwright page event listener was still active, this could:
+- Cause the test to time out silently (most common)
+- Emit a `UnhandledPromiseRejection` warning in Node.js output
+- Return `{ violations: [], passes: [], incomplete: [] }` without error, masking a partial scan
+
+**After the fix:**
+
+Unloaded iframes are skipped during analysis. The iframe URL is included in the `axe-core` response's `incomplete` category with `id: 'frame-tested'` and a reason of `'Could not inject into frame'`. This is visible in the scan results and can be tested for explicitly.
+
+```typescript
+// File: e2e/accessibility/deferred-iframe.spec.ts
+// Pattern for handling pages with deferred iframes in axe scans.
+// Verifies that the main content is clean AND that we're aware of any skipped frames.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Pages with deferred/lazy iframes', () => {
+
+  test('main content has no violations (iframes may be skipped)', async ({ page }) => {
+    await page.goto('/checkout/payment');
+    // Wait for main content to load, but do NOT wait for the payment iframe
+    // (it loads conditionally after user interaction or is intentionally deferred)
+    await page.waitForLoadState('domcontentloaded');
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag22aa'])
+      .analyze();
+
+    // Check if any frames were skipped (expected for deferred payment iframe)
+    const skippedFrames = results.incomplete.filter(
+      (r) => r.id === 'frame-tested'
+    );
+    if (skippedFrames.length > 0) {
+      console.warn(
+        `[a11y] ${skippedFrames.length} frame(s) not scanned (deferred load):\n` +
+        skippedFrames.flatMap((r) => r.nodes.map((n) => `  - ${n.html}`)).join('\n') +
+        '\n  Action: scan these frames separately after user interaction triggers loading.'
+      );
+    }
+
+    // Main page violations are hard failures
+    expect(results.violations, 'Main page WCAG violations').toEqual([]);
+  });
+
+  test('payment iframe is accessible after user triggers load', async ({ page }) => {
+    await page.goto('/checkout/payment');
+    await page.waitForLoadState('domcontentloaded');
+
+    // Trigger the deferred iframe to load (e.g., user selects credit card)
+    await page.click('[data-testid="payment-method-card"]');
+    // Wait specifically for the iframe to appear and load
+    await page.waitForSelector('iframe[data-testid="payment-frame"]');
+    await page.waitForTimeout(500); // Allow iframe content to initialize
+
+    // Now rescan — the iframe should be included
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag22aa'])
+      .analyze();
+
+    const stillSkipped = results.incomplete.filter((r) => r.id === 'frame-tested');
+    expect(stillSkipped, 'Payment iframe should be scanned after load').toHaveLength(0);
+    expect(results.violations, 'Full page WCAG violations after iframe load').toEqual([]);
+  });
+});
+```
+
+**Why this matters:** Teams that run axe on pages with chat widgets, embedded maps, or payment iframes without waiting for those iframes to load may be getting false-clean results — the scan passes because the problematic iframe was silently skipped. The `incomplete[].id === 'frame-tested'` check makes the skip explicit, allowing QA teams to add targeted scans when the iframe is actually loaded.
+
+---
+
+### New Community Gotchas (Iteration 38)
+
+63. **[community] `@axe-core/playwright` 4.11.1 TypeScript export reorder fix — if you see `Module '@axe-core/playwright' has no exported member 'AxeBuilder'` in a TypeScript NodeNext/bundler project, upgrade to 4.11.1+**: Before 4.11.1, the `@axe-core/playwright` package placed type exports after value exports in its entry point. TypeScript's strict `NodeNext` and `bundler` module resolution modes require type exports to appear first to resolve them correctly. The symptom was a compile-time `TS2305` error claiming `AxeBuilder` is not exported, despite the package clearly exporting it. The fix in 4.11.1 reorders exports so types appear before values. WHY: teams using Vite (which defaults to `moduleResolution: bundler`) or modern ESM TypeScript projects were most affected; switching back to `node` or `node10` module resolution was a common but unnecessary workaround that should be reverted after upgrading.
+
+64. **[community] Deferred/lazy iframes are silently skipped by axe-core before the @axe-core/playwright 4.9.1 fix — check `results.incomplete` for `frame-tested` to confirm all frames were scanned**: Pages that include payment widgets, chat widgets, or embedded maps via lazy-loaded iframes can return a clean axe result even though the iframe content was never scanned. After the 4.9.1 fix, unloaded iframes appear in `results.incomplete` with `id: 'frame-tested'` instead of causing silent errors. A clean `violations: []` result without checking `incomplete` for skipped frames gives false confidence. WHY: accessibility violations in embedded third-party iframes (WCAG 4.1.2 for payment frames, for example) are the responsibility of the page embedding them if no equivalent alternative is provided.
+
+65. **[community] axe-core-npm monorepo reached v4.11.3 on 2026-05-04 — verify your `@axe-core/*` packages are aligned to the same monorepo version to avoid inter-package type mismatches**: The axe-core-npm monorepo publishes all `@axe-core/*` packages together at the same version (`@axe-core/playwright`, `@axe-core/react`, `@axe-core/cli`, `@axe-core/reporter-earl`, `jest-axe`, etc.). Running mismatched versions — e.g., `@axe-core/playwright@4.11.3` with `axe-core@4.11.1` as a peer dep — can cause rule differences where one package includes rules or fixes not present in the peer. Use `npm ls axe-core` to verify all packages resolve to the same axe-core version. WHY: gotcha #8 above (axe-core version mismatch between jest-axe and playwright) is the most common form of this problem; the general principle applies to all packages in the monorepo.
+
+66. **[community] AxeBuilder memory usage grows with page complexity in large-scale CI scans — axe-core-npm 4.11.0 includes memory optimizations for the AxeBuilder context accumulation, but teams scanning 100+ pages per CI run should still implement explicit cleanup**: Prior to axe-core-npm 4.11.0, the `AxeBuilder` instance accumulated internal state across multiple `.analyze()` calls on the same instance. For teams scanning large applications (100+ routes in CI), this caused Node.js heap growth and occasional OOM kills. The 4.11.0 optimization reduces context accumulation. However, the best practice remains to create a new `AxeBuilder({ page })` instance for each scan rather than reusing across page navigations. WHY: the `AxeBuilder` is designed as a per-scan configuration object, not a persistent scanner; creating one per test (as shown in all patterns above) is both idiomatic and memory-safe regardless of the version.

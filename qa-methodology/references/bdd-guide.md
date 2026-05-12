@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 28 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 29 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 29 additions: Gherkin DocString backtick delimiter (```) — Markdown-friendly alternative to """ for multi-line content in feature files; full delimiter comparison table with editor syntax-highlighting and content-type annotation support notes -->
 <!-- Iter 28 additions: Cucumber Expressions advanced syntax — optional text (s), alternation a/b, anonymous {} parameter, escape sequences for { ( / characters; playwright-bdd v8.4.1 — explicit TypeScript type exports (BddFixtures, CreateBddOptions, TestTypeCommon), skipLibCheck fix for module:commonjs; DataTable escape sequences (\n \| \\) with rowsHash/hashes method reference table; @cucumber/gherkin-streams removal migration guide — regex-based counting and Messages API alternatives; Gherkin keyword scope rules reference table — Rule/Background/Examples valid parent scopes, tags-on-Background anti-pattern, multiple Background blocks silent failure -->
 <!-- Iter 27 additions: Cucumber.js unreleased — formatter architecture redesign (SummaryFormatter/ProgressFormatter class deprecation, new summary/progress/progress-bar/pretty formatter design), printAttachments→includeAttachments migration, FORCE_COLOR env var replaces color format option; playwright-bdd unreleased — enrichReporterData config option removed (breaking), bddgen worker concurrency capped at CPU/2 (OOM fix), tinyglobby replaces fast-glob (internal dep), @cucumber/messages 27→32 + @cucumber/gherkin 32→39 (direct import paths breaking), JSON reporter attachment opt-in (attachments skipped by default), non-ASCII garbling fix in HTML reporter, strict Cucumber-compatible arity checks (breaking), docStringType exposed on $step fixture, AI agent skill for Gherkin generation (playwright-bdd v8.6+), junit-modern alias deprecated→junit canonical; full version migration guide added (v12 → unreleased upgrade path) -->
 <!-- Iter 26 additions: playwright-bdd unreleased — junit-modern alias deprecated (canonical JUnit reporter), tinyglobby replaces fast-glob, bddgen worker concurrency limited to CPU/2 for OOM prevention, @cucumber/messages 27→32 and @cucumber/gherkin 32→39 major bumps (direct import breaking change), JSON reporter skips attachments by default, non-ASCII garbling fix in HTML reporter; Gherkin reference — "Imagine it's 1922" heuristic for technology-agnostic step writing, vivid story-like character names in Background vs generic identifiers; playwright-bdd v8.5.0 — documented verbose mode improvements and VS Code Cucumber reporter fix -->
@@ -6635,6 +6636,141 @@ Review your CI matrix before upgrading:
 
 ---
 
+### Gherkin DocString Backtick Delimiter: The Markdown-Friendly Alternative  [official]
+
+The Gherkin specification supports two DocString delimiters, not one. In addition to
+the triple-quote (`"""`) delimiter that is universally documented, the backtick variant
+(`` ``` ``) is a fully supported alternative. The choice is cosmetic for Cucumber
+execution, but has practical implications for code review, editor rendering, and feature
+file readability.
+
+**Two valid DocString delimiter forms:**
+
+```gherkin
+# Feature file: features/api/orders.feature
+
+Scenario: Creating an order with JSON payload (triple-quote delimiter)
+  Given I have the following order payload:
+    """
+    {
+      "customerId": "cust-001",
+      "items": [{ "productId": "prod-42", "quantity": 2 }]
+    }
+    """
+  When I POST to "/api/v1/orders"
+  Then the response status is 201
+
+Scenario: Creating an order with JSON payload (backtick delimiter)
+  Given I have the following order payload:
+    ```
+    {
+      "customerId": "cust-001",
+      "items": [{ "productId": "prod-42", "quantity": 2 }]
+    }
+    ```
+  When I POST to "/api/v1/orders"
+  Then the response status is 201
+
+# Content-type annotation works identically with both delimiters:
+Scenario: Annotated JSON payload with backtick delimiter
+  Given I have the following order payload:
+    ```json
+    {
+      "customerId": "cust-002",
+      "items": [{ "productId": "prod-99", "quantity": 1 }]
+    }
+    ```
+  When I POST to "/api/v1/orders"
+  Then the response status is 201
+```
+
+**Delimiter comparison:**
+
+| Aspect | `"""` (triple-quote) | `` ``` `` (backtick) |
+|---|---|---|
+| Gherkin spec support | Yes (all versions) | Yes (Gherkin 6+) |
+| Content-type annotation | `"""json` | `` ```json `` |
+| Step definition receives | Same: raw string content | Same: raw string content |
+| GitHub / GitLab rendering | Plain preformatted text block | Syntax-highlighted code block (Markdown) |
+| VS Code Gherkin extension | Recognized | Recognized |
+| Common usage | Widespread | Less common but growing in teams that publish feature files in GitHub |
+
+**Step definition: both delimiters produce identical output**
+
+```typescript
+// src/steps/api.steps.ts — same step definition handles both delimiters
+import { Given } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+// The step definition is completely unaware of which delimiter was used.
+// Both """json and ```json deliver the same raw content string.
+Given('I have the following order payload:', function (this: AppWorld, docString: string) {
+  try {
+    this.requestBody = JSON.parse(docString);
+  } catch (err) {
+    throw new Error(`DocString is not valid JSON:\n${docString}\nError: ${err}`);
+  }
+});
+```
+
+**Why backtick delimiters improve GitHub pull request readability:**
+
+When a `.feature` file is viewed on GitHub, backtick DocStrings render with the code
+block's syntax highlighting (when a content-type annotation is present), while triple-quote
+DocStrings render as plain preformatted text. For teams that use GitHub Pull Request reviews
+to run Three Amigos sessions asynchronously, backtick DocStrings with annotations make
+JSON and YAML payloads significantly easier to read during review:
+
+```gherkin
+# In a GitHub PR review, this renders as a syntax-highlighted JSON block:
+Given I have the following order payload:
+  ```json
+  {
+    "customerId": "cust-001",
+    "items": [{ "productId": "prod-42", "quantity": 2 }],
+    "shippingAddress": { "city": "Berlin", "country": "DE" }
+  }
+  ```
+
+# While this renders as a plain monospace text block (no highlighting):
+Given I have the following order payload:
+  """json
+  {
+    "customerId": "cust-001",
+    "items": [{ "productId": "prod-42", "quantity": 2 }],
+    "shippingAddress": { "city": "Berlin", "country": "DE" }
+  }
+  """
+```
+
+**[community] Team consistency over personal preference**: Whether to standardize on `"""`
+or `` ``` `` is a team style decision, not a correctness issue. The important rule is
+**consistency within a project**: mixing both delimiters in the same suite creates
+inconsistent visual language in feature files and can confuse contributors who assume
+only one form is valid. Add the chosen delimiter style to your Gherkin style guide and
+`gherkin-lint` configuration:
+
+```json
+// .gherkin-lintrc.json — enforce consistent DocString delimiter (optional rule)
+{
+  // gherkin-lint does not currently enforce delimiter style natively.
+  // Document the team's choice in comments and review guidelines instead:
+  "no-restricted-patterns": {
+    "Global": {
+      "description": "Use triple-quote (\\\"\\\"\\\" ) for DocStrings, not backtick (```). Team standard for consistency with existing feature files."
+    }
+  }
+}
+```
+
+**[community] Backtick delimiter and Prettier formatting**: Some teams run `prettier` on
+their feature files via `prettier-plugin-gherkin`. As of 2026, prettier-plugin-gherkin
+normalizes DocString delimiters — check the plugin's `docStringDelimiter` option before
+adopting backtick style if prettier runs automatically on commit. Mixed delimiter output
+from prettier can produce unexpected diffs in PRs that only change business logic.
+
+---
+
 ### playwright-bdd v8.4.2: Multiple Step Decorators on a Single Method
 
 `playwright-bdd` v8.4.2 added support for stacking multiple step decorators on a single class
@@ -7831,3 +7967,7 @@ The Feature-level `Background` always runs first; the Rule-level `Background` fo
 - [playwright-bdd v8.4.1 issue #322](https://github.com/vitalets/playwright-bdd/issues/322) — type resolution fix for `module: commonjs` + `skipLibCheck: false` TypeScript configurations
 - [@cucumber/gherkin changelog](https://github.com/cucumber/gherkin/blob/main/CHANGELOG.md) — Gherkin language spec evolution; keyword scope rules; DataTable escape sequences
 - [Gherkin keyword scope rules](https://cucumber.io/docs/gherkin/reference/) — authoritative reference for valid parent scopes for all Gherkin keywords including `Rule`, `Background`, and `Examples`
+
+## Additional Resources (Iteration 29 Additions)
+
+- [Gherkin DocString reference](https://cucumber.io/docs/gherkin/reference/#doc-strings) — both `"""` and `` ``` `` delimiter forms documented; content-type annotation syntax; indentation dedentation rules

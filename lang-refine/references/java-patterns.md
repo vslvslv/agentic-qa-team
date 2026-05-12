@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs, WireMock docs, Awaitility docs, Spring Boot Test docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis) | mixed | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs, WireMock docs, Awaitility docs, Spring Boot Test docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics) | mixed | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -1684,6 +1684,124 @@ PaymentGateway gateway = gateways.findFirst()
 
 **When to use JPMS:** Multi-module Maven/Gradle projects with clear layer boundaries (domain/infra/application), library JAR publishing (to expose only the public API), or applications that use `jlink` to create minimal JVM runtime images. For Spring Boot monoliths or microservices using classpath mode, JPMS is optional — but `module-info.java` in each module enforces boundaries at build time even without the full modular JVM runtime.
 
+### `Collectors.teeing()` — Dual Aggregation in One Pass (Java 12+)
+`Collectors.teeing(downstreamA, downstreamB, merger)` applies two independent collectors to the same stream simultaneously and merges their results. This eliminates the need to iterate the collection twice or collect into an intermediate list before applying two reduction operations.
+
+```java
+import java.util.stream.Collectors;
+import java.util.DoubleSummaryStatistics;
+
+record SalaryStats(double min, double max, double avg, long count) {}
+
+// Without teeing: stream collected twice (or iterated twice with a loop)
+List<Double> salaries = employees.stream()
+    .map(Employee::salary)
+    .toList();
+double min = salaries.stream().mapToDouble(d -> d).min().orElse(0);
+double max = salaries.stream().mapToDouble(d -> d).max().orElse(0);
+
+// With teeing: single pass, two collectors
+SalaryStats stats = employees.stream()
+    .map(Employee::salary)
+    .collect(Collectors.teeing(
+        Collectors.summarizingDouble(Double::doubleValue),    // downstream A: full stats
+        Collectors.counting(),                                // downstream B: count
+        (DoubleSummaryStatistics s, Long c) ->
+            new SalaryStats(s.getMin(), s.getMax(), s.getAverage(), c)
+    ));
+
+// Another use: split into two groups in one pass (replaces partitioningBy when you need both)
+record PartitionResult<T>(List<T> matches, List<T> nonMatches) {}
+
+PartitionResult<Order> result = orders.stream()
+    .collect(Collectors.teeing(
+        Collectors.filtering(o -> o.total() > 100, Collectors.toList()),
+        Collectors.filtering(o -> o.total() <= 100, Collectors.toList()),
+        PartitionResult::new
+    ));
+```
+
+**When to use:** `teeing()` is ideal when you need two separate aggregation results (statistics + count, two filtered groups, sum + max) and iterating the source twice would be expensive. For more than two downstream collectors, chain multiple `teeing()` calls or use a custom `Collector`.
+
+### `Path.of()` and `Files` — Modern File I/O Idioms (Java 11+)
+`Path.of()` (Java 11+) replaces the verbose `Paths.get()` factory. The `Files` utility class provides one-liner methods for common file operations that previously required boilerplate streams. Use `Files.writeString()` / `Files.readString()` for text; `Files.write()` / `Files.readAllBytes()` for binary.
+
+```java
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+
+// Path.of() — replaces Paths.get() (Paths.get() still works but Path.of() is idiomatic post-Java-11)
+Path configFile = Path.of("/etc/myapp", "config.json");       // varargs join with OS separator
+Path relative   = Path.of("src", "main", "resources", "app.properties");
+
+// Files.readString / writeString — no stream boilerplate for text files
+String content = Files.readString(configFile, StandardCharsets.UTF_8);  // Java 11+
+Files.writeString(Path.of("/tmp/output.txt"), "Hello World\n",
+    StandardCharsets.UTF_8,
+    java.nio.file.StandardOpenOption.CREATE,
+    java.nio.file.StandardOpenOption.APPEND);
+
+// Files.createTempFile / createTempDirectory — safe temp file creation
+Path tmpFile = Files.createTempFile("prefix-", ".tmp");      // OS-managed temp dir
+Path tmpDir  = Files.createTempDirectory("work-");
+
+// Files.copy / move with options
+Files.copy(configFile, Path.of("/tmp/config-backup.json"),
+    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+
+// Walk directory tree — lazy, closes automatically
+try (var stream = Files.walk(Path.of("src"))) {
+    List<Path> javaFiles = stream
+        .filter(p -> p.toString().endsWith(".java"))
+        .toList();
+}
+
+// Files.isSameFile — canonical comparison (handles symlinks and different representations)
+boolean same = Files.isSameFile(Path.of("./config.json"), Path.of("/app/config.json"));
+```
+
+**Key idioms:** Prefer `Path.of()` over `new File(...)` in all new code — `Path` is the modern NIO.2 API. Prefer `Files.readString()` over `new BufferedReader(new FileReader(...))` for text files. Always wrap `Files.walk()` and `Files.lines()` in `try-with-resources` — they open file system iterators.
+
+### `Map.entry()` and `Map.ofEntries()` — Readable Map Literals (Java 9+)
+`Map.entry(k, v)` creates an immutable `Map.Entry` without the verbose `new AbstractMap.SimpleEntry<>(k, v)` syntax. Combined with `Map.ofEntries()`, it allows map literals with more than 10 entries (the limit of `Map.of()`).
+
+```java
+import java.util.Map;
+
+// Map.of() — up to 10 key-value pairs
+Map<String, Integer> small = Map.of(
+    "one",   1,
+    "two",   2,
+    "three", 3
+);
+
+// Map.ofEntries() + Map.entry() — unlimited entries, more readable for many pairs
+Map<String, String> httpCodes = Map.ofEntries(
+    Map.entry("200", "OK"),
+    Map.entry("201", "Created"),
+    Map.entry("400", "Bad Request"),
+    Map.entry("401", "Unauthorized"),
+    Map.entry("403", "Forbidden"),
+    Map.entry("404", "Not Found"),
+    Map.entry("500", "Internal Server Error"),
+    Map.entry("503", "Service Unavailable")
+    // Can have any number of entries — no limit
+);
+
+// Map.entry() as a return value or local variable — cleaner than AbstractMap.SimpleEntry
+public Map.Entry<String, Integer> mostFrequent(Map<String, Integer> freq) {
+    return freq.entrySet().stream()
+        .max(Map.Entry.comparingByValue())
+        .orElseThrow();
+}
+
+// Map.copyOf() — defensive immutable copy of any map (Java 10+)
+Map<String, Integer> mutable = new HashMap<>(Map.of("a", 1, "b", 2));
+mutable.put("c", 3);
+Map<String, Integer> snapshot = Map.copyOf(mutable);  // throws on null keys/values
+```
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -2744,6 +2862,170 @@ public double calculateShipping(Parcel parcel) {
 ```
 **WHY:** The `instanceof` chain has a silent completeness assumption that the compiler cannot verify. A new `Parcel` subtype added by a teammate compiles fine, but the shipping calculation silently falls through to the exception. With `sealed + switch`, the compiler flags every `switch` site that doesn't handle the new type — turning a potential runtime bug across the entire codebase into N compile errors that are trivial to fix.
 
+**45. `Object.wait()` / `notify()` Also Pins Virtual Threads in Java 21–23 [community]**
+`Object.wait()` and `Object.notify()` are called inside a `synchronized` block by definition, so they suffer the same virtual thread pinning problem as `synchronized` in Java 21–23. A virtual thread calling `wait()` on a monitor blocks its carrier OS thread for the entire wait duration — this is separate from the synchronized-entry pinning issue. In Java 24 (JEP 491), `Object.wait()` was also fixed: virtual threads are now unmounted during `wait()` in Java 24+, just as they are during blocking I/O. On Java 21–23, migrate to `java.util.concurrent.locks.Condition` (from `ReentrantLock`) for coroutine-safe waiting.
+
+```java
+// Java 21–23: BAD — Object.wait() pins carrier OS thread for the full wait duration
+public class LegacyQueue<T> {
+    private final Queue<T> queue = new LinkedList<>();
+
+    public synchronized T take() throws InterruptedException {
+        while (queue.isEmpty()) {
+            wait();  // pins carrier OS thread in Java 21–23; virtual thread cannot unmount
+        }
+        return queue.poll();
+    }
+
+    public synchronized void put(T item) {
+        queue.add(item);
+        notifyAll();
+    }
+}
+
+// Java 21–23: GOOD — ReentrantLock + Condition; virtual thread unmounts during await()
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
+public class VirtualThreadSafeQueue<T> {
+    private final Queue<T> queue = new LinkedList<>();
+    private final ReentrantLock lock = new ReentrantLock();
+    private final Condition notEmpty = lock.newCondition();
+
+    public T take() throws InterruptedException {
+        lock.lock();
+        try {
+            while (queue.isEmpty()) {
+                notEmpty.await();  // virtual thread unmounts; carrier OS thread is free
+            }
+            return queue.poll();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public void put(T item) {
+        lock.lock();
+        try {
+            queue.add(item);
+            notEmpty.signal();
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+
+// Java 24+: Object.wait() is safe with virtual threads (JEP 491 also covers wait/notify)
+// The original synchronized + wait() form works correctly on Java 24+.
+```
+**WHY:** In Java 21–23, the JVM cannot unmount a virtual thread from its carrier while it holds a monitor (either blocked on `synchronized` entry OR inside `wait()`). Even a 100ms `wait()` pins the carrier thread for the entire duration. With virtual threads intended to number in the hundreds of thousands, a handful of waiting threads pinning their carriers can starve the entire scheduler. Java 24 resolved both issues (JEP 491).
+
+**46. `List.copyOf()` Throws NullPointerException on Null Elements — Unlike `Collections.unmodifiableList()` [community]**
+`List.copyOf(collection)` creates an unmodifiable snapshot and **throws `NullPointerException` if any element is null**. This is intentional (the method contract rejects null elements), but it is easy to confuse with `Collections.unmodifiableList()`, which wraps the original list without null-checking its elements. The root cause is that `List.of()` and `List.copyOf()` enforce "no null elements" as an invariant, whereas `Collections.unmodifiableList()` is a transparent wrapper. The difference is significant when migrating older code that uses null-as-sentinel.
+
+```java
+List<String> withNulls = new ArrayList<>(Arrays.asList("a", null, "c"));
+
+// Collections.unmodifiableList — live view; null elements are preserved
+List<String> view = Collections.unmodifiableList(withNulls);
+System.out.println(view.get(1));  // null — works fine
+withNulls.set(0, "z");
+System.out.println(view.get(0));  // "z" — reflects mutation in original (live view!)
+
+// List.copyOf — snapshot; THROWS NullPointerException if any element is null
+List<String> snapshot = List.copyOf(withNulls);  // throws NullPointerException!
+
+// SAFE pattern when nulls might be present
+List<String> safeSnapshot = withNulls.stream()
+    .filter(Objects::nonNull)
+    .toList();   // null-safe, unmodifiable snapshot
+
+// Also: Map.copyOf() and Set.copyOf() have the same null-rejection rule
+Map<String, String> mapWithNull = new HashMap<>();
+mapWithNull.put("key", null);  // value is null
+Map<String, String> copied = Map.copyOf(mapWithNull);  // throws NullPointerException!
+```
+**WHY:** `List.of()` / `List.copyOf()` follow the "no-null" contract established by the factory methods for consistency and performance (they can use more efficient internal representations without null checks throughout). If you're replacing `Collections.unmodifiableList()` with `List.copyOf()`, audit for null elements first — the NPE will be thrown at copy time (construction), not when the element is accessed, which can be confusing to diagnose.
+
+**47. Using `new Locale("en", "US")` — Deprecated Since Java 19 [community]**
+The `Locale(String, String)` and `Locale(String, String, String)` constructors were deprecated since Java 19 in favour of `Locale.of(String, String)` and the `Locale.Builder` API. The constructors did not validate their inputs — `new Locale("EN", "us")` silently created a malformed locale (language tag should be lowercase, country uppercase). `Locale.of()` normalizes the case, and `Locale.Builder` validates against IETF BCP 47 language tag syntax. The root cause is decades of code written before the API was improved in Java 7 (IANA language tag support) and the deprecation becoming effective only in Java 19.
+
+```java
+import java.util.Locale;
+
+// DEPRECATED since Java 19 — no validation, accepts malformed inputs
+Locale bad  = new Locale("EN", "us");   // wrong: language should be lowercase, country uppercase
+Locale ok   = new Locale("en", "US");   // works but deprecated
+Locale bad2 = new Locale("en-US");      // WRONG: this creates a language "en-us", not en/US!
+
+// GOOD — Locale.of() (Java 19+): normalizes language to lowercase, country to uppercase
+Locale us      = Locale.of("en", "US");          // normalizes automatically
+Locale german  = Locale.of("de", "DE");
+Locale chinese = Locale.of("zh", "CN", "Hans");  // with variant
+
+// GOOD — pre-defined constants for common locales (available since Java 1.1)
+Locale usStandard = Locale.US;          // Locale.of("en", "US")
+Locale uk         = Locale.UK;          // Locale.of("en", "GB")
+Locale french     = Locale.FRENCH;      // Locale.of("fr")
+
+// GOOD — Locale.Builder for IETF BCP 47 compliant tags with validation
+Locale serbian = new Locale.Builder()
+    .setLanguage("sr")
+    .setScript("Latn")
+    .setRegion("RS")
+    .build();
+
+// GOOD — parse from IETF BCP 47 string
+Locale fromTag = Locale.forLanguageTag("zh-Hans-CN");  // preferred for external strings
+
+// WARNING: Locale.getDefault() changes affect all code in the JVM — avoid in library code
+// Use explicit Locale parameter everywhere instead of relying on default
+String formatted = String.format(Locale.US, "%.2f", 3.14159);  // always uses . as decimal
+```
+**WHY:** `new Locale("en-US")` is a common typo that creates a locale with language tag `"en-us"` (hyphen included in the language code) rather than language `"en"` and country `"US"`. This compiles and runs without error but produces wrong formatting (falls back to ROOT locale) and is invisible until a user sees `"$3.14"` rendered as `"3.14"` or a date displayed in the wrong format.
+
+**48. `String.chars()` Returns `IntStream`, Not `Stream<Character>` [community]**
+`String.chars()` returns an `IntStream` of char values (as `int`), not a `Stream<Character>`. This is a source of surprise: mapping `s.chars()` gives you `int` values that must be explicitly cast to `char` to get characters. The root cause is that `char` can be widened to `int` without loss, and providing a primitive `IntStream` avoids boxing overhead — but it makes the API less intuitive. Use `.codePoints()` for Unicode code points (including surrogate pairs); use `chars()` only for BMP characters where `char` encoding is sufficient.
+
+```java
+String s = "Hello";
+
+// SURPRISE — chars() returns IntStream, not Stream<Character>
+s.chars()
+ .forEach(c -> System.out.print(c));  // prints: 72101108108111 (ints, not chars!)
+
+// CORRECT — cast int to char explicitly
+s.chars()
+ .mapToObj(c -> String.valueOf((char) c))   // IntStream → Stream<String>
+ .forEach(System.out::print);              // prints: Hello
+
+// ALSO CORRECT — (char) cast in print
+s.chars()
+ .forEach(c -> System.out.print((char) c));  // prints: Hello
+
+// For Unicode-correct character processing (handles emoji, surrogate pairs)
+"Hello 🌍".codePoints()
+    .mapToObj(Character::toString)  // code point → String (handles multi-char emoji)
+    .forEach(System.out::print);
+
+// Common use case: count occurrences of a character
+long count = "banana".chars()
+    .filter(c -> c == 'a')  // compare to int, not char
+    .count();  // 3
+
+// Collect chars to a String — needs manual joining
+String upper = "hello".chars()
+    .map(Character::toUpperCase)
+    .collect(StringBuilder::new,
+             StringBuilder::appendCodePoint,
+             StringBuilder::append)
+    .toString();  // "HELLO"
+
+// Simpler for pure transformation: use String methods
+String upperSimple = "hello".toUpperCase(Locale.ROOT);  // not always needed via chars()
+```
+**WHY:** Developers naturally expect `Stream<Character>` from `String.chars()` because `String` is conceptually a sequence of characters. The surprise of getting `IntStream` manifests in code that prints ints instead of chars, or compares `char` literals with `==` against `int` values (which actually works due to promotion, making the bug even subtler). The rule: always cast `c` to `(char)` when you need the character value, or use `Character.toString(c)` for a `String`.
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -2800,6 +3082,10 @@ public double calculateShipping(Parcel parcel) {
 | Split packages across JPMS modules | Module-resolution error at startup; two modules own the same package | Rename packages per module or consolidate into a shared module |
 | `instanceof` chain instead of sealed + switch | Compiler cannot verify exhaustiveness; new subtypes break dispatch silently | Use `sealed` hierarchy + pattern-matching `switch`; compiler enforces all variants |
 | Infrastructure code in domain module | Domain imports Spring/JDBC/Kafka; cannot test domain without starting infrastructure | Apply hexagonal architecture; keep domain behind ports (interfaces); adapters implement ports |
+| `Object.wait()` in virtual threads (Java 21–23) | `wait()` pins carrier OS thread for entire wait duration; same as synchronized pinning | Use `ReentrantLock` + `Condition.await()` on Java 21–23; safe on Java 24+ |
+| `List.copyOf()` on collection with null elements | Throws `NullPointerException` at construction time (unlike `Collections.unmodifiableList()`) | Filter nulls first (`stream().filter(Objects::nonNull).toList()`) or use `unmodifiableList` if nulls are expected |
+| `new Locale("en", "US")` — deprecated constructor | No input validation; `new Locale("en-US")` silently creates wrong locale | Use `Locale.of("en", "US")`, predefined `Locale.US`, or `Locale.forLanguageTag("en-US")` |
+| `String.chars()` used as `Stream<Character>` | Returns `IntStream` of `int` values; printing without cast yields integers | Cast `(char) c` or use `Character.toString(c)`; use `codePoints()` for Unicode correctness |
 
 ---
 

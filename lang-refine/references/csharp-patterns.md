@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -56,6 +56,14 @@
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/field-keyword,
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/first-class-span-types,
        learn.microsoft.com/dotnet/csharp/language-reference/operators/member-access-operators
+     Iter 33 (2026-05-12): added Channel<T> multi-producer/multi-consumer fan-out pattern, BoundedChannelFullMode
+       drop modes (DropOldest/DropNewest/DropWrite) with itemDropped callback; added sync-over-async bridge
+       pattern (GetAwaiter().GetResult() vs Task.Run wrapping, deadlock risks); added LINQ-async interaction
+       idiom (ToArray vs ToList choice for WhenAll vs WhenAny patterns); added community gotchas: LINQ deferred
+       execution silently prevents concurrent task fan-out, single-producer channel optimisation lost when
+       SingleWriter is left as true with concurrent writes; sourced from
+       learn.microsoft.com/dotnet/core/extensions/channels and
+       learn.microsoft.com/dotnet/csharp/asynchronous-programming/async-scenarios
      Iter 32 (2026-05-12): added .NET 10 JIT deep-dive (struct argument promotion, loop inversion
        graph-based improvement, array interface method devirtualization, array enumeration
        de-abstraction, code layout Travelling Salesman heuristic, inlining improvements — return type
@@ -4968,3 +4976,250 @@ Attributes on lambda expressions (e.g., `[DisallowNull]`, `[RequiresUnreferenced
 | Applying `[Obsolete]` or `[RequiresUnreferencedCode]` directly to a lambda | Attributes on lambdas are not enforced at the invocation call site | Apply enforcement attributes to named methods; use lambdas as typed callbacks |
 | Passing coerced `IEnumerable<T>` arrays to devirtualizable paths expecting optimization | In .NET 10 array devirtualization is automatic, but explicit `IEnumerable<T>` variables still trigger the optimized path | No action needed — JIT handles it; just avoid storing arrays in `IEnumerable<T>` fields unnecessarily |
 | Using PKCS#12 default export encryption in new deployments | Default uses TripleDES+SHA1 (weak legacy format) | Use `Pkcs12ExportPbeParameters.Pbes2Aes256Sha256` for modern deployments |
+
+---
+
+## Channel<T> — Advanced Patterns (Multi-Producer, Drop Modes, Callbacks)
+
+### Multiple Producers and Consumers — Fan-Out / Fan-In
+
+When `SingleWriter = true` or `SingleReader = true` is set, the channel's internal implementation elects a faster single-writer or single-reader path. Setting these to `false` explicitly enables the concurrent multi-producer / multi-consumer path. Call `writer.Complete()` only after **all** producers finish — a partial complete closes the channel prematurely.
+
+```csharp
+using System.Threading.Channels;
+
+// GPS coordinates streaming from multiple sensors to multiple processors
+public readonly record struct Coordinates(Guid DeviceId, double Lat, double Lon);
+
+var channel = Channel.CreateUnbounded<Coordinates>(
+    new UnboundedChannelOptions
+    {
+        SingleWriter = false,   // multiple sensors write concurrently
+        SingleReader = false,   // multiple processors consume concurrently
+        AllowSynchronousContinuations = false   // avoid stack overflows in tight loops
+    });
+
+// Fan-out: three concurrent producers, each representing a sensor
+Task[] producers = Enumerable.Range(0, 3)
+    .Select(id => Task.Run(async () =>
+    {
+        for (int i = 0; i < 100; i++)
+        {
+            await channel.Writer.WriteAsync(
+                new Coordinates(Guid.NewGuid(), -90 + id * 30, -180 + id * 60));
+        }
+    }))
+    .ToArray();
+
+// Fan-in: two concurrent consumers drain the channel
+Task[] consumers = Enumerable.Range(0, 2)
+    .Select(_ => Task.Run(async () =>
+    {
+        await foreach (var coord in channel.Reader.ReadAllAsync())
+            Console.WriteLine($"[{coord.DeviceId:N}] ({coord.Lat:F1}, {coord.Lon:F1})");
+    }))
+    .ToArray();
+
+// CRITICAL: complete only after ALL producers finish
+await Task.WhenAll(producers);
+channel.Writer.Complete();
+
+await Task.WhenAll(consumers);
+```
+
+### Bounded Channel Drop Modes and `itemDropped` Callback
+
+When a bounded channel is full and the producer cannot wait (e.g., a sensor that must never block), use `DropOldest`, `DropNewest`, or `DropWrite` modes. Register an `itemDropped` callback to observe which items were silently discarded — important for metrics and debugging.
+
+```csharp
+using System.Threading.Channels;
+
+int droppedCount = 0;
+
+// Sliding window of the 1000 most recent readings — drop oldest when full
+var channel = Channel.CreateBounded<Coordinates>(
+    new BoundedChannelOptions(capacity: 1_000)
+    {
+        FullMode = BoundedChannelFullMode.DropOldest,   // drop oldest to make room
+        SingleWriter = true,   // single high-frequency sensor
+        SingleReader = false,
+        AllowSynchronousContinuations = false
+    },
+    itemDropped: static (Coordinates dropped) =>
+    {
+        // invoked synchronously when an item is dropped
+        Interlocked.Increment(ref droppedCount);
+        // Log/metric: emit a counter but do not block
+    });
+
+// Writer: never blocks, always succeeds (DropOldest makes room)
+while (sensorIsRunning)
+{
+    var coords = ReadSensor();
+    channel.Writer.TryWrite(coords);  // TryWrite never blocks — FullMode handles the rest
+}
+
+// DropWrite: drop the incoming item instead (keep existing queue intact)
+var telemetryChannel = Channel.CreateBounded<string>(
+    new BoundedChannelOptions(256)
+    {
+        FullMode = BoundedChannelFullMode.DropWrite   // newest items dropped when full
+    },
+    itemDropped: item => Console.Error.WriteLine($"[DROPPED] {item}"));
+```
+
+**Drop mode selection guide:**
+
+| Mode | When to use | Data loss |
+|------|-------------|-----------|
+| `Wait` (default) | Consumer keeps up; producer can block | None |
+| `DropOldest` | Sliding-window; latest reading most important | Oldest items |
+| `DropNewest` | Oldest data must be preserved (audit log) | Most recent items |
+| `DropWrite` | Producer must never see data removed from queue | Incoming item |
+
+---
+
+## Sync-over-Async Bridge Pattern
+
+### When You Must Call Async Code from a Sync Context
+
+The correct approach is always "async all the way". When that is impossible (legacy codebase, static constructors, `IDisposable.Dispose()`, console `Main` before C# 7.1), use the following ranked options.
+
+**Option 1 — `GetAwaiter().GetResult()` (preferred sync-block)**
+
+Preserves the original exception (no `AggregateException` wrapping) and is marginally less allocating than `.Result`.
+
+```csharp
+// When you cannot use async — rare; document WHY
+public static string LoadConfigSync(string path)
+{
+    // GetAwaiter().GetResult() rethrows the original exception,
+    // unlike .Result which wraps in AggregateException
+    return File.ReadAllTextAsync(path).GetAwaiter().GetResult();
+}
+```
+
+**Option 2 — `Task.Run(...).GetAwaiter().GetResult()` for sync-context deadlock avoidance**
+
+When the calling code has a `SynchronizationContext` (ASP.NET Classic, WinForms, WPF), direct `.GetAwaiter().GetResult()` can deadlock because the async continuation awaits the sync context that the blocking call holds. Offloading to `Task.Run` breaks the sync context chain:
+
+```csharp
+// Legacy ASP.NET Classic or WinForms: avoid deadlock by escaping sync context
+string html = Task.Run(async () =>
+    await httpClient.GetStringAsync("https://example.com")
+).GetAwaiter().GetResult();
+// Task.Run schedules on the ThreadPool (no SynchronizationContext), so the
+// continuation can resume without needing to re-enter the blocked context.
+```
+
+**Option 3 — `.Result` / `.Wait()` (avoid)**
+
+Wraps exceptions in `AggregateException`. Only use when you specifically need to inspect `AggregateException.InnerExceptions`.
+
+```csharp
+// Avoid — exception is wrapped in AggregateException
+try { task.Wait(); }
+catch (AggregateException ae) { ae.Handle(e => e is OperationCanceledException); }
+```
+
+**Community signal — deadlock triangle:** The deadlock occurs when three conditions are met simultaneously: (1) a `SynchronizationContext` exists (UI thread, classic ASP.NET request context), (2) `ConfigureAwait(false)` is NOT used on every await in the async chain, and (3) the calling thread blocks synchronously. Fixing any one of the three breaks the deadlock. In modern ASP.NET Core there is no `SynchronizationContext` by default, so `.GetAwaiter().GetResult()` is safe — but it remains a code smell that prevents horizontal scaling.
+
+---
+
+## Language Idioms — Async / LINQ Interaction
+
+### `ToArray()` vs `ToList()` When Creating Tasks from LINQ
+
+LINQ uses deferred (lazy) execution. A `Select(id => GetAsync(id))` expression does NOT fire the async calls until the sequence is enumerated. This means tasks do not start until `Task.WhenAll` iterates the `IEnumerable` — which defeats concurrency because the calls are dispatched sequentially. **Always materialize to an array or list immediately.**
+
+```csharp
+// BAD: deferred — GetUserAsync fires one at a time (sequential)
+var tasks = userIds.Select(id => GetUserAsync(id));   // IEnumerable<Task<User>> — not started yet
+var users = await Task.WhenAll(tasks);                // fires them one by one → no concurrency
+
+// GOOD with ToArray: concurrent fan-out, fixed-size collection
+var tasks = userIds.Select(id => GetUserAsync(id)).ToArray();  // all tasks START here
+var users = await Task.WhenAll(tasks);                          // waits for all concurrently
+
+// GOOD with ToList: concurrent fan-out when you need to mutate (e.g., WhenAny remove pattern)
+var tasks = userIds.Select(id => GetUserAsync(id)).ToList();
+while (tasks.Count > 0)
+{
+    var done = await Task.WhenAny(tasks);
+    tasks.Remove(done);
+    Console.WriteLine($"Processed user {(await done).Id}");
+}
+```
+
+**Choice rule:**
+- Use `ToArray()` for `Task.WhenAll` where count is fixed and you only read results.
+- Use `ToList()` for `Task.WhenAny` drain loops where you need to remove completed tasks.
+- Never pass a raw `IEnumerable<Task>` to `Task.WhenAll` / `Task.WhenAny` if the selector has side effects or starts I/O — it materializes lazily, defeating parallelism.
+
+---
+
+## Real-World Gotchas — Channel<T> and Async [community]
+
+### **`SingleWriter = true` with Concurrent Writers Causes Corruption** [community]
+
+`Channel.CreateUnbounded<T>()` defaults to `SingleWriter = true` for performance — it skips internal locking on the write path. WHY it causes problems: if you create the channel with this default and then call `WriteAsync` from multiple tasks concurrently, you get data corruption or dropped items because the single-writer fast path has no thread-safety guarantees. Fix: always set `SingleWriter = false` when multiple producers write to the same channel.
+
+```csharp
+// BAD: default SingleWriter=true but writing from multiple tasks
+var channel = Channel.CreateUnbounded<int>();  // SingleWriter defaults to true!
+await Task.WhenAll(
+    Task.Run(async () => { for (int i = 0; i < 100; i++) await channel.Writer.WriteAsync(i); }),
+    Task.Run(async () => { for (int i = 100; i < 200; i++) await channel.Writer.WriteAsync(i); })
+);
+// Items may be dropped or corrupted — the fast path assumes single-producer
+
+// GOOD: explicitly mark multi-writer
+var channel = Channel.CreateUnbounded<int>(
+    new UnboundedChannelOptions { SingleWriter = false, SingleReader = false });
+```
+
+### **Not Completing the Channel Writer Stalls Consumers Forever** [community]
+
+`ChannelReader<T>.ReadAllAsync()` and `await foreach` return only when the writer is marked complete. If a producer crashes without calling `writer.Complete()` (or `writer.TryComplete()`), all consumers hang indefinitely. WHY it causes problems: unhandled exceptions in producers silently strand consumers. Fix: always call `writer.TryComplete(exception)` in a `catch`/`finally` block; use `TryComplete` over `Complete` to avoid `ChannelClosedException` if already completed.
+
+```csharp
+static async Task ProduceAsync(ChannelWriter<int> writer, CancellationToken ct)
+{
+    try
+    {
+        for (int i = 0; i < 1_000; i++)
+            await writer.WriteAsync(i, ct);
+
+        writer.Complete();              // signal success
+    }
+    catch (Exception ex)
+    {
+        writer.TryComplete(ex);         // signal failure — consumers receive ChannelClosedException
+    }
+}
+```
+
+### **LINQ Deferred Execution Silently Prevents Concurrent Task Fan-Out** [community]
+
+`IEnumerable<Task<T>>` from LINQ does not start the tasks. WHY it causes problems: developers write `Task.WhenAll(items.Select(x => FetchAsync(x)))` expecting parallel fan-out, but the tasks are dispatched sequentially by `WhenAll` as it enumerates the lazy sequence. Elapsed time is the sum, not the maximum. No compiler warning is emitted. Fix: materialize with `.ToArray()` immediately after the `Select`.
+
+```csharp
+// Total elapsed ≈ sum of all fetch times (serial execution, no parallelism)
+var results = await Task.WhenAll(items.Select(x => FetchAsync(x)));  // BUG
+
+// Total elapsed ≈ max of all fetch times (true parallel fan-out)
+var results = await Task.WhenAll(items.Select(x => FetchAsync(x)).ToArray());
+```
+
+---
+
+## Anti-Patterns Quick Reference — Channels and Async Interaction
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `Channel.CreateUnbounded<T>()` with multiple writers | Default `SingleWriter=true` skips locking — concurrent writes corrupt data | Set `SingleWriter = false` explicitly when multiple producers write |
+| Producer exits without calling `writer.Complete()` | Consumers hang in `ReadAllAsync` forever | Always call `writer.TryComplete(ex)` in `finally` or `catch` |
+| `BoundedChannelFullMode.DropOldest` without `itemDropped` callback | Silently discards data with no observability | Register `itemDropped:` callback for metrics/logging |
+| `Task.WhenAll(items.Select(...))` without `.ToArray()` | LINQ deferred execution runs tasks serially | `.ToArray()` before `Task.WhenAll` to start all tasks concurrently |
+| `.Result` or `.Wait()` on `Task` in sync-over-async bridge | Wraps exceptions in `AggregateException`; higher deadlock risk | Use `.GetAwaiter().GetResult()`; prefer `Task.Run(async () => ...).GetAwaiter().GetResult()` in sync-context environments |
+| Blocking on async inside `SynchronizationContext` without `Task.Run` | Context deadlock: awaiter tries to marshal back to blocked thread | Escape context via `Task.Run(() => asyncMethod())` before blocking |

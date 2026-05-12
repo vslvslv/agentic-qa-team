@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 47 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 48 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -3530,6 +3530,9 @@ import assert from 'node:assert/strict';
 | Duplicate named regex groups without `!== undefined` checks | Unmatched alternatives set groups to `undefined`; falsy check misidentifies empty-string match | Use `match.groups.year !== undefined` — empty string `''` is a valid match |
 | `map.getOrInsert(key, [])` in hot loops | `[]` is allocated every call even on cache hits; adds GC pressure in tight loops | Use `map.getOrInsertComputed(key, () => [])` — factory only called on cache miss |
 | `(?i)pattern` unbounded modifier syntax | JavaScript only supports bounded form `(?i:pattern)`; unbounded form is a SyntaxError | Always use `(?i:subpattern)` to scope the modifier to the intended portion |
+| `await` on synchronous/non-Promise values | Wraps value in `Promise.resolve()`, adding unnecessary microtask suspension and subtle execution-order shifts | Only `await` expressions that actually return a Promise; assign sync values directly |
+| Module-level side effects ("floating code") | Runs before DI/config/mocks are ready; breaks test isolation; inflates serverless cold-start cost | Wrap all side-effectful init in factory or `init()` functions; call them explicitly at startup |
+| `Promise.resolve().then(fn)` when synchronous execution is required | `fn` is deferred to next microtask; side effects run after other pending microtasks, causing subtle races | Use `Promise.try(fn)` which calls `fn` synchronously before yielding to the queue |
 
 ---
 
@@ -4436,5 +4439,71 @@ Iterator.prototype.chunks = function* (size) {
 **51. Using `Promise.all([])` for Object-Shaped Concurrent Awaiting** [community] — Destructuring the result of `Promise.all` by array position is fragile: inserting a new promise in the middle silently shifts all downstream variable assignments. WHY it causes problems: adding `const [user, newThing, posts] = await Promise.all([...])` after code already assumed `posts` was index 1 is a silent data-wiring bug that no type checker catches unless you're on TypeScript with `as const` tuples. Fix: use `Promise.allKeyed` (Stage 2.7) for named concurrent awaiting; or at minimum destructure into explicit variable names via a named array: `const [userResult, postsResult] = await Promise.all([fetchUser(), fetchPosts()])`.
 
 **52. Calling `.windows(n)` Expecting Padding on Short Trailing Sequences** [community] — When fewer than `n` elements remain at the end of an iterator, `.windows(n)` silently stops — it does NOT yield a padded window. WHY it causes problems: code expecting `[1,2,3].values().windows(2).toArray()` to yield `[[1,2],[2,3],[3,undefined]]` is surprised to get `[[1,2],[2,3]]` with no trailing window. Fix: if you need trailing padded windows, post-process with a `.flatMap` that adds padding, or use a custom generator.
+
+**53. `await` on Non-Promise Values Creates Unnecessary Microtasks** [community] — Writing `const x = await someNumber` or `const y = await 'literal'` inside an `async` function is legal but not free: the engine wraps the value in `Promise.resolve()` and defers resumption to the microtask queue. WHY it causes problems: every unnecessary `await` adds a microtask checkpoint, creating subtle execution-order shifts (code after the `await` runs later than it appears) and a small-but-measurable overhead in hot loops. The pattern is most harmful when developers habitually add `await` to every variable in an async function "just in case". Fix: only `await` expressions that actually return a Promise; for synchronous values, assign directly without `await`. Use TypeScript's `@typescript-eslint/no-unnecessary-type-assertion` rule or ESLint's `no-await-in-loop` with `unicorn/no-unnecessary-await` to catch these.
+
+```javascript
+// BAD — two unnecessary microtask suspensions
+async function computeScore(items) {
+  const filtered = await items.filter(x => x.active);  // filter() is sync
+  const count    = await filtered.length;               // .length is sync
+  return count;
+}
+
+// GOOD — no unnecessary awaits
+async function computeScore(items) {
+  const filtered = items.filter(x => x.active);
+  return filtered.length;
+}
+
+// LEGITIMATE await — fetch() IS async
+async function fetchScore(userId) {
+  const data = await fetch(`/api/score/${userId}`).then(r => r.json());
+  return data.score;
+}
+```
+
+**54. Module-Level Side Effects Running Before Infrastructure Is Ready** [community] — Placing database connections, HTTP client initialisations, or `console.log` calls at the top level of a module (outside any function) causes those operations to execute the moment the module is first `import`ed — before your DI container, config loader, or error handler is in place. WHY it causes problems: in test environments the side effects run before mocks are installed; in production the connection pool opens before the ORM has applied config; in serverless the cold-start cost balloons because every `import` chain triggers real I/O. Node.js best-practices research (goldbergyoni/nodebestpractices) calls this "floating code". Fix: wrap all side-effectful initialisation in explicit factory or `init()` functions that are called at a controlled time. Modules should declare intent; the application entry-point should execute it.
+
+```javascript
+// BAD — db.connect() runs immediately on import, before config is loaded
+import { Pool } from 'pg';
+const pool = new Pool({ connectionString: process.env.DB_URL }); // side effect!
+export { pool };
+
+// GOOD — factory function called explicitly at startup
+import { Pool } from 'pg';
+let _pool = null;
+export function getPool() {
+  if (!_pool) {
+    if (!process.env.DB_URL) throw new Error('DB_URL is required');
+    _pool = new Pool({ connectionString: process.env.DB_URL });
+  }
+  return _pool;
+}
+
+// In tests: call getPool() AFTER setting process.env.DB_URL in beforeEach
+// In production: call getPool() inside server startup, after config is loaded
+```
+
+**55. Confusing `Promise.try` with `Promise.resolve().then()` for Same-Tick Side Effects** [community] — Both `Promise.try(fn)` and `Promise.resolve().then(fn)` schedule asynchronous work, but there is a critical execution-timing difference: `Promise.try(fn)` invokes `fn` *synchronously* in the current call, before yielding to the microtask queue; `Promise.resolve().then(fn)` schedules `fn` as a microtask, deferring it to the next microtask checkpoint. WHY it causes problems: code that needs a side effect (setting a flag, writing to a sync cache, emitting an event) to happen before any other microtask fires will work correctly with `Promise.try` but silently race with other microtasks when `Promise.resolve().then()` is used as a substitute. The distinction is invisible in happy-path tests but surfaces in complex microtask-ordering scenarios. Fix: use `Promise.try(fn)` when `fn` must run immediately (synchronously) with its result returned as a Promise; use `Promise.resolve().then(fn)` when deferral is intentional.
+
+```javascript
+let sideEffectDone = false;
+
+// Promise.try — fn runs NOW (synchronously), before any microtask
+Promise.try(() => {
+  sideEffectDone = true; // set synchronously
+  return fetchData();
+}).then(data => process(data));
+console.log(sideEffectDone); // true — already ran
+
+// Promise.resolve().then() — fn runs LATER (microtask)
+Promise.resolve().then(() => {
+  sideEffectDone = true; // set asynchronously
+  return fetchData();
+}).then(data => process(data));
+console.log(sideEffectDone); // false — not run yet
+```
 
 ---

@@ -78,6 +78,10 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | C# LINQ Standard Query Operators | https://learn.microsoft.com/en-us/dotnet/csharp/linq/standard-query-operators/ | official-docs | C# | 2026-05-12 | ⭐ Full SQO overview — deferred vs immediate, IEnumerable vs IQueryable, classification by execution timing |
 | System.Numerics.Tensors | https://learn.microsoft.com/en-us/dotnet/api/system.numerics.tensors | official-docs | C# / .NET | 2026-05-12 | ⭐ Tensor<T> stable .NET 10 API — IReadOnlyTensor, slice views, extension operators |
 | System.Diagnostics.ActivitySourceOptions | https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.activitysourceoptions | official-docs | C# / .NET | 2026-05-12 | ⭐ ActivitySourceOptions constructor pattern; TelemetrySchemaUrl for OpenTelemetry schema alignment |
+| System.Threading.Channels | https://learn.microsoft.com/en-us/dotnet/core/extensions/channels | official-docs | C# / .NET | 2026-05-12 | ⭐ Channel<T> producer-consumer — bounded/unbounded, drop modes, itemDropped callback, multi-producer fan-out |
+| C# Async Scenarios | https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/async-scenarios | official-docs | C# | 2026-05-12 | ⭐ I/O-bound vs CPU-bound, Task.Run, async LINQ pitfalls, GetAwaiter().GetResult() vs .Result, ConfigureAwait guidance |
+| C# Async Streams (IAsyncEnumerable) | https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream | official-docs | C# | 2026-05-12 | ⭐ async iterator yield return, await foreach, [EnumeratorCancellation], .WithCancellation(), .ConfigureAwait() on IAsyncEnumerable |
+| ValueTask<TResult> Struct | https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.valuetask-1 | official-docs | C# / .NET | 2026-05-12 | ⭐ Await once only; .AsTask() for multi-await; default choice is Task not ValueTask; performance tradeoff guidance |
 
 ---
 

@@ -1,6 +1,7 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 51 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 52 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
+<!-- Iteration 52: Pattern 82 (Vitest 4.1 vi.setTimerTickMode — nextTimerAsync/interval for async timer flakiness); Pattern 83 (Playwright v1.59 tracing.start({ live: true }) for real-time trace capture); Pattern 84 (Playwright v1.58 retain-on-failure-and-retries trace mode for multi-retry comparison); Pattern 85 (Vitest 4.1 agent/minimal reporter for AI agent token-efficient flakiness triage); AP42 (Vitest 4.1 beforeAll/afterAll hook signature breaking change — Suite arg removed); Quick Reference additions (iteration 52) -->
 <!-- Iteration 51: Pattern 78 (Vitest 4.1 conditional retry with error condition predicate); Pattern 79 (Playwright v1.53 TestStepInfo.skip() conditional — step-level quarantine); Pattern 80 (Playwright v1.60 testInfoError.errorContext aria snapshot for flakiness diagnosis); Pattern 81 (Vitest 4.1 test.meta for custom flakiness metadata in reporters); AP41 (conditional retry masking real failures); Quick Reference additions (iteration 51) -->
 <!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog, vitest.dev/api/hooks, playwright.dev/docs/api/class-tracing, playwright.dev/docs/api/class-browsercontext -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
@@ -7058,3 +7059,406 @@ const retry4 = {
 | Playwright TestStepInfo | Official | https://playwright.dev/docs/api/class-teststepinfo | `skip()`, `skip(condition, description)`, `titlePath` — step-level quarantine (v1.53) |
 | Playwright testInfoError.errorContext | Official | https://playwright.dev/docs/api/class-testinfoerror#test-info-error-error-context | ARIA snapshot of failing element at assertion time — lightweight content-flakiness diagnosis (v1.60) |
 | Vitest test.meta / TaskMeta | Official | https://vitest.dev/api/#test-meta | Machine-readable test metadata for reporters — enables structured quarantine dashboards (v4.1) |
+
+---
+
+## Pattern 82 — Vitest 4.1 `vi.setTimerTickMode()` for Async Timer Flakiness  [official]
+
+A common source of test flakiness with fake timers is the mismatch between async/await code and manual timer advancement: a test `await`s a Promise, but the Promise only resolves after a `setTimeout` fires, and that timer only fires after an explicit `vi.advanceTimersByTime()` call. The result is a test that hangs or times out unless the developer manually interleaves `await` and `vi.advanceTimersByTime()` — brittle and easy to get wrong.
+
+Vitest 4.1 introduces `vi.setTimerTickMode()` to control *how* fake timers advance, decoupling the advancement strategy from the test body. This eliminates the advance-then-await pattern for most async timer tests.
+
+**Three tick modes:**
+
+| Mode | Behaviour | Best for |
+|------|-----------|----------|
+| `'manual'` (default) | Timers only advance when `vi.advanceTimers*()` is called explicitly | Tests that need precise timer control (e.g., debounce threshold tests) |
+| `'nextTimerAsync'` | Timers automatically advance to the next scheduled callback after each macrotask | Async functions that `await` timer-backed operations (Promises, polling) |
+| `'interval'` | Timers advance by a fixed interval continuously | Simulating elapsed real-time in tests with multiple concurrent timers |
+
+**Important:** `vi.setTimerTickMode()` requires fake timers to already be active (i.e., after `vi.useFakeTimers()`). It controls the *advancement strategy*, not whether fake timers are enabled.
+
+```typescript
+// vitest — before vi.setTimerTickMode was available (fragile manual-advance pattern)
+import { vi, describe, it, expect, afterEach } from 'vitest';
+
+async function pollUntilReady(maxAttempts: number): Promise<string> {
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    if (i === 2) return 'ready';
+  }
+  throw new Error('Timed out');
+}
+
+describe('pollUntilReady — FRAGILE manual-advance approach', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('resolves after 3 attempts', async () => {
+    vi.useFakeTimers();
+    // Must manually interleave advances with ticks — brittle and order-sensitive
+    const promise = pollUntilReady(5);
+    await vi.runAllTimersAsync(); // advances ALL timers — can cause cascading effects
+    await expect(promise).resolves.toBe('ready');
+  });
+});
+
+// vitest 4.1+ — vi.setTimerTickMode('nextTimerAsync') makes this clean
+describe('pollUntilReady — stable nextTimerAsync approach', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('resolves after 3 attempts without manual advance', async () => {
+    vi.useFakeTimers();
+    // Timers automatically advance to the next callback after each macrotask.
+    // The async function can await its own setTimeout() naturally.
+    vi.setTimerTickMode('nextTimerAsync');
+
+    const result = await pollUntilReady(5);
+    // No vi.advanceTimersByTime() needed — macrotask boundaries drive advancement
+    expect(result).toBe('ready');
+  });
+});
+```
+
+```typescript
+// vitest 4.1+ — 'interval' mode for simulating elapsed time in retry loops
+import { vi, it, expect, afterEach } from 'vitest';
+
+interface BackoffConfig { baseMs: number; maxRetries: number }
+
+async function fetchWithBackoff(url: string, config: BackoffConfig): Promise<Response> {
+  let attempt = 0;
+  while (attempt < config.maxRetries) {
+    try {
+      return await fetch(url);
+    } catch {
+      attempt++;
+      const delay = config.baseMs * Math.pow(2, attempt);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw new Error(`Failed after ${config.maxRetries} retries`);
+}
+
+it('fetchWithBackoff retries with exponential delays', async () => {
+  afterEach(() => vi.useRealTimers());
+
+  vi.useFakeTimers();
+  // Advance 50ms every macrotask — simulates real elapsed time without exact knowledge
+  // of each exponential delay interval. Prevents the test from hanging on await.
+  vi.setTimerTickMode('interval', 50);
+
+  const mockFetch = vi.fn()
+    .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    .mockResolvedValueOnce(new Response('OK', { status: 200 }));
+  vi.stubGlobal('fetch', mockFetch);
+
+  const response = await fetchWithBackoff('https://api.example.com/data', {
+    baseMs: 100,
+    maxRetries: 3,
+  });
+
+  expect(response.status).toBe(200);
+  expect(mockFetch).toHaveBeenCalledTimes(3);
+  vi.unstubAllGlobals();
+});
+```
+
+**Flakiness anti-pattern this replaces:**
+
+The `await vi.runAllTimersAsync()` call (running ALL pending timers at once) frequently causes cascading timer execution — timers scheduling new timers which schedule more timers — leading to tests that either hang indefinitely or consume unexpected timer callbacks from unrelated module code. `setTimerTickMode('nextTimerAsync')` advances only *one* timer per macrotask boundary, eliminating the cascade.
+
+**When NOT to use `nextTimerAsync`:** Tests that assert on *specific timer counts* (e.g., "this function should only call setTimeout once") still need `'manual'` mode so you can observe the timer state before advancement.
+
+---
+
+## Pattern 83 — Playwright v1.59 `tracing.start({ live: true })` for Real-Time Flakiness Investigation  [official]
+
+Standard Playwright tracing archives trace data into a zip at the end of the test. For long-running E2E tests with intermittent failures, this means the trace is only available *after* the test completes — by which time the test may have timed out and the trace may be truncated or missing the final actions.
+
+Playwright v1.59 adds a `live` option to `tracing.start()`. When `live: true`, the trace is written to an unarchived file that is **updated in real time** as actions occur. This enables attaching a trace viewer to a *running* test to see what it's doing right now — essential for diagnosing flakiness in slow, time-sensitive, or environment-dependent tests.
+
+```typescript
+// playwright.config.ts — enable live trace for specific projects (E2E / flaky-prone)
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  projects: [
+    {
+      name: 'chromium',
+      use: { browserName: 'chromium' },
+    },
+    {
+      // Dedicated project for investigating flaky tests with live trace
+      name: 'flaky-investigation',
+      use: {
+        browserName: 'chromium',
+        // Trace is written live — use this when debugging specific flaky test cases
+        // Overhead: slightly more disk I/O than archived tracing
+        trace: 'on',  // 'on' starts tracing for every test; combine with live below
+      },
+      testMatch: /.*\.flaky\.spec\.ts/,
+    },
+  ],
+});
+```
+
+```typescript
+// flaky-spec.ts — manually start live trace for a known-flaky scenario
+import { test, expect } from '@playwright/test';
+
+test('checkout flow completes within timeout', async ({ page, context }) => {
+  // Start live trace with explicit live:true — enables real-time viewer attachment
+  // while the test is running (not just after it completes)
+  await context.tracing.start({
+    screenshots: true,
+    snapshots: true,
+    live: true,  // write trace to unarchived file; updated as actions occur
+    // Useful when: test fails in CI with 2-minute timeout but the trace zip
+    // is truncated because the trace is only archived on success
+  });
+
+  await page.goto('/checkout');
+  await page.fill('[data-testid="card-number"]', '4111111111111111');
+  await page.fill('[data-testid="expiry"]', '12/28');
+
+  // If the test times out here, the live trace already contains all actions up to this point
+  await expect(page.locator('[data-testid="order-confirmed"]')).toBeVisible({ timeout: 30_000 });
+
+  await context.tracing.stop({ path: 'checkout-trace.zip' });
+});
+```
+
+**When `live` tracing prevents flakiness information loss:**
+
+| Scenario | Without `live: true` | With `live: true` |
+|----------|---------------------|-------------------|
+| Test times out mid-run | Trace zip missing or empty | All actions up to timeout visible |
+| CI runner OOM-kills the process | Trace not archived | Trace partially written and readable |
+| Test crashes in beforeEach fixture | Trace not started | Trace available from first action |
+| Need to watch test in real-time | Not possible | Attach `npx playwright show-trace` to live file |
+
+**Performance note:** Live tracing has slightly higher disk I/O than archived tracing because writes happen continuously rather than in a single flush. Use it for targeted investigation of flaky tests, not as a default for all tests in CI.
+
+---
+
+## Pattern 84 — Playwright v1.58 `trace: 'retain-on-failure-and-retries'` for Multi-Retry Trace Comparison  [official]
+
+When a test is retried (via `retries: 2`), the default `trace: 'on-first-retry'` setting captures only the *first* retry attempt. If the test passes on retry 2 but fails on retry 1, you have trace data for retry 1 only — you cannot compare the failure conditions across retries to identify what changed between attempts.
+
+Playwright v1.58 adds the `'retain-on-failure-and-retries'` trace mode, which records a trace for **every** test run (including retry 0, retry 1, retry 2) and retains all traces when *any* attempt fails. This enables side-by-side comparison of traces across retries to identify what differed — a critical diagnostic for flakiness caused by external state (race conditions, network timing, CI environment differences).
+
+```typescript
+// playwright.config.ts — retain traces for all retry attempts
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: process.env.CI ? 2 : 0,
+  use: {
+    // Record a trace for every run (run 0, retry 1, retry 2).
+    // Retain ALL traces if ANY attempt fails.
+    // Compare run-0-trace.zip vs retry-1-trace.zip to see what changed.
+    trace: 'retain-on-failure-and-retries',
+
+    // Pair with screenshot on failure for visual diff
+    screenshot: 'only-on-failure',
+  },
+  reporter: [
+    ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    // HTML report shows all retry traces with side-by-side comparison links
+  ],
+});
+```
+
+```typescript
+// Usage: after a CI failure, navigate to the HTML report.
+// The HTML report shows each retry attempt with its own trace link.
+// Compare "Run 0" trace vs "Retry 1" trace to identify:
+//   - Which network requests changed timing between retries
+//   - Whether a DOM element appeared then disappeared between retries
+//   - Whether a previous test's state leaked into this run
+
+// Trace comparison checklist (use in CI flakiness review):
+// 1. Open both traces in the Playwright trace viewer side by side
+// 2. Compare "Network" tab — did the same API call succeed in one and fail in another?
+// 3. Compare "Snapshots" tab — was the DOM in the same state at the start?
+// 4. Compare timestamps — was the retry slower? (possible timeout-driven flakiness)
+// 5. Check "Console" tab — were there JavaScript errors in one retry but not another?
+```
+
+**Comparison: trace mode selection guide**
+
+| Mode | Traces retained | Use case |
+|------|----------------|----------|
+| `'off'` | None | Speed-critical local runs |
+| `'on'` | All runs, always | Development debugging (high disk usage) |
+| `'on-first-retry'` | First retry only | Standard CI — low overhead, catches most flakiness |
+| `'retain-on-first-failure'` | Run 0 only if it fails | Low-overhead "why did it fail first time?" |
+| `'retain-on-failure-and-retries'` | All retries when any fails | Flakiness root cause comparison across retries [v1.58+] |
+
+**Anti-pattern:** Using `trace: 'on'` for all CI runs generates one zip per test per run — for a 500-test suite with `retries: 2`, this means up to 1,500 trace files per CI run, consuming significant storage and slowing down artifact upload. Use `'retain-on-failure-and-retries'` to capture all retry data only when needed.
+
+---
+
+## Pattern 85 — Vitest 4.1 `agent`/`minimal` Reporter for AI-Agent Flakiness Triage  [official]
+
+When using an AI coding agent (Claude Code, Copilot Chat, Cursor) to diagnose and fix flaky tests, the standard Vitest reporter emits full test output including all passing tests — often thousands of lines that consume token budget without contributing to diagnosis. Vitest 4.1 introduces the `agent` reporter (aliased as `minimal`) that outputs **only failed tests and their error messages**, suppressing all passing test output and the summary section.
+
+The reporter activates automatically when Vitest detects it is running inside an AI coding agent environment. It can also be configured explicitly for CI environments where token efficiency matters, or for human developers who prefer signal-dense output during flakiness triage.
+
+```typescript
+// vitest.config.ts — explicit agent reporter configuration
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Use 'agent' (or its alias 'minimal') to suppress passing test output.
+    // Useful during flakiness triage when you only care about failures.
+    // Auto-activates in AI coding agent environments without this config.
+    reporters: process.env.FLAKINESS_TRIAGE === 'true'
+      ? ['agent']      // failures + errors only — no passing-test noise
+      : ['verbose'],   // full output for normal development runs
+
+    // Pair with retries so the reporter shows retry details on failure
+    retry: process.env.CI ? 2 : 0,
+  },
+});
+```
+
+```typescript
+// vitest.config.ts — combining agent reporter with JUnit for CI flakiness tracking
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    reporters: [
+      // Minimal console output — only failures, for human readability in CI
+      'agent',
+      // Full structured output — for flakiness tracking dashboards (BuildPulse, Trunk)
+      ['junit', { outputFile: 'test-results/vitest-results.xml', classname: 'vitest' }],
+    ],
+    // GitHub Actions job summary: automatically generated with flaky test permalinks
+    // (built-in github-actions reporter activates automatically in GH Actions environments)
+  },
+});
+```
+
+**Vitest 4.1 GitHub Actions Job Summary for flakiness visibility:**
+
+```yaml
+# .github/workflows/test.yml — no extra config needed for job summary
+# The built-in github-actions reporter auto-generates a job summary when
+# Vitest detects it is running in GitHub Actions (GITHUB_ACTIONS=true).
+# The summary includes:
+#   - Test file and test case counts
+#   - Flaky tests highlighted (tests that required retries to pass)
+#   - Permalink URLs linking test names to source lines on GitHub
+#
+# To view: Go to the GitHub Actions run → "Summary" tab
+name: Test
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npx vitest run
+        # github-actions reporter + job summary activated automatically by GITHUB_ACTIONS env
+```
+
+**When the agent reporter prevents over-triage:**
+A common mistake during flakiness investigation is running the full suite, reading 3,000 lines of output, and losing context on the specific failures. The `agent` reporter keeps the failure signal clear and concise — especially important when AI agents run the test suite multiple times in a triage loop (each run consuming token budget).
+
+---
+
+## Anti-Patterns (iteration 52)
+
+### AP42 — Relying on the Undocumented `Suite` Argument in Vitest `beforeAll`/`afterAll`/`aroundAll`  [official]
+
+**What:** In Vitest versions before 4.1, `beforeAll`, `afterAll`, and `aroundAll` hooks received an undocumented `Suite` object as their first argument. Some test setups (particularly those managing shared database connections or server instances) passed this argument to helper functions to introspect the test suite structure.
+
+**Why harmful in 4.1+:** Vitest 4.1 removed the `Suite` argument. These hooks now receive `file` and `worker` context objects instead. Tests that destructure `Suite` properties (e.g., `suite.name`, `suite.tests`) will receive `undefined` or throw `TypeError: Cannot read properties of undefined` — a flakiness-like failure that only appears after the Vitest upgrade and only in hooks that used this undocumented API.
+
+**Compounding problem:** Because this was undocumented, the failure is invisible until the upgrade. The test continues to compile (TypeScript does not catch it — the parameter is typed as `unknown`), and the failure manifests at runtime only when the destructured property is accessed.
+
+```typescript
+// BAD: relies on the removed undocumented Suite argument
+import { beforeAll, afterAll } from 'vitest';
+import { db } from '../src/db';
+
+// In Vitest < 4.1, this received a Suite object.
+// In Vitest 4.1+, `suite` is undefined — accessing suite.name throws TypeError.
+beforeAll(async (suite: any) => {
+  const suiteName = suite?.name ?? 'unknown'; // worked before; undefined now
+  console.log(`Setting up DB for suite: ${suiteName}`);
+  await db.migrate.latest();
+});
+
+afterAll(async (suite: any) => {
+  // suite.tests would list test cases — no longer available
+  console.log(`Tearing down ${suite?.tests?.length ?? '?'} tests`);
+  await db.destroy();
+});
+```
+
+```typescript
+// GOOD: use the new file/worker context (Vitest 4.1+) or no argument at all
+import { beforeAll, afterAll } from 'vitest';
+import { db } from '../src/db';
+
+// beforeAll now receives { file: File, worker: WorkerContext } — or nothing.
+// For DB setup, you rarely need suite metadata — omit the argument entirely.
+beforeAll(async () => {
+  await db.migrate.latest();
+});
+
+afterAll(async () => {
+  await db.destroy();
+});
+
+// If you DO need file/worker context (e.g., per-worker DB schema isolation):
+beforeAll(async ({ worker }) => {
+  // worker.id is a unique integer per worker — use for schema namespacing
+  await db.schema.createSchema(`test_worker_${worker.id}`).ifNotExists();
+});
+
+afterAll(async ({ worker }) => {
+  await db.schema.dropSchema(`test_worker_${worker.id}`).cascade();
+});
+```
+
+**Detection:** Search your codebase for `beforeAll(async (` or `afterAll(async (` or `aroundAll(async (` with a non-empty argument list. If the parameter is named `suite`, `s`, or has a type annotation referencing suite structure, update it to use the new `{ file, worker }` context or remove the argument.
+
+**Fix script:**
+```bash
+# Finds beforeAll/afterAll/aroundAll calls with Suite-like argument patterns
+grep -rn "beforeAll\|afterAll\|aroundAll" --include="*.ts" --include="*.spec.ts" \
+  src/ tests/ | grep -E "\(async \(s(uite)?\b" || echo "No Suite argument usage found"
+```
+
+---
+
+## Quick Reference additions (iteration 52)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Test with `await`ed timer-backed Promise hangs or requires `vi.runAllTimersAsync()` | Manual timer advance cascades | Pattern 82 (`vi.setTimerTickMode('nextTimerAsync')`) | `vi.runAllTimersAsync()` — runs ALL pending timers, including ones from unrelated modules |
+| Flaky test trace is truncated because test timed out before trace was archived | Standard tracing archives on completion only | Pattern 83 (`tracing.start({ live: true })`) | Using `trace: 'off'` in CI so there's no evidence of what happened |
+| Retry 1 failed differently than retry 0 — need to compare both traces | Only retry 1 trace retained (`on-first-retry`) | Pattern 84 (`trace: 'retain-on-failure-and-retries'`) | `trace: 'on'` for all runs — generates 1 zip per test per run (storage bloat) |
+| AI agent triage loop consumes all token budget reading passing tests | Default reporter emits all test output | Pattern 85 (`agent`/`minimal` reporter) | Using `verbose` reporter during automated triage |
+| After Vitest 4.1 upgrade, `beforeAll` hook throws TypeError on suite metadata | Removed undocumented `Suite` argument | AP42 (use `{ file, worker }` context or no argument) | Silently casting to `any` to suppress the error |
+
+---
+
+## Key Resources (iteration 52 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest `vi.setTimerTickMode()` | Official | https://vitest.dev/api/vi#vi-settimertickmode | `'manual'` / `'nextTimerAsync'` / `'interval'` — controls how fake timers advance in async tests (v4.1.0) |
+| Playwright `tracing.start({ live: true })` | Official | https://playwright.dev/docs/api/class-tracing#tracing-start | Real-time trace writing to unarchived file; enables live trace viewer during long-running tests (v1.59) |
+| Playwright trace mode reference | Official | https://playwright.dev/docs/api/class-fixtures#fixtures-use | `retain-on-failure-and-retries` mode — retain all retry traces for cross-retry comparison (v1.58) |
+| Vitest `agent`/`minimal` reporter | Official | https://vitest.dev/guide/reporters | Failure-only output for AI coding agents; auto-activates via agent detection; aliased as `minimal` (v4.1) |
+| Vitest 4.1 hook signature migration | Official | https://vitest.dev/blog/vitest-4-1 | `beforeAll`/`afterAll`/`aroundAll` now receive `{ file, worker }` instead of undocumented `Suite` (v4.1) |

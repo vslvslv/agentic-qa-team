@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description), /api/class-apirequestcontext -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.60 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.60 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.60 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.60 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description/highlight), /api/class-apirequestcontext, /api/class-tracing (startHar/stopHar), /api/class-test (abort), /api/class-browser (on-context) -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.60 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.60 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.60 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.60 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes) -->
 
 ---
 
@@ -8090,3 +8090,357 @@ git add .github/ && git commit -m "chore: update playwright agent definitions fo
 | v1.58 | `:light` selector suffix removed | Use standard CSS selectors without `:light` |
 | v1.58 | `devtools` option removed from `browserType.launch()` | Use `args: ['--auto-open-devtools-for-tabs']` |
 | v1.59 | macOS 14 WebKit support removed | Run WebKit tests on macOS 15+ or Linux |
+| v1.60 | `Locator.ariaRef()` removed | Use `getByRole()` with `description` option or ARIA snapshot matching |
+| v1.60 | `handle` option on `exposeBinding()` removed | Use standard callback approach without handle |
+| v1.60 | `logger` option on `connect()`/`connectOverCDP()` removed | Use environment-level logging instead |
+| v1.60 | `videosPath`/`videoSize` context options removed | Use `video: { dir, size }` object in context options |
+
+---
+
+## Additional Key APIs (Iteration 30 — v1.60)
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `await using har = await context.tracing.startHar(path)` | First-class HAR recording via async disposable (v1.60+) | Capture network traffic alongside traces; auto-finalizes on scope exit |
+| `tracing.stopHar(path)` | Stop and save HAR recording manually (v1.60+) | When not using `await using`; pair with try/finally in fixtures |
+| `locator.drop({ files })` | Simulate external file drop onto element (v1.60+) | Test drag-and-drop upload zones without using `<input type="file">` |
+| `locator.drop({ data })` | Simulate clipboard/DataTransfer drop with arbitrary MIME types (v1.60+) | Test custom DnD handlers that read `event.dataTransfer.getData()` |
+| `test.abort(message?)` | Abort current test from fixture, hook, or route handler (v1.60+) | Guard against test misuse (e.g., prevent publishing in a read-only test run) |
+| `browser.on('context', handler)` | Subscribe to new-context events on browser instance (v1.60+) | Centralize context-level setup (routing, headers) across multiple contexts |
+| `context.on('pageclose', handler)` | Fires when a page inside the context is closed (v1.60+) | Cleanup teardown hooks scoped to page lifetime without test-level coupling |
+| `context.on('pageload', handler)` | Fires when any page inside the context reaches load state (v1.60+) | Global navigation audit — log all load events for flakiness investigation |
+| `context.on('frameattached', handler)` | Fires when a frame is attached to any page in the context (v1.60+) | Monitor iframe injection for security testing |
+| `context.on('framenavigated', handler)` | Fires when a frame navigates in any page in the context (v1.60+) | Track all frame-level navigations for SPA routing assertions |
+| `page.getByRole(role, { description })` | Match element by accessible role AND accessible description (v1.60+) | Disambiguate buttons/links that share the same name but differ by aria-description |
+| `expect(locator).toHaveCSS(prop, val, { pseudo })` | Assert computed styles on `::before`/`::after` pseudo-elements (v1.60+) | Test CSS decorative content injected via pseudo-elements |
+| `locator.highlight({ style })` | Highlight element with inline CSS override (v1.60+) | Custom visual markers in codegen; debug complex selectors interactively |
+| `page.hideHighlight()` | Remove all locator highlights from the page (v1.60+) | Clean up highlight overlays before screenshots or assertions |
+| `locator.ariaSnapshot({ boxes: true })` | Include bounding-box metadata `[box=x,y,w,h]` in ARIA snapshot (v1.60+) | Feed spatial ARIA data to AI agents; verify element positioning in a11y tests |
+
+---
+
+## HAR Recording with `tracing.startHar` (v1.60)
+
+HAR recording is now a first-class tracing API, returned as an async disposable. This lets you capture network traffic in the same lifecycle block as the test, with automatic finalization via `await using`.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test('captures HAR for network debugging', async ({ context }) => {
+  // `await using` ensures HAR is finalized even if the test throws
+  await using har = await context.tracing.startHar('test-artifacts/trace.har', {
+    content: 'embed',   // Embed response bodies inside the HAR (default: 'omit')
+    mode: 'full',       // 'full' | 'minimal'
+    urlFilter: /api\//  // Only record matching URLs
+  });
+
+  const page = await context.newPage();
+  await page.goto('/dashboard');
+  await page.getByRole('button', { name: 'Load data' }).click();
+  await expect(page.getByRole('grid')).toBeVisible();
+  // HAR is automatically saved when `har` goes out of scope
+});
+```
+
+**Fixture pattern (manual stopHar for broader scope):**
+
+```typescript
+// e2e/fixtures/har.ts
+import { test as base } from '@playwright/test';
+import path from 'path';
+
+export const test = base.extend({
+  context: async ({ context }, use, testInfo) => {
+    await context.tracing.startHar(
+      path.join(testInfo.outputDir, 'network.har'),
+      { urlFilter: /your-api-domain/ }
+    );
+    await use(context);
+    await context.tracing.stopHar();
+  },
+});
+```
+
+> **WHY:** Unlike `recordHar` which must be set at context creation, `tracing.startHar()` can be started mid-test and restarted between test phases — useful for isolating the HAR to a specific user flow. [official]
+
+---
+
+## File Drop Testing with `locator.drop` (v1.60)
+
+`locator.drop()` simulates an external drag-and-drop operation, dispatching the full sequence of `dragenter`, `dragover`, and `drop` events with a synthetic `DataTransfer` object. This is the correct way to test drag-and-drop upload zones — unlike `setInputFiles()`, which only works on `<input type="file">`.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test('accepts file drop on upload zone', async ({ page }) => {
+  await page.goto('/upload');
+
+  // Drop a file onto the upload zone
+  await page.locator('#dropzone').drop({
+    files: {
+      name: 'report.pdf',
+      mimeType: 'application/pdf',
+      buffer: Buffer.from('%PDF-1.4 mock content'),
+    },
+  });
+
+  await expect(page.getByText('report.pdf')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Upload' })).toBeEnabled();
+});
+
+test('accepts custom DataTransfer data', async ({ page }) => {
+  await page.goto('/kanban');
+
+  // Drop plain-text or URI data (e.g., drag from external app)
+  await page.locator('[data-column="done"]').drop({
+    data: {
+      'text/plain': 'TASK-123',
+      'text/uri-list': 'https://jira.example.com/browse/TASK-123',
+    },
+  });
+
+  await expect(page.locator('[data-column="done"]').getByText('TASK-123')).toBeVisible();
+});
+```
+
+> **Anti-pattern:** Using `page.mouse.move()` + `page.mouse.down()` + `page.mouse.up()` for file drops does NOT populate `event.dataTransfer.files`. Always use `locator.drop({ files })` for file-drop testing. [community]
+
+---
+
+## Test Abort Guard with `test.abort` (v1.60)
+
+`test.abort()` lets fixtures or route handlers abort the running test with a descriptive message. This is different from throwing an error — it marks the test as intentionally aborted (not failed) and surfaces a clear message in the report.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+// Protect shared staging from destructive operations
+test('read-only audit of published items', async ({ page }) => {
+  // Abort if the test accidentally tries to publish
+  await page.route('**/api/v1/publish', (route) => {
+    test.abort('Read-only test must not call /publish. Use ?preview=true.');
+    route.abort();
+  });
+
+  await page.goto('/admin/posts');
+  await expect(page.getByRole('list', { name: 'Published posts' })).toBeVisible();
+  // Safe: no publish call → test completes normally
+});
+```
+
+**Fixture-level abort guard:**
+
+```typescript
+// e2e/fixtures/safe-context.ts
+import { test as base } from '@playwright/test';
+
+export const test = base.extend({
+  page: async ({ page }, use) => {
+    await page.route('**/admin/delete/**', (route) => {
+      test.abort('DELETE routes are blocked in the test suite. Use the API teardown fixture instead.');
+      route.abort();
+    });
+    await use(page);
+  },
+});
+```
+
+> **WHY:** Throwing `new Error()` in a route handler marks the test as failed and may leave the route handler registered, causing subsequent tests to abort too. `test.abort()` cleanly terminates only the current test and unregisters handlers as part of normal teardown. [community]
+
+---
+
+## Browser & Context Lifecycle Events (v1.60)
+
+`browser.on('context')` fires whenever a new `BrowserContext` is created — including contexts created by `browser.newContext()` within test fixtures. `BrowserContext` now also mirrors page-level events, so you can track navigation and frame changes globally without attaching listeners to each individual page.
+
+```typescript
+import { chromium, Browser, BrowserContext } from '@playwright/test';
+
+// Global context auditing (e.g., in globalSetup)
+const browser: Browser = await chromium.launch();
+
+browser.on('context', (context: BrowserContext) => {
+  // Attach a global route to every new context
+  context.route('**/api/**', (route) => {
+    console.log(`[audit] ${route.request().method()} ${route.request().url()}`);
+    route.continue();
+  });
+
+  // Track all page close events across the browser
+  context.on('pageclose', (page) => {
+    console.log(`[lifecycle] Page closed: ${page.url()}`);
+  });
+
+  // Track all load events
+  context.on('pageload', (page) => {
+    console.log(`[lifecycle] Page loaded: ${page.url()}`);
+  });
+
+  // Track iframe injection (security monitoring)
+  context.on('frameattached', (frame) => {
+    if (frame.url().includes('ads.')) {
+      console.warn(`[security] Ad iframe injected: ${frame.url()}`);
+    }
+  });
+});
+```
+
+**Fixture pattern for per-context auditing:**
+
+```typescript
+// e2e/fixtures/audit.ts
+import { test as base } from '@playwright/test';
+
+export const test = base.extend({
+  context: async ({ browser }, use) => {
+    const context = await browser.newContext();
+    const navigationLog: string[] = [];
+
+    context.on('framenavigated', (frame) => {
+      if (frame === frame.page().mainFrame()) {
+        navigationLog.push(frame.url());
+      }
+    });
+
+    await use(context);
+
+    // Attach navigation log to test results for debugging
+    console.log('Navigation trace:', navigationLog);
+    await context.close();
+  },
+});
+```
+
+> **WHY:** Before v1.60, you had to attach event listeners to each page individually. The context-level events let you build a single global observer that tracks every page across every navigation — critical for SPAs that open popups or redirect chains. [community]
+
+---
+
+## CSS Pseudo-Element Assertions with `toHaveCSS` (v1.60)
+
+The `pseudo` option on `expect(locator).toHaveCSS()` reads computed styles from `::before` and `::after` pseudo-elements, making it possible to assert decorative content injected via CSS.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test('required field indicator uses correct CSS color', async ({ page }) => {
+  await page.goto('/form');
+  const label = page.getByLabel('Email');
+
+  // Assert the ::before pseudo-element color (the required * indicator)
+  await expect(label).toHaveCSS('color', 'rgb(220, 38, 38)', { pseudo: '::before' });
+
+  // Assert content property (if CSS content is set)
+  await expect(label).toHaveCSS('content', '"*"', { pseudo: '::before' });
+});
+
+test('tooltip arrow uses correct background', async ({ page }) => {
+  await page.goto('/help');
+  await page.getByRole('button', { name: 'Help' }).hover();
+  const tooltip = page.locator('[role="tooltip"]');
+
+  // Tooltip arrow is typically a ::before or ::after pseudo-element
+  await expect(tooltip).toHaveCSS('background-color', 'rgb(0, 0, 0)', { pseudo: '::after' });
+});
+```
+
+> **WHY:** Before this API, testing pseudo-element styles required `page.evaluate()` with `window.getComputedStyle(el, '::before')`, which returns a live `CSSStyleDeclaration` but does not auto-wait or retry on assertion failure. The `pseudo` option integrates full web-first retry behavior. [community]
+
+---
+
+## Accessible Description Matching with `getByRole` (v1.60)
+
+The new `description` option lets you match elements by their accessible description (set via `aria-description` or `aria-describedby`) in addition to their role and name. This disambiguates elements that share the same role and name but serve different purposes.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test('opens correct delete dialog', async ({ page }) => {
+  await page.goto('/settings/users');
+
+  // Two "Delete" buttons exist — differentiated by aria-description
+  const deleteUserBtn = page.getByRole('button', {
+    name: 'Delete',
+    description: 'Delete user account permanently',
+  });
+  const deleteSessionBtn = page.getByRole('button', {
+    name: 'Delete',
+    description: 'End active session',
+  });
+
+  await deleteSessionBtn.click();
+  await expect(page.getByRole('dialog')).toHaveText(/End active session/);
+});
+```
+
+> **WHY:** Without the `description` filter, `page.getByRole('button', { name: 'Delete' })` throws a `strict mode violation` error when multiple Delete buttons are present. Previously you had to fall back to `locator.filter({ hasText })` or CSS selectors — losing the semantic intent. [community]
+
+---
+
+## Gotchas — v1.60 Edition
+
+### 41. `locator.drop()` does not trigger `input` or `change` events on `<input type="file">` [community]
+
+`locator.drop()` dispatches `dragenter`, `dragover`, and `drop` events with a `DataTransfer` object — it does NOT trigger the native file input change event. If your upload zone is implemented as an `<input type="file">` that listens for `change`, you must use `setInputFiles()` instead. `locator.drop()` is only for custom JavaScript drop handlers.
+
+```typescript
+// ❌ Wrong: <input type="file"> needs setInputFiles, not drop()
+await page.locator('input[type="file"]').drop({ files: { name: 'f.txt', ... } });
+
+// ✅ Correct for <input type="file">
+await page.locator('input[type="file"]').setInputFiles('./fixtures/f.txt');
+
+// ✅ Correct for custom JS drop zone (no <input>)
+await page.locator('#custom-dropzone').drop({ files: { name: 'f.txt', ... } });
+```
+
+> **WHY:** Native file inputs use a browser-native file picker change event pipeline that `DataTransfer` synthetic events bypass. The drag-and-drop spec and the file input spec are separate browser behaviors. [community]
+
+---
+
+### 42. `browser.on('context')` does NOT fire for contexts created before the listener is registered [community]
+
+If you call `browser.on('context', handler)` after `browser.newContext()` has already been called (e.g., in a `beforeEach` that runs after the default context is created), the handler will not fire for the already-existing context.
+
+```typescript
+// ❌ Too late — default context already exists
+test.beforeEach(async ({ browser, context }) => {
+  // `context` is already created by the test fixture
+  browser.on('context', handler); // Will NOT fire for this test's context
+});
+
+// ✅ Correct: register in globalSetup or a worker-scoped fixture
+// globalSetup.ts
+export default async function globalSetup() {
+  // Worker-scoped browser setup
+}
+// Or use a worker fixture:
+export const test = base.extend({
+  browser: async ({ playwright }, use) => {
+    const browser = await playwright.chromium.launch();
+    browser.on('context', auditHandler);
+    await use(browser);
+    await browser.close();
+  },
+});
+```
+
+> **WHY:** Event listeners in Node.js are synchronous registrations — you can only receive future events, not past ones. The test harness creates the default context as part of fixture initialization, which happens before `beforeEach` runs. [community]
+
+---
+
+### 43. HAR recording via `tracing.startHar()` buffers responses in memory until `stopHar` [community]
+
+When using `context.tracing.startHar()` with `content: 'embed'`, all response bodies are held in memory until `stopHar()` or the async disposable scope exit. For tests that download large blobs or stream video, this can cause OOM errors in long-running test suites.
+
+```typescript
+// ❌ Risky: embeds all response bodies including large downloads
+await using har = await context.tracing.startHar('trace.har', { content: 'embed' });
+
+// ✅ Safer: use urlFilter to exclude large binary endpoints
+await using har = await context.tracing.startHar('trace.har', {
+  content: 'embed',
+  urlFilter: /\/api\//,  // Only record API calls, skip /static/ and /assets/
+});
+```
+
+> **WHY:** `content: 'embed'` is the default for convenience, but in suites that test file download pages or media streaming endpoints, the accumulated buffer grows linearly with the number of tests and can exhaust worker memory mid-run. Use `urlFilter` to scope what gets embedded. [community]

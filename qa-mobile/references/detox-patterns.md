@@ -1,10 +1,11 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 46 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 47 | score: 100/100 | date: 2026-05-12 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 <!-- iteration 44 (2026-05-12) adds: WebView testing (by.web() matchers, web element interactions, hybrid app patterns), visual regression with device.takeScreenshot() + external tools, JUnit XML CI reporting (jest-junit), React Native 0.78+ New Architecture strict mode notes, device.resetContentAndSettings() for deep iOS simulator reset, network activity tracking (NetworkSynchronizationEnabled per-configuration), 7 new community gotchas (44–50: by.web() IPC latency vs native sync, visual diff false positives from dynamic content, jest-junit path collision in sharded CI, device.resetContentAndSettings() permission re-grant pattern, Android API 35 predictive back gesture breaking by.system() back button, Hermes debugger port conflict on parallel CI jobs, and WebView URL not yet updated when Detox selector fires) -->
 <!-- iteration 45 (2026-05-12) adds: by.system() full dialog workflow (permissions/alerts/sheets), device.openURL() deep link testing pattern, parallel worker configuration for large suites, by.traits() iOS accessibility traits testing, element.getAttributes() extended inspection, device.shake() shake gesture testing, 6 new community gotchas (51–56: by.system() label locale mismatch, deep link cold-start race condition, parallel workers sharing global launchArgs, by.traits() not available on Android, getAttributes() returning null for off-screen elements, device.shake() no-op on physical devices without shake hardware) -->
 <!-- iteration 46 (2026-05-12) adds: Pattern 47 (element.swipe() startNormalizedX/Y precision swipe control), Pattern 48 (Detox test tagging with describe-based smoke/regression tiers + --testNamePattern selective CI), 7 new community gotchas (57–63: iOS 18 "Precise Location" prompt blocks by.system() selectors, device.setStatusBar() state bleed across tests without afterAll reset, element.longPress() 0 ms duration behaves as tap() on Android, Expo SDK 53 expo-modules-core v2 requires Detox 20.9+, --loglevel verbose CI log overflow, waitFor.whileElement.scroll('up') skips SectionList headers on Android, device.setOrientation() no-op on Android Emulator API 34+ without hardware rendering flag) -->
+<!-- iteration 47 (2026-05-12) adds: Pattern 49 (device.setStatusBar()/resetStatusBar() comprehensive status-bar simulation), Pattern 50 (Detox + Allure reporting integration), Pattern 51 (network request interception via launchArgs + lightweight mock server for offline/error simulation), Pattern 52 (toHaveText/toHaveLabel/toHaveValue disambiguation guide), 7 new community gotchas (64–70: Allure stepStatus colliding with Detox afterEach cleanup, mock server port conflict on parallel workers, toHaveLabel vs toHaveText ordering ambiguity in double-accessible elements, device.setStatusBar() batteryLevel float precision silently clamped, Detox server port collision in monorepo multi-configuration CI, RN 0.79+ Metro bundler lazy requires increasing cold-start wait thresholds, jest-circus vs jest-jasmine2 afterAll ordering causing device.terminateApp() deadlocks) -->
 
 ## Core Principles
 
@@ -7482,6 +7483,768 @@ rotation pipeline. The ANGLE regression is Android-only.
 | `device.shake()` in tests intended for physical devices | Guard with platform + environment check; provide a debug-mode fallback tap target (Gotcha 56) |
 | `by.traits()` assertions in Android test paths | Guard with `if (device.getPlatform() !== 'ios') return;` — `by.traits()` throws on Android |
 | `device.openURL()` without `waitFor` on the target screen | Always follow `openURL()` with `waitFor(...).toBeVisible().withTimeout(5000+)` — URL processing is async |
+
+---
+
+## Additional Patterns (iteration 47 additions)
+
+### Pattern 49 — `device.setStatusBar()` / `device.resetStatusBar()` for status-bar-dependent UI testing
+
+Many React Native apps render conditional UI based on status-bar state: battery-level
+warnings, "No signal" banners, or layouts that shift when the carrier name changes. Detox
+exposes `device.setStatusBar()` (iOS Simulator only) to override these values during a test,
+and `device.resetStatusBar()` to restore defaults. Without the reset, status-bar overrides
+bleed across the entire test session — always pair setter with `afterAll` reset.
+
+```js
+// e2e/statusbar.test.js
+// device.setStatusBar() is iOS Simulator only — guard with platform check
+
+describe('Status-bar-dependent UI', () => {
+  const isIOS = device.getPlatform() === 'ios';
+
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  afterAll(async () => {
+    // ALWAYS reset — overrides persist across test files in the same session (Gotcha 58)
+    if (isIOS) {
+      await device.resetStatusBar();
+    }
+  });
+
+  it('shows "Low Battery" banner when battery reaches 20%', async () => {
+    if (!isIOS) {
+      return; // setStatusBar only supported on iOS Simulator
+    }
+
+    await device.setStatusBar({
+      batteryLevel: 0.2,   // 0.0–1.0 float — clamped to 2 decimal places (Gotcha 64)
+      batteryState: 'discharging',
+    });
+
+    await waitFor(element(by.id('low-battery-banner')))
+      .toBeVisible()
+      .withTimeout(3000);
+
+    await expect(element(by.id('low-battery-banner-text')))
+      .toHaveText('Battery low — 20%');
+  });
+
+  it('shows airplane-mode indicator when network type is set to none', async () => {
+    if (!isIOS) {
+      return;
+    }
+
+    await device.setStatusBar({
+      networkType: 'none',  // 'wifi' | 'cell' | 'none' | 'searching'
+      time: '09:41',        // Freeze the displayed clock to avoid UI drift in screenshots
+    });
+
+    await waitFor(element(by.id('no-network-banner')))
+      .toBeVisible()
+      .withTimeout(3000);
+  });
+
+  it('hides cellular indicator when WiFi is active', async () => {
+    if (!isIOS) {
+      return;
+    }
+
+    await device.setStatusBar({
+      networkType: 'wifi',
+      wifiBars: 3,
+      cellularBars: 0,
+      time: '09:41',
+    });
+
+    await expect(element(by.id('cellular-icon'))).not.toBeVisible();
+    await expect(element(by.id('wifi-icon'))).toBeVisible();
+  });
+});
+```
+
+**`device.setStatusBar()` field reference (iOS Simulator):**
+
+| Field | Type | Values | Notes |
+|-------|------|--------|-------|
+| `time` | string | `'HH:MM'` | Freeze clock display (e.g., `'09:41'` for Apple's marketing time) |
+| `batteryLevel` | number | `0.0–1.0` | Float; displayed as percentage — silently clamped at 2 decimal places |
+| `batteryState` | string | `'charging'`, `'discharging'`, `'full'`, `'unknown'` | Must match OS-level state or display is inconsistent |
+| `networkType` | string | `'wifi'`, `'cell'`, `'none'`, `'searching'` | Controls what network icon shows |
+| `wifiBars` | number | `0–3` | Signal strength bars |
+| `cellularBars` | number | `0–4` | Carrier signal bars |
+| `operatorName` | string | any string | Carrier label override |
+| `dataNetwork` | string | `'wifi'`, `'lte'`, `'5g'`, `'4g'`, `'3g'`, `'2g'`, `'edge'` | Data technology label |
+
+**Android note**: `device.setStatusBar()` is not supported on Android. For Android status-bar
+testing, use `adb shell` commands in `beforeAll` (e.g., `adb shell cmd connectivity airplane-mode enable`)
+or test with `device.setURLBlacklist()` to simulate network-unavailable conditions instead.
+
+---
+
+### Pattern 50 — Detox + Allure reporting integration [community]
+
+Allure is the most widely used HTML test reporter in enterprise RN projects. Integrating
+Allure with Detox requires `allure-jest` (the Jest reporter) plus manual step API calls
+inside test files to produce meaningful reports with screenshots, steps, and environment info.
+
+```bash
+# Install
+npm install --save-dev allure-jest allure-commandline
+```
+
+```js
+// jest.config.js — add allure-jest as a second reporter alongside the default
+// WARNING: allure-jest must come AFTER the default reporter (Gotcha 64)
+module.exports = {
+  testEnvironment: 'detox/runners/jest/testEnvironment',
+  testRunner: 'jest-circus/runner',
+  reporters: [
+    'default',
+    ['allure-jest/node', {
+      resultsDir: 'e2e/allure-results',
+      environmentInfo: {
+        Platform: process.env.DETOX_PLATFORM || 'ios',
+        AppVersion: process.env.APP_VERSION || 'local',
+        CI: process.env.CI ? 'true' : 'false',
+      },
+    }],
+  ],
+};
+```
+
+```js
+// e2e/helpers/allure.js — thin wrapper to call Allure step API in Detox tests
+// allure is a global injected by allure-jest reporter when configured above
+// It exposes: allure.step(), allure.attachment(), allure.label(), allure.description()
+
+/**
+ * Wrap a Detox action in an Allure step so it appears as a named node in the report.
+ * @param {string} name - Step title shown in the Allure report
+ * @param {() => Promise<void>} fn - Async action to execute
+ */
+async function step(name, fn) {
+  // allure global may be undefined if allure-jest is not configured
+  if (typeof allure === 'undefined') {
+    return fn();
+  }
+  return allure.step(name, fn);
+}
+
+/**
+ * Attach a Detox screenshot to the current Allure step.
+ * @param {string} name - Screenshot label shown in the report
+ */
+async function attachScreenshot(name) {
+  if (typeof allure === 'undefined' || typeof device === 'undefined') return;
+  const screenshotPath = await device.takeScreenshot(name);
+  if (screenshotPath) {
+    allure.attachment(name, require('fs').readFileSync(screenshotPath), 'image/png');
+  }
+}
+
+module.exports = { step, attachScreenshot };
+```
+
+```js
+// e2e/checkout.test.js — using the Allure step wrapper
+const { step, attachScreenshot } = require('./helpers/allure');
+
+describe('[smoke] Checkout flow', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  it('completes a purchase with a valid card', async () => {
+    await step('Navigate to product listing', async () => {
+      await element(by.id('shop-tab')).tap();
+      await waitFor(element(by.id('product-list')))
+        .toBeVisible()
+        .withTimeout(5000);
+    });
+
+    await step('Add first product to cart', async () => {
+      await element(by.id('product-item-0-add-button')).tap();
+      await waitFor(element(by.id('cart-badge')))
+        .toBeVisible()
+        .withTimeout(3000);
+    });
+
+    await step('Proceed to checkout', async () => {
+      await element(by.id('cart-button')).tap();
+      await element(by.id('checkout-button')).tap();
+      await waitFor(element(by.id('payment-screen')))
+        .toBeVisible()
+        .withTimeout(5000);
+    });
+
+    await attachScreenshot('payment-screen');
+
+    await step('Enter payment details', async () => {
+      await element(by.id('card-number-input')).replaceText('4242424242424242');
+      await element(by.id('card-expiry-input')).replaceText('12/28');
+      await element(by.id('card-cvc-input')).replaceText('123');
+    });
+
+    await step('Submit payment', async () => {
+      await element(by.id('pay-button')).tap();
+      await waitFor(element(by.id('order-confirmation-screen')))
+        .toBeVisible()
+        .withTimeout(10000);
+    });
+
+    await attachScreenshot('order-confirmation');
+  });
+});
+```
+
+```bash
+# Generate and open the Allure HTML report
+npx allure generate e2e/allure-results --clean -o e2e/allure-report
+npx allure open e2e/allure-report
+```
+
+```yaml
+# GitHub Actions — upload Allure results as artifact and generate report
+- name: Run Detox tests
+  run: npx detox test -c ios.sim.release --forceExit
+
+- name: Upload Allure results
+  if: always()   # upload even on test failure
+  uses: actions/upload-artifact@v4
+  with:
+    name: allure-results-${{ matrix.shard }}
+    path: e2e/allure-results/
+
+- name: Generate Allure report (combine shards)
+  if: always()
+  run: |
+    npx allure generate e2e/allure-results --clean -o e2e/allure-report
+    echo "Report generated at e2e/allure-report/index.html"
+
+- name: Upload Allure report
+  if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: allure-report
+    path: e2e/allure-report/
+```
+
+**[community] WHY this matters**: Without structured steps in your report, a 60-test Detox run
+produces a flat list of pass/fail entries with no insight into which user action failed. With
+Allure steps + screenshot attachments on failure, the QA team can identify the exact failing
+action without re-running the test locally — essential for CI-only failures.
+
+---
+
+### Pattern 51 — Network request interception via `launchArgs` and a lightweight mock server
+
+Detox tests that depend on real API responses are fragile. The recommended pattern for
+network-level isolation is to start a lightweight mock server (msw, nock, or a plain
+`http.createServer`) before the test run, then use `launchArgs` to tell the app to point
+at `http://localhost:<port>` instead of the real backend. This works for both iOS
+(`localhost`) and Android (`10.0.2.2` — the emulator's host alias).
+
+```js
+// e2e/setup/mockServer.js — minimal HTTP mock server using Node's built-in http module
+// No external dependencies beyond what Node 18+ provides
+
+const http = require('http');
+
+const routes = new Map();
+let server = null;
+let port = null;
+
+/**
+ * Register a mock route.
+ * @param {string} method - HTTP method ('GET', 'POST', etc.)
+ * @param {string} path   - URL path (exact match, e.g. '/api/products')
+ * @param {object} body   - JSON response body
+ * @param {number} [status=200] - HTTP status code
+ */
+function mockRoute(method, path, body, status = 200) {
+  routes.set(`${method.toUpperCase()} ${path}`, { body, status });
+}
+
+/**
+ * Start the mock server on a random available port.
+ * Returns the base URL to inject into the app via launchArgs.
+ */
+async function startMockServer() {
+  return new Promise((resolve, reject) => {
+    server = http.createServer((req, res) => {
+      const key = `${req.method} ${req.url}`;
+      const route = routes.get(key);
+      if (route) {
+        res.writeHead(route.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(route.body));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `No mock for ${key}` }));
+      }
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      port = server.address().port;
+      resolve(`http://127.0.0.1:${port}`);
+    });
+
+    server.on('error', reject);
+  });
+}
+
+/** Stop the mock server and clear all registered routes. */
+async function stopMockServer() {
+  routes.clear();
+  if (!server) return;
+  return new Promise((resolve, reject) => {
+    server.close((err) => {
+      server = null;
+      port = null;
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+module.exports = { mockRoute, startMockServer, stopMockServer };
+```
+
+```js
+// e2e/products.test.js — test against mock API responses
+const { mockRoute, startMockServer, stopMockServer } = require('./setup/mockServer');
+
+describe('Product listing', () => {
+  let baseUrl;
+
+  beforeAll(async () => {
+    // 1. Start mock server — gets a random free port (avoids collision on parallel workers, Gotcha 65)
+    baseUrl = await startMockServer();
+
+    // 2. Register mock responses
+    mockRoute('GET', '/api/products', [
+      { id: 1, name: 'Widget A', price: 9.99 },
+      { id: 2, name: 'Widget B', price: 14.99 },
+    ]);
+
+    mockRoute('GET', '/api/products/1', { id: 1, name: 'Widget A', price: 9.99, stock: 42 });
+
+    mockRoute('GET', '/api/products', { error: 'Service unavailable' }, 503);  // overrides previous on 503 variant
+    // NOTE: last mockRoute for the same key wins — register error variants in separate describe blocks
+
+    // 3. Launch app pointing at the mock server
+    // The app must read API_BASE_URL from launchArgs when present (see app integration below)
+    const androidBase = baseUrl.replace('127.0.0.1', '10.0.2.2');  // Gotcha 38: Android emulator host alias
+    await device.launchApp({
+      newInstance: true,
+      launchArgs: {
+        // iOS uses 127.0.0.1; Android uses 10.0.2.2 to reach the host machine
+        API_BASE_URL: device.getPlatform() === 'android' ? androidBase : baseUrl,
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await stopMockServer();
+  });
+
+  it('renders the product list from mock API', async () => {
+    await waitFor(element(by.id('product-list'))).toBeVisible().withTimeout(5000);
+    await expect(element(by.id('product-item-1-name'))).toHaveText('Widget A');
+    await expect(element(by.id('product-item-2-name'))).toHaveText('Widget B');
+  });
+
+  it('navigates to product detail on tap', async () => {
+    await element(by.id('product-item-1-row')).tap();
+    await waitFor(element(by.id('product-detail-screen'))).toBeVisible().withTimeout(3000);
+    await expect(element(by.id('product-detail-stock'))).toHaveText('42 in stock');
+  });
+});
+```
+
+```js
+// App integration — read API_BASE_URL from launchArgs in your React Native app
+// index.js or App.js — read the URL from detox launchArgs if present
+
+import { NativeModules } from 'react-native';
+
+// Detox injects launchArgs into the native module 'DetoxUserNotificationDataModel' on iOS
+// and as process.env equivalents via the Detox test environment on RN
+// Simplest approach: use a custom native module or read from __DEV__ process args
+
+const getLaunchArg = (key) => {
+  // In tests, Detox's RN integration exposes launchArgs on `global.detoxArgs` (Detox 20+)
+  // Fallback: read from env var set by the CI/CD pipeline
+  if (typeof global.detoxArgs !== 'undefined' && global.detoxArgs[key]) {
+    return global.detoxArgs[key];
+  }
+  return null;
+};
+
+export const API_BASE_URL =
+  getLaunchArg('API_BASE_URL') ?? 'https://api.production.example.com';
+```
+
+**Android port forwarding note**: For Android emulators, the mock server runs on the host
+machine at `127.0.0.1:PORT`. The emulator reaches the host via `10.0.2.2`. Alternatively, use
+`adb reverse tcp:PORT tcp:PORT` in `beforeAll` to mirror the port into the emulator so the
+app can use `localhost:PORT` on both platforms:
+
+```js
+// e2e/products.test.js — adb reverse alternative for Android
+// Requires Bash access in the test environment (CI pre-step or Jest globalSetup)
+const { execSync } = require('child_process');
+
+beforeAll(async () => {
+  baseUrl = await startMockServer();
+  if (device.getPlatform() === 'android') {
+    // Mirror the host port into the emulator — app can then use 'localhost:PORT'
+    execSync(`adb reverse tcp:${port} tcp:${port}`);
+  }
+  await device.launchApp({ newInstance: true, launchArgs: { API_BASE_URL: baseUrl } });
+});
+```
+
+---
+
+### Pattern 52 — `toHaveText()` / `toHaveLabel()` / `toHaveValue()` disambiguation guide
+
+These three assertion methods are superficially similar but test completely different
+accessibility properties of a React Native element. Misusing them is one of the most common
+causes of assertions that pass locally but fail after an accessibility audit forces a refactor.
+
+| Method | What it reads | RN prop that sets it | Typical use |
+|--------|--------------|----------------------|-------------|
+| `toHaveText(str)` | The **visible text** rendered by a `<Text>` component | `children` of `<Text>` | Asserting text content in `<Text>`, `<Button>` title |
+| `toHaveLabel(str)` | The **accessibility label** (`accessibilityLabel` prop) | `accessibilityLabel` | Asserting descriptive label for screen readers; icons, images |
+| `toHaveValue(str)` | The **accessibility value** (`accessibilityValue.text`) | `accessibilityValue={{ text: '...' }}` | Asserting slider %, progress %, custom state |
+
+```js
+// Example: all three on different elements
+
+// A <Text> component — use toHaveText for its rendered content
+await expect(element(by.id('price-label'))).toHaveText('$9.99');
+
+// An icon button with no visible text — use toHaveLabel
+// The button has: <TouchableOpacity testID="cart-button" accessibilityLabel="Shopping cart, 3 items">
+await expect(element(by.id('cart-button'))).toHaveLabel('Shopping cart, 3 items');
+
+// A slider — use toHaveValue to read its current position
+// The slider has: accessibilityValue={{ text: '75%' }}
+await expect(element(by.id('volume-slider'))).toHaveValue('75%');
+```
+
+```js
+// Real-world ambiguity: a component that sets BOTH accessibilityLabel AND renders <Text>
+// <TouchableOpacity testID="submit-btn" accessibilityLabel="Submit form">
+//   <Text>Submit</Text>
+// </TouchableOpacity>
+
+// WRONG — toHaveText looks at <Text> children inside the element tree
+// This may return 'Submit' OR throw if Detox sees it as a non-Text element
+await expect(element(by.id('submit-btn'))).toHaveText('Submit');  // brittle
+
+// CORRECT — for a TouchableOpacity, assert what screen readers announce: the accessibilityLabel
+await expect(element(by.id('submit-btn'))).toHaveLabel('Submit form');  // stable
+
+// ALSO VALID — when the label is not set and you want to verify rendered text of the nested Text
+await expect(element(by.text('Submit'))).toBeVisible();  // selector-based, no assertion needed
+```
+
+```js
+// toHaveToggleValue — for Switch / Checkbox / RadioButton state
+// Returns boolean (true/false), NOT a string — distinct from toHaveValue
+// Switch: <Switch testID="notifications-toggle" value={enabled} />
+await expect(element(by.id('notifications-toggle'))).toHaveToggleValue(true);
+
+// toHaveValue — for accessibilityValue (returns string, not boolean!)
+// If a Switch sets accessibilityValue={{ text: 'On' }}, use:
+await expect(element(by.id('notifications-toggle'))).toHaveValue('On');
+// But prefer toHaveToggleValue(true) which is type-safe for Switch/Checkbox state
+```
+
+**Decision guide:**
+1. Is the element a `<Switch>`, `<CheckBox>`, or toggle control? → `toHaveToggleValue(bool)`
+2. Does the element have `accessibilityValue` set (slider, progress bar, custom control)? → `toHaveValue(string)`
+3. Does the element have `accessibilityLabel` explicitly set? → `toHaveLabel(string)` for stable assertion
+4. Is the element a `<Text>` or has visible text as its primary content? → `toHaveText(string)`
+5. When unsure: `element.getAttributes()` to inspect all properties at once, then choose
+
+---
+
+## Real-World Gotchas (iteration 47 additions)
+
+### 64. `device.setStatusBar()` `batteryLevel` float precision is silently clamped [community]
+
+**Root cause**: `device.setStatusBar({ batteryLevel: 0.157 })` silently rounds to 2 decimal
+places, displaying `16%` in the status bar instead of `15.7%`. UI assertions like
+`toHaveText('Battery: 15.7%')` that read the raw float from a label that also displays the
+battery value will fail when the label uses the same value that was passed to `setStatusBar`.
+
+**Why it matters**: This only manifests when you're testing a UI component that reads and
+displays the iOS system battery level (via `react-native-battery` or a native module), and
+your `toHaveText` assertion uses a string derived from the test's float constant rather than
+the rounded value that the OS actually reports.
+
+**Fix**: Round the value before passing it and before constructing expected text strings:
+
+```js
+// WRONG — float precision mismatch
+const batteryLevel = 0.157;
+await device.setStatusBar({ batteryLevel, batteryState: 'discharging' });
+await expect(element(by.id('battery-text'))).toHaveText(`${batteryLevel * 100}%`); // '15.7%'
+
+// CORRECT — use Math.round for two-decimal consistency
+const batteryLevel = 0.16; // or: Math.round(0.157 * 100) / 100
+await device.setStatusBar({ batteryLevel, batteryState: 'discharging' });
+await expect(element(by.id('battery-text'))).toHaveText('16%');
+```
+
+---
+
+### 65. Mock server port conflicts on parallel Detox workers [community]
+
+**Root cause**: When multiple Jest workers run simultaneously (parallel config, GitHub Actions
+matrix), each worker starts its own mock server. If the port is hard-coded (e.g., `8080`),
+the second worker fails to bind with `EADDRINUSE`. This causes the test's `beforeAll` to
+throw and all tests in that worker to fail with a misleading `Cannot read properties of null
+(reading 'address')` error — not an obvious port conflict message.
+
+**Fix**: Always use port `0` (OS-assigned ephemeral port) for mock servers started inside
+test suites. The pattern in Pattern 51 already does this (`server.listen(0, ...)`). If you
+share a single server across workers via `globalSetup`, use `JEST_WORKER_ID` to allocate
+distinct base ports:
+
+```js
+// e2e/globalSetup.js — only if you need a shared server across all workers
+// Use a port range based on JEST_WORKER_ID to avoid binding conflicts
+const BASE_PORT = 8080;
+const workerPort = BASE_PORT + parseInt(process.env.JEST_WORKER_ID || '1', 10);
+server.listen(workerPort, '127.0.0.1', ...);
+// Store port in process.env so tests can read it
+process.env.MOCK_SERVER_PORT = String(workerPort);
+```
+
+---
+
+### 66. `toHaveLabel()` vs `toHaveText()` ordering ambiguity on double-accessible elements [community]
+
+**Root cause**: Some RN components set *both* `accessibilityLabel` and render `<Text>` children.
+On iOS, when `accessibilityLabel` is set, VoiceOver announces the label and ignores the text.
+But Detox's `toHaveText()` traverses the view hierarchy looking for a `<Text>` child, while
+`toHaveLabel()` reads the `accessibilityLabel` prop at the root. If the two strings differ
+(e.g., label is localized, text is raw), you may have a test that passes in English and fails
+in French because `toHaveText()` finds the English fallback text child while the label is in
+French.
+
+**Fix**: In test code, always assert what the user *experiences* (the `accessibilityLabel`)
+rather than the implementation detail (raw text). Coordinate with developers to ensure
+`accessibilityLabel` is always set explicitly on interactive elements.
+
+```js
+// BRITTLE — may fail when locale changes or label is reformatted
+await expect(element(by.id('welcome-message'))).toHaveText('Bienvenue, Alice');
+
+// STABLE — reads accessibilityLabel which is the contract for screen reader users
+await expect(element(by.id('welcome-message'))).toHaveLabel('Bienvenue, Alice');
+```
+
+---
+
+### 67. Detox server port collision in monorepo multi-configuration CI [community]
+
+**Root cause**: In a monorepo where multiple apps run Detox in separate CI jobs on the
+same GitHub Actions runner, Detox's internal WebSocket server defaults to port `8099`.
+When two Detox jobs start concurrently (e.g., job matrix with `app-a` and `app-b`), the
+second process to bind fails with `listen EADDRINUSE :::8099` in its Detox setup log.
+The test run starts but all device commands silently fail because the Detox server never
+connected — the error appears as a generic `"No device found"` or connection timeout.
+
+**Fix**: Set a unique `server.port` per app in `.detoxrc.js`, or use the `DETOX_SERVER_PORT`
+environment variable in the CI matrix:
+
+```js
+// apps/app-a/.detoxrc.js
+module.exports = {
+  server: {
+    port: 8099,   // default
+  },
+  // ...
+};
+
+// apps/app-b/.detoxrc.js
+module.exports = {
+  server: {
+    port: 8100,   // distinct port for the second app
+  },
+  // ...
+};
+```
+
+```yaml
+# Alternatively — use env var in the CI matrix to avoid editing .detoxrc.js
+jobs:
+  detox:
+    strategy:
+      matrix:
+        app: [app-a, app-b]
+        include:
+          - app: app-a
+            detox_port: 8099
+          - app: app-b
+            detox_port: 8100
+    steps:
+      - name: Run Detox
+        run: npx detox test -c ios.sim.release
+        working-directory: apps/${{ matrix.app }}
+        env:
+          DETOX_SERVER_PORT: ${{ matrix.detox_port }}
+```
+
+---
+
+### 68. React Native 0.79+ Metro lazy-require increases cold-start wait thresholds [community]
+
+**Root cause**: React Native 0.79 introduced opt-in Metro lazy bundling (`lazyImports: true`
+in `metro.config.js`). With lazy bundling, module resolution happens on first `require()`
+call rather than at bundle load. This means the JS thread is busy resolving modules for
+several extra seconds after the bundle JS has "loaded" — Detox's idle detector may prematurely
+declare the app idle before all modules are initialized, causing the first `waitFor()` to
+time out because the target screen hasn't registered its navigation route yet.
+
+**Symptoms**: Tests fail intermittently on the very first `waitFor()` after `launchApp()`;
+lowering timeouts does not help; tests pass when lazy bundling is disabled.
+
+**Fix option 1 — Increase `withTimeout` for post-launch navigations** from the default
+`5000` ms to `12000` ms in suites that cold-start the app. Use a named constant so it's easy
+to revert when Metro stabilizes:
+
+```js
+// e2e/constants.js
+const COLD_START_TIMEOUT = 12000;  // RN 0.79+ lazy bundling adds ~4s module init time
+const NAV_TIMEOUT        = 5000;   // normal navigation between pre-loaded screens
+module.exports = { COLD_START_TIMEOUT, NAV_TIMEOUT };
+
+// e2e/auth.test.js
+const { COLD_START_TIMEOUT } = require('./constants');
+
+it('reaches the login screen after cold start', async () => {
+  await waitFor(element(by.id('login-screen')))
+    .toBeVisible()
+    .withTimeout(COLD_START_TIMEOUT);   // 12s for lazy-bundle cold start
+});
+```
+
+**Fix option 2 — Disable lazy bundling in the test build** via a Detox-specific Metro config:
+
+```js
+// metro.config.js — disable lazy bundling only for the detox build type
+const isDetox = process.env.DETOX_CONFIGURATION !== undefined;
+
+module.exports = {
+  transformer: {
+    lazyImports: isDetox ? false : true,  // eager bundling in Detox builds only
+  },
+};
+```
+
+---
+
+### 69. `jest-circus` `afterAll` ordering causes `device.terminateApp()` deadlock [community]
+
+**Root cause**: `jest-circus` (the default Jest runner since Jest 27, and Detox 20's required
+runner) executes `afterAll` hooks in the reverse order they were registered across nested
+`describe` blocks. If a nested `describe` registers `afterAll(() => device.terminateApp())`
+and an outer `describe` or `beforeAll` at file scope registered the app launch, `jest-circus`
+may call `terminateApp()` before Detox has fully flushed the pending action queue from the
+inner test. This causes a deadlock: Detox is waiting for the app to respond to an in-flight
+action, but the app has been terminated.
+
+**Fix**: Only call `device.terminateApp()` or `device.launchApp({ newInstance: true })` in
+the **outermost** `describe` block's `afterAll`. Nested `describe` blocks should use
+`device.reloadReactNative()` for between-test cleanup, never `terminateApp()`:
+
+```js
+// WRONG — nested terminateApp can deadlock if inner test's afterAll fires before completion
+describe('Checkout flow', () => {
+  describe('Payment step', () => {
+    afterAll(async () => {
+      await device.terminateApp();  // DANGEROUS — may fire while outer cleanup is in-flight
+    });
+    // ...
+  });
+});
+
+// CORRECT — only the outermost describe manages app lifecycle
+describe('Checkout flow', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+  afterAll(async () => {
+    await device.terminateApp();  // safe — last hook to run for this file
+  });
+
+  describe('Payment step', () => {
+    beforeEach(async () => {
+      await device.reloadReactNative();  // JS-only reset — no lifecycle risk
+    });
+    // ...
+  });
+});
+```
+
+---
+
+### 70. Allure `stepStatus` collides with Detox `afterEach` cleanup on test failure [community]
+
+**Root cause**: When an `allure.step()` wrapping a Detox action throws (the test fails),
+Allure records the step as `failed` and marks the test as complete before `afterEach` has
+a chance to run. `afterEach` then calls `device.reloadReactNative()`, which succeeds
+normally. But the subsequent test inherits the Allure context from the failed step's
+`allure.step()` closure, because Allure's step context is thread-local to the Jest worker
+and wasn't properly closed when the exception propagated. The next test's steps appear
+as children of the previous test's failed step in the Allure report tree — producing a
+single parent node with two test's worth of steps.
+
+**Fix**: Always close the Allure step context using a `try/finally` wrapper, and never
+start a new `allure.step()` in `beforeEach` (only in `it()` bodies). The wrapper in
+Pattern 50's `e2e/helpers/allure.js` already uses Allure's built-in step callback
+signature which handles this; the issue arises when teams write `allure.step(name); ...;
+allure.stepStatus('passed')` manually instead of using the callback form:
+
+```js
+// WRONG — manual stepStatus management leaks context on exception
+async function doLogin() {
+  allure.step('Enter credentials');
+  await element(by.id('email-input')).replaceText('user@test.com');
+  await element(by.id('password-input')).replaceText('secret');
+  allure.stepStatus('passed');   // NEVER REACHED if replaceText throws
+}
+
+// CORRECT — use the callback form (auto-closes on exception)
+async function doLogin() {
+  await allure.step('Enter credentials', async () => {
+    await element(by.id('email-input')).replaceText('user@test.com');
+    await element(by.id('password-input')).replaceText('secret');
+  });
+}
+```
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 47 additions)
+
+| Anti-Pattern | Fix |
+|---|---|
+| `device.setStatusBar({ batteryLevel: 0.157 })` with `toHaveText('15.7%')` | Round to 2 decimal places before passing to `setStatusBar` and before constructing expected strings (Gotcha 64) |
+| Hard-coded port number for mock servers started inside test suites | Use `server.listen(0, ...)` for OS-assigned ports; use `JEST_WORKER_ID`-based allocation only for global setup (Gotcha 65) |
+| `toHaveText()` assertions on elements that also set `accessibilityLabel` | Prefer `toHaveLabel()` — asserts the screen-reader contract, survives refactors and locale changes (Gotcha 66) |
+| Multiple Detox apps running in the same CI runner with default Detox server port | Set `server.port` per app in `.detoxrc.js` or use `DETOX_SERVER_PORT` env var in CI matrix (Gotcha 67) |
+| Cold-start `waitFor` timeouts of 5000 ms in RN 0.79+ projects with `lazyImports: true` | Raise to 12000 ms or disable lazy bundling in Detox builds via `process.env.DETOX_CONFIGURATION` guard (Gotcha 68) |
+| `device.terminateApp()` called in nested `describe` `afterAll` hooks | Only terminate/launch in the outermost `describe` block; use `reloadReactNative()` in nested cleanup (Gotcha 69) |
+| Manual `allure.stepStatus()` calls without `try/finally` context closing | Use Allure's callback form `allure.step(name, async () => { ... })` which auto-closes on exception (Gotcha 70) |
 
 ---
 

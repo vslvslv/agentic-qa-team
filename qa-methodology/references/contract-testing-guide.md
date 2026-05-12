@@ -1,6 +1,7 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23) | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24) | community: production lessons -->
+<!-- new in iteration 24: extended MatchersV3 quick reference (atMostLike, constrainedArrayLike, includes, nullValue, equal, eachKeyMatches, eachValueMatches), InterfaceToTemplate<T> TypeScript utility, constrainedArrayLike bounded-array pattern, community lessons 47-49 (executeTest single-interaction-per-call constraint, constrainedArrayLike for bounded APIs, InterfaceToTemplate drift) -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
 <!-- new in iteration 18: contract_requiring_verification_published webhook (supersedes contract_content_changed, Pact Broker 2.82.0+), pact-js v16.2 withMatchingRules for async/sync interactions, pact-js v16.4 addInteractionReference, PactFlow Drift (spec-driven provider compliance CI), updated Pact Specification Version Reference table with v16.1–v16.4, community lesson 29 (deprecated webhook event), community lesson 30 (Drift for BDCT gap) -->
 <!-- new in iteration 19: addGraphQLInteraction() native V4 GraphQL DSL (pact-js v16.0.0+) replaces body-matching regex approach, PactFlow MCP Server (August 2025) section, community lessons 31 and 32 (GraphQL native DSL migration, MCP-assisted contract test generation) -->
@@ -1503,8 +1504,19 @@ describe('OrderService → InventoryService contract (Vitest)', () => {
 | `timestamp(format, value)` | Datetime with explicit format | `timestamp('yyyy-MM-dd', '2024-01-01')` |
 | `eachLike(value)` | Array with ≥1 item matching shape | `eachLike({ id: integer(1) })` |
 | `atLeastOneLike(value, min)` | Array with minimum count | `atLeastOneLike({ id: integer(1) }, 2)` |
+| `atMostLike(value, max)` | Array with maximum count | `atMostLike({ id: integer(1) }, 5)` |
+| `constrainedArrayLike(min, max, value)` | Array with min and max count bounds | `constrainedArrayLike(1, 10, { id: integer(1) })` |
 | `arrayContaining([...])` | Array contains these items (subset) | `arrayContaining([string('a')])` |
+| `eachKeyMatches(value)` | Every key in an object matches a matcher | `eachKeyMatches(regex(/^\w+$/, 'tag'))` |
+| `eachValueMatches(value)` | Every value in an object matches a matcher | `eachValueMatches(string('active'))` |
+| `includes(value)` | String contains the given substring | `includes('ERROR:')` |
+| `nullValue()` | Explicitly matches JSON `null` | `nullValue()` |
+| `equal(value)` | Exact equality (no type flexibility) | `equal('CONFIRMED')` |
 | `fromProviderState(expr, value)` | Value injected from provider state | `fromProviderState('${orderId}', 'ORD-001')` |
+
+**When to choose `equal` vs `string`:** `equal('CONFIRMED')` asserts the exact value and type — it fails if the provider returns `'confirmed'` (wrong case) or any other string. Use `equal` only when the consumer's code path depends on the exact value (e.g., an enum that drives a switch statement). `string('CONFIRMED')` asserts the type is string with an example — the provider can return any string without breaking the contract.
+
+**When to choose `eachKeyMatches` / `eachValueMatches`:** These are the fluent API equivalents of the `eachKey`/`eachValue` matching rule expressions used in `withMatchingRules`. Use the fluent matchers when the key/value validation is simple (type or regex); drop down to `withMatchingRules` only when combining `eachKey` + `eachValue` + `atLeast` on the same field.
 
 ---
 
@@ -4025,3 +4037,221 @@ body: {
 45. **[community] Dynamic example values in pact files trigger redundant webhook builds and inflate Pact Broker storage.** A common setup mistake: teams call `like(uuidv4())` or `like(new Date().toISOString())` in pact body definitions. Since these values change on every test run, the pact file content hash changes on every consumer CI run. The `contract_content_changed` webhook event fires every time, triggering provider verification even though no actual interaction changed. At scale (10 consumer services × 20 builds/day), this generates 200 unnecessary provider CI runs per day. The fix is deterministic examples: always use hard-coded fictional values (`like('550e8400-e29b-41d4-a716-446655440000')` instead of `like(uuidv4())`). The `contract_requiring_verification_published` event (Pact Broker 2.82.0+) partially mitigates the webhook flood but does not fix the storage inflation or git diff noise.
 
 46. **[community] CRUD services generate interaction count explosions without a composition strategy.** A provider with full CRUD (Create, Read, Update, Delete, List, List-with-filters) on five resources quickly accumulates 30+ interactions per consumer. With three consumers, that is 90+ interactions to verify, each requiring a state handler and database seed. Provider verification time scales linearly with interaction count. Prevention strategies: (1) group related interactions into a single `it` block using `executeTest` with multiple `addInteraction` calls (within one pact-js session, multiple interactions can be registered before `executeTest`); (2) for list-with-filters, use a single interaction with broad matchers rather than one interaction per filter combination; (3) use `filterConsumerNames` in `VerifierV3` options to run verification for one consumer at a time in separate CI shards; (4) promote stable, schema-only providers to BDCT (OpenAPI spec + PactFlow) so consumer CDC interactions only cover the fields the consumer actually reads, not the full API surface.
+
+---
+
+### `constrainedArrayLike` — Bounded Array Contracts (TypeScript)
+
+For APIs that enforce size constraints on array responses (e.g., paginated endpoints with a maximum page size, or APIs that return at least one item but cap at a configurable limit), `constrainedArrayLike` is more precise than `eachLike` or `atLeastOneLike`.
+
+```typescript
+// notifications-feed.consumer.pact.spec.ts
+// Demonstrates constrainedArrayLike for APIs with hard min/max array bounds.
+// Use case: a notification feed that always returns ≥1 item and at most 20 items per page.
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { NotificationClient } from '../src/notification-client';
+
+// Import the full set of array matchers — atMostLike and constrainedArrayLike
+// are available from MatchersV3 alongside eachLike and atLeastOneLike
+const {
+  constrainedArrayLike,
+  atMostLike,
+  like,
+  string,
+  integer,
+  boolean: boolMatch,
+} = MatchersV3;
+
+interface Notification {
+  id: string;
+  type: string;
+  message: string;
+  read: boolean;
+}
+
+interface NotificationPage {
+  items: Notification[];
+  hasMore: boolean;
+  totalUnread: number;
+}
+
+const provider = new PactV3({
+  consumer: 'DashboardUI',
+  provider: 'NotificationService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8097,
+  logLevel: 'warn',
+});
+
+describe('DashboardUI → NotificationService contract (bounded arrays)', () => {
+  it('returns a bounded notification page (1–20 items, enforced by API contract)', async () => {
+    await provider
+      .given('user has 3 unread notifications')
+      .uponReceiving('a request for the first notification page (page_size=20)')
+      .withRequest({
+        method: 'GET',
+        path: '/notifications',
+        query: { page_size: '20' },
+        headers: { Accept: 'application/json' },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          // constrainedArrayLike(min, max, shape):
+          // - min=1: the API guarantees at least 1 item when the user has notifications
+          // - max=20: the API never returns more than page_size items
+          // Use when the API contract explicitly documents array size bounds.
+          // Use eachLike when only a lower bound (≥1) is meaningful.
+          items: constrainedArrayLike(1, 20, {
+            id: string('NOTIF-001'),
+            type: like('order_shipped'),
+            message: like('Your order has shipped'),
+            read: boolMatch(false),
+          }),
+          hasMore: boolMatch(false),
+          totalUnread: integer(3),
+        },
+      })
+      .executeTest(async (mockServer) => {
+        const client = new NotificationClient(mockServer.url);
+        const page: NotificationPage = await client.getNotifications({ page_size: 20 });
+        expect(page.items.length).toBeGreaterThanOrEqual(1);
+        expect(page.items.length).toBeLessThanOrEqual(20);
+        expect(page.totalUnread).toBeGreaterThanOrEqual(0);
+      });
+  });
+
+  it('returns at most 5 notifications for a preview widget', async () => {
+    await provider
+      .given('user has 10 notifications')
+      .uponReceiving('a request for notification preview (page_size=5)')
+      .withRequest({
+        method: 'GET',
+        path: '/notifications',
+        query: { page_size: '5' },
+        headers: { Accept: 'application/json' },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          // atMostLike(shape, max): array with at most max items.
+          // Use when only the upper bound matters (no guaranteed minimum).
+          items: atMostLike(
+            { id: string('NOTIF-001'), type: like('order_shipped'), message: like('msg'), read: boolMatch(false) },
+            5
+          ),
+          hasMore: boolMatch(true),
+          totalUnread: integer(10),
+        },
+      })
+      .executeTest(async (mockServer) => {
+        const client = new NotificationClient(mockServer.url);
+        const page = await client.getNotifications({ page_size: 5 });
+        expect(page.items.length).toBeLessThanOrEqual(5);
+      });
+  });
+});
+```
+
+**Array matcher selection guide:**
+
+| Situation | Matcher | Semantics |
+|---|---|---|
+| Array with at least 1 item, no upper bound | `eachLike(shape)` | ≥1, unbounded |
+| Array with at least N items | `atLeastOneLike(shape, N)` | ≥N, unbounded |
+| Array with at most N items | `atMostLike(shape, N)` | ≤N, unbounded minimum |
+| Array with exactly min..max items | `constrainedArrayLike(min, max, shape)` | ≥min, ≤max |
+| Array must contain specific items (subset check) | `arrayContaining([...])` | Ordered subset match |
+| Fixed-length tuple | `[like(x), like(y)]` | Exact length; each element matched |
+
+---
+
+### `InterfaceToTemplate<T>` — TypeScript Type Compatibility Utility
+
+`pact-js` exports `InterfaceToTemplate<T>` to resolve TypeScript type errors that arise when building a Pact response body from a TypeScript interface. The pact body uses `MatchersV3` matcher types (e.g., `AnyTemplate`, `MatchersV3.Type`) which are not always assignable to a plain interface type, causing `TS2322` errors on the `body:` property.
+
+```typescript
+// typed-pact-body.consumer.pact.spec.ts
+// Demonstrates InterfaceToTemplate<T> to avoid TS2322 errors when constructing
+// pact body objects from TypeScript interfaces.
+import path from 'path';
+import { PactV3, MatchersV3, InterfaceToTemplate } from '@pact-foundation/pact';
+import { InventoryClient } from '../src/inventory-client';
+
+const { like, string, integer, eachLike, regex } = MatchersV3;
+
+// The consumer's TypeScript interface for the expected response
+interface StockSummary {
+  sku: string;
+  available: number;
+  reserved: number;
+  warehouseId: string;
+  items: Array<{ location: string; count: number }>;
+}
+
+// Without InterfaceToTemplate, this line produces TS2322:
+// Type '{ sku: PactV3Type; available: PactV3Type; ... }' is not assignable
+// to type 'StockSummary' because 'sku' expects 'string' not 'PactV3Type'.
+
+// WITH InterfaceToTemplate<T>: wraps each interface field in an AnyTemplate union,
+// making the compiler accept MatchersV3 values in place of concrete types.
+const stockSummaryBody: InterfaceToTemplate<StockSummary> = {
+  sku: string('ABC-123'),
+  available: integer(10),
+  reserved: integer(2),
+  warehouseId: regex(/^WH-\d{3}$/, 'WH-001'),
+  items: eachLike({ location: like('SHELF-A1'), count: integer(5) }),
+};
+
+const provider = new PactV3({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8098,
+  logLevel: 'warn',
+});
+
+describe('OrderService → InventoryService contract (InterfaceToTemplate)', () => {
+  it('returns a typed stock summary', async () => {
+    await provider
+      .given('SKU ABC-123 has stock data')
+      .uponReceiving('a stock summary request for SKU ABC-123')
+      .withRequest({
+        method: 'GET',
+        path: '/inventory/ABC-123/summary',
+        headers: { Accept: 'application/json' },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: stockSummaryBody,    // ← no TS2322 error with InterfaceToTemplate
+      })
+      .executeTest(async (mockServer) => {
+        const client = new InventoryClient(mockServer.url);
+        const result: StockSummary = await client.getStockSummary('ABC-123');
+        expect(result.available).toBeGreaterThanOrEqual(0);
+        expect(result.items.length).toBeGreaterThanOrEqual(1);
+      });
+  });
+});
+```
+
+**Key points:**
+- `InterfaceToTemplate<T>` is a mapped type that replaces each property type `P` in `T` with `P | AnyTemplate` — the TypeScript compiler accepts both the concrete type and any `MatchersV3` value in its place
+- Import it directly from `@pact-foundation/pact`: `import { InterfaceToTemplate } from '@pact-foundation/pact'`
+- Use it on the `const` that holds the pact body shape, not on the `willRespondWith` `body:` property itself — this keeps type inference intact
+- **Limitation:** `InterfaceToTemplate<T>` does not enforce that every field in `T` is present in the body object — it only resolves assignability errors. The `Record<keyof T, unknown>` pattern (from the Contract Evolution section) is stricter and preferred when completeness matters
+- **When NOT to use it:** If a `TS2322` error appears in the pact body, the first question should be "is this matcher correct?" — type errors often indicate a mismatch between the interface and the matcher. `InterfaceToTemplate` should be a last resort, not a first fix
+
+---
+
+### Additional Community Production Lessons [community]
+
+47. **[community] Each `executeTest()` call in pact-js V4 creates a new mock server session — multiple `addInteraction()` calls before one `executeTest()` is the correct pattern for multi-step workflows, not chaining `executeTest()` calls.** Teams writing multi-step consumer workflows (e.g., create then fetch) often chain `executeTest` calls sequentially: `await provider.addInteraction(...).executeTest(...)` then `await provider.addInteraction(...).executeTest(...)`. Each `executeTest` call starts and stops the mock server, so the second call runs against a fresh server that has no knowledge of the first interaction. The correct pattern for recording multiple interactions in a single pact session is to call `addInteraction()` multiple times before a single `executeTest()` — all registered interactions are available to the mock server for the duration of that one `executeTest` call. Using separate `executeTest` calls (one per interaction) is correct when each interaction is an independent test case (one `it` block, one `executeTest`) — the confusion arises when teams want to test a workflow that genuinely chains two calls.
+
+48. **[community] `constrainedArrayLike` is under-used for APIs with documented size limits, leading to overly permissive contracts.** Teams that know their API enforces a maximum page size (e.g., `GET /notifications?page_size=20` never returns more than 20 items) routinely use `eachLike` instead of `constrainedArrayLike(1, 20, shape)`. The consequence: the consumer's pact does not enforce the upper bound, so a provider that accidentally returns 200 items (buffer overflow, off-by-one in pagination logic) will pass provider verification. `constrainedArrayLike` is specifically designed for this case — it encodes both the minimum guarantee (the provider always returns at least one item when state is set up) and the maximum contract (the provider never exceeds the page size). Use it whenever the API spec documents a maximum array length.
+
+49. **[community] `InterfaceToTemplate<T>` silently relaxes completeness checking — teams use it to silence TS2322 errors without realizing the body is now missing required fields.** `InterfaceToTemplate<T>` makes all interface fields optional from TypeScript's perspective (each field becomes `field?: P | AnyTemplate`). Teams that import it to suppress type errors sometimes end up with pact bodies that are missing required fields — the TypeScript compiler no longer complains that `reservedQuantity` is absent because the mapped type treats it as optional. The contract then tests fewer fields than the interface defines, giving a false sense of coverage. **Safer alternative:** use `Record<keyof StockSummary, unknown>` on the body const — this enforces that every key in the interface appears in the body while still accepting `MatchersV3` values. Reserve `InterfaceToTemplate<T>` for bodies with deeply nested types where the key-completeness check is impractical.

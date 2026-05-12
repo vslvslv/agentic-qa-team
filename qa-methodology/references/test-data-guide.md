@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
@@ -8,6 +8,7 @@
 <!-- iter-33: Vitest 4.0 pool config migration (poolOptions.vmForks → top-level isolate; singleFork → maxWorkers: 1; poolMatchGlobs/environmentMatchGlobs → projects; workspace → projects); community gotcha #21; Key Resources updated (2026-05-12) -->
 <!-- iter-34: Playwright mergeTests() modular fixture composition; Playwright box fixture (box:true/box:'self') for clean test reports; Vitest 4.x singleThread also removed (not just singleFork); vi.resetModules() required with isolate:false; VITEST_MAX_WORKERS replaces VITEST_MAX_THREADS/MAX_FORKS; community gotcha #22; 2 new checklists (Playwright fixtures, Vitest 4.x config); 2 new Key Resources (2026-05-12) -->
 <!-- iter-35: Vitest 4.1 builder pattern for test.extend() (return-based, automatic TypeScript type inference); aroundEach hook (transaction-per-test pattern); test.override() per-suite fixture overrides; vi.defineHelper() for clean factory assertion stack traces; Vitest 4.x coverage.all/coverage.extensions removal + mandatory coverage.include; community gotcha #23; new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
+<!-- iter-39: Playwright fixture { option: true } per-project factory parameterization (playwright.dev/docs/test-fixtures#fixture-option); Playwright 1.59 browserContext.setStorageState() for auth test data injection; Vitest 5.0 beta migration notes for factory authors (sequential removal, inline expect package); community gotcha #27 (Vitest 5.0 test.concurrent default change affects factory isolation); updated checklists + Key Resources (2026-05-12) -->
 <!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-37: Vitest 4.0 expect.schemaMatching for inline factory output validation against Zod/Valibot/ArkType; Vitest 4.0 getSeed() API for programmatic seed access; Vitest 4.1 experimental viteModuleRunner:false for native Node.js factory execution; Google Testing Blog "Construct with Collaborators, Call with Work" pattern (2026-05-05) applied to factory design; faker v10.4.0 latest stable (2026-03-23); fishery v2.4.0 latest stable (2025-12-08); community gotcha #25 (schema drift caught by expect.schemaMatching); updated Key Resources (2026-05-12) -->
 <!-- iter-38: Playwright 1.59 async disposables (await using for route handlers, pages, tracing — Symbol.asyncDispose in E2E test data); Playwright 1.60 HAR-based record/replay (routeFromHAR + tracing.startHar as a native Self-Initializing Fake for E2E); Playwright 1.57 testProject.workers for per-project parallelism in test data isolation; Playwright @tag syntax for conditional E2E fixture setup; community gotcha #26 (HAR fixture drift — routeFromHAR has no automatic re-recording signal); updated Key Resources (2026-05-12) -->
@@ -7191,6 +7192,393 @@ Testcontainers startup for all smoke-only runs.
 
 ---
 
+## Playwright Fixture `{ option: true }` — Per-Project Factory Parameterization  [community]
+
+Playwright fixtures support an `{ option: true }` flag that makes a fixture value configurable
+per test project in `playwright.config.ts`. This is the idiomatic way to provide project-specific
+factory defaults (e.g., different base URL environments, different seed data profiles, different
+DB connection strings) without duplicating fixture definitions.
+
+**Why it matters for test data:** In a monorepo with `staging` and `production-replica` test
+projects, the DB connection string used by factory `create()` calls should differ per project.
+Without `{ option: true }`, teams either duplicate fixtures or use environment variable checks
+inside fixture bodies. The option pattern is declarative, type-safe, and visible in
+`playwright.config.ts` — making per-environment factory configuration a first-class concern.
+
+```typescript
+// fixtures/factory-options.ts — declare factory configuration options
+import { test as base } from '@playwright/test';
+import { userFactory } from '../factories/user.factory';
+import { db } from '../db';
+
+// Type declaration for the configurable options
+export type FactoryOptions = {
+  // DB connection string — defaults to TEST_DATABASE_URL, overridden per project
+  testDatabaseUrl: string;
+  // Default subscription tier for factory-created users — overridden per project
+  defaultUserTier: 'free' | 'premium' | 'enterprise';
+  // Seed profile — which fixture data set to load in globalSetup
+  seedProfile: 'minimal' | 'full' | 'performance';
+};
+
+// Fixture types for the actual test objects derived from options
+type FactoryFixtures = {
+  factoryUser: { id: string; email: string; tier: string };
+};
+
+// Declare options as configurable (option: true) and provide defaults
+export const test = base.extend<FactoryFixtures & FactoryOptions>({
+  // Options — configurable per project in playwright.config.ts
+  testDatabaseUrl: [process.env.TEST_DATABASE_URL ?? '', { option: true }],
+  defaultUserTier:  ['free', { option: true }],
+  seedProfile:      ['minimal', { option: true }],
+
+  // Fixture that consumes the options — creates a user using the project's tier default
+  factoryUser: async ({ defaultUserTier }, use) => {
+    const user = await userFactory.create({ subscriptionTier: defaultUserTier });
+    await use({ id: user.id, email: user.email, tier: user.subscriptionTier });
+    await userFactory.cleanup(user.id);
+  },
+});
+
+export { expect } from '@playwright/test';
+```
+
+```typescript
+// playwright.config.ts — per-project factory option overrides
+import { defineConfig } from '@playwright/test';
+import type { FactoryOptions } from './fixtures/factory-options';
+
+export default defineConfig<FactoryOptions>({
+  projects: [
+    {
+      name: 'staging-smoke',
+      testMatch: '**/*.smoke.spec.ts',
+      use: {
+        baseURL: 'https://staging.example.com',
+        testDatabaseUrl: process.env.STAGING_DATABASE_URL,
+        defaultUserTier: 'free',          // smoke tests use free-tier users
+        seedProfile: 'minimal',           // lightweight seed for fast smoke runs
+      },
+    },
+    {
+      name: 'staging-integration',
+      testMatch: '**/*.integration.spec.ts',
+      use: {
+        baseURL: 'https://staging.example.com',
+        testDatabaseUrl: process.env.STAGING_DATABASE_URL,
+        defaultUserTier: 'premium',       // integration tests need premium features
+        seedProfile: 'full',              // full seed for integration coverage
+      },
+      workers: 2,
+    },
+    {
+      name: 'local',
+      testMatch: '**/*.spec.ts',
+      use: {
+        baseURL: 'http://localhost:3000',
+        testDatabaseUrl: 'postgresql://localhost/testdb',
+        defaultUserTier: 'enterprise',    // local dev: use highest tier for feature access
+        seedProfile: 'full',
+      },
+    },
+  ],
+});
+```
+
+```typescript
+// specs/dashboard.spec.ts — test uses factoryUser, which respects the project's tier option
+import { test, expect } from '../fixtures/factory-options';
+
+// In 'staging-smoke' project: factoryUser has tier='free'
+// In 'staging-integration' project: factoryUser has tier='premium'
+// The SAME test exercises the correct feature access per project — no duplication
+test('dashboard shows tier-appropriate widgets', async ({ page, factoryUser }) => {
+  await page.goto(`/dashboard?userId=${factoryUser.id}`);
+
+  if (factoryUser.tier === 'free') {
+    await expect(page.locator('[data-testid="upgrade-prompt"]')).toBeVisible();
+    await expect(page.locator('[data-testid="analytics-widget"]')).not.toBeVisible();
+  } else {
+    await expect(page.locator('[data-testid="analytics-widget"]')).toBeVisible();
+  }
+});
+```
+
+**Override options in a specific test file using `test.use()`:**
+```typescript
+// Temporarily override the defaultUserTier for a specific describe block
+test.describe('enterprise-only features', () => {
+  test.use({ defaultUserTier: 'enterprise' });
+
+  test('SSO login button visible for enterprise users', async ({ page, factoryUser }) => {
+    // factoryUser.tier === 'enterprise' in this describe block only
+    await page.goto('/settings');
+    await expect(page.locator('[data-testid="sso-config"]')).toBeVisible();
+  });
+});
+```
+
+**When `{ option: true }` is the right pattern:**
+- Factory configuration that varies by test environment (staging vs. local vs. CI)
+- Seed profiles that change what data is available per project
+- Service endpoint URLs (different API base per project)
+- Feature flag overrides that affect which fixtures are appropriate
+
+**When `test.override()` is the right pattern instead:**
+- Per-suite domain variant overrides (e.g., suspended user instead of active user for a checkout failure suite) — these are domain variants, not environment configuration
+- Ad-hoc fixture overrides within a single test file — not reused across projects
+
+---
+
+## Playwright 1.51 `browserContext.setStorageState()` — Auth Test Data Reset  [community]
+
+Playwright 1.51 introduced `browserContext.setStorageState()`, which **clears all existing
+cookies, localStorage, and IndexedDB for all origins** and replaces them with new storage
+state in a single call. This is the idiomatic way to reset authentication test data between
+test cases that share a worker-scoped browser context — without creating an entirely new
+`BrowserContext`.
+
+**Why it matters:** A common pattern is to use a worker-scoped `BrowserContext` for performance
+(one browser context per worker, shared across tests). But when test A logs in as `alice` and
+test B needs to start as an anonymous user, the worker-scoped context retains Alice's session
+cookies. Before `setStorageState()`, the only options were: (1) create a new context per test
+(expensive), or (2) manually clear cookies + localStorage (fragile, multi-step). `setStorageState()`
+is a single atomic operation that resets all auth state.
+
+```typescript
+// fixtures/auth-fixtures.ts — worker-scoped context with storage state reset
+import { test as base } from '@playwright/test';
+import path from 'path';
+import { userFactory } from '../factories/user.factory';
+
+type AuthFixtures = {
+  // Worker-scoped: one context per worker (performance)
+  sharedContext: import('@playwright/test').BrowserContext;
+  // Test-scoped: resets auth state to anonymous before each test
+  anonymousPage: import('@playwright/test').Page;
+  // Test-scoped: resets auth state to a new user session before each test
+  authenticatedPage: import('@playwright/test').Page;
+};
+
+export const test = base.extend<AuthFixtures>({
+  sharedContext: [async ({ browser }, use) => {
+    const context = await browser.newContext();
+    await use(context);
+    await context.close();
+  }, { scope: 'worker' }],
+
+  // Reset to anonymous (clear all storage) — fast: no new context creation
+  anonymousPage: async ({ sharedContext }, use) => {
+    // Playwright 1.51+: clears all cookies + localStorage + IndexedDB atomically
+    await sharedContext.setStorageState({ cookies: [], origins: [] });
+    const page = await sharedContext.newPage();
+    await use(page);
+    await page.close();
+  },
+
+  // Reset to a specific user's session — inject pre-generated auth state
+  authenticatedPage: async ({ sharedContext }, use) => {
+    // Load pre-generated storage state (created by auth.setup.ts or a login factory)
+    // This replaces ALL existing storage — no residual state from previous tests
+    await sharedContext.setStorageState({
+      path: path.join(__dirname, '../.auth/user-session.json'),
+    });
+    const page = await sharedContext.newPage();
+    await use(page);
+    await page.close();
+  },
+});
+
+export { expect } from '@playwright/test';
+```
+
+```typescript
+// auth/auth.setup.ts — generates the user-session.json for authenticatedPage fixture
+// Run as a Playwright setup project before the main test suite
+import { test as setup } from '@playwright/test';
+import path from 'path';
+
+const AUTH_FILE = path.join(__dirname, '../.auth/user-session.json');
+
+setup('authenticate and save storage state', async ({ page }) => {
+  // Perform login with a factory-created test user
+  await page.goto('/login');
+  await page.fill('[data-testid="email"]', 'e2e-user@test.com');
+  await page.fill('[data-testid="password"]', 'Test@12345');
+  await page.click('[data-testid="submit"]');
+  await page.waitForURL('/dashboard');
+
+  // Save the full storage state (cookies + localStorage + IndexedDB) to file
+  // This file is loaded by setStorageState() in authenticatedPage fixture
+  await page.context().storageState({ path: AUTH_FILE });
+});
+```
+
+```typescript
+// playwright.config.ts — auth setup project runs before all test projects
+export default defineConfig({
+  projects: [
+    {
+      name: 'auth-setup',
+      testMatch: '**/auth.setup.ts',
+    },
+    {
+      name: 'e2e',
+      testMatch: '**/*.spec.ts',
+      dependencies: ['auth-setup'],  // auth-setup runs first
+    },
+  ],
+});
+```
+
+**`setStorageState()` vs creating a new context:**
+
+| Approach | Speed | Isolation | IndexedDB support |
+|---|---|---|---|
+| New `BrowserContext` per test | Slowest (~200–500ms) | Complete isolation | Yes |
+| `setStorageState()` (1.51+) | Fast (~5–20ms) | Replaces all storage | Yes (v1.51+) |
+| Manual cookie + localStorage clear | Medium (multiple calls) | Partial (IndexedDB untouched) | No |
+
+**Note on IndexedDB:** Playwright 1.51 added `indexedDB` support to `storageState()`. Applications
+using Firebase Authentication (which stores tokens in IndexedDB) or other IndexedDB-first auth
+libraries can now fully serialize and restore auth state — not just cookie + localStorage based sessions.
+
+---
+
+## Vitest 5.0 Beta — Factory Author Migration Notes  [community]
+
+Vitest 5.0 (currently in beta as of May 2026) introduces breaking changes that affect how
+test data factories are written and configured. Teams should audit factory files before
+upgrading to avoid silent behavioural changes.
+
+**Breaking changes affecting factory authors:**
+
+### 1. `test.concurrent` is now the default
+
+Vitest 5.0 makes `test.concurrent` the default for all test cases (previously opt-in).
+Tests within a file now run concurrently by default instead of sequentially. Factory
+code that relies on sequential execution order within a file — particularly factories
+with module-level counters or shared singleton connections — will produce race conditions
+that were previously hidden.
+
+**Before (Vitest 4.x, sequential by default):**
+```typescript
+// No race condition in 4.x — tests run sequentially within the file
+let userCounter = 0;
+
+function buildUserWithCounter(): User {
+  // Module-level counter — safe in sequential mode
+  userCounter++;
+  return { id: `usr-${userCounter}`, email: `user-${userCounter}@test.com`, ... };
+}
+
+test('first user has counter 1', () => {
+  const user = buildUserWithCounter();
+  expect(user.id).toBe('usr-1');  // always passes in sequential mode
+});
+
+test('second user has counter 2', () => {
+  const user = buildUserWithCounter();
+  expect(user.id).toBe('usr-2');  // order-dependent — breaks in concurrent mode
+});
+```
+
+**After (Vitest 5.0, concurrent by default):**
+```typescript
+// Replace module-level counters with per-call generation — concurrent-safe
+import { faker } from '@faker-js/faker';
+
+export function buildUser(overrides: Partial<User> = {}): User {
+  return {
+    // UUID generation is concurrent-safe — no shared counter state
+    id: faker.string.uuid(),
+    email: `${faker.string.uuid()}@test.com`,
+    ...overrides,
+  };
+}
+
+// OR: use fishery's sequence parameter — internally thread-safe in Vitest 5.x
+export const userFactory = Factory.define<User>(({ sequence }) => ({
+  id: faker.string.uuid(),
+  email: `user-${sequence}@test.com`,  // fishery sequences are worker-scoped, not module-global
+  ...
+}));
+```
+
+**Opt back to sequential for a specific file (escape hatch):**
+```typescript
+// At the top of a test file that requires sequential execution
+// (e.g., because it uses a transaction-rollback pattern that is single-connection)
+test.describe.sequential('sequential DB tests', () => {
+  test('...', async () => { /* ... */ });
+  test('...', async () => { /* ... */ });
+});
+```
+
+### 2. `expect` is now an inline package
+
+Vitest 5.0 extracts `expect` into a standalone `@vitest/expect` package. Test helpers that
+import `expect` from `'vitest'` continue to work, but factory smoke test files that previously
+imported `expect` directly for assertion helpers should be aware of the new import path if
+they also use the package in non-Vitest contexts.
+
+```typescript
+// Works in both 4.x and 5.x:
+import { test, expect } from 'vitest';
+
+// New in 5.x — can also import from standalone package:
+import { expect } from '@vitest/expect';
+// Useful for: factory assertion utilities run outside Vitest (e.g., in Node scripts)
+```
+
+### 3. `sequential` test option renamed
+
+The `sequential: true` test option that serialized concurrent tests back to sequential is
+being renamed in 5.0 to `concurrent: false` to be more explicit. The old `sequential: true`
+still works but is deprecated.
+
+```typescript
+// 4.x (still works in 5.x, but deprecated):
+test('needs sequential execution', { sequential: true }, async () => { ... });
+
+// 5.x (preferred):
+test('needs sequential execution', { concurrent: false }, async () => { ... });
+```
+
+**Factory audit checklist for Vitest 5.0 upgrade:**
+- [ ] Module-level counters in factory files replaced with per-call UUID/sequence generation
+- [ ] Singleton DB connection factories wrapped in fixtures (not module-level `const pool = new Pool(...)`)
+- [ ] `test.concurrent` usage changed from explicit opt-in to explicit opt-out where sequential is required
+- [ ] `VITEST_MAX_WORKERS` env var still applies (unchanged from 4.x)
+- [ ] `coverage.include` still required (unchanged from 4.x)
+- [ ] Review `@vitest/expect` package import paths in standalone factory assertion utilities
+
+---
+
+27. **[community] Vitest 5.0 default-concurrent mode causes race conditions in factory files with module-level state.**
+    When Vitest 4.x test suites upgrade to 5.0 beta, the default change from sequential to concurrent test execution within a file surfaces factory bugs that were previously hidden. The most common pattern: a factory file that initializes a DB connection pool or a sequence counter at module load (`const counter = 0; let pool = new Pool(...)`) works correctly when tests run sequentially but produces race conditions when they run concurrently. The symptom is flaky test failures that only appear in Vitest 5.0 — passing 95% of the time but failing under concurrent load. **Before upgrading to Vitest 5.0, audit every factory file for module-level mutable state**, and migrate counters to fishery's `sequence` parameter or `faker.string.uuid()`. DB connections should move to worker-scoped fixtures, not factory-file-level module singletons.
+
+    ```typescript
+    // AUDIT PATTERN: find module-level mutable state in factory files
+    // Search for these patterns in src/factories/**/*.ts:
+    // - let <variable> = (mutable variable outside a function)
+    // - const <variable> = new Pool(...) (DB connection at module load)
+    // - export let (exported mutable variable)
+    // - let _counter = 0; (counter pattern)
+
+    // SAFE: per-call generation (no module-level state)
+    export function buildUser(): User {
+      return { id: faker.string.uuid(), ... };  // faker.string.uuid() is concurrent-safe
+    }
+
+    // UNSAFE in Vitest 5.0: module-level mutable counter
+    // let _seq = 0;
+    // export function buildUser(): User { return { id: `usr-${++_seq}`, ... }; }
+    ```
+
+---
+
 ## Key Resources (iter-38 additions)
 
 | Name | Type | URL | Why useful |
@@ -7200,3 +7588,12 @@ Testcontainers startup for all smoke-only runs.
 | Playwright `routeFromHAR()` docs | Official | https://playwright.dev/docs/api/class-browsercontext#browser-context-route-from-har | Native HAR record/replay — zero-boilerplate Self-Initializing Fake for Playwright E2E suites |
 | Playwright `testProject.workers` | Official | https://playwright.dev/docs/api/class-testproject#test-project-workers | Per-project worker count for right-sizing test data isolation per test type |
 | Playwright test annotations docs | Official | https://playwright.dev/docs/test-annotations | `@tag` syntax, `tag` option, `--grep`/`--grep-invert` for conditional E2E fixture setup |
+
+## Key Resources (iter-39 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright fixture options docs | Official | https://playwright.dev/docs/test-fixtures#fixture-option | `{ option: true }` pattern for per-project factory configuration (tier, DB URL, seed profile) |
+| Playwright `browserContext.setStorageState()` | Official | https://playwright.dev/docs/api/class-browsercontext#browser-context-set-storage-state | Atomically reset auth test data (cookies + localStorage + IndexedDB) within a shared context |
+| Playwright 1.51 release notes | Official | https://playwright.dev/docs/release-notes#version-151 | IndexedDB in storageState + setStorageState() for Firebase/IndexedDB auth session management |
+| Vitest 5.0 migration guide | Official | https://vitest.dev/guide/migration#vitest-5-0 | Concurrent-by-default change; `sequential` → `concurrent: false`; `@vitest/expect` package split |

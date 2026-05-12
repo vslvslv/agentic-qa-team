@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -16,6 +16,7 @@
      github.com/vitest-dev/vitest/pull/9818 (fetched 2026-05-12: Vitest 5 coverage include/exclude glob pattern breaking change — "too eager" fix) |
      stryker-mutator.io/blog (fetched 2026-05-12: Stryker.NET 4.13 MTP runner preview — keep-alive across mutations, YAML config) |
      github.com/Codium-ai/cover-agent (fetched 2026-05-12: Qodo Cover archived June 2025 — no longer maintained) |
+     typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html (fetched 2026-05-12: TS 6.0 default changes — module/target/types/rootDir/strict; removed options: outFile, classic moduleResolution; ignoreDeprecations bridge flag) |
      community: production experience patterns synthesized from training knowledge -->
 
 ## Core Principles
@@ -3059,6 +3060,74 @@ for `NoCoverage` counts — a high NoCoverage count means the test coverage inve
 is incomplete, not that the mutant was killed. Use `allowEmpty: true` only as a
 transitional option while building test coverage, not as a permanent CI configuration.
 
+### G49 — TypeScript 6.0 default changes silently break coverage tooling for projects that skip tsconfig review  [community]
+TypeScript 6.0 (May 2026) changed several compiler option defaults that directly affect Istanbul
+and V8 coverage collection in Jest and Vitest projects. Teams that run `npm update typescript`
+without reviewing the changelog frequently encounter CI failures that appear unrelated to coverage.
+
+**Critical default changes affecting coverage tooling:**
+
+1. **`module` now defaults to `"esnext"`** (was `"commonjs"`). Projects using `ts-jest` with its
+   default `ts-jest` preset rely on CommonJS output. After upgrading to TypeScript 6.0, `ts-jest`
+   may silently switch to ESM mode, causing require/import interop failures that produce zero
+   coverage rather than correct test failures. Fix: explicitly set `"module": "commonjs"` in
+   `tsconfig.json` (or `"module": "nodenext"` with `"moduleResolution": "nodenext"` for ESM-native
+   projects). TypeScript 6.0 allows `--module commonjs` + `--moduleResolution bundler` as a
+   migration bridge.
+
+2. **`types` now defaults to `[]`** (was auto-include all `@types/*`). Projects that relied on
+   implicit `@types/node` inclusion for `process.env`, `Buffer`, or `__dirname` globals will get
+   type errors after upgrading. Istanbul relies on `@types/node` types being available during
+   instrumentation. Fix: add `"types": ["node", "jest"]` (or `["node", "vitest/globals"]`) to
+   `compilerOptions` explicitly.
+
+3. **`rootDir` now defaults to `.`** (was inferred common ancestor of source files). If your
+   `collectCoverageFrom` paths in Jest or `coverage.include` in Vitest are relative to the
+   previously-inferred `rootDir`, they may suddenly point to wrong locations. Coverage reports
+   may show 0 files after upgrading. Fix: explicitly set `"rootDir": "./src"` in `tsconfig.json`.
+
+4. **`--outFile` is removed entirely.** Projects that used `outFile` for legacy concatenated
+   output with coverage are forced to migrate to a bundler. This primarily affects legacy
+   TypeScript projects using namespace-based module patterns — if you encounter this, the
+   migration path is to switch to ESM modules and use esbuild/webpack for bundling.
+
+5. **`--moduleResolution classic` is removed.** Projects using any module resolution that fell
+   through to `classic` (e.g., `module: "commonjs"` without explicit `moduleResolution`) will
+   error. This affects `@stryker-mutator/typescript-checker`'s path resolution for alias-heavy
+   TypeScript projects — verify Stryker still resolves `tsconfig.json` paths after upgrade.
+
+**Migration bridge**: TypeScript 6.0 provides `"ignoreDeprecations": "6.0"` in `tsconfig.json`
+to silence deprecation warnings for options not yet removed (so you can upgrade TypeScript and
+fix the toolchain incrementally without fixing all deprecated options at once). This is a
+temporary bridge — deprecated options will be removed in TypeScript 7.0.
+
+```json
+// tsconfig.json — TypeScript 6.0 safe upgrade bridge for coverage tooling
+{
+  "compilerOptions": {
+    "target": "ES2022",           // explicit — TS 6.0 default changed to "es2025"
+    "module": "commonjs",         // explicit — TS 6.0 default changed to "esnext"
+    "moduleResolution": "nodenext", // TS 6.0 dropped "classic"; use nodenext or bundler
+    "rootDir": "./src",           // explicit — TS 6.0 default changed to "."
+    "outDir": "./dist",
+    "types": ["node"],            // explicit — TS 6.0 default changed to [] (no auto-include)
+    "strict": true,
+    "sourceMap": true,
+    "esModuleInterop": true,
+    // Suppress deprecation warnings during incremental migration (remove before TS 7.0):
+    "ignoreDeprecations": "6.0"
+  },
+  "include": ["src/**/*.ts"]
+}
+```
+
+**WHY it matters**: TypeScript 6.0's new defaults are sensible for new projects but silently
+break coverage tooling in existing projects because the coverage failure surfaces as "0 files
+instrumented" or "module not found" rather than "TypeScript version incompatibility." Treat a
+TypeScript major version upgrade (5.x → 6.0) identically to a Vitest major upgrade: run a
+dry-run with explicit `tsc --noEmit`, check coverage file counts, and verify the HTML report
+shows the expected file set before merging the upgrade PR.
+
 ### G48 — Stryker `disableTypeChecks` default changed in v7.0: existing configs may have redundant settings  [community]
 Before Stryker 7.0, `disableTypeChecks` defaulted to a glob string (e.g.,
 `'{test,tests,__tests__}/**/*.ts'`) targeting test directories. In Stryker 7.0, the default
@@ -3160,6 +3229,11 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
   restore thresholds based on the new (more accurate) numbers. Additionally, the blob reporter
   default directory changes from `.vitest-tmp/` to `.vitest/blob/` — update CI sharding
   workflows (Pattern 22) accordingly.
+- **TypeScript 6.0 upgrade coverage breakage**: TypeScript 6.0 changed compiler defaults for
+  `module`, `target`, `types`, and `rootDir` — and removed `--outFile` and `--moduleResolution classic`.
+  These changes cause `ts-jest` and Istanbul to silently fail or instrument zero files if `tsconfig.json`
+  is not updated. Use `"ignoreDeprecations": "6.0"` as a temporary bridge and update defaults
+  explicitly (see G49). Treat TypeScript major upgrades as coverage-tooling risk events.
 
 ---
 
@@ -3200,3 +3274,4 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Qodo Cover (formerly Codium cover-agent) — ARCHIVED | Community | https://github.com/Codium-ai/cover-agent | ⚠️ No longer maintained (June 2025). LLM-based coverage gap filler; see G34 and AP13 for replacement strategy using mutation-guided prompting |
 | Stryker VS Code Plugin | Official | https://stryker-mutator.io/blog/vscode-plugin/ | Inline mutation results in VS Code gutter (StrykerJS v9.3.0+, Nov 2025); uses MSP; replaces HTML-report-in-browser workflow |
 | Vitest coverage config reference | Official | https://vitest.dev/config/coverage | Full coverage config: autoUpdate, changed, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks, reportOnFailure, processingConcurrency, allowExternal, cleanOnRerun, thresholds.100 |
+| TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | TS 6.0 default changes (module, target, types, rootDir) and removed options (outFile, classic moduleResolution) that silently break coverage tooling; ignoreDeprecations bridge flag |

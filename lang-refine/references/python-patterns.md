@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 40 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -44,6 +44,7 @@
      Iter 38 (2026-05-12): 100/100 (+0) — added annotationlib deep-dive (Format enum, ForwardRef evaluation, migration from get_type_hints, metaclass integration); concurrent.interpreters/InterpreterPoolExecutor deep-dive (comparison table vs processes/threads, data-sharing rules, gotchas); t-string custom processor patterns (HTML, SQL, shell); community gotchas #34 (t-string naive concatenation) and #35 (InterpreterPoolExecutor pickle limitations); sourced from docs.python.org/3/library/annotationlib.html + docs.python.org/3/library/concurrent.futures.html + docs.python.org/3/library/string.templatelib.html
      Iter 39 (2026-05-12): 100/100 (+0) — added pathlib.copy/copy_into/move/move_into (Python 3.14); http.server HTTPSServer (Python 3.14); os.readinto() zero-copy reads; date.strptime()/time.strptime() (Python 3.14); python -c auto-dedent and -X importtime=2; contextvars.Token as context manager (Python 3.14); community gotchas #36 (multiprocessing forkserver default breaks fork-dependent code), #37 (int() __trunc__ removal), #38 (NotImplemented TypeError); sourced from docs.python.org/3/whatsnew/3.14.html
      Iter 40 (2026-05-12): 100/100 (+0) — added community gotcha #39 (CancelledError swallowing breaks structured concurrency), #40 (configparser.InvalidWriteError Python 3.14); added operator.is_none()/is_not_none() idiom (Python 3.14) and dataclasses.field(doc=) in-source documentation pattern; sourced from docs.python.org/3/library/asyncio-task.html + docs.python.org/3/library/dataclasses.html + docs.python.org/3/whatsnew/3.14.html
+     Iter 41 (2026-05-12): 100/100 (+0) — added Unpack[TypedDict] dedicated idiom section (PEP 692), NamedTuple keyword-syntax deprecation community gotcha #41 (removal in Python 3.15), super() pickling/copying idiom (Python 3.14), pow() __rpow__ fallback idiom (Python 3.14); sourced from docs.python.org/3/library/typing.html + docs.python.org/3/whatsnew/3.14.html + practitioner synthesis
 -->
 
 ## Core Philosophy
@@ -6636,4 +6637,242 @@ print(dataclass_help(InvoiceItem))
 ```
 
 **When to use:** Any `@dataclass` that will be introspected by tooling (REST serialisers, admin dashboards, CLI help text, OpenAPI schema builders). Field `doc` keeps the description co-located with the field definition, eliminating the drift that happens with separate docstring tables or comments.
+
+---
+
+## Language Idioms (continued — iteration 41)
+
+### `Unpack[TypedDict]` for Fully Typed `**kwargs` (PEP 692, Python 3.11+)
+
+`Unpack` combined with a `TypedDict` turns an untyped `**kwargs: Any` into a statically checked keyword argument contract. Type checkers validate both caller and callee; IDEs offer completion; missing or misspelled keys become errors before runtime. This is the standard pattern for public APIs that must accept flexible keyword arguments while retaining type safety.
+
+```python
+from __future__ import annotations
+from typing import TypedDict, Unpack
+
+
+# ── Define the accepted kwargs as a TypedDict ──────────────────────────────────
+class RequestOptions(TypedDict, total=False):
+    timeout: float          # seconds; optional, defaults to 30.0
+    retries: int            # number of retries; optional, defaults to 3
+    verify_ssl: bool        # optional, defaults to True
+    headers: dict[str, str] # optional extra headers
+
+
+# ── Accept them via **kwargs: Unpack[RequestOptions] ─────────────────────────
+def fetch(url: str, **kwargs: Unpack[RequestOptions]) -> bytes:
+    timeout = kwargs.get("timeout", 30.0)
+    retries = kwargs.get("retries", 3)
+    verify  = kwargs.get("verify_ssl", True)
+    hdrs    = kwargs.get("headers", {})
+    # ... actual HTTP call ...
+    return b""
+
+
+# ── Type checker enforces the contract ────────────────────────────────────────
+fetch("https://example.com", timeout=10.0, retries=2)       # OK
+fetch("https://example.com", timout=10.0)                   # ERROR: unexpected key
+fetch("https://example.com", timeout="10")                  # ERROR: expected float
+
+
+# ── Forwarding pattern: pass **kwargs through to another function ─────────────
+def post(url: str, body: bytes, **kwargs: Unpack[RequestOptions]) -> bytes:
+    # Forward all options without listing them individually
+    return fetch(url, **kwargs)
+
+
+# ── total=True variant: all keys required ────────────────────────────────────
+class ConnectConfig(TypedDict):
+    host: str
+    port: int
+    database: str
+
+def connect(**cfg: Unpack[ConnectConfig]) -> None:
+    # All three keys are required at the call site
+    print(f"Connecting to {cfg['host']}:{cfg['port']}/{cfg['database']}")
+
+connect(host="localhost", port=5432, database="mydb")   # OK
+# connect(host="localhost", port=5432)                  # Type error: missing 'database'
+```
+
+**When to use:** Builder-style functions, configuration-passing APIs, and wrapper functions that forward kwargs to an inner function. Prefer explicit keyword parameters for functions with ≤4 known options; use `Unpack[TypedDict]` when the kwargs set is large (5+) or shared across multiple call sites.
+
+---
+
+### `super()` Is Now Copyable and Picklable (Python 3.14)
+
+Python 3.14 makes `super()` objects copyable (`copy.copy()`, `copy.deepcopy()`) and picklable. Before 3.14, storing a `super()` object — for example, in a proxy or delegation wrapper — and then copying or serialising the containing object would raise `TypeError`. This idiom is relevant for proxy patterns, memoised delegation, and test doubles.
+
+```python
+from __future__ import annotations
+import copy
+import pickle
+from dataclasses import dataclass
+
+
+class Base:
+    def greet(self) -> str:
+        return "Hello from Base"
+
+    def value(self) -> int:
+        return 42
+
+
+class Child(Base):
+    def greet(self) -> str:
+        return f"{super().greet()} via Child"
+
+
+# ── Python 3.14: super() is copyable ─────────────────────────────────────────
+child = Child()
+child_copy = copy.copy(child)           # Works in 3.14; raised TypeError in 3.13
+child_deep = copy.deepcopy(child)       # Also works
+
+# ── Python 3.14: super() is picklable ────────────────────────────────────────
+blob = pickle.dumps(child)
+restored = pickle.loads(blob)
+assert restored.greet() == child.greet()    # True
+
+
+# ── Practical: delegation proxy that can be serialised ────────────────────────
+@dataclass
+class LoggingProxy:
+    """Logs all calls to a wrapped object — must be serialisable for task queues."""
+    _wrapped: object
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._wrapped, name)
+        if callable(attr):
+            def logged(*args, **kwargs):
+                result = attr(*args, **kwargs)
+                print(f"[LOG] {name}({args!r}, {kwargs!r}) → {result!r}")
+                return result
+            return logged
+        return attr
+
+
+proxy = LoggingProxy(Child())
+blob2 = pickle.dumps(proxy)             # Requires Child (and super()) to be picklable
+proxy2 = pickle.loads(blob2)
+proxy2.greet()   # [LOG] greet((), {}) → 'Hello from Base via Child'
+```
+
+**When to use:** Proxy classes, task-queue workers (Celery, RQ, arq), and test doubles that wrap a real object and must survive serialisation. In Python ≤3.13, refactor to store the wrapped instance directly rather than a `super()` reference.
+
+---
+
+### `pow()` Now Falls Back to `__rpow__` for Three-Argument Form (Python 3.14)
+
+Python 3.14 extends the reflected operator fallback to the three-argument `pow(base, exp, mod)`. Previously, if `base.__pow__(exp, mod)` returned `NotImplemented`, Python would raise `TypeError` immediately — the reflected `exp.__rpow__(base, mod)` was never tried. Now the full reflected fallback chain applies, enabling custom numeric types on either side of a modular exponentiation.
+
+```python
+from __future__ import annotations
+
+
+# ── Custom numeric type that only implements __rpow__ ─────────────────────────
+class ModInt:
+    """Integer that supports modular exponentiation as the exponent."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __rpow__(self, base: int, mod: int | None = None) -> int:
+        """Called when base ** self (or pow(base, self, mod)) is evaluated."""
+        if mod is not None:
+            return pow(base, self.value, mod)
+        return base ** self.value
+
+    def __repr__(self) -> str:
+        return f"ModInt({self.value})"
+
+
+exp = ModInt(10)
+
+# ── Python 3.14: three-argument pow() tries __rpow__ ─────────────────────────
+result = pow(2, exp, 1000)   # 2 ** 10 mod 1000 = 24; calls exp.__rpow__(2, 1000)
+print(result)   # 24
+
+# Before Python 3.14: pow(2, exp, 1000) would raise TypeError
+# because int.__pow__(exp, 1000) returned NotImplemented and no fallback occurred.
+
+# ── Two-argument form already worked before 3.14 ─────────────────────────────
+result2 = 2 ** exp           # calls exp.__rpow__(2) — worked in all versions
+print(result2)  # 1024
+
+
+# ── Practical: custom ring / finite-field type ────────────────────────────────
+class GF2:
+    """GF(2) element — binary field arithmetic."""
+
+    def __init__(self, bit: int) -> None:
+        self.bit = bit & 1
+
+    def __rpow__(self, base: int, mod: int | None = None) -> "GF2":
+        # base ** GF2(n) interpreted as base^n mod 2
+        return GF2(pow(base, self.bit, 2))
+
+    def __repr__(self) -> str:
+        return f"GF2({self.bit})"
+
+
+print(pow(3, GF2(5), 2))    # Python 3.14: GF2(1)  — 3^5 mod 2 = 1
+```
+
+**When to use:** Custom numeric types (finite fields, matrix types, polynomial rings) that implement `__rpow__`. The change is purely additive — existing code is unaffected; only previously-failing `TypeError` cases now succeed.
+
+---
+
+## Real-World Gotchas (continued — iteration 41)
+
+### 41. `NamedTuple` Old-Style Keyword-Argument Syntax Removed in Python 3.15  [community]
+
+**Problem:** The keyword-argument form of `NamedTuple` — `NT = NamedTuple("NT", x=int, y=str)` — was deprecated in Python 3.12 and will be removed in Python 3.15. Code that uses this syntax or calls `NamedTuple` with no fields argument (`NamedTuple("Empty")`) will raise `TypeError` on 3.15+.
+
+**Why:** The keyword syntax was an early convenience that predates the class-based form. It cannot support default values, `__doc__`, or `field()` metadata. The class-based form (`class NT(NamedTuple): ...`) is unambiguous, supports all modern features, and reads like any other class definition — the community converged on it years ago.
+
+```python
+from typing import NamedTuple
+
+
+# ── REMOVED in Python 3.15: keyword-argument form ────────────────────────────
+# Point = NamedTuple("Point", x=float, y=float)   # DeprecationWarning 3.12; TypeError 3.15
+# Empty = NamedTuple("Empty")                      # DeprecationWarning 3.12; TypeError 3.15
+
+
+# ── STILL VALID: positional-tuple form ───────────────────────────────────────
+# (Use only when you need to construct a NamedTuple dynamically at runtime)
+DynPoint = NamedTuple("DynPoint", [("x", float), ("y", float)])
+
+
+# ── PREFERRED: class-based form (all Python versions, all features) ───────────
+class Point(NamedTuple):
+    """2-D point in Cartesian space."""
+    x: float
+    y: float
+    label: str = ""     # Default value — not possible with keyword-argument form
+
+p = Point(1.0, 2.0)
+p2 = Point(3.0, 4.0, label="origin")
+print(p._asdict())   # {'x': 1.0, 'y': 2.0, 'label': ''}
+
+# ── Replace (immutable update) ────────────────────────────────────────────────
+p3 = p._replace(y=99.0)   # Point(x=1.0, y=99.0, label='')
+
+# ── Works with isinstance checks ─────────────────────────────────────────────
+assert isinstance(p, tuple)     # True — NamedTuple IS a tuple subclass
+assert isinstance(p, Point)     # True
+
+
+# ── Migration: automated scan for old-style usage ────────────────────────────
+# grep -r 'NamedTuple(' . --include='*.py' | grep -v 'class ' | grep -v '\[('
+# Matches the old keyword or no-fields forms; review each hit.
+```
+
+**Migration checklist:**
+- Run `grep -r 'NamedTuple(' . --include='*.py' | grep -v 'class \|NamedTuple(\[' | grep -v '#'` to find legacy usage.
+- Convert `NT = NamedTuple("NT", x=int)` → `class NT(NamedTuple): x: int`.
+- Convert `NamedTuple("Empty")` → `class Empty(NamedTuple): pass`.
+- If the name must be dynamic (e.g., generated at runtime), keep the positional-list form: `NamedTuple("NT", [("x", int)])`.
+
+---
 

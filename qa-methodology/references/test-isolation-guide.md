@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 17 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 18 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -34,6 +34,11 @@
 <!--          Vitest fixture scope hierarchy (worker > file > test) — vitest.dev/guide/test-context, -->
 <!--          Vitest 4.1 Chai-style mock assertions (.to.have.been.called),                          -->
 <!--          martinfowler.com/articles/nonDeterminism.html — teardown exception cascade taxonomy     -->
+<!--          Iteration 18 (2026-05-12): vi.mock(import(...)) type-safe module promise pattern,      -->
+<!--            onCleanup single-call limitation per fixture, vi.resetModules() does not reset       -->
+<!--            mock registry (needs vi.unmock() separately), Construct-with-Collaborators DI        -->
+<!--            principle (Google Testing Blog May 2026), vi.mock() ES import-only restriction,      -->
+<!--            Chai-style assertion migration gotcha (.to.have.been.called vs toHaveBeenCalled)     -->
 
 ---
 
@@ -3653,3 +3658,220 @@ describe('ApiClient — staging', () => {
 | Vitest Guide — Test Context & Fixture Scopes | Official | https://vitest.dev/guide/test-context | Fixture scope hierarchy (worker/file/suite/test) and lifetime contracts |
 | Vitest API — `vi.defineHelper` | Official | https://vitest.dev/api/vi#vi-definehelper | Call-site stack trace attribution for shared assertion helper functions |
 | Vitest 4.1 Blog — What's New | Official | https://vitest.dev/blog/vitest-4-1.html | `aroundEach`/`aroundAll`, `detectAsyncLeaks`, `onCleanup` builder, `mockThrow`, `vi.defineHelper`, test tags, `viteModuleRunner: false` |
+
+---
+
+## Community Lessons — Iteration 18  [community]
+
+75. **`vi.mock(import('./path'), factory)` — the module promise syntax gives TypeScript-safe factory return types and prevents silent mock shape drift.** [community]
+    Vitest 4.1 supports `vi.mock()` with a module promise as the first argument (instead of a string path):
+    ```typescript
+    vi.mock(import('./emailService'), async (importOriginal) => {
+      const actual = await importOriginal(); // preserves real non-mocked exports
+      return {
+        ...actual,
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+    });
+    ```
+    The key isolation benefit: TypeScript infers the factory's return type from the actual module shape. If `emailService` gains a new required export and the factory omits it, TypeScript reports a compile error — the mock is always structurally consistent with the real module. The string path version (`vi.mock('./emailService', () => ({ ... }))`) returns `unknown` from the factory and provides no type checking on what is being mocked. WHY: teams that use string-path `vi.mock()` factories without explicit type assertions accumulate mocks that silently diverge from the real interface after interface changes — the tests continue to pass while the production code compiles with errors that the tests cannot catch. The module promise syntax catches these at compile time.
+
+76. **`onCleanup` can only be called once per fixture — combining multiple cleanups into one callback is the correct pattern.** [community]
+    Vitest's fixture builder pattern (introduced in 4.1) provides an `onCleanup` parameter for registering teardown logic when returning a value from a fixture function. A critical, non-obvious constraint: `onCleanup` may only be called **once** per fixture invocation. Calling it multiple times (e.g., once for a database connection and again for a temp directory created within the same fixture) results in only the **last** registration being honored — earlier registrations are silently dropped. The correct pattern is to combine all cleanup into a single `onCleanup` call using a sequential teardown function:
+    ```typescript
+    const test = baseTest.extend({
+      environment: async ({}, { onCleanup }) => {
+        const conn = await createDbConnection();
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'env-'));
+
+        // WRONG — calling onCleanup twice: only the second registration runs
+        // onCleanup(() => closeDbConnection(conn));
+        // onCleanup(() => fs.rm(dir, { recursive: true, force: true }));
+
+        // CORRECT — single onCleanup that handles both resources sequentially
+        onCleanup(async () => {
+          await closeDbConnection(conn);
+          await fs.rm(dir, { recursive: true, force: true });
+        });
+
+        return { conn, dir };
+      },
+    });
+    ```
+    WHY: the single-call restriction is documented but easily overlooked because `onCleanup` does not throw when called multiple times — it silently ignores subsequent calls. The failure mode is resource leaks (unclosed database connections or orphaned temp directories) that only appear as test hangs or `ENOMEM` errors in later test files. The correct mental model is: treat `onCleanup` like a `finally` block — write one function that cleans everything up in the right order.
+
+77. **`vi.resetModules()` clears the module cache but does NOT reset the mock registry — `vi.unmock()` must be called separately for complete isolation.** [community]
+    Teams that use `vi.resetModules()` to re-load a module under a fresh environment (e.g., to pick up different `process.env` values) often assume this also clears the mock registry. It does not. If `vi.mock('./service')` was called earlier in the test file or in a `setupFile`, the mock registration persists even after `vi.resetModules()`. The dynamically imported module will load a fresh instance — but that instance will still be mocked. The full teardown sequence for complete isolation requires both steps:
+    ```typescript
+    afterEach(() => {
+      vi.resetModules();      // Clears module cache — next import re-evaluates the file
+      vi.unmock('./service'); // Removes mock registry entry — next import gets the real module
+    });
+    ```
+    Alternatively, use `vi.doMock()` with the `using` disposable (Pattern from iteration 17) for scoped mocking that handles both concerns automatically. WHY: `vi.resetModules()` and `vi.unmock()` operate on two independent registries — the loaded module instances cache and the mock factory registry. They are not transactively linked. Teams that reset one and not the other encounter tests where the module re-evaluates correctly (fresh env var, fresh singleton) but runs mocked code because the registry was never cleared — producing false passes where the real module behavior is never exercised.
+
+78. **"Construct with Collaborators, Call with Work" — Google's 2026 DI principle: inject dependencies at construction time, pass work items at call time.** [community]
+    Google Testing Blog (May 2026, author Shahar Roth) codifies a dependency injection principle directly relevant to test isolation: a class should receive its *collaborators* (services, repositories, clocks, loggers) in its constructor, and receive its *work data* (the payload, the user input, the parameters) in method call arguments. This split makes the class trivially testable: the test controls collaborators at construction time (via test doubles) and exercises logic by calling methods with controlled inputs.
+    ```typescript
+    // WRONG — work data injected at construction; hard to test different inputs
+    class OrderProcessor {
+      constructor(
+        private readonly order: Order,  // work data — should be a method param
+        private readonly inventory: InventoryService,  // collaborator — OK here
+      ) {}
+      process(): boolean {
+        return this.inventory.reserve(this.order.skuId, this.order.qty);
+      }
+    }
+    // Testing requires constructing a new OrderProcessor for each input variant — expensive
+
+    // CORRECT — collaborators at constructor; work data at call time
+    class OrderProcessor {
+      constructor(
+        private readonly inventory: InventoryService,  // collaborator only
+      ) {}
+      process(order: Order): boolean {  // work data as method argument
+        return this.inventory.reserve(order.skuId, order.qty);
+      }
+    }
+
+    // Test: one constructed instance, multiple work variants — clean isolation
+    describe('OrderProcessor', () => {
+      let inventory: jest.Mocked<InventoryService>;
+      let processor: OrderProcessor;
+
+      beforeEach(() => {
+        inventory = { reserve: jest.fn().mockReturnValue(true) } as jest.Mocked<InventoryService>;
+        processor = new OrderProcessor(inventory); // collaborator injected once
+      });
+
+      it('reserves the correct sku and quantity', () => {
+        processor.process({ skuId: 'sku-1', qty: 3 }); // work data at call time
+
+        expect(inventory.reserve).toHaveBeenCalledWith('sku-1', 3);
+      });
+
+      it('returns false when reservation is rejected', () => {
+        inventory.reserve.mockReturnValue(false);
+
+        const result = processor.process({ skuId: 'sku-2', qty: 1 }); // same instance, different work
+
+        expect(result).toBe(false);
+      });
+    });
+    ```
+    WHY: when work data is injected at construction time, each test variant requires constructing a new object — and `beforeEach` setup complexity grows with each new test case. When work data is a method argument, the same constructed instance (with its injected doubles) can test unlimited input variants. This pattern is also the structural reason why `beforeEach` fixture reset is the right tool for collaborators but not for input data: collaborators belong in `beforeEach`; work data belongs in the test body's Arrange phase.
+
+79. **Chai-style mock assertions (`.to.have.been.called`) are available in Vitest 4.1 but cause snapshot mismatches during migration from Jest.** [community]
+    Vitest 4.1 added sinon-chai-style assertions (`expect(spy).to.have.been.called`, `expect(spy).to.have.callCount(2)`) as an alternative to Jest-style assertions (`expect(spy).toHaveBeenCalled()`). Both styles operate on the same underlying mock state — there is no isolation difference between them. The migration gotcha: teams that copy-paste assertion libraries or test helpers from a Sinon/Chai codebase into Vitest may mix styles within the same test file. This is syntactically valid but creates maintenance confusion because the two styles are not aliases of each other in terms of TypeScript autocomplete — `to.have.been.called` is a property chain (no parentheses on `called`), while `toHaveBeenCalled()` requires parentheses. Mismatching produces runtime errors that look like assertion failures:
+    ```typescript
+    // WRONG — forgetting that Chai style is property access, not a function call
+    expect(spy).to.have.been.called();  // TypeError: called() is not a function in sinon-chai
+
+    // CORRECT — Chai style: property access
+    expect(spy).to.have.been.called;
+
+    // CORRECT — Jest style: method call
+    expect(spy).toHaveBeenCalled();
+    ```
+    Team decision: pick one assertion style per project and enforce it via ESLint rules (`eslint-plugin-vitest` supports `prefer-to-have-been-called-with` to standardize). WHY: mixing assertion styles in the same test file makes code review harder — reviewers must mentally parse two syntaxes to verify that assertions are correct. Since both styles test the same mock state, the only benefit to standardizing is readability and linting uniformity.
+
+---
+
+## Extended Patterns — Iteration 18
+
+### Pattern 31: `vi.mock(import(...))` type-safe module promise syntax (TypeScript, Vitest 4.1+)  [community]
+
+The module promise syntax for `vi.mock()` makes mock factories type-checked by TypeScript — the factory must return an object structurally compatible with the real module's exports. Unlike the string-path variant, it uses `importOriginal()` to safely mix real and mocked exports without needing explicit type assertions.
+
+```typescript
+// emailService.ts
+export interface EmailPayload {
+  to: string;
+  subject: string;
+  body: string;
+}
+
+export async function send(payload: EmailPayload): Promise<void> {
+  // real SMTP call
+}
+
+export function getTransportName(): string {
+  return 'smtp';
+}
+
+// userRegistration.test.ts — type-safe vi.mock with module promise syntax
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Module promise syntax: TypeScript infers return type from emailService's actual exports
+// Factory must return the correct shape — compile error if send or getTransportName are missing or wrong type
+vi.mock(import('./emailService'), async (importOriginal) => {
+  const actual = await importOriginal(); // real exports — preserves getTransportName() unchanged
+  return {
+    ...actual,                                  // keep real exports that we don't need to stub
+    send: vi.fn<typeof actual.send>().mockResolvedValue(undefined), // only stub what we need
+  };
+});
+
+// Import AFTER vi.mock — gets the mocked module
+import { send } from './emailService';
+import { registerUser } from './userRegistration';
+
+describe('registerUser (vi.mock module promise)', () => {
+  beforeEach(() => {
+    // clear call history between tests; the mock stub itself persists (declared at file scope)
+    vi.mocked(send).mockClear();
+  });
+
+  it('sends a welcome email after registering a user', async () => {
+    await registerUser({ name: 'Alice', email: 'alice@example.com' });
+
+    // TypeScript knows send is vi.Mock<typeof actual.send> — assertion is type-checked
+    expect(send).toHaveBeenCalledWith({
+      to: 'alice@example.com',
+      subject: 'Welcome!',
+      body: expect.stringContaining('Alice'),
+    });
+  });
+
+  it('does not send email when registration validation fails', async () => {
+    await expect(
+      registerUser({ name: '', email: 'not-an-email' }), // invalid input
+    ).rejects.toThrow(/validation/i);
+
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+```
+
+**Key advantages over string-path `vi.mock('./emailService', () => ({ ... }))`:**
+- TypeScript enforces the factory's return type against the real module's exports
+- `importOriginal()` lets you selectively stub only the exports you need — the rest are real
+- If `emailService` gains a new required export, TypeScript reports a compile error at the factory, not a silent runtime failure
+- Path aliases are resolved the same way as regular imports — no need to manually convert `@/services/email` to relative paths in the mock path string
+
+**When to prefer string-path mock:** Only when the factory must execute before the module is available to TypeScript (e.g., in a test helper's `setupFile` where the module does not yet exist). In all other cases, the module promise syntax is strictly safer.
+
+---
+
+## Quick Reference Additions — Iteration 18
+
+| Problem | Symptom | Vitest 4.1+ Solution | Jest equivalent |
+|---------|---------|---------------------|-----------------|
+| Mock factory type drift from real module | Mock compiles but has wrong shape; runtime error | `vi.mock(import('./module'), async (importOriginal) => { ... })` — factory return type is enforced by TypeScript | No equivalent; use `jest.Mocked<T>` for partial type safety |
+| Multiple `onCleanup` calls in one fixture | Second resource leaks silently — only last cleanup runs | Combine into single `onCleanup(async () => { cleanup1(); cleanup2(); })` | N/A (Jest beforeEach/afterEach pairs handle multiple resources independently) |
+| `vi.resetModules()` still returns mocked module | Re-imported module is real (re-evaluated) but still mocked; test sees stubbed behavior | Call `vi.unmock('./module')` alongside `vi.resetModules()`, or use `using _m = vi.doMock(...)` | `jest.resetModules()` + `jest.unmock('./module')` — same two-step requirement |
+| Work data in constructor blocks per-test input variation | Each test requires a new constructed object in `beforeEach` | Refactor to "Construct with Collaborators, Call with Work" — constructor for services, method args for data | Same pattern; applies universally |
+| Mixed Chai and Jest assertion styles in one file | Runtime `TypeError: called() is not a function` or linting inconsistency | Standardize on one style; enforce with `eslint-plugin-vitest` rule | Jest-style only in Jest projects |
+
+---
+
+## Key Resources — Iteration 18 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest API — `vi.mock` with module promise | Official | https://vitest.dev/api/vi#vi-mock | Module promise syntax: `vi.mock(import('./path'), factory)` for type-safe mock factories |
+| Vitest Guide — `onCleanup` (single call constraint) | Official | https://vitest.dev/guide/test-context | Documents the `onCleanup` single-registration constraint; combine multiple teardowns into one call |
+| Vitest API — `vi.resetModules` + `vi.unmock` distinction | Official | https://vitest.dev/api/vi#vi-resetmodules | `resetModules` clears load cache only; mock registry is separate — `vi.unmock()` needed for full reset |
+| Google Testing Blog — Construct with Collaborators, Call with Work | Community | https://testing.googleblog.com/ | May 2026 TotT: DI principle — collaborators at constructor, work data at call time; enables single-instance multi-test pattern |
+| Vitest API — Chai-style mock assertions | Official | https://vitest.dev/api/expect#to-have-been-called | `.to.have.been.called` property chain (sinon-chai style); no parentheses on `called` — distinct from `toHaveBeenCalled()` |

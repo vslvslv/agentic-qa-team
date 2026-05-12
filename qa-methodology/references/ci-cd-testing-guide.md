@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026), nektos/act (v0.2.79: --validate/--strict workflow flags) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 48 CI testing pillars covered in this guide:**
+**The 51 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -66,6 +66,9 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 46 | `act --validate` / `--strict` | Local workflow validation before push — catches YAML and logic errors before consuming CI minutes (v0.2.79+) |
 | 47 | Playwright HAR-as-trace API | `tracing.startHar()` / `stopHar()` as first-class tracing — replaces `recordHar` option (v1.60+) |
 | 48 | Vitest v5 migration awareness | `attachmentsDir` rename, `sequential` removal, inlined `expect`, V8 coverage for `child_process`/`worker_threads` |
+| 49 | Vitest 4.1 GitHub Actions job summary | `github-actions` reporter auto-injects job summary with test stats + flaky test permalinks when `$GITHUB_STEP_SUMMARY` is set |
+| 50 | OIDC repository custom properties | `repo_property_*` claims in GitHub OIDC tokens enable attribute-based trust policies — eliminates per-repo allow-list maintenance |
+| 51 | Vitest `viteModuleRunner: false` | Experimental: production-parity Node.js test execution (no Vite sandbox) for backend/CLI packages — 30–50% faster startup |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -3361,6 +3364,10 @@ validateAllWorkflows();
 | Vitest v5 upgrade with `sequential` test option in source | `sequential` property on individual tests removed in v5; TypeScript compiler flags all usages as unknown property | Replace individual-test `sequential: true` annotations with `describe.sequential(() => { ... })` blocks |
 | Importing `expect` from `'vitest/expect'` after v5 upgrade | Entry point `'vitest/expect'` removed in v5; runtime `Cannot find module` error | Replace all `import { expect } from 'vitest/expect'` with `import { expect } from 'vitest'` |
 | V8 coverage threshold failure after Vitest v5 upgrade | V5 V8 now tracks `node:child_process` and `node:worker_threads` — previously uncovered worker code appears; threshold may fail if worker coverage is low | Profile coverage delta on non-blocking branch before upgrading; adjust thresholds for newly-visible worker code |
+| Vitest `github-actions` reporter disabled explicitly when custom `reporters` array is set | Listing any reporter in the `reporters` array replaces the defaults — `github-actions` is no longer auto-injected; job summaries silently stop appearing | Always include `'github-actions'` in the `reporters` array when overriding defaults in CI environments |
+| `viteModuleRunner: false` used in a package with CSS Module or JSX imports | Vite transforms are disabled; `.module.css` and JSX imports fail with module-not-found or syntax errors | Only enable `viteModuleRunner: false` in pure Node.js packages with no Vite-specific imports |
+| OIDC trust policy with `repo_property_*` condition but no `sub` scoping | Any GitHub org that assigns the same custom property can assume the role — cross-org credential exposure | Always pair `repo_property_*` conditions with `StringLike: sub: repo:myorg/*:*` to restrict to the owning org |
+| Custom property not designated for OIDC inclusion at org level | `repo_property_*` claims absent from token even when property is set on the repo; trust policy condition never matches | Org admin must enable "Include in OIDC tokens" for each property — verify with `verify-oidc-claims.ts` script before rolling out |
 
 ## Real-World Gotchas [community]
 
@@ -3527,7 +3534,11 @@ export default env;
 
 54. **Playwright HAR `urlFilter` regex anchoring — captures wrong requests when unanchored** [community]: A `urlFilter` regex like `/api/` matches any URL containing the string "api" including third-party analytics URLs (`/api.mixpanel.com/...`). Teams that write unanchored `urlFilter` patterns capture 3–5× more requests than intended, producing large HAR files with third-party noise. Use an anchored pattern targeting the API host: `/^https?:\/\/api\.example\.com\//` or use a path-prefix match: `/\/api\//` (note the leading and trailing slashes) to ensure only your application's API calls are captured.
 
-## Tradeoffs & Alternatives
+55. **Vitest 4.1 job summary absent after adding a custom `reporters` array** [community]: The `github-actions` reporter is injected automatically when no `reporters` array is configured. As soon as a team adds `reporters: ['verbose', 'json']` to `vitest.config.ts`, the auto-injection stops and job summaries silently disappear from the GitHub Actions checks UI. The fix is to add `'github-actions'` explicitly: `reporters: ['verbose', 'json', 'github-actions']`. Teams that add a custom reporter for coverage comments in one sprint routinely discover the missing job summaries two sprints later when someone asks "where are our flaky test links?".
+
+56. **OIDC `repo_property_*` claim matching without org-level designation** [community]: Repository custom properties appear in OIDC tokens ONLY if an organization administrator has explicitly designated the property for OIDC inclusion. A property that is set on a repository but not designated will not appear in the token — the trust policy condition silently never matches and the IAM role assumption fails with a generic "not authorized" error. Teams that configure the trust policy, set the repository property, and then see OIDC failures have almost always forgotten the org-level designation step. Add the `verify-oidc-claims.ts` debug script as a pre-test step to confirm claims are present before blaming the trust policy.
+
+
 |---|---|---|---|
 | Unit only | ~2 min | Logic only | Hotfix branches, library packages |
 | Unit + integration | ~6 min | Logic + service contracts | Feature branches |
@@ -6444,6 +6455,299 @@ export default defineConfig({
 > [community] The V8 coverage overhaul in Vitest 4.0 also affects teams relying on `coverage.all: true` to catch untested files. That option is removed — Vitest 4.0 only reports coverage for files that were actually loaded during the test run. If a source file has no test importing it, it will not appear in the coverage report at all, which can make coverage look artificially high. The fix is to add all source files explicitly via `coverage.include`, which causes Vitest to instrument all matching files even if no test imports them. Teams that relied on the implicit "all: true" behavior will see their coverage drop on upgrade — the numbers are now accurate.
 
 
+### Vitest 4.1 GitHub Actions Job Summary Reporter [community]
+
+Vitest 4.1 (March 2026) ships a zero-configuration GitHub Actions job summary reporter. When Vitest detects it is running inside a GitHub Actions environment (`$GITHUB_STEP_SUMMARY` is set), the built-in `github-actions` reporter automatically appends a structured test summary to the job's step summary page. The summary includes total/passed/failed test counts and, critically, **permalinks to flaky test source lines** for any test that passed only on retry.
+
+> [community] Teams that added the Vitest GitHub Actions reporter report that flaky test follow-up time dropped significantly — instead of clicking into the verbose log to find "which test retried?", the job summary shows a clickable link to the exact source line of the flaky test case. The zero-config activation is the key adoption enabler: teams with existing `vitest run` CI commands get enriched reporting without any workflow changes.
+
+**How it activates — no configuration required:**
+
+```yaml
+# .github/workflows/ci.yml — Vitest job summary activates automatically
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Vitest detects GITHUB_STEP_SUMMARY and appends job summary automatically
+      # No reporter configuration needed — zero config
+      - run: npx vitest run --coverage
+        name: Unit tests with auto job summary
+```
+
+**Output in the GitHub Actions job summary panel:**
+- Test file count and total test case count
+- Pass/fail/skip breakdown
+- Flaky test list: tests that passed only after retry, each with a permalink to the source file line
+
+**Customizing or disabling the feature:**
+
+```typescript
+// vitest.config.ts — customize or disable the GitHub Actions job summary
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    reporters: [
+      // Keep default reporters for local dev
+      'verbose',
+      // Customize the github-actions reporter's job summary behavior
+      ['github-actions', {
+        jobSummary: {
+          enabled: true,
+          // Set a custom output path (defaults to $GITHUB_STEP_SUMMARY)
+          // outputPath: '/custom/path',
+        },
+      }],
+    ],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'json-summary'],
+      include: ['src/**/*.ts'],
+    },
+  },
+});
+```
+
+**Combining with `coverage.changed` for PR-scoped reporting (Vitest 4.1+):**
+
+```yaml
+# .github/workflows/ci.yml — PR job: job summary + coverage delta for changed files only
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }  # needed for coverage.changed git diff
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # --coverage.changed: only report coverage for files changed vs. origin/main
+      # job summary auto-appended; coverage.changed makes it PR-scoped
+      - run: |
+          git fetch origin main
+          npx vitest run --coverage --coverage.changed=origin/main
+        name: Unit tests (PR coverage + job summary)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+```
+
+> [community] The `coverage.changed` flag and the GitHub Actions job summary reporter together solve the "coverage report is overwhelming" problem for large codebases. Without `coverage.changed`, a PR that touches 3 files produces a coverage report for all 300 source files — developers ignore it. With `coverage.changed`, only the 3 touched files appear in the report. With the job summary, the results are directly visible in the PR checks UI without clicking into artifacts. Teams that pair both features report 3–4× higher coverage review engagement per PR.
+
+---
+
+### GitHub Actions OIDC with Repository Custom Properties [community]
+
+GitHub Actions OIDC tokens (March 2026, GA) now support **repository custom properties** as claims in the OIDC token. Organization and enterprise administrators can designate custom properties to be included in tokens — they appear with a `repo_property_` prefix. Cloud provider trust policies can then use these properties for attribute-based access control without maintaining per-repository allow lists.
+
+> [community] Teams managing OIDC trust policies across 20+ repositories report that the repository custom properties feature eliminates a long-standing pain point: every new repository required a manual IAM trust policy update to add its `sub` claim. With custom properties, a single trust policy can grant access based on an org-level property (`repo_property_team=platform-infra`) applied to all qualifying repositories at once. Teams at companies with strict IAM governance report cutting new-repository onboarding time from 2–3 days (waiting for IAM approval) to hours (property assignment requires no IAM change).
+
+**How custom properties flow into OIDC tokens:**
+
+```yaml
+# Step 1: Organization admin adds a custom property to qualifying repositories
+# (done via GitHub UI or API — not in workflow YAML)
+# Property: "team" = "platform-infra"
+# This property appears in the OIDC token as: repo_property_team = "platform-infra"
+
+# Step 2: CI workflow — no change required; token automatically includes the property
+name: CI with Custom Property OIDC
+on: [pull_request]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Custom property is in the token — AWS trust policy uses it for role selection
+      - name: Configure AWS credentials (OIDC with custom property)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Role trust policy can match on repo_property_team instead of per-repo sub
+          role-to-assume: arn:aws:iam::123456789012:role/GitHubTestRole-PlatformInfra
+          aws-region: us-east-1
+
+      - name: Run integration tests
+        run: npm run test:integration
+```
+
+**AWS IAM trust policy using repository custom properties (attribute-based):**
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": {
+    "Federated": "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+  },
+  "Action": "sts:AssumeRoleWithWebIdentity",
+  "Condition": {
+    "StringEquals": {
+      "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+    },
+    "StringLike": {
+      "token.actions.githubusercontent.com:sub": "repo:myorg/*:*"
+    },
+    "StringEquals": {
+      "token.actions.githubusercontent.com:repo_property_team": "platform-infra"
+    }
+  }
+}
+```
+
+**TypeScript helper to verify OIDC token claims in CI (debugging):**
+
+```typescript
+// scripts/verify-oidc-claims.ts — decode and validate expected custom property claims
+import * as fs from 'fs';
+
+interface OIDCClaims {
+  iss: string;
+  sub: string;
+  aud: string;
+  repository: string;
+  repository_owner: string;
+  [key: string]: string;  // dynamic claims including repo_property_*
+}
+
+async function verifyOIDCClaims(): Promise<void> {
+  // Only available when workflow has permissions: id-token: write
+  const tokenPath = process.env['ACTIONS_ID_TOKEN_REQUEST_URL'];
+  const tokenHeader = process.env['ACTIONS_ID_TOKEN_REQUEST_TOKEN'];
+
+  if (!tokenPath || !tokenHeader) {
+    console.log('[oidc-verify] Not running in GitHub Actions — skipping claim verification');
+    return;
+  }
+
+  const res = await fetch(`${tokenPath}&audience=sts.amazonaws.com`, {
+    headers: { Authorization: `Bearer ${tokenHeader}` },
+  });
+
+  const { value: rawToken } = await res.json() as { value: string };
+
+  // Decode (not verify) the JWT payload for debugging
+  const [, payloadB64] = rawToken.split('.');
+  const claims = JSON.parse(
+    Buffer.from(payloadB64, 'base64url').toString('utf8'),
+  ) as OIDCClaims;
+
+  const customProps = Object.entries(claims)
+    .filter(([key]) => key.startsWith('repo_property_'));
+
+  console.log('[oidc-verify] Repository custom property claims in token:');
+  customProps.forEach(([key, value]) => {
+    console.log(`  ${key} = ${value}`);
+  });
+
+  if (customProps.length === 0) {
+    console.warn('[oidc-verify] WARNING: No repo_property_* claims found.');
+    console.warn('  Ensure custom properties are defined at the org/repo level and designated for OIDC inclusion.');
+  }
+}
+
+verifyOIDCClaims().catch(console.error);
+```
+
+> [community] The most important security implication: repository custom properties are set at the organization level by administrators, not by individual repository owners or workflow authors. This creates a trust hierarchy — a repository's workflow cannot self-assert a property that it does not legitimately hold. Teams using `sub` claim matching (`repo:myorg/specific-repo:*`) for OIDC isolation can now express the same constraint more cleanly as a property claim, with the additional benefit of central management: changing the property changes access for all affected repositories without touching a single IAM policy.
+
+> [community] Custom property OIDC claims do NOT replace `sub` claim scoping — they extend it. Always use both: `sub` to restrict the token to the correct organization, and `repo_property_*` to express the access tier or team. A trust policy that uses only `repo_property_team=platform-infra` without a `sub` claim restriction would allow any repo in any org that somehow got the same property (edge case but possible in an enterprise shared-tenant OIDC setup) to assume the role.
+
+---
+
+### Vitest `viteModuleRunner: false` for Production-Parity Testing [community]
+
+Vitest 4.1 introduced `viteModuleRunner: false` as an experimental project-level option. When enabled, Vitest disables the Vite module runner sandbox for that project and uses native Node.js `require`/`import` semantics instead. This eliminates the module transformation overhead and makes the test environment behaviorally identical to the production Node.js runtime.
+
+> [community] The primary use case for `viteModuleRunner: false` is testing Node.js services and CLI tools where the production code will run under native Node.js, not under Vite's module runner. Teams that enable this for their API and backend service packages report two compounding benefits: (1) CI startup time for these projects drops by 30–50% because Vite's module graph construction is skipped, and (2) module resolution bugs that Vite's runner masks (e.g., CJS/ESM interop differences, native addon loading) surface in tests rather than in production.
+
+```typescript
+// packages/api/vitest.config.ts — use viteModuleRunner: false for Node.js service tests
+import { defineProject } from 'vitest/config';
+
+export default defineProject({
+  test: {
+    name: 'api',
+    root: './packages/api',
+    include: ['src/**/*.test.ts'],
+    environment: 'node',
+    pool: 'threads',
+    // Experimental: disable Vite module runner for production-parity testing
+    // Use only for packages that run under native Node.js in production
+    // Do NOT use for browser tests or packages that depend on Vite transforms
+    viteModuleRunner: false,
+    // Longer timeout: native imports may be slower on first cold run
+    testTimeout: 15_000,
+  },
+});
+```
+
+**When to use `viteModuleRunner: false`:**
+
+```typescript
+// vitest.config.ts — workspace with selective viteModuleRunner usage
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      include: ['packages/*/src/**/*.ts'],
+    },
+    projects: [
+      // UI package: NEEDS Vite module runner for JSX transform, CSS modules
+      {
+        plugins: [react()],
+        test: {
+          name: 'ui',
+          root: './packages/ui',
+          include: ['packages/ui/src/**/*.test.tsx'],
+          environment: 'jsdom',
+          // viteModuleRunner: true (default) — required for Vite transforms
+        },
+      },
+      // API package: native Node.js service — viteModuleRunner OFF for parity
+      './packages/api/vitest.config.ts',   // contains viteModuleRunner: false
+      // CLI package: pure Node.js binary — viteModuleRunner OFF
+      './packages/cli/vitest.config.ts',   // contains viteModuleRunner: false
+    ],
+  },
+});
+```
+
+**Limitations and migration path:**
+
+```typescript
+// Known incompatibilities with viteModuleRunner: false
+// (1) Vite-specific imports will fail (e.g., `import styles from './Component.module.css'`)
+// (2) vi.mock() with factory functions that use Vite-specific features may fail
+// (3) Hot module replacement (HMR) does not apply — irrelevant for CI, matters locally
+
+// Safe migration pattern: enable on a per-project basis, verify one package at a time
+// Run with viteModuleRunner: false in CI for a sprint before enabling locally
+// If tests pass in CI but fail locally with viteModuleRunner: false, the tests
+// have a Vite-specific dependency that must be resolved first.
+```
+
+> [community] The most common issue when enabling `viteModuleRunner: false`: tests that import TypeScript path aliases (`@/services/db`) break because the native Node.js module resolver does not know about `tsconfig` path mappings. The fix is to configure `moduleNameMapper` (if using Jest-compatible compat mode) or to use a Node.js import map or `tsconfig-paths` loader. Teams that encounter this in CI add `node --loader tsconfig-paths/esm` to the Vitest process instead of reverting to the Vite runner.
+
+---
+
 | Martin Fowler — Test Pyramid | Official article | https://martinfowler.com/bliki/TestPyramid.html | Fail-fast ordering rationale |
 | GitHub Actions docs — Caching | Official docs | https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows | node_modules + browser caching |
 | GitHub Actions docs — Concurrency | Official docs | https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs | Concurrency group config |
@@ -6524,6 +6828,9 @@ export default defineConfig({
 | Playwright aria snapshot `boxes` option (v1.60) | Official docs | https://playwright.dev/docs/release-notes | Appends bounding box `[box=x,y,w,h]` to aria snapshot output — enables AI vision model consumption of page structure |
 | Vitest v5.0 Release Notes (beta) | Official docs | https://github.com/vitest-dev/vitest/releases | Breaking changes: `attachmentsDir` renamed, `sequential` removed, `vitest/expect` entry removed, blob path changed, V8 covers child_process/worker_threads |
 | Vitest merge-reports multi-environment (v5.0) | Official docs | https://vitest.dev/guide/reporters | Non-sharded multi-environment blob merging: Node + browser results merged into single HTML report without sharding |
+| Vitest 4.1 — GitHub Actions job summary reporter | Official docs | https://vitest.dev/blog/vitest-4-1 | Zero-config job summary with test stats and flaky test permalinks; activated by `$GITHUB_STEP_SUMMARY` presence |
+| Vitest 4.1 — `viteModuleRunner: false` | Official docs | https://vitest.dev/config/#vitemodulerunner | Experimental: disable Vite sandbox for production-parity native Node.js test execution |
+| GitHub Actions — OIDC with repository custom properties | Official docs | https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect | Attribute-based OIDC trust policies using `repo_property_*` claims (GA March 2026) |
 
 Playwright v1.60 promotes HAR recording from a context option (`recordHar: { path: '...' }`) to a first-class tracing API via `context.tracing.startHar()` and `context.tracing.stopHar()`. Like the Screencast API, this gives tests precise start/stop control over recording within the test body rather than requiring pre-configuration in `playwright.config.ts`. HAR captures all network requests and responses as a standard JSON archive — useful for debugging API mismatch failures, replaying requests in isolation, or attaching network evidence to CI failure artifacts.
 

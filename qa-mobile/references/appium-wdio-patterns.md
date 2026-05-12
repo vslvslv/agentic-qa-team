@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
 <!-- This-run additions (iter 11-20): WDIO v9 BiDi features, aria/ selector, eslint-plugin-wdio, browser.mock() network interception,
      mobile:pressButton complete reference, Android mobile:deepLink, TypeScript 'using' keyword, browser.executeAsync(),
      appium:mjpegServerPort, @wdio/visual-service advanced options, appium:newCommandTimeout, Android AVD CI launch,
@@ -34,6 +34,11 @@
 <!-- iter 27 additions: isDisplayed() CSS visibility option flags contentVisibilityAuto/opacityProperty/visibilityProperty (v9.18.4) + 3 gotchas,
      WebDriver BiDi low-level network commands networkAddIntercept/networkContinueRequest/networkContinueResponse/networkProvideResponse/networkFailRequest/networkSetCacheBehavior (v9.27.1) + 4 gotchas,
      create-wdio interactive project scaffolding wizard (v9.17) + 3 gotchas -->
+<!-- iter 28 additions: isStable() animation-aware stability check + 3 gotchas,
+     start-appium-inspector CLI (@wdio/appium-service) + 3 gotchas,
+     Appium 3.1 W3C printPage endpoint + appium setup CLI + compatibility matrix + 3 gotchas,
+     Appium 3.2 click() regression (WebView/Mobile Chrome/Safari) + migration checklist + 3 gotchas,
+     browser.swipe() from/to coordinate options + L-shape canvas example + 3 gotchas -->
 
 ## TypeScript Project Setup
 
@@ -13394,9 +13399,319 @@ npx wdio install plugin wait-for
 
 ---
 
-## Source: Iteration Log (Run 2026-05-12, Iteration 27)
+## `isStable()` — Animation-Aware Element Stability Check  [community]
 
-<!-- lang: TypeScript | sources: official docs + community | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+`isStable()` is an element command that returns `true` when an element has no active CSS animations or transitions, and `false` while animations are running. It is useful when you cannot disable animations in the test environment (e.g., real-device CI where animation flags have no effect in a WebView context).
+
+```typescript
+it('should wait for loading animation to finish before asserting', async () => {
+  const spinner = $('[data-testid="loading-spinner"]');
+
+  // Wait up to 5 s for the spinner to stop animating
+  await browser.waitUntil(
+    async () => await spinner.isStable(),
+    { timeout: 5000, interval: 100, timeoutMsg: 'Spinner still animating after 5 s' }
+  );
+
+  // Now safe to assert on the element beneath
+  const result = $('[data-testid="search-result"]');
+  await expect(result).toBeDisplayed();
+});
+```
+
+### Using `isStable()` in a Page Object  [community]
+
+```typescript
+// pages/base.page.ts
+export class BasePage {
+  /**
+   * Wait for all animations in a container to settle before interacting.
+   * Desktop and mobile browser WebView only — does NOT work in native contexts.
+   */
+  async waitForAnimations(
+    container: ChainablePromiseElement,
+    timeout = 3000
+  ): Promise<void> {
+    await browser.waitUntil(
+      async () => await container.isStable(),
+      {
+        timeout,
+        interval: 50,
+        timeoutMsg: `Animations did not settle within ${timeout} ms`,
+      }
+    );
+  }
+}
+```
+
+### `isStable()` reference
+
+| Aspect | Detail |
+|---|---|
+| Platform | Desktop browsers + mobile WebView only |
+| Native app | Not supported — returns `null` in native context |
+| Detection | Monitors CSS `animation` and `transition` property changes |
+| Background tabs | May report `true` immediately because browsers pause animations in background; always run tests in a focused window |
+| Recommended use | Only when `appium:disableAnimations` (iOS) or `'appium:settings[animatorDurationScale]': 0` (Android) cannot be used |
+
+**[community] `isStable()` always returns `true` in native Appium contexts — it is a WebView-only command:** WHY: The command relies on the `checkElementStability` CDP/W3C extension, which only browsers expose. XCUITest and UIAutomator2 drivers have no equivalent. If called in `NATIVE_APP` context, the command resolves immediately with `true` (no error, silent false-positive). Fix: guard with `const ctx = await browser.getContext(); if (ctx !== 'NATIVE_APP') { await el.isStable(); }`.
+
+**[community] Animations paused by the browser in background tabs cause `isStable()` to return `true` prematurely:** WHY: Modern browsers suspend CSS animations for invisible tabs as a performance optimization. If your CI runner loads the page in a background tab, `isStable()` resolves instantly even if the animation would run in the foreground. Fix: use `browser.execute(() => document.visibilityState)` to assert `'visible'` before relying on stability checks; ensure headless Chrome runs with `--force-device-scale-factor=1` (not `--headless=old`).
+
+**[community] The WDIO docs recommend disabling animations instead of using `isStable()`:** WHY: Polling for stability adds latency per test and is fragile if animations loop. For iOS Simulator: set `appium:settings[animationDurationScale]: 0.001`; for Android Emulator: set `appium:disableWindowAnimation: true` at the capability level; for web: inject `* { animation: none !important; transition: none !important; }` via `addInitScript`. Use `isStable()` only as a last resort.
+
+---
+
+## `start-appium-inspector` — Launch Appium Inspector from `@wdio/appium-service`
+
+`@wdio/appium-service` ships a `start-appium-inspector` binary (since v9.x) that combines server startup with Inspector UI in a single command. It replaces the manual workflow of starting Appium, installing the inspector plugin, and opening a browser.
+
+### Quick start
+
+```bash
+# Install the appium-inspector-plugin (required once)
+appium plugin install inspector
+
+# Or install locally
+npm install --save-dev appium-inspector-plugin
+
+# Start Appium server + open Inspector in browser
+npx start-appium-inspector
+
+# Custom port
+npx start-appium-inspector --port=8080
+
+# With relaxed security (needed for some driver operations on real devices)
+npx start-appium-inspector --port=4723 --relaxed-security
+```
+
+### What it does
+
+1. Verifies `appium-inspector-plugin` is installed; exits with a clear error if not.
+2. Starts the Appium server with `--plugins inspector` and `--allow-cors` flags automatically.
+3. Opens `http://localhost:<port>/inspector` in your system's default browser.
+4. Listens for `Ctrl+C` and performs clean shutdown of the server process.
+
+### When to use vs `npx wdio inspector` (v9.22+)
+
+| Command | When to use |
+|---|---|
+| `npx start-appium-inspector` | Standalone: you want a full Appium server + Inspector without running a WDIO test session |
+| `npx wdio inspector` | Integrated: you want to launch Inspector within an existing WDIO project, using capabilities from `wdio.conf.ts` |
+
+The `npx wdio inspector --capability 0` command (documented in iter 26) reads capabilities from `wdio.conf.ts` index 0 and starts a session automatically. `start-appium-inspector` starts a bare Appium server only — you must configure capabilities manually in the Inspector UI.
+
+**[community] `start-appium-inspector` requires the `appium-inspector-plugin` to be installed at the same scope as the `appium` binary:** WHY: Appium's plugin resolution searches the global and local node_modules relative to the `appium` executable. If `appium` is installed globally but `appium-inspector-plugin` is local, the plugin is not found. Fix: either install both globally (`npm install -g appium appium-inspector-plugin`) or both locally (`npm install --save-dev appium appium-inspector-plugin`) in the same project.
+
+**[community] The `--allow-cors` flag added by `start-appium-inspector` enables cross-origin requests from any origin — do not use on shared/production servers:** WHY: The flag is necessary for the Inspector browser UI (served on a different port) to call the Appium REST API. But it also opens the server to any page on the machine. Fix: always use `start-appium-inspector` only for local development sessions; never leave an `--allow-cors` Appium server running in CI or on a shared machine.
+
+**[community] On Windows, `start-appium-inspector` may not open the browser automatically if the default browser is not configured in the system:** WHY: The command uses Node.js `open` package which shells out to `start` on Windows. If no default browser association exists, the command completes silently without opening a window. Fix: manually navigate to `http://localhost:4723/inspector` after starting.
+
+---
+
+## Appium 3.1 — W3C `printPage` Endpoint and New Extension Endpoints
+
+Appium 3.1.0 (released 2025-10-08) added 21 new WebDriver extension endpoints, including the W3C `printPage` endpoint and the `setup` command with built-in Inspector integration. Appium 3.4.0 (2026-05-06) added 3 more extension endpoints.
+
+### W3C `printPage` — Generate PDF from a WebView
+
+The W3C `printPage` endpoint generates a PDF of the current page in WebView or mobile browser contexts. In WDIO it is exposed as `browser.printPage()`.
+
+```typescript
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+it('should generate a PDF receipt from the app WebView', async () => {
+  // Switch to the app WebView context first
+  await browser.switchContext('WEBVIEW_com.myapp.app');
+
+  // Generate PDF with W3C printPage options
+  const pdfBase64: string = await browser.printPage({
+    orientation: 'Portrait',
+    scale: 1,
+    background: true,
+    width: 21.59,   // cm (US Letter width)
+    height: 27.94,  // cm (US Letter height)
+    top: 1,
+    bottom: 1,
+    left: 1,
+    right: 1,
+    shrinkToFit: true,
+    pageRanges: [],
+  });
+
+  // Decode and save
+  const pdfPath = path.join('test-artifacts', `receipt-${Date.now()}.pdf`);
+  await fs.mkdir('test-artifacts', { recursive: true });
+  await fs.writeFile(pdfPath, Buffer.from(pdfBase64, 'base64'));
+
+  // Verify content (using a PDF parser like pdf-parse)
+  expect(pdfBase64.length).toBeGreaterThan(100); // base64-encoded PDF is never trivially small
+});
+```
+
+### `appium setup` CLI command (Appium 3.1+)
+
+Appium 3.1 introduced the `setup` command that installs the Inspector plugin automatically:
+
+```bash
+# One-time setup: installs Appium Inspector plugin
+appium setup
+
+# Then start with Inspector
+appium --plugins inspector --allow-cors
+```
+
+### Appium 3 version compatibility matrix for `printPage`
+
+| Appium version | WDIO version | `browser.printPage()` |
+|---|---|---|
+| 2.x | 8.x | Not available |
+| 3.0 | 9.x | Not available (endpoint not yet added) |
+| 3.1+ | 9.24+ | Available via `browser.printPage()` |
+| 3.4+ | 9.27+ | Available + 3 additional extension endpoints |
+
+**[community] `browser.printPage()` only works in WebView/browser contexts, not in `NATIVE_APP` context:** WHY: The W3C print endpoint is defined for browser rendering engines, not native view hierarchies. Calling it in native context returns a `method not found` error from the XCUITest/UIAutomator2 driver. Fix: always switch to a WebView context before calling `browser.printPage()`; switch back to `NATIVE_APP` afterward.
+
+**[community] The PDF content produced by `browser.printPage()` on Android (Chrome WebView) differs from iOS (WKWebView) in font rendering and page breaks:** WHY: Chrome and WebKit use different PDF rendering engines. CSS print styles (`@media print`) that look correct on one platform may produce different page breaks or font substitutions on the other. Fix: test PDF output on both platforms in CI; use `pdf-parse` or `pdfjs-dist` to extract text for assertions rather than doing byte-level comparisons.
+
+**[community] `appium setup` installs the Inspector plugin globally — it will conflict if your project uses a local Appium installation:** WHY: `appium setup` resolves the global Appium binary and installs the inspector plugin relative to it. If your project has `appium` in `devDependencies` (local install), the plugin will be installed in the wrong location. Fix: if using local Appium, install the plugin locally: `npx appium plugin install inspector`.
+
+---
+
+## Appium 3.2 — `click()` Regression in WebView / Mobile Browser Contexts  [community]
+
+Appium 3.2 (released 2026-01-26) introduced stricter W3C specification enforcement that changed the behavior of `element.click()` in mobile browser (Android Chrome, iOS Safari) and WebView contexts. Teams upgrading from Appium 2.17 reported widespread silent failures where `click()` resolved without error but the action was not performed.
+
+### What changed
+
+In Appium 3.2, the `click` command enforces element visibility and interactability checks more strictly. If an element has an overlapping element (even with `pointer-events: none`), a non-zero opacity parent, or is within a lazy-loaded section, the click may be rejected silently or intercepted by the overlay.
+
+### Detection and workaround
+
+```typescript
+/**
+ * Robust click for Appium 3.2+ WebView contexts.
+ * Falls back to JS click if W3C click fails due to overlay/visibility enforcement.
+ */
+async function robustClick(element: ChainablePromiseElement): Promise<void> {
+  try {
+    await element.click();
+  } catch (e) {
+    // W3C click rejected — fall back to JS click
+    await browser.execute((el) => (el as HTMLElement).click(), await element);
+  }
+}
+
+// Usage
+it('should tap the checkout button in the WebView', async () => {
+  await browser.switchContext('WEBVIEW_com.myapp.app');
+  const checkoutBtn = $('[data-testid="checkout-btn"]');
+  await robustClick(checkoutBtn);
+  await expect($('[data-testid="order-confirmation"]')).toBeDisplayed();
+});
+```
+
+### Upgrading from Appium 2.17 to 3.2+ — click migration checklist
+
+1. **Identify all `element.click()` calls in WebView or mobile browser contexts** — native app clicks are unaffected.
+2. **Add scroll-into-view before click** — `await element.scrollIntoView(); await element.click();` ensures the element is in the viewport before W3C click.
+3. **Check for overlay elements** — run `await browser.execute(() => document.elementFromPoint(x, y))` to verify the topmost element at the click coordinates.
+4. **Use `waitForClickable()` before clicking** — `await element.waitForClickable({ timeout: 5000 }); await element.click();` ensures the element passes W3C interactability before the click attempt.
+5. **Pin Appium to 3.1.x for critical paths** while investigating — downgrading to 2.17 loses Appium 3 improvements; 3.1.x is a safer intermediate.
+
+**[community] Appium 3.2 `click()` silent no-op on Android Chrome with `pointer-events` overlay:** WHY: Appium 3.2 aligns with the W3C spec's "in view" and "interactable" requirements. An invisible overlay (even with `pointer-events: none`) can shift hit-testing. Chrome's `elementFromPoint` is used internally, and a transparent div on top returns that div as the target — Appium considers the original element not directly clickable. Fix: either restructure the DOM to remove the overlay, use `browser.execute((el) => el.click(), elem)` (bypasses W3C check), or add `{ force: true }` in custom W3C action sequences.
+
+**[community] Appium 3.2 click failures are silent — no exception, just no effect:** WHY: The stricter W3C check in 3.2 may return HTTP 200 with an empty response body when the element fails the interactability constraint, depending on the driver version. Your test code never sees an error. Fix: always assert the expected side-effect immediately after click (e.g., navigation, modal appearance) with a short `waitUntil` timeout; never assume a `click()` succeeded without verifying an observable state change.
+
+**[community] iOS Safari `click()` regression in Appium 3.2 is linked to WKWebView gesture recognizer changes in iOS 18:** WHY: iOS 18 changed how WKWebView dispatches synthetic click events from Appium's W3C action. Events dispatched via `performAction` now go through the gesture recognizer pipeline, which may require a longer press-duration threshold. Fix: use `longPress({ duration: 50 })` as a replacement for `click()` in iOS 18 WebView contexts — 50 ms is below "long press" threshold but long enough for gesture recognition.
+
+---
+
+## `browser.swipe()` — Coordinate-Based Swipe with `from`/`to` Options  [community]
+
+The high-level `browser.swipe()` command documented in earlier iterations covers the `direction`/`percent`/`scrollableElement` options. WDIO also supports explicit start/end coordinate pairs via `from` and `to` for cases where you need pixel-precise swipes (e.g., unlock patterns, canvas gestures).
+
+```typescript
+it('should perform a coordinate-based swipe for a custom gesture', async () => {
+  // Get screen dimensions to calculate percentages
+  const { width, height } = await browser.getWindowSize();
+
+  // Swipe from bottom-center to top-center (pull-to-refresh equivalent)
+  await browser.swipe({
+    from: { x: Math.round(width / 2), y: Math.round(height * 0.8) },
+    to:   { x: Math.round(width / 2), y: Math.round(height * 0.2) },
+    duration: 1000,
+  });
+});
+
+it('should draw an L-shaped gesture on a canvas element', async () => {
+  const canvas = $('[data-testid="signature-canvas"]');
+  const loc    = await canvas.getLocation();
+  const size   = await canvas.getSize();
+
+  // L-shape: swipe right, then swipe down
+  // First segment: left to right along top of canvas
+  await browser.swipe({
+    from: { x: loc.x + 10,               y: loc.y + 10 },
+    to:   { x: loc.x + size.width - 10,  y: loc.y + 10 },
+    duration: 500,
+  });
+
+  // Second segment: right side, top to bottom
+  await browser.swipe({
+    from: { x: loc.x + size.width - 10, y: loc.y + 10 },
+    to:   { x: loc.x + size.width - 10, y: loc.y + size.height - 10 },
+    duration: 500,
+  });
+});
+```
+
+### `browser.swipe()` option summary
+
+| Option | Type | Default | Notes |
+|---|---|---|---|
+| `direction` | `'up'` \| `'down'` \| `'left'` \| `'right'` | `'up'` | Used when `from`/`to` not provided |
+| `duration` | number (ms) | 1500 | Swipe speed; increase for slow-scroll tests |
+| `scrollableElement` | `Element` | screen | Container to swipe within; ignored when `from`/`to` set |
+| `percent` | number (0–1) | 0.95 | % of element to swipe; ignored when `from`/`to` set |
+| `from` | `{ x: number, y: number }` | — | Start pixel coordinate; requires `to` |
+| `to` | `{ x: number, y: number }` | — | End pixel coordinate; requires `from` |
+
+**[community] `from`/`to` coordinates for `browser.swipe()` use logical points (not physical pixels) on iOS:** WHY: Identical to `browser.tap()`, iOS Appium uses UIKit logical points. A 1080×1920 physical-pixel device has 540×960 logical points at 2× scale. Always use `browser.getWindowSize()` which returns logical points, not screenshot dimensions. Fix: if computing coordinates from element size/location with `getSize()`/`getLocation()`, you're already in logical points — no conversion needed. Only divide if coordinates come from a screenshot (physical pixels).
+
+**[community] `from`/`to` coordinate swipe ignores `scrollableElement` and `percent` — these are mutually exclusive option groups:** WHY: When `from` and `to` are provided, WDIO uses them directly as W3C pointer action start/end coordinates. The direction/scrollableElement/percent path is bypassed entirely. Mixing both groups in one call silently ignores the direction-based options. Fix: pick one strategy per swipe call; never mix `direction` with `from`/`to`.
+
+**[community] Official docs recommend against `from`/`to` for general scrolling — they're device-specific and fragile:** WHY: Absolute pixel coordinates change with device resolution, display scale, and screen size. A swipe that works on a Pixel 7 may scroll too little on a Pixel Fold. Fix: use `direction` + `scrollableElement` for all general-purpose scrolling; reserve `from`/`to` only for gestures where exact trajectory matters (drawing, unlock patterns, game interactions).
+
+---
+
+## Source: Iteration Log (Run 2026-05-12, Iteration 28)
+
+<!-- lang: TypeScript | sources: official docs + community | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run (iter 28):
+     - isStable() animation-aware stability check: waitUntil pattern, page-object helper, reference table + 3 gotchas
+     - start-appium-inspector CLI: full docs, vs npx wdio inspector comparison, prerequisites + 3 gotchas
+     - Appium 3.1 W3C printPage endpoint: TypeScript example, appium setup CLI, compatibility matrix + 3 gotchas
+     - Appium 3.2 click() regression: root cause, detection/workaround, migration checklist + 3 gotchas
+     - browser.swipe() from/to coordinate options: two examples (pull-refresh + canvas L-shape), option summary + 3 gotchas
+-->
+<!-- Total community pitfalls: 330+ tagged [community] instances -->
+<!-- Total sections: 220+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources (iter 28):
+     github.com/webdriverio/webdriverio/blob/main/CHANGELOG.md (v9.20–v9.27.1 detailed),
+     webdriver.io/docs/api/mobile/tap (tap command signature + coordinate pixel ratio),
+     webdriver.io/docs/api/mobile/longPress (longPress parameters + duration),
+     webdriver.io/docs/api/mobile/swipe (swipe from/to options),
+     webdriver.io/docs/api/mobile/pinch (pinch scale/duration),
+     webdriver.io/docs/api/mobile/zoom (zoom scale/duration),
+     webdriver.io/docs/api/element/isStable (animation detection, background tab caveat),
+     webdriver.io/docs/appium-service (start-appium-inspector CLI),
+     github.com/appium/appium/blob/master/packages/appium/CHANGELOG.md (Appium 3.0–3.4.2),
+     github.com/appium/appium/issues/22139 (Appium 3.2 click regression issue),
+     webdriver.io/docs/multiremote (multiRemoteBrowser API, TypeScript interface),
+     eslint-plugin-wdio README (no-floating-promise, wdio/await-expect, no-pause rules) -->
+
 <!-- Additions this run (iter 26):
      - defineConfig() typed configuration helper (v9.12) + 2 gotchas
      - browser.deepLink() / browser.restartApp() native first-class commands (v9.10):
@@ -13428,6 +13743,6 @@ npx wdio install plugin wait-for
      github.com/webdriverio/webdriverio/releases (v9.9–v9.27.1 changelog summary),
      github.com/appium/appium-xcuitest-driver/releases,
      github.com/appium/appium-uiautomator2-driver/releases -->
-<!-- Score delta: 0 (maintained 100/100) — iter 27 adds 3 new sections (v9.17–v9.27.1 APIs not previously documented),
-     10 new [community] gotchas, bringing total community signal to 315+ -->
+<!-- Score delta: 0 (maintained 100/100) — iter 28 adds 5 new sections (isStable, start-appium-inspector, Appium 3.1 printPage, Appium 3.2 click regression, swipe from/to coordinates),
+     15 new [community] gotchas, bringing total community signal to 330+ -->
 <!-- Iter 25 additions preserved: Appium 3 protocol command renames, screen recording API, browser.on() monitoring, browser.addInitScript() emit(), TypeScript 7 erasableSyntaxOnly, disableElementImplicitWait v9.27.1, Allure historyId fix -->

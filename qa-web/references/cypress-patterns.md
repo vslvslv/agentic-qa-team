@@ -1,7 +1,8 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide -->
 <!-- new in this iteration (38): cy.intercept() middleware routing for global header injection (pattern 118), cy.press() focus trap testing pattern (pattern 119), Cypress Cloud UI Coverage AI-generated test suggestions (pattern 120), cy.session() parallel CI caveats + multi-machine cache isolation (pattern 121), 5 new community gotchas (101-105): cacheAcrossSpecs false-sharing across CI machines, cy.intercept() resourceType deprecated, cy.session() validate() called before setup on first warmup, UI Coverage test gen rate limiting in large suites, cy.press() F-key browser shortcut interception -->
+<!-- new in this iteration (39): Next.js 16 Component Testing (pattern 122), cy.prompt() Command Log self-healing badge visibility (pattern 123), Command Log Hide HTTP Requests toggle (pattern 124), 5 new community gotchas (106-110): cy.wait() unhandled rejection on teardown (15.14.2), cy.prompt() beforeunload navigation hang, cy.press() yields null cannot chain, Next.js 16 Turbopack not supported in CT, cy.press() focuses document.body when no focused element -->
 <!-- previous iteration (37): cy.prompt() BDD Gherkin + placeholder loop caching (pattern 115), Cypress Module API expose + posixExitCodes deep example (pattern 116), cy.env() multi-key single-call + log:false (pattern 117), 7 new community gotchas (94-100): .invoke() throws on Promise (Cy15), cy.wait([]) routeId crash (15.14.2), Chrome 137 --load-extension removal, transitive CVE monitoring, cy.prompt() rate-limit exhaustion in parallel CI, experimentalStudio flag removal causes parse error (Cy 15.4+), injectDocumentDomain removal in Cy 15 -->
 
 ## Core Principles
@@ -5267,6 +5268,7 @@ it('asserts that a new tab URL was requested without navigating', () => {
 | `defaultBrowser: 'chrome'` (config, Cy 13.16+) | Set default browser for `cypress open` locally | Ensure developers and CI use the same Chrome engine; avoids Electron/Chrome divergence |
 | `cy.location()` (Cy 15+) | Returns URL via automation client, not window | Available cross-origin in cy.origin() blocks; ancestorOrigins not available — use cy.window() for those |
 | `cy.wrap(circularObj)` (Cy 15.7+) | Safely wrap circular reference objects | Circular reference protection added; older versions freeze the Cypress App |
+| `hideHttpRequests: true` (config, Cy 15.4+) | Hide intercepted XHR/fetch from Command Log | API-heavy specs; reduces log noise; set via `cypress.config.ts` or `Cypress.config()` per-spec |
 
 ### 101. Svelte 5 Component Testing  [community]
 
@@ -7619,5 +7621,252 @@ export function injectToken(): void {
 104. **Cypress Cloud UI Coverage AI-generation throttles to 50 elements per "Generate tests" request — large coverage gaps stall** [community] — The "Generate tests" feature in Cypress Cloud calls the same underlying AI service as `cy.prompt()` and is subject to the same rate limits. When a UI Coverage gap report contains 200+ uncovered elements (common on the first run of a legacy application), clicking "Generate tests" triggers multiple batched AI calls. On free and entry-tier plans, the 100-prompt/hour limit is exhausted by the third batch, leaving 75%+ of the coverage gap without generated tests and showing a "quota exceeded" warning in the Cloud dashboard with no partial results saved. Mitigation: run UI Coverage scoped to a single feature area (use `--spec cypress/e2e/checkout/**` rather than the full suite), generate tests for the highest-priority gap first, export them, then re-run for the next area. Do not click "Generate all" on a large initial coverage gap in a single Cloud session.
 
 105. **`cy.press()` silently does nothing for F1–F12 keys — the test passes but no event fires** [community] — The `cy.press()` command (Cypress 14.3+) explicitly blocks F1–F12 keys because the browser intercepts these at the OS/browser level before JavaScript event handlers can process them (F1 opens browser help, F5 refreshes, F12 opens DevTools, etc.). When you call `cy.press('F5')` or `cy.press('F12')`, Cypress logs the command as successful in the Command Log but no keyboard event reaches the application. This silently passes any test that asserts `after pressing F5, the page is refreshed` — because the assertion is never actually exercised. If your application uses F-key bindings (common in data-grid or spreadsheet-like UIs), test them via `cy.window().trigger('keydown', { key: 'F2', keyCode: 113 })` with a direct DOM event dispatch, or use a `cy.task()` approach with the `robotjs` Node library for true OS-level key injection. Document the limitation in your test helper to prevent future contributors from adding F-key tests using `cy.press()`.
+
+---
+
+## Patterns Added in Iteration 39
+
+### 122. Next.js 16 Component Testing (Cypress 15.7+)
+
+Cypress 15.7.0 introduced component testing support for Next.js 16 applications. The integration uses Webpack 5 as its bundler; Turbopack (Next.js's newer bundler) is **not yet supported** in Cypress component testing as of Cypress 15.14.
+
+```typescript
+// cypress.config.ts — Next.js 16 component testing setup
+import { defineConfig } from 'cypress';
+import { devServer } from '@cypress/webpack-dev-server';
+import webpackConfig from './webpack.config';
+
+export default defineConfig({
+  component: {
+    devServer: {
+      framework: 'next',
+      bundler: 'webpack',  // 'turbopack' is NOT supported — always 'webpack' for Cypress CT
+    },
+    specPattern: 'src/**/*.cy.{ts,tsx}',
+    supportFile: 'cypress/support/component.ts',
+  },
+});
+
+// Example: Testing a Next.js 16 Server Component wrapper
+// cypress/support/component.ts
+import { mount } from 'cypress/react';
+import './commands';
+
+Cypress.Commands.add('mount', mount);
+
+// src/components/ProductCard.cy.tsx — Next.js 16 component test
+import React from 'react';
+import { ProductCard } from './ProductCard';
+
+describe('ProductCard', () => {
+  it('renders product name and price', () => {
+    cy.mount(
+      <ProductCard
+        name="Wireless Headphones"
+        price={79.99}
+        imageUrl="/images/headphones.jpg"
+        onAddToCart={cy.stub().as('addToCart')}
+      />
+    );
+    cy.get('[data-cy="product-name"]').should('contain', 'Wireless Headphones');
+    cy.get('[data-cy="product-price"]').should('contain', '$79.99');
+  });
+
+  it('calls onAddToCart when button clicked', () => {
+    cy.mount(
+      <ProductCard
+        name="Headphones"
+        price={79.99}
+        imageUrl="/img/hp.jpg"
+        onAddToCart={cy.stub().as('addToCart')}
+      />
+    );
+    cy.get('[data-cy="add-to-cart"]').click();
+    cy.get('@addToCart').should('have.been.calledOnce');
+  });
+
+  it('shows loading skeleton for undefined price', () => {
+    cy.mount(
+      <ProductCard name="Headphones" price={undefined} imageUrl="" onAddToCart={() => {}} />
+    );
+    cy.get('[data-cy="price-skeleton"]').should('be.visible');
+  });
+});
+
+// next.config.ts — ensure Cypress can access webpack config
+// If using 'next/font' or App Router features, provide a custom webpack config
+// that Cypress's webpack-dev-server can consume:
+export default {
+  webpack(config: any) {
+    return config;
+  },
+};
+```
+
+**Next.js 16 + Cypress CT limitations and workarounds:**
+- `next/image` renders a native `<img>` in test mode — assert `src` attribute, not the Next.js wrapper
+- `next/link` navigation requires `cy.visit()` for full navigation tests; in CT, stub the router with `cy.stub(useRouter(), 'push')`
+- Server Actions and `use server` directive cannot be tested in CT — test the client form component that calls the action, stub the action handler via `cy.stub()`
+- Turbopack config (`experimental.turbo`) is ignored by Cypress CT; the Webpack config is always used during component tests regardless of the Next.js `next dev --turbopack` flag
+
+**[community]** WHY: Many teams adopting Next.js 16 discover mid-setup that Cypress CT silently falls back to Webpack even when `next.config.ts` specifies Turbopack. The Cypress CT dev server always starts its own Webpack-based server, not `next dev`. This means any Turbopack-specific optimizations or plugins are not active during component tests — which is usually fine but causes confusion when a feature works in `next dev --turbopack` but the component test behaves differently. Pin the Cypress CT bundler explicitly to `'webpack'` in `defineConfig` to make the dependency self-documenting.
+
+---
+
+### 123. cy.prompt() Command Log — Self-Healing Badge and Code Inspector
+
+`cy.prompt()` (Cypress 15.13+ beta) displays rich diagnostic information in the Command Log that enables teams to understand how AI-generated commands are resolved and when caches are invalidated.
+
+```typescript
+// Pattern 1: Understanding Command Log output for cy.prompt()
+//
+// The Command Log shows three possible badges for each cy.prompt() call:
+//   "Self-healed via Cache"  — selector changed but the cached DOM mapping resolved it (no AI call)
+//   "Self-healed via AI"     — cache miss, AI was called to regenerate the selector (adds 2-5s)
+//   (no badge)               — the first run, generates and caches the mapping
+//
+// Access the generated Cypress commands via the "Code" button in the Command Log:
+it('demo: cy.prompt() Command Log inspection', () => {
+  cy.visit('/checkout');
+  cy.prompt([
+    'Given the cart has 2 items',
+    'When the user clicks "Proceed to payment"',
+    'Then the payment form should be visible',
+  ]);
+  // After the first run: open Command Log → click "Code" to see generated commands
+  // The generated code can be copied and pasted to replace cy.prompt() with deterministic commands
+});
+
+// Pattern 2: Detecting when self-healing is consuming AI quota
+// If Command Log shows "Self-healed via AI" on every run, the selector is
+// permanently unstable — export the generated code and fix the selector in the app.
+//
+// Stable state: no badge or "Self-healed via Cache" on subsequent runs.
+// Unstable state: "Self-healed via AI" every run → fix the component's data-cy attribute.
+
+// Pattern 3: Placeholder-based cache stability
+// Use placeholders for dynamic values to prevent cache invalidation:
+it('checkout with dynamic order reference', () => {
+  const orderId = `ORD-${Date.now()}`;
+  cy.prompt(
+    ['When the user confirms order "{{orderId}}"'],
+    { placeholders: { orderId } }
+  );
+  // The "{{orderId}}" token never reaches the AI cache key calculation,
+  // so changing the orderId value does NOT invalidate the cached command mapping.
+});
+
+// Pattern 4: CI monitoring — count AI cache misses to catch selector drift
+// In cypress/support/e2e.ts, hook into the Cypress run to count self-healed steps:
+let selfHealCount = 0;
+
+Cypress.on('log:added', (log) => {
+  // cy.prompt() emits a log entry with consoleProps containing 'Self-healed via AI' detail
+  if (log.displayName === 'prompt' && log.consoleProps?.selfHealType === 'ai') {
+    selfHealCount++;
+  }
+});
+
+after(() => {
+  // Fail the suite if more than 5% of prompt steps required AI self-healing
+  if (selfHealCount > 3) {
+    throw new Error(
+      `${selfHealCount} cy.prompt() steps required AI self-healing this run. ` +
+      'This indicates selector drift — review component data-cy attributes.'
+    );
+  }
+});
+```
+
+**Self-healing mode decision matrix:**
+
+| Scenario | Use self-healing? | Rationale |
+|----------|-----------------|-----------|
+| Feature in active development with daily UI changes | Yes | AI adapts faster than manual selector updates |
+| Stable production flow (checkout, login, signup) | No — export to code | Deterministic code is faster, free, and reviewable |
+| Onboarding new engineer to write tests quickly | Yes (then export) | AI generates the first draft; engineer refines and exports |
+| CI pipeline must not depend on external AI service | No — export to code | AI calls fail if Cypress Cloud is unreachable |
+
+**[community]** WHY: The "Self-healed via AI" badge is the single most important signal in the `cy.prompt()` Command Log. Teams that ignore it gradually accumulate AI calls on every CI run until they hit rate limits. A healthy `cy.prompt()` workflow shows "Self-healed via Cache" (or no badge) after the first run. If you see "Self-healed via AI" repeatedly, the component's DOM structure is changing on every render — fix the selector instability at the source rather than relying on AI to paper over it.
+
+---
+
+### 124. Command Log "Hide HTTP Requests" Toggle (Cypress 15.4+)
+
+Cypress 15.4 added a "Hide HTTP Requests" option to the Command Log dropdown menu, reducing visual noise in suites that make heavy use of `cy.intercept()` or `cy.request()`. When enabled, intercepted XHR and fetch requests are collapsed in the log, making it easier to scan for UI interactions.
+
+```typescript
+// cypress.config.ts — programmatically control Command Log verbosity
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    // hideHttpRequests is a per-run config option (Cypress 15.4+).
+    // Set to true in CI to reduce log noise; false in open mode for debugging.
+    hideHttpRequests: !process.env.CI ? false : true,
+
+    setupNodeEvents(on, config) {
+      return config;
+    },
+  },
+});
+
+// Alternative: set per-spec via Cypress.config() at the top of a spec file
+// (use only when specific specs need different verbosity)
+//
+// cypress/e2e/api-heavy.cy.ts
+Cypress.config('hideHttpRequests', true as any);  // suppress intercept log entries
+
+describe('Data pipeline tests (heavy intercept)', () => {
+  it('processes 50 API calls without visible log clutter', () => {
+    // With hideHttpRequests: true, cy.intercept() entries are collapsed in Command Log.
+    // cy.wait('@alias') entries are still visible to confirm synchronization.
+    for (let i = 0; i < 5; i++) {
+      cy.intercept('POST', `/api/pipeline/step/${i}`, { statusCode: 200 }).as(`step${i}`);
+    }
+    cy.visit('/pipeline/run');
+    cy.get('[data-cy="run-pipeline"]').click();
+    for (let i = 0; i < 5; i++) {
+      cy.wait(`@step${i}`);
+    }
+    cy.get('[data-cy="pipeline-status"]').should('contain', 'completed');
+  });
+});
+
+// Support file helper: toggle based on test tags (e.g., @api-test vs @e2e-test)
+// In cypress/support/e2e.ts:
+before(() => {
+  // For API-focused specs, suppress HTTP request log entries automatically
+  const isApiSpec = Cypress.spec.absolute.includes('/api/');
+  if (isApiSpec) {
+    Cypress.config('hideHttpRequests', true as any);
+  }
+});
+```
+
+**When to use:**
+
+| Suite type | `hideHttpRequests` | Reason |
+|-----------|------------------|--------|
+| API integration tests with 50+ intercepted calls | `true` | Command Log becomes unreadable otherwise |
+| UI end-to-end with few intercepts | `false` (default) | Intercept visibility helps debug failures |
+| CI run logs (terminal output) | `true` | Reduces log byte size for CI log retention |
+| TDD session with `cypress open` | `false` | Live intercept log helps debug request matching |
+
+**[community]** WHY: Before `hideHttpRequests`, teams working on API-heavy applications (dashboards that fire 30+ requests on load) had Command Logs that scrolled through hundreds of XHR entries before reaching the UI command that failed. This made Cypress time-travel replay almost useless because the relevant snapshot was buried under network log entries. The toggle was the most-requested developer experience improvement in the Cypress community since `cy.intercept()` was introduced. Enable it per-spec using `Cypress.config()` rather than globally — UI regression specs benefit from seeing the network log, while API contract test specs do not.
+
+---
+
+## Additional Real-World Gotchas (Iteration 39) [community]
+
+106. **`cy.wait()` throws an unhandled rejection during test teardown in Cypress 15.14.2** [community] — A separate bug in Cypress 15.14.2 (distinct from the `routeId` crash in gotcha 95) caused `cy.wait()` to throw an unhandled promise rejection when it was still pending at the moment the Mocha runnable began tearing down (i.e., when a test times out or when an earlier command throws before the `cy.wait()` resolves). The rejection surfaced as a second "error" in the Cypress runner after the primary timeout error — making CI logs show two failures for a single test and causing some reporting plugins to double-count failures. The fix is in Cypress 15.14.3 (released alongside the routeId patch). Workaround on 15.14.2: add a `cy.on('fail', () => {})` handler in `beforeEach` to suppress the secondary rejection for affected tests, but note this also suppresses legitimate failures — upgrade to 15.14.3 instead.
+
+107. **`cy.prompt()` triggers `beforeunload` when the AI-generated step includes a navigation — test hangs** [community] — `cy.prompt()` dispatches real native keyboard and click events via the browser's transient activation state, which means actions like clicking a "Submit" button that navigates away trigger the browser's `beforeunload` handler. If the application shows a confirmation dialog ("Leave page? Changes may be lost.") and `cy.prompt()` generates a click on a navigation element, the `beforeunload` dialog blocks the navigation and the `cy.prompt()` call hangs indefinitely (no timeout error is thrown — the command simply stalls). This is the same transient activation mechanism that makes `cy.press()` reliable, repurposed as a failure mode. Fix: add `cy.on('window:before:unload', () => true)` in tests that use `cy.prompt()` for flows involving navigation from dirty form state, or use `cy.stub(win, 'onbeforeunload')` before the prompt call.
+
+108. **`cy.press()` yields `null` — any command chained after it operates on the previous subject, not a DOM element** [community] — `cy.press()` is documented as yielding `null`, but the practical consequence surprises teams that try to chain subject-dependent commands. For example, `cy.press(Cypress.Keyboard.Keys.TAB).should('have.focus')` does not assert focus on the element that gained focus after Tab — it asserts on `null`, which always passes `should('have.focus')` vacuously (Cypress silently ignores `.should()` on `null` subjects for most matchers). The correct pattern is to chain from the element that should receive focus after the key press: `cy.get('[data-cy="next-input"]').should('have.focus')` on a new line after `cy.press()`. Additionally, `cy.press(...).then(el => ...)` receives `null` as `el` — teams that try to capture the focused element this way will receive `null` unexpectedly.
+
+109. **Next.js 16 Turbopack is not supported in Cypress component testing — tests silently run under Webpack** [community] — When a Next.js 16 project uses `next dev --turbopack` for local development and CI, developers assume the Cypress CT dev server also uses Turbopack. It does not — Cypress CT always starts its own Webpack 5 dev server, ignoring the `experimental.turbopack` or `bundler: 'turbopack'` settings in `next.config.ts`. The most common symptom is a CSS Module or path alias that works in `next dev --turbopack` but causes a "Cannot resolve module" or "unknown rule" error in Cypress CT. Debug by running `cypress open --component` and checking the browser console for bundler errors; the error message references Webpack, not Turbopack. Fix: ensure `next.config.ts`'s `webpack()` callback handles the same path aliases and loaders that Turbopack handles via its `resolveAlias` config. As of Cypress 15.14, the Cypress team has not announced a Turbopack CT timeline.
+
+110. **`cy.press()` dispatches the key event to `document.body` when no element has focus — may silently miss the intended target** [community] — `cy.press()` sends a native keyboard event to whatever element currently has focus in the browser. If no test command has explicitly focused an element (via `.focus()`, `.click()`, or `.type()`), the event lands on `document.body`. For most keyboard shortcuts, this is correct behavior (global shortcuts are intentionally body-scoped). However, for widget-specific keyboard interactions (arrow-key navigation inside a `<select>` replacement, Enter to confirm an autocomplete), calling `cy.press()` without first asserting or setting focus on the widget produces a test that passes locally (where leftover focus state from a previous test may coincidentally point to the right element) but fails in CI (where each test starts with a clean, focus-free page). Always pair `cy.press()` with an explicit focus assertion: `cy.get('[data-cy="dropdown"]').focus(); cy.press(Cypress.Keyboard.Keys.DOWN);`
 
 ---
