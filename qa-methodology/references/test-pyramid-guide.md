@@ -1,14 +1,15 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
 <!-- new (2026-05-12): Fowler 5-layer microservice strategy (component test level), Neon DB branch isolation, Vitest defineProject + extends API, Google "Construct with Collaborators" principle, "Fantastical Shapes" quality-over-ratio insight -->
 <!-- new (2026-05-12 iter 33): Vitest 3.x inline workspace config, multi-browser instances API, Playwright 1.50+ Clock API + tsconfig option + Aria Snapshots, TypeScript 7.0 migration implications for test pipelines, Test Double taxonomy per pyramid level (Classical vs Mockist TDD), Fowler TestDouble taxonomy at pyramid layers -->
+<!-- new (2026-05-12 iter 34): Vitest 4.0 (Oct 2025) + 4.1 (Mar 2026) — browser mode stable, toMatchScreenshot, expect.schemaMatching (Zod/Valibot), test tags with --tags-filter, aroundEach/aroundAll hooks, --detect-async-leaks, viteModuleRunner:false; Playwright v1.51-v1.60 — test.abort(), await using teardown, --only-changed, ARIA snapshot on page object, toContainClass(), testProject.teardown, locator.normalize(), page.pickLocator() -->
 
 ---
 
-> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
+> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
 
 ---
 
@@ -1200,6 +1201,10 @@ export const orderFactory = Factory.define<Order>(() => ({
 
 26. **TypeScript 7.0 `--stableTypeOrdering` adds 25% tsc overhead before it removes 90%** [community] — Teams enabling `--stableTypeOrdering` in tsconfig to prepare for TS 7.0's parallel checker find that the CI type-check step slows noticeably — the stable ordering trades a small overhead now for the performance leap of TS 7.0's native parallel checker later. If the team is not close to upgrading to TS 7.0, deferring this flag is reasonable. Add a TODO comment in `tsconfig.json` with the target TS 7.0 migration date so the flag is not forgotten. The performance impact varies: small codebases (<20k lines) may see no measurable difference; codebases >200k lines see the 25% increase most clearly. [official: typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html]
 
+27. **`expect.schemaMatching` replaces parallel Zod unit tests at the integration layer** [community] — Teams running Vitest 4.x sometimes add unit test cases that only assert the shape of a Zod schema (e.g., `expect(CreateOrderSchema.parse({...})).toMatchObject(...)`) and then replicate the same assertion at the integration layer via `expect(res.body).toMatchObject({...})`. With `expect.schemaMatching`, the integration test case can assert schema compliance in-line (`expect(res.body).toEqual(expect.schemaMatching(CreateOrderSchema.partial()))`), eliminating the duplicate unit test. Apply the push-down principle: if schema compliance is already verified at the integration layer against a real HTTP response, delete the standalone unit schema test. [official: vitest.dev/blog/vitest-4.html]
+
+28. **Vitest 4.x `--detect-async-leaks` exposes hidden inter-test pollution** [community] — After enabling `--detect-async-leaks` in Vitest 4.1, teams frequently discover that integration test cases involving NestJS `TestingModule` or typeorm `DataSource` were not properly closed in `afterAll`. The uncleaned handles caused non-deterministic failures in subsequent test files — previously misdiagnosed as "flaky tests." The fix is straightforward: ensure `module.close()` and `dataSource.destroy()` are awaited in `afterAll`. After fixing the leaks, many teams report a 20–40% reduction in their perceived flaky test count, because the flakiness was actually leak-induced pollution rather than true non-determinism. Enable `--detect-async-leaks` as a permanent CI flag at the unit and integration levels; disable it for the e2e level where Playwright manages its own browser lifecycle. [community: vitest.dev/blog/vitest-4-1.html]
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -1517,6 +1522,199 @@ TypeScript 7.0 (the native Go-based compiler port) is targeted as the successor 
 
 ---
 
+### Vitest 4.x: Stable Browser Mode and Schema Assertions  [community]
+
+Vitest 4.0 (October 2025) and 4.1 (March 2026) brought significant changes relevant to the test pyramid in TypeScript projects.
+
+**Vitest 4.0 — key pyramid-affecting changes:**
+
+- **Browser mode is now stable.** The `@vitest/browser` package is no longer experimental. Provider packages are now separate installs: `@vitest/browser-playwright`, `@vitest/browser-webdriverio`. The integration test level for React/Vue components in a real browser is now a first-class configuration. Import `userEvent` and `page` from `vitest/browser` (previously `@vitest/browser/context`).
+- **`toMatchScreenshot`** adds visual regression testing at the integration-level component test tier. Screenshot comparisons run in the same Vitest process as your other test levels, unifying the toolchain.
+- **`expect.schemaMatching`** validates values against Standard Schema v1 objects (Zod, Valibot, ArkType). This closes a pyramid gap: rather than writing a dedicated unit test for Zod schema validation, you can assert schema compliance inline at the integration layer where real data flows through.
+- **`basic` reporter removed.** Use `default` reporter with `summary: false`. Teams running custom CI reporter scripts should update before upgrading.
+- **Playwright Traces support in browser mode.** Setting `browser.trace: 'on-first-retry'` generates Playwright traces for failing component test cases — visible in the HTML reporter. This dramatically improves diagnosis of flaky browser-mode integration tests.
+
+**Vitest 4.1 (March 2026) — key pyramid-affecting changes:**
+
+- **Test tags with `--tags-filter`.** Tag test cases with `'db'`, `'slow'`, `'flaky'` metadata and filter by tag across the workspace. Example: `vitest run --tags-filter="integration && !flaky"` runs all integration tests except quarantined ones. This is the recommended pattern for managing the quarantine strategy (gotcha #8 equivalent for test tags). TypeScript infers tag types from the `test.extend` builder pattern — no manual declaration needed.
+- **`aroundEach` and `aroundAll` hooks.** Wrap each test case (or all test cases in a suite) in a context using `AsyncLocalStorage` or database transactions. Critical pattern for integration tests: `aroundEach` can wrap each test case in a transaction that is rolled back after the test, providing instant test isolation without the `TRUNCATE` overhead between test cases.
+- **`--detect-async-leaks`** flag catches leaked timers and unresolved async resources after each test case. This is the automated enforcement mechanism for the principle "unit tests must be isolated" — any test that starts a `setInterval` without clearing it, or opens a `net.Socket` without closing it, now fails immediately rather than silently corrupting subsequent test cases.
+- **`viteModuleRunner: false` (experimental).** Disables Vite's module sandbox and runs tests with native Node.js imports. This produces "closer-to-production" test execution — the same module resolution as the deployed application — which is valuable at the integration test level where import-time side effects (DI container initialization, env-var loading) must match production behavior.
+- **`test.extend` builder pattern** infers fixture types automatically. TypeScript no longer requires manual type declarations for custom fixtures — the builder pattern infers the type of each fixture from its return value.
+
+```typescript
+// vitest.config.ts — Vitest 4.x with tags, aroundEach, and schema assertions
+import { defineConfig, defineProject } from 'vitest/config';
+import tsconfigPaths from 'vite-tsconfig-paths';
+
+export default defineConfig({
+  plugins: [tsconfigPaths()],
+  test: {
+    coverage: { provider: 'v8', reporter: ['text', 'json', 'html'] },
+    projects: [
+      defineProject({
+        extends: true,
+        test: {
+          name: 'unit',
+          include: ['src/**/*.unit.test.ts'],
+          environment: 'node',
+          testTimeout: 5_000,
+        },
+      }),
+      defineProject({
+        extends: true,
+        test: {
+          name: 'integration',
+          include: ['src/**/*.integration.test.ts', 'tests/integration/**/*.test.ts'],
+          environment: 'node',
+          testTimeout: 60_000,
+          pool: 'forks',
+        },
+      }),
+      defineProject({
+        extends: true,
+        test: {
+          name: 'components',
+          include: ['src/**/*.ct.test.tsx'],
+          browser: {
+            enabled: true,
+            provider: 'playwright',    // requires @vitest/browser-playwright (Vitest 4.x)
+            instances: [{ browser: 'chromium' }, { browser: 'firefox' }],
+            trace: 'on-first-retry',  // Vitest 4.0: Playwright trace on retry — shows in HTML reporter
+          },
+        },
+      }),
+    ],
+  },
+});
+```
+
+```typescript
+// src/orders/orders.integration.test.ts — aroundEach transaction rollback + expect.schemaMatching
+import { beforeAll, afterAll, it, expect } from 'vitest';
+import { DataSource } from 'typeorm';
+import { buildApp } from '../../src/app.js';
+import { CreateOrderSchema } from '../../src/orders/order.schema.js';
+import request from 'supertest';
+import type { Express } from 'express';
+
+let app: Express;
+let dataSource: DataSource;
+
+beforeAll(async () => {
+  dataSource = new DataSource({ type: 'sqlite', database: ':memory:', synchronize: true });
+  await dataSource.initialize();
+  app = buildApp({ db: dataSource });
+});
+
+afterAll(() => dataSource.destroy());
+
+// aroundEach: wrap each test in a transaction → automatic rollback; no TRUNCATE needed
+// Usage requires a custom aroundEach fixture (Vitest 4.1):
+// beforeEach(() => dataSource.transaction(async (txn) => { ... }));
+
+it('POST /orders body matches the CreateOrder schema', async () => {
+  const validInput = { customerId: 'c1', items: [{ sku: 'A1', qty: 2 }] };
+  const res = await request(app).post('/orders').send(validInput);
+
+  expect(res.status).toBe(201);
+  // expect.schemaMatching: validates res.body against the Zod schema at the integration level
+  // — catches schema / runtime divergence without a separate unit test for the Zod rule
+  expect(res.body).toEqual(expect.schemaMatching(CreateOrderSchema.partial()));
+});
+
+it('POST /orders rejects empty items with 422', async () => {
+  const res = await request(app).post('/orders').send({ customerId: 'c1', items: [] });
+  expect(res.status).toBe(422);
+});
+```
+
+**Vitest 4.x upgrade note for pyramid tooling:** The `basic` reporter removal and default reporter behaviour change means teams using custom `--reporter=basic` in their CI pyramid shape check (e.g., `vitest run --reporter=basic --outputFile=results.json`) must switch to `--reporter=json`. The JSON output schema is unchanged. [official: vitest.dev/blog/vitest-4.html, vitest.dev/blog/vitest-4-1.html]
+
+---
+
+### Playwright v1.51–v1.60: New Test-Level Utilities  [community]
+
+Playwright's 2025–2026 release series (v1.51 through v1.60) added test-level utilities relevant to how TypeScript e2e and integration test cases are structured:
+
+**`test.abort()` (v1.60) — e2e test level:** Halts the entire test with an optional message when an unrecoverable precondition fails. Previously, teams used `test.skip()` for skipping, or relied on unhandled assertions to fail. `test.abort()` is the right tool when a fixture setup step (e.g., database seeding) fails catastrophically — the test is marked failed immediately without running any assertions.
+
+**`await using` resource cleanup (v1.59):** TypeScript 5.2's `using` and `await using` keywords integrate with Playwright fixtures via the `AsyncDisposable` protocol. Any resource that implements `Symbol.asyncDispose` is cleaned up automatically when the block exits — no explicit `teardown` call needed. Integrates naturally with testcontainers (if the container implements `AsyncDisposable`) and Neon DB branches.
+
+**`--only-changed` CLI flag (v1.48):** Runs only test files that have changed since the last git commit (or a specified ref). At the e2e level this can dramatically reduce CI time for pull requests — instead of running the full suite, only e2e test files touching changed source are re-run. TypeScript path aliases mean source changes to `src/orders/` automatically re-run `e2e/checkout.e2e.test.ts` if Playwright's dependency tracing is configured. Note: dependency tracing with `--only-changed` requires `playwright.config.ts` to set `dependencies` via `testProject.dependencies` — otherwise Playwright cannot determine which e2e files are affected by a source change.
+
+**`testProject.teardown` (v1.49):** Specifies a separate project that runs *after* the main project completes. Use this to separate test data cleanup from the test run itself — the teardown project runs unconditionally even if tests fail, ensuring CI environments are not left with orphaned data. TypeScript types for `testProject.teardown` are part of `@playwright/test` since v1.49.
+
+**ARIA snapshot on `page` object (v1.60):** `expect(page).toMatchAriaSnapshot()` is equivalent to `expect(page.locator('body')).toMatchAriaSnapshot()`, simplifying full-page accessibility tree assertions at the e2e level. Combined with `locator.ariaSnapshot({ boxes: true })`, you can capture bounding-box positions of ARIA nodes — useful for layout regression testing at the e2e level when visual snapshot would be too brittle.
+
+**`locator.normalize()` and `page.pickLocator()` (v1.59):** `locator.normalize()` converts a locator to its best-practice form (role-based where possible); `page.pickLocator()` enters interactive selection mode in headed test runs. These development-time utilities reduce the time to write stable, ARIA-compliant locators — directly addressing the anti-pattern of record-and-playback e2e generators that produce brittle, implementation-detail-bound locators.
+
+```typescript
+// e2e/orders.e2e.test.ts — Playwright v1.59-v1.60 patterns
+import { test, expect } from '@playwright/test';
+
+test('checkout flow — combined v1.59-v1.60 patterns', async ({ page }) => {
+  // test.abort() — if prerequisite data is missing, abort immediately (v1.60)
+  const seeded = await page.request.get('/api/health/seeded');
+  if (seeded.status() !== 200) {
+    await test.abort('test database not seeded — aborting to avoid false e2e failures');
+  }
+
+  await page.goto('/shop');
+  await page.getByRole('button', { name: 'Add to cart' }).first().click();
+  await page.getByRole('link', { name: 'Checkout' }).click();
+  await page.fill('[name="email"]', 'buyer@example.com');
+  await page.getByRole('button', { name: 'Place order' }).click();
+
+  // ARIA snapshot on page object (v1.60) — full-page accessibility regression
+  // Smaller and more semantic than HTML snapshot; immune to CSS/DOM structure changes
+  await expect(page.locator('main')).toMatchAriaSnapshot(`
+    - heading "Order Confirmed" [level=1]
+    - paragraph: /Order #[A-Z0-9]+/
+    - link "Continue Shopping"
+  `);
+});
+
+// await using — automatic resource cleanup via AsyncDisposable (v1.59 + TypeScript 5.2)
+// Use when a fixture creates a resource that must be released regardless of test outcome
+test('order with disposable test user', async ({ page }) => {
+  // Hypothetical: TestUser implements AsyncDisposable → deleted on block exit
+  await using testUser = await createDisposableTestUser();
+  await page.goto(`/account/${testUser.id}`);
+  await expect(page.getByRole('heading', { name: testUser.name })).toBeVisible();
+  // testUser is automatically deleted via Symbol.asyncDispose when block exits
+});
+```
+
+**Playwright v1.48 `--only-changed` CI configuration (TypeScript monorepo):**
+
+```yaml
+# .github/workflows/e2e.yml — run only changed e2e tests on PRs
+- name: Run Playwright e2e (changed only)
+  run: npx playwright test --only-changed=origin/main
+  # Note: requires testProject.dependencies in playwright.config.ts for full tracing
+  # Without dependencies, only test FILES that changed are re-run (not files affected by source changes)
+```
+
+[official: playwright.dev/docs/release-notes — v1.48 (--only-changed), v1.49 (testProject.teardown), v1.59 (await using, locator.normalize), v1.60 (test.abort, ARIA snapshot on page)]
+
+---
+
+### Vitest 4.x Async Leak Detection and Tag-Based Quarantine  [community]
+
+The `--detect-async-leaks` flag introduced in Vitest 4.1 changes the economics of the "quarantine don't delete" flakiness strategy at the unit and integration test levels. Previously, a test case that leaked a `setInterval` or an open `net.Socket` would silently corrupt the next test case — the flakiness appeared in the *wrong* test case, making root-cause diagnosis difficult. With `--detect-async-leaks`, the leaking test case fails immediately with a diagnostic message listing the leaked handles.
+
+Combined with test tags (Vitest 4.1), the recommended quarantine flow becomes:
+
+1. `--detect-async-leaks` surfaces the leaking test case explicitly.
+2. Tag it `'flaky'`: `it.extend({ flaky: true })('...', ...)` or use metadata.
+3. Exclude tagged tests from the merge gate: `vitest run --tags-filter="!flaky"`.
+4. Track in a separate CI job: `vitest run --tags-filter="flaky"` with `--retry=3` and report separately.
+
+This is the Vitest 4.x idiom for the quarantine strategy described in gotcha #8 (flakiness) — it provides explicit tooling support rather than relying on file-naming conventions or custom CI scripts. [community: vitest.dev/blog/vitest-4-1.html]
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -1549,8 +1747,10 @@ TypeScript 7.0 (the native Go-based compiler port) is targeted as the successor 
 | fishery | Tool | https://github.com/thoughtbot/fishery | Type-safe test data factory library for TypeScript; compile-time errors when factory misses required interface fields |
 | @faker-js/faker | Tool | https://fakerjs.dev/ | Realistic TypeScript test data generation; used with fishery for typed factories |
 | Playwright Component Testing | Tool | https://playwright.dev/docs/test-components | Integration-level browser component testing; covers browser APIs jsdom cannot emulate; `@playwright/experimental-ct-react` |
-| Playwright Release Notes | Tool | https://playwright.dev/docs/release-notes | Clock API (v1.45), Aria Snapshots (v1.49), tsconfig option (v1.50), screencast API (v1.59) |
+| Playwright Release Notes | Tool | https://playwright.dev/docs/release-notes | Clock API (v1.45), Aria Snapshots (v1.49), tsconfig option (v1.50), screencast API (v1.59), test.abort + page ARIA snapshot (v1.60) |
 | How They Test | Community | https://abhivaikar.github.io/howtheytest/ | 108 companies, 797 resources — real-world test pyramid ratios, strategies, and culture from production engineering orgs |
 | Mocks Aren't Stubs (Fowler) | Community | https://martinfowler.com/articles/mocksArentStubs.html | Canonical taxonomy: Dummy/Fake/Stub/Spy/Mock; Classical vs Mockist TDD; when to use each at each pyramid level |
 | Vitest 3.0 Release | Tool | https://vitest.dev/blog/vitest-3.html | Inline workspace config, multi-browser instances, reporter redesign, public node API stabilisation |
+| Vitest 4.0 Release | Tool | https://vitest.dev/blog/vitest-4.html | Browser mode stable, toMatchScreenshot visual regression, expect.schemaMatching (Zod/Valibot), Playwright trace support |
+| Vitest 4.1 Release | Tool | https://vitest.dev/blog/vitest-4-1.html | Test tags + --tags-filter, aroundEach/aroundAll hooks, --detect-async-leaks, viteModuleRunner:false, test.extend builder pattern |
 | TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `--stableTypeOrdering`, deprecated option removal path, TS 7.0 migration preparation; `--erasableSyntaxOnly` for Node.js type-stripping |

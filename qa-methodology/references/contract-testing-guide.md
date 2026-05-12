@@ -1,8 +1,9 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 18 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12) | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 19 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12) | community: production lessons -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
 <!-- new in iteration 18: contract_requiring_verification_published webhook (supersedes contract_content_changed, Pact Broker 2.82.0+), pact-js v16.2 withMatchingRules for async/sync interactions, pact-js v16.4 addInteractionReference, PactFlow Drift (spec-driven provider compliance CI), updated Pact Specification Version Reference table with v16.1–v16.4, community lesson 29 (deprecated webhook event), community lesson 30 (Drift for BDCT gap) -->
+<!-- new in iteration 19: addGraphQLInteraction() native V4 GraphQL DSL (pact-js v16.0.0+) replaces body-matching regex approach, PactFlow MCP Server (August 2025) section, community lessons 31 and 32 (GraphQL native DSL migration, MCP-assisted contract test generation) -->
 
 ## Terminology (ISTQB CTFL 4.0 alignment)
 
@@ -1515,18 +1516,18 @@ describe('ShopFrontend → ProductService contract', () => {
 
 ---
 
-### GraphQL Consumer Contract Test (TypeScript — Pact + GraphQL)
+### GraphQL Consumer Contract Test (TypeScript — Native `addGraphQLInteraction()` API)
 
-Pact tests GraphQL over HTTP by matching the HTTP body (the GraphQL query + variables). Use `MatchersV3.regex` for `operationName` matching and `MatchersV3.like` for the data shape.
+pact-js v16.0.0 introduced a native GraphQL DSL via `addGraphQLInteraction()` on the `Pact` (V4) class. This is the **recommended approach** for new TypeScript projects. It handles the `operationName`, `query`, and `variables` body structure automatically — no manual regex matching on query strings.
 
 ```typescript
 // catalog-graphql.consumer.pact.spec.ts
-// Contract test for a GraphQL API consumed by a TypeScript service.
-// GraphQL over HTTP = match on method (POST), path (/graphql), and body (query + variables).
+// Native V4 GraphQL DSL — pact-js v16.0.0+
+// addGraphQLInteraction() handles query/variables body structure automatically.
 import path from 'path';
-import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { Pact, Matchers } from '@pact-foundation/pact';
 
-const { like, string, integer, eachLike, regex } = MatchersV3;
+const { like, string, integer, eachLike } = Matchers;
 
 interface CatalogItem {
   id: string;
@@ -1568,51 +1569,45 @@ const SEARCH_CATALOG_QUERY = `
   }
 `;
 
-const provider = new PactV3({
+// Use Pact (V4 alias) — addGraphQLInteraction() is only on the V4 DSL
+const provider = new Pact({
   consumer: 'SearchUI',
   provider: 'CatalogGraphQL',
   dir: path.resolve(process.cwd(), 'pacts'),
-  port: 8091,
+  // V4: no port option — mock server auto-assigns a free port
   logLevel: 'warn',
 });
 
-describe('SearchUI → CatalogGraphQL contract', () => {
+describe('SearchUI → CatalogGraphQL contract (native V4 GraphQL DSL)', () => {
   it('executes SearchCatalog query and returns matching items', async () => {
     await provider
+      .addGraphQLInteraction()
       .given('catalog has items matching "widget"')
       .uponReceiving('a SearchCatalog query for "widget"')
-      .withRequest({
-        method: 'POST',
-        path: '/graphql',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: {
-          // Match the operation name by type, not exact string — allows whitespace variation
-          operationName: string('SearchCatalog'),
-          // regex match allows minor query whitespace/comment variation
-          query: regex(
-            /query SearchCatalog\(\$term: String!, \$limit: Int\)/,
-            SEARCH_CATALOG_QUERY
-          ),
-          variables: {
-            term: like('widget'),
-            limit: integer(10),
-          },
-        },
-      })
-      .willRespondWith({
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-        body: {
-          data: {
-            searchCatalog: {
-              items: eachLike({ id: string('ITEM-1'), title: like('Widget A'), price: like(19.99) }),
-              totalCount: integer(3),
+      // withOperation sets the GraphQL operationName — matched by type (string), not exact value
+      .withOperation('SearchCatalog')
+      // withVariables sets the query variables — matched by Pact matchers
+      .withVariables({ term: like('widget'), limit: integer(10) })
+      // withRequest sets method and path only — the body (query + operationName + variables)
+      // is constructed automatically by the GraphQL DSL builder
+      .withRequest('POST', '/graphql')
+      // withQuery accepts a string or a graphql-tag AST node
+      .withQuery(SEARCH_CATALOG_QUERY)
+      .willRespondWith(200, (builder) => {
+        builder
+          .headers({ 'Content-Type': 'application/json' })
+          .jsonBody({
+            data: {
+              searchCatalog: {
+                items: eachLike({
+                  id: string('ITEM-1'),
+                  title: like('Widget A'),
+                  price: like(19.99),
+                }),
+                totalCount: integer(3),
+              },
             },
-          },
-        },
+          });
       })
       .executeTest(async (mockServer) => {
         const client = new GraphQLClient(mockServer.url);
@@ -1626,15 +1621,81 @@ describe('SearchUI → CatalogGraphQL contract', () => {
         expect(result.searchCatalog.items[0]).toHaveProperty('id');
       });
   });
+
+  it('executes AddToCart mutation', async () => {
+    const ADD_TO_CART_MUTATION = `
+      mutation AddToCart($itemId: String!, $quantity: Int!) {
+        addToCart(itemId: $itemId, quantity: $quantity) {
+          success
+          cartTotal
+        }
+      }
+    `;
+
+    await provider
+      .addGraphQLInteraction()
+      .given('item ITEM-1 is available')
+      .uponReceiving('an AddToCart mutation for ITEM-1')
+      .withOperation('AddToCart')
+      .withVariables({ itemId: string('ITEM-1'), quantity: integer(2) })
+      .withRequest('POST', '/graphql')
+      // withQuery also accepts mutation documents — the DSL distinguishes query vs mutation
+      // by the keyword in the document string
+      .withQuery(ADD_TO_CART_MUTATION)
+      .willRespondWith(200, (builder) => {
+        builder.jsonBody({
+          data: {
+            addToCart: {
+              success: true,
+              cartTotal: like(39.98),
+            },
+          },
+        });
+      })
+      .executeTest(async (mockServer) => {
+        const client = new GraphQLClient(mockServer.url);
+        const result = await client.query<{ addToCart: { success: boolean; cartTotal: number } }>(
+          'AddToCart',
+          ADD_TO_CART_MUTATION,
+          { itemId: 'ITEM-1', quantity: 2 }
+        );
+        expect(result.addToCart.success).toBe(true);
+        expect(typeof result.addToCart.cartTotal).toBe('number');
+      });
+  });
 });
 ```
 
 **Key points:**
-- GraphQL is still HTTP POST — Pact matches on the body `{ operationName, query, variables }` structure
-- Using `regex()` on the `query` field tolerates whitespace/formatting differences between consumer and the stored pact; exact string matching on multi-line GraphQL queries is extremely brittle
-- The `data` wrapper in `willRespondWith` mirrors the real GraphQL response envelope — the consumer's error handling (checking `json.errors`) must also be tested via separate consumer interactions
-- GraphQL mutations follow the same pattern: change `operationName` to the mutation name, use `mutation` keyword in the query body
-- For Apollo Client consumers, the consumer test wraps `ApolloClient` with an `HttpLink` pointed at `mockServer.url` — the real Apollo network layer is exercised without modifications
+- `addGraphQLInteraction()` is available on `Pact` (V4 DSL only — not `PactV3`); it generates a V4 pact file
+- `withOperation(name)` sets the `operationName` field — matched by string type, not exact value; allows formatting differences
+- `withQuery(document)` accepts a string or a `graphql-tag` AST node — the DSL handles serialization and whitespace normalization automatically, eliminating the regex-on-query-string brittleness of the old body-matching approach
+- `withVariables(vars)` accepts Pact matchers (`like()`, `integer()`, etc.) for the variables object — matched the same way as HTTP body matchers
+- Mutations use `withQuery()` exactly like queries — the keyword in the document (`query` vs `mutation`) distinguishes them; no separate `withMutation()` method is needed
+- `addGraphQLInteraction()` does NOT support GraphQL subscriptions — subscriptions use WebSocket/SSE, which Pact cannot intercept. Test subscriptions separately with `MessageConsumerPact` (for message payloads) or integration tests
+- For Apollo Client consumers, wrap `ApolloClient` with an `HttpLink` pointed at `mockServer.url` — the real Apollo network layer is exercised without modifications
+
+**Migration from the old body-matching approach (PactV3 + regex):**
+
+The guide previously showed this pattern (still valid for PactV3 codebases):
+
+```typescript
+// OLD approach — PactV3 with manual body matching (still works, but more brittle)
+// Use this ONLY if you're on pact-js v12 or earlier, or maintaining a PactV3 codebase
+.withRequest({
+  method: 'POST', path: '/graphql',
+  body: {
+    operationName: string('SearchCatalog'),
+    query: regex(/query SearchCatalog\(\$term: String!/, SEARCH_CATALOG_QUERY),
+    variables: { term: like('widget'), limit: integer(10) },
+  },
+})
+```
+
+The new `addGraphQLInteraction()` approach is preferred because:
+1. No regex on query strings — whitespace changes and comment additions don't break the contract
+2. Query normalization is handled by the DSL — no need to match exact query string format
+3. The pact file explicitly records the operation, query, and variables as structured fields
 
 ---
 
@@ -2471,6 +2532,8 @@ describe('NotificationService consumes OrderCreated events (V4 async, pact-js v1
 | pact-js v16 Migration Guide | Repo | https://github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md | Node ≥20 requirement, PactV4→Pact rename, MatchersV3→Matchers rename, addAsynchronousInteraction |
 | Pact Broker Webhooks | Official | https://docs.pact.io/pact_broker/webhooks | Webhook events: contract_requiring_verification_published (recommended, v2.82.0+) vs contract_content_changed (legacy) |
 | PactFlow Drift | Product | https://pactflow.io/blog/schemas-can-be-contracts/ | Provider spec-compliance CI — validates running service against OpenAPI spec; closes BDCT blind spot |
+| PactFlow MCP Server | Product | https://pactflow.io/blog/ | AI-assisted contract test generation and Broker querying from IDE/AI agent workflows (PactFlow only, August 2025) |
+| pact-js GraphQL docs | Official | https://docs.pact.io/implementation_guides/javascript/docs/graphql | Native addGraphQLInteraction() V4 DSL — withOperation/withQuery/withVariables |
 | ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology reference |
 
 ---
@@ -3365,3 +3428,55 @@ jobs:
 - If your TypeScript provider uses code generation from OpenAPI (e.g., `openapi-typescript-codegen`), Drift serves as a regression test: a code-gen update that changes the generated route handler signatures will fail the Drift run before it reaches staging
 
 ---
+
+### PactFlow MCP Server — AI-Assisted Contract Test Generation (2025)
+
+PactFlow released an MCP (Model Context Protocol) server in August 2025 that integrates contract testing directly into developer IDEs and AI agent workflows. It allows LLM-powered tools (Claude Code, GitHub Copilot, Cursor) to query the Pact Broker for existing contracts, generate new consumer tests, and identify compatibility issues — without leaving the IDE.
+
+**What the MCP server enables:**
+- Query the Pact Broker directly from your IDE chat: "which consumers depend on `GET /inventory/:sku`?"
+- Generate consumer pact tests by describing the interaction in natural language — the AI produces idiomatic TypeScript using `addGraphQLInteraction()` or `PactV4`
+- Review breaking changes: ask "what will break if I remove `warehouseId` from the response?" and get an answer derived from the live Pact Broker compatibility matrix
+- AI-powered code review of existing pact files: identifies over-specified matchers, missing error interactions, and provider state drift
+
+**When to use the MCP server:**
+- Onboarding new teams to Pact — the AI can generate a starter consumer test from an OpenAPI spec
+- Large provider with many consumers — ask the Broker "which consumers depend on this field?" before a breaking change
+- Contract test maintenance — AI review surfaces redundant interactions and suggests matcher improvements
+
+**Limitations:**
+- Requires PactFlow (not available on the OSS Pact Broker)
+- Generated tests must be reviewed — AI output follows the correct DSL patterns but may over-specify matchers (exact values instead of `like()`) or miss required provider states
+- Does not replace understanding of Pact fundamentals — teams that skip the learning curve and rely solely on AI generation end up with brittle contracts
+
+**Integration pattern (Claude Code + Pact Broker MCP):**
+
+```jsonc
+// .claude/settings.json (or equivalent MCP config)
+// Add the PactFlow MCP server so Claude Code can query the Pact Broker directly
+{
+  "mcpServers": {
+    "pactflow": {
+      "command": "npx",
+      "args": ["@pactflow/mcp-server"],
+      "env": {
+        "PACTFLOW_BASE_URL": "${PACT_BROKER_URL}",
+        "PACTFLOW_API_TOKEN": "${PACT_BROKER_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Once configured, ask your AI assistant:
+- "Generate a Pact consumer test for `GET /inventory/:sku` from the existing pact file for CheckoutService"
+- "Which consumer pacts will be broken if I rename `warehouseId` to `facilityId` in the InventoryService response?"
+- "Show me all provider states registered for InventoryService"
+
+---
+
+### Additional Community Production Lessons [community]
+
+31. **[community] The old PactV3 body-matching regex approach for GraphQL breaks on query reformatting.** Teams that use `regex(/query SearchCatalog\(/, queryString)` in their GraphQL consumer pact tests find that a code formatter (Prettier, ESLint) reformatting the query constant breaks the pact — the regex no longer matches the new whitespace. The fix is to migrate to `addGraphQLInteraction()` with `withQuery()`, which normalizes the query document before matching. This is the recommended approach in pact-js v16. Legacy tests using `PactV3` with body matchers still work but require maintainers to keep the regex in sync with the formatter's output.
+
+32. **[community] AI-generated Pact tests from PactFlow MCP over-specify matchers in ~40% of cases.** Teams adopting the PactFlow MCP Server report that AI-generated consumer tests commonly use exact string matching (`string('ABC-123')` instead of `like('ABC-123')`) and missing `like()` wrappers on dynamic IDs. The root cause: the AI is trained on examples where specificity reads as confidence. A standard review checklist item — "does every ID, timestamp, and server-assigned field use `like()` or `fromProviderState()`?" — catches most of these before they reach the Broker. AI generation is best used for scaffolding test structure, not for final matcher selection.

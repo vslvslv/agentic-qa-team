@@ -1,7 +1,7 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests -->
-<!-- new in this iteration: Svelte 5 component testing (Svelte 5 runes/event API), React 19 CT patterns, GitHub Actions v7 upgrade (ubuntu-24.04 + cypress-io/github-action@v7), Node.js 24 support in Cy 15, Angular 18 minimum for CT, Cy 15 Selector Playground → ElementSelector rename, route order importance for cy.intercept(), 8 new community gotchas (Node 24 glibc, Docker container mismatch, GITHUB_TOKEN reruns, route order, Svelte 5 $props runes, React 19 act() warning, TS6 verbatimModuleSyntax, cy.env() .then() nesting) -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt -->
+<!-- new in this iteration: cy.prompt() AI-powered natural language test steps (Cypress 15.13 beta), Cypress.stop() conditional fail-fast (Cypress 14.2), --posix-exit-codes and --pass-with-no-tests CLI flags (Cy 15.4/15.11), experimentalFastVisibility (Cy 15.8), experimentalRunAllSpecs for component testing (Cy 15.9), justInTimeCompile now default for webpack CT, Firefox WebDriver BiDi (Cy 14.1) CDP guard pattern, Module API expose+posixExitCodes options (Cy 15.10+), Cypress Studio default-enabled (Cy 15.4), passWithNoTests config option, 8 new community gotchas (cy.prompt() CI re-execution, Cypress.stop() afterEach scope, BiDi CDP guard, JIT compile memory, FastVisibility edge cases, pass-with-no-tests in monorepos, Studio @cypress/grep tag propagation, Brotli proxy impact) -->
 
 ## Core Principles
 
@@ -5251,6 +5251,18 @@ it('asserts that a new tab URL was requested without navigating', () => {
 | `cypress-io/github-action@v7` | Official GitHub Action for Cypress (v7, 2026) | Handles caching, browser install, parallelization with `ubuntu-24.04` |
 | `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` | Required env var for Cypress Cloud PR detection | Prevents Smart Orchestration from cancelling reruns as empty builds |
 | `COMMIT_INFO_MESSAGE: ${{ github.event.pull_request.title }}` | Pass PR title to Cypress Cloud | Correct PR context in Cloud dashboards for pull_request triggered runs |
+| `cy.prompt(steps, options)` | AI natural language → Cypress commands (Cy 15.13+, beta) | Accelerate test authoring; use Generate & Export workflow, not self-healing, in CI |
+| `cy.prompt(steps, { placeholders })` | Placeholder injection for sensitive data in cy.prompt() | Keeps passwords/tokens out of AI context while still parameterizing steps |
+| `Cypress.stop()` | Halt all remaining tests in current spec (Cy 14.2+) | Fail-fast in afterEach; environment precondition guards in beforeEach |
+| `--posix-exit-codes` (CLI, Cy 15.4+) | Return exit code 1 (not N) on any test failure | POSIX-compliant CI pipelines; aligns with shell script error conventions |
+| `--pass-with-no-tests` (CLI, Cy 15.11+) | Exit 0 when no spec files match the glob | Monorepo CI jobs for unchanged packages; dynamic spec selection |
+| `passWithNoTests: true` (config) | Config equivalent of --pass-with-no-tests | Persistent no-tests-is-OK setting in cypress.config.ts |
+| `posixExitCodes: true` (Module API, Cy 15.10+) | POSIX exit codes in programmatic cypress.run() | Custom CI orchestration scripts |
+| `expose: {}` (Module API, Cy 15.10+) | Pass public config values in programmatic run | Non-sensitive flags (API version, env name) alongside env secrets |
+| `experimentalFastVisibility: true` (Cy 15.8+) | Faster visibility checks via getBoundingClientRect | Large suites with deep DOM trees; test display:contents elements carefully |
+| `justInTimeCompile: true` (default webpack CT, Cy 14+) | Compile only current-spec modules | Reduces memory for large webpack CT suites; true by default since Cy 14 |
+| `experimentalRunAllSpecs: true` (component, Cy 15.9+) | All component specs in one browser session | Eliminates browser relaunch overhead for 100+ component specs |
+| `Cypress.browser.family !== 'chromium'` | Browser family guard for CDP commands | Required for all Cypress.automation() CDP calls since Firefox uses BiDi (Cy 14.1+) |
 
 ### 101. Svelte 5 Component Testing  [community]
 
@@ -6081,5 +6093,591 @@ cy.fixture<UserFixture>('user.json').then((user) => {
 ```
 
 **[community]** WHY: TypeScript 6's `verbatimModuleSyntax` option (now a default in strict configurations) requires all type-only imports to use `import type`. Teams upgrading TypeScript alongside Cypress 15 often see a flood of "Module ... has no exported member" or "This import is never used" errors that are actually the TS6 `verbatimModuleSyntax` rule being enforced for the first time. Run `npx tsc --noEmit` after updating TypeScript before adding Cypress 15 — fix all TS6 type import errors first, then address any Cypress-specific type changes (e.g., `result.exitCode`) in a separate pass.
+
+### 104. cy.prompt() — AI-Powered Natural Language Test Steps (Cypress 15.13+, Beta)
+
+`cy.prompt()` converts plain-English step descriptions into executable Cypress commands using AI. Introduced as experimental in earlier 15.x versions, it moved to beta in 15.13.0 and no longer requires the `experimentalPromptCommand` config flag. It supports two workflows: **Generate & Export** (one-time generation into committed code) and **Self-Healing** (kept as `cy.prompt()` in production specs for automatic UI adaptation).
+
+```typescript
+// Pattern 1: Generate & Export — create test steps, review, export to source control
+// Run once: Cypress executes the prompt, AI generates real Cypress commands.
+// Export the generated code via "Get Code" button in the Command Log.
+// Then replace cy.prompt() with the exported commands so CI runs without AI.
+
+it('completes the checkout flow using AI-generated steps', () => {
+  cy.prompt([
+    'visit /cart',
+    'click the checkout button',
+    'type "Alice Smith" in the full name field',
+    'type "alice@example.com" in the email field',
+    'click the place order button',
+    'assert that the order confirmation number is visible',
+  ]);
+  // After reviewing the generated code in the Command Log, export and commit it.
+  // This replaces the cy.prompt() call with deterministic commands.
+});
+```
+
+```typescript
+// Pattern 2: Self-Healing — keep cy.prompt() in CI for adaptive selector updates
+// The AI re-evaluates selectors on each run; useful during rapid UI development.
+// Best for tests that run on components that change frequently.
+// WARNING: self-healing fires AI calls on every run — use sparingly.
+
+it('submits a registration form (self-healing mode)', () => {
+  cy.prompt([
+    'visit /register',
+    'type "newuser@example.com" in the email field',
+    'type "{{ password }}" in the password field',  // placeholder keeps secret out of AI context
+    'click the register button',
+    'assert that the welcome banner contains "newuser@example.com"',
+  ], {
+    placeholders: { password: Cypress.env('TEST_PASSWORD') },  // injected at runtime
+  });
+});
+```
+
+```typescript
+// Pattern 3: Hybrid — use cy.prompt() for new flow discovery, export stable steps
+// During initial test authoring, cy.prompt() accelerates creation.
+// Once the flow is stable, export and commit the concrete commands.
+
+// cypress.config.ts — no special config needed in Cypress 15.13+ (flag removed)
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    // cy.prompt() is available by default in Cypress 15.13+
+    // No experimentalPromptCommand: true needed
+  },
+});
+```
+
+```bash
+# Authentication requirement: must be logged into Cypress Cloud OR use --record flag
+# Free tier: 100 prompts / 500 steps per hour
+# Paid tier: 600 prompts / 3,000 steps per hour
+
+npx cypress open  # log in via Cypress App → Cloud → Sign in
+# OR
+npx cypress run --record --key $CYPRESS_RECORD_KEY  # authenticates via Cloud key
+```
+
+**cy.prompt() limitations:**
+- E2E tests only — no component testing support
+- Chromium browsers only (Chrome, Edge, Electron)
+- Canvas and iframe content not supported
+- No `cy.request()` API testing steps (UI interactions only)
+- Max 50 steps per call
+
+**[community]** WHY: The most critical production decision with `cy.prompt()` is whether to use it in CI (self-healing mode) or export to concrete code. Self-healing mode means the AI re-runs on every test execution, consuming rate-limit quota and adding latency (2-5s per cy.prompt() call). For a 50-test suite where 20 tests use `cy.prompt()`, this adds 40-100s to every CI run. Use self-healing only for genuinely unstable UI flows (e.g., a component in active development); export all stable tests to concrete Cypress commands that run deterministically without AI.
+
+### 105. Cypress.stop() — Conditional Test Execution Halt (Cypress 14.2+)
+
+`Cypress.stop()` immediately stops the Cypress runner on the current machine. Unlike `cy.skip()` (which skips a single test), `Cypress.stop()` prevents all remaining tests from executing. Use it in `afterEach` for fail-fast behaviour or in `beforeEach` as an environment precondition guard.
+
+```typescript
+// Pattern 1: Fail-fast in afterEach — stop the suite on first test failure
+// Useful when tests are order-dependent or share expensive setup state.
+// Reduces CI time by not running 50 more tests after a critical setup failure.
+
+// cypress/support/e2e.ts — global fail-fast guard
+afterEach(function () {
+  // 'this.currentTest' is available in function() hooks (not arrow functions)
+  if (this.currentTest?.state === 'failed') {
+    cy.log(`Stopping suite after failure: "${this.currentTest.title}"`);
+    Cypress.stop();
+    return;  // REQUIRED: code after Cypress.stop() in the same block still runs
+  }
+});
+
+// Pattern 2: Environment precondition guard in beforeEach
+// Stop the entire spec if a required service is unavailable.
+describe('Third-party payment integration', () => {
+  before(() => {
+    cy.request({
+      url: '/api/health/stripe',
+      failOnStatusCode: false,
+    }).then((res) => {
+      if (res.status !== 200) {
+        cy.log('Stripe health check failed — stopping payment tests');
+        Cypress.stop();
+        return;
+      }
+    });
+  });
+
+  it('processes a payment with test card', () => {
+    // Only runs if Stripe service is healthy
+    cy.visit('/checkout');
+    // ...
+  });
+});
+```
+
+```typescript
+// Pattern 3: Environment-based conditional execution
+// Stop tests that require a specific environment (e.g., production smoke tests
+// should not run against a development environment).
+
+beforeEach(() => {
+  const baseUrl = Cypress.config('baseUrl') ?? '';
+  const isProduction = baseUrl.includes('production.example.com');
+  const isSmokeOnly = Cypress.env('SMOKE_ONLY') === 'true';
+
+  if (isSmokeOnly && !isProduction) {
+    cy.log(`SMOKE_ONLY is true but baseUrl is not production: ${baseUrl}`);
+    Cypress.stop();
+    return;
+  }
+});
+```
+
+**Behavior by mode:**
+- `cypress run` (CI): skips all remaining tests in the current spec; uploads videos/screenshots/Test Replay to Cypress Cloud
+- `cypress open` (interactive): stops the runner but keeps the Cypress App open for inspection
+
+**[community]** WHY: `Cypress.stop()` is often confused with `cy.skip()` or throwing an error in a `before()` hook. The critical difference: `Cypress.stop()` gracefully stops the runner and still collects artifacts (screenshots, video) for already-completed tests, while throwing from `before()` marks all pending tests as failed and surfaces a cryptic "before all hook failed" error. Always add a `return` statement immediately after `Cypress.stop()` — code in the same `afterEach` or `beforeEach` block runs even after `Cypress.stop()` is called, and failing to return causes unexpected side effects.
+
+### 106. Cypress CLI Flags — --posix-exit-codes and --pass-with-no-tests
+
+Two CI-focused CLI flags added in Cypress 15.4 and 15.11 improve integration with POSIX-compliant CI pipelines and dynamic test selection workflows.
+
+```bash
+# --posix-exit-codes (Cypress 15.4+)
+# Returns exit code 1 for any test failure, regardless of how many tests failed.
+# Default Cypress behavior: exit code = number of failed tests (can be > 1).
+# POSIX convention: non-zero exit means "failure"; the exact code is usually 1.
+# Impact: tools like `|| exit 1` and shell condition checks work correctly.
+
+npx cypress run --posix-exit-codes
+# Exit codes with --posix-exit-codes:
+#   0  — all tests passed
+#   1  — one or more tests failed (replaces the default "N tests failed" exit code)
+#   112 — Cypress could not determine which spec to run next (network/Cloud issue)
+
+# --pass-with-no-tests (Cypress 15.11+)
+# Exits with code 0 when no spec files match the --spec glob or file-based filter.
+# Without this flag: Cypress exits 1 if no tests match (treated as a failure).
+# With this flag: "no tests found" is not an error — useful for conditional CI jobs.
+
+npx cypress run --spec "cypress/e2e/feature-x/**" --pass-with-no-tests
+# Exits 0 when feature-x directory doesn't exist or contains no .cy.ts files
+```
+
+```typescript
+// cypress.config.ts — configure both flags persistently for CI
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    // Equivalent to --pass-with-no-tests CLI flag
+    passWithNoTests: true,  // Added in Cypress 15.11
+    // Note: posixExitCodes can also be set in the Module API (see below)
+  },
+});
+```
+
+```typescript
+// Module API — include posixExitCodes in programmatic runs (Cypress 15.10+)
+import cypress from 'cypress';
+
+const result = await cypress.run({
+  spec: process.env.TEST_SPEC ?? 'cypress/e2e/**/*.cy.ts',
+  posixExitCodes: true,          // --posix-exit-codes equivalent
+  config: {
+    passWithNoTests: true,       // --pass-with-no-tests equivalent
+  },
+  expose: {                      // new in 15.10 — public config values
+    API_VERSION: '2',
+    ENVIRONMENT: process.env.ENVIRONMENT ?? 'local',
+  },
+});
+
+// With posixExitCodes: true, result.totalFailed > 0 always means exit 1
+if (result.status === 'failed' || result.totalFailed > 0) {
+  process.exit(1);
+}
+```
+
+```yaml
+# .github/workflows/e2e.yml — use --posix-exit-codes for correct CI failure detection
+- name: Run Cypress E2E (POSIX exit codes)
+  run: npx cypress run --posix-exit-codes --pass-with-no-tests
+  env:
+    CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# Monorepo pattern: run spec subset for changed package, exit 0 if no specs found
+- name: Run affected E2E tests
+  run: |
+    CHANGED_PACKAGE=$(./scripts/detect-changed-package.sh)
+    npx cypress run \
+      --spec "packages/${CHANGED_PACKAGE}/cypress/e2e/**" \
+      --pass-with-no-tests \
+      --posix-exit-codes
+```
+
+**[community]** WHY: Without `--posix-exit-codes`, a CI step that runs `cypress run` and gets exit code 5 (5 failures) can fool shell scripts that check `[ $? -ne 0 ]` into reporting an error correctly, but tools like `make`, `jest --bail`, or Python's `subprocess.check_call()` interpret specific non-zero exit codes differently. With POSIX exit codes, the convention is unambiguous: 0 = success, 1 = failure, anything else = system error. `--pass-with-no-tests` is essential in monorepo CI where a spec glob may legitimately match zero files for unchanged packages — without it, every unchanged package's CI job fails with "No spec files were found" which is not a real test failure.
+
+### 107. Firefox WebDriver BiDi — CDP Guard Pattern (Cypress 14.1+)
+
+Starting with Firefox 135 and Cypress 14.1, Firefox uses the **WebDriver BiDi** automation protocol instead of Chrome DevTools Protocol (CDP). CDP-specific commands (`Cypress.automation('remote:debugger:protocol', ...)`) must be guarded to Chrome-family browsers.
+
+```typescript
+// cypress/support/commands.ts — CDP-safe network throttling (Chrome only)
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      throttleNetwork(profile: 'offline' | 'slow3g' | 'fast3g' | 'online'): Chainable<void>;
+      setGeolocation(coords: { latitude: number; longitude: number; accuracy?: number }): Chainable<void>;
+      grantClipboardPermission(): Chainable<void>;
+    }
+  }
+}
+
+const NETWORK_PROFILES = {
+  offline: { offline: true,  latency: 0,   downloadThroughput: 0,       uploadThroughput: 0 },
+  slow3g:  { offline: false, latency: 400,  downloadThroughput: 500 / 8 * 1024,  uploadThroughput: 500 / 8 * 1024 },
+  fast3g:  { offline: false, latency: 100,  downloadThroughput: 1500 / 8 * 1024, uploadThroughput: 750 / 8 * 1024 },
+  online:  { offline: false, latency: 0,   downloadThroughput: -1,      uploadThroughput: -1 },
+} as const;
+
+// All CDP commands must be guarded: Cypress.browser.family !== 'chromium'
+Cypress.Commands.add('throttleNetwork', (profile) => {
+  if (Cypress.browser.family !== 'chromium') {
+    cy.log(`Skipping network throttle — CDP not supported on ${Cypress.browser.name} (BiDi)`);
+    return;
+  }
+  cy.wrap(
+    Cypress.automation('remote:debugger:protocol', {
+      command: 'Network.emulateNetworkConditions',
+      params: NETWORK_PROFILES[profile],
+    })
+  );
+});
+
+Cypress.Commands.add('setGeolocation', ({ latitude, longitude, accuracy = 100 }) => {
+  if (Cypress.browser.family !== 'chromium') {
+    cy.log(`Skipping geolocation override — CDP not supported on ${Cypress.browser.name} (BiDi)`);
+    return;
+  }
+  cy.wrap(
+    Cypress.automation('remote:debugger:protocol', {
+      command: 'Emulation.setGeolocationOverride',
+      params: { latitude, longitude, accuracy },
+    })
+  );
+});
+
+Cypress.Commands.add('grantClipboardPermission', () => {
+  if (Cypress.browser.family !== 'chromium') {
+    cy.log(`Clipboard permission grant requires Chrome (CDP). Current: ${Cypress.browser.name}`);
+    return;
+  }
+  cy.wrap(
+    Cypress.automation('remote:debugger:protocol', {
+      command: 'Browser.grantPermissions',
+      params: {
+        permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+        origin: window.location.origin,
+      },
+    })
+  );
+});
+```
+
+```typescript
+// Per-test browser guard — skip CDP-dependent tests on Firefox
+it('network throttling shows skeleton loader on slow 3G', { browser: '!firefox' }, () => {
+  cy.throttleNetwork('slow3g');  // safe — only runs on Chrome
+  cy.visit('/products');
+  cy.get('[data-cy="skeleton-loader"]').should('be.visible');
+  cy.get('[data-cy="product-list"]').should('be.visible');
+  cy.throttleNetwork('online');
+});
+
+// Alternatively, use Cypress.browser.family check inside the test
+it('geolocation-based store lookup', () => {
+  if (Cypress.browser.family !== 'chromium') {
+    cy.log('Geolocation override skipped — not running on Chrome');
+    return;
+  }
+  cy.setGeolocation({ latitude: 40.7128, longitude: -74.006 });
+  cy.visit('/store-locator');
+  cy.get('[data-cy="use-my-location"]').click();
+  cy.get('[data-cy="store-card"]').should('have.length.gte', 1);
+});
+```
+
+```yaml
+# GitHub Actions — run CDP tests only on Chrome, non-CDP tests on both
+jobs:
+  cypress-chrome:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: cypress-io/github-action@v7
+        with:
+          browser: chrome  # Chrome: all tests including CDP-dependent
+          record: true
+          
+  cypress-firefox:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: cypress-io/github-action@v7
+        with:
+          browser: firefox  # Firefox: only non-CDP tests (network throttle, geolocation, clipboard skipped)
+          record: true
+          group: 'Firefox E2E'
+```
+
+**[community]** WHY: Firefox switched from CDP to WebDriver BiDi in Firefox 135 (shipped with Cypress 14.1 compatibility). Teams that added CDP-based network throttling, geolocation, or clipboard commands before this change find those commands silently no-op on Firefox — or worse, throw an opaque error like `"protocol not supported"`. The `Cypress.browser.family !== 'chromium'` guard prevents silent failures by logging a clear message when skipping a CDP operation on Firefox. WebDriver BiDi does not yet expose equivalents for all CDP capabilities (geolocation emulation, network throttling, permission grants) — for these features, Chrome remains the only supported browser.
+
+### 108. justInTimeCompile — Webpack Component Testing Memory Optimization
+
+`justInTimeCompile` (default `true` since Cypress 14.0) compiles only the resources directly needed for the current spec, rather than compiling the entire component tree up front. This significantly reduces memory consumption for large component test suites on webpack.
+
+```typescript
+// cypress.config.ts — justInTimeCompile is true by default for webpack CT
+// You only need to set it explicitly when DISABLING it for debugging
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  component: {
+    devServer: {
+      framework: 'react',
+      bundler: 'webpack',  // justInTimeCompile applies to webpack only (not Vite)
+    },
+    specPattern: 'src/**/*.cy.{ts,tsx}',
+    // justInTimeCompile: true,  // this is the default — no need to specify
+    // justInTimeCompile: false, // disable to debug "module not found" errors
+  },
+});
+```
+
+```typescript
+// Vite users: justInTimeCompile does not apply — Vite handles this natively.
+// The setting is a webpack-specific memory optimization.
+// cypress.config.ts — Vite CT (no justInTimeCompile config needed)
+import { defineConfig } from 'cypress';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  component: {
+    devServer: {
+      framework: 'react',
+      bundler: 'vite',        // Vite: no justInTimeCompile setting
+      viteConfig: {
+        plugins: [react()],
+      },
+    },
+  },
+});
+```
+
+```bash
+# Monitoring JIT compile impact in large monorepos
+# Use Cypress's built-in memory management flags together with justInTimeCompile:
+
+npx cypress run \
+  --component \
+  --browser chrome \
+  --env experimentalMemoryManagement=true \
+  --config numTestsKeptInMemory=3
+
+# Signs that justInTimeCompile is helping:
+# - First spec runs slower (compile on demand), subsequent specs fast
+# - Memory stays low throughout the run instead of growing per spec
+# - No OOM crashes even with 500+ component specs
+```
+
+**[community]** WHY: Before `justInTimeCompile: true`, webpack compiled the entire component bundle before running the first test — for a monorepo with 400+ components, this could take 60-120s of startup time and allocate 2-4 GB of memory for all component modules simultaneously. JIT compilation eliminates the startup cost but adds a small per-spec compile step. The trade-off matters most in monorepos with many independent component suites: if your spec pattern matches components across 10 feature areas, the pre-JIT compilation compiled all 10 areas regardless of which 2 you were testing. Set `justInTimeCompile: false` only when debugging "module not found" errors, as JIT compilation can occasionally surface bundler configuration issues that full upfront compilation masks.
+
+### 109. experimentalFastVisibility — Faster Element Visibility Checks (Cypress 15.8+)
+
+`experimentalFastVisibility` changes the internal algorithm Cypress uses to determine element visibility, reducing the overhead of every `cy.get()`, `.should('be.visible')`, and interaction command actionability check.
+
+```typescript
+// cypress.config.ts — enable experimental fast visibility checks
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    experimentalFastVisibility: true,  // Cypress 15.8.0+
+    // Impact: faster test execution; different behavior for edge-case visibility scenarios
+  },
+  component: {
+    devServer: { framework: 'react', bundler: 'vite' },
+    experimentalFastVisibility: true,  // applies to both e2e and component testing
+  },
+});
+```
+
+```typescript
+// Known edge cases to test after enabling experimentalFastVisibility:
+
+// 1. Elements with `display: contents` — visibility detection may differ
+// 2. Clipped overflow: elements outside scrollable containers
+// 3. Elements inside shadow DOM with restrictive CSS
+// 4. Absolutely positioned elements with z-index layering
+
+// Recommended validation approach: run your full suite twice (with/without)
+// and compare results to catch any false-positive visibility assertions
+
+// Example: element that may behave differently with fast visibility
+it('validates display:contents element visibility', () => {
+  cy.visit('/complex-layout');
+
+  // This assertion may behave differently under experimentalFastVisibility
+  cy.get('[data-cy="display-contents-wrapper"]')
+    .find('[data-cy="inner-content"]')
+    .should('be.visible');
+
+  // If this flakes after enabling the flag, report to Cypress GitHub issues
+  // and disable experimentalFastVisibility as a workaround
+});
+```
+
+```bash
+# Enable/disable per CI run for A/B comparison
+CYPRESS_experimentalFastVisibility=true npx cypress run  # test with flag
+CYPRESS_experimentalFastVisibility=false npx cypress run  # test without flag
+```
+
+**[community]** WHY: The standard Cypress visibility algorithm traverses the DOM tree and checks multiple CSS properties (display, visibility, opacity, overflow, clip, transform) for the element and all its ancestors. For complex component hierarchies, this can execute hundreds of property reads per visibility check. `experimentalFastVisibility` uses a faster algorithm that relies on the browser's `getBoundingClientRect()` and IntersectionObserver, which are O(1) rather than O(depth). The performance gain is most visible in suites with dense DOM trees (data grids, rich text editors, nested card layouts) where each visibility check currently traverses 10-20 ancestor nodes. Enable it in a non-blocking CI job first and compare failure rates before making it the default.
+
+### 110. Cypress Studio — Default-Enabled (Cypress 15.4+)
+
+Cypress Studio is now available by default without the `experimentalStudio` configuration flag (enabled in 15.4.0). Studio lets you record UI interactions visually, add assertions by right-clicking elements, and generate Cypress commands from live browser actions.
+
+```typescript
+// Before Cypress 15.4: required explicit config flag
+// ❌ No longer needed
+// cypress.config.ts (pre-15.4)
+// experimentalStudio: true  // REMOVED — Studio is always on now
+
+// ✅ Cypress 15.4+: Studio is enabled by default in cypress open
+// No configuration required
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    baseUrl: 'http://localhost:3000',
+    // Studio is available automatically — no experimentalStudio flag
+  },
+});
+```
+
+```typescript
+// Studio workflow with @cypress/grep tags (supported since Cypress 15.2)
+// Studio-generated tests can be tagged with @cypress/grep syntax
+
+describe('User settings flow', { tags: ['@smoke'] }, () => {
+  // Open Studio on a specific test: hover the test in Cypress App → "Add Commands to Test"
+  // Studio records your interactions and adds them to the test body
+  it('updates notification preferences', { tags: ['@regression', '@settings'] }, () => {
+    // Studio-generated code appears here after recording:
+    cy.visit('/settings/notifications');
+    cy.get('[data-cy="email-notifications"]').check();
+    cy.get('[data-cy="save-settings"]').click();
+    cy.get('[data-cy="success-toast"]').should('be.visible');  // added via right-click → Assert
+  });
+});
+```
+
+```bash
+# Running Studio (requires cypress open — not available in cypress run)
+npx cypress open --browser chrome
+
+# Studio + @cypress/grep: run only Studio-tagged tests
+npx cypress run --env grep=@smoke  # works with Studio-authored tests
+
+# Studio in CI: Studio-generated code is plain Cypress commands — runs in CI without Studio
+npx cypress run --headless
+```
+
+**Studio key features in Cypress 15:**
+- Add assertions by right-clicking on elements (generates `.should()` commands)
+- Create new tests while focused on a spec
+- Word wrap for generated code (added 15.12)
+- Works with `@cypress/grep` tag filtering (since 15.2)
+- Unsaved Studio changes warn before code export
+
+**[community]** WHY: The most common Studio gotcha is attempting to use it during `cypress run` (headless CI) — Studio is exclusively a `cypress open` feature. Code generated by Studio is standard Cypress TypeScript, so it runs in CI without any Studio dependency. However, teams that use Studio's "self-healing" mode (keeping `cy.prompt()` in code) should understand that Studio-generated code does NOT self-heal — only `cy.prompt()` stubs self-heal. Studio generates static code that is committed and runs deterministically. Treat Studio as a code-generation assistant, not a runtime AI layer.
+
+### 111. experimentalRunAllSpecs for Component Testing (Cypress 15.9+)
+
+`experimentalRunAllSpecs` was expanded in Cypress 15.9 to support component testing in addition to E2E tests. This flag runs all specs in a single browser session, eliminating browser launch overhead between specs.
+
+```typescript
+// cypress.config.ts — enable for both testing types
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    experimentalRunAllSpecs: true,  // run all E2E specs in one browser session
+  },
+  component: {
+    devServer: { framework: 'react', bundler: 'vite' },
+    experimentalRunAllSpecs: true,  // NEW in Cypress 15.9 — component testing support
+    specPattern: 'src/**/*.cy.{ts,tsx}',
+  },
+});
+```
+
+```bash
+# Run all component tests in a single browser session
+npx cypress run --component --browser chrome
+
+# Disable per-run for a specific CI job (e.g., debugging isolation issues)
+CYPRESS_experimentalRunAllSpecs=false npx cypress run --component
+```
+
+```typescript
+// Component testing with experimentalRunAllSpecs: isolation requirements
+// Without experimentalRunAllSpecs: browser relaunches between specs (full reset)
+// With experimentalRunAllSpecs: browser persists — you MUST clean up between tests
+
+// cypress/support/component.ts — ensure isolation when specs share a browser session
+afterEach(() => {
+  // Unmount the component (Cypress CT does this automatically, but explicit is safer)
+  // Any global state modified by the component must be reset
+  cy.window().then((win) => {
+    // Reset any global state the component may have set
+    win.localStorage.clear();
+    win.sessionStorage.clear();
+  });
+});
+
+// Modules that register global side effects (event listeners on document/window)
+// must clean up in afterEach to avoid polluting subsequent component specs
+afterEach(() => {
+  // If the component adds document-level event listeners, they persist in
+  // experimentalRunAllSpecs mode. Always use useEffect cleanup in React:
+  // useEffect(() => { document.addEventListener('keydown', handler); return () => document.removeEventListener('keydown', handler); }, []);
+});
+```
+
+**[community]** WHY: The browser launch overhead for component tests is proportionally larger than for E2E tests — each component spec launch starts Vite's dev server transaction, processes the module graph for the spec, and hydrates the test framework. For suites with 100+ component specs, this overhead adds 5-10 minutes to CI wall time. `experimentalRunAllSpecs` eliminates this by reusing the browser session. The isolation risk is lower for component tests than for E2E tests because each component is mounted fresh via `cy.mount()` — the browser's DOM is fully reset between specs by Cypress's automatic cleanup. The main risk is component-level global side effects (window event listeners, global CSS variables, browser API patches) that survive unmounting. Always clean these up in `afterEach` regardless of `experimentalRunAllSpecs`.
+
+---
+
+## Additional Real-World Gotchas [community]
+
+78. **`cy.prompt()` re-executes AI on every CI run in self-healing mode** [community] — If you leave `cy.prompt()` calls in committed test code and run them in CI, the AI is called on every run, consuming rate-limit quota (100 prompts/500 steps/hour on free tier). On a large parallel CI suite, this can exhaust your hourly quota within minutes and cause subsequent tests to fail with "rate limit exceeded". Use `cy.prompt()` only for initial test authoring (Generate & Export workflow), then replace with exported concrete Cypress commands before committing to main. Reserve self-healing mode for feature branches during active UI development.
+
+79. **`Cypress.stop()` code after the call still runs in the same hook** [community] — Calling `Cypress.stop()` does not immediately halt execution of the current `afterEach` or `beforeEach` block. Code written after `Cypress.stop()` in the same function will execute. This is intentional (teardown may still be needed), but teams often assume `Cypress.stop()` is like a `return` statement. Always add an explicit `return` immediately after `Cypress.stop()` to prevent unintended code from running: `Cypress.stop(); return;`. Without the return, the rest of the hook function executes and can trigger additional commands that clutter the test log.
+
+80. **Firefox WebDriver BiDi silently ignores CDP automation commands** [community] — When Cypress switches Firefox to WebDriver BiDi (Firefox 135+, Cypress 14.1+), calls to `Cypress.automation('remote:debugger:protocol', ...)` do not throw an error — they silently succeed with an empty response or no-op. Network throttling applied via CDP on Firefox appears to work (no error), but the throttling has no effect on the actual network. This is especially deceptive for throttling tests: the test passes because the skeleton loader never appears (no throttling), but the assertion is against the wrong behavior. Always guard CDP commands with `if (Cypress.browser.family !== 'chromium')` and verify the command had an effect by asserting on the resulting UI state.
+
+81. **`justInTimeCompile: false` may surface bundler config errors hidden by JIT** [community] — JIT compilation compiles only the modules needed by the current spec, which can hide bundler misconfiguration. With JIT enabled, a webpack alias typo in a module that's never imported by your spec passes silently. When you disable JIT for debugging, webpack compiles the entire bundle upfront and surfaces all errors at once — which can look like disabling JIT "broke" compilation when it actually exposed pre-existing issues. If disabling JIT reveals new webpack errors, fix them with JIT still disabled (so you see all errors at once), then re-enable JIT.
+
+82. **`experimentalFastVisibility` returns false for `display: contents` elements** [community] — CSS `display: contents` makes an element's children participate in layout as if the element itself didn't exist. The standard Cypress visibility algorithm correctly handles `display: contents` elements (visible if children are visible). The `experimentalFastVisibility` algorithm uses `getBoundingClientRect()`, which returns `{ width: 0, height: 0 }` for `display: contents` elements (they have no box). `should('be.visible')` therefore fails for `display: contents` wrapper elements under `experimentalFastVisibility`. If your component library uses `display: contents` for slot-based wrappers (Headless UI, Radix, etc.), test carefully before enabling this flag.
+
+83. **`--pass-with-no-tests` can hide genuine spec discovery failures in CI** [community] — The `--pass-with-no-tests` flag treats "no matching spec files" as success. In a monorepo where spec paths are dynamically computed per changed package, a bug in the path computation script can result in an empty spec glob that passes with exit 0 — silently running zero tests. To detect this, check the Cypress run output for `"No spec files were found"` log line and fail the CI step if found but not expected: `npx cypress run --pass-with-no-tests 2>&1 | tee cypress-output.txt; if grep -q "No spec files were found" cypress-output.txt && [ "$ALLOW_NO_SPECS" != "true" ]; then exit 1; fi`. Set `ALLOW_NO_SPECS=true` only for jobs that legitimately run on unchanged packages.
+
+84. **Cypress Studio `@cypress/grep` tag propagation requires registerCypressGrep before Studio records** [community] — When using Cypress Studio to add commands to tests that are tagged with `@cypress/grep`, the `registerCypressGrep()` call in `cypress/support/e2e.ts` must be loaded before Studio initializes. If `registerCypressGrep` is imported conditionally (e.g., only in non-CI environments), Studio-enhanced tests may not have their `@tags` property recognized during `cypress open` recording sessions. Always register grep unconditionally in `support/e2e.ts`, and control the grep filter via CLI flags (`--env grep=@smoke`) rather than conditional imports.
+
+85. **Brotli-compressed API responses in Cypress proxy may appear empty in `cy.intercept()` handlers** [community] — Cypress 15.11 added Brotli decompression support in the Cypress proxy. However, if your API server sends Brotli-compressed responses and your intercepted `req.reply()` in `cy.intercept()` handler tries to read `res.body` before decompression completes, `res.body` may be a Buffer containing raw Brotli bytes instead of the parsed JSON. This surfaces as empty or garbled response bodies in intercept spy logs. Ensure you await full decompression by reading `res.body` only inside `req.continue(res => { ... })` — Cypress automatically decompresses the body before invoking the response handler. The issue only manifests when directly calling `req.reply()` with a passthrough and immediately reading the streamed body in the same synchronous tick.
 
 ---

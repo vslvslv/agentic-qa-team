@@ -1,8 +1,9 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 46 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 47 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
 <!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
+<!-- Iteration 47: Pattern 64 (Vitest 4.1 tags with per-tag retry); Pattern 65 (Playwright per-project workers for flaky isolation); Pattern 66 (Playwright test step timeout); AP36 (retry-all via global tag); Gotcha 41 (Vitest 3.2 fixture scope 'file' for shared setups); Gotcha 42 (Playwright v1.57 webserver wait regex) -->
 <!-- Iteration 46: Pattern 59 (Vitest onTestFailed/onTestFinished hooks); Pattern 60 (Vitest repeats option); Pattern 61 (Playwright test.step.skip()); Pattern 62 (Playwright page.consoleMessages/page.pageErrors for flakiness diagnosis); Pattern 63 (Playwright test.abort() from fixtures); AP35 (Vitest onTestFailed in beforeAll); Gotcha 39 (captureGitInfo correlation); Gotcha 40 (Google TotT: DI for testability) -->
 <!-- Iter-43: AP23–AP25; extended Quick Reference table -->
 <!-- Iter-44: pytest flaky tests cross-reference (docs.pytest.org/en/stable/explanation/flaky.html, 2026-05-08); cross-language flakiness equivalents table -->
@@ -4689,4 +4690,445 @@ describe('OrderService — DI pattern', () => {
 | Playwright page.pageErrors() | Official | https://playwright.dev/docs/api/class-page#page-page-errors | Post-test access to last 200 uncaught JS errors — surfaces silent flakiness precursors |
 | Playwright test.abort() | Official | https://playwright.dev/docs/api/class-test#test-abort | Immediate test termination from fixtures and route handlers (v1.60) |
 | Trunk Flaky Tests On-Premise | Community | https://trunk.io/flaky-tests | Auto-quarantine SaaS + on-premise preview (2026) — quarantined tests run but don't break CI |
+
+---
+
+## Pattern 64 — Vitest 4.1 Test Tags with Per-Tag Retry Policy  [official]
+
+Vitest 4.1 (March 2026) introduced first-class test tags that carry configuration overrides —
+including per-tag retry count and timeout. This removes the need for manual quarantine wrappers:
+tests marked `{ tags: ['flaky'] }` automatically receive extra retries on CI, while stable tests
+run with no retries. When the underlying defect is fixed, removing the tag is the only change needed.
+
+```typescript
+// vitest.config.ts — define tags with retry/timeout policies
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    tags: [
+      {
+        name: 'flaky',
+        description: 'Known-flaky test cases under active investigation.',
+        // On CI: retry 3 times before marking failed. Locally: run once (fail fast).
+        retry: process.env.CI ? 3 : 0,
+        // Extend timeout — flaky tests often involve timing; extra headroom avoids
+        // false flakiness from slow CI machines masking the actual root cause.
+        timeout: 30_000,
+        // Priority 1: when a test has both 'flaky' and 'db' tags, 'flaky' wins
+        // because lower priority number = higher precedence.
+        priority: 1,
+      },
+      {
+        name: 'db',
+        description: 'Tests that require database access.',
+        timeout: 60_000, // extended timeout for DB tests
+        // No retry — DB tests should be deterministic; flakiness is a real defect
+      },
+      {
+        name: 'network',
+        description: 'Tests that make real or mocked network calls.',
+        timeout: 15_000,
+      },
+    ],
+    // Enforce that all tags used in tests are declared — catches typos early
+    strictTags: true,
+  },
+});
+```
+
+```typescript
+// Augment Vitest types for strict TypeScript tag checking
+// Add to vitest-env.d.ts or a global type file
+declare module 'vitest' {
+  interface TestTags {
+    tags: 'flaky' | 'db' | 'network' | 'frontend' | 'backend';
+  }
+}
+```
+
+```typescript
+// Usage: tests declare their tags inline — no quarantine wrapper needed
+import { describe, it, expect } from 'vitest';
+import { PaymentGateway } from './PaymentGateway';
+
+describe('PaymentGateway — integration', () => {
+  // Standard test: no extra retry, 15s timeout from 'network' tag
+  it('returns order confirmation', { tags: ['network'] }, async () => {
+    const gw = new PaymentGateway({ endpoint: process.env.GATEWAY_URL! });
+    const result = await gw.charge({ amount: 5000, currency: 'USD' });
+    expect(result.status).toBe('succeeded');
+  });
+
+  // Flaky test: 3 retries on CI (from 'flaky' tag) + extended timeout
+  // Tracking: PROJ-2890 — webhook timing race under CI load
+  it(
+    'processes refund webhook within 5 seconds',
+    { tags: ['flaky', 'network'] }, // 'flaky' priority wins: retry=3, timeout=30s
+    async () => {
+      const gw = new PaymentGateway({ endpoint: process.env.GATEWAY_URL! });
+      const refund = await gw.refund({ transactionId: 'TXN-001', amount: 50_00 });
+      expect(refund.status).toBe('refunded');
+    }
+  );
+});
+```
+
+**Tag-based conditional setup with `TestRunner.matchesTags`:**
+
+```typescript
+// vitest.setup.ts — seed DB only when tests tagged 'db' are being run
+import { beforeAll } from 'vitest';
+import { TestRunner } from 'vitest';
+import { seedTestDatabase, teardownTestDatabase } from './test-utils/db-seed';
+
+// Conditional seeding: avoids slow DB setup for pure unit test runs
+beforeAll(async () => {
+  if (TestRunner.matchesTags(['db'])) {
+    await seedTestDatabase();
+  }
+});
+
+afterAll(async () => {
+  if (TestRunner.matchesTags(['db'])) {
+    await teardownTestDatabase();
+  }
+});
+```
+
+**Migration from manual quarantine wrapper (Pattern 3) to tags:**
+
+| Old approach | New approach |
+|---|---|
+| `test.skip('[QUARANTINE] test name', ...)` | `it('test name', { tags: ['flaky'] }, ...)` |
+| `quarantine('test name', fn)` wrapper | `it('test name', { tags: ['flaky'] }, fn)` |
+| Per-test retry: `it('name', { retry: 3 }, fn)` | Centralised: tag `'flaky'` applies retry policy from config |
+| Remove quarantine: change `test.skip` → `test` | Remove quarantine: delete `'flaky'` from tags array |
+
+Tags are the Vitest 4.1+ preferred quarantine mechanism because the retry policy is centralised
+(change once in config, affects all flaky-tagged tests) and the tag serves as searchable metadata.
+
+---
+
+## Pattern 65 — Playwright Per-Project Worker Limit for Flaky Test Isolation  [official]
+
+Playwright supports setting `workers` at the **project level** (`testProject.workers`), enabling
+different concurrency for different test categories within the same config. The canonical use case:
+run known-flaky or resource-contending tests with `workers: 1` (serial) while stable tests run at
+full parallelism. This prevents the flaky tests from interfering with each other (shared DB rows,
+port collisions) without needing a separate CI job.
+
+```typescript
+// playwright.config.ts — per-project worker limits
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  // Default: 50% of CPUs for stable projects
+  workers: '50%',
+  retries: process.env.CI ? 2 : 0,
+
+  projects: [
+    // Stable unit-equivalent tests: run at full parallelism
+    {
+      name: 'component-tests',
+      testMatch: '**/*.component.spec.ts',
+      // Inherits global workers ('50%') — fast, parallelised
+    },
+
+    // Integration tests: moderate parallelism — share a test DB with row-level isolation
+    {
+      name: 'integration',
+      testMatch: '**/*.integration.spec.ts',
+      workers: 4, // fixed count avoids port collisions on shared DB
+      retries: 1, // one retry; legitimate flakiness should be investigated
+    },
+
+    // E2E tests that are known-flaky: serial execution prevents cascading failures
+    // Workers=1 means tests run one at a time — order-dependency becomes obvious
+    {
+      name: 'e2e-flaky-isolation',
+      testMatch: '**/*.flaky.spec.ts',
+      workers: 1,          // serial: surfaces order-dependency, prevents interference
+      retries: 2,          // allow retries while root causes are diagnosed
+      // Run this project AFTER stable projects complete
+      dependencies: ['component-tests', 'integration'],
+    },
+
+    // E2E stable: full parallelism
+    {
+      name: 'e2e-stable',
+      testMatch: '**/*.e2e.spec.ts',
+      testIgnore: '**/*.flaky.spec.ts',
+      workers: '50%',
+      retries: 1,
+    },
+  ],
+});
+```
+
+**Why this matters for flakiness:** Tests in the `e2e-flaky-isolation` project run serially, so:
+1. Port collisions between concurrent tests are eliminated.
+2. Order-dependency defects become deterministic (the order is always the same in serial mode).
+3. Flaky root causes can be diagnosed without "noise" from parallel interference.
+4. Stable tests are not slowed down — they still run in parallel.
+
+Once a test's root cause is fixed, move it from `*.flaky.spec.ts` back to `*.e2e.spec.ts` to
+restore parallelism. The `.flaky.spec.ts` naming convention is a team convention: any test known
+to be under active flakiness investigation gets the `.flaky.` infix.
+
+---
+
+## Pattern 66 — Playwright Test Step Timeout for Granular Flakiness Scoping  [official]
+
+Playwright v1.50 added a `timeout` option to `test.step()`. Before this, the only timeout control
+was at the test case level — a single slow step could consume the entire test timeout, making it
+impossible to distinguish "this step is always slow" from "this step is occasionally hanging."
+Per-step timeouts enable precise attribution of timing flakiness to the specific step that caused it.
+
+```typescript
+// playwright.config.ts — global step timeout sets a ceiling for individual steps
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  timeout: 60_000,          // total test timeout
+  use: {
+    actionTimeout: 10_000,  // default timeout for page actions (click, fill, etc.)
+  },
+});
+```
+
+```typescript
+// tests/e2e/checkout.spec.ts — per-step timeouts for precise flakiness scoping
+import { test, expect } from '@playwright/test';
+
+test('completes checkout flow', async ({ page }) => {
+  // Step 1: fast navigation — strict 5s timeout; longer than this is a bug, not flakiness
+  await test.step('Navigate to checkout', async () => {
+    await page.goto('/checkout');
+    await expect(page.getByRole('heading', { name: 'Checkout' })).toBeVisible();
+  }, { timeout: 5_000 });
+
+  // Step 2: fill form — user interactions are fast; 3s is generous
+  await test.step('Fill payment form', async () => {
+    await page.fill('[name="card-number"]', '4111111111111111');
+    await page.fill('[name="expiry"]', '12/28');
+    await page.fill('[name="cvv"]', '123');
+  }, { timeout: 3_000 });
+
+  // Step 3: order submission — involves API call; known to be slow under load
+  // Step-level timeout 15s < total test timeout 60s — but scoped to this step
+  await test.step('Submit order (API call)', async () => {
+    await page.getByRole('button', { name: 'Place Order' }).click();
+    // If this assertion fails due to timeout, the step report shows "Submit order" failed,
+    // not the entire test — making the trace much more actionable
+    await expect(page.getByTestId('order-confirmation')).toBeVisible({ timeout: 15_000 });
+  }, { timeout: 20_000 }); // 20s step ceiling includes the 15s assertion timeout
+
+  // Step 4: verify confirmation details — should be instant (DOM already rendered)
+  await test.step('Verify confirmation', async () => {
+    await expect(page.getByTestId('order-id')).toContainText('ORD-');
+    await expect(page.getByTestId('total-price')).toBeVisible();
+  }, { timeout: 2_000 }); // tight timeout: if this is slow, the step before leaked state
+});
+```
+
+**Flakiness diagnosis with per-step timeouts:**
+
+When a step times out, the Playwright trace viewer highlights the exact step with its timeline,
+the network activity within that step's window, and the DOM state at the moment of timeout.
+Without step-level timeouts, a timeout in step 4 shows "test timed out at 60s" with no indication
+of which step was the culprit. With step-level timeouts, it shows "step 'Submit order' timed out
+at 20s" — immediately actionable.
+
+---
+
+## Anti-Patterns (continued)
+
+### AP36 — Applying a `flaky` Tag to All Integration Tests  [community]
+
+**What:** Bulk-tagging every integration or E2E test case with `{ tags: ['flaky'] }` to silence
+retry exhaustion, rather than tagging only the specific test cases that are known to be flaky.
+
+**Why harmful:** The `flaky` tag is a signal — it means "this specific test case has a known
+non-determinism defect under active investigation." When applied broadly:
+1. The retry policy inflates CI runtime (3x for every integration test).
+2. The tag loses its diagnostic value — no one knows which tests are genuinely flaky vs.
+   which were tagged defensively.
+3. Real new flakiness is invisible because every test already retries.
+4. The team loses the quarantine SLA mechanism — there is no backlog to track.
+
+**Fix:** Use the `flaky` tag surgically, following the same discipline as `test.skip('[QUARANTINE]')`:
+a tracking issue number, an owner, and a resolution SLA. The backlog check script (Pattern 3)
+should count `tags: ['flaky']` alongside `[QUARANTINE]` markers.
+
+```typescript
+// BAD: defensive bulk tagging — all integration tests retry 3x on CI
+describe('OrderService integration', { tags: ['flaky'] }, () => {
+  it('creates order', async () => { /* ... */ });
+  it('updates order', async () => { /* ... */ });
+  it('cancels order', async () => { /* ... */ });
+  // 3 retries × 3 tests = up to 9 executions on CI just for this describe block
+});
+
+// GOOD: surgical tagging — only the specific known-flaky test case is tagged
+describe('OrderService integration', () => {
+  it('creates order', async () => { /* ... */ });
+
+  // [QUARANTINE-EQUIVALENT] via tag — PROJ-3012, owner: @bob, SLA: 2026-05-30
+  // Root cause: webhook timing race with payment provider
+  it('cancels order with refund webhook', { tags: ['flaky'] }, async () => {
+    /* test body — retries 3x on CI until root cause is fixed */
+  });
+
+  it('updates order', async () => { /* ... */ });
+});
+```
+
+---
+
+## Real-World Gotchas (continued)  [community]
+
+**Gotcha 41 — Vitest 3.2 Fixture Scope `'file'` Eliminates Repeated DB Seeding Between Tests**  [official]
+
+Vitest 3.2 added two new fixture scope values: `'file'` (initialise once per test file, teardown
+after all tests in that file complete) and `'worker'` (initialise once per worker process). Before
+3.2, the only scopes were `'test'` (per test, equivalent to beforeEach/afterEach) and `'suite'`
+(per describe block). The `'file'` scope is the correct choice for expensive setup that should be
+shared within a file but not leaked between files:
+
+```typescript
+// test-utils/fixtures.ts — scoped fixture for expensive DB setup
+import { test as base } from 'vitest';
+import { createTestDb, dropTestDb, TestDb } from './test-db';
+
+// Extend base test with a file-scoped DB fixture
+// The DB is created once when the first test in the file runs,
+// and destroyed after the last test in the file completes.
+// Each test in the file shares the same DB instance — use transaction
+// rollback (Pattern 4b equivalent) to keep individual tests isolated.
+export const test = base.extend<{ db: TestDb }>({
+  db: {
+    scope: 'file', // file-scoped: one DB per test file, not per test
+    async fixture({}, { onCleanup }) {
+      const db = await createTestDb({
+        // Unique name per file prevents cross-file interference
+        name: `test_${Math.random().toString(36).slice(2, 8)}`,
+      });
+      // onCleanup is guaranteed to run even if tests fail
+      onCleanup(async () => { await dropTestDb(db.name); });
+      return db;
+    },
+  },
+});
+
+// tests/order.test.ts — all tests share one DB instance (file scope)
+import { test } from '../test-utils/fixtures';
+import { expect } from 'vitest';
+import { OrderRepository } from '../src/OrderRepository';
+
+// The 'db' fixture is initialised ONCE for this file, not once per test.
+// Eliminates 3× DB creation/teardown overhead vs per-test scope.
+test('creates an order', async ({ db }) => {
+  const repo = new OrderRepository(db.client);
+  const order = await repo.create({ items: ['sku-A'] });
+  expect(order.id).toBeDefined();
+  // Clean up the specific row to avoid state bleed to the next test
+  await repo.delete(order.id);
+});
+
+test('finds orders by customer', async ({ db }) => {
+  const repo = new OrderRepository(db.client);
+  // Shared DB — but order.id was deleted above, so no bleed
+  const orders = await repo.findByCustomer('cust-001');
+  expect(orders).toHaveLength(0);
+});
+```
+
+**When to use each scope:**
+- `'test'` (default): mocks, in-memory state, anything cheap to recreate
+- `'file'`: DB connections, server instances, expensive seed operations — reset rows per test, not the entire DB
+- `'worker'`: fixtures that must persist across files on the same worker (e.g., a shared auth token cache)
+
+The key insight: `'file'` scope reduces flakiness from fixture setup failures (creating a DB
+for every test in a 50-test file is 50 failure points) while preserving per-test isolation via
+row-level rollback or explicit delete.
+
+---
+
+**Gotcha 42 — Playwright v1.57 Webserver `wait` Regex Prevents Premature Test Start**  [official]
+
+Playwright's `webServer` config option has a `wait` field (added v1.57) that accepts a regex
+pattern. Playwright waits until the server emits a line matching the pattern before starting tests.
+Before this, teams relied on `reuseExistingServer: true` with a fixed URL poll, which could
+incorrectly report "server ready" on the 200 response from a previous run's cached process —
+causing intermittent failures when tests started before the new server had finished seeding data
+or applying migrations.
+
+```typescript
+// playwright.config.ts — wait for specific server readiness signal
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  webServer: {
+    command: 'npm run start:test',
+    url: 'http://localhost:3000',
+    // Wait until the server emits this exact log line before starting any tests.
+    // This prevents the race condition where the server URL responds (200) before
+    // the database migrations and seed data are applied.
+    wait: /Server ready — migrations applied, seed data loaded/,
+    // Timeout for the wait pattern — fail fast if the server never becomes fully ready
+    timeout: 60_000,
+    // Do NOT reuse an existing server: ensures migrations run fresh every CI run
+    reuseExistingServer: !process.env.CI,
+  },
+});
+```
+
+```typescript
+// src/server.ts — emit a structured readiness signal after setup completes
+async function startTestServer() {
+  const app = createExpressApp();
+  await runMigrations();
+  await seedTestData();
+  const port = process.env.PORT ?? 3000;
+  app.listen(port, () => {
+    // This exact string is what the 'wait' regex in playwright.config.ts matches.
+    // Keep this log line stable — changing it will break CI until the config is updated.
+    console.log('Server ready — migrations applied, seed data loaded');
+  });
+}
+```
+
+**Without `wait` regex:** Playwright polls `http://localhost:3000` until it gets a 200, which
+happens when the HTTP server starts — but before migrations run. Tests start and fail with
+`table "orders" does not exist` errors that look like infrastructure flakiness but are really
+a race condition in startup sequencing.
+
+**With `wait` regex:** Playwright does not start tests until the server has explicitly signalled
+readiness. The race condition is eliminated at the protocol level, not papered over with a sleep.
+
+---
+
+## Quick Reference additions (iteration 47)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| All integration tests retry 3× on CI, slowing the build | Bulk flaky tagging | AP36 (surgical tag, not bulk) | Applying `tags: ['flaky']` to entire describe blocks |
+| Different E2E projects interfering with each other's ports | Cross-project parallelism | Pattern 65 (per-project workers) | Single global workers setting for all projects |
+| Test failure says "timed out at 60s" with no step info | No per-step timeout | Pattern 66 (test.step timeout) | Relying on test-level timeout only |
+| DB setup runs 50× for a 50-test file | Per-test fixture scope | Gotcha 41 (fixture scope: 'file') | Using scope: 'test' for expensive DB fixtures |
+| Tests start before server finishes migrations | URL-based readiness poll | Gotcha 42 (webserver wait regex) | reuseExistingServer without readiness signal |
+| Need per-tag retry policies without quarantine wrappers | No tag-based retry | Pattern 64 (Vitest 4.1 tags) | Manual quarantine() wrapper per test |
+
+---
+
+## Key Resources (iteration 47 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest 4.1 Test Tags | Official | https://vitest.dev/guide/test-tags | Per-tag retry, timeout, priority — replaces manual quarantine wrappers |
+| Vitest Test Context (fixture scopes) | Official | https://vitest.dev/guide/test-context | file and worker scope options, onCleanup callback — Vitest 3.2+ |
+| Playwright testProject.workers | Official | https://playwright.dev/docs/api/class-testproject#test-project-workers | Per-project worker limits for flaky test isolation (v1.50+) |
+| Playwright test.step timeout | Official | https://playwright.dev/docs/api/class-test#test-step | timeout option on test.step() for granular flakiness attribution (v1.50) |
+| Playwright webServer.wait | Official | https://playwright.dev/docs/test-webserver | Regex readiness wait — prevents premature test start before server is fully ready (v1.57) |
 | Google TotT: Construct with Collaborators | Official | https://testing.googleblog.com/2026/05/construct-with-collaborators-call-with.html | DI pattern that eliminates a class of shared-state and network flakiness |

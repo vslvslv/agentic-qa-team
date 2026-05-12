@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -1423,7 +1423,7 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 - [ ] `"noUnusedLocals": true` and `"noUnusedParameters": true`
 - [ ] Separate `tsconfig.test.json` with relaxed rules for test files
 - [ ] **TS 5.5+ greenfield:** `"isolatedDeclarations": true` for parallelizable type checking
-- [ ] **TS 5.8+ greenfield:** `"erasableSyntaxOnly": true` + `"verbatimModuleSyntax": true` for native TS execution
+- [ ] **TS 5.8+ greenfield:** `"erasableSyntaxOnly": true` + `"verbatimModuleSyntax": true` for native TS execution (stable in Node.js 23.6.0+; `--experimental-strip-types` still required for Node.js 22 LTS)
 
 **Static Layer (pre-commit)**
 - [ ] `@typescript-eslint/eslint-plugin` v8+ with `recommendedTypeChecked`
@@ -4135,32 +4135,59 @@ export type UserRole = typeof UserRole[keyof typeof UserRole]; // 'admin' | 'vie
 ```
 
 ```yaml
-# .github/workflows/native-ts-test.yml — test TypeScript natively with Node.js 22
+# .github/workflows/native-ts-test.yml — test TypeScript natively
+# Node.js 23.6.0+ (released Jan 2025): --strip-types is stable, no --experimental flag needed
+# Node.js 22 LTS: still requires --experimental-strip-types flag
 # Requires: erasableSyntaxOnly: true in tsconfig.json
 name: Tests (Native TypeScript)
 on:
   pull_request:
 
 jobs:
-  test-native:
-    name: Vitest with native TS (Node 22 --strip-types)
+  test-native-node23:
+    name: Vitest with native TS (Node 23+, stable strip-types)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '23', cache: 'npm' }   # Node 23.6.0+: --strip-types is default
+      - run: npm ci
+      # Type check first (--strip-types does NOT type check — it only strips annotations)
+      - run: npx tsc --noEmit
+      # Run tests via Node 23 native TS — no --experimental flag needed in Node 23.6.0+
+      - run: node --strip-types --test src/**/*.spec.ts
+        # OR: continue using vitest (which also supports native TS via vite transform)
+        # - run: npx vitest run
+
+  test-native-node22-lts:
+    # Node 22 LTS still requires the --experimental flag for type stripping
+    name: Vitest with native TS (Node 22 LTS, experimental)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22', cache: 'npm' }
       - run: npm ci
-      # Type check first (--strip-types does NOT type check)
       - run: npx tsc --noEmit
-      # Run tests via Node 22 native TS — no ts-jest or vitest transform needed
       - run: node --experimental-strip-types --test src/**/*.spec.ts
-        # OR: continue using vitest (which also supports native TS via vite)
-        # - run: npx vitest run
 ```
+
+> **Node.js native TypeScript execution — version matrix:**
+>
+> | Node version | Command | Status |
+> |---|---|---|
+> | Node.js 22.6.0 (first TS support) | `node --experimental-strip-types file.ts` | Experimental |
+> | Node.js 22.x LTS (current LTS) | `node --experimental-strip-types file.ts` | Experimental |
+> | Node.js 23.6.0 (Jan 2025) | `node --strip-types file.ts` | **Stable (unflagged)** |
+> | Node.js 24+ (2026 LTS) | `node --strip-types file.ts` | Stable |
+>
+> **Key caveat**: `--strip-types` only removes type annotations — it is NOT a type checker. `tsc --noEmit` must still run as a separate CI step to enforce type correctness. The shift-left benefit is developer ergonomics (no transpile step for scripts/tests) and CI speed (no build artifact needed for test runs).
 
 **WHY `erasableSyntaxOnly` + `verbatimModuleSyntax` are shift-left tools**: They make TypeScript code directly executable by the runtime without a build step. In development, `node --strip-types src/server.ts` starts the server in < 1 second (no tsc). In CI, test discovery is near-instantaneous. The tradeoff: you cannot use TypeScript enums, namespaces, or parameter properties — but these features are deprecated anyway by the TypeScript team for performance reasons.
 
-> [community] **Lesson (Deno, Bun, Node 22 communities, 2025–2026)**: Teams migrating to `erasableSyntaxOnly` discover that removing enums improves their TypeScript: const-assertion objects (`as const`) are more ergonomic, produce better union types, and are zero-cost at runtime (no IIFE emitted). The migration to `erasableSyntaxOnly` is also a code quality improvement — it forces removal of the TypeScript-specific features that most confuse JavaScript developers reading TS code.
+> [community] **Lesson (Deno, Bun, Node 22/23 communities, 2025–2026)**: Teams migrating to `erasableSyntaxOnly` discover that removing enums improves their TypeScript: const-assertion objects (`as const`) are more ergonomic, produce better union types, and are zero-cost at runtime (no IIFE emitted). The migration to `erasableSyntaxOnly` is also a code quality improvement — it forces removal of the TypeScript-specific features that most confuse JavaScript developers reading TS code.
+
+> [community] **Gotcha (Node.js 23.6.0 `--strip-types` + ESM imports)**: When using `node --strip-types`, TypeScript files must include explicit `.ts` extensions in import paths (e.g., `import { x } from './utils.ts'` not `./utils`). Node.js does NOT apply TypeScript module resolution — it uses Node's standard resolution algorithm. Projects upgrading from `tsx` or `ts-node` (which support extensionless imports via path rewriting) must add `.ts` extensions to all relative imports. Use `verbatimModuleSyntax: true` in tsconfig to enforce this at compile time.
 
 ---
 
@@ -4362,7 +4389,8 @@ export type CreateUserInput = Omit<User, 'id' | 'createdAt'>;
 | cdk-nag | Tool | https://github.com/cdklabs/cdk-nag | AWS CDK security policy-as-code checks |
 | Checkov | Tool | https://www.checkov.io/ | Policy-as-code scanner for CloudFormation, Terraform, CDK |
 | TypeScript 5.5–5.9 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html | isolatedDeclarations, verbatimModuleSyntax, --noCheck, erasableSyntaxOnly |
-| Node.js --strip-types (Node 22) | Official | https://nodejs.org/en/blog/release/v22.6.0 | Native TypeScript execution without transpilation step |
+| Node.js --strip-types (Node 22) | Official | https://nodejs.org/en/blog/release/v22.6.0 | Native TypeScript execution without transpilation step (experimental flag required in Node 22 LTS) |
+| Node.js 23.6.0 — Stable type stripping | Official | https://nodejs.org/en/blog/release/v23.6.0 | `--strip-types` unflagged as of Node.js 23.6.0 (Jan 2025); no `--experimental` flag needed on Node 23+ |
 | GitHub Artifact Attestation | Official | https://docs.github.com/en/actions/security-guides/using-artifact-attestations | Native SLSA L2 provenance for GitHub Actions |
 | SLSA Framework | Official | https://slsa.dev/ | Supply chain security levels and provenance attestation |
 | GitHub OIDC with AWS | Official | https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services | Zero stored credentials in CI |
@@ -4620,6 +4648,8 @@ jobs:
 ```
 
 **WHY Vitest 3.x `--reporter=github-actions` is a shift-left improvement**: When a test fails, the old workflow produces a log line: "FAIL src/services/payment.service.spec.ts > test name." The developer must find the file in the PR diff. With the `github-actions` reporter, the failure appears as a red annotation directly on the failing line in the GitHub diff view — the same as a TypeScript type error in VS Code. The developer sees the failure in context, without switching to a log view. **Faster failure comprehension = faster fix = shorter feedback loop.**
+
+> [community] **Lesson (Vitest 3.x — line-number test filtering)**: Vitest 3.x introduced filtering tests by line number: `vitest basic/foo.spec.ts:42` runs only the test at line 42 in `foo.spec.ts`. This is a direct shift-left ergonomic improvement: when a CI failure points to a specific test, developers can re-run exactly that test locally in < 1 second without modifying test files (no `it.only`, no `test.skip`). Combined with `act pull_request --job unit-tests`, this allows zero-push reproduction of CI failures. WHY it matters: the faster a developer can reproduce a failing test, the faster the feedback loop closes.
 
 > [community] **Lesson (Vitest 3.x adopters, 2025–2026)**: The `typecheck: { enabled: true }` option in Vitest 3.x runs TypeScript type checking on test files as part of the `vitest run` command. Teams that enable this report catching an entire class of "test passes but the mock type is wrong" errors that previously only surfaced as `tsc --noEmit` failures on the separate type check job. The improvement: type errors in test files now appear alongside test failures in the same CI run, rather than as a separate job failure that developers must correlate manually.
 

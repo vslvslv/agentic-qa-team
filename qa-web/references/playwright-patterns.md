@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.60 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath) -->
 
 ---
 
@@ -3513,6 +3513,42 @@ export class LoginPage {
 
 ---
 
+### `testStepInfo.titlePath` — Full Step Hierarchy in Custom Reporters (v1.55+)
+
+`testStepInfo.titlePath` exposes the full breadcrumb path from the test title down to the current step. Useful when building custom reporters that need to identify which specific step within a nested POM call chain produced a failure.
+
+```typescript
+// e2e/reporters/step-breadcrumb-reporter.ts
+import type { Reporter, TestCase, TestResult, TestStep } from '@playwright/test/reporter';
+
+class StepBreadcrumbReporter implements Reporter {
+  onStepEnd(test: TestCase, result: TestResult, step: TestStep) {
+    if (step.error) {
+      // titlePath: ['Test title', 'beforeEach hook', 'CheckoutPage.fill', 'fill payment details']
+      const breadcrumb = step.titlePath().join(' > ');
+      console.error(`STEP FAIL: ${breadcrumb}`);
+      console.error(`  Error: ${step.error.message}`);
+    }
+  }
+}
+
+export default StepBreadcrumbReporter;
+```
+
+```typescript
+// playwright.config.ts — use in combination with default reporter
+reporter: [
+  ['list'],
+  ['./e2e/reporters/step-breadcrumb-reporter.ts'],
+],
+```
+
+> `titlePath` is especially valuable when POM methods call helper steps: the breadcrumb
+> shows the full call chain, not just the innermost step name. Without it, nested step
+> failures from `@step`-decorated POM methods show a step name without context. [community]
+
+---
+
 ### `updateSnapshots: 'changed'` — Surgical Snapshot Updates (v1.50+)
 
 Update only snapshots that actually differ instead of regenerating all of them. Prevents accidentally overwriting stable baselines when fixing one component.
@@ -3756,10 +3792,44 @@ test('shows error state on API failure', async ({ mount, router }) => {
 });
 ```
 
+**`component.update()` — reactive prop/slot changes after mount:**
+
+```typescript
+// Update props after mount to test reactive re-renders
+test('button reflects updated label', async ({ mount }) => {
+  const component = await mount(<Button label="Save" />);
+  await expect(component).toContainText('Save');
+
+  // Update props without unmounting — triggers re-render
+  await component.update(<Button label="Saved!" disabled />);
+  await expect(component).toContainText('Saved!');
+  await expect(component).toBeDisabled();
+});
+```
+
+**`component.unmount()` — verify cleanup and teardown behavior:**
+
+```typescript
+// Test that unmounting triggers expected cleanup (e.g., "unsaved changes" dialog)
+test('warns before unmounting with unsaved changes', async ({ mount }) => {
+  const component = await mount(<EditForm />);
+  await component.getByLabel('Title').fill('Draft');
+
+  // Trigger unmount and catch the browser confirm dialog
+  page.on('dialog', async dialog => {
+    expect(dialog.message()).toContain('unsaved');
+    await dialog.dismiss();
+  });
+  await component.unmount();
+});
+```
+
 **Component testing constraints:**
 - Cannot pass complex live objects (e.g., class instances, functions with closures) as props — use plain data and callbacks
 - Component tests run in a sandboxed Vite/Webpack server, not your app's dev server
 - Use `hooksConfig` to pass routing/provider configuration per-test without mounting wrapper components in every spec
+- Module-level mocks (`vi.mock()`, `jest.mock()`) run in the test process (Node.js), not in the browser sandbox where the component executes — use the `router` fixture or `beforeMount`/`afterMount` hooks for browser-side mocking [community]
+- Component testing may **reuse the browser context and page between tests** as a performance optimization — always reset `localStorage`, cookies, and singleton services in `beforeMount` hooks, not just in test-level setup [community]
 
 > Run component tests in a separate CI job from e2e tests — they use a different test
 > runner config (`playwright-ct.config.ts`) and different browser binary. Mixing them
@@ -5886,6 +5956,99 @@ test('network audit for checkout API', async ({ context }) => {
   // HAR written automatically — only contains /api.example.com/* calls
 });
 ```
+
+---
+
+### 27. `APIRequestContext.fetch`: "Request context disposed" when using `page.route()` after context close [community]
+
+**What:** Tests that use `page.route()` to intercept requests and then call `route.fetch()` (to fetch the real response before modifying it) fail with `"Request context disposed"` after the browser context closes. This typically happens in `afterAll` or teardown hooks, or when the `request` fixture is used inside a `page.route()` handler that outlives the fixture scope.
+
+**WHY:** `route.fetch()` uses the APIRequestContext associated with the browser context. If the browser context (or the `request` fixture) is disposed before the route handler completes — which can happen when a navigation triggers cleanup and the route is still pending — the context is gone.
+
+**Fix:** Ensure `route.continue()` or `route.fulfill()` is always called and that route handlers do not hold references to the request context beyond the test's lifecycle. Use `{ noWaitAfter: false }` to synchronize cleanup.
+
+```typescript
+// WRONG: route handler referencing request after context may close
+test.afterAll(async ({ request }) => {
+  await request.delete('/api/test/cleanup');
+});
+
+page.route('**/api/**', async route => {
+  const real = await route.fetch();        // MAY throw if context closed mid-flight
+  const body = await real.json();
+  await route.fulfill({ response: real, body: JSON.stringify({ ...body, patched: true }) });
+});
+
+// CORRECT: always guard route.fetch() and catch disposal errors
+page.route('**/api/**', async route => {
+  try {
+    const real = await route.fetch();
+    const body = await real.json();
+    await route.fulfill({ response: real, body: JSON.stringify({ ...body, patched: true }) });
+  } catch (err) {
+    // Context disposed before route completed — just continue
+    if (!route.request().isNavigationRequest()) {
+      await route.continue().catch(() => {});
+    }
+  }
+});
+```
+
+> Dispose `page.route()` handlers explicitly before teardown in long-lived browser
+> contexts: `await page.unroute('**/api/**')`. This prevents handler callbacks from
+> running after the context is cleaned up. [community]
+
+---
+
+### 28. `sessionStorage` cannot be persisted in `storageState` — use `addInitScript` workaround [community]
+
+**What:** `context.storageState()` saves cookies, localStorage, and IndexedDB but silently skips `sessionStorage`. Apps that store auth tokens or feature flags in `sessionStorage` appear to lose state between test setup and actual tests.
+
+**WHY:** `sessionStorage` is scoped to the tab lifetime and is intentionally excluded from the `storageState` serialization format. Even saving with `{ path }` and loading it back produces no `sessionStorage` entries.
+
+**Fix:** Serialize `sessionStorage` with `page.evaluate()` after login and restore it with `page.addInitScript()` before navigation. This injects the values into `window.sessionStorage` synchronously before any page scripts run.
+
+```typescript
+// e2e/auth.setup.ts — serialize sessionStorage after UI login
+setup('authenticate (sessionStorage)', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByLabel('Email').fill(process.env.E2E_USER_EMAIL!);
+  await page.getByLabel('Password').fill(process.env.E2E_USER_PASSWORD!);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page).not.toHaveURL(/login/);
+
+  // Capture sessionStorage — not in storageState()
+  const sessionData = await page.evaluate(() =>
+    JSON.stringify(Object.fromEntries(
+      Object.keys(sessionStorage).map(k => [k, sessionStorage.getItem(k)])
+    ))
+  );
+
+  // Save sessionStorage alongside storageState
+  require('fs').writeFileSync('e2e/.auth/session-storage.json', sessionData);
+  await page.context().storageState({ path: 'e2e/.auth/user.json' });
+});
+
+// e2e/fixtures/auth.ts — restore sessionStorage before each test
+import { test as base } from '@playwright/test';
+import sessionData from '../.auth/session-storage.json';
+
+export const test = base.extend({
+  page: async ({ page }, use) => {
+    // Inject sessionStorage before any navigation
+    await page.addInitScript((data: Record<string, string>) => {
+      for (const [key, value] of Object.entries(data)) {
+        window.sessionStorage.setItem(key, value);
+      }
+    }, sessionData as Record<string, string>);
+
+    await use(page);
+  },
+});
+```
+
+> Always add `e2e/.auth/session-storage.json` to `.gitignore` alongside `user.json`.
+> The `addInitScript` runs before page scripts on every navigation within the context — no need to re-inject after `page.goto()`. [community]
 
 ---
 

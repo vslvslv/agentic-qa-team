@@ -5,6 +5,38 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.6 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 3/100)
+
+### qa-refine (5 guides extended, all 100/100)
+- `playwright-patterns.md` — component.update()/unmount() CT lifecycle, testStepInfo.titlePath (v1.55+), sessionStorage storageState limitation + addInitScript workaround, APIRequestContext disposal race guard, vi.mock CT isolation (runs in Node not browser) (+250 lines)
+- `cypress-patterns.md` — cy.prompt() AI test authoring (15.13+), Cypress.stop() fail-fast, Firefox WebDriver BiDi CDP guard, justInTimeCompile default (14+), experimentalRunAllSpecs CT (15.9+), --posix-exit-codes/--pass-with-no-tests CLI flags (+8 patterns, +8 gotchas)
+- `k6-patterns.md` — corrected false claim: k6/net/grpc supports bidirectional streaming since v0.49.0; gRPC client-side/bidi streaming, reflection (no .proto), health check setup() gate, BrowserContext auth state sharing (not serializable across VUs) (+250 lines)
+- `detox-patterns.md` — Android GitHub Actions CI (AVD API 31 + swiftshader_indirect mandatory), MSW 2.x for RN network interception, RN 0.76+ New Architecture selector name changes, 10.0.2.2 vs localhost + reversePorts (+3 gotchas)
+- `appium-wdio-patterns.md` — @wdio/mcp MCP server (Feb 2026, XML page source 2 vs 600+ calls), getPerformanceData() jagged array return type correction, toggleAirplaneMode v9 explicit boolean, network toggles rejected on cloud farms (+13 sections, +28 gotchas, 358 total)
+
+### qa-methodology-refine (12 guides extended, all 100/100)
+- `test-pyramid-guide.md` — Vitest 3.x→4.x correction, expect.schemaMatching (Zod inline), --detect-async-leaks (fixes 20–40% false flakiness from NestJS/TypeORM handle leaks), Playwright v1.60 test.abort() + await using
+- `tdd-guide.md` — TS 5.9 noUncheckedSideEffectImports (silent false-green imports), isolatedModules: true default, Vitest 4.0 verbose sequential-everywhere, typed test.extend() fixture context
+- `bdd-guide.md` — Cucumber.js v12.7.0 env var fix in parallel workers (secrets undefined on v12.0–12.6 — upgrade immediately), playwright-bdd v8.0 missingSteps: 'pending', v12.8.0 externalise for S3 attachments; fixed truncated file (Additional Resources was missing)
+- `test-isolation-guide.md` — jest.replaceProperty() for typed property isolation, jest.isolateModulesAsync() ESM requirement, Vitest forks vs threads pool isolation tradeoff
+- `test-data-guide.md` — Playwright mergeTests() modular fixture composition, {box:true}/{box:'self'} fixture hiding, Vitest 4.x singleThread removal + VITEST_MAX_WORKERS env var rename
+- `contract-testing-guide.md` — pact-js v16 addGraphQLInteraction() V4 DSL (replaces brittle regex), PactFlow MCP Server, AI over-specification gotcha (40% use exact instead of like())
+- `flakiness-guide.md` — Vitest 4.1 tags with per-tag retry (replaces manual quarantine), Playwright testProject.workers: 1 for flaky suite isolation, webServer.wait regex (v1.57) DB migration race fix
+- `coverage-guide.md` — Vitest 4.1 coverage.changed (diff coverage), autoUpdate CI footgun, excludeAfterRemap (phantom tslib in NestJS), Stryker 9.6.1 hitcount fix for Vitest 4.1 (perTest scores were wrong)
+- `ci-cd-testing-guide.md` — --fail-on-flaky-tests strict gate (nightly-first rollout), captureGitInfo + fetch-depth:0 requirement, per-project workers (v1.52 OOM fix), testConfig.tsconfig (path-alias fix), Vitest v3.2 workspace→projects rename
+- `accessibility-guide.md` — axe-core 4.11.0 RGAA tags (French public-sector beyond WCAG), 4.11.1 open shadow DOM (Shoelace/Lit violations surface), oklch/oklab contrast change, WCAG 3.0 confirmed 2028+ timeline
+- `shift-left-guide.md` — Node.js 23.6.0 stable --strip-types (CI examples corrected from --experimental-), Vitest 3.x line-number filtering (vitest spec.ts:42)
+- `exploratory-guide.md` — Playwright UI Mode/Trace Viewer as exploratory tools (60%→90% reproducibility), LLM oracle statistical failure-rate model, behavior-envelope charter framing for AI features
+
+### lang-refine (5 guides extended, all 100/100)
+- `typescript-patterns.md` — --explainFiles/--traceResolution diagnostics, disableReferencedProjectLoad monorepo memory, TS 6.0 module→namespace hard error, --ignoreConfig file-level tsc, ts5to6 migration tool, selective annotation strategy
+- `javascript-patterns.md` — Iterator.zip/zipKeyed Stage 3 ("strict" mode gotcha), Atomics.pause Stage 3 spinlock, import source Wasm phase imports, Symbol.metadata (replaces reflect-metadata, mixing causes double-registration)
+- `java-patterns.md` — Java 24 JEP 491 lifts synchronized pinning restriction (major correction), BigDecimal.equals() scale gotcha, double/float money trap, Record Wither Pattern, Java 25 unnamed classes (JEP 477)
+- `python-patterns.md` — compression.zstd stdlib (3.14), heapq max-heap functions (3.14), multiprocessing fork+thread deadlock gotcha
+- `csharp-patterns.md` — C# 14 file-based apps (#!/#: + inline NuGet), ASP.NET Core 10 AddValidation/[ValidatableType] source-gen, TypedResults.ServerSentEvents, Blazor [PersistentState], WebSocketStream (.NET 10), field keyword naming conflict
+
+---
+
 ## v1.16.0.5 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 2/100)
 
 ### qa-refine (5 guides extended, all ≥ 99/100)

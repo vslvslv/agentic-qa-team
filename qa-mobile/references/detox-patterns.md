@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 42 | score: 100/100 | date: 2026-05-12 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 
@@ -1881,6 +1881,12 @@ Test passes consistently but assertions are wrong?
 │   └── YES → Assert unique destination landmark + source.not.toBeVisible() (Gotcha 15)
 └── Is clearText() missing before typeText()?
     └── YES → Use replaceText() instead (Gotcha 8)
+
+Android emulator test fails — app can't reach mock server?
+└── Is localhost used as API_BASE_URL?
+    ├── YES → Use reversePorts or 10.0.2.2 (Gotcha 38)
+    └── NO  → Is -gpu swiftshader_indirect missing?
+        └── → Add to emulator bootArgs/emulator-options (Gotcha 36)
 ```
 
 ---
@@ -1935,6 +1941,11 @@ Review your tests against this list when diagnosing a CI failure:
 | `clearText()` on secureTextEntry password field | Use `multiTap(3)` + `tapBackspace()` or `clearSecureField()` helper (Gotcha 35) |
 | CI job hangs after test suite completes | Add `--forceExit` to Jest CLI args in `.detoxrc.js` testRunner (Gotcha 24) |
 | Background/foreground lifecycle transitions not tested | Add `device.sendToBackground()` / `device.bringToForeground()` tests for session-sensitive flows (Gotcha 34) |
+| Android emulator on Linux CI uses `-gpu swiftshader` (single-threaded) | Use `-gpu swiftshader_indirect` in emulator-options or `bootArgs`; verify with `adb shell getprop qemu.gles` (Gotcha 36) |
+| `by.type()` uses legacy type names after RN 0.76+ New Architecture migration | Update to `RCTViewComponentView` (iOS) / `ReactViewGroup` (Android) or prefer `by.id()` (Gotcha 37) |
+| Android mock server unreachable — app gets `ECONNREFUSED` on `localhost` | Use `reversePorts: [8088]` in app config, or use `10.0.2.2` as host alias (Gotcha 38) |
+| iOS workflow deployed to CI but no Android equivalent | See Android GitHub Actions Workflow pattern — `ubuntu-22.04` + `reactivecircus/android-emulator-runner` |
+| Network mock via local server requires `adb reverse` setup every run | Use `reversePorts` in `.detoxrc.js` for automatic reversal; or adopt MSW for JS-layer mocking |
 
 ---
 
@@ -1969,6 +1980,9 @@ Use this checklist when a test passes locally but fails on CI:
 25. **CI job hangs after suite** — Does the CI runner stay blocked after all tests finish? Add `forceExit: true` to `testRunner.args` in `.detoxrc.js` (Gotcha 24).
 26. **Background/foreground lifecycle untested** — Does the feature survive app backgrounding? Add `device.sendToBackground()` / `device.bringToForeground()` tests (Gotcha 34).
 27. **`clearText()` failing on password field** — Is `clearText()` or `replaceText('')` called on a `secureTextEntry` field? Use `multiTap(3)` + `tapBackspace()` cross-platform helper (Gotcha 35).
+28. **Android Linux CI emulator rendering stalls** — Is `-gpu swiftshader_indirect` missing from emulator boot flags? Add it to prevent single-threaded SwiftShader rendering deadlocks (Gotcha 36).
+29. **`by.type()` matching fails after RN 0.76+ New Architecture migration** — Did Fabric change native type names? Update type strings to `RCTViewComponentView` (iOS) or `ReactViewGroup` (Android), or prefer `by.id()` (Gotcha 37).
+30. **Android app cannot reach mock server at `localhost`** — Is `reversePorts` missing from the app config? The emulator routes `localhost` to its own loopback, not the host. Use `reversePorts: [8088]` or `launchArgs: { API_BASE_URL: 'http://10.0.2.2:8088' }` (Gotcha 38).
 
 ---
 
@@ -3863,6 +3877,471 @@ async function clearSecureField(testId) {
   }
 }
 ```
+
+---
+
+## Additional Patterns (iteration 42 additions)
+
+### Complete GitHub Actions Workflow (Android) [community]
+
+The iOS workflow is documented in CI Considerations. Android requires a fundamentally different setup because the emulator runs on Linux (`ubuntu-22.04`) using the `reactivecircus/android-emulator-runner` action, which manages the AVD lifecycle in CI. Key decisions: set `api-level: 31` (stable, widely available); use `target: google_apis` for apps requiring Google Play Services; pass `-no-window -gpu swiftshader_indirect -no-snapshot -noaudio` to run headlessly without GPU acceleration; extend `AVD_WAIT_TIMEOUT` for cold boot on GitHub-hosted runners.
+
+```yaml
+# .github/workflows/e2e-android.yml
+name: Detox E2E — Android
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  detox-android:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Android build
+        uses: actions/cache@v4
+        id: android-build-cache
+        with:
+          path: android/app/build
+          key: android-build-${{ hashFiles('android/**', 'src/**', 'package-lock.json') }}
+          restore-keys: android-build-
+
+      - name: Build Android app (Release)
+        if: steps.android-build-cache.outputs.cache-hit != 'true'
+        run: npx detox build -c android.emu.release
+
+      - name: Run Detox on Android Emulator (shard ${{ matrix.shard }}/${{ strategy.job-total }})
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 31
+          target: google_apis          # required for apps that use Google Play Services
+          arch: x86_64
+          profile: pixel_6
+          avd-name: Pixel_6_API_31
+          # CRITICAL: headless flags — GPU SwiftShader required for Linux CI (no hardware GPU)
+          emulator-options: >-
+            -no-window
+            -gpu swiftshader_indirect
+            -no-snapshot
+            -noaudio
+            -no-boot-anim
+          disable-animations: true      # action sets global animator duration scale to 0
+          script: |
+            # Dismiss keyguard before running tests (emulator always boots locked)
+            adb shell wm dismiss-keyguard || true
+            # Forward host port 8088 to emulator (for local mock server)
+            adb reverse tcp:8088 tcp:8088 || true
+            # Run the shard
+            npx detox test \
+              -c android.emu.release \
+              --shard-index ${{ matrix.shard }} \
+              --shard-count ${{ strategy.job-total }} \
+              --loglevel verbose \
+              --artifacts-location .artifacts \
+              --forceExit
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detox-android-artifacts-shard-${{ matrix.shard }}
+          path: .artifacts/
+          retention-days: 7
+```
+
+```js
+// .detoxrc.js — Android Release configuration for CI
+apps: {
+  'android.debug': {
+    type: 'android.apk',
+    binaryPath: 'android/app/build/outputs/apk/debug/app-debug.apk',
+    build: 'cd android && ./gradlew assembleDebug assembleAndroidTest -DtestBuildType=debug && cd ..',
+    reversePorts: [8088],   // adb reverse tcp:8088 applied automatically by Detox
+  },
+  'android.release': {
+    type: 'android.apk',
+    binaryPath: 'android/app/build/outputs/apk/release/app-release.apk',
+    build: 'cd android && ./gradlew assembleRelease assembleAndroidTest -DtestBuildType=release && cd ..',
+    reversePorts: [8088],
+  },
+},
+devices: {
+  emulator: {
+    type: 'android.emulator',
+    device: { avd: 'Pixel_6_API_31' },
+    bootArgs: '-no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim',
+    headless: true,
+  },
+},
+configurations: {
+  'android.emu.debug':   { device: 'emulator', app: 'android.debug' },
+  'android.emu.release': { device: 'emulator', app: 'android.release' },
+},
+```
+
+**Key differences from iOS workflow:**
+- `ubuntu-22.04` instead of `macos-14` — significantly cheaper (Linux runners cost ~10% of macOS)
+- `reactivecircus/android-emulator-runner@v2` manages the entire emulator lifecycle (create, boot, wait, teardown)
+- `disable-animations: true` in the action sets `anim_duration_scale` to 0 via ADB — equivalent to iOS's `launchArgs: { detoxDisableAnimations: 'true' }`, but applied at the OS level
+- `reversePorts` in the app config triggers `adb reverse` automatically instead of requiring a manual CI step
+- Shard count is lower (2 not 3) — Android emulators are slower on Linux CI; parallel emulators on a single `ubuntu-22.04` runner are unstable above 2
+
+---
+
+### Pattern 27 — MSW (Mock Service Worker) for React Native as a network mock layer
+
+[`msw`](https://mswjs.io/docs/integrations/react-native) natively supports React Native via its `react-native` integration (MSW 2.x+). Rather than running a standalone mock server in `globalSetup`, you can define request handlers in JavaScript that intercept `fetch`/`XMLHttpRequest` calls at the JS layer without any port-forwarding or server lifecycle management. This approach works on both iOS Simulator and Android Emulator without `adb reverse`.
+
+```js
+// e2e/mocks/handlers.js
+const { http, HttpResponse } = require('msw');
+
+const handlers = [
+  http.get('https://api.myapp.com/products', ({ request }) => {
+    return HttpResponse.json([
+      { id: 1, name: 'Widget A', price: 9.99 },
+      { id: 2, name: 'Widget B', price: 14.99 },
+    ]);
+  }),
+
+  http.post('https://api.myapp.com/auth/login', async ({ request }) => {
+    const { email } = await request.json();
+    if (email === 'test@example.com') {
+      return HttpResponse.json({ token: 'mock-jwt-token-abc123', userId: 42 });
+    }
+    return HttpResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+  }),
+
+  // Simulate a network error for error-state tests
+  http.get('https://api.myapp.com/flaky-endpoint', () => {
+    return HttpResponse.error();
+  }),
+];
+
+module.exports = { handlers };
+```
+
+```js
+// e2e/mocks/setup.js — register MSW server before Detox app launches
+const { setupServer } = require('msw/node');
+const { handlers } = require('./handlers');
+
+const server = setupServer(...handlers);
+
+// Start MSW in globalSetup
+async function startMSW() {
+  server.listen({ onUnhandledRequest: 'warn' });
+  return server;
+}
+
+// Add test-specific overrides at runtime
+function addHandler(handler) {
+  server.use(handler);
+}
+
+// Reset to default handlers between tests
+function resetHandlers() {
+  server.resetHandlers();
+}
+
+function stopMSW() {
+  server.close();
+}
+
+module.exports = { startMSW, addHandler, resetHandlers, stopMSW };
+```
+
+```js
+// e2e/globalSetup.js (Detox globalSetup)
+const { startMSW } = require('./mocks/setup');
+
+module.exports = async () => {
+  global.__mswServer = await startMSW();
+};
+
+// e2e/globalTeardown.js
+const { stopMSW } = require('./mocks/setup');
+
+module.exports = async () => {
+  stopMSW();
+};
+```
+
+```js
+// e2e/products.test.js — override handlers per-test
+const { http, HttpResponse } = require('msw');
+const { addHandler, resetHandlers } = require('./mocks/setup');
+
+describe('Product list', () => {
+  afterEach(async () => {
+    resetHandlers();  // restore defaults after each test
+    await device.reloadReactNative();
+  });
+
+  it('shows the product list on success', async () => {
+    // Default handler returns 2 products — no override needed
+    await element(by.id('products-tab')).tap();
+    await waitFor(element(by.id('product-item-1'))).toBeVisible().withTimeout(5000);
+    await waitFor(element(by.id('product-item-2'))).toBeVisible().withTimeout(3000);
+  });
+
+  it('shows an error message when the API returns 500', async () => {
+    // Override the products endpoint to simulate a server error
+    addHandler(
+      http.get('https://api.myapp.com/products', () =>
+        HttpResponse.json({ error: 'Internal Server Error' }, { status: 500 })
+      )
+    );
+
+    await element(by.id('products-tab')).tap();
+    await waitFor(element(by.id('products-error-banner'))).toBeVisible().withTimeout(5000);
+    await expect(element(by.id('retry-button'))).toBeVisible();
+  });
+});
+```
+
+**When to prefer MSW over a local mock server:**
+- When your app uses `fetch` or `axios` (MSW intercepts at the JS layer — no `adb reverse` needed)
+- When you want per-test handler overrides without restarting the server
+- When tests need to simulate error states, network delays, or partial responses in isolation
+
+**When to prefer a standalone local mock server (Pattern 11):**
+- When your app uses a native HTTP client (OkHttp, NSURLSession) bypassing the JS layer
+- When you need WebSocket mock support (MSW WebSocket support requires MSW 2.3+)
+
+**Limitation [community]:** MSW for React Native intercepts only `fetch`/`XMLHttpRequest`. Native modules that use `URLSession` (iOS) or `OkHttp` (Android) directly bypass the MSW interceptor. If your RN library uses a native HTTP client, combine MSW with `device.setURLBlacklist()` for the native calls.
+
+---
+
+### 36. Android emulator hardware acceleration missing on Linux CI — `swiftshader_indirect` is mandatory [community]
+
+**Root cause**: GitHub Actions `ubuntu-22.04` runners (and most Linux CI providers) do not have a physical GPU or hardware KVM acceleration for the Android Emulator's GPU rendering. The emulator falls back to software rendering automatically, but it defaults to `swiftshader` (single-threaded), not `swiftshader_indirect` (multi-threaded). The difference matters: on a single-threaded SwiftShader renderer, heavy list animations and map views trigger the same "animation running" idle-detection deadlock as Lottie animations (Gotcha 6), because the rendering pipeline blocks the Android UI thread.
+
+**WHY it's missed**: Teams that test on macOS CI runners (GitHub's `macos-14` has a GPU) see no issues. When they migrate to Linux for cost savings, tests that previously passed intermittently start timing out, but only on screens with complex views (maps, charts, FlatList with many items).
+
+**Mandatory emulator flags for Linux CI:**
+
+```bash
+# These flags must be passed to the emulator binary when running on Linux CI
+# without hardware GPU acceleration:
+-no-window          # headless — no X11 display required
+-gpu swiftshader_indirect   # multi-threaded SwiftShader (NOT plain 'swiftshader')
+-no-snapshot        # disable snapshot loading/saving — snapshots fail on headless boot
+-noaudio            # disable audio processing — reduces CPU overhead
+-no-boot-anim       # disable boot animation — shaves 5–10s off cold boot
+```
+
+**Via `.detoxrc.js` device bootArgs:**
+
+```js
+devices: {
+  emulator: {
+    type: 'android.emulator',
+    device: { avd: 'Pixel_6_API_31' },
+    // Passed directly to the emulator binary at boot
+    bootArgs: '-no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim',
+    headless: true,
+  },
+},
+```
+
+**Via `reactivecircus/android-emulator-runner` in GitHub Actions:**
+
+```yaml
+- uses: reactivecircus/android-emulator-runner@v2
+  with:
+    api-level: 31
+    arch: x86_64
+    emulator-options: >-
+      -no-window
+      -gpu swiftshader_indirect
+      -no-snapshot
+      -noaudio
+      -no-boot-anim
+    disable-animations: true
+    script: npx detox test -c android.emu.release --forceExit
+```
+
+**Verify the flag is working:** Run `adb shell getprop qemu.gles` inside the runner — it should return `2` (software rendering active) rather than `0` (no GLES) or `-1` (hardware, not applicable on Linux CI). If `getprop qemu.gles` returns `0`, the emulator will crash on any OpenGL call and your tests will fail at app launch with a black screen.
+
+---
+
+### 37. React Native 0.76+ New Architecture enabled by default — testID bridging regressions [community]
+
+**Root cause**: React Native 0.76 (released November 2024) enabled the New Architecture (Fabric renderer + JSI, no legacy Bridge) by default for new projects. This has a direct impact on Detox's ability to find elements by `testID`:
+
+1. **Third-party Fabric components without `getTestID()` native implementation** — Any React Native library that bridges a native view must explicitly implement `getTestID()` in its Fabric component spec (`.js` codegen spec). If it doesn't, `by.id('testID')` returns zero matches even though the element is visible on screen. This is more common in community libraries (e.g., `react-native-maps`, `react-native-camera`, custom chart libraries) than in React Native core.
+
+2. **Concurrent rendering race conditions** — Fabric's concurrent rendering model can render components in off-screen stages before committing them to the screen. During these pre-commit phases, the element exists in the accessibility tree but is not yet visible. Tests that call `element(by.id('x')).tap()` immediately after a navigation transition may hit the pre-commit element rather than the committed one.
+
+3. **`by.type()` type names changed in Fabric** — In the legacy renderer, `by.type('RCTView')` matched plain `<View>` components. In Fabric, plain `<View>` is bridged as `RCTViewComponentView` (iOS) or `ReactViewGroup` (Android). Any test that uses `by.type()` on core components needs updating after migrating to New Architecture.
+
+**Gotcha: Diagnosing New Architecture testID failures:**
+
+```bash
+# Check if New Architecture is enabled in your project
+cat android/gradle.properties | grep newArchEnabled
+# Should show: newArchEnabled=true (0.76+ default) or newArchEnabled=false (opt-out)
+
+cat ios/Podfile | grep -i "fabric\|new_arch"
+# Should show: ENV['RCT_NEW_ARCH_ENABLED'] = '1' (enabled) or absent (disabled)
+```
+
+```js
+// .detoxrc.js — run parallel configurations for both architectures during migration
+configurations: {
+  'ios.sim.release.oldarch': {
+    device: 'simulator',
+    app: 'ios.oldarch',  // built with RCT_NEW_ARCH_ENABLED=0
+  },
+  'ios.sim.release.newarch': {
+    device: 'simulator',
+    app: 'ios.newarch',  // built with RCT_NEW_ARCH_ENABLED=1
+  },
+},
+```
+
+**Fix for third-party Fabric components without testID support:**
+
+```jsx
+// Wrap the Fabric component in a native View that provides testID bridging
+// Native <View> always bridges testID correctly regardless of architecture
+
+// BAD — react-native-maps MapView may not forward testID in Fabric
+<MapView testID="map-view" region={region} />
+
+// GOOD — wrap in a native View for reliable testID bridging
+<View testID="map-view" style={StyleSheet.absoluteFill} pointerEvents="box-none">
+  <MapView region={region} />
+</View>
+```
+
+**Fix for `by.type()` after New Architecture migration:**
+
+```js
+// Check actual type after migration using captureViewHierarchy
+// then update type selectors:
+
+// OLD (legacy Bridge renderer, RN < 0.76)
+await element(by.type('RCTView').and(by.id('card-container'))).tap();
+
+// NEW (Fabric renderer, RN 0.76+)
+// Option 1: switch to by.id() — preferred
+await element(by.id('card-container')).tap();
+
+// Option 2: if testID cannot be added, check actual type via hierarchy dump
+// iOS Fabric: 'RCTViewComponentView' | Android Fabric: 'ReactViewGroup'
+await element(by.type('RCTViewComponentView').and(by.label('Card Container'))).tap();
+```
+
+**Mitigation strategy for gradual New Architecture adoption:**
+
+```bash
+# .github/workflows/e2e-ios.yml — matrix across both architectures
+strategy:
+  matrix:
+    arch: [old, new]
+    include:
+      - arch: old
+        config: ios.sim.release.oldarch
+        rn_new_arch: '0'
+      - arch: new
+        config: ios.sim.release.newarch
+        rn_new_arch: '1'
+steps:
+  - name: Build iOS (${{ matrix.arch }} arch)
+    run: |
+      export RCT_NEW_ARCH_ENABLED=${{ matrix.rn_new_arch }}
+      npx detox build -c ${{ matrix.config }}
+  - name: Run Detox tests
+    run: npx detox test -c ${{ matrix.config }} --loglevel verbose
+```
+
+---
+
+### 38. `device.reverseTcp()` vs `reversePorts` configuration: Android network routing gotchas [community]
+
+**Root cause**: Android emulators cannot reach the host machine's `localhost` directly — the emulator's network stack routes through a virtual router where `10.0.2.2` is the host's loopback adapter. If your mock server binds on `localhost:8088`, calling `http://localhost:8088` from inside the app returns `ECONNREFUSED`. Teams commonly discover this only after Android tests fail with "API call failed" while iOS tests pass fine.
+
+There are three ways to handle this, each with different tradeoffs:
+
+**Option 1: `adb reverse` per-run (manual)**
+```bash
+# CI pre-test step: forward host port 8088 to emulator port 8088
+adb wait-for-device
+adb reverse tcp:8088 tcp:8088
+# App can now use 'http://localhost:8088' and it routes to the host
+```
+
+**Option 2: `reversePorts` in `.detoxrc.js` (automatic)**
+```js
+// .detoxrc.js — Detox applies adb reverse automatically at app launch
+apps: {
+  'android.release': {
+    type: 'android.apk',
+    binaryPath: '...',
+    reversePorts: [8088],  // equivalent to: adb reverse tcp:8088 tcp:8088
+  },
+},
+```
+This is the recommended approach — Detox reruns `adb reverse` on every app launch, so the reverse port survives emulator reboots and `device.launchApp({ newInstance: true })` calls.
+
+**Option 3: Use `10.0.2.2` as the host alias (no port-forward)**
+```js
+// .detoxrc.js — use Android emulator's built-in host alias
+apps: {
+  'android.release': {
+    launchArgs: {
+      // Use 10.0.2.2 instead of localhost — resolves to the host machine
+      API_BASE_URL: 'http://10.0.2.2:8088',
+    },
+  },
+},
+```
+Downside: the iOS and Android builds need different `API_BASE_URL` values — add platform detection:
+
+```js
+// .detoxrc.js — platform-specific launchArgs
+const BASE_URL = process.env.CI
+  ? (process.env.PLATFORM === 'android' ? 'http://10.0.2.2:8088' : 'http://localhost:8088')
+  : 'http://localhost:8088';
+
+apps: {
+  'android.release': { launchArgs: { API_BASE_URL: BASE_URL } },
+  'ios.release':     { launchArgs: { API_BASE_URL: 'http://localhost:8088' } },
+},
+```
+
+**Common symptom of missing reverse port**: The test passes the first Detox action (element visible) but then hangs on the first `waitFor` that expects data from the mock server. `--debug-synchronization 3000` shows `1 network requests in flight: http://localhost:8088/...` — the request is in-flight indefinitely because the connection is refused.
 
 ---
 

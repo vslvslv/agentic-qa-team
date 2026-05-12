@@ -1,6 +1,14 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 28 (2026-05-12): added --explainFiles and --traceResolution to Performance Diagnostics;
+       added disableReferencedProjectLoad + disableSolutionSearching editor performance flags;
+       added module Foo {} → namespace Foo {} TS 6.0 syntax breaking change with note on declare module;
+       added --ignoreConfig flag (TS 6.0 CLI change for file-only compilation);
+       added ts5to6 automated migration tool for baseUrl/rootDir changes;
+       added staged annotation strategy community insight from TypeScript Performance wiki —
+       sourced from github.com/microsoft/TypeScript/wiki/Performance and
+       typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html
      Iter 27 (2026-05-12): added TypeScript 6.0 language features — Subpath Imports starting with `#/`,
        Less Context-Sensitivity on `this`-less Functions (improved inference for method-syntax callbacks),
        `--moduleResolution bundler` + `--module commonjs` combination as a migration path, and ES2025
@@ -204,6 +212,8 @@ function buildUrl(
   return `${base}${path}?${query}`;
 }
 ```
+
+[community] **Staged annotation strategy (from TypeScript Performance wiki):** Adding explicit return types *everywhere* is a blunt instrument. In practice, annotation bottlenecks appear only under specific conditions: deeply nested generics, declaration emit with cross-module references, or incremental builds with expensive `.d.ts` regeneration. The TypeScript Performance wiki recommends a profile-first approach: run `tsc --extendedDiagnostics` and look for high `Check time` paired with high `Types` count. If found, annotate return types on the modules that appear most in the `.d.ts` chain — not across the whole codebase. For new projects, enable `isolatedDeclarations: true` from the start instead, which enforces annotations on all exports without the performance penalty of retrofitting them.
 
 ---
 
@@ -1775,6 +1785,44 @@ async function loadConfig(path: string): Promise<Config> {
 
 **`--stableTypeOrdering` flag (migration bridge to TS 7.0):** TypeScript 7.0 will introduce deterministic union type ordering. Enable this flag in TypeScript 6.0 to match TS 7.0 behavior now (at up to 25% compile slowdown). Useful for catching declaration emit ordering differences before upgrading.
 
+**`module Foo {}` → `namespace Foo {}` (TypeScript 6.0 syntax error):** The legacy `module` keyword for declaring internal namespaces now produces a hard error in TypeScript 6.0. It was deprecated in favor of `namespace` years ago, but was silently accepted. TypeScript 6.0 enforces the correct spelling:
+
+```typescript
+// ❌ Error in TypeScript 6.0+
+module Utils {
+  export function parse(s: string): number { return parseInt(s, 10); }
+}
+
+// ✅ Correct
+namespace Utils {
+  export function parse(s: string): number { return parseInt(s, 10); }
+}
+```
+
+Note: `declare module` (ambient module declarations for `.d.ts` files) is NOT affected — only the inline runtime form `module Foo {}` is deprecated. `declare module "express"` in augmentation files continues to work.
+
+**`--ignoreConfig` flag (TypeScript 6.0):** Running `tsc file.ts` directly alongside a `tsconfig.json` now produces an error — TypeScript 6.0 requires either a project config or an explicit opt-out:
+
+```bash
+# ❌ Error in TypeScript 6.0 when tsconfig.json exists in the directory
+tsc foo.ts
+
+# ✅ Opt out of project config explicitly
+tsc --ignoreConfig foo.ts
+
+# ✅ Or use a dedicated tsconfig for ad-hoc compilation
+tsc -p tsconfig.scripts.json
+```
+
+**`ts5to6` automated migration tool:** The community-maintained [`ts5to6`](https://github.com/andrewbranch/ts5to6) tool can automatically migrate `baseUrl` into `paths` entries and update `rootDir` across your `tsconfig.json` files — the two most tedious manual changes required for TypeScript 6.0.
+
+```bash
+# Run in your project root — rewrites tsconfig.json files in-place
+npx ts5to6
+```
+
+Always review the diff before committing — the tool makes mechanical changes but may not understand custom `baseUrl` patterns in monorepo root configs.
+
 ---
 
 ### TypeScript 6.0 — Subpath Imports `#/` and `this`-less Function Inference
@@ -3039,9 +3087,17 @@ npx tsc --extendedDiagnostics --noEmit
 # Identify which files are included (use to catch accidental node_modules crawl)
 npx tsc --listFiles --noEmit | head -50
 
+# Explain WHY each file was included — gives the import chain responsible
+# (more actionable than --listFiles: tells you which tsconfig glob or import pulled it in)
+npx tsc --explainFiles --noEmit 2>&1 | head -100
+
+# Trace module resolution for a specific import — diagnose "cannot find module" failures
+npx tsc --traceResolution --noEmit 2>&1 | grep "myModule" | head -20
+
 # Generate a build trace for deep analysis in Chrome DevTools (Perfetto UI)
 npx tsc --generateTrace ./trace-output --noEmit
 # Open trace-output/trace.json in https://ui.perfetto.dev
+# Prefer @typescript/analyze-trace for a text summary: npx @typescript/analyze-trace ./trace-output
 
 # Find the 10 slowest type instantiations
 npx tsc --extendedDiagnostics 2>&1 | grep "Instantiations" -A 20
@@ -3056,8 +3112,30 @@ npx tsc --extendedDiagnostics 2>&1 | grep "Instantiations" -A 20
 | High `Instantiations` count | Large union pairwise checks | Replace wide unions with interface hierarchy |
 | Slow `Check time` despite few files | Missing `incremental` | Add `"incremental": true` + `.tsbuildinfo` |
 | `Parse time` dominates | No file filtering | Explicit `"include"` list instead of directory scan |
+| Unexpected file included | Implicit glob or `import` chain | Run `tsc --explainFiles` to see the import chain responsible |
+| Module resolution failure | Path alias or extension mismatch | Run `tsc --traceResolution` to see each resolution step |
 
 [community] **Pitfall:** Teams run `tsc --generateTrace` once, see a complex trace, and immediately start refactoring types without reading the trace. The trace's "Heavy" nodes are not always in your own code — they are often in `node_modules/.d.ts` files. Check the **file column** in each heavy instantiation before assuming your types are the bottleneck.
+
+**Editor-specific performance flags (add to `tsconfig.json` for large monorepos):**
+
+```json
+{
+  "compilerOptions": {
+    // Prevents the editor from loading ALL referenced projects at startup.
+    // Only load a project when you open a file in it — dramatically reduces
+    // VS Code memory usage in repos with 10+ projects.
+    "disableReferencedProjectLoad": true,
+
+    // Prevents the language service from searching the full solution tree
+    // for go-to-definition / find-references across project boundaries.
+    // Use when inter-project navigation is not needed or is handled by monorepo tooling.
+    "disableSolutionSearching": true
+  }
+}
+```
+
+These two flags have zero effect on `tsc --build` (command-line compilation) — they only control editor behavior. They are safe to add to any `tsconfig.json` in a multi-project workspace.
 
 ---
 

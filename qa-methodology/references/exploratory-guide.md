@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 36 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 37 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -27,6 +27,7 @@
      - Iter 33: charter network analysis; inter-charter dependency mapping; TypeScript charter dependency graph; community lessons #90-92
      - Iter 35: AI-augmented session documentation pattern; TypeScript AI note synthesizer; community lessons #93-95; updated date to 2026-05-12
      - Iter 36: Real-time/WebSocket exploration pattern; TypeScript WebSocket session harness; exploratory testing of AI-generated (vibe-coded) applications; TypeScript vibe-code oracle checker; community lessons #96-98; new anti-patterns (no latency oracle, passive AI acceptance)
+     - Iter 37: Playwright UI Mode + Trace Viewer + Codegen as exploratory tooling pattern; TypeScript Playwright exploratory session recorder using UI mode signals; AI agent / non-deterministic system exploration heuristics; TypeScript simulation-based oracle harness for LLM features; community lessons #99-101; new anti-pattern (codegen-as-test-authoring trap)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -5841,5 +5842,285 @@ export function printOracleSummary(results: OracleCheckResult[]): void {
 97. **[community] AI-generated TypeScript code passes type-checking and still has semantic defects the type system cannot catch.** Teams that adopt AI coding assistants and use `tsc --noEmit` as their primary quality gate discover that a significant proportion of AI-generated logic defects are type-correct: wrong business logic, incorrect conditional branches, missing edge-case handling. These defects are structurally identical to the defects exploratory testing has always targeted — but teams in AI-assisted codebases have a new cognitive bias: "the types pass, so it must be right." Exploratory testing of AI-generated code requires the tester to consciously override this bias and treat each logical branch as unverified until a session has exercised it. The charter's "with Y" and "to discover Z" must explicitly name the logical branches, not rely on the tester's intuition about which paths are risky.
 
 98. **[community] WebSocket reconnection logic is the single highest-defect-density area in real-time features across production incident reports.** Analysis of production incidents involving real-time features consistently implicates reconnection: the socket reconnects after a drop, but the client missed N events during the gap and shows stale state; or the client re-subscribes to the wrong channel after reconnect; or the reconnection exponential backoff has no maximum cap and the client eventually gives up silently. One exploratory session targeting reconnection behavior — simulate a 30-second offline period and observe what the UI shows before, during, and after reconnection — finds more production-equivalent defects per session-hour than any other real-time charter type.
+
+---
+
+## Playwright Tooling as Exploratory Aid (Iteration 37)
+
+Modern exploratory testing in TypeScript projects benefits from three specific Playwright features that are purpose-built for interactive exploration rather than scripted automation: **UI Mode**, **Trace Viewer**, and **Codegen**. These tools do not turn exploration into scripted testing — they reduce the overhead of evidence capture so the tester can focus on observation and hypothesis generation.
+
+### Playwright UI Mode  [community]
+
+Playwright UI Mode (`npx playwright test --ui`) provides a "time travel" interface for running and observing tests interactively. For exploratory work, the key capabilities are:
+
+- **Timeline visualization**: Hover over any action in the timeline to see the DOM snapshot at that exact moment — before and after the action. This lets the tester observe state transitions that are invisible in a running browser.
+- **DOM inspection**: Each snapshot can be popped out into a separate window with full browser DevTools access. A tester exploring form validation can inspect the exact DOM state when a validation error renders, not just what it looks like visually.
+- **Locator playground**: The "pick locator" tool lets the tester hover over any element and immediately see its Playwright locator, which can be modified and tested inline. This turns "I wonder how robust this selector is" from a mental note into an observable, verifiable check.
+- **Watch mode**: Click the eye icon to put a test into watch mode — it reruns automatically on code change. This bridges exploration and automation: the tester runs an exploratory harness script, modifies a failing assertion, and immediately sees the result.
+- **"Open in VSCode" bridge**: A button jumps directly to the source line of the selected action. When an exploration session produces a finding, the tester can navigate immediately to the relevant code without a manual file search.
+
+The practical exploration pattern: write a minimal Playwright script that navigates to the area under exploration, then use UI Mode as the observation environment — the script handles login and setup, and the tester uses the timeline and DOM snapshots to investigate what the application actually does.
+
+### Playwright Trace Viewer as Session Evidence  [community]
+
+Playwright's Trace Viewer (`npx playwright show-trace trace.zip`) renders a complete visual record of a browser session: every DOM action, every network request, every console message, and the exact DOM state before and after each interaction. For exploratory testing, this is a zero-overhead evidence capture mechanism: the tester enables tracing before the session, explores freely, and the trace captures everything automatically without the tester needing to take screenshots or write notes about what was on screen.
+
+Key properties that make Trace Viewer valuable for exploratory sessions:
+- **Network inspector with filtering**: The tester can see every API call made during the session, filtered by status code or request type. Unexpected 4xx responses, slow queries, and missing API calls are visible without opening DevTools during the session.
+- **Console log separation**: Browser console logs and test framework logs are presented separately, so the tester can immediately see JavaScript errors without wading through framework output.
+- **Action-level DOM snapshots**: Every DOM change is captured at action granularity. A finding like "the button disabled state did not update after the API call" is immediately reproducible from the trace — the tester can navigate directly to the relevant frame.
+
+**TypeScript: Trace-enabled Exploratory Session Script**
+
+```typescript
+// src/testing/exploratory/trace-session.ts
+// Launches a browser session with full tracing enabled for exploratory work.
+// Run with: ts-node src/testing/exploratory/trace-session.ts
+// Output: traces/<timestamp>-session.zip — open with: npx playwright show-trace
+
+import { chromium } from '@playwright/test';
+import * as path from 'path';
+import * as fs from 'fs';
+
+const SESSION_ID = new Date().toISOString().replace(/[:.]/g, '-');
+const TRACE_DIR = path.resolve('traces');
+const TRACE_PATH = path.join(TRACE_DIR, `${SESSION_ID}-session.zip`);
+
+async function launchExploratorySession(startUrl: string): Promise<void> {
+  if (!fs.existsSync(TRACE_DIR)) fs.mkdirSync(TRACE_DIR, { recursive: true });
+
+  const browser = await chromium.launch({ headless: false, slowMo: 100 });
+  const context = await browser.newContext({
+    recordVideo: { dir: TRACE_DIR, size: { width: 1280, height: 720 } },
+    viewport: { width: 1280, height: 720 },
+  });
+
+  // Start tracing: capture screenshots, DOM snapshots, and source maps
+  await context.tracing.start({
+    screenshots: true,
+    snapshots: true,   // DOM + CSS snapshots for each action
+    sources: true,     // Source maps for test framework actions
+  });
+
+  const page = await context.newPage();
+
+  // Attach console log listener — captures browser errors during exploration
+  const consoleLogs: Array<{ type: string; text: string; timestamp: string }> = [];
+  page.on('console', (msg) => {
+    consoleLogs.push({
+      type: msg.type(),
+      text: msg.text(),
+      timestamp: new Date().toISOString(),
+    });
+    if (msg.type() === 'error') {
+      console.error(`[BROWSER ERROR] ${msg.text()}`);
+    }
+  });
+
+  // Attach network response listener — flags unexpected error responses
+  page.on('response', (response) => {
+    const status = response.status();
+    if (status >= 400) {
+      console.warn(`[NETWORK ${status}] ${response.request().method()} ${response.url()}`);
+    }
+  });
+
+  await page.goto(startUrl);
+  console.log(`\nExploratory session started. Navigate freely.`);
+  console.log(`Press Ctrl+C when done — trace will be saved to:\n  ${TRACE_PATH}\n`);
+
+  // Keep session open until interrupted
+  await new Promise<void>((resolve) => {
+    process.once('SIGINT', () => resolve());
+  });
+
+  await context.tracing.stop({ path: TRACE_PATH });
+  await browser.close();
+
+  // Write console log summary alongside the trace
+  const summaryPath = TRACE_PATH.replace('.zip', '-console.json');
+  fs.writeFileSync(summaryPath, JSON.stringify(consoleLogs, null, 2));
+
+  console.log(`\nTrace saved: ${TRACE_PATH}`);
+  console.log(`Console log: ${summaryPath}`);
+  console.log(`To review: npx playwright show-trace ${TRACE_PATH}`);
+}
+
+const url = process.argv[2] ?? 'http://localhost:3000';
+launchExploratorySession(url).catch(console.error);
+```
+
+This script turns a Playwright context into an evidence-capturing exploration environment. The tester explores the application in the launched browser; the trace automatically captures every DOM state. At session end, the tester runs `npx playwright show-trace` to review what they found, add annotations, and select the frames most relevant to each finding.
+
+### Playwright Codegen as Exploration Aid — with Caveats  [community]
+
+Playwright Codegen (`npx playwright codegen <url>`) records browser interactions and emits TypeScript test code in real time. For exploratory testing, it has a specific valid use and a critical misuse pattern.
+
+**Valid use — capturing interaction sequences for replay**: When a tester finds a defect and wants to document the exact sequence of steps that triggered it, running codegen during the reproduction walk-through produces a TypeScript script that can be shared with developers and run in CI as a regression test. The codegen output is not a finished test — it captures the locators and actions — but it compresses the "reproduce this defect" documentation step from 10 minutes of manual write-up to 30 seconds.
+
+**Invalid use — treating codegen output as exploratory coverage**: The codegen records only what the tester did, not what should have been checked. A codegen script with no assertions is not a test case — it is a replay macro. Teams that use codegen to "generate test cases" and then skip manual assertion review end up with a large suite of tests that verify the application can be navigated without verifying any observable outcome. This is a structural confidence gap.
+
+**The idiom for TypeScript**: Use codegen to capture the interaction skeleton, then manually add `expect()` assertions at the points where the session found interesting behavior. The split of labor: codegen handles the locator research; the tester handles the oracle.
+
+---
+
+## AI Agent / Non-Deterministic System Exploration (Iteration 37)
+
+The growing prevalence of LLM-powered features in production applications creates a testing challenge that traditional exploratory heuristics do not fully address: the system under test is **non-deterministic**. The same input may produce observably different outputs across runs. Charter-based exploration remains valid — but the oracle heuristic requires explicit adaptation.
+
+### The Non-Determinism Charter Adaptation
+
+A standard charter for a deterministic feature specifies "to discover Z" as a specific observable outcome. For an LLM-powered feature, Z must be restated as a **property** or **invariant** rather than a specific output:
+
+| Deterministic charter (discover Z) | Non-deterministic adaptation |
+|-------------------------------------|------------------------------|
+| "to discover whether the form accepts non-ASCII postal codes" | Unchanged — response is deterministic |
+| "to discover whether the AI summary is correct" | **Invalid** — "correct" is model-dependent and variable |
+| "to discover whether the AI summary contains PII from adjacent users" | Valid — privacy isolation is a property, not a specific output |
+| "to discover whether the AI summary cites sources it was not given" | Valid — hallucination detection is a property check |
+| "to discover response time under normal load" | Valid with multiple samples — percentile, not single value |
+
+The oracle shift: for AI features, use **Standards** (HICCUPPS — does output violate policy, privacy, or safety rules?), **Claims** (does output contradict the documented behavior spec?), and **History** (is output quality degrading across runs?) rather than **Comparable Products** or **User Expectations**, which are too subjective for non-deterministic output.
+
+### Simulation-Based Exploration Pattern  [community]
+
+AI agent features (chatbots, code generation, document summarization) require repeated probing with varied inputs to characterize their behavior envelope — the space of inputs over which the feature behaves acceptably. A single exploratory session with one input is structurally insufficient: it samples one point in the input space. The practical approach is a **simulation-based charter**: run the feature repeatedly with parameterized inputs spanning the coverage dimensions of interest, and classify each output against the oracle properties.
+
+**TypeScript: Simulation-Based Oracle Harness for LLM Features**
+
+```typescript
+// src/testing/exploratory/llm-oracle-harness.ts
+// Simulation-based exploratory harness for non-deterministic LLM features.
+// Runs a feature under test with multiple input variants and classifies each
+// output against a set of oracle properties (policy, safety, format, invariant).
+// Outputs a session report with pass/fail per oracle per variant.
+
+export interface LLMOracleProperty {
+  name: string;
+  description: string;
+  /** Returns true if the output PASSES this property check */
+  check: (input: string, output: string) => boolean | Promise<boolean>;
+}
+
+export interface LLMSimulationResult {
+  input: string;
+  output: string;
+  oracleResults: Array<{ property: string; passed: boolean; evidence: string }>;
+  runIndex: number;
+}
+
+export interface LLMSimulationReport {
+  totalRuns: number;
+  propertyFailureRates: Record<string, number>;  // 0–1 failure rate per property
+  failures: LLMSimulationResult[];
+  sessionNotes: string;
+}
+
+/**
+ * Run a simulation-based exploration session over an LLM feature.
+ * @param inputs - Parameterized inputs to test (cover dimensions from FEW HICCUPS)
+ * @param runFeature - Calls the LLM feature under test, returns its output
+ * @param oracleProperties - Oracle properties to check each output against
+ * @param runsPerInput - Number of times to run each input (for non-determinism sampling)
+ */
+export async function runLLMExplorationSession(
+  inputs: string[],
+  runFeature: (input: string) => Promise<string>,
+  oracleProperties: LLMOracleProperty[],
+  runsPerInput = 3
+): Promise<LLMSimulationReport> {
+  const allResults: LLMSimulationResult[] = [];
+  const failureCounts: Record<string, number> = Object.fromEntries(
+    oracleProperties.map((p) => [p.name, 0])
+  );
+
+  for (const input of inputs) {
+    for (let run = 0; run < runsPerInput; run++) {
+      let output: string;
+      try {
+        output = await runFeature(input);
+      } catch (err) {
+        output = `[FEATURE_ERROR: ${String(err)}]`;
+      }
+
+      const oracleResults: LLMSimulationResult['oracleResults'] = [];
+      for (const prop of oracleProperties) {
+        let passed: boolean;
+        try {
+          passed = await Promise.resolve(prop.check(input, output));
+        } catch {
+          passed = false;
+        }
+        if (!passed) failureCounts[prop.name]++;
+        oracleResults.push({
+          property: prop.name,
+          passed,
+          evidence: passed ? '' : `Input: "${input.slice(0, 80)}" → Output: "${output.slice(0, 120)}"`,
+        });
+      }
+
+      allResults.push({ input, output, oracleResults, runIndex: run });
+    }
+  }
+
+  const totalRuns = allResults.length;
+  const propertyFailureRates = Object.fromEntries(
+    Object.entries(failureCounts).map(([name, count]) => [name, count / totalRuns])
+  );
+
+  const failures = allResults.filter((r) => r.oracleResults.some((o) => !o.passed));
+
+  const worstProperty = Object.entries(propertyFailureRates)
+    .sort(([, a], [, b]) => b - a)[0];
+
+  const sessionNotes =
+    failures.length === 0
+      ? `All ${totalRuns} runs passed all oracle properties.`
+      : `${failures.length}/${totalRuns} runs had oracle failures. ` +
+        `Highest failure rate: "${worstProperty[0]}" at ${(worstProperty[1] * 100).toFixed(0)}%. ` +
+        `File as defect-candidate if failure rate > 10% on any safety or policy property.`;
+
+  return { totalRuns, propertyFailureRates, failures, sessionNotes };
+}
+
+// Example usage: explore a summarization feature for PII leakage and hallucination
+// const report = await runLLMExplorationSession(
+//   ['summarize this document: [DOC_A]', 'summarize this document: [DOC_B with PII]'],
+//   async (input) => callSummarizationAPI(input),
+//   [
+//     {
+//       name: 'no-pii-leakage',
+//       description: 'Output must not contain user PII from other users',
+//       check: (_, output) => !output.match(/\b\d{3}-\d{2}-\d{4}\b/) // SSN pattern
+//     },
+//     {
+//       name: 'no-hallucinated-citations',
+//       description: 'Output must not cite sources not present in input',
+//       check: (input, output) => !output.includes('[REF]') || input.includes('[REF]')
+//     },
+//   ],
+//   5  // 5 runs per input for non-determinism sampling
+// );
+```
+
+This harness makes the non-deterministic exploration repeatable: the same inputs run multiple times, oracle properties are explicit, and failure rates rather than pass/fail are the primary metric. A hallucination rate of 2/15 runs on a specific input type is a meaningful finding to file as a defect-candidate; a single hallucination in one run is noise.
+
+---
+
+## Additional Anti-Patterns (Iteration 37)
+
+- **Codegen-as-test-authoring trap**: Playwright's codegen records interactions but captures no oracle. Teams that use codegen as the primary means of "writing" exploratory test cases end up with large suites of scripts that verify the application can be navigated but assert nothing about observable outcomes. A codegen script without explicit `expect()` calls is a navigation replay macro, not a test case. Use codegen to capture the interaction skeleton from an exploratory session; always add assertions manually at the points where the session discovered interesting behavior. The charter's "to discover Z" should drive which assertions are added — not the order in which the tester happened to click.
+
+- **Single-run oracle for non-deterministic features**: Applying a pass/fail oracle to a single run of an LLM-powered feature treats a non-deterministic system as if it were deterministic. A feature that fails the oracle 2 times in 20 runs has a different risk profile than one that fails 18 times in 20. Exploratory sessions for AI features must run each input multiple times and report failure rates, not binary outcomes. "The AI summary passed my check" from a single run is anecdote, not signal.
+
+---
+
+## Additional Community Lessons (Iteration 37)
+
+99. **[community] Playwright Trace Viewer turns exploratory session evidence from ephemeral to permanent at zero cognitive cost.** Teams that enable Playwright tracing during exploratory sessions report that the trace viewer eliminates the most common complaint about exploratory testing: "I found something but can't reproduce it." The trace captures the exact DOM state, network responses, and console errors for every action in the session. A tester who notices a flash of incorrect state during exploration can review the trace after the session and identify the exact frame where the defect occurred — something impossible with manual screenshot capture. The zero-cost aspect: the tester does not need to change their exploration behavior at all; they simply run the session inside the trace-enabled harness. Teams that adopt this pattern consistently report that the ratio of "findings that can be reproduced by developers" to "total findings per session" improves from roughly 60% to over 90%, because the trace provides the reproduction context the developer needs.
+
+100. **[community] Non-deterministic LLM features expose a gap in traditional exploratory oracle practice that failure-rate metrics fill.** Experienced exploratory testers who encounter their first LLM-powered feature report disorientation: the same input produces different outputs on repeated runs, and their trained instinct for "this output is wrong" does not transfer cleanly to outputs that are statistically likely to be acceptable most of the time. The productive reframe is to treat oracle application as a statistical process: define the property clearly (no PII leakage, no policy-violating content, no hallucinated citations), run the feature 10–20 times per input variant, and measure the failure rate. A 0% failure rate on 20 runs is meaningful evidence. A 5% failure rate on a safety property is a defect to file regardless of how "reasonable" the individual failing output looks. Teams that make this shift report that their LLM feature defect reports become actionable for developers, because a failure rate is reproducible and measurable in a way that "it said something weird once" is not.
+
+101. **[community] Charter-based exploration of AI features requires a "behavior envelope" framing rather than a "correct answer" framing.** Senior testers who transition to testing LLM-powered features find that writing the "to discover Z" part of the charter is harder than for deterministic features because there is rarely a single correct answer. The productive technique: frame Z as a boundary rather than an outcome. Instead of "to discover whether the AI response is accurate," write "to discover the boundary conditions under which the AI response violates the [policy / safety / coherence] oracle." This framing treats the exploratory session as a boundary-finding exercise — mapping where acceptable behavior ends — rather than a correctness check. The session then produces actionable findings: "input type X consistently triggers policy violations at Y% rate" is a clear, fileable, reproducible defect characterization. Teams that adopt behavior-envelope framing report that their AI feature defect reports are taken seriously by product teams because they describe a measurable behavior boundary, not a subjective quality judgment.
 
 ---

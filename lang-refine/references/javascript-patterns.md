@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 42 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 43 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -3007,6 +3007,236 @@ function loadCheckout(flag) {
 
 ---
 
+## Stage 3 Proposals — Production-Ready with Transpilers
+
+These proposals have reached TC39 Stage 3 (specification complete, awaiting browser/runtime implementations to stabilise). All are available today via Babel or TypeScript 5.x.
+
+### `Iterator.zip` / `Iterator.zipKeyed` — Joint Iteration (Stage 3)
+
+`Iterator.zip()` combines positional elements from multiple iterables into arrays. `Iterator.zipKeyed()` combines them into named-key objects. Both support `"shortest"` (default), `"longest"`, and `"strict"` modes. This is the TC39 Joint Iteration proposal.
+
+```javascript
+// Iterator.zip — positional pairing (like Python's zip())
+const zipped = Iterator.zip([0, 1, 2], [3, 4, 5]).toArray();
+// [[0, 3], [1, 4], [2, 5]]
+
+// Works with any iterable — generators, Sets, Maps, etc.
+function* odds() { yield 1; yield 3; yield 5; }
+const mixed = Iterator.zip([0, 2, 4], odds()).toArray();
+// [[0, 1], [2, 3], [4, 5]]
+
+// 'longest' mode — pads shorter iterables with undefined
+Iterator.zip([1, 2, 3], [10, 20], { longest: true }).toArray();
+// [[1, 10], [2, 20], [3, undefined]]
+
+// 'strict' mode — throws if iterables have different lengths
+try {
+  Iterator.zip([1, 2, 3], [10, 20], { mode: 'strict' }).toArray();
+} catch (e) {
+  console.error('Iterables must be same length'); // thrown because lengths differ
+}
+
+// Iterator.zipKeyed — named-key objects (much more readable than positional tuples)
+const result = Iterator.zipKeyed({
+  name:  ['Alice', 'Bob',   'Carol'],
+  score: [95,      87,      92],
+  rank:  [1,       3,       2],
+}).toArray();
+// [
+//   { name: 'Alice', score: 95, rank: 1 },
+//   { name: 'Bob',   score: 87, rank: 3 },
+//   { name: 'Carol', score: 92, rank: 2 },
+// ]
+
+// Chain with Iterator Helpers — find first pair where Alice outscores Bob
+const allRounds = Iterator.zipKeyed({ alice: aliceScores, bob: bobScores });
+const firstAliceWin = allRounds.find(({ alice, bob }) => alice > bob);
+```
+
+**Why it matters:** before `Iterator.zip`, zipping iterables required a manual for loop accumulating an index — and it required materialising both iterables into arrays first if you wanted lazy evaluation. `Iterator.zip` is lazy (stops at shortest by default) and composes with the full Iterator Helpers chain (`.filter()`, `.map()`, `.take()`, etc.).
+
+---
+
+### `Atomics.pause` — Spin-Loop Micro-Wait (Stage 3)
+
+`Atomics.pause(n)` performs a very short CPU-level yield without blocking the thread or relinquishing the core. It is specifically designed for spinlock patterns where a thread polls a shared flag in a tight loop — using it reduces power consumption and improves scheduling behavior compared to a bare `while(true)` loop.
+
+```javascript
+// Context: SharedArrayBuffer + Int32Array shared across workers
+const sharedBuf  = new SharedArrayBuffer(4);
+const lockArray  = new Int32Array(sharedBuf);
+// lockArray[0] === 0 means "unlocked"; 1 means "locked"
+
+// Acquire a spinlock with exponential back-off using Atomics.pause
+function acquireLock(lockArr, index, maxSpins = 1000) {
+  let spins = 0;
+
+  while (true) {
+    // Atomically compare-and-swap: only succeeds if current value is 0
+    if (Atomics.compareExchange(lockArr, index, 0, 1) === 0) {
+      return; // Lock acquired
+    }
+
+    // Micro-wait: larger n = slightly longer pause (still nanosecond scale)
+    Atomics.pause(spins);
+
+    spins++;
+    if (spins >= maxSpins) {
+      // Fall back to Atomics.wait (yields the thread entirely, unlike pause)
+      Atomics.wait(lockArr, index, 1, 5); // wait up to 5ms
+      spins = 0;
+    }
+  }
+}
+
+function releaseLock(lockArr, index) {
+  Atomics.store(lockArr, index, 0);   // Release lock
+  Atomics.notify(lockArr, index, 1);  // Wake one waiting worker
+}
+
+// Worker thread usage
+acquireLock(lockArray, 0);
+try {
+  // Critical section — only one worker executes here at a time
+  sharedData.counter++;
+} finally {
+  releaseLock(lockArray, 0);
+}
+```
+
+**Key rules:**
+- `Atomics.pause` can run on the **main thread** (unlike `Atomics.wait`, which is main-thread-forbidden in browsers).
+- The argument `n` is advisory — the engine interprets it as "relative pause duration"; `0` is the shortest hint.
+- Only use this when you need actual shared-memory synchronisation via `SharedArrayBuffer`. If you don't have `SharedArrayBuffer`, you don't need `Atomics.pause`.
+
+---
+
+### `import source` — Source Phase Imports (Stage 3)
+
+Source phase imports load a module's source representation without executing it. The primary use case is WebAssembly: `import source Foo from './foo.wasm'` returns a `WebAssembly.Module` you can instantiate with custom imports — without the awkward `fetch` + `WebAssembly.instantiateStreaming` ceremony.
+
+```javascript
+// ── WebAssembly integration (primary use case) ────────────────────────
+import source FooModule from './foo.wasm';
+// FooModule is a WebAssembly.Module — not yet instantiated
+
+const instance = await WebAssembly.instantiate(FooModule, {
+  env: { memory: new WebAssembly.Memory({ initial: 1 }) },
+  wasi_snapshot_preview1: wasi.wasiImport,
+});
+instance.exports.main();
+
+// ── Compare with the old fetch approach ──────────────────────────────
+// Before: manual fetch + compile + instantiate (3 steps)
+const response = await fetch('./foo.wasm');
+const module   = await WebAssembly.compileStreaming(response);
+const inst     = await WebAssembly.instantiate(module, imports);
+
+// After: static source import (1 line; statically analysable by bundlers)
+import source FooModule from './foo.wasm';
+const inst = await WebAssembly.instantiate(FooModule, imports);
+
+// ── Dynamic form ─────────────────────────────────────────────────────
+// Dynamic source import — deferred, returns AbstractModuleSource
+const mod = await import.source('./heavy.wasm');
+
+// ── Security benefit: CSP + static analysis ──────────────────────────
+// Bundlers and CSP can track source imports statically — impossible with
+// dynamic fetch() calls that construct URLs at runtime.
+```
+
+**Comparison table:**
+
+| | `import foo` | `import defer * as foo` | `import source foo` |
+|---|---|---|---|
+| Load from network | Parse time | Parse time | Parse time |
+| Module execution | Immediately | On first access | Never (source only) |
+| Returns | Bindings | Namespace | `AbstractModuleSource` |
+| Main use case | Normal modules | Deferred init | Wasm, custom instantiation |
+| Works in browsers | ✅ | Stage 3 | Stage 3 |
+
+**Limitation:** Only the default import form is supported (`import source x from '...'`). Named imports and unbound declarations are not supported.
+
+---
+
+### Decorator Metadata (`Symbol.metadata`) — Stage 3
+
+The Decorator Metadata proposal extends Stage 3 Decorators with a shared `metadata` object available in every decorator's context. After class definition completes, the metadata is frozen onto `ClassName[Symbol.metadata]`, making it available for runtime introspection by frameworks.
+
+```javascript
+// Metadata decorator factory — attaches key/value to any decorated element
+function meta(key, value) {
+  return (_, context) => {
+    context.metadata[key] = value;
+  };
+}
+
+// Class and method metadata in one pass
+@meta('route', '/users')
+@meta('auth',  'required')
+class UserController {
+  @meta('method', 'GET')
+  @meta('path',   '/:id')
+  getUser(id) { /* ... */ }
+}
+
+UserController[Symbol.metadata].route;  // '/users'
+UserController[Symbol.metadata].auth;   // 'required'
+UserController[Symbol.metadata].method; // 'GET' (from method decorator)
+
+// Framework-style: validation metadata for serialization
+function validate(schema) {
+  return (_, { metadata, name }) => {
+    metadata.validators ??= {};
+    metadata.validators[name] = schema;
+  };
+}
+
+class CreateUserDto {
+  @validate({ type: 'string', minLength: 1, maxLength: 50 })
+  name;
+
+  @validate({ type: 'string', format: 'email' })
+  email;
+
+  @validate({ type: 'integer', minimum: 0, maximum: 150 })
+  age;
+}
+
+// Validator runtime reads metadata without knowing about the class
+function validateDto(dto) {
+  const validators = dto.constructor[Symbol.metadata]?.validators ?? {};
+  const errors = [];
+  for (const [field, schema] of Object.entries(validators)) {
+    const value = dto[field];
+    if (schema.type === 'string' && typeof value !== 'string') {
+      errors.push(`${field}: expected string`);
+    }
+    if (schema.minLength && value.length < schema.minLength) {
+      errors.push(`${field}: too short`);
+    }
+    // ... additional schema checks
+  }
+  return errors;
+}
+
+// Inheritance — child class inherits parent metadata via prototype chain
+class AdminDto extends CreateUserDto {
+  @validate({ type: 'string', enum: ['superadmin', 'moderator'] })
+  adminRole;
+}
+// AdminDto[Symbol.metadata] inherits CreateUserDto's validators and adds adminRole
+```
+
+**Key differences from framework-level metadata approaches:**
+- `reflect-metadata` (used by Angular, NestJS, TypeORM) is a third-party polyfill that monkey-patches `Reflect`. `Symbol.metadata` is built into the language spec.
+- Metadata is stored per-class, not per-instance — it's for schema/type information, not per-object state.
+- Inheritance is prototype-chain based: child class metadata shadows (not replaces) parent metadata.
+
+**Community signal [community]:** Do not use `Symbol.metadata` with `reflect-metadata` simultaneously — the two metadata systems are independent and will produce confusing double-registration. NestJS and Angular have migration timelines to adopt `Symbol.metadata`; check your framework's docs before combining.
+
+---
+
 ## Anti-Patterns Quick Reference
 
 | Anti-Pattern | Why It's Harmful | What to Do Instead |
@@ -3050,6 +3280,10 @@ function loadCheckout(flag) {
 | Legacy `experimentalDecorators` mixed with Stage 3 decorators | Two incompatible decorator semantics in one project; Angular/NestJS migrations break | Decide on one: Stage 3 (TS 5.0+ with `"experimentalDecorators": false`) or legacy; never mix |
 | `import defer` named/default imports | Syntax error — only namespace import (`* as`) is supported | Use `import defer * as name from '...'`; for named access use `name.export` |
 | `Math.sumPrecise` for `0.1 + 0.2 === 0.3` | sumPrecise sums IEEE 754 values precisely, but 0.1 and 0.2 are already imprecise; result is still 0.30000000000000004 | Use a decimal library (decimal.js, big.js) for base-10 precision; sumPrecise solves magnitude-cancellation, not representation |
+| `Iterator.zip` with iterables of different lengths without a mode | Stops at shortest silently (default `"shortest"` mode); data from longer iterables is dropped without warning | Pass `{ mode: 'strict' }` to throw if lengths differ, or `{ mode: 'longest' }` to pad with `undefined` |
+| `Atomics.pause` outside SharedArrayBuffer spinlock patterns | Using `Atomics.pause` in code that doesn't have concurrent workers sharing memory provides no benefit and obscures intent | Only use `Atomics.pause` inside tight spinlock loops on `Int32Array` backed by `SharedArrayBuffer` |
+| `import source` named imports | Syntax error — only default import form is supported | Use `import source Foo from './foo.wasm'`; access exports via the instantiated instance |
+| Mixing `reflect-metadata` with `Symbol.metadata` | Two independent metadata systems — double-registration and confusing reads | Pick one; check your framework's migration guide before combining both |
 
 ---
 

@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 12 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 13 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -10,6 +10,10 @@
 <!--          Jest 30 upgrade guide (jestjs.io/docs/upgrading-to-jest30),                          -->
 <!--          Playwright fixtures docs (playwright.dev/docs/test-fixtures),                        -->
 <!--          martinfowler.com/articles/mocksArentStubs.html (classicist vs mockist)               -->
+<!--          Jest 30 jest.replaceProperty + jest.Replaced<T> (jestjs.io/docs/jest-object),        -->
+<!--          jest.isolateModulesAsync for ESM (jestjs.io/docs/jest-object),                       -->
+<!--          jest.unstable_mockModule / jest.unstable_unmockModule ESM pair,                      -->
+<!--          Vitest pool types: forks vs threads vs vmThreads + isolate: false trade-off          -->
 
 ---
 
@@ -881,6 +885,10 @@ parallel workers.
 | `requestAnimationFrame` callbacks not advancing in tests | Timer tests with rAF never fire; animation tests timeout | `jest.advanceTimersToNextFrame()` (Jest 30+) | `vi.advanceTimersByTime(16)` |
 | `SpyInstance` TypeScript type error after Jest 30 upgrade | `jest.SpyInstance` removed; `Type 'SpyInstance' not found` | Replace with `jest.Spied<typeof fn>` or `jest.SpyInstance` → `jest.Spied` | N/A |
 | `jest.mock()` not matching due to filename casing | Module mock silently not applied; production code runs | Ensure `jest.mock('./path/Module')` matches exact filesystem casing (Jest 30) | N/A |
+| Non-function property replacement leaks across tests | Config object value from test A visible in test B | `jest.replaceProperty(obj, 'key', val)` + `restoreAllMocks()` in `afterEach` | `vi.stubEnv()` / manual save-restore |
+| ESM singleton reads env var at import time | `isolateModules()` (sync) cannot contain `await import()` | `await jest.isolateModulesAsync(async () => { ... await import() ... })` | N/A (Vitest uses `vi.resetModules()`) |
+| Vitest file isolation too slow in unit suites | Module bootstrap overhead per file | `pool: 'threads'` (faster, weaker isolation) or `isolate: false` (no isolation) | N/A (Jest always isolates files) |
+| Cross-file state leak in Vitest Worker threads | Shared global modified in one file leaks to next file on same Worker | Switch to `pool: 'forks'` (separate child process per file) | N/A |
 
 ---
 
@@ -1818,3 +1826,261 @@ timing implementation, keeping it stable across rAF polyfill changes.
     real integration bugs, while teams that default to "use real objects everywhere" suffer slow
     suites and complex fixtures. The correct answer is contextual and should be documented in
     the project's testing guidelines.
+
+---
+
+## Community Lessons — Iteration 13  [community]
+
+43. **`jest.replaceProperty()` is the correct API for non-function property isolation — not `Object.defineProperty` or direct assignment.** [community]
+    Jest 30 added `jest.replaceProperty(object, propertyKey, value)` as the idiomatic way to replace
+    non-function properties on objects for a test. It captures the original value and automatically
+    restores it when `jest.restoreAllMocks()` is called in `afterEach`. The common alternative —
+    directly assigning `process.env.FEATURE_FLAG = 'true'` and forgetting to restore — is the
+    root cause of numerous environment-variable isolation failures. The TypeScript utility type
+    `jest.Replaced<Source>` preserves type-checking on the replaced value.
+    ```typescript
+    const utils = {
+      isLocalhost: () => process.env.HOSTNAME === 'localhost',
+    };
+
+    afterEach(() => {
+      // Restores both jest.spyOn() mocks AND jest.replaceProperty() replacements
+      jest.restoreAllMocks();
+    });
+
+    it('isLocalhost returns true when HOSTNAME is localhost', () => {
+      jest.replaceProperty(process, 'env', { HOSTNAME: 'localhost' });
+      expect(utils.isLocalhost()).toBe(true);
+    });
+
+    it('isLocalhost returns false for other hostnames', () => {
+      jest.replaceProperty(process, 'env', { HOSTNAME: 'prod-host' });
+      expect(utils.isLocalhost()).toBe(false);
+    });
+    ```
+    **When to use vs. alternatives:** Use `jest.replaceProperty()` for plain data properties on
+    objects. Use `jest.spyOn(obj, 'prop', 'get')` for getter properties. Use `vi.stubEnv()` in
+    Vitest (Gotcha 36). WHY: direct property assignment without capture/restore is the most
+    common source of environment-variable order-dependent failures in CJS Jest projects.
+
+44. **`jest.isolateModulesAsync()` is required when isolating ESM modules loaded via dynamic `import()`.** [community]
+    `jest.isolateModules()` is synchronous and cannot await dynamic `import()` calls inside its
+    callback. When test code needs to load a module under a specific environment condition (e.g.,
+    a feature flag set in `process.env`) using native ESM `import()`, `jest.isolateModulesAsync()`
+    creates an async sandbox registry. Without the async version, the `import()` resolves outside
+    the isolated registry boundary, defeating the isolation.
+    ```typescript
+    it('featureEnabled is true when FEATURE_FLAG=true', async () => {
+      process.env.FEATURE_FLAG = 'true';
+      let featureEnabled: boolean;
+
+      // isolateModulesAsync creates a fresh module registry for the async callback
+      await jest.isolateModulesAsync(async () => {
+        const mod = await import('./featureFlag');
+        featureEnabled = mod.featureEnabled;
+      });
+
+      expect(featureEnabled!).toBe(true);
+      delete process.env.FEATURE_FLAG;
+    });
+    ```
+    WHY: teams that use `jest.isolateModules()` with ESM `import()` (the synchronous form) find
+    that the `import()` completes after the isolation scope ends — the module loads from the global
+    cache, not the isolated registry. The symptom is that `process.env` changes have no effect on
+    the module, producing a silent false negative.
+
+45. **`jest.unstable_mockModule()` + `jest.unstable_unmockModule()` is the ESM-native isolation pair; `jest.mock()` does not hoist in native ESM.** [community]
+    In Jest projects running native ESM (`--experimental-vm-modules`, no Babel/ts-jest transform),
+    `jest.mock()` hoisting is not performed by the JS engine itself. The ESM-native API is
+    `jest.unstable_mockModule()` paired with a dynamic `import()` after mock registration. Its
+    complement, `jest.unstable_unmockModule()`, restores the real module within the same test —
+    enabling mock/unmock cycles without `resetModules()` for the entire registry.
+    ```typescript
+    import { jest, test, expect } from '@jest/globals';
+
+    test('can switch between mock and real module in the same test', async () => {
+      // Register mock before dynamic import
+      jest.unstable_mockModule('./analytics', () => ({
+        track: jest.fn(),
+      }));
+      const { track } = await import('./analytics');
+      expect(typeof track).toBe('function'); // mock
+
+      // Restore real module
+      jest.unstable_unmockModule('./analytics');
+      const realModule = await import('./analytics');
+      // realModule.track is the real implementation
+      expect(realModule.track).not.toBe(track);
+    });
+    ```
+    **Caveats:** (1) Re-mocking after `unstable_unmockModule()` reverts to the first mock factory —
+    it does not apply a new factory. (2) The "unstable_" prefix signals the API may change; avoid
+    depending on it in test utilities that must survive major Jest upgrades.
+
+46. **Vitest pool type determines the isolation boundary for module state; `forks` (the default) provides the strongest isolation.** [community]
+    Vitest offers four pool types with different isolation guarantees:
+    - **`forks`** (default since Vitest 2): runs each test file in a separate child process (`child_process.fork`). Strongest isolation — Node.js module cache, global state, and memory are fully separate per file. Slower startup than threads.
+    - **`threads`**: runs each test file in a Node.js Worker thread. Faster than forks, but Workers share the V8 heap with the host process. Shared `SharedArrayBuffer` or global singletons can bleed across files.
+    - **`vmThreads`**: runs each test file in a separate VM context within a Worker thread. Module isolation within the context, but not as strong as a separate process; rare internal V8 issues can cause hangs.
+    - **`vmForks`**: runs each test file in a VM context within a forked child process. Combines the isolation of `forks` with the module-registry reset of `vmThreads`.
+
+    The `isolate: false` config flag (or `--no-isolate` CLI) disables file-level isolation entirely
+    for a significant performance gain — all test files share one process and one module cache.
+    Only safe when all test files are fully self-contained and import no singletons with persistent state.
+    ```
+    # vitest.config.ts — pool selection by isolation need
+    export default defineConfig({
+      test: {
+        pool: 'forks',     // strongest isolation (default); use for integration suites
+        // pool: 'threads', // faster; use for pure-unit suites with no shared globals
+        // pool: 'vmThreads', // VM isolation; use when module reset per file is needed but forks is too slow
+        // isolate: false,  // DISABLE only if every test file is fully self-contained
+      },
+    });
+    ```
+    WHY: teams that switch from `forks` to `threads` for speed sometimes encounter non-deterministic
+    failures caused by Worker-shared globals (e.g., `global.fetch = vi.fn()` set in one file's
+    `beforeAll` but not cleaned up, leaking into the next file assigned to the same Worker thread).
+    Diagnose with `--reporter=verbose` and `--no-isolate=false` to confirm per-file isolation
+    eliminates the failure.
+
+---
+
+## Extended Patterns — Iteration 13
+
+### Pattern 20: `jest.replaceProperty()` for typed property isolation (TypeScript, Jest 30+)  [community]
+
+`jest.replaceProperty()` provides a type-safe, auto-restorable way to replace non-function object
+properties for the duration of a test. Unlike direct assignment (`process.env.X = 'y'`) or
+`Object.assign`, it records the original value and restores it via `jest.restoreAllMocks()`.
+The `jest.Replaced<T>` utility type preserves the TypeScript shape of the replaced property.
+
+```typescript
+// config.ts
+export const appConfig = {
+  maxRetries: 3,
+  timeout: 5000,
+  environment: process.env.NODE_ENV ?? 'development',
+};
+
+// config.test.ts
+import { appConfig } from './config';
+
+describe('appConfig property isolation (jest.replaceProperty)', () => {
+  afterEach(() => {
+    // Restores all jest.spyOn() mocks AND jest.replaceProperty() replacements
+    jest.restoreAllMocks();
+  });
+
+  it('maxRetries can be overridden for a single test without leaking', () => {
+    // Arrange — replace a non-function property with auto-restore
+    jest.replaceProperty(appConfig, 'maxRetries', 1);
+
+    // Act — code under test reads the overridden value
+    const result = appConfig.maxRetries;
+
+    // Assert
+    expect(result).toBe(1);
+    // After afterEach, appConfig.maxRetries is 3 again — no manual restore needed
+  });
+
+  it('environment override does not affect adjacent tests', () => {
+    jest.replaceProperty(process, 'env', {
+      ...process.env,
+      NODE_ENV: 'production',
+    });
+
+    // Re-evaluate the property that reads from process.env
+    const env = process.env.NODE_ENV;
+
+    expect(env).toBe('production');
+    // Restored automatically in afterEach
+  });
+
+  it('maxRetries is back to the original value — no state leak', () => {
+    // Previous test's replaceProperty has been restored by restoreAllMocks
+    expect(appConfig.maxRetries).toBe(3);
+  });
+});
+```
+
+**When to prefer over alternatives:**
+- Over `vi.stubEnv()`: when replacing arbitrary object properties (not just `process.env` keys)
+- Over `jest.spyOn(obj, 'prop', 'get')`: when the property is a plain data property (not a getter)
+- Over `Object.assign({}, ...)` save/restore: when you want `restoreAllMocks()` to handle cleanup automatically
+
+### Pattern 21: `jest.isolateModulesAsync()` for ESM singleton isolation (TypeScript)  [community]
+
+When a TypeScript module exports a value that is computed at import time (a configuration object,
+a singleton built from `process.env`, or a flag read at load time), testing different configurations
+requires loading a fresh copy of the module. For native ESM modules, `jest.isolateModulesAsync()`
+provides a scoped async module registry where `import()` loads a fresh copy.
+
+```typescript
+// featureFlags.ts — value computed at module load time
+export const featureFlags = {
+  newCheckout: process.env.FEATURE_NEW_CHECKOUT === 'true',
+  analyticsV2: process.env.FEATURE_ANALYTICS_V2 === 'true',
+};
+
+// featureFlags.test.ts
+import { jest, describe, it, expect, afterEach } from '@jest/globals';
+
+describe('featureFlags (ESM singleton — isolated per test)', () => {
+  afterEach(() => {
+    // Clean up env vars set during tests
+    delete process.env.FEATURE_NEW_CHECKOUT;
+    delete process.env.FEATURE_ANALYTICS_V2;
+  });
+
+  it('newCheckout is true when env var is set before module load', async () => {
+    process.env.FEATURE_NEW_CHECKOUT = 'true';
+
+    let flags: typeof import('./featureFlags');
+    // isolateModulesAsync creates an isolated registry for the async callback
+    await jest.isolateModulesAsync(async () => {
+      flags = await import('./featureFlags');
+    });
+
+    expect(flags!.featureFlags.newCheckout).toBe(true);
+  });
+
+  it('newCheckout is false when env var is absent', async () => {
+    // No env var set — fresh module load sees it as absent
+    let flags: typeof import('./featureFlags');
+    await jest.isolateModulesAsync(async () => {
+      flags = await import('./featureFlags');
+    });
+
+    expect(flags!.featureFlags.newCheckout).toBe(false);
+  });
+
+  it('multiple flags can be independently controlled per test', async () => {
+    process.env.FEATURE_ANALYTICS_V2 = 'true';
+
+    let flags: typeof import('./featureFlags');
+    await jest.isolateModulesAsync(async () => {
+      flags = await import('./featureFlags');
+    });
+
+    expect(flags!.featureFlags.newCheckout).toBe(false);
+    expect(flags!.featureFlags.analyticsV2).toBe(true);
+  });
+});
+```
+
+**Key rule:** `jest.isolateModules()` (synchronous) cannot host a `await import()` inside its
+callback — the `import()` resolves after the isolation scope has closed. Always use the `Async`
+variant for ESM `import()`.
+
+---
+
+## Key Resources — Iteration 13 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Jest Docs — `jest.replaceProperty` | Official | https://jestjs.io/docs/jest-object#jestreplacepropertyobject-propertykey-value | Auto-restorable non-function property replacement; `jest.Replaced<T>` type |
+| Jest Docs — `jest.isolateModulesAsync` | Official | https://jestjs.io/docs/jest-object#jestisolatemodulesasyncfn | Async scoped module registry for ESM `import()` isolation |
+| Jest Docs — ESM Module Mocking | Official | https://jestjs.io/docs/ecmascript-modules | `jest.unstable_mockModule` + `jest.unstable_unmockModule` — ESM-native mock/unmock pair |
+| Vitest Docs — Pool Configuration | Official | https://vitest.dev/guide/improving-performance#pool | `forks` vs `threads` vs `vmThreads` isolation guarantees and performance tradeoffs |
+| Vitest Config — `isolate` | Official | https://vitest.dev/config/#isolate | `isolate: false` / `--no-isolate` flag — when safe to disable file-level isolation for speed |

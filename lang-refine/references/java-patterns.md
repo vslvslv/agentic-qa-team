@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -1282,6 +1282,78 @@ ConcurrentHashMap<Department, List<Employee>> grouped = employees.parallelStream
 
 **When to use:** `groupingByConcurrent()` wins on large datasets where merging per-thread maps is the bottleneck. `unordered()` helps when the pipeline contains `distinct()`, `sorted()`, or `limit()` and you don't need encounter order preserved. Always benchmark — for small collections, sequential is faster.
 
+### Record Wither Pattern — Immutable "Copy With Change"
+Records are immutable — there is no built-in `with` syntax for creating a copy with one field changed (unlike Kotlin data classes). The idiomatic Java workaround is to add explicit `withXxx()` methods that call the canonical constructor with the new value for the changed field. For records with many fields, this is verbose but keeps the immutability contract intact. Lombok's `@With` or Java 25's planned "withers" proposal (not yet standard) are alternatives worth tracking.
+
+```java
+public record UserProfile(
+    String userId,
+    String displayName,
+    String email,
+    boolean active,
+    Instant createdAt
+) {
+    // Wither methods: return a new record with one field changed, rest unchanged
+    public UserProfile withDisplayName(String newName) {
+        return new UserProfile(userId, newName, email, active, createdAt);
+    }
+
+    public UserProfile withEmail(String newEmail) {
+        // Can include validation in the wither
+        if (!newEmail.contains("@")) {
+            throw new IllegalArgumentException("Invalid email: " + newEmail);
+        }
+        return new UserProfile(userId, displayName, newEmail, active, createdAt);
+    }
+
+    public UserProfile deactivated() {
+        return new UserProfile(userId, displayName, email, false, createdAt);
+    }
+}
+
+// Usage — chain wither calls; original is unchanged; each call returns a new instance
+UserProfile original = new UserProfile("u1", "Alice", "alice@old.com", true, Instant.now());
+UserProfile updated  = original
+    .withEmail("alice@new.com")
+    .withDisplayName("Alice Smith");
+
+// Original is unchanged — immutability preserved
+System.out.println(original.email());   // alice@old.com
+System.out.println(updated.email());    // alice@new.com
+```
+
+**Why idiomatic:** Records guarantee immutability; wither methods provide a fluent API for producing modified copies without exposing setters. Until a Java language feature adds native wither syntax, this explicit pattern is the standard approach endorsed by the community.
+
+### Unnamed Classes and Instance Main Methods (Java 25 — JEP 477)
+Java 25 standardizes the ability to write simple programs without the boilerplate of `public class Foo { public static void main(String[] args) {} }`. An unnamed class file can contain top-level methods and fields, and an instance `main()` method (no `static`, no `String[]` required) becomes the entry point. This makes Java more accessible for scripting, quick experiments, and educational contexts without changing how production code is written.
+
+```java
+// Java 25 unnamed class — no class declaration, no static, args optional
+// File: Hello.java
+void main() {
+    System.out.println("Hello, World!");
+}
+
+// With a helper method — also at top level
+String greet(String name) {
+    return "Hello, %s!".formatted(name);
+}
+
+void main() {
+    System.out.println(greet("Alice"));  // Hello, Alice!
+}
+
+// Import is still allowed
+import java.util.List;
+
+void main() {
+    var names = List.of("Alice", "Bob", "Carol");
+    names.forEach(name -> System.out.println(greet(name)));
+}
+```
+
+**Note for production code:** Unnamed classes and instance main are for scripting and teaching contexts. Production application entry points should still use `public static void main(String[] args)` or Spring Boot's `@SpringBootApplication` — not unnamed classes — for clarity and compatibility with tooling.
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -1365,16 +1437,16 @@ List<String> mutableNames = users.stream()
 mutableNames.add("ExtraName");      // safe
 ```
 
-**10. Blocking Virtual Threads on Synchronized Blocks (Java 21) [community]**
-Virtual threads (introduced in Java 21) are cheap and designed for blocking I/O, but a `synchronized` block on a virtual thread **pins it to its carrier OS thread** — negating the scalability benefit. The root cause is that Java 21's virtual thread scheduler cannot unmount a pinned virtual thread. Fix: replace `synchronized` with `java.util.concurrent.locks.ReentrantLock` inside code paths that run on virtual threads, or wait for Java 24+ which lifts the pinning restriction.
+**10. Blocking Virtual Threads on Synchronized Blocks (Java 21–23) — Fixed in Java 24 [community]**
+Virtual threads (introduced in Java 21) are cheap and designed for blocking I/O, but in Java 21–23 a `synchronized` block on a virtual thread **pins it to its carrier OS thread** — negating the scalability benefit. The root cause is that Java 21–23's virtual thread scheduler cannot unmount a pinned virtual thread. **Java 24 (JEP 491) lifted this restriction**: `synchronized` no longer pins virtual threads — they can unmount during blocking operations inside `synchronized` blocks just as they can with `ReentrantLock`. If you are on Java 21–23, the fix is to replace `synchronized` with `java.util.concurrent.locks.ReentrantLock` in high-concurrency paths. On Java 24+, `synchronized` is safe with virtual threads.
 
 ```java
-// BAD on virtual threads — pins carrier thread
+// Java 21–23 only: BAD on virtual threads — pins carrier thread
 synchronized (lock) {
-    result = remoteService.fetchData();  // blocking I/O while pinned
+    result = remoteService.fetchData();  // blocking I/O while pinned (Java 21-23)
 }
 
-// GOOD — ReentrantLock allows the virtual thread scheduler to unmount
+// Java 21–23: GOOD — ReentrantLock allows the virtual thread scheduler to unmount
 private final ReentrantLock lock = new ReentrantLock();
 
 lock.lock();
@@ -1382,6 +1454,14 @@ try {
     result = remoteService.fetchData();  // virtual thread can unmount here
 } finally {
     lock.unlock();
+}
+
+// Java 24+: synchronized is safe with virtual threads (JEP 491)
+// The scheduler can now unmount during blocking calls inside synchronized blocks.
+// ReentrantLock remains a good choice for its tryLock() / timed-lock API,
+// but pinning is no longer a reason to avoid synchronized.
+synchronized (this) {
+    result = remoteService.fetchData();  // safe on Java 24+ virtual threads
 }
 ```
 
@@ -1987,6 +2067,73 @@ double sum = Arrays.stream(values).parallel().sum();  // optimal splits
 ```
 **WHY:** The `ForkJoinPool` work-stealing algorithm requires sub-split size estimates to balance tasks. Without `SUBSIZED`, the splitter guesses and often front-loads one worker. A `LinkedList.parallelStream()` over 1 million elements typically runs slower than `ArrayList.parallelStream()` over the same elements because the list cannot be split at arbitrary indices — it must traverse from the head.
 
+**35. `BigDecimal.equals()` Considers Scale — Use `compareTo()` for Numeric Equality [community]**
+`BigDecimal.equals()` considers both numeric value AND scale — `new BigDecimal("1.0").equals(new BigDecimal("1.00"))` returns `false` even though both represent the same mathematical value. This breaks `HashMap` lookups, `Set` membership tests, and any equality check on `BigDecimal` values that may differ only in trailing zeros. The root cause is that `BigDecimal` encodes significant figures, so `1.0` and `1.00` are semantically different objects (2 sig figs vs 3). Fix: use `compareTo() == 0` for mathematical equality checks; use `stripTrailingZeros()` to normalize before storing in sets or as map keys.
+
+```java
+BigDecimal a = new BigDecimal("1.0");
+BigDecimal b = new BigDecimal("1.00");
+
+// BAD — equals() checks scale: returns false even though a == b mathematically
+System.out.println(a.equals(b));         // false!
+
+// BAD — Map lookup breaks if key was inserted with different scale
+Map<BigDecimal, String> prices = new HashMap<>();
+prices.put(new BigDecimal("9.90"), "Widget");
+String name = prices.get(new BigDecimal("9.9")); // null — different scale, different bucket
+
+// GOOD — use compareTo() for mathematical equality
+System.out.println(a.compareTo(b) == 0);  // true
+
+// GOOD — normalize scale before using as map key
+Map<BigDecimal, String> normalized = new HashMap<>();
+normalized.put(new BigDecimal("9.90").stripTrailingZeros(), "Widget");
+String found = normalized.get(new BigDecimal("9.9").stripTrailingZeros()); // "Widget"
+
+// GOOD — sorting/min/max: Comparator based on compareTo
+List<BigDecimal> amounts = List.of(new BigDecimal("1.0"), new BigDecimal("1.00"), new BigDecimal("2.5"));
+BigDecimal min = amounts.stream().min(BigDecimal::compareTo).orElseThrow();
+// → 1.0 (the first 1.x encountered — compareTo considers them equal)
+```
+**WHY:** Because `BigDecimal` implements `Comparable<BigDecimal>` but `equals()` is inconsistent with `compareTo()`, the documentation explicitly warns that `BigDecimal` is unusual in this respect. Using it in `TreeSet`/`TreeMap` (which use `compareTo`) produces different behavior than `HashSet`/`HashMap` (which use `equals`). Always use `compareTo()` for monetary value comparisons.
+
+**36. Using `double` or `float` for Monetary Calculations [community]**
+`double` and `float` use binary floating-point representation, which cannot exactly represent most decimal fractions. `0.1 + 0.2` in IEEE 754 double precision is `0.30000000000000004`, not `0.3`. This causes rounding errors that silently accumulate in financial calculations — cents off in small transactions become dollars off at scale. The root cause is treating `double` as a "real number" type rather than a "binary approximation" type. Fix: always use `BigDecimal` with explicit scale and `RoundingMode` for money; or represent monetary values as integer cents and convert only for display.
+
+```java
+// BAD — binary floating-point loses precision silently
+double price  = 0.10;
+double tax    = 0.03;
+double total  = price + tax;
+System.out.println(total);   // 0.13000000000000001 — NOT 0.13
+
+// BAD — accumulation of floating-point errors
+double sum = 0.0;
+for (int i = 0; i < 1000; i++) {
+    sum += 0.01;
+}
+System.out.printf("%.20f%n", sum);  // 9.99999999999998046... — NOT 10.0
+
+// GOOD — BigDecimal with explicit scale and rounding mode
+BigDecimal price  = new BigDecimal("0.10");
+BigDecimal tax    = new BigDecimal("0.03");
+BigDecimal total  = price.add(tax);  // exactly 0.13
+
+// GOOD — BigDecimal for percentage computations with controlled rounding
+BigDecimal vatRate  = new BigDecimal("0.20");
+BigDecimal subtotal = new BigDecimal("99.95");
+BigDecimal vat      = subtotal.multiply(vatRate)
+                               .setScale(2, RoundingMode.HALF_EVEN);  // 19.99
+
+// GOOD — represent as integer cents to avoid any floating point entirely
+// store 99 for $0.99; display as amount / 100.0 or BigDecimal.valueOf(cents, 2)
+long priceCents = 99L;  // $0.99
+long taxCents   = 3L;   // $0.03
+long totalCents = priceCents + taxCents;  // 102 cents = $1.02 (exact integer arithmetic)
+BigDecimal display = BigDecimal.valueOf(totalCents, 2);  // "1.02"
+```
+**WHY:** IEEE 754 double has 52 mantissa bits — about 15–16 significant decimal digits. A value like `0.1` is stored as `0.1000000000000000055511151231257827021181583404541015625`. For a high-volume payment system processing a billion transactions at $0.01 each, cumulative rounding errors can produce incorrect totals. The JVM spec guarantees `double` precision but not decimal exactness. `BigDecimal` is the standard Java solution: it stores decimal numbers exactly (subject to the scale you specify) and gives you full control over rounding.
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -2032,6 +2179,8 @@ double sum = Arrays.stream(values).parallel().sum();  // optimal splits
 | `stream.reduce("", String::concat)` for joining | O(n²) string copying; quadratic time on large streams | Use `Collectors.joining()` or `String.join()` |
 | `parallelStream()` on SUBSIZED-absent sources (LinkedList) | Unbalanced work splits; often slower than sequential | Use `ArrayList`, arrays, or `IntStream.range()` as parallel stream source |
 | Module imports (`import module`) misuse | Ambiguous type resolution when same name exists in two modules | Add explicit single-type import after module import to resolve ambiguity |
+| `BigDecimal.equals()` for numeric equality | Returns false for same value with different scale (1.0 ≠ 1.00) | Use `compareTo() == 0`; `stripTrailingZeros()` before using as map key |
+| `double`/`float` for monetary values | Binary floating-point cannot represent 0.1 exactly; silent rounding errors accumulate | Use `BigDecimal` with explicit scale and `RoundingMode`; or store as integer cents |
 
 ---
 

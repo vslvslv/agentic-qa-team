@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -20,6 +20,12 @@
        Dictionary.GetAlternateLookup, ServerSentEvents; added community gotchas: magic strings, early-return guard clauses,
        PriorityQueue misuse — sourced from learn.microsoft.com/dotnet/core/whats-new/dotnet-9/libraries and
        official async programming docs
+     Iter 28 (2026-05-12): added File-Based Apps (C# 14 #!/# directives), ASP.NET Core 10
+       built-in validation (AddValidation/[ValidatableType]), TypedResults.ServerSentEvents,
+       [PersistentState] for Blazor prerendering; added WebSocketStream (.NET 10 networking);
+       added community gotchas: `field` keyword naming conflict, extension member resolution
+       ambiguity vs old-style extension methods — sourced from learn.microsoft.com/dotnet/csharp/whats-new/csharp-14
+       and learn.microsoft.com/aspnet/core/release-notes/aspnetcore-10.0
 -->
 
 ## Core Philosophy
@@ -1775,6 +1781,42 @@ int c = Sum(roSpan);      // ReadOnlySpan<T> — direct
 
 **Why it matters:** library authors no longer need to write three overloads (`T[]`, `Span<T>`, `ReadOnlySpan<T>`) for performance-sensitive APIs. A single `ReadOnlySpan<T>` parameter now accepts all three without allocations.
 
+### File-Based Apps — C# 14 Preprocessor Directives (`#!` / `#:`)
+
+C# 14 and the .NET 10 SDK support *file-based apps*: single `.cs` files compiled and run with `dotnet run Program.cs` without a `.csproj`. Two new preprocessor prefixes support this mode:
+
+- **`#!`** — Unix shebang line. Ignored by the C# compiler; used by the OS to invoke `dotnet` directly.
+- **`#:`** — Build directive. Passed to the SDK to configure the file's compilation (SDK version, package references, etc.). Silently ignored by the compiler but emits a warning if used in a project-based compilation.
+
+```csharp
+#!/usr/bin/env dotnet
+// ^ Unix-only: chmod +x hello.cs; ./hello.cs runs this file
+
+#:sdk Microsoft.NET.Sdk
+#:property LangVersion preview
+#:package Humanizer 2.14.1
+
+using Humanizer;
+
+Console.WriteLine(3.ToWords());        // "three"
+Console.WriteLine("hello_world".Pascalize());  // "HelloWorld"
+```
+
+**Running a file-based app:**
+
+```bash
+# Compile and run in one step — no .csproj needed
+dotnet run hello.cs
+
+# Unix: make executable and invoke directly
+chmod +x hello.cs
+./hello.cs
+```
+
+**Why it matters:** file-based apps lower the barrier for scripts, quick experiments, and CI utilities without a full project setup. The `#:` directives compose — you can pin SDK versions, add NuGet packages, and set compiler options all inline. Use this for tooling scripts and one-off utilities; keep long-lived production code in proper projects for IDE support and multi-file organization.
+
+**Limitation:** the C# compiler itself ignores `#!` and `#:` entirely (it doesn't error on them either). The SDK build system parses them. If you accidentally include `#:` in a project-based compilation, the compiler emits a warning.
+
 ### `partial` Constructors and Events (C# 14)
 
 C# 14 extends partial members to include instance constructors and events. A partial constructor has exactly one declaring declaration and one implementing declaration. Only the implementing declaration can include a constructor initializer (`this()` or `base()`). Partial events have a field-like declaring declaration and an implementing declaration with explicit `add`/`remove` accessors.
@@ -2658,6 +2700,103 @@ pq.UpdatePriority("NodeA", 3);  // now "NodeA" has priority 3
 // For production graph algorithms, use an indexed priority queue or a 3rd-party library
 ```
 
+### **`field` Keyword Naming Conflict — Disambiguation Required**  [community]
+
+The `field` contextual keyword (C# 14) clashes with any identifier named `field` in the same type. If your class has a field, property, local variable, or parameter named `field`, the compiler treats `field` as that identifier rather than the backing-field keyword. WHY it causes problems: silent semantic change — a type migrated from an explicit backing `field` variable to the new keyword syntax may compile but reference the wrong value if the old `_field` → `field` rename was done carelessly. Fix: either rename the conflicting symbol (preferred), or use the escape `@field` to access the identifier or `this.field` to access an instance member.
+
+```csharp
+// BAD: 'field' identifier conflicts with the C# 14 field keyword
+public class Config
+{
+    private string field = "default";  // identifier named 'field'
+
+    public string Value
+    {
+        get;
+        set => field = value?.Trim() ?? string.Empty;  // 'field' = which one?!
+        // AMBIGUOUS: compiler uses the property's synthesized backing field,
+        // not the class-level 'field' identifier — silently different behavior
+    }
+}
+
+// GOOD option 1: rename the conflicting identifier
+public class Config
+{
+    private string _field = "default";  // renamed — no conflict
+
+    public string Value
+    {
+        get;
+        set => field = value?.Trim() ?? string.Empty;  // unambiguously: synthesized backing field
+    }
+}
+
+// GOOD option 2: use @field to reference the identifier explicitly
+public class Config
+{
+    private string field = "default";
+
+    public string Value
+    {
+        get => @field;                          // @field = the class-level identifier
+        set => @field = value?.Trim() ?? "";    // not the keyword
+    }
+}
+```
+
+### **Extension Members vs Old-Style Extension Methods — Resolution Ambiguity**  [community]
+
+C# 14's new `extension` block syntax coexists with C# 3's classic static extension methods. When both define a method with the same name for the same receiver type, the compiler picks based on resolution rules that may surprise readers. WHY it causes problems: a library update that migrates from `static void Foo(this T t)` to an `extension(T t) { void Foo() { ... } }` block can break call sites that relied on the old static method being callable as `T.Foo(instance)` or `MyExtensions.Foo(instance)` (explicit form), because the `extension` block form does not support explicit static invocation in the same way. Fix: during migration, do not mix both forms for the same method — remove the classic form entirely when switching to the `extension` block. Document the migration with a `[Obsolete]` on the old form first to give callers time to update.
+
+```csharp
+// BAD: both forms defined — resolution is surprising
+public static class OrderExtensions
+{
+    // Classic C# 3 form — still works
+    public static decimal TotalPrice(this IReadOnlyList<OrderItem> items)
+        => items.Sum(i => i.Price * i.Quantity);
+
+    // New C# 14 extension block form for the same receiver
+    extension(IReadOnlyList<OrderItem> items)
+    {
+        // If this also defines TotalPrice, the compiler may prefer one form
+        // depending on call-site context — confusing for maintainers
+        public string Summary => $"{items.Count} items, {items.Sum(i => i.Price * i.Quantity):C}";
+    }
+}
+
+// GOOD: pick one style — migrate fully to extension blocks for new code
+public static class OrderExtensions
+{
+    extension(IReadOnlyList<OrderItem> items)
+    {
+        public decimal TotalPrice => items.Sum(i => i.Price * i.Quantity);
+        public string  Summary    => $"{items.Count} items, {items.TotalPrice:C}";
+    }
+}
+```
+
+### **File-Based Apps `#:` Directives in Project Files — Build Warning Flood**  [community]
+
+Using `#:` build directives (C# 14 file-based apps feature) in `.cs` files that are part of a project-based compilation produces a compiler warning on every file that contains them. WHY it causes problems: a developer who copy-pastes a file-based app script into a `dotnet new webapi` project brings along the `#:sdk` and `#:package` directives; suddenly every build emits dozens of warnings that obscure real issues. Fix: strip all `#:` and `#!` lines when promoting a file-based script into a project-based solution. The SDK only interprets them when compiling via `dotnet run <file>` — they have no effect and generate noise in project mode.
+
+```csharp
+// file-based script — fine as standalone
+#!/usr/bin/env dotnet
+#:sdk Microsoft.NET.Sdk
+#:package Newtonsoft.Json 13.0.3
+
+using Newtonsoft.Json;
+Console.WriteLine(JsonConvert.SerializeObject(new { hello = "world" }));
+
+// AFTER promoting to a project — remove the #! and #: lines
+// Project already has the SDK and NuGet package in .csproj:
+// <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+
+using Newtonsoft.Json;
+Console.WriteLine(JsonConvert.SerializeObject(new { hello = "world" }));
+```
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -2708,6 +2847,212 @@ pq.UpdatePriority("NodeA", 3);  // now "NodeA" has priority 3
 | `Dictionary<string,T>` for static lookup tables in hot paths | Resizable hash table has more overhead than needed for immutable data | Use `FrozenDictionary<K,V>.ToFrozenDictionary()` for read-only lookups |
 | `string.IndexOfAny(char[])` in tight loops | Allocates array on each call site; uses non-SIMD path | Use `SearchValues<char>.Create(...)` once, store in `static readonly` |
 | Calling `PriorityQueue.Enqueue` without removing old entry | Stale low-priority copy processed unnecessarily; N+1 dequeue iterations | Use `queue.Remove(element, ...)` before re-enqueue to update priority |
+| `field` identifier in same class as C# 14 `field` keyword | Naming conflict — compiler resolves to different targets than expected | Rename conflicting symbol or use `@field` to explicitly reference the identifier |
+| Mixing classic extension methods and C# 14 extension blocks for same type | Resolution order surprises; explicit static invocation form differs | Fully migrate to `extension` blocks; mark old form `[Obsolete]` during transition |
+| `#:` directives in project-based `.cs` files | Compiler emits warning per directive per build — floods diagnostics | Strip `#:` and `#!` lines when promoting file-based scripts into project-based solutions |
+| `TypedResults.ServerSentEvents` without `EnumeratorCancellation` | Client disconnect doesn't cancel the generator; connection leaks | Add `[EnumeratorCancellation] CancellationToken ct` to `IAsyncEnumerable<T>` generator |
+
+---
+
+## .NET 10 / ASP.NET Core 10 New APIs
+
+### ASP.NET Core 10 — Built-In Validation (`AddValidation`)
+
+ASP.NET Core 10 adds source-generator-based endpoint validation via `builder.Services.AddValidation()`. Annotate your request model with `[ValidatableType]` and the framework automatically validates bound parameters before the handler runs, returning a `ValidationProblem` response on failure — no FluentValidation or manual `ModelState` checks required.
+
+```csharp
+// Program.cs — enable validation globally
+builder.Services.AddValidation();
+
+// Request model — mark with [ValidatableType] for source-gen validation
+using System.ComponentModel.DataAnnotations;
+
+[ValidatableType]
+public class CreateOrderRequest
+{
+    [Required(ErrorMessage = "Customer ID is required.")]
+    [Range(1, int.MaxValue, ErrorMessage = "Customer ID must be positive.")]
+    public int CustomerId { get; set; }
+
+    [Required]
+    [MinLength(1, ErrorMessage = "At least one item is required.")]
+    public List<OrderItem> Items { get; set; } = [];
+}
+
+// Minimal API endpoint — validation runs before handler
+app.MapPost("/orders", async (
+    CreateOrderRequest request,
+    IOrderService orders,
+    CancellationToken ct) =>
+{
+    // Execution only reaches here if validation passes
+    var order = await orders.CreateAsync(request, ct);
+    return TypedResults.Created($"/orders/{order.Id}", order);
+});
+
+// Disable validation for a specific endpoint
+app.MapPost("/admin/bulk-import", BulkImportHandler)
+   .DisableValidation();
+```
+
+**Why it matters:** previously you had to install FluentValidation or write `if (!ModelState.IsValid) return BadRequest(...)` manually in every controller/handler. The new source-gen approach produces the same zero-overhead-at-runtime behavior as compiled code, validates nested objects and collections (unlike basic DataAnnotations), and integrates with `IProblemDetailsService` for consistent error responses.
+
+### ASP.NET Core 10 — `TypedResults.ServerSentEvents` for Streaming
+
+ASP.NET Core 10 adds first-class Server-Sent Events (SSE) support in Minimal APIs via `TypedResults.ServerSentEvents`. Pass an `IAsyncEnumerable<T>` and the framework handles the SSE framing, flushing, and cancellation automatically.
+
+```csharp
+// Minimal API streaming endpoint — returns SSE stream
+app.MapGet("/metrics/realtime", (CancellationToken ct) =>
+{
+    return TypedResults.ServerSentEvents(
+        StreamMetricsAsync(ct),
+        eventType: "metrics");
+});
+
+// Generator: yields metrics as they arrive
+static async IAsyncEnumerable<MetricsSnapshot> StreamMetricsAsync(
+    [EnumeratorCancellation] CancellationToken ct)
+{
+    while (!ct.IsCancellationRequested)
+    {
+        yield return MetricsSnapshot.Capture();
+        await Task.Delay(TimeSpan.FromSeconds(2), ct);
+    }
+}
+
+// Complex object support — serialized as JSON in the SSE data field
+public record MetricsSnapshot(
+    double CpuPercent,
+    long MemoryMb,
+    DateTimeOffset CapturedAt)
+{
+    public static MetricsSnapshot Capture() => new(
+        Random.Shared.NextDouble() * 100,
+        Random.Shared.NextInt64(512, 8192),
+        DateTimeOffset.UtcNow);
+}
+```
+
+**Consumer side (browser/JavaScript):**
+```javascript
+const evtSource = new EventSource("/metrics/realtime");
+evtSource.addEventListener("metrics", (event) => {
+    const snapshot = JSON.parse(event.data);
+    updateDashboard(snapshot);
+});
+```
+
+**Why it matters:** previously SSE in ASP.NET Core required manual `Response.ContentType = "text/event-stream"` and manual `await response.Body.WriteAsync(...)` calls with the SSE framing written by hand. `TypedResults.ServerSentEvents` handles protocol framing, keeps connections alive, respects cancellation when the client disconnects, and integrates correctly with OpenAPI schema generation.
+
+### Blazor `[PersistentState]` — Declarative Prerendering State (.NET 10)
+
+Blazor Web Apps in .NET 10 simplify prerendering state persistence with the `[PersistentState]` attribute. Previously, passing state from the server prerender to the WebAssembly or Server-interactive runtime required verbose `PersistentComponentState` API calls with manual serialization. Now, mark a property with `[PersistentState]` and the framework handles persistence automatically.
+
+```razor
+@page "/movies"
+@inject IMovieService MovieService
+
+@if (MoviesList is null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <ul>
+        @foreach (var movie in MoviesList)
+        {
+            <li>@movie.Title</li>
+        }
+    </ul>
+}
+
+@code {
+    // Persisted across prerender → interactive boundary automatically
+    [PersistentState]
+    public List<Movie>? MoviesList { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // ??= means: only fetch if not already restored from prerender state
+        MoviesList ??= await MovieService.GetMoviesAsync();
+    }
+}
+```
+
+**Before .NET 10 (verbose PersistentComponentState approach):**
+```csharp
+[Inject] private PersistentComponentState ApplicationState { get; set; } = default!;
+private PersistingComponentStateSubscription _subscription;
+
+protected override async Task OnInitializedAsync()
+{
+    _subscription = ApplicationState.RegisterOnPersisting(PersistMoviesList);
+    if (!ApplicationState.TryTakeFromJson<List<Movie>>("moviesList", out var restored))
+    {
+        MoviesList = await MovieService.GetMoviesAsync();
+    }
+    else
+    {
+        MoviesList = restored;
+    }
+}
+
+private Task PersistMoviesList()
+{
+    ApplicationState.PersistAsJson("moviesList", MoviesList);
+    return Task.CompletedTask;
+}
+```
+
+**Why it matters:** the old pattern required 5+ boilerplate lines per persisted value. `[PersistentState]` collapses this to a single attribute, making prerendering viable for data-heavy pages without verbosity.
+
+### `WebSocketStream` — Simplified WebSocket I/O (.NET 10)
+
+.NET 10 adds `WebSocketStream` in `System.Net.WebSockets`. It wraps a `WebSocket` in a standard `Stream` interface, enabling WebSocket data to be processed with any `Stream`-consuming API (readers, writers, pipes, JSON deserializers) without custom framing code.
+
+```csharp
+using System.Net.WebSockets;
+using System.IO;
+using System.Text.Json;
+
+// Server-side: wrap WebSocket in a Stream for unified I/O
+app.MapGet("/ws", async (HttpContext context) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        return;
+    }
+
+    using var ws = await context.WebSockets.AcceptWebSocketAsync();
+
+    // Wrap in WebSocketStream — now works with any Stream-based API
+    await using var wsStream = new WebSocketStream(ws);
+
+    // Read: use StreamReader, PipeReader, or JsonSerializer directly
+    await foreach (var message in JsonSerializer.DeserializeAsyncEnumerable<ChatMessage>(
+        wsStream, cancellationToken: context.RequestAborted))
+    {
+        if (message is null) continue;
+        var response = ProcessMessage(message);
+
+        // Write back serialized response
+        await JsonSerializer.SerializeAsync(wsStream, response, context.RequestAborted);
+        await wsStream.FlushAsync(context.RequestAborted);
+    }
+});
+
+public record ChatMessage(string User, string Text, DateTimeOffset SentAt);
+
+// Client-side: same pattern
+using var client = new ClientWebSocket();
+await client.ConnectAsync(new Uri("ws://localhost:5000/ws"), CancellationToken.None);
+await using var stream = new WebSocketStream(client);
+// Now serialize/deserialize directly on stream — no byte framing needed
+```
+
+**Why it matters:** before `WebSocketStream`, reading from a WebSocket required `ReceiveAsync` with a manually sized byte buffer and a loop to handle partial frames. Integrating with JSON streaming or PipeReader required writing an adapter. `WebSocketStream` enables zero-glue integration with the entire `Stream` ecosystem.
 
 ---
 

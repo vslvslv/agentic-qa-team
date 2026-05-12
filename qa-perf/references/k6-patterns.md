@@ -1,5 +1,5 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/ -->
 
 > Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Re-run `/qa-refine k6` to refresh.
@@ -2081,6 +2081,49 @@ k6 cloud run --local-execution --no-cloud-secrets \
 k6 cloud run --local-execution k6/scripts/load.js
 ```
 
+### 34. gRPC bidirectional streaming gotcha — `stream.end()` must precede VU closure  [community]
+**What:** In bidirectional streaming tests, if the VU's `default()` function returns before `stream.end()` is called (e.g., due to an early `return` on a failed check), the gRPC stream is forcibly closed — the server sees an abrupt EOF, logs an error, and may increment its error counters. Under 50+ VUs this appears as a flood of unexpected server-side errors that are not reflected in k6's `http_req_failed` or `grpc_req_failed` metrics.
+**WHY:** k6 closes the TCP connection when the VU iteration ends. If `stream.end()` was never called, the server never received the client's graceful half-close, and interprets it as a connection reset — not a clean stream termination.
+**Fix:** Always `stream.end()` in a `try/finally` block so it fires even if the iteration exits early:
+```javascript
+export default function () {
+  client.connect(TARGET, { plaintext: true });
+  const stream = new grpc.Stream(client, "svc.Svc/BiDi");
+  try {
+    stream.write({ data: "hello" });
+    // ... more writes ...
+  } finally {
+    stream.end();   // always signal graceful close
+    client.close();
+  }
+}
+```
+
+### 35. `browser.newContext()` state NOT shared across VUs — each VU needs its own cookie injection  [community]
+**What:** Teams who inject auth cookies into `browser.newContext()` in `setup()` expect VUs to share the authenticated context. They cannot — `setup()` returns a plain JSON-serializable object; the `BrowserContext` object itself is not serializable and cannot be passed to VUs.
+**WHY:** k6's `setup()` return value is serialized to JSON and copied to each VU. Browser context state (cookies, localStorage, sessions) lives in Chromium's in-process memory — it cannot be serialized across VUs. Each VU runs its own Chromium subprocess.
+**Fix:** In `setup()`, return only the raw cookie data (strings, not BrowserContext objects). In each VU's `default()`, create a new context and call `ctx.addCookies([cookieData])` before navigating:
+```javascript
+export function setup() {
+  // Extract cookie values via HTTP — NOT via browser module
+  const res = http.post(`${BASE}/api/auth/login`, ...);
+  return { sessionCookie: res.cookies["session"]?.[0]?.value };
+}
+
+export default async function (data) {
+  const ctx = await browser.newContext();
+  try {
+    // Re-inject per VU — this is correct; there is no other way
+    await ctx.addCookies([{ name: "session", value: data.sessionCookie, domain: ... }]);
+    const page = await ctx.newPage();
+    await page.goto(APP_URL);
+    // ...
+  } finally {
+    await ctx.close();
+  }
+}
+```
+
 ## Lesser-Known Options
 
 These `options` fields are valid in any k6 script but rarely appear in tutorials. Use them to solve specific production problems.
@@ -2519,10 +2562,11 @@ export default function () {
 }
 ```
 
-> **[community]:** k6 gRPC streaming does NOT support bidirectional streaming in the standard
-> `k6/net/grpc` module — only server-side and client-side streaming. For bidirectional use
-> the `k6/experimental/grpc` module (which graduates to stable in future versions). Always
-> verify the streaming mode supported before planning a load test against a streaming endpoint.
+> **[community]:** k6 v0.49.0+ supports all four gRPC streaming modes in the standard
+> `k6/net/grpc` module: unary, server-side streaming, client-side streaming, and
+> **bidirectional streaming**. The `k6/experimental/grpc` module no longer exists — do not
+> reference it in new scripts. Always verify the streaming mode your proto defines
+> (`rpc Foo(stream Bar) returns (stream Baz)`) before planning the load test.
 
 ### gRPC Authentication — Metadata Bearer Token  [community]
 
@@ -2676,6 +2720,310 @@ export function teardown() {
 > to model concurrent requests from independent users; use `asyncInvoke` + `Promise.all`
 > to model a single user making multiple simultaneous service calls (e.g., a dashboard
 > loading data from 3 microservices in parallel).
+
+### gRPC Client-Side Streaming  [community]
+
+Client-side streaming — the client sends multiple messages, the server replies with
+a single response. Classic pattern: collect a series of GPS waypoints and receive
+a single `RouteSummary` back (the RouteGuide example from the gRPC docs).
+
+```javascript
+// k6/scripts/grpc-client-stream.js
+import grpc from "k6/net/grpc";
+import { check, sleep } from "k6";
+
+const client = new grpc.Client();
+client.load(["./proto"], "routing.proto");
+
+export const options = {
+  scenarios: {
+    client_stream: { executor: "constant-vus", vus: 5, duration: "1m" },
+  },
+  thresholds: {
+    "grpc_req_duration": ["p(95)<500"],
+    checks:               ["rate>0.99"],
+  },
+};
+
+const TARGET = __ENV.GRPC_TARGET || "localhost:50051";
+
+// Sample waypoints to stream
+const WAYPOINTS = [
+  { latitude: 406109563, longitude: -742186778 },
+  { latitude: 411733222, longitude: -744228360 },
+  { latitude: 744_105_598, longitude: -743755555 },
+];
+
+export default function () {
+  client.connect(TARGET, { plaintext: true });
+
+  // Client-side streaming: client sends N messages, server responds once
+  const stream = new grpc.Stream(client, "routing.RouteGuide/RecordRoute");
+
+  // Collect summary from the single server response
+  stream.on("data", (stats) => {
+    check(stats, {
+      "trip has points":  (s) => s.pointCount > 0,
+      "trip has distance": (s) => s.distance >= 0,
+    });
+  });
+
+  stream.on("error", (err) => {
+    console.error("client-stream error:", JSON.stringify(err));
+  });
+
+  // Send multiple messages sequentially
+  for (const wp of WAYPOINTS) {
+    stream.write({ location: wp });
+  }
+  stream.end();  // signal end-of-stream → triggers server's aggregated response
+
+  client.close();
+  sleep(0.5);
+}
+```
+
+> **[community]:** `stream.end()` is required for client-side and bidirectional streaming —
+> it signals to the server that no more messages are coming, allowing it to produce its
+> response. Omitting `stream.end()` causes the server to wait indefinitely and the VU to
+> hang until the scenario timeout.
+
+### gRPC Bidirectional Streaming  [community]
+
+Bidirectional streaming — both client and server send multiple messages concurrently.
+Supported in `k6/net/grpc` since k6 v0.49.0. Pattern: combine `stream.on('data', ...)` for
+incoming messages and `stream.write(...)` for outgoing, then `stream.end()` when done sending.
+
+```javascript
+// k6/scripts/grpc-bidi-stream.js
+import grpc from "k6/net/grpc";
+import { check, sleep } from "k6";
+import { Counter, Trend } from "k6/metrics";
+
+const CLIENT_NOTES  = new Counter("bidi_client_notes_sent");
+const SERVER_NOTES  = new Counter("bidi_server_notes_received");
+const BIDI_LATENCY  = new Trend("bidi_round_trip_ms", true);
+
+const client = new grpc.Client();
+client.load(["./proto"], "routing.proto");
+
+export const options = {
+  scenarios: {
+    bidi_stream: { executor: "constant-vus", vus: 5, duration: "1m" },
+  },
+  thresholds: {
+    "bidi_server_notes_received": ["count>0"],
+    checks:                        ["rate>0.99"],
+  },
+};
+
+const TARGET = __ENV.GRPC_TARGET || "localhost:50051";
+
+const ROUTE_POINTS = [
+  { latitude: 406109563, longitude: -742186778 },
+  { latitude: 411733222, longitude: -744228360 },
+];
+
+export default function () {
+  client.connect(TARGET, { plaintext: true });
+
+  // Bidirectional: client sends points, server replies with notes for each interesting location
+  const stream = new grpc.Stream(client, "routing.RouteGuide/RouteChat");
+
+  const sentAt = {};
+
+  stream.on("data", (note) => {
+    SERVER_NOTES.add(1);
+    check(note, { "note has message": (n) => typeof n.message === "string" });
+    // Round-trip latency if we tagged the outbound message
+    const key = `${note.location?.latitude},${note.location?.longitude}`;
+    if (sentAt[key]) BIDI_LATENCY.add(Date.now() - sentAt[key]);
+  });
+
+  stream.on("error", (err) => {
+    console.error("bidi-stream error:", JSON.stringify(err));
+  });
+
+  stream.on("end", () => {
+    check(SERVER_NOTES.name, { "received at least one note": () => true });
+  });
+
+  // Client and server are now both streaming concurrently
+  for (const point of ROUTE_POINTS) {
+    const key = `${point.latitude},${point.longitude}`;
+    sentAt[key] = Date.now();
+    stream.write({ location: point, message: `Passing through (${point.latitude})` });
+    CLIENT_NOTES.add(1);
+  }
+  stream.end();  // no more messages from client; server will close its side when done
+
+  client.close();
+  sleep(0.5);
+}
+```
+
+> **[community]:** In bidirectional streams, `stream.on('data')` and `stream.write()` run
+> concurrently on the same event loop — the server may start sending responses before the
+> client has finished writing. Do NOT assume responses arrive in the same order as writes;
+> use a correlation ID in the message payload (as `key` above) to match requests and
+> responses for latency measurement.
+
+### gRPC Reflection — Dynamic Proto Loading  [community]
+
+gRPC server reflection (RFC in grpc-proto) lets k6 discover service definitions at runtime
+without `.proto` files. Pass `reflect: true` to `client.connect()`. The server must have
+the reflection service enabled (standard in `grpc-go`, `grpc-java`, and most server frameworks).
+
+```javascript
+// k6/scripts/grpc-reflection.js — no .proto files needed
+import grpc from "k6/net/grpc";
+import { check, sleep } from "k6";
+
+const client = new grpc.Client();
+// NOTE: No client.load() call needed when using reflection
+
+export const options = {
+  scenarios: {
+    reflected_load: { executor: "constant-vus", vus: 5, duration: "1m" },
+  },
+  thresholds: {
+    "grpc_req_duration": ["p(95)<300"],
+    checks:               ["rate>0.99"],
+  },
+};
+
+const TARGET = __ENV.GRPC_TARGET || "localhost:50051";
+
+export default function () {
+  // reflect: true → k6 fetches service definitions from the server at connect time
+  // plaintext: true → skip TLS (dev/staging only)
+  client.connect(TARGET, {
+    reflect: true,
+    plaintext: true,
+  });
+
+  const response = client.invoke(
+    "grpc.examples.echo.Echo/UnaryEcho",
+    { message: `hello-${__ITER}` }
+  );
+
+  check(response, {
+    "status OK":    (r) => r && r.status === grpc.StatusOK,
+    "echo matches": (r) => r.message?.message?.startsWith("hello-"),
+  });
+
+  client.close();
+  sleep(0.2);
+}
+```
+
+> **[community]:** gRPC reflection requires the server to expose the reflection service —
+> this is NOT always enabled in production services for security reasons (reflection leaks
+> the full API surface). Always confirm reflection is available before writing scripts that
+> depend on it. For production load tests, keep `.proto` files in version control so the
+> test script can run without network access to the reflection endpoint during `client.load()`.
+
+### gRPC Health Check Protocol  [community]
+
+The gRPC Health Checking Protocol (`grpc.health.v1.Health/Check`) is a standard way to
+probe service readiness before starting a load test. `Client.healthCheck([serviceName])`
+implements this protocol — no `.proto` file needed for health checks (it is built in).
+
+```javascript
+// k6/scripts/grpc-health-preflight.js
+// Use gRPC health check as a pre-flight gate before the actual load test
+import grpc from "k6/net/grpc";
+import { check } from "k6";
+import exec from "k6/execution";
+
+const client = new grpc.Client();
+client.load(["./proto"], "items.proto");
+
+export const options = {
+  scenarios: {
+    load: {
+      executor: "ramping-vus",
+      stages: [
+        { duration: "30s", target: 20 },
+        { duration: "2m",  target: 20 },
+        { duration: "15s", target: 0  },
+      ],
+    },
+  },
+  thresholds: {
+    "grpc_req_duration": ["p(95)<200"],
+    checks:               ["rate>0.99"],
+  },
+};
+
+const TARGET = __ENV.GRPC_TARGET || "localhost:50051";
+
+export function setup() {
+  // Pre-flight: verify the service is healthy before launching VUs
+  client.connect(TARGET, { plaintext: true });
+
+  // healthCheck() with service name → checks that specific service's health
+  // healthCheck() with no arg      → checks overall server health
+  const overall  = client.healthCheck();
+  const specific = client.healthCheck("items.ItemService");
+
+  check(overall,  { "server healthy":        (h) => h.status === grpc.HealthCheckServing });
+  check(specific, { "ItemService healthy":   (h) => h.status === grpc.HealthCheckServing });
+
+  if (overall.status !== grpc.HealthCheckServing) {
+    // Abort immediately — no point running load against a sick server
+    exec.test.abort("gRPC server not healthy at test start: " + overall.status);
+  }
+
+  client.close();
+  return {};
+}
+
+export default function () {
+  client.connect(TARGET, { plaintext: true });
+
+  const res = client.invoke("items.ItemService/ListItems", { page: 1, pageSize: 10 });
+  check(res, { "list ok": (r) => r.status === grpc.StatusOK });
+
+  client.close();
+}
+```
+
+**Health status values:**
+
+| Constant | Meaning |
+|----------|---------|
+| `grpc.HealthCheckServing` | Service is healthy and accepting requests |
+| `grpc.HealthCheckNotServing` | Service is degraded or refusing requests |
+| `grpc.HealthCheckUnknown` | Service health is indeterminate |
+| `grpc.HealthCheckServiceUnknown` | The named service does not exist |
+
+> **[community]:** `Client.healthCheck()` does NOT require `client.load()` — the health
+> check proto is built into k6. You CAN call it on a client that was connected with
+> `reflect: true` (no `.proto` files) as long as the server has the health service registered.
+> A common CI pattern: use `healthCheck()` in `setup()` as an early abort gate — if the
+> health check fails, abort before allocating hundreds of VUs for a doomed test run.
+
+### gRPC Message Size Limits  [community]
+
+By default, gRPC sets a 4 MB receive size limit. For services that return large payloads
+(bulk exports, binary data, large protos), configure `maxReceiveSize` on `client.connect()`.
+
+```javascript
+client.connect(TARGET, {
+  plaintext: true,
+  // Override gRPC default 4 MB receive limit — needed for large payload services
+  maxReceiveSize: 32 * 1024 * 1024,  // 32 MB
+  // Override send limit as well for large request payloads
+  maxSendSize: 8 * 1024 * 1024,      // 8 MB
+});
+```
+
+> **[community]:** The default gRPC `maxReceiveSize` (4 MB) is a frequent source of
+> confusing errors: k6 reports `grpc_req_failed` or a stream error, but the root cause
+> is a message that exceeds the size cap — not a server error. Check `error_code` and
+> the error message for "grpc: received message larger than max" when debugging unexpected
+> gRPC failures against bulk-data endpoints.
 
 ---
 
@@ -3724,6 +4072,124 @@ K6_BROWSER_EXECUTABLE_PATH="/usr/bin/google-chrome-stable" \
 ```
 
 > **[community]:** In Docker containers, always add `K6_BROWSER_ARGS="--no-sandbox --disable-dev-shm-usage"`. The `--no-sandbox` flag is required because Chromium's sandbox needs Linux namespaces which are often disabled in Docker. The `--disable-dev-shm-usage` flag prevents Chromium from crashing when `/dev/shm` is too small — an issue in containers with default 64 MB shared memory.
+
+### BrowserContext — Auth State Sharing Across Pages  [community]
+
+k6's browser module has no `storageState` equivalent (unlike Playwright's `storageState` file).
+Instead, use `browser.newContext()` with pre-injected cookies from a single login flow —
+the context shares cookies across all pages created within it.
+
+**Pattern:** login once in `setup()` via HTTP (fast), extract the session cookie, inject it
+into a `BrowserContext` via `addCookies()` — then every page created from that context is
+already authenticated. This avoids repeated Chromium login flows per VU iteration.
+
+```javascript
+// k6/scripts/browser-reuse-auth.js
+import http from "k6/http";
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    authed_ui: {
+      executor: "shared-iterations",
+      vus: 2,
+      iterations: 6,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+  thresholds: {
+    "browser_web_vital_lcp": ["p(75)<3000"],
+    checks:                   ["rate>0.99"],
+  },
+};
+
+const BASE    = __ENV.API_URL  || "http://localhost:3001";
+const APP_URL = __ENV.APP_URL  || "http://localhost:3001";
+
+// ---- setup: fast HTTP login, return the session cookie ----
+export function setup() {
+  const res = http.post(
+    `${BASE}/api/auth/login`,
+    JSON.stringify({
+      email:    __ENV.E2E_USER_EMAIL    || "test@example.com",
+      password: __ENV.E2E_USER_PASSWORD || "password123",
+    }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+  check(res, { "login ok": (r) => r.status === 200 });
+
+  // Extract the session cookie set by the server on the login response
+  const cookies = res.cookies;
+  // Cookies are keyed by name; grab the session cookie value
+  const sessionCookie = cookies["session"]?.[0] || cookies["sid"]?.[0];
+
+  return {
+    cookie: {
+      name:    sessionCookie ? "session" : "connect.sid",
+      value:   sessionCookie?.value || res.json("token") || "",
+      domain:  new URL(APP_URL).hostname,
+      path:    "/",
+      secure:  APP_URL.startsWith("https"),
+      sameSite: "Lax",
+    },
+  };
+}
+
+export default async function (data) {
+  // Create a fresh context per VU iteration, then pre-inject the auth cookie
+  const ctx  = await browser.newContext();
+  const page = await ctx.newPage();
+
+  try {
+    // Inject auth cookie before navigating — page is already authenticated
+    await ctx.addCookies([data.cookie]);
+
+    await page.goto(`${APP_URL}/dashboard`);
+    await page.waitForLoadState("networkidle");
+
+    // Should land on the dashboard without redirecting to login
+    check(page.url(), { "no redirect to login": (u) => !u.includes("/login") });
+
+    const heading = page.getByRole("heading", { level: 1 });
+    await heading.waitFor({ state: "visible" });
+    check(await heading.textContent(), { "dashboard loaded": (t) => t?.length > 0 });
+
+    await page.screenshot({ path: `results/dashboard-${__ITER}.png` });
+  } finally {
+    await page.close();
+    await ctx.close();
+  }
+}
+```
+
+**`BrowserContext` API quick reference:**
+
+| Method | Purpose |
+|--------|---------|
+| `browser.newContext([options])` | Create isolated context (separate cookies/cache/storage) |
+| `browser.context()` | Return the current default context |
+| `ctx.addCookies([...])` | Pre-inject cookies before any page navigation |
+| `ctx.clearCookies()` | Wipe all cookies in the context |
+| `ctx.cookies([urls])` | Read current cookies (for debugging or extraction) |
+| `ctx.grantPermissions(['geolocation'])` | Grant browser permissions |
+| `ctx.setGeolocation({ lat, lng })` | Simulate a geographic location |
+| `ctx.setOffline(true)` | Simulate network offline |
+| `ctx.addInitScript(fn)` | Inject JS that runs on every page load in this context |
+| `ctx.setDefaultTimeout(ms)` | Override timeout for all locators in this context |
+| `ctx.newPage()` | Open a new page within this context |
+| `ctx.pages()` | List all open pages |
+| `ctx.close()` | Close context and all its pages |
+
+> **[community]:** k6 has no `storageState` file mechanism (Playwright's `context.storageState()` +
+> `browser.newContext({ storageState: '...' })` flow). The alternative: use HTTP to obtain the session
+> cookie in `setup()` and inject it via `ctx.addCookies()`. This is faster than a full browser login
+> flow per VU and avoids race conditions when multiple VUs try to log in simultaneously at test start.
+
+> **[community]:** Each `browser.newContext()` creates an isolated browser context with separate
+> cookies, localStorage, and sessionStorage — analogous to opening an Incognito window. If you want
+> all pages in the test to share auth state (not per-iteration isolation), open the context ONCE
+> in a module-level init or per-VU init and reuse it; do NOT create a new context per iteration.
 
 ---
 
@@ -4856,6 +5322,11 @@ k6/
     mfa-load.js           # TOTP MFA authentication load test
     browser-advanced.js   # browser module with iframe, navigation, request interception
     streams-csv.js        # line-by-line CSV processing via k6/experimental/streams
+    grpc-client-stream.js # gRPC client-side streaming (write N, receive 1)
+    grpc-bidi-stream.js   # gRPC bidirectional streaming (write N, receive N)
+    grpc-reflection.js    # gRPC without .proto files — uses server reflection
+    grpc-health-preflight.js # gRPC health check in setup() as abort gate
+    browser-reuse-auth.js # BrowserContext auth cookie injection pattern
   lib/
     auth.js               # shared setup() / getToken() helpers + token manager
     thresholds.js         # reusable threshold presets per environment

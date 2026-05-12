@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -1042,10 +1042,12 @@ describe('DataTable accessibility', () => {
 
 > **Version pinning note** (updated 2026-05-12): **jest-axe v10.0.0** (released March 2025) upgrades the bundled axe-core to 4.10.2; v9.0.0 used axe-core 4.9.1. To stay current with axe-core 4.11.x rules (`aria-dialog-name`, `aria-tooltip-name`, `scrollable-region-focusable`, `target-size`, improved `color-contrast-enhanced`), set `"jest-axe": "^10.0.0"` and override axe-core to the latest patch: `"overrides": { "axe-core": "4.11.4" }` in `package.json`. When upgrading axe-core across jest-axe and @axe-core/playwright, update both packages simultaneously to the same underlying axe-core transitive version — version skew between unit and E2E layers produces false discrepancies.
 >
-> **axe-core 4.11.2–4.11.4 bug fixes** (Q1–Q2 2026, critical for TypeScript projects):
-> - **4.11.4**: `aria-labelledby` now correctly excludes natively hidden elements from the accessible name computation. Previously, an element with `aria-labelledby="hidden-el"` where `hidden-el` was `display: none` would still compute a non-empty name — causing axe to silently pass components with inaccessible labels.
-> - **4.11.3**: `<br>` and `<wbr>` elements are now restricted to `aria-hidden` semantics only. `position: fixed` offscreen elements are correctly excluded from scan results — teams with fixed banners or cookie notices positioned off-screen no longer see false violation noise.
-> - **4.11.2**: Multiple `aria-errormessage` IDs (space-separated, as allowed by ARIA 1.2) are now handled correctly. Duplicate nodes from `getOwnedVirtual` are deduplicated, preventing false double-reporting on owned listbox options.
+> **axe-core 4.11.0–4.11.4 key changes for TypeScript projects:**
+> - **4.11.4** (April 2026): `aria-labelledby` now correctly excludes natively hidden elements from accessible name computation — fix for components labelled by `display: none` elements that previously passed silently.
+> - **4.11.3** (April 2026): `<br>` and `<wbr>` restricted to `aria-hidden` semantics; `position: fixed` offscreen elements excluded from scan results.
+> - **4.11.2** (March 2026): Multiple `aria-errormessage` IDs (ARIA 1.2 space-separated) handled correctly; duplicate node deduplication in `getOwnedVirtual`.
+> - **4.11.1** (January 2026): **Shadow roots now supported in `axe.run` contexts** — open shadow DOM traversal enabled; oklch/oklab CSS Color Level 4 contrast calculation matches browser behavior.
+> - **4.11.0** (October 2025): **RGAA tags added** (French accessibility standard filtering); TypeScript `nodeSerializer` typings expanded; Portuguese and Russian locales added.
 
 ### Accessible Carousel / Auto-Rotating Content  [community]
 
@@ -2227,7 +2229,7 @@ axe-core's automated rules detect approximately **57% of WCAG 2.1 issues** (Dequ
 
 32. **[community] navable MCP / agent-driven a11y fixes can introduce new violations when patching structural issues**: An AI agent implementing a fix plan may add `aria-label` to resolve a `button-name` violation and inadvertently introduce a WCAG 2.5.3 Label in Name mismatch (the aria-label does not contain the visible text). WHY: each fix is isolated; the agent does not have global context about all WCAG interactions. Always run a full re-scan after agent-applied fixes, not just verification of the patched rules. The navable MCP `run_accessibility_scan` verify step covers this, but teams using custom agent scripts often skip the full rescan.
 
-33. **[community] axe-core 4.11.4 (April 2026) is the current version — teams on 4.8/4.9 miss 12+ rules**: Teams that pinned `axe-core: "4.8"` are missing rules for `aria-dialog-name`, `aria-tooltip-name`, `scrollable-region-focusable`, `target-size` (WCAG 2.5.8), and `color-contrast-enhanced`. axe-core security support covers minor versions up to 18 months old — versions before 4.8 are outside the support window. WHY: axe-core 4.11.x is the version that aligns with WCAG 2.2 AA requirements mandated by the EU EAA (June 2025 deadline). Running an older version creates a false sense of compliance for EU-market products. Best practice: pin a specific minor version (e.g., `4.11.4`) and plan quarterly upgrades, treating each minor version as a lint-rule change review.
+33. **[community] axe-core 4.11.4 (April 2026) is the current version — teams on 4.8/4.9 miss 12+ rules**: Teams that pinned `axe-core: "4.8"` are missing rules for `aria-dialog-name`, `aria-tooltip-name`, `scrollable-region-focusable`, `target-size` (WCAG 2.5.8), and `color-contrast-enhanced`. Additionally, 4.11.0 added RGAA tags, 4.11.1 added open shadow DOM traversal and oklch/oklab color support — all invisible to older pinned versions. axe-core security support covers minor versions up to 18 months old — versions before 4.8 are outside the support window. WHY: axe-core 4.11.x is the version that aligns with WCAG 2.2 AA requirements mandated by the EU EAA (June 2025 deadline). Running an older version creates a false sense of compliance for EU-market products. Best practice: pin a specific minor version (e.g., `4.11.4`) and plan quarterly upgrades, treating each minor version as a lint-rule change review.
 
 34. **[community] Carousel `aria-live` regions that are injected after page load are missed by some screen readers**: If the `aria-live` region for carousel slide announcements is rendered conditionally (e.g., only after auto-play starts), NVDA and JAWS may not observe changes to it. WHY: screen readers register `aria-live` regions on page load. Regions created or inserted into the DOM after load are not reliably observed by all AT. Always render the live region in the initial HTML/DOM with empty content, then populate it — never create the region dynamically.
 
@@ -2534,7 +2536,7 @@ export function generateEN301549Report(
 
 ### WCAG 3.0 (W3C Accessibility Guidelines 3.0) — Forward-Looking Awareness
 
-WCAG 3.0 (previously known as "Silver") is in development by the W3C AGWG. As of 2025–2026, it is a working draft, not a finalized standard. QA teams should be aware of its direction but should NOT build compliance programs around it yet.
+WCAG 3.0 (previously known as "Silver") is in development by the W3C AGWG. The **March 3, 2026 Working Draft** is the most recent public version as of May 2026. It is still a working draft, not a finalized standard. The W3C AGWG has explicitly stated: *"While this draft has moved closer towards completion, it still has several years of work."* QA teams should be aware of its direction but should NOT build compliance programs around it yet.
 
 **Key differences from WCAG 2.x:**
 
@@ -2544,7 +2546,7 @@ WCAG 3.0 (previously known as "Silver") is in development by the W3C AGWG. As of
 | Scope | Web content only | Any technology delivering digital experiences |
 | Cognitive accessibility | Limited (AAA level) | First-class citizen alongside visual and motor |
 | Testing | Rule-based (axe-core) | Mixed: automated + functional outcomes + user research |
-| Status | Published standard (2.1: 2018, 2.2: 2023) | Working draft — expected finalized 2027+ |
+| Status | Published standard (2.1: 2018, 2.2: 2023) | Working draft — March 2026 update released; expected finalized 2028+ |
 
 **Why QA teams should monitor but not pivot to WCAG 3.0 yet:**
 1. No legal requirement references WCAG 3.0 as of 2026 — all current laws reference WCAG 2.0 or 2.1/2.2
@@ -4144,6 +4146,151 @@ test.describe('WCAG 2.2 AA compliance (EU EAA)', () => {
 
 ---
 
+### axe-core 4.11.0–4.11.1: RGAA Tags, Shadow DOM Support, and Color Space Enhancements
+
+**axe-core 4.11.0 (October 2025)** added three features relevant to TypeScript projects:
+
+1. **RGAA tags**: French accessibility standard (Référentiel Général d'Amélioration de l'Accessibilité) is now mapped to axe-core rules. Teams shipping products to French public-sector markets can filter axe results by RGAA compliance alongside WCAG tags.
+2. **TypeScript nodeSerializer typings**: Expanded `nodeSerializer` type definitions — teams using custom serializers for violation reporting now have better TypeScript inference.
+3. **International locales expanded**: Portuguese and Russian locale files added for localized violation reports.
+
+**RGAA tag configuration (French market compliance):**
+
+```typescript
+// File: e2e/fixtures/axe-rgaa-fixture.ts
+// axe-core 4.11.0+: RGAA tags enable filtering by French accessibility standard
+// alongside standard WCAG tags. Use when shipping to French public-sector markets.
+import { test as base } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+export const test = base.extend<{ checkA11yRGAA: (selector?: string) => Promise<void> }>({
+  checkA11yRGAA: async ({ page }, use) => {
+    const checkA11yRGAA = async (selector?: string) => {
+      // 'rgaa' tag runs all rules that map to RGAA criteria
+      // Combine with 'wcag2a', 'wcag2aa', 'wcag21aa' for full coverage
+      let builder = new AxeBuilder({ page })
+        .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'rgaa']);
+
+      if (selector) builder = builder.include(selector);
+
+      const results = await builder.analyze();
+
+      // Separate WCAG violations from RGAA-only violations for targeted reporting
+      const rgaaOnlyViolations = results.violations.filter(
+        (v) => v.tags.includes('rgaa') && !v.tags.some((t) => t.startsWith('wcag'))
+      );
+      const wcagViolations = results.violations.filter(
+        (v) => v.tags.some((t) => t.startsWith('wcag'))
+      );
+
+      if (rgaaOnlyViolations.length > 0) {
+        console.warn(
+          `[RGAA] ${rgaaOnlyViolations.length} RGAA-specific violation(s) (not covered by WCAG):\n` +
+          rgaaOnlyViolations.map((v) => `  - ${v.id}: ${v.description}`).join('\n')
+        );
+      }
+
+      if (wcagViolations.length > 0) {
+        const report = wcagViolations
+          .map((v) => `[${v.impact?.toUpperCase()}] ${v.id}: ${v.description}`)
+          .join('\n');
+        throw new Error(`WCAG violations found:\n${report}`);
+      }
+    };
+    await use(checkA11yRGAA);
+  },
+});
+
+export { expect } from '@playwright/test';
+```
+
+**axe-core 4.11.1 (January 2026)** introduced two important improvements:
+
+1. **Shadow roots in `axe.run` contexts**: `axe.run` can now accept shadow roots as context parameters, enabling scanning of open-shadow-DOM web components from within a test script. Previously, axe-core could only scan the document root.
+2. **oklch/oklab color support**: CSS Color Level 4 color spaces (`oklch()`, `oklab()`) are now handled in color contrast calculations, matching browser behavior. Teams using design tokens in `oklch()` format for color palettes no longer get false incomplete results on contrast checks.
+
+**Shadow DOM scanning pattern (axe-core 4.11.1+):**
+
+```typescript
+// File: e2e/accessibility/shadow-dom.spec.ts
+// axe-core 4.11.1+: open shadow roots can be scanned directly.
+// Note: CLOSED shadow DOM remains invisible to axe-core — see anti-pattern below.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Web component shadow DOM accessibility', () => {
+  test('open-shadow-DOM component passes axe scan', async ({ page }) => {
+    await page.goto('/components/my-button');
+    await page.waitForLoadState('networkidle');
+
+    // For open shadow DOM, @axe-core/playwright traverses shadow roots automatically
+    // as of axe-core 4.11.1+ — no special configuration needed for open shadow DOM
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+
+    // Violations inside open shadow roots are now included in results
+    expect(results.violations).toEqual([]);
+  });
+
+  test('scan a specific shadow host element', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Use include() with the shadow host selector — axe traverses into shadow DOM
+    const results = await new AxeBuilder({ page })
+      .include('my-button-component')  // custom element / shadow host
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+
+    if (results.violations.length > 0) {
+      console.table(results.violations.map((v) => ({
+        id: v.id,
+        impact: v.impact,
+        description: v.description,
+      })));
+    }
+    expect(results.violations).toEqual([]);
+  });
+});
+```
+
+**`AxeBuilder.setLegacyMode()` — iframe scanning fallback:**
+
+```typescript
+// File: e2e/fixtures/axe-legacy-fixture.ts
+// setLegacyMode(true) disables axe-core's default behavior of opening a blank page
+// to isolate frame scanning. Use ONLY when the test environment blocks blank page creation
+// (e.g., strict CSP, sandboxed iframes, some CI environments).
+// Legacy mode is slower and may produce less accurate iframe results.
+import { test as base } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+export const test = base.extend<{ checkA11yLegacy: () => Promise<void> }>({
+  checkA11yLegacy: async ({ page }, use) => {
+    const checkA11yLegacy = async () => {
+      const results = await new AxeBuilder({ page })
+        .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+        // setLegacyMode(true): use when blank-page frame isolation is blocked by CSP
+        // or when scanning pages that contain sandboxed iframes
+        // DO NOT use by default — legacy mode has reduced accuracy for iframe scanning
+        .setLegacyMode(true)
+        .analyze();
+
+      expect(results.violations).toEqual([]);
+    };
+    await use(checkA11yLegacy);
+  },
+});
+```
+
+**When to use `setLegacyMode`:**
+- Test environment enforces a strict CSP blocking `about:blank` navigation (distinct from the CSP blocking axe injection — see community gotcha #28)
+- Pages contain cross-origin iframes in a sandboxed iframe context that prevents the default frame isolation approach
+- **Do not** use by default — the default frame testing approach is more accurate for page-level scans
+
+---
+
 ### Mobile and Touch Accessibility Testing  [community]
 
 Mobile accessibility testing requires validating against TalkBack (Android) and VoiceOver (iOS), which have fundamentally different interaction models from desktop screen readers. Playwright can emulate mobile viewports and touch events, but AT testing on mobile requires physical devices or simulators.
@@ -5485,6 +5632,12 @@ TypeScript 6.0 (released in the TS 6.x series, see lang-refine TypeScript patter
 
 46. **[community] TypeScript 6.0's new `"types": []` default breaks jest-axe type inference in existing projects**: TS 6.0 changed the `"types"` tsconfig default from `undefined` (include all `@types/*` in node_modules) to `[]` (include nothing implicitly). Projects that relied on implicit `@types/jest-axe` type inclusion will see TypeScript errors — `toHaveNoViolations` becomes `unknown`, `configureAxe` loses its type signature, and `axe()` return type becomes `any`. Fix: add `"jest-axe"` and `"@testing-library/jest-dom"` to the `"types"` array in `tsconfig.json` (or `tsconfig.test.json`). This is a one-line fix but breaks CI silently if TypeScript `noEmit` checks are not run before deployment.
 
+47. **[community] axe-core 4.11.1 shadow DOM support changes expected violation counts for web component test suites**: axe-core 4.11.1 added the ability to traverse open shadow DOM roots. Teams upgrading from 4.10.x to 4.11.1+ may see new violations appear inside web component shadow trees — these are real violations that were previously invisible to axe. WHY: before 4.11.1, open shadow DOM content was silently excluded from `axe.run` traversal. After upgrading, violations in `<my-button>`, `<sl-input>`, or other web components using open shadow DOM will surface. Run a full scan audit after upgrading and treat new violations as newly detected defects, not regressions.
+
+48. **[community] axe-core 4.11.1 oklch/oklab color handling changes contrast pass/fail for modern CSS design tokens**: Teams using CSS Color Level 4 `oklch()` or `oklab()` colors (increasingly common in design token systems) may see contrast rule status change when upgrading from 4.10.x to 4.11.1+. Before 4.11.1, these color values could produce `incomplete` (uncertain) contrast results; 4.11.1 matches browser behavior for oklch/oklab gamut calculations and may produce definitive pass or fail. WHY: color token libraries like Radix Colors, Tailwind's oklch palette, and custom design systems built on CSS Color Level 4 use oklch for more perceptually uniform palettes — test suites need to account for the more accurate reporting.
+
+49. **[community] RGAA compliance adds requirements beyond WCAG for French public-sector procurement**: axe-core 4.11.0's `rgaa` tag maps to the French RGAA standard. RGAA has ~110 criteria and mirrors WCAG 2.1 AA for most web content, but adds requirements for JavaScript interaction patterns and specific form field behaviors not explicitly in WCAG. Teams using `withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])` alone are not meeting RGAA even if all WCAG rules pass. Add `'rgaa'` to the tag list for French public-sector procurement, and expect RGAA-only violations to surface for some native browser control overrides.
+
 ---
 
 ## Key Resources
@@ -5497,7 +5650,7 @@ TypeScript 6.0 (released in the TS 6.x series, see lang-refine TypeScript patter
 | EN 301 549 v3.3.2 | Standard | https://www.etsi.org/deliver/etsi_en/301500_302000/301549/03.03.02_60/ | Technical standard for EAA; maps WCAG 2.2 AA to EU law |
 | ARIA Authoring Practices Guide | Official guide | https://www.w3.org/WAI/ARIA/apg/ | Patterns for custom widgets — roving tabindex, combobox, dialog, etc. |
 | ARIA Accessible Name Computation | Spec | https://www.w3.org/TR/accname-1.2/ | Authoritative source for name/label precedence rules |
-| axe-core | Open source | https://github.com/dequelabs/axe-core | Rule documentation and changelog (v4.11.4 current); custom rule API |
+| axe-core | Open source | https://github.com/dequelabs/axe-core | Rule documentation and changelog (v4.11.4 current); RGAA tags (4.11.0+); shadow DOM support (4.11.1+); custom rule API |
 | axe-core Rule Descriptions | Reference | https://github.com/dequelabs/axe-core/blob/develop/doc/rule-descriptions.md | Full list of all axe rules with WCAG mapping |
 | jest-axe | Open source | https://github.com/nickcolley/jest-axe | Jest integration for axe; v10.0.0 (March 2025) uses axe-core 4.10.2; requires `jest-environment-jsdom`; use `@vitest-environment jsdom` for Vitest |
 | @axe-core/playwright | Open source | https://github.com/dequelabs/axe-core-npm | Playwright integration |
@@ -5533,3 +5686,5 @@ TypeScript 6.0 (released in the TS 6.x series, see lang-refine TypeScript patter
 | WCAG 1.2.4 Understanding Live Captions | Official | https://www.w3.org/WAI/WCAG21/Understanding/captions-live.html | AA criterion for live audio captions — applies to webinars and live streams |
 | WCAG 2.5.7 Understanding Dragging Movements | Official | https://www.w3.org/WAI/WCAG22/Understanding/dragging-movements.html | WCAG 2.2 AA — all drag operations must have a single-pointer alternative |
 | aria-required MDN | Reference | https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Attributes/aria-required | When to use aria-required vs HTML required attribute |
+| RGAA (French Accessibility Standard) | Official | https://accessibilite.numerique.gouv.fr/methode/criteres-et-tests/ | French government accessibility standard; axe-core 4.11.0+ supports RGAA tags for rule filtering |
+| WCAG 3.0 Working Draft (March 2026) | Draft spec | https://www.w3.org/TR/wcag-3.0/ | Most current draft (March 3, 2026); Bronze/Silver/Gold outcome-based model; still "several years" from finalization |

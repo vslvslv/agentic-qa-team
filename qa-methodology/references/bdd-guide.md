@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 23 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 24 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 24 additions: Cucumber.js v12.7-v12.8.3 — env var propagation to parallel child processes (v12.7.0), custom externalizing option (v12.8.0), thrown-string error fix (v12.8.3 — latest as of 2026-05-09); playwright-bdd v8.0–v8.5.0 — missingSteps option, matchKeywords, BeforeScenario/AfterScenario aliases, tags-from-path, min Playwright 1.41, single-quote default, step decorators, "Fix with AI" (v8.1+); Gherkin DocString content-type annotation caveats; Additional Resources section completion -->
 <!-- Iter 23 additions: Cucumber.js v12 (current version as of 2026) — TypeScript config files, built-in sharding v12.2, plugin architecture v12.5, formatter redesign, includeAttachments option, Node 24/25; Gherkin Rule keyword practical usage with per-rule Background and TypeScript step binding example; v12 migration pitfalls [community] -->
 <!-- Iter 22 additions: two new official anti-patterns from cucumber.io/docs/guides/anti-patterns/ (Feature-Coupled Step Definitions, Conjunction Steps); discovery-first BDD model from cucumber.io/docs/bdd/ — both sources added to learning-sources catalog 2026-05-12 -->
 
@@ -6098,8 +6099,332 @@ file is active.
 | v9.x | 14, 16, 18 | CommonJS default; `ts-node/register` for TypeScript |
 | v10.x | 16, 18, 20 | ESM migration; `import:` replaces `require:` |
 | v11.x | 18, 20, 22 | Typed World generics; `--retry` flag; native `--import` |
-| v12.x | 20, 22, 24, 25 | TypeScript config; built-in `--shard`; plugin API; named hooks |
+| v12.0–v12.6 | 20, 22, 24, 25 | TypeScript config; built-in `--shard`; plugin API; named hooks |
+| v12.7+ | 20, 22, 24, 25 | + env var propagation to parallel workers (critical fix) |
+| v12.8+ | 20, 22, 24, 25 | + custom externalising; thrown-string fix |
 
 ---
 
 ## Additional Resources (Iterations 11–20 Additions)
+
+**New framework references (2024–2026):**
+- [Gherkin `Rule` keyword reference](https://cucumber.io/docs/gherkin/reference/#rule) — `Rule` grouping for scenario organization by business rule with per-rule `Background`
+- [Cucumber.js v12 CHANGELOG](https://github.com/cucumber/cucumber-js/blob/main/CHANGELOG.md) — TypeScript config files, built-in `--shard`, plugin architecture, Node 24/25 support
+- [Screenplay Pattern — Serenity/JS](https://serenity-js.org/handbook/design/screenplay-pattern/) — TypeScript-native Screenplay Pattern implementation
+- [WireMock Node client](https://github.com/Sairyss/wiremock-node-client) — HTTP service mocking for service-level BDD
+- [Detox — React Native E2E](https://github.com/wix/Detox) — iOS/Android automation for mobile BDD
+- [Allure Framework — TestOps](https://allurereport.org/) — report publishing, trend charts, CI integration
+- [openapi-backend](https://github.com/anttiviljami/openapi-backend) — OpenAPI request/response validation for BDD
+- [ajv](https://ajv.js.org/) — JSON schema validation for OpenAPI contract assertions
+- [Redocly CLI](https://redocly.com/docs/cli/) — OpenAPI spec linting and bundling in CI
+- [playwright-bdd advanced config](https://vitalets.github.io/playwright-bdd/) — Playwright-native BDD runner documentation
+- [Unleash feature flags — Node SDK](https://docs.getunleash.io/reference/sdks/node) — feature flag isolation for parallel BDD scenarios
+- [testcontainers/node](https://github.com/testcontainers/testcontainers-node) — real database and message broker instances for BDD
+- [multiple-cucumber-html-reporter v3](https://github.com/WasiqB/multiple-cucumber-html-reporter) — merged report generation for sharded CI
+- [BDD Books — Gaspar Nagy & Seb Rose](https://bddbooks.com/) — practitioner guide for BDD at scale (includes microservices, migrations)
+
+**Additional community resources:**
+- [Cucumber Discord community](https://discord.gg/cucumber) — active Q&A for Cucumber.js, step definition issues, tooling
+- [OWASP Web Security Testing Guide v4.2](https://owasp.org/www-project-web-security-testing-guide/) — security behavioral patterns for BDD scenarios
+- [Google Web Vitals documentation](https://web.dev/vitals/) — Core Web Vitals thresholds for performance BDD scenarios
+
+---
+
+### Cucumber.js v12.7–v12.8: Latest Patch Releases (2026)
+
+Cucumber.js v12.8.3 (released 2026-05-09) is the current latest version. Patch releases
+v12.7.x and v12.8.x contain production-relevant fixes and features teams running at scale
+should be aware of.
+
+**What changed in v12.7.0 (2026-02-25):**
+
+| Change | Impact |
+|---|---|
+| Environment variables now propagate to child processes in parallel mode | Fix: env vars set in CI (e.g., `BASE_URL`, `TEST_CLIENT_SECRET`) were silently unavailable to scenarios running in parallel workers — now automatically forwarded |
+| Warnings emitted when paths are merged from config file and CLI | Visibility: previously silent behavior now produces an auditable warning when `--require` paths from CLI overlap with `import` paths in `cucumber.ts` |
+| ESM source reference handling improved | Fix: source map references in error stack traces now correctly resolve for ESM TypeScript setups |
+
+**[community] Parallel env var propagation was the most-reported v12.6 bug**: Teams using
+`--parallel 8` with secrets injected via CI environment variables reported that `process.env.BASE_URL`
+was `undefined` inside step definitions running in worker processes. The root cause was that
+Cucumber.js spawned child processes without forwarding the parent process's environment.
+v12.7.0 resolves this — but teams on earlier v12.x patches should explicitly upgrade to
+v12.7+ before assuming env vars are reliable in parallel mode.
+
+**What changed in v12.8.0:**
+
+The `custom externalising` option allows step definitions to export attachment data to an
+external store (e.g., S3 bucket, artifact server) rather than embedding large binary
+attachments (screenshots, traces, HAR files) inline in the Cucumber JSON or HTML report.
+This is particularly valuable for suites that capture full-page screenshots on every failure
+— large reports can exceed CI artifact size limits.
+
+```typescript
+// cucumber.ts — v12.8+ custom externalising option
+import type { IConfiguration } from '@cucumber/cucumber/api';
+import { uploadAttachment } from './src/support/attachment-uploader';
+
+export const regression: IConfiguration = {
+  import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+  format: [
+    'progress-bar',
+    'html:reports/regression-report.html',
+  ],
+  formatOptions: {
+    includeAttachments: true,
+    // Custom externalising: receive attachment data and return a URL
+    // Large attachments (screenshots, traces) are uploaded to S3 instead of inlined
+    externalise: async (data: Buffer, mediaType: string) => {
+      const url = await uploadAttachment(data, mediaType);
+      return url; // Returned URL replaces the inline binary in the report
+    },
+  },
+};
+```
+
+**What changed in v12.8.3 (2026-05-09 — current latest):**
+
+- **Fix: thrown strings now handled correctly**: Previously, if a step definition threw
+  a plain string (`throw 'something went wrong'`) instead of an `Error` object, Cucumber
+  would crash with a confusing internal error. v12.8.3 wraps thrown strings in an Error
+  before reporting, producing the expected FAILED status with the string as the message.
+- **Improved stack trace assertion info**: Stack traces in assertion failures now include
+  more context about the assertion source location.
+
+**[community] Throw Error objects, not strings**: The v12.8.3 fix is a safeguard —
+the correct practice is still to throw `Error` instances, not strings. `throw new Error('message')`
+produces a stack trace and works consistently across all Cucumber.js versions. `throw 'message'`
+(a JavaScript antipattern) has always been fragile and the fix does not change the recommendation
+to avoid it.
+
+---
+
+### playwright-bdd v8.0–v8.5: Feature Guide (2025–2026)  [community]
+
+`playwright-bdd` v8.5.0 (released March 2026) is the current version. The v8.x series
+introduced significant features over the v7.x baseline. Teams upgrading from v7 to v8 face
+several breaking changes; teams starting fresh should use v8.5 directly.
+
+**Breaking changes (v7 → v8.0):**
+
+| Breaking change | Migration |
+|---|---|
+| Minimum Playwright version is now 1.41 | Upgrade `@playwright/test` to `>=1.41` before upgrading `playwright-bdd` |
+| Default quote style changed to **single quotes** | Auto-generated step definition stubs now use `'...'` instead of `"..."` — cosmetic but noisy in diffs if your team standardized on double quotes |
+| `enrichReporterData` configuration option removed | Delete from `playwright.config.ts` if present — Playwright's native report data is now always included |
+
+**New features in v8.0:**
+
+**`missingSteps` configuration option** — controls what happens when a `.feature` file
+references steps that have no matching definition:
+
+```typescript
+// playwright.config.ts — v8 missingSteps option
+import { defineConfig } from '@playwright/test';
+import { defineBddConfig } from 'playwright-bdd';
+
+const testDir = defineBddConfig({
+  features: 'features/**/*.feature',
+  steps: 'src/steps/**/*.ts',
+  // Options: 'fail' (default) | 'skip' | 'pending'
+  // 'fail': CI fails immediately — safest for established suites
+  // 'skip': Missing steps produce skipped tests — useful during active development
+  // 'pending': Missing steps produce pending tests — shows in report without failing CI
+  missingSteps: process.env.CI ? 'fail' : 'pending',
+});
+
+export default defineConfig({
+  testDir,
+  // ...
+});
+```
+
+**`matchKeywords` option** — enables keyword-based step matching so `Given`, `When`, and
+`Then` decorators only match steps with the corresponding Gherkin keyword (not any keyword):
+
+```typescript
+// playwright.config.ts
+const testDir = defineBddConfig({
+  features: 'features/**/*.feature',
+  steps: 'src/steps/**/*.ts',
+  // When matchKeywords: true, a @Given() decorated step will NOT match a "When I ..." step
+  // This is stricter and prevents accidental keyword mismatches in large step libraries
+  matchKeywords: true,
+});
+```
+
+**`BeforeScenario` and `AfterScenario` hook aliases** — clearer names for `Before` and
+`After` that make hook intent explicit in reports:
+
+```typescript
+// src/support/hooks.ts — v8 alias syntax
+import { BeforeScenario, AfterScenario } from 'playwright-bdd';
+
+// BeforeScenario is an alias for Before — identical behavior, clearer name in reports
+BeforeScenario({ name: 'Provision test user' }, async ({ page, $testInfo }) => {
+  // $testInfo gives access to Playwright's TestInfo (title, tags, retry count)
+  const testId = `test-${$testInfo.workerIndex}-${Date.now()}`;
+  // ... setup using testId for isolation
+});
+
+AfterScenario({ name: 'Cleanup test data' }, async ({ page, $testInfo }) => {
+  if ($testInfo.status === 'failed') {
+    await page.screenshot({ path: `reports/failures/${$testInfo.title}.png` });
+  }
+});
+```
+
+**Tags from path** — automatically tag scenarios based on their directory location:
+
+```typescript
+// playwright.config.ts — tags from path
+const testDir = defineBddConfig({
+  features: 'features/**/*.feature',
+  steps: 'src/steps/**/*.ts',
+  // Each directory segment under 'features/' becomes a tag.
+  // features/payments/checkout.feature → all scenarios get @payments tag
+  // features/admin/users.feature → all scenarios get @admin tag
+  // Enables: npx playwright test --grep "@payments" without modifying feature files
+  tagsFromPath: {
+    featuresDir: 'features',
+  },
+});
+```
+
+**Multiple step decorators on a single method (v8.4.2):**
+
+```typescript
+// src/steps/checkout.steps.ts — v8.4.2 multiple decorators
+import { createBdd } from 'playwright-bdd';
+import { test } from '@playwright/test';
+
+const { Given, When } = createBdd(test);
+
+// Class-based step definitions with decorator stacking
+class CheckoutSteps {
+  // A single step function matches multiple Gherkin phrases
+  // Useful when product managers use slightly different phrasing for the same action
+  @Given('I am a registered customer')
+  @Given('I am logged in as a registered user')
+  async setupLoggedInCustomer({ page }: { page: import('@playwright/test').Page }) {
+    await page.goto('/login');
+    await page.getByTestId('email').fill('test@example.com');
+    await page.getByTestId('password').fill('TestPass123!');
+    await page.getByTestId('submit').click();
+    await page.waitForURL('/dashboard');
+  }
+
+  @When('I proceed to checkout')
+  @When('I navigate to the checkout page')
+  async navigateToCheckout({ page }: { page: import('@playwright/test').Page }) {
+    await page.getByTestId('checkout-button').click();
+    await page.waitForURL('/checkout');
+  }
+}
+```
+
+**[community] Multiple decorators vs. Cucumber expressions**: The decorator approach solves
+a common problem — teams where different product managers use slightly different Gherkin
+phrasing for the same business action (e.g., "I am logged in" vs. "I am a registered customer").
+Rather than writing two separate step functions with duplicate code, a single method handles
+both. The alternative (Cucumber expression alternation: `'I am (logged in|a registered customer)'`)
+works but produces less readable step audit output because the pattern obscures the two
+distinct phrases.
+
+**playwright-bdd v8.1: "Fix with AI" integration:**
+
+playwright-bdd v8.1.0 introduced a `Fix with AI` feature that integrates with AI code
+assistants. When a BDD scenario fails, the failure context (scenario text, step definition,
+error message, screenshot) can be exported to an AI-friendly format for automated fix suggestions.
+The upcoming `playwright-bdd agent skill` (announced in the v8.5 roadmap) will generate
+`.feature` files and step definition stubs from natural-language requirement descriptions.
+
+**[community] playwright-bdd v8.5 vs `@cucumber/cucumber` v12.8 — updated comparison:**
+
+| Capability | `playwright-bdd` v8.5 | `@cucumber/cucumber` v12.8 |
+|---|---|---|
+| TypeScript support | Native (no loader config) | Requires `tsx` or `ts-node/esm` |
+| Reporting | Playwright HTML (native, rich) | Requires separate formatter config |
+| Tag expressions | `--grep` regex + auto-tagging from path | Full boolean expression (`@smoke and not @wip`) |
+| Sharding | Playwright native `--shard` | Built-in `--shard` since v12.2 |
+| Step decorators | v8.4+ (class methods, stackable) | Not supported (function-based only) |
+| AI tooling | "Fix with AI" + upcoming agent skill | No built-in AI integration |
+| Hook aliases | `BeforeScenario`/`AfterScenario` | `Before`/`After` only |
+| Missing step control | `missingSteps` option (fail/skip/pending) | Undefined steps always fail |
+| Parallel env vars | Forwarded by Playwright runner | Fixed in Cucumber.js v12.7+ |
+| Min runtime | `@playwright/test` ≥ 1.41 | Node.js ≥ 20 |
+
+**[community] Migration path from `@cucumber/cucumber` to `playwright-bdd`**: The feature
+file Gherkin is fully compatible — no changes needed. Step definitions require rewriting from
+`function (this: CustomWorld)` pattern to fixture-injected `async ({ page, ... })` pattern.
+For suites with 50+ step definitions, the rewrite takes 1–2 sprints. Teams should migrate
+incrementally: run both runners against the same `.feature` files during the transition period,
+gradually moving step definitions to the `playwright-bdd` fixture model.
+
+---
+
+### Gherkin DocString Content-Type Annotations: Current Tool Support
+
+The Gherkin specification allows `.feature` files to annotate `DocString` blocks with a
+content type (e.g., `"""json`, `"""markdown`, `"""yaml`). The annotation is syntactically
+valid in all Gherkin-compliant parsers and is used by some formatters to enable syntax
+highlighting in reports.
+
+**What the annotation does and does NOT do:**
+
+```gherkin
+# features/api/orders.feature
+Scenario: Creating an order with a valid JSON payload
+  Given I have the following order payload:
+    """json
+    {
+      "customerId": "cust-001",
+      "items": [{ "productId": "prod-42", "quantity": 2 }]
+    }
+    """
+  When I POST to "/api/v1/orders"
+  Then the response status is 201
+```
+
+The `"""json` annotation:
+- **Does**: Signal to the Gherkin parser and report formatter that the content is JSON
+- **Does NOT**: Automatically validate or parse the content as JSON in the step definition
+- **Does NOT**: Currently trigger syntax highlighting in most editors (VS Code Cucumber
+  extension does not highlight annotated DocStrings as of 2026; JetBrains IDE plugin does)
+
+**Step definition handling of annotated DocStrings** (TypeScript):
+
+```typescript
+// src/steps/api.steps.ts
+import { Given } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+// The content-type annotation is stripped — the step receives the raw content string.
+// 'docString' below is the plain JSON text without the annotation keyword.
+Given('I have the following order payload:', function (this: AppWorld, docString: string) {
+  // Always parse explicitly — the annotation does NOT auto-parse
+  try {
+    this.requestBody = JSON.parse(docString);
+  } catch (err) {
+    throw new Error(`DocString is not valid JSON:\n${docString}\n${err}`);
+  }
+});
+```
+
+**[community] DocString annotation adoption gap**: Most BDD teams are unaware that content-type
+annotations exist. They were introduced in Gherkin 6 (2020) but remain underused because
+tool support is incomplete. As of 2026:
+- **`@cucumber/cucumber`**: Parses and exposes the annotation via `docString.mediaType`
+  property — but `mediaType` is not passed as a step parameter; it requires custom parameter
+  type registration to access programmatically
+- **`playwright-bdd`**: Passes the raw content to the fixture — annotation metadata is not
+  exposed via the fixture API in v8.5
+- **VS Code Cucumber extension**: Does not yet highlight annotated DocString content
+- **JetBrains / IntelliJ Cucumber plugin**: Supports annotation-based syntax highlighting
+
+**[community] Use DocString annotations for human readability only (2026 recommendation)**:
+Until editor and tooling support matures uniformly, use the annotation (`"""json`, `"""yaml`)
+purely as a readability aid for reviewers of feature files. Write step definitions that parse
+the content regardless of annotation. This keeps step definitions forward-compatible: they
+work whether the annotation is present, absent, or changed, and do not silently break if a
+team member omits the annotation on a new scenario.

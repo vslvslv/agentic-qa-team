@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -39,6 +39,7 @@
      Iter 33 (2026-05-08): 100/100 (+0) — added factory_boy test factory patterns — basic Factory/DjangoModelFactory/SQLAlchemyModelFactory, LazyAttribute, SubFactory, RelatedFactory, Faker integration, sequences, create/build/stub strategies, batch operations; community gotcha #29 (create vs build strategy pitfalls); sourced from factoryboy.readthedocs.io/en/stable/ + practitioner synthesis
      Iter 34 (2026-05-12): 100/100 (+0) — added Concatenate + ParamSpec decorator typing pattern, TypeVar bounds vs constraints deep-dive, map() strict= mode (Python 3.14), pathlib.info attribute, asyncio call-graph introspection, float.from_number() / complex.from_number(); community gotcha #30 (TypeVar bound vs constraint confusion); sourced from docs.python.org/3/library/typing.html + docs.python.org/3/whatsnew/3.14.html
      Iter 35 (2026-05-12): 100/100 (+0) — added dataclasses.KW_ONLY + field(doc=) + InitVar + weakref_slot patterns; TypeVar(infer_variance=True) (PEP 695); itertools.batched + math.sumprod (Python 3.12); typing.assert_type() for static testing; community gotcha #31 (TypeVar infer_variance misconception); sourced from docs.python.org/3/library/dataclasses.html + docs.python.org/3/whatsnew/3.12.html
+     Iter 36 (2026-05-12): 100/100 (+0) — added compression.zstd module (Python 3.14) with zstd.compress/decompress/ZstdCompressor/train_dict; heapq max-heap functions heapify_max/heappop_max/heappush_max (Python 3.14) with running_median example; sys.remote_exec() + pdb -p PID zero-overhead debugging deep-dive; multiprocessing fork-safety patterns; community gotcha #32 (fork() + threads = deadlock); sourced from docs.python.org/3/library/heapq.html + docs.python.org/3/library/compression.zstd.html + docs.python.org/3/whatsnew/3.14.html
 -->
 
 ## Core Philosophy
@@ -5068,5 +5069,312 @@ class MutableBox(ReadBox[T], WriteBox[T]):
 # variance is inferred as covariant automatically. If it's mutable, it is invariant.
 # Don't fight this — use read-only types in function signatures where mutation isn't needed.
 ```
+
+---
+
+## `compression.zstd` — Zstandard Compression in the Standard Library (Python 3.14)
+
+Python 3.14 ships a new `compression` package (PEP 784) that adds native **Zstandard (zstd)** support alongside a unified namespace for all compression modules. Zstandard is a real-time compression algorithm designed to achieve better compression ratios than gzip at comparable or faster speeds, with tunable compression levels and trained dictionaries for repetitive data.
+
+```python
+from compression import zstd
+
+# ── One-shot in-memory compression/decompression ──────────────────────────
+data = b"User payload: name=Alice, role=admin, tenant=42\n" * 1000
+
+compressed   = zstd.compress(data, level=3)   # level 1–22; default 3
+decompressed = zstd.decompress(compressed)
+assert decompressed == data
+print(f"Ratio: {len(data) / len(compressed):.1f}x")  # typically 5–15x
+
+
+# ── Stream compression — suitable for large or network-streamed data ───────
+comp = zstd.ZstdCompressor()
+chunks = []
+chunks.append(comp.compress(b"Part 1\n"))
+chunks.append(comp.compress(b"Part 2\n"))
+chunks.append(comp.flush())              # Flush internal buffer; finishes frame
+result = b"".join(chunks)
+
+
+# ── File I/O ──────────────────────────────────────────────────────────────
+import io, pathlib
+
+path = pathlib.Path("events.zst")
+with zstd.open(path, "wb") as f:
+    for i in range(100):
+        f.write(f"event {i}\n".encode())
+
+with zstd.open(path, "rb") as f:
+    content = f.read()
+
+
+# ── Dictionary training for repetitive structured data ────────────────────
+# (greatly improves ratio for many small, similar chunks — e.g. JSON records)
+samples = [
+    b'{"user":"alice","action":"login","ts":1700000000}',
+    b'{"user":"bob","action":"view","ts":1700000001}',
+    b'{"user":"carol","action":"logout","ts":1700000002}',
+] * 100                                  # Need many samples (hundreds typical)
+
+zdict = zstd.train_dict(samples, dict_size=8192)
+
+# Compress with the trained dictionary — much better ratio on small chunks
+compressed_with_dict = zstd.compress(samples[0], zstd_dict=zdict)
+# Decompression must use the SAME dictionary
+decompressed = zstd.decompress(compressed_with_dict, zstd_dict=zdict)
+
+
+# ── Advanced parameters ───────────────────────────────────────────────────
+options = {
+    zstd.CompressionParameter.compression_level: 15,  # Higher = smaller but slower
+    zstd.CompressionParameter.checksum_flag: 1,        # Embed integrity checksum
+}
+with zstd.open("archive.zst", "wb", options=options) as f:
+    f.write(b"high-compression payload")
+```
+
+**Choosing a compression format:**
+
+| Format | Speed | Ratio | Best for |
+|--------|-------|-------|----------|
+| `zstd` (level 3) | Very fast | Excellent | Real-time, logs, APIs |
+| `gzip` | Moderate | Good | HTTP transfer, compatibility |
+| `lzma` | Slow | Best | Archives, cold storage |
+| `zstd` (level 15+) | Slow | Near-lzma | Cold storage, high-value data |
+
+**Note:** `compression.zstd` requires the external `libzstd` to be installed at build time. On platforms where it is not available, `import compression.zstd` raises `ModuleNotFoundError`. Check availability with `importlib.util.find_spec("compression.zstd")`.
+
+---
+
+## `heapq` Max-Heap Functions (Python 3.14)
+
+Prior to Python 3.14, `heapq` only provided **min-heap** operations. The standard workaround for a max-heap was to negate all values — which is unintuitive, error-prone, and breaks entirely with non-numeric types. Python 3.14 adds a complete suite of max-heap functions.
+
+**New functions:**
+- `heapq.heapify_max(x)` — transform list `x` into a max-heap in-place, O(n)
+- `heapq.heappush_max(heap, item)` — push item onto a max-heap
+- `heapq.heappop_max(heap)` — pop and return the largest item
+- `heapq.heappushpop_max(heap, item)` — push then pop (more efficient than two calls)
+- `heapq.heapreplace_max(heap, item)` — pop largest, push item (size unchanged)
+
+```python
+import heapq
+
+
+# ── Min-heap (pre-existing) vs Max-heap (new in 3.14) ────────────────────
+min_h = [3, 1, 4, 1, 5, 9, 2, 6]
+heapq.heapify(min_h)
+print(heapq.heappop(min_h))   # 1 — smallest first
+
+max_h = [3, 1, 4, 1, 5, 9, 2, 6]
+heapq.heapify_max(max_h)
+print(heapq.heappop_max(max_h))   # 9 — largest first
+
+
+# ── Top-N largest WITHOUT sorting the entire list ──────────────────────────
+# heapq.nlargest() already worked; max-heap functions enable custom algorithms
+def top_n_streaming(stream, n: int):
+    """
+    Keep the top-N largest items seen so far from an unbounded stream.
+    Uses a MIN-heap of size N — when a new item is larger than the
+    smallest keeper, replace it.
+    """
+    heap = []
+    for item in stream:
+        if len(heap) < n:
+            heapq.heappush(heap, item)
+        elif item > heap[0]:         # heap[0] is the min of the kept items
+            heapq.heapreplace(heap, item)
+    return sorted(heap, reverse=True)
+
+
+print(top_n_streaming(range(1000), 5))   # [999, 998, 997, 996, 995]
+
+
+# ── Running Median — the canonical dual-heap algorithm ────────────────────
+# Maintains two heaps of equal size: lo (max-heap) ≤ hi (min-heap)
+# Median = lo[0] if odd count, else average of lo[0] and hi[0]
+
+def running_median(iterable):
+    """Yield the cumulative median after each element is seen."""
+    lo: list = []   # max-heap: smaller half
+    hi: list = []   # min-heap: larger half
+
+    for x in iterable:
+        if len(lo) == len(hi):
+            # Even count: push to hi, move smallest of hi to lo
+            heapq.heappush_max(lo, heapq.heappushpop(hi, x))
+            yield lo[0]                               # lo[0] is the median
+        else:
+            # Odd count: push to lo, move largest of lo to hi
+            heapq.heappush(hi, heapq.heappushpop_max(lo, x))
+            yield (lo[0] + hi[0]) / 2                # average of two middle values
+
+
+result = list(running_median([5.0, 9.0, 4.0, 12.0, 8.0, 9.0]))
+print(result)   # [5.0, 7.0, 5.0, 7.0, 8.0, 8.5]
+
+
+# ── OLD workaround (pre-3.14) — avoid this ────────────────────────────────
+h = []
+heapq.heappush(h, -10)   # Negate to simulate max-heap
+heapq.heappush(h, -3)
+heapq.heappush(h, -7)
+print(-heapq.heappop(h)) # 10 — must un-negate every time
+# Breaks with non-numeric types; hard to explain to code reviewers
+```
+
+**When to use max-heap over `max()` or `sorted(..., reverse=True)`:**
+- `max()` is O(n) per call — fine for one query, not for k repeated queries on a growing dataset
+- `sorted()` is O(n log n) — use when you need the full order
+- Max-heap `heapify_max` is O(n), each `heappop_max` is O(log n) — ideal for priority queues, streaming top-N, scheduling
+
+---
+
+## `sys.remote_exec()` — Zero-Overhead Production Debugging (Python 3.14)
+
+`sys.remote_exec(pid, script_path)` (PEP 768) enables attaching a debugger or profiler to a **running Python process** without stopping it, without instrumentation, and without any overhead when not in use. The target process executes the script at the next safe point between bytecode instructions.
+
+```python
+# ── Attaching a debugger to a running process ─────────────────────────────
+import sys
+import tempfile
+import os
+
+# Create a temporary script to inject into the target process
+with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+    script_path = f.name
+    target_pid = 12345   # PID of the process you want to debug
+
+    # Write the debug payload
+    f.write(f"""
+import pdb
+pdb.set_trace()
+""")
+
+# Inject into the live process — execution happens at next safe checkpoint
+sys.remote_exec(target_pid, script_path)
+
+# Alternatively: attach pdb directly from the command line (Python 3.14+)
+# python -m pdb -p 12345
+```
+
+```python
+# ── Inject a custom profiler without restarting the server ────────────────
+import sys, tempfile, os
+
+profiler_code = """
+import cProfile, io, pstats
+_pr = cProfile.Profile()
+_pr.enable()
+
+import atexit
+def _dump_profile():
+    _pr.disable()
+    s = io.StringIO()
+    pstats.Stats(_pr, stream=s).sort_stats("cumulative").print_stats(20)
+    print(s.getvalue())
+atexit.register(_dump_profile)
+"""
+
+with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+    f.write(profiler_code)
+    sys.remote_exec(os.getpid(), f.name)   # Inject into this process
+
+# Also available as asyncio introspection shortcut (Python 3.14):
+# python -m asyncio ps   <PID>      → flat task listing
+# python -m asyncio pstree <PID>    → hierarchical coroutine tree
+```
+
+```python
+# ── Security controls (disable remote debug in production containers) ──────
+# Environment variable (set before process starts):
+# PYTHON_DISABLE_REMOTE_DEBUG=1 python my_server.py
+
+# Command-line flag:
+# python -X disable-remote-debug my_server.py
+
+# Build-time disable (compile Python with):
+# ./configure --without-remote-debug
+```
+
+**Why this matters:** Prior to PEP 768, attaching a debugger to a production Python process required either `ptrace`-based C-level injection (fragile, platform-specific) or pre-instrumented code. `sys.remote_exec()` is a first-class, safe, officially supported mechanism with opt-out security controls for hardened deployments.
+
+---
+
+### 32. `multiprocessing` Fork Safety — Threads + Fork = Deadlock  [community]
+
+**Problem:** On Linux/macOS (pre-3.14), the default `multiprocessing` start method was `'fork'`. Forking a process that holds a lock — including locks held internally by `threading`, `logging`, or the memory allocator — creates child processes where those locks are permanently held (the thread that held the lock never runs in the child). This causes silent **deadlocks** that are extremely difficult to diagnose.
+
+**Why:** `os.fork()` copies the entire process memory but only the forking thread. Any mutex that was locked by *another* thread at the time of fork is copied in the locked state, but the thread that owns the lock does not exist in the child, so `acquire()` blocks forever.
+
+**Common symptoms:**
+- `multiprocessing` worker hangs silently when the parent had active logging threads
+- `logging.getLogger()` calls in workers deadlock because `logging._lock` was held at fork time
+- Any code using `httpx`, `requests`, or `boto3` in a thread pool before forking workers can deadlock
+- Intermittent deadlocks that are timing-dependent and hard to reproduce
+
+**Fix for Python < 3.14 — always use `'spawn'` or `'forkserver'`:**
+
+```python
+import multiprocessing
+import concurrent.futures
+import logging
+
+
+# ── WRONG (default fork on Linux — races with any active thread) ──────────
+# pool = multiprocessing.Pool(4)   # May deadlock if logging/threads active
+
+
+# ── CORRECT — always specify the start method explicitly ──────────────────
+ctx = multiprocessing.get_context("spawn")  # Safe: clean process, no shared state
+pool = ctx.Pool(4)
+
+# Or with concurrent.futures:
+with concurrent.futures.ProcessPoolExecutor(
+    max_workers=4,
+    mp_context=ctx,
+) as executor:
+    results = list(executor.map(cpu_task, range(100)))
+
+
+# ── CORRECT — 'forkserver' for lower overhead than 'spawn' on Linux ───────
+# forkserver starts a single clean server process; workers are forked from it
+# (the server process has no threads, so fork is safe)
+ctx_fs = multiprocessing.get_context("forkserver")
+with concurrent.futures.ProcessPoolExecutor(
+    max_workers=4,
+    mp_context=ctx_fs,
+) as executor:
+    results = list(executor.map(cpu_task, range(100)))
+
+
+# ── Python 3.14+: default changed to 'forkserver' on Linux (not macOS) ───
+# You can rely on the default being safe; but explicitly specifying is still
+# better practice for cross-platform reproducibility.
+import sys
+if sys.platform == "linux":
+    # On 3.14+, default is 'forkserver' — still explicit for clarity
+    ctx = multiprocessing.get_context("forkserver")
+else:
+    ctx = multiprocessing.get_context("spawn")
+
+
+# ── DIAGNOSTIC: reproduce the deadlock in test ────────────────────────────
+# Run with PYTHONFAULTHANDLER=1 to get a traceback on hang:
+# PYTHONFAULTHANDLER=1 python -Xfaulthandler my_script.py
+# Then: kill -SIGABRT <PID>  to dump all thread stacks
+```
+
+**The three start methods compared:**
+
+| Method | Copies parent state | Thread-safe | Startup cost | Available on |
+|--------|--------------------|-----------  |------------- |------------|
+| `fork` | Yes (CoW) | **No** — deadlock risk | Fastest | Unix only |
+| `forkserver` | No (forked from clean server) | Yes | Moderate | Unix only |
+| `spawn` | No (fresh interpreter) | Yes | Slowest (imports re-run) | All platforms |
+
+**Rule:** Unless you specifically need `'fork'` (e.g., to inherit large numpy arrays cheaply), always use `'spawn'` or `'forkserver'`. In Python 3.14+ on Linux, `'forkserver'` is the default. On macOS and Windows, `'spawn'` remains the default.
 
 

@@ -1,11 +1,12 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration); training-knowledge fallback for remaining gaps -->
+<!-- lang: TypeScript | topic: test-data | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
 <!-- iter-31: Neon DB copy-on-write branching for test isolation (neon.com/docs/guides/branching-test-queries, 2026-05-08); Testcontainers Cloud 8GB/session + Turbo mode (testcontainers.com/cloud/docs, 2026-05-08) -->
 <!-- iter-32: faker v10.0.0 ESM-only breaking change (2026-05-12); UUID v7 time-ordered keys for DB-performance test data; Self-Initializing Fake pattern (Fowler); Testing Resource Pools (pool-size-1 technique); updated checklist to reference faker v10; Key Resources updated -->
 <!-- iter-33: Vitest 4.0 pool config migration (poolOptions.vmForks → top-level isolate; singleFork → maxWorkers: 1; poolMatchGlobs/environmentMatchGlobs → projects; workspace → projects); community gotcha #21; Key Resources updated (2026-05-12) -->
+<!-- iter-34: Playwright mergeTests() modular fixture composition; Playwright box fixture (box:true/box:'self') for clean test reports; Vitest 4.x singleThread also removed (not just singleFork); vi.resetModules() required with isolate:false; VITEST_MAX_WORKERS replaces VITEST_MAX_THREADS/MAX_FORKS; community gotcha #22; 2 new checklists (Playwright fixtures, Vitest 4.x config); 2 new Key Resources (2026-05-12) -->
 
 ---
 
@@ -752,6 +753,152 @@ test('authenticated user can complete checkout', async ({ page, authenticatedPag
 - Teardown is guaranteed — no leaked data even on test failure
 - Fixtures compose: `authenticatedPage` auto-requests `testUser` without the test knowing
 - Worker-scoped fixtures (e.g., seeded DB baseline) share setup cost across tests
+
+---
+
+### Playwright `mergeTests()` — Composing Fixtures from Multiple Modules  [community]
+
+When a large test suite has fixtures defined in multiple modules (e.g., `auth-fixtures.ts`,
+`db-fixtures.ts`, `api-fixtures.ts`), combining them via `mergeTests()` creates a single
+extended test object without requiring a single monolithic fixture file.
+
+**Why it matters:** In large codebases, a single `fixtures/test-fixtures.ts` that imports
+every factory and lifecycle becomes a maintenance bottleneck — every new fixture type
+requires editing one shared file. `mergeTests()` (available since Playwright v1.39) allows
+fixtures to be defined in domain-aligned modules and composed at the point of use,
+keeping each module focused and independently maintainable.
+
+```typescript
+// fixtures/auth-fixtures.ts — authentication-related test data
+import { test as base } from '@playwright/test';
+import { userFactory } from '../factories/user.factory';
+import { db } from '../db';
+
+type AuthFixtures = {
+  authenticatedUser: { id: string; email: string; sessionToken: string };
+};
+
+export const authTest = base.extend<AuthFixtures>({
+  authenticatedUser: async ({}, use) => {
+    const user = await userFactory.create({ status: 'active' });
+    const sessionToken = await createSession(user.id);
+    await use({ id: user.id, email: user.email, sessionToken });
+    await revokeSession(sessionToken);
+    await deleteUser(user.id);
+  },
+});
+```
+
+```typescript
+// fixtures/db-fixtures.ts — database-related test data
+import { test as base } from '@playwright/test';
+import { db } from '../db';
+
+type DbFixtures = {
+  cleanDb: void;
+};
+
+export const dbTest = base.extend<DbFixtures>({
+  cleanDb: [async ({}, use) => {
+    await use();
+    // Truncate test tables after each test that requests cleanDb
+    await db.execute('TRUNCATE users, orders, products RESTART IDENTITY CASCADE');
+  }, { auto: false }],
+});
+```
+
+```typescript
+// fixtures/index.ts — compose all fixture modules via mergeTests()
+import { mergeTests } from '@playwright/test';
+import { authTest } from './auth-fixtures';
+import { dbTest } from './db-fixtures';
+
+// The merged test object exposes fixtures from ALL merged modules
+export const test = mergeTests(authTest, dbTest);
+export { expect } from '@playwright/test';
+```
+
+```typescript
+// specs/checkout.spec.ts — uses the merged fixture set
+import { test, expect } from '../fixtures';
+
+// Both 'authenticatedUser' and 'cleanDb' are available from merged modules
+test('authenticated user completes checkout', async ({ page, authenticatedUser, cleanDb }) => {
+  await page.goto('/login');
+  await page.fill('[data-testid="email"]', authenticatedUser.email);
+  // ... test body
+});
+```
+
+**Limitation:** `mergeTests()` does not support merging fixtures that have conflicting names
+across the input test objects. Resolve conflicts by renaming fixtures before merging or
+by ensuring each fixture module uses a distinct namespace convention.
+
+---
+
+### Playwright `box` Fixture — Clean Reports for Infrastructure Fixtures  [community]
+
+When Playwright fixtures are used for test data infrastructure (creating DB records,
+seeding authentication state), their setup steps appear in test reports and Trace Viewer
+as noise. The `{ box: true }` fixture option hides these steps from reports while
+preserving full teardown guarantees — keeping reports focused on the actual test assertions.
+
+**Why it matters:** A test report showing 12 fixture-setup steps before the first
+assertion makes failures harder to diagnose — the report is dominated by infrastructure
+noise. Boxing data-setup fixtures produces reports that show only the business-logic
+steps that matter for debugging.
+
+```typescript
+// fixtures/boxed-fixtures.ts — boxed infrastructure fixtures
+import { test as base } from '@playwright/test';
+import { userFactory } from '../factories/user.factory';
+import { db, users } from '../db';
+import { eq } from 'drizzle-orm';
+
+type BoxedFixtures = {
+  testUser: { id: string; email: string };
+  seedData: void;
+};
+
+export const test = base.extend<BoxedFixtures>({
+  // Boxed: setup/teardown steps hidden from reports and Trace Viewer
+  // The fixture still executes fully — only the report is cleaner
+  testUser: [async ({}, use) => {
+    const user = await userFactory.create({ status: 'active' });
+    await use({ id: user.id, email: user.email });
+    await db.delete(users).where(eq(users.id, user.id));
+  }, { box: true }],  // ← hidden from test report steps
+
+  // Partial boxing: fixture name hidden, but steps within it remain visible
+  // Use when you want the fixture's own steps visible but the fixture name hidden
+  seedData: [async ({}, use) => {
+    // These inner steps ARE visible in Trace Viewer (box: 'self' only hides the fixture name)
+    await db.execute('INSERT INTO products (name, price) VALUES ($1, $2)', ['Test Product', 999]);
+    await use();
+    await db.execute('DELETE FROM products WHERE name = $1', ['Test Product']);
+  }, { box: 'self' }],  // ← only the fixture wrapper name is hidden; steps remain
+});
+
+export { expect } from '@playwright/test';
+```
+
+```typescript
+// specs/product.spec.ts — boxed fixtures produce clean reports
+import { test, expect } from '../fixtures/boxed-fixtures';
+
+// In the test report: only these steps appear (no fixture setup noise):
+// ✓ Navigate to /products
+// ✓ Expect product to be visible
+test('product listing shows seeded product', async ({ page, testUser, seedData }) => {
+  await page.goto('/products');
+  await expect(page.locator('[data-testid="product-name"]')).toBeVisible();
+  // testUser and seedData are set up/torn down without appearing as report steps
+});
+```
+
+**When to box vs not box:**
+- **Box:** DB seed setup, auth state creation, data cleanup — infrastructure not specific to the test's assertion
+- **Do not box:** Fixtures whose behavior you want visible in failure traces, or fixtures that could fail and need debugging visibility
 
 ---
 
@@ -1664,6 +1811,33 @@ export const LLMResponseFixtures = {
     // npx vitest --version  →  4.x = new API; 2.x/3.x = old poolOptions API
     ```
 
+22. **[community] Vitest 4.x removed `singleThread` in addition to `singleFork` — and `maxWorkers: 1, isolate: false` requires explicit `vi.resetModules()` when modules hold state.**
+    The Vitest 4.0 release removed Tinypool entirely, consolidating `singleThread` (vmThreads mode) AND `singleFork` (forks mode) into the unified `maxWorkers: 1, isolate: false` config. Guides written for Vitest 3.x often only mention `singleFork`, leaving `singleThread` users unaware that their config also silently stopped working. The second part of this gotcha: when combining `maxWorkers: 1` with `isolate: false`, **module state is shared across test files in the same worker** — a singleton factory counter or faker seed initialized at module load is shared between files. If your factories or test helpers hold module-level state (a counter, a cached DB connection, a faker instance), you must call `vi.resetModules()` in a `beforeAll` or `setupFile` to reinitialize the module registry between files. Omitting this causes test pollution that only manifests when multiple test files run in the same process.
+
+    ```typescript
+    // vitest.config.ts — Vitest 4.x single-process shared module mode
+    export default defineConfig({
+      test: {
+        pool: 'forks',
+        maxWorkers: 1,
+        isolate: false,     // module registry shared across files in this worker
+        setupFiles: ['./test/reset-modules.ts'],  // REQUIRED when isolate: false
+      },
+    });
+
+    // test/reset-modules.ts — reset module registry before each file when sharing the process
+    // Without this, module-level state (factory counters, DB singletons) leaks between files
+    import { beforeAll, vi } from 'vitest';
+
+    beforeAll(() => {
+      // Reinitialize all imported modules between test files
+      // Prevents: factory sequence counters resetting, faker seed bleeding across files
+      vi.resetModules();
+    });
+    ```
+
+    Additionally, the `VITEST_MAX_WORKERS` environment variable replaces both `VITEST_MAX_THREADS` and `VITEST_MAX_FORKS` in Vitest 4.x. CI scripts that set `VITEST_MAX_THREADS=2` to limit parallelism on resource-constrained runners must be updated to `VITEST_MAX_WORKERS=2`.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -2359,6 +2533,8 @@ creating `activeUser` or `adminUser`. `beforeEach` would run all setup regardles
 | Testcontainers Cloud | Official | https://testcontainers.com/cloud/docs/ | Cloud Docker daemon; 8GB/session; Turbo mode for parallel test isolation |
 | Testcontainers Guides | Official | https://testcontainers.com/guides/ | Getting-started guides: 11 languages, Spring Boot, Quarkus, ASP.NET, DB, Kafka, WireMock, LocalStack |
 | Vitest 4.0 migration guide | Official | https://vitest.dev/guide/migration | poolOptions restructuring (singleFork removed, isolate/maxWorkers top-level); workspace → projects migration |
+| Playwright box fixture docs | Official | https://playwright.dev/docs/test-fixtures#box-a-fixture | `{ box: true }` / `{ box: 'self' }` — hide infrastructure fixture steps from test reports |
+| Playwright mergeTests() docs | Official | https://playwright.dev/docs/api/class-test#test-merge-tests | Composing fixtures from multiple domain-aligned modules into a single test object |
 | @faker-js/faker v10 docs | Official | https://fakerjs.dev/api/ | v10 stable API reference; ESM-only; UUID v7 in faker.string.uuid({ version: 7 }) |
 | @faker-js/faker v10 migration guide | Official | https://next.fakerjs.dev/guide/upgrading | Breaking changes v9→v10: CommonJS removal, deprecated API cleanup |
 | Self-Initializing Fake (Fowler) | Official | https://martinfowler.com/bliki/SelfInitializingFake.html | Record-then-replay pattern for third-party API test data; drift detection via nightly re-recording |
@@ -5370,3 +5546,15 @@ test data technical debt from accumulating.
 - [ ] Event schemas derived from a shared schema package — not duplicated in producer and consumer tests
 - [ ] Out-of-order event delivery tested (shuffled timestamps in batch factory)
 - [ ] WebSocket / SSE test factories cover error and reconnection scenarios, not only the happy path
+
+**Playwright fixtures checklist:**
+- [ ] Infrastructure fixtures (DB seed, auth state) use `{ box: true }` to keep test reports focused on assertion steps
+- [ ] Large fixture suites use `mergeTests()` to compose domain-aligned fixture modules rather than one monolithic fixture file
+- [ ] Worker-scoped fixtures (expensive setup) are scoped with `{ scope: 'worker' }` to share cost across tests in the same worker
+- [ ] All Playwright fixtures have guaranteed teardown — no `afterAll` skipped on test failure
+
+**Vitest configuration checklist (Vitest 4.x):**
+- [ ] `poolOptions` is NOT used — settings are top-level (`isolate`, `maxWorkers`, `pool`)
+- [ ] If using `maxWorkers: 1, isolate: false`: a `setupFiles` entry calls `vi.resetModules()` in `beforeAll` to prevent module-state leakage between files
+- [ ] CI scripts use `VITEST_MAX_WORKERS` (not `VITEST_MAX_THREADS` or `VITEST_MAX_FORKS`) to control parallelism
+- [ ] Mixed isolation strategies use `projects` array (each project can have its own `isolate` setting)

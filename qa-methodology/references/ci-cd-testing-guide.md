@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/test-cli (--only-changed), playwright.dev/docs/test-global-setup-teardown (Project Dependencies), vitest.dev/guide/browser (Browser Mode CI), vitest.dev/guide/workspace (Projects/workspace mode) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.45–v1.57: --fail-on-flaky-tests, captureGitInfo, per-project workers, testConfig.tsconfig, testConfig.tag, WebServer wait), vitest.dev/guide/projects (workspace→projects rename in v3.2, defineProject API) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -47,6 +47,11 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 27 | Project Dependencies | Replace `globalSetup` with traceable, fixture-aware setup projects |
 | 28 | Vitest Browser Mode | Real Chromium component tests within Vitest — `fullyParallel`-compatible |
 | 29 | Vitest Workspace Projects | Monorepo: multi-env test orchestration in one Vitest process |
+| 30 | `--fail-on-flaky-tests` | Playwright v1.45+: exit CI with code 1 when retried tests pass (explicit flakiness gate) |
+| 31 | `captureGitInfo` | Playwright v1.51+: auto-capture branch/SHA/PR metadata in test reports |
+| 32 | Per-project worker count | Playwright v1.52+: `project.workers` — heterogeneous parallelism per test level |
+| 33 | `testConfig.tsconfig` | Playwright v1.49+: single TypeScript config for all Playwright test files |
+| 34 | `defineProject` vs `defineConfig` | Vitest v3.2+: use `defineProject` in workspace files to prevent invalid root-only options |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -3044,6 +3049,11 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 | Playwright `globalSetup` used instead of Project Dependencies | Setup failures appear as cryptic first-test errors — not traceable | Migrate to `dependsOn: ['setup']` for visible, traceable setup failures in HTML report |
 | Vitest Browser Mode test isolation assumed to be per-test | Global DOM state bleeds between tests in the same file; ordering-dependent flakiness | Add explicit `afterEach` cleanup for any browser global state; audit all `window.*` mutations |
 | Vitest workspace `include: ['**/*.test.ts']` without package prefix | All test files from all packages matched; Node-only tests fail in jsdom environment | Scope every project's `include` to `'packages/<name>/src/**/*.test.ts'` |
+| `--fail-on-flaky-tests` enabled without fixing existing flakiness first | CI becomes permanently red on first adoption; team disables the flag within a week | Baseline flakiness rate first on nightly; fix top offenders; then enable on PR gate |
+| Playwright `captureGitInfo` without `fetch-depth: 0` checkout | Shallow clone omits commit metadata; report shows empty author/message fields | Add `fetch-depth: 0` to `actions/checkout@v4` when using `captureGitInfo` |
+| Global `workers` set without considering per-project memory requirements | Visual regression tests OOM the runner (200–400 MB per worker × 4 workers = 1.6 GB) | Use per-project `workers` (v1.52+) to serialize memory-intensive projects |
+| `defineConfig` used in Vitest workspace project files | Root-only options (`coverage`, `reporters`) silently ignored or throw at startup | Use `defineProject` in all per-package vitest config files referenced by `projects:` |
+| Vitest `projects` config without `name` on each project | Projects receive numeric default names; `--project` filter fails with ambiguous matches | Always set `name:` on every project — use the package name for clarity |
 
 ## Real-World Gotchas [community]
 
@@ -3181,6 +3191,14 @@ export default env;
 39. **Playwright `globalSetup` used instead of Project Dependencies for CI** [community]: `globalSetup` runs outside the Playwright test runner context and is invisible to the HTML reporter and trace recorder. When setup fails (e.g., API seeding fails, auth token cannot be generated), CI reports the first test failing with a cryptic error instead of a setup failure. Migrate to Project Dependencies (`dependsOn: ['setup']`) so setup failures appear as distinct, traceable failures with correct error messages and trace links.
 
 40. **Vitest workspace projects using `**/*.test.ts` glob without package prefix** [community]: In a `defineWorkspace` config, an `include` pattern of `['**/*.test.ts']` at the workspace root matches test files from ALL packages. When a project runs with `environment: 'jsdom'`, all matched files (including Node-only API tests that import `node:crypto`, `node:fs`, etc.) will fail with DOM environment errors. Always scope `include` to `'packages/<name>/src/**/*.test.ts'` — never use the bare recursive glob in workspace projects.
+
+41. **`--fail-on-flaky-tests` adopted on PR gate before baselining flakiness** [community]: Teams that enable `--fail-on-flaky-tests` on PR gate workflows without first measuring baseline flakiness typically discover on day one that 3–8 test cases are chronically flaky and block every PR. The correct rollout sequence: (1) add `--fail-on-flaky-tests` to the nightly scheduled run only, (2) observe the first week's results and quarantine offenders, (3) fix root causes (usually timing issues or shared state), (4) promote to PR gate once the nightly run is clean for 5+ consecutive days.
+
+42. **`captureGitInfo` with shallow checkout producing empty commit metadata** [community]: The `captureGitInfo: { commit: true }` option in Playwright v1.51+ requires full git history to populate commit message, author, and parent SHA in test reports. GitHub Actions defaults to `fetch-depth: 1` (shallow clone). Teams that add `captureGitInfo` without changing the checkout depth see blank commit metadata in every report artifact — the reports run successfully but are missing the information that makes them useful for post-incident analysis. Add `fetch-depth: 0` to your `actions/checkout@v4` step.
+
+43. **Vitest v3.2 `workspace` deprecation causing `defineWorkspace is not a function` errors** [community]: Vitest v3.2 deprecated the `defineWorkspace` helper (and the `vitest.workspace.ts` / `vitest.workspace.js` discovery pattern) in favor of the `projects` array inside `vitest.config.ts`. Teams upgrading from Vitest v2.x or v3.1 to v3.2+ with existing `vitest.workspace.ts` files see `defineWorkspace is not a function` if they import from an old package path, or find their workspace config silently ignored. Migration: move workspace project definitions into `vitest.config.ts` under `test.projects`, replace `defineWorkspace` calls with the inline array syntax, and replace `defineConfig` in per-project files with `defineProject`.
+
+44. **Playwright `testConfig.tsconfig` omitting `@playwright/test` from types** [community]: The `tsconfig` option in `playwright.config.ts` (v1.49+) applies the specified TypeScript configuration to all test files. Teams that set this to a tsconfig file that does not include `"@playwright/test"` in its `types` array see IDE type errors for `test`, `expect`, `page`, and all other Playwright globals, even when tests run correctly at runtime. Playwright injects its runtime types automatically, but the TypeScript language server requires the explicit `types` declaration. Always add `"types": ["@playwright/test"]` to any tsconfig referenced by `testConfig.tsconfig`.
 
 ## Tradeoffs & Alternatives
 |---|---|---|---|
@@ -4755,6 +4773,463 @@ export default defineWorkspace([
 
 > [community] The most common Vitest workspace pitfall: expecting `--project ui` to automatically exclude all other project test files. It does exclude them from execution, but if a test file in `packages/core` is accidentally matched by the `ui` project's `include` glob (e.g., glob pattern too broad), it will run in the wrong environment. Always scope `include` patterns to the package's own `src/` directory, never use `**/*.test.ts` at the workspace root level without a package prefix.
 
+### Playwright `--fail-on-flaky-tests` as a Strict Flakiness Gate [community]
+
+Playwright v1.45 introduced the `--fail-on-flaky-tests` CLI flag. By default, when a test fails on the first attempt but passes on a retry, Playwright exits with code `0` — marking the overall run as green even though a retry occurred. `--fail-on-flaky-tests` reverses this: **any test that required a retry to pass causes the CI run to exit with code 1**, making flakiness a first-class CI failure.
+
+> [community] Teams that add `--fail-on-flaky-tests` to their PR gate workflow report that flaky tests go from "tolerated background noise" to "immediate P1 defect". The typical adoption path: (1) enable the flag on the nightly run first to measure flakiness rate baseline, (2) fix the top 5 flaky test cases (usually 80% of failures), (3) promote to PR gate. Teams that skip step 2 and immediately gate PRs on flakiness disable the flag within a week when CI becomes permanently red.
+
+```yaml
+# .github/workflows/ci.yml — strict flakiness gate on main branch
+jobs:
+  e2e-strict:
+    if: github.ref == 'refs/heads/main'  # strict gate only on main; PRs use retries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+      # --fail-on-flaky-tests: exit 1 if any test passes only via retry
+      # retries: 1 to detect flakiness; strict mode catches the symptom immediately
+      - run: npx playwright test --retries=1 --fail-on-flaky-tests
+        name: E2E (strict flakiness gate)
+```
+
+**`playwright.config.ts` with selective flakiness tolerance:**
+
+```typescript
+// playwright.config.ts — strict mode for production flows; lenient for utilities
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests/e2e',
+  fullyParallel: true,
+  // Retry once to detect flakiness; --fail-on-flaky-tests triggers exit code 1 if retry needed
+  retries: process.env['CI'] ? 1 : 0,
+  // Prevent test.only() from being accidentally committed and silencing the suite
+  forbidOnly: !!process.env['CI'],
+  reporter: [
+    ['html', { open: 'never' }],
+    // GitHub Actions annotations for PR inline feedback
+    ['github'],
+    ['blob'],
+  ],
+  use: {
+    ...devices['Desktop Chrome'],
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+  },
+  projects: [
+    {
+      name: 'critical-flows',
+      testMatch: /.*\.(payment|auth|checkout)\.spec\.ts/,
+      // Critical flows: strict flakiness intolerance — no retries at project level
+      retries: 0,
+    },
+    {
+      name: 'standard-e2e',
+      testMatch: /.*\.spec\.ts/,
+      testIgnore: /.*\.(payment|auth|checkout)\.spec\.ts/,
+      retries: 1,  // 1 retry for standard tests; --fail-on-flaky-tests catches if needed
+    },
+  ],
+});
+```
+
+> [community] The `forbidOnly: !!process.env['CI']` setting is frequently cited as the most common "developer accidentally ships broken CI" prevention. When a developer uses `test.only()` for local debugging and forgets to remove it before pushing, all other tests are silently skipped — producing a deceptively green CI run with only one test passing. `forbidOnly: true` in CI causes an immediate failure with a clear error message. Set this in every Playwright project without exception.
+
+### Playwright `captureGitInfo` for Enriched CI Reports [community]
+
+Playwright v1.51 added `testConfig.captureGitInfo` — a configuration flag that automatically captures the current git branch, commit SHA, commit message, author, and PR information into the HTML report and blob reporter output. This metadata makes navigating test history significantly easier: reports are self-describing, removing the need to correlate report artifacts with git log output.
+
+> [community] Teams managing shared test report archives (e.g., storing blob reports as GitHub Actions artifacts for 30 days) report that `captureGitInfo: true` cuts the time to answer "which commit caused this regression?" from minutes of log archaeology to seconds of reading the report header. The feature has zero performance overhead since it simply reads git metadata at test run start.
+
+```typescript
+// playwright.config.ts — captureGitInfo for self-describing CI reports
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests/e2e',
+  fullyParallel: true,
+  retries: process.env['CI'] ? 1 : 0,
+  forbidOnly: !!process.env['CI'],
+
+  // Capture git context into every report — branch, SHA, message, author
+  // Requires git to be available in CI (standard on GitHub Actions runners)
+  captureGitInfo: process.env['CI'] ? { commit: true, diff: false } : false,
+  // Note: diff: true captures the full git diff — useful for debugging but increases artifact size
+
+  reporter: process.env['CI']
+    ? [
+        ['blob'],        // for cross-shard report merging
+        ['github'],      // inline PR annotations
+        ['html', { open: 'never' }],
+      ]
+    : [['html']],
+
+  use: {
+    ...devices['Desktop Chrome'],
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+  },
+});
+```
+
+**GitHub Actions step using captureGitInfo for attribution in merged reports:**
+
+```yaml
+# .github/workflows/e2e-sharded.yml — sharded suite with git-enriched reports
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # required for captureGitInfo to read full git history
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test --shard=${{ matrix.shard }}/4 --reporter=blob
+        env:
+          CI: true    # triggers captureGitInfo: { commit: true } in config
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report/
+
+  merge-reports:
+    needs: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: all-blob-reports/
+          pattern: blob-report-*
+          merge-multiple: true
+      # Merged HTML report includes git commit info from captureGitInfo
+      - run: npx playwright merge-reports --reporter html ./all-blob-reports
+      - uses: actions/upload-artifact@v4
+        with:
+          name: html-report-${{ github.sha }}
+          path: playwright-report/
+          retention-days: 30     # 30-day retention for post-incident investigation
+```
+
+> [community] The `fetch-depth: 0` checkout flag is required when using `captureGitInfo` to ensure git history metadata (author, message, parent SHA) is fully available. The default `fetch-depth: 1` (shallow clone) in GitHub Actions provides only the latest commit with no history context, causing `captureGitInfo` to silently omit commit metadata. Teams that deploy this without `fetch-depth: 0` see empty commit fields in the HTML report and file a bug — it is always the shallow clone.
+
+### Playwright Per-Project Worker Configuration [community]
+
+Playwright v1.52 added `workers` as a per-project configuration option, allowing different test levels to run with different concurrency within the same CI job. Before v1.52, the `workers` option was global — a single value applied to all projects. With per-project workers, CPU-bound test levels (e.g., visual regression with 8 full-page screenshots) can use fewer workers while fast unit-like component tests use the maximum.
+
+> [community] Teams with heterogeneous Playwright project configurations (smoke tests + full e2e + visual regression) in a single CI job report that per-project workers eliminates their most common OOM (out-of-memory) failure mode. Previously, a global `workers: 4` setting launched 4 concurrent visual regression tests, each requiring 200–400 MB for full-page Chromium renders, exceeding the 7 GB available on a free-tier GitHub Actions runner. With per-project workers, visual regression runs at `workers: 1` while smoke tests run at `workers: 4`.
+
+```typescript
+// playwright.config.ts — per-project worker configuration (Playwright v1.52+)
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests',
+  fullyParallel: true,
+  retries: process.env['CI'] ? 1 : 0,
+  forbidOnly: !!process.env['CI'],
+  captureGitInfo: process.env['CI'] ? { commit: true, diff: false } : false,
+
+  reporter: process.env['CI']
+    ? [['blob'], ['github']]
+    : [['html']],
+
+  use: {
+    ...devices['Desktop Chrome'],
+    trace: 'on-first-retry',
+  },
+
+  projects: [
+    // Smoke tests: fast, low memory — use maximum available workers
+    {
+      name: 'smoke',
+      testMatch: /.*\.smoke\.spec\.ts/,
+      workers: process.env['CI'] ? 4 : undefined,  // 4 workers on 2-core CI runner
+      retries: 0,                                     // smoke must pass on first attempt
+    },
+    // Standard e2e: balanced parallelism
+    {
+      name: 'e2e',
+      testMatch: /.*\.spec\.ts/,
+      testIgnore: /.*\.(smoke|visual)\.spec\.ts/,
+      workers: process.env['CI'] ? 2 : undefined,
+      retries: 1,
+    },
+    // Visual regression: CPU and memory intensive — serialize to prevent OOM
+    {
+      name: 'visual',
+      testMatch: /.*\.visual\.spec\.ts/,
+      workers: 1,                                     // always 1: memory safety
+      retries: process.env['CI'] ? 1 : 0,
+      use: {
+        // Consistent viewport for reproducible screenshots
+        viewport: { width: 1280, height: 720 },
+      },
+    },
+  ],
+});
+```
+
+**GitHub Actions — CI workflow using per-project workers effectively:**
+
+```yaml
+# .github/workflows/ci.yml — single job runs all projects with correct per-project concurrency
+jobs:
+  playwright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+
+      # Smoke tests first (fast gate) — inherits project-level workers: 4
+      - run: npx playwright test --project=smoke
+        name: Smoke tests (fast gate)
+
+      # E2E + visual in a single run — each project uses its configured workers
+      - run: npx playwright test --project=e2e --project=visual
+        name: E2E + visual regression
+        continue-on-error: false
+```
+
+> [community] The per-project worker configuration is especially valuable when mixing test levels that have radically different resource profiles — Playwright component tests (`ct`) run in milliseconds with no I/O, while API smoke tests against a real service run in seconds with network I/O. Using `workers: 4` for component tests and `workers: 2` for API tests in the same CI job prevents API rate limiting while maximizing component test throughput.
+
+### `testConfig.tsconfig` for Playwright TypeScript Unification [community]
+
+Playwright v1.49 introduced `testConfig.tsconfig` — a single TypeScript configuration file applied to all Playwright test files. Before this option, teams needed separate `tsconfig.json` files in each test directory or relied on Playwright's default behavior (ignoring path aliases, using relaxed module resolution). With `testConfig.tsconfig`, the full TypeScript compiler configuration — path aliases, strict mode flags, module resolution — applies uniformly to all spec files.
+
+> [community] The most common TypeScript + Playwright CI failure mode before `testConfig.tsconfig`: path alias imports (`@/utils`, `@/fixtures`) resolved correctly in the application's `tsconfig.json` but failed in Playwright test files because Playwright used its own internal TypeScript configuration that didn't include the `paths` mapping. Teams added hacky workarounds: symlinks, duplicated `tsconfig` inheritance chains, or gave up on path aliases entirely in test files. `testConfig.tsconfig` eliminates all of these.
+
+```typescript
+// playwright.config.ts — unified TypeScript configuration for all test files
+import { defineConfig, devices } from '@playwright/test';
+import { resolve } from 'path';
+
+export default defineConfig({
+  testDir: './tests/e2e',
+  fullyParallel: true,
+  retries: process.env['CI'] ? 1 : 0,
+  forbidOnly: !!process.env['CI'],
+  captureGitInfo: process.env['CI'] ? { commit: true, diff: false } : false,
+
+  // Apply shared tsconfig to ALL Playwright test files (v1.49+)
+  // This makes path aliases (@/utils), strict mode, and module resolution
+  // consistent between source code and e2e tests
+  tsconfig: resolve(__dirname, 'tsconfig.playwright.json'),
+
+  use: {
+    ...devices['Desktop Chrome'],
+    baseURL: process.env['BASE_URL'] ?? 'http://localhost:3000',
+    trace: 'on-first-retry',
+  },
+});
+```
+
+```json
+// tsconfig.playwright.json — TypeScript config for Playwright tests
+// Extends the app tsconfig so path aliases and strict settings are shared
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "bundler",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@fixtures/*": ["./tests/e2e/fixtures/*"],
+      "@helpers/*": ["./tests/e2e/helpers/*"]
+    },
+    // Playwright test types must be available
+    "types": ["@playwright/test"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": [
+    "tests/e2e/**/*.ts",
+    "tests/e2e/**/*.tsx",
+    "playwright.config.ts"
+  ],
+  "exclude": ["node_modules"]
+}
+```
+
+**Test file using path aliases — enabled by `testConfig.tsconfig`:**
+
+```typescript
+// tests/e2e/checkout.spec.ts — path aliases work because of testConfig.tsconfig
+import { test, expect } from '@playwright/test';
+// @fixtures resolves via tsconfig.playwright.json paths — no relative path needed
+import { authenticatedPage } from '@fixtures/auth';
+// @helpers resolves the same way
+import { formatPrice } from '@helpers/formatting';
+
+test.describe('Checkout flow', () => {
+  test.use({ storageState: 'tests/e2e/.auth/user.json' });
+
+  test('displays correct total with tax', async ({ page }) => {
+    await page.goto('/cart');
+    const total = await page.getByTestId('order-total').textContent();
+    expect(total).toBe(formatPrice(109.99));   // uses shared helper — no duplication
+  });
+});
+```
+
+> [community] With `testConfig.tsconfig`, the `types` field in `tsconfig.playwright.json` is the only required addition beyond extending the app config. Teams commonly forget to add `"@playwright/test"` to `types`, resulting in `Cannot find name 'test'` or `Cannot find name 'expect'` type errors even when the tests run correctly at runtime (because Playwright's runtime loads the types implicitly). The type error appears only in the IDE and in `tsc --noEmit` runs — add `"@playwright/test"` to `types` explicitly.
+
+### Vitest `defineProject` for Type-Safe Workspace Configurations [community]
+
+Vitest v3.2 deprecated the `workspace` configuration file (`.vitest-workspace.ts`) in favor of the `projects` array in `vitest.config.ts`. Alongside this rename, Vitest introduced `defineProject` — a dedicated helper for configuring projects inside a workspace that is distinct from `defineConfig`. Using `defineProject` prevents accidentally including root-only options (like `coverage`, `reporters`, `snapshotResolver`) in a project-level config, which causes Vitest to throw an error.
+
+> [community] Teams migrating from the old `vitest.workspace.ts` to the new `projects` API in Vitest v3.2+ consistently run into two issues: (1) they use `defineConfig` instead of `defineProject` in their per-package config files and accidentally add a `reporters` key — Vitest then throws `reporters is not allowed in project configuration`. (2) They expect coverage to be configurable per project — it is not; coverage is a root-level-only concern. Both issues take 10–30 minutes to diagnose without knowing the distinction. Use `defineProject` in any file referenced by `projects:` and `defineConfig` only at the workspace root.
+
+```typescript
+// vitest.config.ts — NEW API: projects array (replaces vitest.workspace.ts since v3.2)
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  // Coverage is ROOT-LEVEL only — cannot be in defineProject configs
+  test: {
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'json-summary'],
+      include: ['packages/*/src/**/*.ts', 'packages/*/src/**/*.tsx'],
+      exclude: [
+        'packages/*/src/**/*.d.ts',
+        'packages/*/src/**/*.test.*',
+        'packages/*/src/**/*.spec.*',
+      ],
+      thresholds: { lines: 80, branches: 75 },
+    },
+    // Projects: replaces workspace; can be inline objects or file paths with globs
+    projects: [
+      // Inline project config — use defineProject for type safety
+      {
+        plugins: [react()],
+        test: {
+          name: 'ui',
+          root: './packages/ui',
+          include: ['packages/ui/src/**/*.test.tsx'],
+          environment: 'jsdom',
+          setupFiles: ['./packages/ui/tests/setup-dom.ts'],
+        },
+      },
+      // File reference — Vitest loads defineProject from each package's vitest.config.ts
+      './packages/core/vitest.config.ts',
+      './packages/api/vitest.config.ts',
+    ],
+  },
+});
+```
+
+```typescript
+// packages/core/vitest.config.ts — use defineProject (not defineConfig) for workspace members
+import { defineProject } from 'vitest/config';
+
+// defineProject prevents accidentally adding root-only options (coverage, reporters, etc.)
+// If you accidentally add 'coverage:' here, Vitest throws a clear error at startup
+export default defineProject({
+  test: {
+    name: 'core',
+    root: './packages/core',
+    include: ['src/**/*.test.ts'],
+    environment: 'node',
+    pool: 'threads',
+    poolOptions: {
+      threads: { maxThreads: 2, minThreads: 1 },
+    },
+    // Per-project globals and setup are allowed
+    globals: true,
+    setupFiles: ['./tests/setup.ts'],
+  },
+});
+```
+
+```typescript
+// packages/api/vitest.config.ts — API package with integration test timeouts
+import { defineProject } from 'vitest/config';
+
+export default defineProject({
+  test: {
+    name: 'api',
+    root: './packages/api',
+    include: ['src/**/*.test.ts', 'src/**/*.integration.test.ts'],
+    environment: 'node',
+    // Longer timeout for integration tests (DB connections, HTTP calls)
+    testTimeout: 30_000,
+    hookTimeout: 15_000,
+    // Per-project retry — integration tests can be flaky on CI runner cold start
+    retry: process.env['CI'] ? 1 : 0,
+  },
+});
+```
+
+**GitHub Actions using `--project` filter with the new API:**
+
+```yaml
+# .github/workflows/ci.yml — filter by Vitest project name (works with both old workspace and new projects API)
+jobs:
+  test-core:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Run only 'core' project — unchanged from v3.1 API; works with new projects config
+      - run: npx vitest run --project core --coverage
+        name: Core package tests
+
+  test-all:
+    needs: lint
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Run all projects with merged coverage
+      - run: npx vitest run --coverage --reporter=junit --outputFile=junit.xml
+        name: All workspace projects (main branch)
+```
+
+> [community] The primary practical difference between `defineProject` and `defineConfig` in a workspace file: `defineConfig` allows (and applies) the full root-level config including `coverage`, `reporters`, `snapshotResolver`, and `globalSetup`. In a project file this causes silent or explicit failures. `defineProject` is a strict subset — it only accepts project-scoped options. The Vitest team added `defineProject` specifically to solve the "why does my project config break coverage?" class of questions that accounted for 15–20% of GitHub issues in Vitest's tracker.
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -4815,4 +5290,7 @@ export default defineWorkspace([
 | Playwright --only-changed flag | Official docs | https://playwright.dev/docs/test-cli | Run only spec files changed since a git ref — fast PR feedback gate |
 | Playwright Project Dependencies | Official docs | https://playwright.dev/docs/test-global-setup-teardown | Replaces globalSetup with traceable, fixture-aware setup projects |
 | Vitest Browser Mode | Official docs | https://vitest.dev/guide/browser/ | Real Chromium component tests within Vitest — alternative to Playwright CT |
-| Vitest Workspace (Projects) | Official docs | https://vitest.dev/guide/workspace | Monorepo test orchestration: run multiple Vitest configs in one process |
+| Vitest Workspace (Projects) | Official docs | https://vitest.dev/guide/workspace | Monorepo test orchestration: run multiple Vitest configs in one process (workspace deprecated since v3.2 — use `projects` array) |
+| Playwright Release Notes (v1.45–v1.57) | Official docs | https://playwright.dev/docs/release-notes | --fail-on-flaky-tests, captureGitInfo, per-project workers, testConfig.tsconfig, testConfig.tag, WebServer wait |
+| Vitest `defineProject` API | Official docs | https://vitest.dev/guide/projects | Type-safe per-package config in workspace; prevents root-only options in project files |
+| Playwright `--fail-on-flaky-tests` | Official docs | https://playwright.dev/docs/test-cli | CLI flag to exit code 1 when retried tests pass — strict flakiness gate |

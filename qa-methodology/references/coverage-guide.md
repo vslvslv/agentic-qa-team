@@ -1,11 +1,13 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
      stryker-mutator.io/docs (synthesized) |
-     stryker-mutator.io/releases (fetched 2026-05-12: v9.4–9.6 new features) |
+     stryker-mutator.io/releases (fetched 2026-05-12: v9.4–9.6 new features; v9.6.1 Vitest 4.1 hitcount fix) |
      vitest.dev/blog/vitest-4.html (fetched 2026-05-12: Vitest 4 coverage API changes) |
+     vitest.dev/blog/vitest-4-1 (fetched 2026-05-12: coverage.changed, agent reporter, htmlDir) |
+     vitest.dev/config/coverage (fetched 2026-05-12: full config reference — autoUpdate, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks) |
      community: production experience patterns synthesized from training knowledge -->
 
 ## Core Principles
@@ -1571,6 +1573,180 @@ infrastructure modules (database seeders, mock servers, fixture loaders) would o
 inflate coverage numbers. For most projects, standard config-based coverage (Patterns 1–2)
 is sufficient and less complex.
 
+### Pattern 26 — Vitest 4.1 `coverage.changed`: built-in differential coverage on changed files  [community]
+
+Vitest 4.1 introduced `coverage.changed` as a first-class config option. Unlike external
+tools such as Codecov's `patch_coverage_threshold` (Pattern 15), `coverage.changed` runs
+the **entire test suite** but restricts the coverage **report** to files modified since a
+given git reference. This is the lowest-friction path to differential coverage for Vitest
+projects — no additional tooling required.
+
+`coverage.changed` accepts:
+- `true` — reports coverage only for files with staged or unstaged local changes
+- A branch name (e.g., `'main'`) — files changed vs that branch
+- A commit hash — files changed since that commit
+
+```typescript
+// vitest.config.ts — built-in differential coverage (Vitest 4.1+)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',             // Vitest 3.2+: AST-remapped V8 = Istanbul accuracy
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/**/index.ts', 'src/**/__mocks__/**'],
+      all: true,
+      reporter: ['text', 'html', 'lcov', 'json-summary'],
+      reportsDirectory: './coverage',
+      // Report coverage only for files changed vs main — Vitest 4.1+.
+      // Does NOT restrict which tests run; all tests execute.
+      // Only the coverage report is filtered to changed files.
+      changed: 'main',
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+        perFile: true,            // per-file thresholds applied to changed files only
+      },
+    },
+  },
+});
+```
+
+```yaml
+# .github/workflows/coverage-changed.yml — PR coverage gate on changed files (Vitest 4.1+)
+name: Coverage (changed files)
+
+on: [pull_request]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history required for changed file detection
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+
+      - name: Run tests with changed-only coverage
+        # --coverage.changed=origin/main: report coverage only for PR diff
+        # All tests still run; thresholds apply only to changed files
+        run: npx vitest run --coverage --coverage.changed=origin/main
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+```
+
+**`coverage.changed` vs `--changed` CLI flag**: these are different options:
+- `--changed` (test selection): restricts which **tests** run to those covering changed files.
+  Risks missing tests for unchanged source that a changed test covers.
+- `coverage.changed` (coverage filter): runs **all tests**, shows **coverage only** for changed
+  files. All test execution happens; only the report is filtered.
+
+**Comparison with Pattern 15 (Codecov `patch_coverage_threshold`)**:
+- Pattern 15 requires Codecov integration and uploads LCOV to an external service.
+- `coverage.changed` works entirely locally with no external service.
+- `coverage.changed` is preferred for projects not using Codecov; Pattern 15 is better when
+  you need the Codecov dashboard, PR comments, and historical coverage trends.
+
+### Pattern 27 — Vitest `coverage.thresholds.autoUpdate`: automatic threshold ratchet  [community]
+
+Manually maintaining coverage thresholds is error-prone — teams forget to raise them
+as coverage improves, and the threshold becomes stale (testing that coverage is at least
+what it was two years ago, not what it should be today). Vitest's `autoUpdate` option
+automatically raises threshold values in the config file whenever coverage improves,
+creating a self-tightening ratchet without any manual step.
+
+```typescript
+// vitest.config.ts — automatic threshold ratchet (Vitest 4.1+)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/**/index.ts', 'src/**/__mocks__/**'],
+      all: true,
+      reporter: ['text', 'html', 'lcov'],
+      thresholds: {
+        lines: 82,
+        branches: 77,
+        functions: 84,
+        statements: 82,
+        perFile: false,           // autoUpdate works on global thresholds; perFile is a separate check
+        // When autoUpdate is true: if coverage exceeds the threshold, Vitest rewrites
+        // this config file in place, bumping lines/branches/functions/statements to the
+        // new coverage level. The threshold then acts as a hard floor that only moves up.
+        autoUpdate: true,
+      },
+    },
+  },
+});
+```
+
+```typescript
+// vitest.config.ts — autoUpdate with custom formatter (control rounding/precision)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/**/__mocks__/**'],
+      all: true,
+      thresholds: {
+        lines: 82,
+        branches: 77,
+        functions: 84,
+        statements: 82,
+        // Pass a function to customise how the updated threshold is rounded:
+        // autoUpdate: (coverage) => Math.floor(coverage)  — always round down (conservative)
+        // This prevents frequent config changes from floating point coverage numbers.
+        autoUpdate: (coverage: number) => Math.floor(coverage),
+      },
+    },
+  },
+});
+```
+
+```bash
+# Run tests and auto-update thresholds if coverage improved
+npx vitest run --coverage
+
+# In CI: run normally — if coverage drops below current threshold, CI fails.
+# Do NOT run with autoUpdate in CI — it would modify the config file mid-run and
+# commit the change, which is not the intent. Reserve autoUpdate for local
+# developer runs or a dedicated "update thresholds" workflow step.
+
+# Recommended CI pattern:
+# 1. Local dev: npx vitest run --coverage  → autoUpdate raises threshold if coverage improved
+# 2. CI: npx vitest run --coverage --no-coverage.thresholds.autoUpdate  → fail on regression
+```
+
+**Production workflow with `autoUpdate`**:
+1. Developer improves code + adds tests — coverage rises.
+2. `vitest run --coverage` runs locally — `autoUpdate` bumps the threshold in `vitest.config.ts`.
+3. Developer commits the updated config alongside the new tests.
+4. CI enforces the new (higher) threshold from that commit forward.
+5. Next developer cannot ship a PR that drops coverage below the new floor.
+
+**When NOT to use `autoUpdate`**: CI pipelines. `autoUpdate` writes to the config file during
+the test run. A CI runner that enables `autoUpdate` would either (a) fail to commit the
+updated config, or (b) create unexpected config mutations in the working tree. Disable it
+in CI with `autoUpdate: false` in a CI-specific `vitest.config.ci.ts`, or check that the
+option is not set when the `CI` environment variable is `true`.
+
 ### Pattern 25 — Stryker `ignorers` plugin: custom mutation suppression patterns  [community]
 
 Stryker 7.3+ introduced a plugin-based `ignorers` system for suppressing mutations across
@@ -2287,6 +2463,130 @@ the module whose tests are specified. Always pair `testFiles` with a matching `m
 glob to scope both mutation and test execution to the same module boundary. See Pattern 23
 for the correct combined configuration.
 
+### G39 — `coverage.excludeAfterRemap` fixes TypeScript sourcemap exclusion gaps in Vitest  [community]
+When Vitest's Istanbul provider maps coverage back from transpiled JavaScript to original
+TypeScript source files via source maps, the `coverage.exclude` patterns are applied
+**before** remapping by default. This means exclusion globs like `src/**/*.generated.ts`
+match the TypeScript paths — but if the compiled output references vendor helpers or
+type-declaration paths that source maps point to (e.g., TypeScript compiler helper
+functions in `node_modules/tslib`), those paths are not excluded because they only
+appear after remapping. **WHY it matters**: Istanbul reports can include lines from
+`tslib` or other compile-time helpers as uncovered, polluting the report with noise that
+is technically unreachable from test files. Setting `coverage.excludeAfterRemap: true`
+re-applies the `coverage.exclude` patterns after source-map remapping, ensuring that
+any compiled-artifact paths that appear post-remap are suppressed correctly.
+
+```typescript
+// vitest.config.ts — re-apply exclusions after sourcemap remapping (Vitest 4.x)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',
+      include: ['src/**/*.ts'],
+      exclude: [
+        'src/**/*.d.ts',
+        'src/**/index.ts',
+        'src/**/__mocks__/**',
+        'src/**/*.generated.ts',
+        '**/node_modules/**',     // explicitly exclude node_modules post-remap
+        '**/tslib/**',            // TypeScript compiler helpers
+      ],
+      all: true,
+      // Re-apply exclude globs after coverage remaps compiled JS back to TS source.
+      // Prevents tslib helpers and other compile artifacts from appearing in the report.
+      excludeAfterRemap: true,
+    },
+  },
+});
+```
+
+**When to enable**: NestJS or Angular TypeScript projects using decorators and
+`emitDecoratorMetadata: true` are most affected, since the decorator compilation
+emits helper calls that Istanbul instruments and source-maps can route back to
+unexpected paths. Enable `excludeAfterRemap: true` if the HTML coverage report shows
+unexpected entries from `tslib`, `reflect-metadata`, or auto-generated files despite
+being listed in `exclude`.
+
+### G40 — `coverage.ignoreClassMethods` suppresses constructor/getter noise without comment directives  [community]
+Istanbul instruments all class methods, including constructors, `toString()`, and
+auto-generated getters/setters from TypeScript's shorthand property syntax. These methods
+are usually not independently testable, yet Istanbul reports them as uncovered branches
+when the instance is constructed but the method body has never been exercised via
+a direct call. **WHY it matters**: TypeScript classes with `private readonly field: T`
+shorthand properties (compiled to `this.field = field` assignments in the constructor
+body) accumulate quickly into coverage noise — each generates covered lines, but
+derived accessor patterns and explicit `get`/`set` declarations can generate uncovered
+branch markers. The `coverage.ignoreClassMethods` option suppresses named methods
+globally without requiring per-file `/* istanbul ignore */` comments.
+
+```typescript
+// vitest.config.ts — ignore class methods that are untestable structural boilerplate
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/**/*.generated.ts', 'src/**/__mocks__/**'],
+      all: true,
+      reporter: ['text', 'html', 'lcov'],
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+        perFile: true,
+      },
+      // Suppress coverage for class methods that are structural boilerplate:
+      // - 'constructor': TypeScript shorthand assignment constructors are always
+      //   "covered" by instantiation, but their branches (optional param defaults)
+      //   are often not worth dedicated test cases.
+      // - 'toString': rarely tested directly; coverage noise on data classes.
+      // Use sparingly — suppressing 'validate' or 'process' methods is an anti-pattern.
+      ignoreClassMethods: ['constructor', 'toString'],
+    },
+  },
+});
+```
+
+**Important caveat**: `ignoreClassMethods` applies globally to ALL classes in the project.
+Only use it for truly structural, untestable methods. Suppressing domain methods like
+`validate()`, `process()`, or `transform()` hides real coverage gaps. The legitimate
+use cases are: auto-generated data-class constructors, `toString`/`toJSON` used only
+for serialisation, and TypeScript class decorators that generate accessor boilerplate.
+
+### G41 — Stryker 9.6.1 fix for Vitest 4.1 hitcount regression: verify upgrade compatibility  [community]
+Stryker 9.6.1 (April 10, 2026) shipped a specific fix for Vitest 4.1 compatibility:
+"fix vitest runner mutant hitcount and coverage for v4.1". Prior to this fix, Stryker
+running with the Vitest 4.1 runner would produce incorrect per-test mutation coverage
+data — `coverageAnalysis: 'perTest'` was returning inaccurate hitcounts, causing
+the wrong tests to be selected for killing each mutant. **WHY it matters**: a project
+using Stryker 9.5.x with Vitest 4.1 could be seeing inflated or incorrect mutation
+scores because the wrong set of tests was executing per mutant. After upgrading to
+Vitest 4.1, always upgrade Stryker to at least v9.6.1 before trusting mutation scores.
+Verify the Stryker + Vitest version matrix before interpreting historical mutation reports:
+scores generated on Stryker 9.5.x + Vitest 4.1 combinations are unreliable.
+
+```bash
+# Check current Stryker + Vitest version compatibility
+node -e "
+  const pkg = require('./package.json');
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+  console.log('stryker core:', deps['@stryker-mutator/core'] || 'not found');
+  console.log('vitest-runner:', deps['@stryker-mutator/vitest-runner'] || 'not found');
+  console.log('vitest:', deps['vitest'] || 'not found');
+"
+
+# Safe upgrade path for Vitest 4.1+ projects:
+# 1. npm install vitest@^4.1  (or latest 4.x)
+# 2. npm install @stryker-mutator/core@^9.6.1 @stryker-mutator/vitest-runner@^9.6.1
+# 3. Re-run npx stryker run to regenerate mutation baseline
+# If mutation scores change significantly after upgrade, the previous scores were inaccurate.
+```
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -2356,6 +2656,14 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
   and threshold checks only on the merged output — per-shard threshold checks produce false positives.
 - **Vitest 3.2 baseline reset**: upgrading to Vitest 3.2+ resets V8 branch coverage baselines
   (AST remapping now detects more branches); treat as a one-time recalibration, not a test failure.
+- **`coverage.changed` in CI vs Codecov**: Vitest 4.1's `coverage.changed` provides built-in
+  differential coverage without external tooling, but does not generate PR comments, historical
+  trend dashboards, or cross-repository tracking. For projects needing those features, Codecov's
+  `patch_coverage_threshold` (Pattern 15) remains the better choice. For projects that just need
+  "don't ship untested code", `coverage.changed` is simpler and has no external dependencies.
+- **`coverage.thresholds.autoUpdate` in CI**: disable `autoUpdate` in CI pipelines. It writes to
+  the config file during the test run; only use it locally to ratchet thresholds upward after
+  coverage improvements, then commit the updated config as part of the same PR.
 
 ---
 
@@ -2386,5 +2694,7 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Jest 30 configuration docs | Official | https://jestjs.io/docs/configuration | Jest 30 (Oct 2025) reference; negative thresholds, moduleFileExtensions optimisation |
 | Stryker configuration reference | Official | https://stryker-mutator.io/docs/stryker-js/configuration/ | Full config reference: ignoreStatic, disableTypeChecks, coverageAnalysis, timeoutFactor, concurrency, testFiles, typescriptChecker, ignorers |
 | Stryker Dashboard | Official | https://dashboard.stryker-mutator.io/ | Track mutation scores over time, generate badges, integrate with CI |
-| Stryker GitHub Releases | Official | https://github.com/stryker-mutator/stryker-js/releases | Release notes for Stryker 9.x: Node 20+ requirement, Vitest v2+/v4, percentage-based concurrency, testFiles option (9.5.1) |
+| Stryker GitHub Releases | Official | https://github.com/stryker-mutator/stryker-js/releases | Release notes for Stryker 9.x: Node 20+ requirement, Vitest v2+/v4, percentage-based concurrency, testFiles option (9.5.1); v9.6.1 Vitest 4.1 hitcount fix |
 | Vitest 4 release notes | Official | https://vitest.dev/blog/vitest-4.html | Vitest 4 new features: stable Browser Mode, dynamic enableCoverage/disableCoverage API, expect.schemaMatching |
+| Vitest 4.1 release notes | Official | https://vitest.dev/blog/vitest-4-1 | Vitest 4.1 coverage.changed option, agent reporter for AI environments, coverage.htmlDir |
+| Vitest coverage config reference | Official | https://vitest.dev/config/coverage | Full coverage config: autoUpdate, changed, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks, reportOnFailure, processingConcurrency |

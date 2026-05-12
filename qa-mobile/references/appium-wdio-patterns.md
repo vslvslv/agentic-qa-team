@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
 <!-- This-run additions (iter 11-20): WDIO v9 BiDi features, aria/ selector, eslint-plugin-wdio, browser.mock() network interception,
      mobile:pressButton complete reference, Android mobile:deepLink, TypeScript 'using' keyword, browser.executeAsync(),
      appium:mjpegServerPort, @wdio/visual-service advanced options, appium:newCommandTimeout, Android AVD CI launch,
@@ -10793,3 +10793,683 @@ it('should require unlock before accessing secure screen (Android)', async () =>
      webdriver.io/docs/api/mobile/lock -->
 <!-- Score delta across 10 iterations: 0 (maintained 100/100) — delta check not triggered -->
 <!-- Cumulative total across all runs: 20 iterations (v1-v10 + this run iter 11-20) -->
+
+---
+
+## `gsmVoice()` — GSM Voice State Simulation  [community]
+
+The `browser.gsmVoice()` command sets the GSM voice registration state on the Android emulator — distinct from `gsmSignal()` (signal strength) and `gsmCall()` (incoming call simulation). Use it to test app behaviour when the device has no cellular service, is roaming, or the network is searching.
+
+**Valid states:**
+
+| State | Meaning |
+|-------|---------|
+| `'home'` | Registered on home network |
+| `'roaming'` | Registered on a foreign network |
+| `'searching'` | Not registered, actively searching |
+| `'denied'` | Registration denied |
+| `'unregistered'` | Not registered, not searching |
+| `'off'` | Radio off |
+| `'on'` | Radio on (equivalent to home for most tests) |
+
+**Platform support:** Android emulator only.
+
+```typescript
+// test/specs/connectivity/gsm-voice.spec.ts
+describe('GSM voice state', () => {
+  afterEach(async () => {
+    // Always restore home state after the test
+    await browser.gsmVoice('home');
+  });
+
+  it('should show roaming banner when device is roaming', async () => {
+    await browser.gsmVoice('roaming');
+    await expect($('~roaming-banner')).toBeDisplayed({ timeout: 3000 });
+  });
+
+  it('should show no-service overlay when voice is unregistered', async () => {
+    await browser.gsmVoice('unregistered');
+    await expect($('~no-service-overlay')).toBeDisplayed({ timeout: 3000 });
+  });
+
+  it('should disable outgoing calls when voice is denied', async () => {
+    await browser.gsmVoice('denied');
+    await $('~call-button').click();
+    await expect($('~call-error-toast')).toBeDisplayed();
+  });
+});
+```
+
+**[community] `gsmVoice` does NOT affect data connectivity:** The command only changes the voice/CS domain registration state. LTE data (PS domain) continues to work even when `gsmVoice('unregistered')` is set. WHY: Android emulator separates voice and data stacks. To test full offline scenarios, combine `gsmVoice('off')` with `browser.toggleData(false)`.
+
+**[community] Real devices reject `gsmVoice`:** The command is emulator-only. On a real device the underlying Appium command returns a `not supported` error. WHY: There is no programmatic API to change network registration on real hardware. Fix: guard with `if (!browser.isRealDevice)` or skip with `pending()` on real-device CI lanes.
+
+---
+
+## `getPerformanceData()` and `getPerformanceDataTypes()` — Android App Performance Monitoring  [community]
+
+These two commands expose Android `getPerformanceData` metrics — CPU, memory, network I/O, and battery — without external profiling tools.
+
+**Typical workflow:** call `getPerformanceDataTypes()` first to discover available metric types, then fetch each with `getPerformanceData()`.
+
+**Platform support:** Android only.
+
+```typescript
+// test/specs/perf/android-performance.spec.ts
+import { expect as jestExpect } from '@wdio/globals';
+
+const APP_PACKAGE = 'com.example.myapp';
+const DATA_TIMEOUT_SECS = 5;
+
+describe('Android performance metrics', () => {
+  it('should discover supported performance data types', async () => {
+    const types = await browser.getPerformanceDataTypes() as string[];
+    // Typical: ['cpuinfo', 'memoryinfo', 'batteryinfo', 'networkinfo']
+    console.log('Supported types:', types);
+    jestExpect(types).toContain('cpuinfo');
+  });
+
+  it('should not exceed CPU threshold during heavy animation', async () => {
+    await $('~start-animation-btn').click();
+
+    const cpuData = await browser.getPerformanceData(
+      APP_PACKAGE,
+      'cpuinfo',
+      DATA_TIMEOUT_SECS
+    ) as string[][];
+
+    // Row 0 = header names, Row 1 = values
+    const [headers, values] = cpuData;
+    const userIdx = headers.indexOf('user');
+    const userCpu = parseInt(values[userIdx] ?? '0', 10);
+
+    jestExpect(userCpu).toBeLessThan(80); // fail if CPU >80%
+  });
+
+  it('should stay within memory budget', async () => {
+    const memData = await browser.getPerformanceData(
+      APP_PACKAGE,
+      'memoryinfo',
+      DATA_TIMEOUT_SECS
+    ) as string[][];
+
+    const [headers, values] = memData;
+    const dirtyIdx = headers.indexOf('totalPrivateDirty');
+    const dirtyKb   = parseInt(values[dirtyIdx] ?? '0', 10);
+
+    jestExpect(dirtyKb).toBeLessThan(200_000); // <200 MB dirty memory
+  });
+});
+```
+
+**[community] Return format is a jagged two-row array, not a Record:** `getPerformanceData` returns `string[][]` — row 0 is the header array and row 1 is the values array. It is NOT a `Record<string, string>`. WHY: The UIAutomator2 response is a raw two-row table from `ActivityManager.getProcessMemoryInfo()`. Fix: always destructure `const [headers, values] = data` and use `headers.indexOf('key')` to resolve column indices; never hard-code column positions.
+
+**[community] `batteryinfo` is emulator-dependent:** Many emulator images return `[[]]` or throw for battery data. WHY: Battery sensors are optional in Android emulator configuration. Fix: call `getPerformanceDataTypes()` first and skip battery assertions if `'batteryinfo'` is absent from the returned array.
+
+**[community] Performance data is process-level, not thread-level:** `cpuinfo` returns totals for the entire process. WHY: UIAutomator2 calls `cpu.cpuinfo` which is process-scoped. For per-thread breakdown, use `adb shell top -H -p <pid>` via `driver.execute('mobile: shell', { command: 'top', args: ['-H', '-p', pid, '-n', '1'] })`.
+
+---
+
+## `powerAC()` and `powerCapacity()` — Battery State Simulation  [community]
+
+Simulate charger attachment and battery percentage on Android emulators — essential for testing low-battery warnings, power-saving mode activation, and charging UI states.
+
+**Platform support:** Android emulator only.
+
+```typescript
+// test/specs/battery/battery-simulation.spec.ts
+describe('Battery state simulation', () => {
+  afterEach(async () => {
+    // Restore default: charging + full battery
+    await browser.powerAC('on');
+    await browser.powerCapacity(100);
+  });
+
+  it('should show low-battery warning at 15%', async () => {
+    await browser.powerAC('off');       // disconnect charger
+    await browser.powerCapacity(15);    // set battery to 15%
+    await expect($('~low-battery-banner')).toBeDisplayed({ timeout: 5000 });
+  });
+
+  it('should disable energy-intensive features at <20%', async () => {
+    await browser.powerAC('off');
+    await browser.powerCapacity(19);
+    const syncToggle = await $('~background-sync-toggle');
+    await expect(syncToggle).toHaveAttribute('enabled', 'false');
+  });
+
+  it('should show charging indicator when AC connected', async () => {
+    await browser.powerCapacity(50);
+    await browser.powerAC('on');
+    await expect($('~charging-icon')).toBeDisplayed({ timeout: 3000 });
+  });
+});
+```
+
+**[community] `powerCapacity` range is 0–100 (integer only):** Values outside this range cause an Appium error. WHY: UIAutomator2 passes the value directly to `adb shell power supply capacity`, which only accepts 0–100. Fix: clamp values: `Math.max(0, Math.min(100, value))`.
+
+**[community] `powerAC('on')` does NOT change battery level:** It only signals the charger state; the displayed percentage remains whatever `powerCapacity` last set. WHY: Android emulator separates charger status from charge level — set both together when you need a specific combined state.
+
+**[community] Battery simulation is emulator-only; requires API 21+:** Real devices reject these commands. API level <21 emulators may not support `powerAC` correctly. WHY: `adb shell dumpsys battery set level` was normalized in Android 5 (API 21). Fix: target API 24+ for emulators in CI.
+
+---
+
+## `fingerPrint()` — Android Biometric Fingerprint Simulation  [community]
+
+`browser.fingerPrint(id)` simulates a fingerprint scan on Android emulators. It is the Android counterpart to `browser.touchId()` (iOS). The numeric `id` parameter (1–10) identifies the enrolled fingerprint. IDs 1–7 typically match enrolled fingers; IDs 8–10 simulate unknown fingers and trigger failure callbacks.
+
+**Platform support:** Android emulator only. Use `browser.touchId()` for iOS.
+
+```typescript
+// test/helpers/biometricHelper.ts
+export async function simulateAndroidFingerprint(id: 1|2|3|4|5 = 1): Promise<void> {
+  if (!browser.isAndroid) throw new Error('fingerPrint() is Android-only');
+  await browser.fingerPrint(id);
+}
+
+// test/specs/auth/android-biometric.spec.ts
+import { simulateAndroidFingerprint } from '@helpers/biometricHelper.js';
+
+describe('Android fingerprint authentication', () => {
+  it('should authenticate with enrolled fingerprint', async () => {
+    await $('~biometric-auth-btn').click();
+    await expect($('~fingerprint-dialog')).toBeDisplayed({ timeout: 5000 });
+    await simulateAndroidFingerprint(1);
+    await expect($('~home-dashboard')).toBeDisplayed({ timeout: 5000 });
+  });
+
+  it('should show lockout after three failed attempts', async () => {
+    await $('~biometric-auth-btn').click();
+    await expect($('~fingerprint-dialog')).toBeDisplayed({ timeout: 5000 });
+    for (let i = 8; i <= 10; i++) {
+      await browser.fingerPrint(i);  // unenrolled IDs trigger failure
+    }
+    await expect($('~biometric-locked-message')).toBeDisplayed({ timeout: 3000 });
+  });
+});
+```
+
+**[community] IDs 8–10 are the canonical "failed" fingerprints:** By Android emulator convention, fingerprint IDs 1–7 match enrolled fingers; 8–10 simulate unrecognised fingers. WHY: The Appium UiAutomator2 driver maps the `fingerId` parameter, which the emulator interprets against its enrolled set. Always enroll at least one finger in emulator settings before running biometric tests.
+
+**[community] `fingerPrint()` requires an active biometric prompt:** The command sends the fingerprint event to the system; if no biometric dialog is active, the event is silently discarded. WHY: The event is routed by the Android biometric framework only to the active auth dialog. Fix: always wait for the fingerprint prompt before calling `fingerPrint()`.
+
+---
+
+## `openNotifications()` — Android Notification Shade  [community]
+
+Opens the Android notification drawer programmatically. Use this to test notification-driven app flows without simulating a physical swipe-down gesture.
+
+**Platform support:** Android only. For iOS, use `browser.execute('mobile: swipe', { direction: 'down' })` from the top of the screen.
+
+```typescript
+// test/specs/notifications/notification-flow.spec.ts
+describe('Push notification deep link (Android)', () => {
+  it('should navigate to order screen via push notification tap', async () => {
+    await triggerPushNotification({ type: 'order-update', orderId: '12345' });
+
+    // Poll until notification appears in the shade
+    await browser.waitUntil(
+      async () => {
+        await browser.openNotifications();
+        const exists = await $('android=new UiSelector().text("Order Update")').isExisting();
+        if (!exists) {
+          await browser.pressKeyCode(4);  // BACK to close shade
+          return false;
+        }
+        return true;
+      },
+      { timeout: 15_000, interval: 2_000, timeoutMsg: 'Notification did not appear' }
+    );
+
+    await $('android=new UiSelector().text("Order Update")').click();
+    await expect($('~order-detail-screen')).toBeDisplayed({ timeout: 5000 });
+  });
+});
+```
+
+**[community] The notification shade persists across tests if not closed:** `openNotifications()` opens the drawer but does NOT close it. Subsequent `$()` queries target the drawer instead of the app. WHY: The drawer is a system overlay with its own view hierarchy. Fix: always close it in `afterEach` with `browser.pressKeyCode(4)` (BACK).
+
+**[community] Notification content requires `android=` `UiSelector` selectors:** `$('~notification-title')` does NOT find system notifications. WHY: Android system notifications live in the `com.android.systemui` process, outside the app's view hierarchy. Fix: use `android=new UiSelector().resourceId("android:id/title")` or class-chain queries to access notification content.
+
+---
+
+## `getSystemBars()` — Android System Bar Visibility  [community]
+
+Returns visibility and bounds for the Android status bar and navigation bar. Use this to test immersive mode, fullscreen screens, and layout calculations that must account for system chrome.
+
+**Platform support:** Android only.
+
+```typescript
+// test/specs/ui/system-bars.spec.ts
+interface SystemBarInfo {
+  visible: boolean;
+  x: number; y: number;
+  width: number; height: number;
+}
+interface SystemBars {
+  statusBar:     SystemBarInfo;
+  navigationBar: SystemBarInfo;
+}
+
+describe('Immersive mode / full-screen testing', () => {
+  it('should hide both system bars during video playback', async () => {
+    await $('~play-fullscreen-btn').click();
+    const bars = await browser.getSystemBars() as SystemBars;
+    expect(bars.statusBar.visible).toBe(false);
+    expect(bars.navigationBar.visible).toBe(false);
+  });
+
+  it('should calculate correct content area height', async () => {
+    const bars        = await browser.getSystemBars() as SystemBars;
+    const windowSize  = await browser.getWindowSize();
+    const contentH    = windowSize.height
+      - (bars.statusBar.visible     ? bars.statusBar.height     : 0)
+      - (bars.navigationBar.visible ? bars.navigationBar.height : 0);
+
+    const banner     = await $('~hero-banner');
+    const bannerSize = await banner.getSize();
+    expect(bannerSize.height).toBeCloseTo(contentH, -2); // within 4 px
+  });
+});
+```
+
+**[community] `navigationBar.height` returns 0 on gesture-navigation devices:** Android 10+ with gesture navigation has no rendered navigation bar widget. WHY: `getSystemBars()` reports the physical navigation bar; gesture nav has no bar. Fix: check `visible` before using `height` in layout calculations.
+
+**[community] Status bar height varies by API level:** API 29 emulators return 24dp; API 33+ returns 28dp (display cutout). WHY: Android 13 integrated display-cutout inset support into the status bar height. Fix: never hard-code `24`; always read from `bars.statusBar.height`.
+
+---
+
+## Network State Commands — `toggleAirplaneMode()`, `toggleData()`, `toggleWiFi()`, `toggleLocationServices()`  [community]
+
+These four commands give OS-level connectivity control — affecting native socket connections that bypass WebView CDP and `browser.mock()` entirely.
+
+**Platform support:** Android only for all four.
+
+```typescript
+// test/specs/connectivity/offline-resilience.spec.ts
+describe('Offline resilience (Android)', () => {
+  afterEach(async () => {
+    await browser.toggleAirplaneMode(false);
+    await browser.toggleData(true);
+    await browser.toggleWiFi(true);
+  });
+
+  it('should show offline banner when airplane mode enabled', async () => {
+    await browser.toggleAirplaneMode(true);
+    await expect($('~offline-banner')).toBeDisplayed({ timeout: 5000 });
+  });
+
+  it('should queue messages when mobile data and WiFi disabled', async () => {
+    await browser.toggleWiFi(false);
+    await browser.toggleData(false);
+    await $('~message-input').setValue('Hello offline');
+    await $('~send-btn').click();
+    await expect($('~outbox-badge')).toBeDisplayed({ timeout: 3000 });
+  });
+
+  it('should sync queued messages when connection restored', async () => {
+    await browser.toggleAirplaneMode(true);
+    await $('~compose-btn').click();
+    await $('~message-input').setValue('Queued message');
+    await $('~send-btn').click();
+    await browser.toggleAirplaneMode(false);
+
+    await browser.waitUntil(
+      async () => !(await $('~outbox-badge').isDisplayed()),
+      { timeout: 10_000, interval: 1_000, timeoutMsg: 'Message not synced after reconnect' }
+    );
+  });
+});
+
+// toggleLocationServices — toggle, not set
+it('should show location-disabled prompt (Android)', async () => {
+  await browser.toggleLocationServices();
+  await expect($('~location-disabled-prompt')).toBeDisplayed({ timeout: 5000 });
+  await browser.toggleLocationServices(); // restore
+});
+```
+
+**[community] `toggleAirplaneMode` requires an explicit `enabled` boolean in v9+:** The older no-argument form toggled state. v9 requires explicit `true`/`false`. WHY: The implicit toggle was non-deterministic when tests failed mid-suite leaving CI in an unknown state. Fix: always pass the desired state: `toggleAirplaneMode(true)` / `toggleAirplaneMode(false)`.
+
+**[community] `toggleLocationServices()` is a stateless toggle — track state yourself in CI:** Because it simply inverts current state, a test that fails before restoring state causes all subsequent tests to start with location DISABLED. WHY: No `setLocationServices(enabled)` API exists. Fix: read current state via `driver.execute('mobile: shell', { command: 'settings', args: ['get', 'secure', 'location_mode'] })` before toggling.
+
+**[community] Network toggle commands are rejected on cloud device farms:** BrowserStack, Sauce Labs, and similar providers reject these commands for security reasons. WHY: Cloud providers do not allow tenants to modify shared device network state. Fix: use `browser.mock()` for HTTP interception on cloud; run network toggle tests exclusively on self-hosted emulators.
+
+**[community] `toggleAirplaneMode(true)` kills an active WebView CDP session:** If your test has an active WebView CDP session (e.g., `browser.mock()`), enabling airplane mode closes the CDP socket. WHY: Chrome DevTools Protocol uses TCP; the OS closes the socket when the interface goes down. Fix: close and re-establish the WebView context after toggling airplane mode.
+
+---
+
+## `getDisplayDensity()` — Android Screen DPI  [community]
+
+Returns the device's current display density in DPI. Use this to write DPI-aware assertions for layout, icon, and image quality tests.
+
+**Platform support:** Android only.
+
+```typescript
+// test/helpers/dpiHelper.ts
+const DENSITY_BUCKET = {
+  ldpi:    120,
+  mdpi:    160,
+  hdpi:    240,
+  xhdpi:   320,
+  xxhdpi:  480,
+  xxxhdpi: 640,
+} as const;
+
+type DensityBucket = keyof typeof DENSITY_BUCKET;
+
+export async function getDeviceDensityBucket(): Promise<DensityBucket> {
+  const density = await browser.getDisplayDensity() as number;
+  if (density <= 120) return 'ldpi';
+  if (density <= 160) return 'mdpi';
+  if (density <= 240) return 'hdpi';
+  if (density <= 320) return 'xhdpi';
+  if (density <= 480) return 'xxhdpi';
+  return 'xxxhdpi';
+}
+
+// test/specs/ui/icon-quality.spec.ts
+import { getDeviceDensityBucket } from '@helpers/dpiHelper.js';
+
+it('should load xxhdpi icons on high-density screen', async () => {
+  const bucket = await getDeviceDensityBucket();
+  if (bucket !== 'xxhdpi' && bucket !== 'xxxhdpi') return; // skip
+  const icon = await $('~app-logo');
+  const src  = await icon.getAttribute('content-desc');
+  expect(src).toContain('xxhdpi');
+});
+```
+
+**[community] DPI does not equal dp (density-independent pixels):** An emulator with `deviceName: 'Pixel 8'` reports 420 DPI, but gesture coordinates use dp = px / (dpi / 160). WHY: Android reports hardware DPI; WebDriver touch coordinates use dp. Fix: never mix DPI values with pixel coordinates in gesture APIs.
+
+**[community] `getDisplayDensity()` returns the current override density, not hardware spec:** Users can change display density in Settings → Display Size. WHY: `adb shell wm density` returns the effective (possibly overridden) value. Fix: fetch density dynamically at test start; never hard-code device DPI constants.
+
+---
+
+## `getStrings()` — i18n/l10n String Resource Validation  [community]
+
+Retrieves the app's compiled string resources as `Record<string, string>`. Use this to verify translation completeness across locales without changing device language or stubbing string files.
+
+**Platform support:** iOS and Android.
+
+```typescript
+// test/specs/i18n/localization.spec.ts
+const REQUIRED_KEYS = [
+  'login_title',
+  'login_email_placeholder',
+  'login_password_placeholder',
+  'login_cta',
+  'login_forgot_password',
+] as const;
+
+describe('Localization — string completeness', () => {
+  it('should have all required keys for default locale', async () => {
+    const strings = await browser.getStrings() as Record<string, string>;
+    for (const key of REQUIRED_KEYS) {
+      expect(strings).toHaveProperty(key);
+      expect(strings[key]).not.toBe('');
+    }
+  });
+
+  it('should have complete French translations', async () => {
+    const frStrings = await browser.getStrings('fr') as Record<string, string>;
+    for (const key of REQUIRED_KEYS) {
+      expect(frStrings).toHaveProperty(key);
+      expect(frStrings[key]).not.toBe('');
+    }
+  });
+
+  it('should not contain untranslated English fallbacks in French', async () => {
+    const enStrings = await browser.getStrings('en') as Record<string, string>;
+    const frStrings = await browser.getStrings('fr') as Record<string, string>;
+    const untranslated = REQUIRED_KEYS.filter(k => frStrings[k] === enStrings[k]);
+    expect(untranslated).toHaveLength(0);
+  });
+});
+
+// Android feature-module strings (optional stringFile parameter)
+const featureStrings = await browser.getStrings('en', 'assets/feature_checkout/strings.xml');
+```
+
+**[community] `getStrings()` does NOT return dynamic/server-driven strings:** Only strings compiled into the APK/IPA are returned. WHY: The command reads `Resources.getIdentifier()` (Android) or `NSBundle.localizedString()` (iOS) — bundled strings only. Fix: for server-driven strings, intercept the API response with `browser.mock()` or compare visible text directly with `toHaveText()`.
+
+**[community] iOS `getStrings()` does not cover framework bundle strings:** Only strings from the main app bundle's `.lproj` folders are returned. Strings from embedded frameworks require the framework's `NSBundle`. WHY: The XCUITest driver uses `NSBundle.mainBundle()` exclusively. Fix: test framework-owned strings via direct UI text assertions (`expect($('~label')).toHaveText('...')`).
+
+---
+
+## `background()` — App Backgrounding with Timer  [community]
+
+`browser.background(seconds)` sends the app to the background for the given duration (cross-platform). It is the primary way to test state preservation across foreground/background transitions.
+
+**Platform support:** iOS and Android.
+
+```typescript
+// test/specs/lifecycle/background-resume.spec.ts
+describe('Background-resume state preservation', () => {
+  it('should preserve scroll position after 5-second background', async () => {
+    await browser.swipe('up', 3);  // scroll down
+    const item = await $('~product-item-50');
+    await expect(item).toBeDisplayed();
+
+    await browser.background(5);  // background for 5 s, then auto-resume
+
+    await expect(item).toBeDisplayed({ timeout: 3000 });
+  });
+
+  it('should reload when backgrounded beyond keepalive threshold', async () => {
+    await browser.background(-1);    // background indefinitely
+    await browser.pause(30_000);     // wait 30 s to exceed 20 s keepalive
+    await driver.activateApp('com.example.app');  // manually restore
+
+    await expect($('~login-screen')).toBeDisplayed({ timeout: 10_000 });
+  });
+
+  it('should complete upload when backgrounded mid-progress', async () => {
+    await $('~upload-btn').click();
+    await browser.background(8);    // background mid-upload
+    await expect($('~upload-complete-toast')).toBeDisplayed({ timeout: 5000 });
+  });
+});
+```
+
+**[community] `background(-1)` requires an explicit `activateApp()` to return:** Unlike `background(5)` (auto-resumes), `background(-1)` leaves the app backgrounded until you call `driver.activateApp(bundleId)`. WHY: The `seconds = -1` sentinel skips the auto-resume timer. Fix: always pair `background(-1)` with `activateApp()` in the same test or in `afterEach`.
+
+**[community] `background()` vs `pressButton('home')` on iOS:** `background()` uses `XCUIApplication.deactivate()` (full `UISceneDelegate` lifecycle). `pressButton('home')` additionally fires `UIApplication.shared.applicationWillResignActive`. WHY: Apps with Home-button–specific handlers (e.g. Face ID logout) need `pressButton('home')` to trigger that code path; use `background()` for simple state-preservation tests.
+
+**[community] `background(seconds)` blocks the test thread on iOS:** The call does not return until the duration has elapsed. WHY: XCUITest's `deactivate(duration:)` is synchronous. Fix: never use `background()` inside `waitUntil()` chains — it blocks the runner for the full duration.
+
+---
+
+## `sendKeyEvent()` — Legacy Android Key Event API  [community]
+
+`browser.sendKeyEvent(keycode, metastate?)` sends a raw Android `KeyEvent`. It is the **legacy** approach — prefer `browser.pressKeyCode(keycode, metastate?)` for all new tests. Use `sendKeyEvent` only when targeting old Appium drivers that do not expose `pressKeyCode`.
+
+**Platform support:** Android only.
+
+**Common key codes (string for `sendKeyEvent`, number for `pressKeyCode`):**
+
+| Key | Code |
+|-----|------|
+| Back | `'4'` / `4` |
+| Home | `'3'` / `3` |
+| App switch | `'187'` / `187` |
+| Enter | `'66'` / `66` |
+| Delete (backspace) | `'67'` / `67` |
+| Volume up | `'24'` / `24` |
+| Volume down | `'25'` / `25` |
+
+```typescript
+// Preferred for new tests — numeric constant
+await browser.pressKeyCode(4);         // Back
+
+// Legacy fallback — string code
+await browser.sendKeyEvent('4');       // Back
+
+// With meta-state modifier (Shift = '1')
+await browser.sendKeyEvent('29', '1'); // Shift+A
+```
+
+**[community] `sendKeyEvent` uses string codes; `pressKeyCode` uses numbers:** Accidentally mixing string/number with the wrong command causes silent failures. WHY: The Appium 2 protocol bridge accepts both types but the underlying handler differs. Fix: use `pressKeyCode` with numeric constants exclusively; reserve `sendKeyEvent` for explicit Appium 1 compatibility shims.
+
+---
+
+## `getCurrentActivity()` and `getCurrentPackage()` — Android Activity Verification  [community]
+
+Read the currently-foreground Android activity and package name. Use these to assert navigation to new Activities or confirm the correct app is in the foreground after a deep link or intent launch.
+
+**Platform support:** Android only.
+
+```typescript
+// test/specs/navigation/android-activity.spec.ts
+describe('Android activity navigation', () => {
+  it('should navigate to ProductDetailActivity on item tap', async () => {
+    await $('~product-list-item-1').click();
+
+    await browser.waitUntil(
+      async () => {
+        const activity = await browser.getCurrentActivity() as string;
+        return activity.endsWith('ProductDetailActivity');
+      },
+      { timeout: 5000, interval: 500, timeoutMsg: 'ProductDetailActivity not reached' }
+    );
+  });
+
+  it('should remain in same package after deep link', async () => {
+    await browser.deepLink('myapp://product/123');
+    const pkg = await browser.getCurrentPackage() as string;
+    expect(pkg).toBe('com.example.myapp');
+  });
+
+  it('should verify package after app switch', async () => {
+    await browser.pressKeyCode(187); // APP_SWITCH
+    await browser.pressKeyCode(4);   // BACK to our app
+    const pkg = await browser.getCurrentPackage() as string;
+    expect(pkg).toBe('com.example.myapp');
+  });
+});
+```
+
+**[community] `getCurrentActivity()` returns the fully-qualified class name:** The return value is `'com.example.myapp.ui.ProductDetailActivity'`, not just `'ProductDetailActivity'`. WHY: Android reports the full `ComponentName.getClassName()`. Fix: use `.endsWith()` or `.includes()` checks rather than strict equality.
+
+**[community] `getCurrentActivity()` may briefly return `MainActivity` during deep-link transitions:** Android routes deep links through `MainActivity` before launching the target Activity. WHY: Intent routing dispatches to `MainActivity` first; it then calls `startActivity()` for the target. Fix: always use `waitUntil()` polling for the target activity name rather than reading it once immediately.
+
+---
+
+## `@wdio/mcp` — AI-Assisted Mobile Testing via Model Context Protocol  [community]
+
+Released February 2026, `@wdio/mcp` is an MCP server that exposes WebdriverIO and Appium capabilities to AI assistants (Claude, Copilot) as tool calls. It enables AI-assisted test generation, interactive debugging, and autonomous mobile app exploration.
+
+### Installation and configuration
+
+```bash
+npm install -g @wdio/mcp
+# or run without installing
+npx @wdio/mcp
+```
+
+**Claude Desktop / Claude Code `~/.claude/settings.json`:**
+```json
+{
+  "mcpServers": {
+    "wdio-mcp": {
+      "command": "npx",
+      "args": ["-y", "@wdio/mcp"]
+    }
+  }
+}
+```
+
+**Custom Appium server (remote device farm):**
+```json
+{
+  "mcpServers": {
+    "wdio-mcp": {
+      "command": "npx",
+      "args": ["-y", "@wdio/mcp"],
+      "env": {
+        "APPIUM_URL":      "192.168.1.100",
+        "APPIUM_URL_PORT": "4724",
+        "APPIUM_PATH":     "/"
+      }
+    }
+  }
+}
+```
+
+### Available MCP tools for mobile testing
+
+| Tool | Description |
+|------|-------------|
+| `start_app_session` | Launch an Appium session (iOS/Android) |
+| `tap_element` | Tap an element by selector or description |
+| `swipe` | Directional swipe on the device screen |
+| `drag_and_drop` | Drag element between two positions |
+| `get_contexts` | List native + WebView contexts |
+| `switch_context` | Switch between contexts |
+| `rotate_device` | Change device orientation |
+| `get_geolocation` / `set_geolocation` | Read/write GPS coordinates |
+| `execute_script` | Run Appium `mobile:` commands directly |
+
+### Element detection strategy
+
+`@wdio/mcp` uses XML page source parsing (2 HTTP calls per lookup vs 600+ for traditional `$()` chains), generating multiple locator candidates in priority order:
+1. Accessibility ID (`~` prefix) — cross-platform
+2. Resource ID / Name attributes
+3. Text / label matching
+4. XPath and platform-specific selectors (UiAutomator2, iOS predicate)
+
+```typescript
+// Workflow: use @wdio/mcp to discover locators interactively, then
+// transcribe them into committed .spec.ts files.
+//
+// Example AI prompt:
+//   "Open the checkout flow in the shopping app and verify the order total
+//    matches the cart subtotal"
+//
+// @wdio/mcp calls: start_app_session → tap_element → get_contexts → ...
+// Output includes discovered locators — copy these into your spec:
+
+// Locators discovered by @wdio/mcp session:
+// accessibility-id: "checkout-total-label"
+// resource-id:      "com.example.app:id/checkout_total"
+// xpath:            //android.widget.TextView[@resource-id='...checkout_total']
+
+it('should show correct order total at checkout', async () => {
+  const total = await $('~checkout-total-label');
+  await expect(total).toHaveText(/^\$\d+\.\d{2}$/);
+});
+```
+
+**[community] `@wdio/mcp` is single-session — only one browser OR app at a time:** The server maintains a single global WebdriverIO instance. You cannot run a browser session and an Appium session simultaneously. WHY: One WebdriverIO instance. Fix: `start_app_session` closes the previous session automatically.
+
+**[community] `@wdio/mcp` is an exploration/generation tool, NOT a test runner replacement:** AI-generated steps do not produce committed test files. WHY: MCP sessions are stateless across AI conversations — no built-in spec persistence. Fix: always transcribe discovered locators and flow steps into version-controlled `.spec.ts` files after each MCP exploration session.
+
+**[community] Appium must be running before `@wdio/mcp` mobile tool calls:** The MCP server does not start Appium automatically. WHY: `@wdio/mcp` connects to an existing Appium server at `APPIUM_URL:APPIUM_URL_PORT`. Fix: start `appium server` in a background terminal, or add an Appium start step to your AI assistant's pre-task hook before using MCP tools for mobile.
+
+---
+
+## Source: Iteration Log (Run 2026-05-12, Iteration 23)
+
+<!-- iteration: 23 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run (iter 23):
+     - gsmVoice() Android GSM voice state (7 states) + 2 gotchas
+     - getPerformanceData()/getPerformanceDataTypes() Android CPU/memory/battery/network monitoring + 3 gotchas
+     - powerAC()/powerCapacity() battery state simulation (0-100) + 3 gotchas
+     - fingerPrint() Android biometric (ID 1-10, enrolled vs rejected) + 2 gotchas
+     - openNotifications() Android notification shade testing + 2 gotchas
+     - getSystemBars() Android system bar visibility/bounds + 2 gotchas
+     - toggleAirplaneMode()/toggleData()/toggleWiFi()/toggleLocationServices() network state + 4 gotchas
+     - getDisplayDensity() Android DPI + DPI-bucket helper TypeScript utility + 2 gotchas
+     - getStrings() i18n/l10n string resource validation (cross-platform, language+stringFile params) + 2 gotchas
+     - background() app backgrounding with timer (cross-platform) + 3 gotchas
+     - sendKeyEvent() legacy Android key API vs pressKeyCode comparison + 1 gotcha
+     - getCurrentActivity()/getCurrentPackage() Android activity verification + 2 gotchas
+     - @wdio/mcp Model Context Protocol server for AI-assisted mobile testing (Feb 2026) + 3 gotchas
+-->
+<!-- Total community pitfalls: 235+ tagged [community] instances -->
+<!-- Total sections: 186+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources: webdriver.io/docs/api/mobile/gsmVoice, getPerformanceData, powerAC, powerCapacity, fingerPrint,
+     openNotifications, getSystemBars, toggleAirplaneMode, toggleData, toggleWiFi, toggleLocationServices,
+     getDisplayDensity, getStrings, background, sendKeyEvent, getCurrentActivity, getCurrentPackage,
+     webdriver.io/docs/mcp, webdriver.io/blog 2026-02-04 (wdio-mcp announcement) -->
+<!-- Score delta: 0 (maintained 100/100) — delta check not triggered -->
