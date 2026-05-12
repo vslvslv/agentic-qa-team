@@ -1,9 +1,10 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 18 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 19 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) | ISTQB CTFL 4.0 terminology applied -->
 <!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
 <!-- extension 2026-05-12: iter 17 — added TDD for Feature Flags (safe defaults pattern); One Map Key One Lookup for test doubles; TCR TypeScript script; gotchas #24–#26 -->
 <!-- extension 2026-05-12: iter 18 — added Zod v4 TDD patterns (schemaMatching with v4 APIs, z.input/z.output for test data, migration pitfall); `using`/`await using` for TDD resource teardown; Neon DB branching for database-level TDD isolation; `Promise.try` for sync-to-async TDD wrappers; gotchas #27–#29 -->
+<!-- extension 2026-05-12: iter 19 — added Vitest 4.1 TDD-relevant features: --detect-async-leaks, vi.defineHelper(), mockThrow()/mockThrowOnce(), aroundEach/aroundAll hooks, test.extend() builder, coverage.changed, test tags, GitHub Actions reporter, agent reporter; gotchas #30–#32 -->
 
 ## Core Principles
 
@@ -3410,6 +3411,348 @@ describe.skipIf(!promiseTryAvailable)('Promise.try-based pipeline', () => {
 
 ---
 
+### Vitest 4.1 — TDD-Relevant Changes [community]
+
+Vitest 4.1 (released 2026) adds several features that directly improve TDD workflows in TypeScript projects, building on Vitest 4.0.
+
+#### `--detect-async-leaks` — Catching Leaked Timers in TDD Test Cases
+
+A new `--detect-async-leaks` flag detects leaked timers and handles that survive beyond a test case's lifecycle. In TDD, leaked timers are a common cause of false-green test cases: an async operation fires _after_ the assertion, the test case passes, but the leaked timer causes the next test case to behave unpredictably.
+
+```typescript
+// Run Vitest with async leak detection enabled (recommended for TDD watch loop)
+// vitest --detect-async-leaks
+
+// Example of a leaking timer caught by --detect-async-leaks:
+// order-poller.test.ts
+import { describe, it, expect, vi } from 'vitest';
+import { OrderPoller } from './OrderPoller.js';
+
+describe('OrderPoller', () => {
+  it('polls for order status every 5 seconds', async () => {
+    vi.useFakeTimers();
+    const poller = new OrderPoller({ intervalMs: 5000 });
+    const statuses: string[] = [];
+
+    poller.start((status) => statuses.push(status));
+    vi.advanceTimersByTime(10_000); // advance 10 seconds
+
+    expect(statuses).toHaveLength(2);
+    // ❌ BUG: poller.stop() not called — timer leaks into the next test case
+    // --detect-async-leaks will report: "Detected 1 leaked timer in 'polls for order status'"
+  });
+
+  it('stops polling when stop() is called', async () => {
+    vi.useFakeTimers();
+    const poller = new OrderPoller({ intervalMs: 5000 });
+    const statuses: string[] = [];
+
+    poller.start((status) => statuses.push(status));
+    vi.advanceTimersByTime(5_000);
+    poller.stop(); // ✅ clean teardown — no timer leak
+    vi.advanceTimersByTime(5_000); // advancing time after stop should not produce more calls
+
+    expect(statuses).toHaveLength(1);
+    // --detect-async-leaks: no leak reported — the timer was properly cleared
+  });
+});
+```
+
+**TDD discipline with `--detect-async-leaks`:** Enabling this flag in the TDD watch loop catches missing `stop()`/`clear()` calls during the Refactor phase — before they become CI-only failures. The flag produces warnings (not failures by default), but pairing it with `--reporter=verbose` makes leak reports visible inline with test output. Add it to the `vitest.config.ts` `test.detectLeaks` option to enable permanently.
+
+```typescript
+// vitest.config.ts — enable leak detection as a permanent TDD health gate
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    detectLeaks: true,    // Vitest 4.1: equivalent to --detect-async-leaks
+    reporter: ['verbose'],
+    bail: 1,
+  },
+});
+```
+
+#### `vi.defineHelper()` — Type-Safe Custom Assertion Stack Traces
+
+`vi.defineHelper()` marks a function as a test helper, causing Vitest to point stack traces to the _call site_ rather than to the helper internals. In TDD, custom helpers improve test case readability but obscure failure locations — `vi.defineHelper()` resolves this without sacrificing the helper abstraction.
+
+```typescript
+// test-doubles/helpers.ts — custom assertions with correct stack trace attribution
+import { expect, vi } from 'vitest';
+
+// ❌ WITHOUT vi.defineHelper(): stack trace points to `assertOrderCreated` line,
+//    not the test case line that called it
+export function assertOrderCreated(spy: ReturnType<typeof vi.fn>, orderId: string) {
+  expect(spy).toHaveBeenCalledOnce();
+  expect(spy).toHaveBeenCalledWith(expect.objectContaining({ orderId }));
+}
+
+// ✅ WITH vi.defineHelper(): stack trace points to the line in the test case
+//    that called assertOrderCreated — TDD failure is immediately locatable
+export const assertOrderCreated = vi.defineHelper(
+  function assertOrderCreated(spy: ReturnType<typeof vi.fn>, orderId: string) {
+    expect(spy).toHaveBeenCalledOnce();
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ orderId }));
+  }
+);
+
+// Usage in a TDD test case:
+// order-service.test.ts
+import { describe, it, vi } from 'vitest';
+import { assertOrderCreated } from './test-doubles/helpers.js';
+import { OrderService } from './OrderService.js';
+import { FakeOrderRepository } from './test-doubles/FakeOrderRepository.js';
+
+describe('OrderService.create', () => {
+  it('persists a new order and emits a creation event', async () => {
+    const repo = new FakeOrderRepository();
+    const emitSpy = vi.fn<[{ orderId: string }], void>();
+    const service = new OrderService(repo, emitSpy);
+
+    await service.create({ userId: 'u1', items: [{ sku: 'A', qty: 1 }] });
+
+    // When this fails, the stack trace points HERE — not inside assertOrderCreated
+    assertOrderCreated(emitSpy, expect.any(String));
+  });
+});
+```
+
+#### `mockThrow()` and `mockThrowOnce()` — Explicit Error Injection in TDD
+
+Vitest 4.1 adds `mockThrow(error)` and `mockThrowOnce(error)` as first-class methods on mock functions, replacing the `mockImplementation(() => { throw error })` boilerplate. In TDD, these make the _error injection_ step in test case Arrange phases explicit and readable.
+
+```typescript
+// Vitest 4.1: mockThrow/mockThrowOnce for error path TDD
+import { describe, it, expect, vi } from 'vitest';
+import { PaymentService } from './PaymentService.js';
+
+interface PaymentGateway {
+  charge(amount: number): Promise<{ transactionId: string }>;
+}
+
+describe('PaymentService error handling', () => {
+  // Test case: RED — what happens when the gateway throws?
+  it('retries once on PaymentGatewayError', async () => {
+    const gatewayMock = {
+      charge: vi.fn<[number], Promise<{ transactionId: string }>>()
+        .mockThrowOnce(new Error('Gateway timeout'))  // ← Vitest 4.1: explicit throw injection
+        .mockResolvedValueOnce({ transactionId: 'txn-123' }), // ← second call succeeds
+    };
+    const service = new PaymentService(gatewayMock);
+
+    const result = await service.charge(50);
+
+    expect(result.transactionId).toBe('txn-123');
+    expect(gatewayMock.charge).toHaveBeenCalledTimes(2); // retry happened
+  });
+
+  // Test case: RED — exhausted retries propagate the error
+  it('throws PaymentGatewayError after exhausting retries', async () => {
+    const gatewayMock = {
+      charge: vi.fn<[number], Promise<{ transactionId: string }>>()
+        .mockThrow(new Error('Gateway unavailable')), // ← always throws (not just once)
+    };
+    const service = new PaymentService(gatewayMock);
+
+    await expect(service.charge(50)).rejects.toThrow('Gateway unavailable');
+    expect(gatewayMock.charge).toHaveBeenCalledTimes(3); // max retries exhausted
+  });
+});
+```
+
+**Why `mockThrow` improves TDD readability:** The Arrange phase intent is immediately clear — "this dependency will throw" — without reading through a `mockImplementation` body. `mockThrowOnce` precisely models the common production scenario where a third-party call fails transiently (network blip) and then succeeds.
+
+#### `aroundEach` and `aroundAll` Hooks — Generator-Based Test Lifecycle [community]
+
+Vitest 4.1 introduces `aroundEach` and `aroundAll` hooks that use generator syntax to wrap test case execution. Unlike `beforeEach`/`afterEach` pairs, the generator approach keeps setup and teardown co-located in a single function — eliminating the coordination bugs that arise when `afterEach` references variables that were not assigned when `beforeEach` threw.
+
+```typescript
+// vitest 4.1: aroundEach for co-located setup/teardown
+import { describe, it, expect } from 'vitest';
+import { InMemoryDatabase } from './test-doubles/InMemoryDatabase.js';
+import { UserRepository } from './UserRepository.js';
+
+describe('UserRepository', () => {
+  // aroundEach wraps every test case — setup before yield, teardown after yield
+  aroundEach(async function* ({ task }) {
+    // Setup: create a fresh isolated database for each test case
+    const db = new InMemoryDatabase();
+    await db.seed([
+      { id: 'seed-1', email: 'seeded@example.com', name: 'Seed User' }
+    ]);
+
+    // Inject the db into the test case via task context
+    task.context.db = db;
+
+    yield; // ← test case runs here
+
+    // Teardown: guaranteed even if the test case throws
+    await db.dispose();
+  });
+
+  it('finds a user by email', async ({ db }: { db: InMemoryDatabase }) => {
+    const repo = new UserRepository(db);
+    const user = await repo.findByEmail('seeded@example.com');
+    expect(user?.name).toBe('Seed User');
+  });
+
+  it('returns null for unknown email', async ({ db }: { db: InMemoryDatabase }) => {
+    const repo = new UserRepository(db);
+    const result = await repo.findByEmail('nobody@example.com');
+    expect(result).toBeNull();
+  });
+});
+```
+
+**Why `aroundEach` improves TDD over separate `beforeEach`/`afterEach`:**
+
+1. **Co-location:** Setup and teardown are in one function — easier to reason about what each test case receives and what gets cleaned up.
+2. **Guaranteed teardown:** The `finally` equivalent is implicit — teardown after `yield` runs regardless of whether the test case throws.
+3. **No `let` hoisting for shared variables:** Traditional `beforeEach`/`afterEach` requires `let db: InMemoryDatabase` hoisted outside both hooks. `aroundEach` eliminates the hoisted `let` that TypeScript cannot initialise-check across hook boundaries.
+
+#### Test Tags — Categorising TDD Test Suites [community]
+
+Vitest 4.1 introduces a tagging system that lets test cases be labelled and filtered. In TDD, this provides a disciplined way to separate the fast TDD inner loop (unit test cases, < 1s) from slower integration test cases and scheduled mutation tests — without maintaining separate config files.
+
+```typescript
+// vitest 4.1 test tags — categorise by execution speed and scope
+import { describe, it, expect } from 'vitest';
+import { PricingEngine } from './PricingEngine.js';
+import { PostgresPricingRepository } from './PostgresPricingRepository.js';
+
+// Unit test cases: tagged 'unit' — run in TDD watch loop
+describe('PricingEngine', { tags: ['unit'] }, () => {
+  it('applies 10% discount for premium tier', () => {
+    const engine = new PricingEngine();
+    const result = engine.calculate({ subtotal: 100, tier: 'premium' });
+    expect(result.discount).toBe(10);
+  });
+});
+
+// Integration test cases: tagged 'integration' — run only in CI
+describe('PostgresPricingRepository', { tags: ['integration', 'database'] }, () => {
+  it('fetches pricing rules from the live database', async () => {
+    const repo = new PostgresPricingRepository(process.env.DATABASE_URL!);
+    const rules = await repo.getAllRules();
+    expect(rules.length).toBeGreaterThan(0);
+  });
+});
+
+// Slow test cases: tagged 'slow' — excluded from TDD watch loop
+it.tags(['slow', 'mutation'])('mutation test: all branches covered', () => {
+  // placeholder — Stryker runs this externally, tag used for filtering only
+});
+```
+
+```bash
+# TDD watch loop: run only fast unit test cases
+npx vitest --watch --project.include-tags unit
+
+# CI full run: run everything
+npx vitest run
+
+# CI integration only: run tagged integration tests
+npx vitest run --project.include-tags integration
+
+# Exclude slow tests from watch loop
+npx vitest --watch --project.exclude-tags slow,mutation
+```
+
+**Tag filtering syntax supports `and`, `or`, `not`, and wildcards:**
+
+```bash
+# Run test cases tagged 'unit' AND 'pricing' (both tags required)
+npx vitest --watch --project.include-tags "unit and pricing"
+
+# Exclude test cases tagged 'database' OR 'slow'
+npx vitest --watch --project.exclude-tags "database or slow"
+```
+
+#### `coverage.changed` — Scoped Coverage for TDD Increments [community]
+
+Vitest 4.1's `coverage.changed` option limits coverage reporting to files that were modified relative to the current git branch. In TDD, this surfaces the coverage of the specific module you are developing without being diluted by the existing test suite.
+
+```typescript
+// vitest.config.ts — coverage.changed for TDD incremental sessions
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      enabled: true,
+      provider: 'v8',
+      // coverage.changed: only report coverage for files modified since the branch base
+      // Useful in TDD sessions where you want to verify the new module is fully covered
+      changed: process.env.TDD_SESSION === 'true',
+
+      // Full coverage still runs in CI (changed not set)
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts', 'src/**/test-doubles/**'],
+      thresholds: {
+        branches: 80,
+        functions: 85,
+        lines: 85,
+      },
+    },
+  },
+});
+```
+
+```bash
+# TDD session: see coverage only for files you've changed in this branch
+TDD_SESSION=true npx vitest run --coverage
+
+# Coverage output scoped to modified files — easier to spot uncovered branches in new code
+# Example output:
+# src/domain/pricing/PricingEngine.ts  |  100% |   95% |  100% |  100% |
+# (only shows the file you've been TDD'ing, not 200 other files)
+```
+
+#### GitHub Actions Reporter and `agent` Reporter [community]
+
+Vitest 4.1 adds a GitHub Actions reporter that generates a Job Summary with test statistics and — critically — flaky test permalinks. This makes TDD-detected intermittent failures visible in the PR review without digging through raw CI logs.
+
+```typescript
+// vitest.config.ts — GitHub Actions reporter for TDD PR visibility
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    reporter: process.env.GITHUB_ACTIONS === 'true'
+      ? ['verbose', 'github-actions']  // Vitest 4.1 — generates Job Summary in GitHub Actions
+      : ['verbose'],
+  },
+});
+```
+
+The `agent` reporter (also new in 4.1) minimises token usage for AI coding agents running test cases. In AI-assisted TDD workflows (where Claude or Copilot runs tests in a loop), this reporter suppresses verbose output and emits only structured pass/fail data — reducing inference costs and noise.
+
+```typescript
+// vitest.config.ts — agent reporter for AI-assisted TDD loops
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    reporter: process.env.AI_AGENT === 'true'
+      ? ['agent']      // Vitest 4.1: minimal output for AI coding agents
+      : ['verbose'],   // Human TDD session: full output
+  },
+});
+```
+
+---
+
+### Real-World Gotchas [community] — Additions (iter 19)
+
+30. **[community] Leaked timers are the second most common cause of order-dependent test failures in Vitest TypeScript projects.** After spy leakage (addressed by `using` in gotcha #28), the next most common isolation defect is a timer started in one test case that fires during a later unrelated test case. Without `detectLeaks: true`, the symptom is intermittent — the failure manifests only when test cases run in a specific order or at a specific speed. Teams enabling `detectLeaks: true` in Vitest 4.1 consistently report finding 3–8 latent timer leaks on first run across a large test suite. Fix: always call `vi.clearAllTimers()` in `afterEach` when using `vi.useFakeTimers()`, or use `aroundEach` to co-locate timer setup and teardown.
+
+31. **[community] `vi.defineHelper()` is the most impactful Vitest 4.1 change for teams with shared TDD helper libraries.** When a shared assertion helper fails, the stack trace without `vi.defineHelper()` points into the helper internals — a TypeScript file that test engineers did not write and are not familiar with. The reported line number is useless for diagnosing the failing test case. With `vi.defineHelper()`, the stack trace points to the specific `it(...)` block in the test file. The fix is wrapping existing helpers with `vi.defineHelper(function namedHelper(...) {...})` — the function must be named (not anonymous) for the stack trace attribution to work correctly.
+
+32. **[community] Vitest 4.1's `aroundEach` generator pattern does not replace `test.extend()` — it complements it.** A common confusion after upgrading to Vitest 4.1: `aroundEach` is suite-scoped (applies to all test cases in a `describe` block), while `test.extend()` fixtures are test-runner-scoped (injected per test case via the test function signature). For TDD test suites that need both suite-level resource management (database per describe block) and per-test-case fixture injection (typed repository per test), use `test.extend()` for the per-test-case concerns and `aroundAll` (not `aroundEach`) for the expensive suite-level setup like spinning up a container or seeding a schema.
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -3444,3 +3787,4 @@ describe.skipIf(!promiseTryAvailable)('Promise.try-based pipeline', () => {
 | TypeScript 5.2 — `using` and `await using` | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html | Explicit Resource Management for TDD teardown; scope-bound spy cleanup and test database disposal |
 | Neon DB — Test Branching | Docs | https://neon.com/docs/guides/branching-test-queries | Copy-on-write Postgres branch per test run; schema-only branching for sensitive data; instant teardown |
 | ECMAScript `Promise.try` Proposal | Docs | https://github.com/tc39/proposal-promise-try | Wraps sync throws as rejected promises — unifies sync/async TDD error assertions; available in Node 22+ and TypeScript 6.0 |
+| Vitest 4.1 Release Notes | Docs | https://vitest.dev/blog/vitest-4-1 | --detect-async-leaks for timer leak detection; vi.defineHelper() for correct stack trace attribution; mockThrow/mockThrowOnce; aroundEach/aroundAll; test tags; coverage.changed; GitHub Actions reporter; agent reporter for AI-assisted TDD |

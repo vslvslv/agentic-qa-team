@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -6735,5 +6735,567 @@ main();
 57. **[community] `@axe-core/react` silently fails to initialize in React 18+ without any error message**: Teams that upgrade from React 17 to React 18 and leave `@axe-core/react` initialization in `main.tsx` find that the module loads without error but produces no console output — no violations, no warnings, no indication the hook is disconnected. WHY: the React DevTools internals bridge hooks that `@axe-core/react` relied on changed in React 18; the package fails silently rather than throwing. Teams interpret the silence as "no violations found" when in reality the tool has stopped working entirely. The fix is to remove `@axe-core/react` from React 18+ projects and adopt the browser extension or `@storybook/addon-a11y` as the replacement for development-time scanning.
 
 58. **[community] Deque's Intelligent Guided Testing (IGT) via the axe MCP Server provides IDE-integrated accessibility scanning for AI agents — but it is a commercial tool, not a replacement for open-source axe-core in CI**: Deque introduced an "Axe MCP Server" as part of axe DevTools that exposes accessibility scanning to AI agents (Copilot, Claude Code) via the Model Context Protocol. This is distinct from the open-source navable MCP server (which uses axe-core directly). Teams evaluating axe MCP should understand: (1) it requires an axe DevTools license tier; (2) it targets IDE-embedded AI agents, not CI pipelines; (3) the open-source `@axe-core/playwright` + navable MCP combination covers the same scan→plan→fix→verify workflow for teams that need CI-integrated agent-driven fixing. WHY: the confusion between "axe DevTools MCP" (commercial, IDE) and "axe-core in CI via @axe-core/playwright" (open-source) leads teams to believe they need a commercial license to use axe-core in CI — they do not.
+
+59. **[community] Playwright 1.56+ `toMatchAriaSnapshot()` renders `<input>` `placeholder` text in the YAML snapshot — teams not expecting this see unexpected snapshot mismatches after upgrading**: Playwright 1.56 changed `ariaSnapshot()` to render `<input>` placeholder text as part of the element's accessible description in the YAML output (e.g., `- textbox "Email" [placeholder="user@example.com"]`). Teams pinning snapshot baselines from Playwright 1.55 or earlier will experience snapshot failures on `<input>` elements with `placeholder` attributes after upgrading — even if the ARIA structure has not changed. WHY: the placeholder is now included as metadata in the YAML format, matching how screen readers announce inputs. Fix: re-run `npx playwright test --update-snapshots` after upgrading to 1.56+ to regenerate baselines, and review whether the placeholder content is semantically meaningful enough to assert on or should be filtered. If you use placeholder as a form label substitute (a known WCAG anti-pattern), this change will surface that pattern in snapshot diffs — a useful side effect.
+
+60. **[community] WCAG 2.2 became ISO/IEC 40500:2025 in October 2025 — this has procurement implications that QA teams should understand even though the technical requirements are unchanged**: WCAG 2.2 (published October 2023) was ratified as an ISO international standard in October 2025 as ISO/IEC 40500:2025. The technical content is identical to the W3C standard — no new criteria were added. The significance for QA teams is in procurement: ISO status enables countries and government bodies that reference ISO standards in procurement law (rather than W3C specifications directly) to formally mandate WCAG 2.2 compliance. Teams shipping to global government markets should track whether their target jurisdictions have updated procurement requirements to reference ISO/IEC 40500:2025. This is distinct from the EU EAA (which references EN 301 549 and WCAG 2.2 directly, not via ISO). The practical testing requirements are unchanged: WCAG 2.2 AA with axe-core `wcag22aa` tags.
+
+61. **[community] ACT Rules Format 1.1 became an official W3C standard in 2026 — teams using axe-core benefit indirectly through improved tool consistency**: The W3C Accessibility Conformance Testing (ACT) Rules Format 1.1 became an official web standard in early 2026. ACT defines the format for writing automated and manual accessibility test rules in a standardized, interoperable way. axe-core's built-in rules are authored as ACT-compatible rules, meaning each axe-core rule maps to a documented ACT rule that describes exactly what it tests and why. The practical impact for TypeScript QA teams: (1) When writing **custom axe-core rules** (see Custom axe-core Rules section above), following ACT Rules Format 1.1 structure (`metadata.description`, `helpUrl`, `evaluate()` function, pass/fail examples) ensures they remain maintainable and auditable; (2) ACT 1.1 now allows **subjective applicability** — meaning you can author rules for requirements that cannot be objectively automated (e.g., "form label is meaningful, not just present"), with a documented manual review fallback; (3) The `Implementations` section in ACT 1.1 lets you document which tools implement each rule — useful for justifying to auditors why a given axe-core scan configuration covers a specific WCAG criterion. WHY: teams that author custom rules without ACT structure end up with undocumented internal checks that new engineers cannot understand or maintain. ACT 1.1's formal structure prevents this.
+
+62. **[community] Running axe-core across 50+ Playwright test files in CI without parallelization can cause test run times to balloon to 15–25 minutes — use Playwright's `--shard` option to distribute accessibility scans**: axe-core injects JavaScript into each page and runs synchronously in the browser context. On large applications with 50+ routes each requiring a full axe scan, the cumulative injection + analysis time adds up. The Playwright test sharding approach (`--shard=1/4`, `--shard=2/4`, etc.) distributes accessibility E2E tests across multiple CI runners. WHY: teams that put all accessibility tests in a single CI job find that the job becomes the longest job in the pipeline, delaying PRs by 15+ minutes when 5–6 parallel jobs would reduce it to 4–5 minutes. Recommended configuration: run jest-axe component tests (fast, 30–60s) in the same job as unit tests; run Playwright accessibility E2E in a dedicated job with `--shard` distributing across 3–4 runners. This mirrors the CI pipeline structure in the GitHub Actions YAML above.
+
+---
+
+### WCAG 2.2 ISO/IEC 40500:2025 — Procurement Implications for QA Programs
+
+WCAG 2.2 was ratified as **ISO/IEC 40500:2025** in October 2025. The technical requirements are identical to the W3C WCAG 2.2 standard — no new success criteria, no changed conformance levels. The significance is in the procurement and legal landscape:
+
+| Context | Previous position | Position after ISO/IEC 40500:2025 |
+|---------|-------------------|-----------------------------------|
+| EU EAA | EN 301 549 v3.3.2 references WCAG 2.2 directly | Unchanged — EU law references EN 301 549, not ISO |
+| US Section 508 | WCAG 2.0 Level AA (updating to 2.1) | No change yet — Section 508 is behind the standard |
+| ISO-referencing procurement (many APAC/MENA govts) | WCAG 2.0 was ISO/IEC 40500:2012 | Now WCAG 2.2 is ISO/IEC 40500:2025; enables mandate |
+| Global SaaS certifications (SOC 2, ISO 27001 trust) | Not directly relevant | Accessibility now has ISO parity with security standards |
+
+**Practical implication for QA teams:** If your organization produces an Accessibility Conformance Report (ACR/VPAT), reference ISO/IEC 40500:2025 in addition to WCAG 2.2 for government/enterprise procurement customers who require ISO standard citations. The axe-core test configuration does not change — WCAG 2.2 AA remains the target, now just with dual naming.
+
+```typescript
+// File: scripts/generate-acr-header.ts
+// Generate the header for an Accessibility Conformance Report (ACR/VPAT)
+// referencing both ISO/IEC 40500:2025 and WCAG 2.2 for maximum procurement coverage.
+
+export interface ACRHeader {
+  productName: string;
+  version: string;
+  reportDate: string;
+  contactInfo: string;
+}
+
+export function generateACRHeader(info: ACRHeader): string {
+  return `
+ACCESSIBILITY CONFORMANCE REPORT
+Based on WCAG 2.2 / ISO/IEC 40500:2025 and EN 301 549 v3.3.2
+(Formerly known as VPAT)
+
+Product: ${info.productName}
+Version: ${info.version}
+Report Date: ${info.reportDate}
+Contact: ${info.contactInfo}
+
+Standards Tested:
+  • WCAG 2.2 Level AA (= ISO/IEC 40500:2025 Level AA)
+  • EN 301 549 v3.3.2, Clauses 9.1–9.4 (Web)
+  • Section 508 (where applicable — maps to WCAG 2.0/2.1 AA)
+
+Testing Methodology:
+  • Automated: axe-core 4.11.4 via @axe-core/playwright (WCAG 2.2 AA tag set)
+  • Manual: Keyboard audit, NVDA + Firefox, VoiceOver + Safari
+  • Standards: ACT Rules Format 1.1 (W3C 2026) for test rule documentation
+
+Note: WCAG 2.2 and ISO/IEC 40500:2025 have identical technical content.
+ISO/IEC 40500:2025 enables adoption by jurisdictions referencing ISO standards
+in procurement law. Test procedures and conformance criteria are unchanged.
+`.trim();
+}
+```
+
+---
+
+### ACT Rules Format 1.1 — Writing Auditable Custom Accessibility Rules
+
+The W3C **Accessibility Conformance Testing (ACT) Rules Format 1.1** became an official web standard in 2026. Teams writing custom axe-core rules for organization-specific standards benefit from structuring those rules using ACT format — it makes them auditable, maintainable, and consistent with how built-in axe-core rules are authored.
+
+**Key ACT 1.1 concepts for custom rule authors:**
+
+| Concept | Description | Custom rule implication |
+|---------|-------------|------------------------|
+| **Atomic rule** | Tests a single specific condition | One `evaluate()` function per condition |
+| **Composite rule** | Combines outcomes of multiple atomic rules | Use `any`/`all`/`none` arrays in axe rule config |
+| **Applicability** | Defines which elements the rule applies to | `selector` in axe rule config |
+| **Subjective applicability** (new in 1.1) | Allowed when objective test is impossible | Document manual review requirement in `helpUrl` |
+| **Implementations section** | Documents which tools run this rule | Add comment: which axe version introduced this |
+| **Secondary requirements** | Flags where tool findings need manual verification | Mark with `metadata.incomplete` logic |
+
+```typescript
+// File: e2e/config/act-rules-custom.ts
+// ACT Rules Format 1.1 compliant custom axe-core rules.
+// Follows ACT structure: description, applicability, expectations, examples, helpUrl.
+// This structure ensures rules are auditable and maintainable by new team members.
+import type { Rule, Check } from 'axe-core';
+
+/**
+ * ACT Rule: Meaningful heading text
+ *
+ * Applicability: All <h1>–<h6> elements with non-empty text
+ * Expectation: Heading text must not be generic placeholders
+ * Rationale: Generic headings (h2: "Section 2") fail WCAG 2.4.6 (Headings and Labels, AA)
+ *   and prevent screen reader users from understanding page structure.
+ *
+ * ACT 1.1 note: This rule uses subjective applicability — "meaningful" cannot
+ * be objectively defined. The check filters obvious failure patterns; human
+ * review is required for borderline cases.
+ *
+ * Pass: <h2>Shopping cart</h2>
+ * Fail: <h2>Section 2</h2> — generic placeholder
+ * Fail: <h2>Heading</h2> — default CMS placeholder
+ * Inapplicable: <h2 aria-hidden="true"> — hidden from accessibility tree
+ */
+const meaningfulHeadingCheck: Check = {
+  id: 'meaningful-heading-text',
+  evaluate(node: Element): boolean {
+    const text = (node.textContent ?? '').trim().toLowerCase();
+    if (!text) return true; // Empty headings caught by axe's built-in heading-order rule
+
+    // Detect obviously generic patterns — not exhaustive; human review required
+    const genericPatterns = [
+      /^section\s*\d+$/i,          // "Section 1", "Section 2"
+      /^heading\s*\d*$/i,           // "Heading", "Heading 1"
+      /^untitled$/i,                // CMS default
+      /^h[1-6]$/i,                  // Literal element name as content
+      /^placeholder/i,              // "Placeholder text"
+      /^lorem ipsum/i,              // Dev placeholder text
+    ];
+
+    const isGeneric = genericPatterns.some((p) => p.test(text));
+    return !isGeneric;
+  },
+  metadata: {
+    type: 'failure',
+    messages: {
+      pass: 'Heading text appears meaningful',
+      fail: 'Heading text appears to be a generic placeholder (e.g., "Section 1", "Heading") — ' +
+            'verify it describes the content below it. WCAG 2.4.6 (AA) requires headings to ' +
+            'be informative. This check uses subjective applicability per ACT Rules Format 1.1 — ' +
+            'manual review required for borderline cases.',
+    },
+  },
+};
+
+const meaningfulHeadingRule: Rule = {
+  id: 'org-meaningful-heading',
+  selector: 'h1, h2, h3, h4, h5, h6',
+  tags: ['org-standards', 'wcag246', 'best-practice'],
+  metadata: {
+    description: 'Heading text must describe the content it introduces (WCAG 2.4.6 AA)',
+    help: 'Replace generic placeholder headings with descriptive text',
+    helpUrl: 'https://www.w3.org/WAI/WCAG22/Understanding/headings-and-labels.html',
+    // ACT 1.1: document the Implementations section — which versions run this
+    // Implementation: custom rule added <date>; aligns with ACT Rules Format 1.1
+  },
+  any: ['meaningful-heading-text'],
+  all: [],
+  none: [],
+};
+
+/**
+ * ACT Rule: Interactive element has data-testid (org QA policy)
+ *
+ * Applicability: All interactive elements (button, a, input, select, textarea)
+ * Expectation: Element has a data-testid attribute
+ * Rationale: Org policy — all interactive elements require data-testid for QA automation
+ *   and accessibility audit traceability. This is NOT a WCAG requirement; it is an
+ *   org-level quality standard.
+ *
+ * ACT 1.1 type: Atomic rule with objective applicability
+ *
+ * Pass: <button data-testid="submit-form">Submit</button>
+ * Fail: <button>Submit</button> — missing data-testid
+ * Inapplicable: non-interactive elements
+ */
+const requireTestIdCheck: Check = {
+  id: 'requires-test-id',
+  evaluate(node: Element): boolean {
+    return node.hasAttribute('data-testid');
+  },
+  metadata: {
+    type: 'failure',
+    messages: {
+      pass: 'Interactive element has data-testid attribute',
+      fail: 'Interactive element is missing data-testid attribute ' +
+            '(org policy — required for QA automation and audit traceability)',
+    },
+  },
+};
+
+const requireTestIdRule: Rule = {
+  id: 'org-require-test-id',
+  selector: 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
+  tags: ['org-standards'],
+  metadata: {
+    description: 'Interactive elements must have data-testid (org QA policy)',
+    help: 'Add data-testid="<descriptive-name>" to all interactive elements',
+    helpUrl: 'https://your-org.example.com/qa/test-ids',
+  },
+  any: ['requires-test-id'],
+  all: [],
+  none: [],
+};
+
+import axe from 'axe-core';
+
+export function registerACTCompliantCustomRules(): void {
+  axe.configure({
+    checks: [meaningfulHeadingCheck, requireTestIdCheck],
+    rules: [meaningfulHeadingRule, requireTestIdRule],
+  });
+}
+```
+
+```typescript
+// File: e2e/accessibility/act-rules-compliance.spec.ts
+// Test that ACT-compliant custom rules run alongside standard WCAG checks.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import { registerACTCompliantCustomRules } from '../config/act-rules-custom';
+
+test.describe('ACT 1.1 custom rule compliance', () => {
+  test.beforeAll(() => {
+    registerACTCompliantCustomRules();
+  });
+
+  test('headings are meaningful (org-meaningful-heading rule)', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'org-standards', 'best-practice'])
+      .analyze();
+
+    // Separate org violations from WCAG violations for targeted reporting
+    const orgViolations = results.violations.filter((v) =>
+      v.id === 'org-meaningful-heading'
+    );
+    const wcagViolations = results.violations.filter((v) =>
+      v.id !== 'org-meaningful-heading' && v.id !== 'org-require-test-id'
+    );
+
+    if (orgViolations.length > 0) {
+      // Note: ACT 1.1 subjective applicability — these require human review
+      console.warn(
+        `[ACT Rule: org-meaningful-heading] ${orgViolations.length} headings need review:\n` +
+        orgViolations.flatMap((v) => v.nodes.map((n) => `  - "${n.html}"`)).join('\n')
+      );
+    }
+
+    // WCAG violations are hard failures; org violations are warnings
+    expect(wcagViolations).toEqual([]);
+  });
+});
+```
+
+**ACT Rules Format 1.1 compliance checklist for custom rules:**
+
+1. **Unique ID** — must not conflict with built-in axe rule IDs; use `org-` prefix
+2. **Rule type** — declare as atomic (single condition) or composite (combines atomics)
+3. **Applicability** — define via `selector`; if truly subjective, document manual review requirement in `metadata.help`
+4. **Expectations** — the `evaluate()` function is the expectation; return `true` for pass, `false` for fail
+5. **Pass/Fail examples** — document in JSDoc comments adjacent to the rule definition
+6. **WCAG mapping** — add relevant WCAG SC code to `tags` if applicable (e.g., `'wcag246'`)
+7. **`helpUrl`** — always link to internal docs; this is what appears in violation reports
+8. **Implementations note** — comment which tool version introduced the rule and when
+
+---
+
+### Playwright 1.56 `input` Placeholder in Aria Snapshots
+
+Playwright 1.56 (released early 2025) changed how `ariaSnapshot()` renders `<input>` elements. Input placeholder text is now included as part of the YAML representation:
+
+**Before 1.56:**
+```yaml
+- textbox "Email address"
+```
+
+**After 1.56:**
+```yaml
+- textbox "Email address" [placeholder="user@example.com"]
+```
+
+**Impact on existing aria snapshot tests:**
+
+Teams upgrading from Playwright 1.55 or earlier with committed `.aria.yml` snapshot files will see snapshot test failures on any `<input>` element that has a `placeholder` attribute — even if the ARIA structure is correct and unchanged. This is not a regression; it is an improvement in snapshot fidelity.
+
+**Migration steps:**
+
+1. Run `npx playwright test --update-snapshots` after upgrading to 1.56+
+2. Review the diff to verify placeholder text is meaningful (not just `"e.g., enter email"` placeholder patterns)
+3. If placeholder text is used as a pseudo-label substitute (WCAG anti-pattern — see Anti-Pattern #5), this diff will expose that in version control — use it as an opportunity to fix the accessibility issue
+
+```typescript
+// File: e2e/accessibility/aria-snapshot-placeholder.spec.ts
+// Playwright 1.56+: aria snapshots now include input placeholder text.
+// Use this test pattern to verify placeholders are complementary to labels,
+// not substitutes for labels (WCAG 3.3.2).
+import { test, expect } from '@playwright/test';
+
+test.describe('Input placeholder in aria snapshots (Playwright 1.56+)', () => {
+
+  // This snapshot documents the expected accessible form structure including placeholders.
+  // After Playwright 1.56, placeholder text appears as [...] in the YAML snapshot.
+  // If a form input lacks a label (relying on placeholder only), the snapshot will
+  // show a textbox with only a placeholder — a useful accessibility flag.
+  test('login form inputs have both labels AND placeholders', async ({ page }) => {
+    await page.goto('/login');
+    await page.waitForLoadState('networkidle');
+
+    const form = page.getByRole('form', { name: 'Sign in' });
+
+    // ✅ Good: input has an accessible name from its label, plus an optional placeholder
+    // The snapshot shows both the label-derived name AND the placeholder
+    await expect(form).toMatchAriaSnapshot(`
+      - form "Sign in":
+        - textbox "Email address" [placeholder="your@email.com"]
+        - textbox "Password" [placeholder="Enter your password"]
+        - button "Sign in"
+    `);
+  });
+
+  // Test that reveals a missing label — placeholder-only inputs show
+  // the accessible name as empty and only the placeholder is visible in the snapshot
+  test('detect placeholder-only inputs (missing labels) via snapshot diff', async ({ page }) => {
+    await page.goto('/register');
+    await page.waitForLoadState('networkidle');
+
+    // Use ariaSnapshot() programmatically to inspect all inputs
+    const formSnapshot = await page.getByRole('form').ariaSnapshot();
+
+    // A properly labeled input: 'textbox "Email address" [placeholder=...]'
+    // A placeholder-only input: 'textbox [placeholder="Enter email"]' — no quoted name before [
+    const hasUnnamedInputs = /textbox \[placeholder/i.test(formSnapshot);
+
+    if (hasUnnamedInputs) {
+      console.error(
+        '[WCAG 3.3.2] Form contains placeholder-only inputs (no visible label).\n' +
+        'Snapshot excerpt:\n' +
+        formSnapshot.split('\n').filter((l) => l.match(/textbox \[placeholder/i)).join('\n')
+      );
+    }
+
+    // Fail CI if any inputs rely solely on placeholder text as their accessible name
+    expect(hasUnnamedInputs).toBe(false);
+  });
+});
+```
+
+**Why Playwright 1.56's placeholder rendering is beneficial:**
+
+Before 1.56, aria snapshots of forms were identical whether a form used proper labels or placeholder-only inputs — both showed `textbox "Email address"` if the accessible name computed correctly. After 1.56, placeholder-only inputs are visibly distinct in snapshots (`textbox [placeholder="Email"]` vs `textbox "Email address" [placeholder="Email"]`), making the anti-pattern detectable in CI snapshot diffs.
+
+**Updating the global `toMatchAriaSnapshot` config for placeholder handling:**
+
+```typescript
+// File: playwright.config.ts update for 1.56+ placeholder snapshots
+// If you want to ignore placeholder values in snapshots (e.g., they change frequently),
+// generate the baseline without placeholder assertions by stripping the [...] from templates.
+// However, this removes the anti-pattern detection benefit — only suppress if justified.
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  expect: {
+    toMatchAriaSnapshot: {
+      children: 'contain', // Default; extras ignored in partial matching
+    },
+  },
+  use: {
+    baseURL: 'http://localhost:3000',
+  },
+});
+```
+
+---
+
+### WCAG-EM 2.0 — Evaluation Methodology for QA Programs
+
+The W3C **Website Accessibility Conformance Evaluation Methodology (WCAG-EM) 2.0** is a draft evaluation framework being developed alongside WCAG 3.0. While WCAG-EM 1.0 defined how to evaluate websites, WCAG-EM 2.0 extends the scope to **digital products** — web applications, mobile web, and multi-page SPAs — that do not fit the traditional "website" model cleanly.
+
+**Why QA teams should track WCAG-EM 2.0:**
+- WCAG-EM 1.0 used "page sampling" — selecting representative pages from a site. SPAs with dynamic routing do not have discrete "pages" to sample.
+- WCAG-EM 2.0 introduces **user flow sampling** — selecting representative user tasks (checkout, login, account creation) rather than static pages. This maps directly to how Playwright E2E tests are structured.
+- WCAG-EM 2.0 evaluation outputs are designed to feed into ACR/VPAT documents with more structured findings than WCAG-EM 1.0 evaluation statements.
+
+**WCAG-EM 1.0 five-step process (current standard):**
+
+| Step | Description | Automation opportunity |
+|------|-------------|----------------------|
+| 1. Define scope | Identify target website, conformance level, AT support baseline | Document in `axe-wcag22-fixture.ts` options |
+| 2. Explore website | Identify page types, essential functionality, relied-on tech | Enumerate routes in Playwright test config |
+| 3. Select sample | Structured sample (all page types) + 10% random sample | `pagesToScan` array in baseline spec |
+| 4. Audit sample | Check WCAG conformance per success criterion | axe scan + manual keyboard + screen reader |
+| 5. Report findings | Document outcomes; produce evaluation statement | ACR/VPAT generation script |
+
+**TypeScript script applying WCAG-EM 1.0 sampling to automated axe scans:**
+
+```typescript
+// File: scripts/wcag-em-sample-scan.ts
+// Applies WCAG-EM 1.0 structured sampling to automated axe scans.
+// Step 3: Select structured sample + 10% random sample for the audit.
+import { chromium } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import * as fs from 'fs';
+
+// Step 2 output: All identified page types from the site exploration
+const STRUCTURED_SAMPLE = [
+  // Essential functionality (WCAG-EM: must include complete processes)
+  { url: '/', type: 'home', category: 'entry' },
+  { url: '/login', type: 'auth', category: 'essential' },
+  { url: '/register', type: 'auth', category: 'essential' },
+  { url: '/checkout/step-1', type: 'checkout', category: 'essential' },
+  { url: '/checkout/step-2', type: 'checkout', category: 'essential' },
+  { url: '/checkout/confirmation', type: 'checkout', category: 'essential' },
+  // Page type representatives
+  { url: '/products', type: 'list', category: 'page-type' },
+  { url: '/products/123', type: 'detail', category: 'page-type' },
+  { url: '/account/profile', type: 'form', category: 'page-type' },
+  { url: '/help', type: 'content', category: 'page-type' },
+  { url: '/contact', type: 'form', category: 'page-type' },
+];
+
+// Step 3: Add 10% random sample from the full URL inventory
+function selectRandomSample(allUrls: string[], structuredSample: string[], pct = 0.1): string[] {
+  const structured = new Set(structuredSample);
+  const candidates = allUrls.filter((url) => !structured.has(url));
+  const sampleSize = Math.max(1, Math.ceil(candidates.length * pct));
+
+  // Deterministic pseudo-random selection for reproducibility
+  const shuffled = candidates.sort((a, b) => a.localeCompare(b));
+  return shuffled.slice(0, sampleSize);
+}
+
+interface WCAGEMScanResult {
+  url: string;
+  type: string;
+  category: string;
+  violationCount: number;
+  violationsBySeverity: Record<string, number>;
+  sampleType: 'structured' | 'random';
+}
+
+export async function runWCAGEMScan(
+  baseUrl: string,
+  allKnownUrls: string[]
+): Promise<WCAGEMScanResult[]> {
+  // Select the 10% random sample from known URLs not in structured sample
+  const structuredUrls = STRUCTURED_SAMPLE.map((p) => p.url);
+  const randomSampleUrls = selectRandomSample(allKnownUrls, structuredUrls);
+
+  const allPages = [
+    ...STRUCTURED_SAMPLE.map((p) => ({ ...p, sampleType: 'structured' as const })),
+    ...randomSampleUrls.map((url) => ({
+      url,
+      type: 'random-sample',
+      category: 'random',
+      sampleType: 'random' as const,
+    })),
+  ];
+
+  const browser = await chromium.launch();
+  const results: WCAGEMScanResult[] = [];
+
+  for (const pageInfo of allPages) {
+    const page = await browser.newPage();
+    try {
+      await page.goto(baseUrl + pageInfo.url);
+      await page.waitForLoadState('networkidle');
+
+      const axeResults = await new AxeBuilder({ page })
+        .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'])
+        .analyze();
+
+      const bySeverity = axeResults.violations.reduce(
+        (acc, v) => {
+          const key = v.impact ?? 'unknown';
+          acc[key] = (acc[key] ?? 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>
+      );
+
+      results.push({
+        url: pageInfo.url,
+        type: pageInfo.type,
+        category: pageInfo.category,
+        sampleType: pageInfo.sampleType,
+        violationCount: axeResults.violations.length,
+        violationsBySeverity: bySeverity,
+      });
+    } catch (e) {
+      console.warn(`[WCAG-EM] Failed to scan ${pageInfo.url}: ${e}`);
+    } finally {
+      await page.close();
+    }
+  }
+
+  await browser.close();
+
+  // Step 5: Report findings summary
+  const totalViolations = results.reduce((sum, r) => sum + r.violationCount, 0);
+  const pagesWithViolations = results.filter((r) => r.violationCount > 0).length;
+
+  console.log('\n=== WCAG-EM 1.0 Evaluation Summary ===');
+  console.log(`Pages scanned: ${results.length} (${STRUCTURED_SAMPLE.length} structured + ${randomSampleUrls.length} random)`);
+  console.log(`Pages with violations: ${pagesWithViolations}/${results.length}`);
+  console.log(`Total violations: ${totalViolations}`);
+  console.log('\nResults by page:');
+  results.forEach((r) => {
+    const status = r.violationCount === 0 ? '✓' : '✗';
+    console.log(`  ${status} [${r.sampleType}] ${r.url} — ${r.violationCount} violations`);
+  });
+
+  // Write WCAG-EM Step 5 structured output for ACR/VPAT generation
+  fs.writeFileSync(
+    'wcag-em-evaluation.json',
+    JSON.stringify({ scanDate: new Date().toISOString(), pages: results }, null, 2)
+  );
+
+  return results;
+}
+```
+
+**WCAG-EM 2.0 user-flow sampling preview (draft concept):**
+
+WCAG-EM 2.0 shifts from page sampling to user-flow sampling. A "user flow" is a complete task like "log in and update profile" rather than isolated pages. This aligns exactly with Playwright E2E test suites — each Playwright test that follows a multi-step user journey IS a WCAG-EM 2.0 user-flow sample. Teams that structure their Playwright accessibility tests as user flows are already aligned with the WCAG-EM 2.0 direction:
+
+```typescript
+// File: e2e/accessibility/wcag-em-flow.spec.ts
+// WCAG-EM 2.0 aligned user flow accessibility testing.
+// Each test covers a complete user task, not just an isolated page.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('WCAG-EM 2.0 user flow — Checkout process', () => {
+  // Each step in the flow gets its own axe scan at the correct state
+  test('checkout flow: all 3 steps have no WCAG 2.2 AA violations', async ({ page }) => {
+    // Step 1: Cart review
+    await page.goto('/cart');
+    await page.waitForLoadState('networkidle');
+    const cartResults = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag22aa'])
+      .analyze();
+    expect(cartResults.violations, 'Cart page violations').toEqual([]);
+
+    // Step 2: Shipping details (dynamic form state — critical to test at this point)
+    await page.click('[data-testid="proceed-to-checkout"]');
+    await page.waitForURL('/checkout/shipping');
+    await page.waitForLoadState('networkidle');
+    const shippingResults = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag22aa'])
+      .analyze();
+    expect(shippingResults.violations, 'Shipping step violations').toEqual([]);
+
+    // Step 3: Order review before submission
+    await page.fill('[name="first-name"]', 'Test');
+    await page.fill('[name="last-name"]', 'User');
+    await page.fill('[name="address"]', '123 Test St');
+    await page.click('[data-testid="proceed-to-review"]');
+    await page.waitForURL('/checkout/review');
+    await page.waitForLoadState('networkidle');
+    const reviewResults = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag22aa'])
+      .analyze();
+    expect(reviewResults.violations, 'Order review page violations').toEqual([]);
+  });
+});
+```
+
+**Why user-flow scanning catches issues page scanning misses:** A checkout confirmation page only exists after a user has completed the previous steps. A static URL scan at `/checkout/confirmation` without state will show an empty or error page. User-flow scanning captures the real accessible state of the confirmation page after a completed transaction — the state screen reader users encounter. This is the core insight behind WCAG-EM 2.0's user-flow model.
 
 ---

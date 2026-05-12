@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 27 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 28 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 28 additions: Cucumber Expressions advanced syntax — optional text (s), alternation a/b, anonymous {} parameter, escape sequences for { ( / characters; playwright-bdd v8.4.1 — explicit TypeScript type exports (BddFixtures, CreateBddOptions, TestTypeCommon), skipLibCheck fix for module:commonjs; DataTable escape sequences (\n \| \\) with rowsHash/hashes method reference table; @cucumber/gherkin-streams removal migration guide — regex-based counting and Messages API alternatives; Gherkin keyword scope rules reference table — Rule/Background/Examples valid parent scopes, tags-on-Background anti-pattern, multiple Background blocks silent failure -->
 <!-- Iter 27 additions: Cucumber.js unreleased — formatter architecture redesign (SummaryFormatter/ProgressFormatter class deprecation, new summary/progress/progress-bar/pretty formatter design), printAttachments→includeAttachments migration, FORCE_COLOR env var replaces color format option; playwright-bdd unreleased — enrichReporterData config option removed (breaking), bddgen worker concurrency capped at CPU/2 (OOM fix), tinyglobby replaces fast-glob (internal dep), @cucumber/messages 27→32 + @cucumber/gherkin 32→39 (direct import paths breaking), JSON reporter attachment opt-in (attachments skipped by default), non-ASCII garbling fix in HTML reporter, strict Cucumber-compatible arity checks (breaking), docStringType exposed on $step fixture, AI agent skill for Gherkin generation (playwright-bdd v8.6+), junit-modern alias deprecated→junit canonical; full version migration guide added (v12 → unreleased upgrade path) -->
 <!-- Iter 26 additions: playwright-bdd unreleased — junit-modern alias deprecated (canonical JUnit reporter), tinyglobby replaces fast-glob, bddgen worker concurrency limited to CPU/2 for OOM prevention, @cucumber/messages 27→32 and @cucumber/gherkin 32→39 major bumps (direct import breaking change), JSON reporter skips attachments by default, non-ASCII garbling fix in HTML reporter; Gherkin reference — "Imagine it's 1922" heuristic for technology-agnostic step writing, vivid story-like character names in Background vs generic identifiers; playwright-bdd v8.5.0 — documented verbose mode improvements and VS Code Cucumber reporter fix -->
 <!-- Iter 25 additions: Cucumber.js unreleased — formatter output redesign (summary/progress/progress-bar/pretty), printAttachments deprecated→includeAttachments migration, SummaryFormatter/ProgressFormatter class deprecation, FORCE_COLOR env var replaces color format option; playwright-bdd unreleased — docStringType in $step fixture (now officially exposed), AI agent skill for Gherkin generation, strict arity checks (breaking), Node.js 20+ / Playwright 1.60+ minimum; playwright-bdd v8.4.2 — multiple step decorators on single method TypeScript example added -->
@@ -7349,3 +7350,484 @@ A consolidated upgrade reference for TypeScript BDD teams:
 | v8.6+ (unreleased) | 1.60 | 20 | `enrichReporterData` removed; `junit-modern` → `junit`; strict arity; `$step.docStringType`; `tinyglobby`; messages 27→32; gherkin 32→39 |
 
 **[community] Version matrix usage pattern**: Pin this matrix in your team's CLAUDE.md or `docs/bdd-setup.md`. The most expensive BDD upgrades are the ones that surprise teams mid-sprint. A 15-minute upgrade spike using this matrix to identify breaking changes is cheaper than discovering them when CI breaks on a release day.
+
+---
+
+### Cucumber Expression Advanced Syntax: Optional Text, Alternation, and the Anonymous Parameter  [official]
+
+The `{string}`, `{int}`, and `{word}` built-in parameter types cover the majority of step
+definition patterns, but three advanced Cucumber Expression features are underused in
+TypeScript BDD suites: optional text, alternation, and the anonymous `{}` parameter.
+These reduce step library duplication without the readability cost of regex patterns.
+
+**Optional text — handle singular/plural naturally:**
+
+```typescript
+// src/steps/cart.steps.ts — optional text for natural language matching
+import { Given, Then } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+import { expect } from '@playwright/test';
+
+// Matches BOTH:
+//   "Given I have 1 item in my cart"
+//   "Given I have 3 items in my cart"
+Given('I have {int} item(s) in my cart', async function (this: AppWorld, count: number) {
+  for (let i = 0; i < count; i++) {
+    await this.page.request.post('/api/cart/items', {
+      data: { productId: `prod-${String(i + 1).padStart(3, '0')}`, quantity: 1 }
+    });
+  }
+  this.cartItemCount = count;
+});
+
+// Matches BOTH:
+//   "Then my order should be confirmed"
+//   "Then my order(s) should be confirmed"
+// Also matches "Then 1 order should be confirmed" vs "Then 3 orders should be confirmed"
+// when combined with {int}
+Then('{int} order(s) should be confirmed', async function (this: AppWorld, count: number) {
+  const res = await this.page.request.get('/api/orders?status=confirmed');
+  const body = await res.json() as { orders: unknown[] };
+  expect(body.orders).toHaveLength(count);
+});
+```
+
+**Alternation — match multiple business vocabulary synonyms:**
+
+```typescript
+// Matches both "my cart" and "my basket" — supports multiple regional terms
+Then(
+  'my cart/basket should be empty',
+  async function (this: AppWorld) {
+    await expect(this.page.getByTestId('cart-item-count')).toHaveText('0');
+  }
+);
+
+// Matches all three: "checkout", "check-out", "check out"
+// Note: alternation requires no whitespace around the /
+When(
+  'I proceed to checkout/check-out',
+  async function (this: AppWorld) {
+    await this.page.getByTestId('checkout-button').click();
+    await this.page.waitForURL('/checkout');
+  }
+);
+
+// Matches: "I am logged in" OR "I am signed in"
+Given(
+  'I am logged/signed in as a registered customer',
+  async function (this: AppWorld) {
+    await this.page.goto('/login');
+    await this.page.getByTestId('email').fill('test@example.com');
+    await this.page.getByTestId('password').fill('TestPass123!');
+    await this.page.getByTestId('submit').click();
+    await this.page.waitForURL('/dashboard');
+  }
+);
+```
+
+**The anonymous `{}` parameter — match anything without a type constraint:**
+
+```typescript
+// {} matches any sequence of non-whitespace characters (more permissive than {word})
+// Use when the value can be any identifier: IDs, codes, slugs, status strings
+
+// Matches: "Then my order ORD-ABC12345 should be in status confirmed"
+// Matches: "Then my order ORD-XYZ99999 should be in status pending"
+Then(
+  'my order {word} should be in status {}',
+  async function (this: AppWorld, orderId: string, status: string) {
+    const res = await this.page.request.get(`/api/orders/${orderId}`);
+    const body = await res.json() as { status: string };
+    expect(body.status).toBe(status);
+  }
+);
+```
+
+**Escaping special characters in expressions:**
+
+```typescript
+// To match a literal { or ( in step text, escape with backslash:
+// "Given the price is {$49.99}" — use \{ to match the literal brace
+Given('the price is \\{{currency}\\}', async function (this: AppWorld, price: number) {
+  // Matches: Given the price is {$49.99}
+  this.expectedPrice = price;
+});
+
+// To match a literal / (not alternation), escape with \/
+When(
+  'I navigate to the path \\/admin\\/dashboard',
+  async function (this: AppWorld) {
+    await this.page.goto('/admin/dashboard');
+  }
+);
+```
+
+**[community] Optional text vs separate steps — decision heuristic**: Use optional text
+(`(s)`) only when the singular/plural distinction carries no semantic difference in the
+step implementation. If the implementation behaves differently for count=1 vs count>1
+(e.g., singular triggers a different API endpoint), write separate steps or use `{int}`
+directly. The `(s)` pattern is a readability aid, not a conditional branch point.
+
+**[community] Alternation scope limit**: Alternation in Cucumber Expressions matches only
+within a single word boundary — `cart/basket` works; `shopping cart/basket` does not match
+"shopping basket" (the alternation applies only to the last word before the `/`). For
+multi-word alternation, use a custom parameter type with a regex instead:
+
+```typescript
+import { defineParameterType } from '@cucumber/cucumber';
+
+// Custom type for multi-word synonym groups
+defineParameterType({
+  name: 'cart_ref',
+  regexp: /shopping cart|cart|basket|bag/,
+  transformer: (s: string) => s, // normalise downstream if needed
+});
+
+// Now: "When I view my shopping cart" AND "When I view my cart" both work
+When('I view my {cart_ref}', async function (this: AppWorld, _cartRef: string) {
+  await this.page.goto('/cart');
+});
+```
+
+---
+
+### playwright-bdd v8.4.1: Explicit TypeScript Type Exports  [community]
+
+`playwright-bdd` v8.4.1 (released September 2025) introduced explicit TypeScript type
+exports that resolve a class of compilation errors experienced by TypeScript projects
+using strict module settings (`module: commonjs`, `skipLibCheck: false`). Before v8.4.1,
+types were emitted but not explicitly listed in the package's `exports` field, causing
+TypeScript to fail to resolve them in certain project configurations.
+
+**What this means for TypeScript BDD projects:**
+
+```typescript
+// BEFORE v8.4.1: type imports sometimes failed with strict TypeScript settings
+// Error: Module 'playwright-bdd' has no exported member 'CreateBddOptions'
+import type { CreateBddOptions } from 'playwright-bdd'; // ❌ could fail
+
+// AFTER v8.4.1: explicit type exports — all public types are importable
+import type {
+  CreateBddOptions,    // Options for createBdd() configuration
+  BddFixtures,         // Base fixture type for extending custom fixtures
+  TestTypeCommon,      // Type for the test object passed to createBdd(test)
+} from 'playwright-bdd';
+
+// Now works reliably with:
+// tsconfig.json: "module": "commonjs", "moduleResolution": "node"
+// and: "skipLibCheck": false (strict mode)
+```
+
+**Practical impact for teams extending playwright-bdd fixtures:**
+
+```typescript
+// src/fixtures/app-fixtures.ts — using explicit types for type-safe fixture extension
+import { test as base, expect } from '@playwright/test';
+import { createBdd, type BddFixtures } from 'playwright-bdd';
+
+// Extend the base Playwright test with application-specific fixtures
+const test = base.extend<BddFixtures & {
+  authToken: string;
+  testUserId: string;
+  apiBaseUrl: string;
+}>({
+  authToken: async ({}, use) => {
+    // Retrieve a test auth token and pass it through the fixture
+    const token = await fetchTestToken(process.env.TEST_CLIENT_ID ?? 'test-client');
+    await use(token);
+  },
+  testUserId: async ({}, use) => {
+    // Generate a unique test user ID for data isolation
+    await use(`test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  },
+  apiBaseUrl: async ({}, use) => {
+    await use(process.env.BASE_URL ?? 'http://localhost:3000');
+  },
+});
+
+// Create BDD helpers bound to the extended test object
+export const { Given, When, Then, Before, After } = createBdd(test);
+
+// Step definitions now get type-safe access to all custom fixtures
+// src/steps/checkout.steps.ts
+import { Given, When, Then } from '../fixtures/app-fixtures';
+
+Given('I am an authenticated customer', async ({ page, authToken, testUserId }) => {
+  // authToken and testUserId are fully typed — TypeScript autocompletes them
+  await page.context().addCookies([{
+    name: 'auth_token', value: authToken,
+    domain: new URL(process.env.BASE_URL ?? 'http://localhost:3000').hostname,
+    path: '/',
+  }]);
+});
+```
+
+**[community] v8.4.1 upgrade check for teams on strict TypeScript**: If your project uses
+`"skipLibCheck": false` (which is the correct strict setting — `skipLibCheck: true` hides
+real type errors from third-party packages), upgrade to playwright-bdd v8.4.1+ before
+adding explicit type imports. Teams that encounter `Module has no exported member` errors
+from playwright-bdd on earlier versions can use `skipLibCheck: true` as a temporary workaround,
+but the correct fix is upgrading to v8.4.1 where types are properly exported.
+
+**[community] `BddFixtures` type and the World replacement pattern**: In playwright-bdd,
+`BddFixtures` is the conceptual replacement for Cucumber.js's `World` object. Where
+`@cucumber/cucumber` uses `this: CustomWorld` to share state across steps, playwright-bdd
+uses Playwright's fixture system. The `BddFixtures` type provides the base shape; teams
+extend it with their application-specific shared state. The key advantage: TypeScript
+infers fixture types without manual `this` typing — `({ page, authToken }) =>` is fully
+typed without any type assertion needed.
+
+---
+
+### Table Cell Escaping and DataTable Advanced Patterns  [official]
+
+Gherkin DataTable cells support escape sequences for special characters. These are
+underused and underdocumented, causing teams to avoid DataTables when they contain
+pipe characters, newlines, or backslashes.
+
+**Escape sequences in DataTable cells:**
+
+```gherkin
+# features/api/product-creation.feature
+Feature: Product data with special characters
+
+  Scenario: Product with multiline description
+    Given I create a product with the following data:
+      | field       | value                                            |
+      | name        | Laptop Stand Pro                                 |
+      | description | Adjustable stand\nFolds flat\nCompatible 13"-17" |
+      | sku         | LS\|PRO\|2026                                    |
+      | notes       | Price: $49.99 \\(discounted\\)                   |
+
+    # \n  → newline character in the cell value
+    # \|  → literal pipe (not a cell delimiter)
+    # \\  → literal backslash
+```
+
+```typescript
+// src/steps/product.steps.ts — handling escaped DataTable values
+import { Given } from '@cucumber/cucumber';
+import { DataTable } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+Given(
+  'I create a product with the following data:',
+  async function (this: AppWorld, table: DataTable) {
+    const data = table.rowsHash(); // { field: value, ... }
+    
+    // DataTable.rowsHash() automatically unescapes \n, \|, \\ — values arrive decoded.
+    // No manual unescaping needed in the step definition.
+    // data.description = "Adjustable stand\nFolds flat\nCompatible 13\"-17\""
+    // data.sku         = "LS|PRO|2026"
+    // data.notes       = "Price: $49.99 \\(discounted\\)"  ← backslash preserved as \
+    
+    const res = await this.page.request.post('/api/products', {
+      data: {
+        name: data.name,
+        description: data.description, // contains literal newline
+        sku: data.sku,                  // contains literal pipe
+        notes: data.notes,
+      }
+    });
+    
+    if (!res.ok()) {
+      throw new Error(`Failed to create product: ${await res.text()}`);
+    }
+    this.lastCreatedProductId = (await res.json() as { id: string }).id;
+  }
+);
+```
+
+**DataTable methods reference** (TypeScript):
+
+```typescript
+import { DataTable } from '@cucumber/cucumber';
+
+// Method          | Input format                | Output type
+// ─────────────────────────────────────────────────────────────
+// table.raw()     | Any table                  | string[][]  — raw 2D array
+// table.rows()    | No header row              | string[][]  — body rows only
+// table.hashes()  | First row is header        | Record<string,string>[]
+// table.rowsHash()| Col 0 = key, Col 1 = value | Record<string,string>
+// table.transpose()| Any table                 | DataTable   — rows become cols
+
+// hashes() — most common for entity tables
+//   | product    | quantity | price |
+//   | USB hub    | 2        | 29.99 |
+//   → [{ product: 'USB hub', quantity: '2', price: '29.99' }]
+
+// rowsHash() — key-value pairs
+//   | name  | Alice |
+//   | email | alice@example.com |
+//   → { name: 'Alice', email: 'alice@example.com' }
+
+// hashes() with numeric coercion — TypeScript pattern
+function parseCartItems(table: DataTable): Array<{product: string; quantity: number; price: number}> {
+  return table.hashes().map(row => ({
+    product: row.product,
+    quantity: parseInt(row.quantity, 10),
+    price: parseFloat(row.price),
+  }));
+}
+```
+
+**[community] `\n` in DataTable cells: the invisible tradeoff**: Multiline values in
+DataTable cells via `\n` escaping look clean in the `.feature` file but produce invisible
+whitespace in test reports. When a scenario fails and the report shows the DataTable,
+the `\n` appears as a literal two-character sequence rather than a newline — making the
+failure message harder to read. For data with genuine newlines, DocStrings (`"""`) are
+more legible in reports and should be preferred when the multiline nature of the data is
+the point.
+
+**[community] Pipe escaping in SKUs, codes, and IDs**: Many real-world business domains
+use `|` as a separator in product codes, permission strings, or composite keys (e.g.,
+`REGION|CATEGORY|SKU`). Teams unfamiliar with `\|` escaping either avoid DataTables for
+this data or incorrectly use placeholder text that doesn't match production formats.
+Add `\| escaping in DataTable cells` to your team's Gherkin style guide with a concrete
+example from your domain's actual data.
+
+---
+
+### `@cucumber/gherkin-streams` Removal and Gherkin Parsing Migration  [community]
+
+`playwright-bdd`'s upcoming release removes the `@cucumber/gherkin-streams` dependency.
+Teams that directly import from `@cucumber/gherkin-streams` in their own test utilities
+(e.g., custom feature file analysis scripts, report generators, test count auditors) need
+to migrate to the current Gherkin parsing API.
+
+```typescript
+// BEFORE — using the deprecated @cucumber/gherkin-streams package
+// (removed from playwright-bdd's dependency tree in v8.6+)
+import { GherkinStreams } from '@cucumber/gherkin-streams';
+
+// AFTER — use @cucumber/gherkin directly for programmatic Gherkin parsing
+import { GherkinClassicCompatibility } from '@cucumber/gherkin';
+// Or use the Messages-based API from @cucumber/cucumber directly:
+import { loadSources, loadSupport } from '@cucumber/cucumber/api';
+
+// For simple feature file parsing (count scenarios, extract tags):
+// Use the Messages API (works without @cucumber/gherkin-streams):
+import { runCucumber, IRunConfiguration } from '@cucumber/cucumber/api';
+
+// Programmatic scenario count script (replaces gherkin-streams usage)
+async function countScenariosInFile(featureFilePath: string): Promise<number> {
+  const fs = await import('fs');
+  const content = fs.readFileSync(featureFilePath, 'utf8');
+  const scenarioMatches = content.match(/^\s*(Scenario|Scenario Outline):/gm) ?? [];
+  return scenarioMatches.length;
+}
+
+// For teams using @cucumber/gherkin directly for AST-level access:
+import Gherkin from '@cucumber/gherkin';
+import { IdGenerator } from '@cucumber/messages';
+
+function parseFeatureFile(source: string) {
+  const parser = new Gherkin.Parser();
+  const builder = new Gherkin.AstBuilder(IdGenerator.incrementing());
+  const matcher = new Gherkin.GherkinClassicTokenMatcher();
+  // Returns a GherkinDocument AST — access Feature, Scenarios, Steps
+  return parser.parse(source);
+}
+```
+
+**[community] Why teams use gherkin-streams directly**: The most common use case was
+scenario counting in CI (`"total scenarios run: N"` badges) and custom report scripts
+that needed to extract all step text without running the full suite. Both use cases can
+be replaced with simple `grep`-based counting or the `@cucumber/cucumber` Messages API.
+The regex approach (`content.match(/^\s*(Scenario|Scenario Outline):/gm)`) is more
+robust than a full AST parser for the common case of counting scenarios, and eliminates
+the `gherkin-streams` dependency entirely.
+
+---
+
+### Gherkin Keyword Anchoring: Feature File Scope Rules  [official]
+
+A persistent source of confusion in teams adopting the `Rule` keyword and nested
+`Background` sections is which keywords can appear where. The Gherkin specification
+defines strict scope rules that formatters and parsers enforce but that are rarely
+summarized in one place.
+
+**Keyword scope reference:**
+
+| Keyword | Valid parent scope | Notes |
+|---|---|---|
+| `Feature` | Top-level only (one per file) | Required; begins the file |
+| `Background` | `Feature` or `Rule` | Steps run before every scenario in the parent scope |
+| `Rule` | `Feature` only | Cannot nest inside another `Rule` |
+| `Scenario` | `Feature` or `Rule` | |
+| `Scenario Outline` | `Feature` or `Rule` | Must have an `Examples` table |
+| `Examples` | `Scenario Outline` only | Can have multiple `Examples` blocks with labels |
+| `Given/When/Then/And/But/*` | `Scenario`, `Scenario Outline`, `Background` | Steps cannot appear at Feature or Rule level |
+| Tags (`@tag`) | `Feature`, `Rule`, `Scenario`, `Scenario Outline`, `Examples` | NOT valid on `Background` |
+
+**[community] Tags on Background: the silent failure**: The Gherkin parser accepts (but
+ignores) tags placed above `Background:` blocks in many Cucumber versions. Teams that
+add `@setup` or `@auth` tags to `Background:` expecting them to control execution discover
+that the tags have no effect — Background steps always run before every scenario
+regardless of tags. This was cited as official anti-pattern in `cucumber.io/docs/guides/anti-patterns/`.
+The `gherkin-lint` rule `no-tags-on-background: true` (shown in the Gherkin linting section
+of this guide) catches this at lint time.
+
+```gherkin
+# INCORRECT: @auth tag on Background has no effect in any Cucumber implementation
+@auth
+Background:
+  Given I am logged in
+
+# CORRECT: Tags belong on the Feature (applies to all scenarios)
+# or on individual Scenario/Scenario Outline blocks
+@auth
+Feature: Authenticated user actions
+  Background:
+    Given I am logged in   # Runs before all scenarios in this feature, unconditionally
+```
+
+**[community] Multiple `Background` blocks in the same scope**: Some teams attempt to
+write two `Background:` blocks in the same feature file to separate authentication setup
+from data setup. The Gherkin parser only recognises the last `Background:` block — the
+first is silently ignored. The correct pattern: use a single `Background:` block with
+all shared preconditions, or use `Rule` blocks each with their own `Background:` for
+different setup requirements:
+
+```gherkin
+Feature: Order management
+
+  # ✅ CORRECT: single Feature-level Background
+  Background:
+    Given I am logged in as a registered customer
+
+  Rule: Standard orders
+    # ✅ CORRECT: Rule-level Background adds to Feature Background for this Rule only
+    Background:
+      And my account is in good standing
+      And I have items in my cart
+
+    Scenario: Place a standard order
+      When I complete checkout
+      Then my order should be confirmed
+
+  Rule: Premium orders
+    Background:
+      And I am a premium subscriber
+
+    Scenario: Place a priority order
+      When I complete checkout with priority shipping
+      Then my order should be confirmed and shipped within 1 business day
+```
+
+In this structure:
+- **Standard order scenarios** run: `Given I am logged in` + `And my account is in good standing` + `And I have items in my cart`
+- **Premium order scenarios** run: `Given I am logged in` + `And I am a premium subscriber`
+
+The Feature-level `Background` always runs first; the Rule-level `Background` follows for scenarios within that Rule.
+
+---
+
+## Additional Resources (Iteration 28 Additions)
+
+- [Cucumber Expressions — GitHub README](https://github.com/cucumber/cucumber-expressions#readme) — optional text `(s)`, alternation `a/b`, anonymous `{}` parameter, and escape rules for `{`, `(`, `/` characters
+- [playwright-bdd v8.4.1 release](https://github.com/vitalets/playwright-bdd/releases/tag/v8.4.1) — explicit TypeScript type exports; `BddFixtures` type for safe fixture extension
+- [playwright-bdd v8.4.1 issue #322](https://github.com/vitalets/playwright-bdd/issues/322) — type resolution fix for `module: commonjs` + `skipLibCheck: false` TypeScript configurations
+- [@cucumber/gherkin changelog](https://github.com/cucumber/gherkin/blob/main/CHANGELOG.md) — Gherkin language spec evolution; keyword scope rules; DataTable escape sequences
+- [Gherkin keyword scope rules](https://cucumber.io/docs/gherkin/reference/) — authoritative reference for valid parent scopes for all Gherkin keywords including `Rule`, `Background`, and `Examples`

@@ -1,12 +1,13 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12) | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23) | community: production lessons -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
 <!-- new in iteration 18: contract_requiring_verification_published webhook (supersedes contract_content_changed, Pact Broker 2.82.0+), pact-js v16.2 withMatchingRules for async/sync interactions, pact-js v16.4 addInteractionReference, PactFlow Drift (spec-driven provider compliance CI), updated Pact Specification Version Reference table with v16.1–v16.4, community lesson 29 (deprecated webhook event), community lesson 30 (Drift for BDCT gap) -->
 <!-- new in iteration 19: addGraphQLInteraction() native V4 GraphQL DSL (pact-js v16.0.0+) replaces body-matching regex approach, PactFlow MCP Server (August 2025) section, community lessons 31 and 32 (GraphQL native DSL migration, MCP-assisted contract test generation) -->
 <!-- new in iteration 20: pact-js v16.3.1 patch (content type extraction from matchers), POST/PUT/PATCH GIGO anti-pattern, UI layer testing limitations, over-specifying validation rules anti-pattern, community lessons 33–35 -->
 <!-- new in iteration 21: pact-js v16.3.0 race condition bug (issue #1713, parallel Vitest load), provider verification filtering enhancement request (issue #1748), community lessons 36–37 -->
 <!-- new in iteration 22: Request Precision vs Response Flexibility pattern (TypeScript) + Golden Rule, two new anti-patterns (duplicate descriptions, sensitive data in pacts), community lessons 38–41 (Content-Length hang issue #1602, stateHandlers+requestFilter bug #1434, duplicate uponReceiving descriptions, credentials in pact files) -->
+<!-- new in iteration 23: tRPC consumer contract testing pattern (TypeScript), Prisma/Drizzle ORM state handler patterns, Vitest 2.x singleFork mode, non-deterministic pact files anti-pattern, community lessons 42–46 (tRPC boundary misuse, ORM state handler teardown gaps, Vitest 2.x pool changes, dynamic example values breaking CI diffs, interaction count explosion in CRUD services) -->
 
 ## Terminology (ISTQB CTFL 4.0 alignment)
 
@@ -3700,3 +3701,327 @@ The `/_pactSetup` endpoint receives `{ state: '<provider state name>', action: '
 40. **[community] Duplicate `uponReceiving` descriptions within the same consumer-provider pair silently overwrite each other in the pact file.** The Pact Broker de-duplicates interactions by `(description, providerState)` tuple. When two tests in the same consumer file use `.uponReceiving('a request for order details')` with the same provider state, the second interaction overwrites the first in the generated pact JSON — the first interaction disappears entirely without any warning from pact-js. This is particularly dangerous in test suites that copy-paste interaction scaffolding: the provider verification passes (fewer interactions to verify) and the consumer's real intent is simply not tested. **Prevention:** adopt a naming convention that encodes the scenario uniquely — e.g., `uponReceiving('a GET request for order ORD-123 (happy path)')` rather than generic descriptions. The `withTestName()` metadata (pact-js v16.3+) records the Jest/Vitest test name in the Broker UI but does not prevent de-duplication — unique `uponReceiving` strings are the only guard.
 
 41. **[community] Sensitive data in pact files published to the Broker is a security risk.** Consumer tests that use real authorization tokens, customer IDs, or PII as literal matcher examples embed that data in the generated pact JSON. Since pact files are published to the Pact Broker (and possibly committed to version control), real credentials or personal data become permanently accessible to anyone with Broker access. Always use `like()` with a fictional example value for credentials, UUIDs, and customer identifiers: `like('Bearer test-token-placeholder')` rather than `like(process.env.REAL_TOKEN)`. For authorization headers specifically, Pact ignores `Authorization` header matching by design — omit `Authorization` from the pact body entirely and inject it via `requestFilter` in the provider verifier.
+
+---
+
+### tRPC Contract Testing (TypeScript — boundary testing at the HTTP layer)
+
+[tRPC](https://trpc.io/) builds fully type-safe client-server communication using TypeScript inference — when the same TypeScript monorepo owns both the consumer and provider, tRPC's compile-time guarantees eliminate many of the cross-service structural mismatches that CDC catches. However, CDC remains necessary in two scenarios:
+
+1. **Cross-repository or cross-team tRPC**: the consumer and provider live in separate repos, so TypeScript types cannot be shared at compile time.
+2. **tRPC with a non-TypeScript consumer**: a mobile app or a third-party service consumes the tRPC HTTP endpoint without using the TypeScript client.
+
+In these scenarios, tRPC procedures map to HTTP endpoints (`/trpc/<procedure>` with a POST body `{ "0": { json: <input> } }` for mutations). These endpoints can be contract-tested using standard Pact HTTP interactions.
+
+```typescript
+// trpc-report.consumer.pact.spec.ts
+// Tests the Pact contract for a tRPC `report.create` mutation consumed
+// from a separate repository (no shared TypeScript types at compile time).
+// tRPC mutation endpoint: POST /trpc/report.create
+// Body shape: { "0": { "json": { title, content, severity } } }
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+
+const { like, string, integer } = MatchersV3;
+
+// Response type matches the shape the consuming service actually parses
+interface ReportCreateResponse {
+  result: {
+    data: {
+      json: {
+        id: string;
+        createdAt: string;
+      };
+    };
+  };
+}
+
+const provider = new PactV3({
+  consumer: 'DashboardFrontend',
+  provider: 'ReportingService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8095,
+  logLevel: 'warn',
+});
+
+describe('DashboardFrontend → ReportingService tRPC contract', () => {
+  it('creates a report via tRPC mutation and receives the created ID', async () => {
+    await provider
+      .given('ReportingService is ready to accept new reports')
+      .uponReceiving('a tRPC report.create mutation')
+      .withRequest({
+        method: 'POST',
+        path: '/trpc/report.create',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        // tRPC batch format: the "0" key is the batch index
+        body: {
+          '0': {
+            json: {
+              title: like('Incident Report Q2'),
+              content: like('Details of the incident...'),
+              severity: like('high'),
+            },
+          },
+        },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          result: {
+            data: {
+              json: {
+                id: string('RPT-001'),
+                createdAt: like('2025-01-15T10:00:00Z'),
+              },
+            },
+          },
+        },
+      })
+      .executeTest(async (mockServer) => {
+        // Call the tRPC endpoint directly via fetch — no tRPC client dependency
+        const response = await fetch(`${mockServer.url}/trpc/report.create`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({
+            '0': { json: { title: 'Incident Report Q2', content: 'Details...', severity: 'high' } },
+          }),
+        });
+        const json: ReportCreateResponse = await response.json();
+        expect(json.result.data.json.id).toBeDefined();
+        expect(json.result.data.json.createdAt).toBeDefined();
+      });
+  });
+});
+```
+
+**Key points:**
+- tRPC batch format wraps the input as `{ "0": { "json": <input> } }` — match with `like()` on the input fields so the contract does not lock to specific values
+- The response is wrapped in `{ result: { data: { json: <output> } } }` — only assert the fields the consumer actually reads from this envelope
+- Use standard HTTP `fetch` (or `axios`) in the consumer test, not the tRPC client — this isolates the HTTP contract from tRPC client library internals and makes the pact file portable to non-TypeScript consumers
+- Provider verification works identically to REST: the tRPC endpoint is a regular HTTP route; `VerifierV3` replays the interaction against the running tRPC server with no tRPC-specific config
+
+**When CDC adds no value for tRPC:**
+- Both consumer and provider live in the same TypeScript monorepo with a shared tRPC router type — TypeScript's `inferRouterInputs<AppRouter>` and `inferRouterOutputs<AppRouter>` already provide compile-time cross-boundary type safety; a Pact interaction duplicates this coverage without adding runtime protection
+- In this case, prefer end-to-end type inference and a thin integration smoke test instead of CDC
+
+---
+
+### Prisma / Drizzle ORM State Handler Patterns (TypeScript)
+
+State handlers that seed a relational database are the most common source of flakiness and maintenance cost in provider verification. Modern TypeScript backends use Prisma or Drizzle ORM — both have idiomatic patterns for test state setup that are safer than raw SQL.
+
+```typescript
+// inventory-service.provider.prisma.pact.spec.ts
+// State handlers using Prisma ORM — idiomatic for TypeScript Prisma backends.
+// Prisma's transaction API and upsert allow atomic, conflict-safe state setup.
+import { VerifierV3, VerifierOptions } from '@pact-foundation/pact';
+import { PrismaClient } from '@prisma/client';
+import { createServer } from 'http';
+import { AddressInfo } from 'net';
+import { app } from '../src/app';
+
+const prisma = new PrismaClient();
+
+// Prisma state handlers — prefer upsert over insert to make handlers idempotent
+const stateHandlers: NonNullable<VerifierOptions['stateHandlers']> = {
+  'SKU ABC-123 exists with 10 units in stock': async (): Promise<void> => {
+    // upsert: safe to run multiple times; avoids UNIQUE constraint errors on reruns
+    await prisma.inventoryItem.upsert({
+      where: { sku: 'ABC-123' },
+      create: { sku: 'ABC-123', available: 10, warehouseId: 'WH-001' },
+      update: { available: 10, warehouseId: 'WH-001' },
+    });
+  },
+  'SKU UNKNOWN-999 does not exist': async (): Promise<void> => {
+    // deleteMany: safe when row may or may not exist
+    await prisma.inventoryItem.deleteMany({
+      where: { sku: 'UNKNOWN-999' },
+    });
+  },
+  // Teardown state: called after verification with action: 'teardown'
+  // In Prisma: wrap in a transaction to reset all seeded data atomically
+  'teardown': async (): Promise<void> => {
+    await prisma.$transaction([
+      prisma.inventoryItem.deleteMany({ where: { sku: { in: ['ABC-123'] } } }),
+    ]);
+  },
+};
+
+describe('InventoryService provider verification (Prisma state handlers)', () => {
+  let serverUrl: string;
+  let closeServer: () => Promise<void>;
+
+  beforeAll(async () => {
+    await prisma.$connect();
+    await new Promise<void>((resolve, reject) => {
+      const server = createServer(app);
+      server.listen(0, '127.0.0.1', () => {
+        const { port } = server.address() as AddressInfo;
+        serverUrl = `http://127.0.0.1:${port}`;
+        closeServer = () => new Promise<void>((res, rej) => server.close((err) => (err ? rej(err) : res())));
+        resolve();
+      });
+      server.on('error', reject);
+    });
+  });
+
+  afterAll(async () => {
+    await closeServer();
+    await prisma.$disconnect();
+  });
+
+  it('satisfies all consumer pacts', async () => {
+    const verifier = new VerifierV3({
+      provider: 'InventoryService',
+      providerBaseUrl: serverUrl,
+      pactBrokerUrl: process.env.PACT_BROKER_URL,
+      pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+      consumerVersionSelectors: [{ mainBranch: true }, { deployedOrReleased: true }],
+      stateHandlers,
+      publishVerificationResult: process.env.PUBLISH_VERIFICATION_RESULTS === 'true',
+      providerVersion: process.env.GIT_COMMIT,
+      providerVersionBranch: process.env.GIT_BRANCH,
+    });
+    await verifier.verifyProvider();
+  });
+});
+```
+
+**Drizzle ORM equivalent for state handlers:**
+
+```typescript
+// State handler using Drizzle ORM — insert-or-update pattern with conflict resolution
+import { db } from '../src/db';
+import { inventoryItems } from '../src/schema';
+import { eq } from 'drizzle-orm';
+
+const drizzleStateHandlers: NonNullable<VerifierOptions['stateHandlers']> = {
+  'SKU ABC-123 exists with 10 units in stock': async (): Promise<void> => {
+    // Drizzle: onConflictDoUpdate for idempotent upsert (PostgreSQL / SQLite)
+    await db
+      .insert(inventoryItems)
+      .values({ sku: 'ABC-123', available: 10, warehouseId: 'WH-001' })
+      .onConflictDoUpdate({
+        target: inventoryItems.sku,
+        set: { available: 10, warehouseId: 'WH-001' },
+      });
+  },
+  'SKU UNKNOWN-999 does not exist': async (): Promise<void> => {
+    await db.delete(inventoryItems).where(eq(inventoryItems.sku, 'UNKNOWN-999'));
+  },
+};
+```
+
+**Key points:**
+- `upsert` (Prisma) / `onConflictDoUpdate` (Drizzle) makes state handlers **idempotent** — pact-js can call them multiple times if provider verification retries; a naive `insert` would throw a `UNIQUE` constraint error on the second call
+- Never use `deleteAll` or `truncate` in state handlers without a clear scope — a truncate that clears a shared table corrupts parallel test runs or leaves the database in an unexpected state for subsequent interactions
+- `prisma.$disconnect()` in `afterAll` is mandatory — leaving PrismaClient connections open causes Jest/Vitest to hang after test completion (`--forceExit` masks this, not fixes it)
+- For Drizzle with SQLite (common in local dev and edge runtimes), `onConflictDoUpdate` requires the `better-sqlite3` driver to be set up with WAL mode to avoid write contention from parallel state handler calls
+
+---
+
+### Vitest 2.x Compatibility (TypeScript — pool and threading changes)
+
+Vitest 2.0 (released June 2024) changed the default execution pool from `threads` to `forks`, which affects how Pact mock servers interact with the test runner.
+
+```typescript
+// vitest.config.ts — Pact-compatible config for Vitest 2.x
+// Vitest 2.x default pool changed from 'threads' to 'forks'.
+// Both PactV3 and PactV4 work with 'forks', but port allocation strategy differs.
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // For pact-js consumer tests: 'forks' (default in Vitest 2.x) is safe with PactV4
+    // (auto-port). For PactV3 with fixed ports, use singleFork to prevent port collision.
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        // singleFork: run all pact test files in a single forked process.
+        // Equivalent to maxWorkers: 1 in Jest — prevents port collision when using
+        // PactV3 (fixed port). Not needed for PactV4 (auto-port).
+        // Set to false if ALL your pact tests use PactV4 with no explicit port option.
+        singleFork: true,
+      },
+    },
+    testTimeout: 120_000,
+    include: ['**/*.pact.spec.ts', '**/*.provider.pact.spec.ts'],
+    exclude: ['node_modules', 'dist'],
+  },
+});
+```
+
+**Vitest 2.x pool migration guide:**
+
+| Scenario | Vitest 1.x setting | Vitest 2.x equivalent | Notes |
+|---|---|---|---|
+| PactV3 consumer tests (fixed port) | `singleThread: true` | `pool: 'forks', singleFork: true` | `singleThread` was removed in Vitest 2.x |
+| PactV4 consumer tests (auto-port) | Default (threads) | Default (forks) | Auto-port PactV4 is safe with any pool |
+| Provider verification | `singleThread: true` | `pool: 'forks', singleFork: true` | Provider verification is stateful; run serially |
+
+**Key points:**
+- `singleThread: true` was removed in Vitest 2.x — replace with `pool: 'forks', poolOptions: { forks: { singleFork: true } }` for the same behavior
+- The `threads` pool (Vitest 1.x default) ran all workers in a single Node.js process using `worker_threads`; the `forks` pool (Vitest 2.x default) spawns separate OS processes — pact-js's native binary FFI is more stable with `forks` because each fork has its own native module instance, eliminating the race condition that caused issue #1713 under `threads`
+- PactV4 with auto-port assignment is the recommended upgrade path: no port configuration, no `singleFork` needed, parallelizable across forks
+
+---
+
+### Non-Deterministic Pact Files Anti-Pattern (TypeScript)
+
+Pact files that contain different content on every run cause noise in version control diffs and in Pact Broker's deduplication logic. The most common sources of non-determinism:
+
+```typescript
+// ❌ ANTI-PATTERN: dynamic values without fixed examples
+// Each test run produces a different pact file, causing spurious Broker webhook triggers
+// and noisy git diffs.
+import { v4 as uuidv4 } from 'uuid';
+import { MatchersV3 } from '@pact-foundation/pact';
+
+const { uuid, timestamp } = MatchersV3;
+
+// BAD: uuid() without a fixed example generates a new UUID on every run
+body: {
+  id: uuid(),                          // ← generates new UUID each run: non-deterministic
+  createdAt: timestamp('yyyy-MM-dd'),  // ← no fixed example: defaults to "now"
+  requestId: like(uuidv4()),           // ← uuidv4() called at import time: changes each run
+}
+
+// ✅ CORRECT: always provide a fixed, fictional example value
+body: {
+  id: uuid('550e8400-e29b-41d4-a716-446655440000'),   // ← fixed example
+  createdAt: timestamp('yyyy-MM-dd', '2025-01-15'),   // ← fixed example
+  requestId: like('req-00000000-0000-0000-0000-000000000001'), // ← fixed fictional value
+}
+```
+
+**Why non-deterministic pact files are harmful:**
+
+1. **Pact Broker webhook flood**: `contract_content_changed` fires on every publish because the file content changes every run, even when no interaction has changed. This triggers provider verification runs that serve no purpose.
+2. **CI diff noise**: `git diff` on pact files shows meaningless UUID and timestamp churn, making code review harder and causing false merge conflicts when two branches both update pact files.
+3. **Broker deduplication breaks**: The Broker stores pact files by content hash; a changed UUID creates a new pact version entry, inflating storage and degrading query performance over time.
+4. **`contract_requiring_verification_published` (Pact Broker 2.82.0+)** partially mitigates this by deduplicating on provider version — but only for the webhook trigger, not for storage or diff noise.
+
+**Checklist for deterministic pact files:**
+- All `uuid()` matchers: provide a fixed UUID example string
+- All `timestamp()` matchers: provide a fixed date string in the correct format
+- All `like(value)` calls: use a hard-coded string/number, not a dynamically generated value
+- Never call `Date.now()`, `new Date()`, `crypto.randomUUID()`, or any PRNG in pact body definitions
+- Commit pact files to version control (optional but useful) — non-determinism surfaces immediately in `git diff`
+
+---
+
+### Additional Community Production Lessons [community]
+
+42. **[community] tRPC's compile-time safety does not replace CDC when consumer and provider live in separate repositories.** Teams that adopt tRPC within a monorepo correctly gain end-to-end type inference for free — `inferRouterOutputs<AppRouter>` enforces that the consumer's TypeScript code matches the provider's route return type at compile time. When those same teams extract services into separate repos (common during scaling), they assume tRPC's safety still holds. It does not: without a shared `AppRouter` type, tRPC clients silently fall back to `unknown` types and the HTTP body format is opaque. CDC at the HTTP layer (using Pact HTTP interactions against `/trpc/<procedure>` endpoints) fills this gap. The rule: if you cannot `import type { AppRouter } from '../provider'` without crossing a repo boundary, you need CDC.
+
+43. **[community] ORM state handlers without proper teardown cause intermittent provider verification failures.** Teams that set up test data in Prisma or Drizzle state handlers but skip teardown accumulate stale rows in the test database. This causes unique constraint violations on the second verification run (if the previous run left a row with a conflicting primary key) and causes state-dependent tests to pass or fail depending on execution order. The fix: make every `setup` state handler idempotent (use `upsert` / `onConflictDoUpdate` rather than `insert`) AND implement teardown handlers that clean up every row created during setup. Pact calls state handlers with `action: 'teardown'` after each interaction; only register teardown handlers for states that modify persistent data.
+
+44. **[community] Vitest 2.x `pool: 'threads'` was removed silently for most Vitest config users.** Projects that upgraded from Vitest 1.x to Vitest 2.x with a `singleThread: true` setting in `vitest.config.ts` found that the option was silently ignored — Vitest 2.x removed `singleThread` and changed the default pool to `forks`. Pact consumer tests that relied on `singleThread: true` for PactV3 port safety started failing with EADDRINUSE errors intermittently. The upgrade checklist: (1) replace `singleThread: true` with `pool: 'forks', poolOptions: { forks: { singleFork: true } }`, or (2) migrate to PactV4 (which uses auto-port assignment and does not need serial execution). Check for Vitest 2.x deprecation warnings during `npm update` — the removed option does not cause an error, only a silent no-op.
+
+45. **[community] Dynamic example values in pact files trigger redundant webhook builds and inflate Pact Broker storage.** A common setup mistake: teams call `like(uuidv4())` or `like(new Date().toISOString())` in pact body definitions. Since these values change on every test run, the pact file content hash changes on every consumer CI run. The `contract_content_changed` webhook event fires every time, triggering provider verification even though no actual interaction changed. At scale (10 consumer services × 20 builds/day), this generates 200 unnecessary provider CI runs per day. The fix is deterministic examples: always use hard-coded fictional values (`like('550e8400-e29b-41d4-a716-446655440000')` instead of `like(uuidv4())`). The `contract_requiring_verification_published` event (Pact Broker 2.82.0+) partially mitigates the webhook flood but does not fix the storage inflation or git diff noise.
+
+46. **[community] CRUD services generate interaction count explosions without a composition strategy.** A provider with full CRUD (Create, Read, Update, Delete, List, List-with-filters) on five resources quickly accumulates 30+ interactions per consumer. With three consumers, that is 90+ interactions to verify, each requiring a state handler and database seed. Provider verification time scales linearly with interaction count. Prevention strategies: (1) group related interactions into a single `it` block using `executeTest` with multiple `addInteraction` calls (within one pact-js session, multiple interactions can be registered before `executeTest`); (2) for list-with-filters, use a single interaction with broad matchers rather than one interaction per filter combination; (3) use `filterConsumerNames` in `VerifierV3` options to run verification for one consumer at a time in separate CI shards; (4) promote stable, schema-only providers to BDCT (OpenAPI spec + PactFlow) so consumer CDC interactions only cover the fields the consumer actually reads, not the full API surface.

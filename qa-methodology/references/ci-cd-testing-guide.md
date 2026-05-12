@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping), github.blog (Copilot Actions minutes billing June 2026), nektos/act (v0.2.79: --validate/--strict workflow flags) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026), nektos/act (v0.2.79: --validate/--strict workflow flags) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 46 CI testing pillars covered in this guide:**
+**The 48 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -64,6 +64,8 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 44 | Vitest 4.0 pool migration | `maxWorkers`/`minWorkers` replaces `poolOptions.threads.maxThreads`; `VITEST_MAX_WORKERS` replaces `VITEST_MAX_THREADS` |
 | 45 | Playwright Screencast API | `page.screencast` — real-time video with action annotations, chapter overlays, JPEG frame streaming for AI vision (v1.59+) |
 | 46 | `act --validate` / `--strict` | Local workflow validation before push — catches YAML and logic errors before consuming CI minutes (v0.2.79+) |
+| 47 | Playwright HAR-as-trace API | `tracing.startHar()` / `stopHar()` as first-class tracing — replaces `recordHar` option (v1.60+) |
+| 48 | Vitest v5 migration awareness | `attachmentsDir` rename, `sequential` removal, inlined `expect`, V8 coverage for `child_process`/`worker_threads` |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -3353,6 +3355,12 @@ validateAllWorkflows();
 | Vitest 4.0 `VITEST_MAX_THREADS` / `VITEST_MAX_FORKS` env vars still set in CI | Replaced by `VITEST_MAX_WORKERS`; old env vars silently ignored — worker count falls back to default (CPU count); 2-core runners spawn 2 workers instead of configured 1 | Rename CI env vars to `VITEST_MAX_WORKERS`; audit any `export VITEST_MAX_*` in `.env.ci` and shell scripts |
 | Playwright `trace: 'on-first-retry'` — no trace for tests that fail on first attempt and aren't retried | First-attempt failures produce no trace; debugging requires reproducing locally | Upgrade to `trace: 'retain-on-failure-and-retries'` (Playwright v1.54+) — records every attempt, retains all traces on any failure |
 | Playwright still installing `chromium` explicitly after v1.57 | Playwright v1.57 switched to Chrome for Testing builds; specifying `chromium` still works but misses latest browser stability fixes | Replace `npx playwright install chromium --with-deps` with `npx playwright install --with-deps` (installs the configured browser set including Chrome for Testing) |
+| HAR recording with unfiltered `urlFilter` | Unfiltered HAR archives contain 100–300 entries (fonts, CDN, analytics); developers ignore them — signal buried in noise | Always set `urlFilter: /\/api\//` or host-based pattern to restrict HAR to business-logic requests only |
+| Using `context.tracing.startHar()` during setup phase | HAR captures setup noise (auth calls, DB seeding HTTP) mixed with test-specific API calls — hard to identify the failing request | Call `startHar()` after setup completes; use `await using` to ensure `stopHar()` runs even on failure |
+| Upgrading to Vitest v5 without auditing blob report paths | Default blob output path changed from `blob-report/` to `.vitest/blob/`; CI artifact upload steps silently upload nothing | Update all `path: blob-report/` artifact upload steps to `path: .vitest/blob/` before upgrading |
+| Vitest v5 upgrade with `sequential` test option in source | `sequential` property on individual tests removed in v5; TypeScript compiler flags all usages as unknown property | Replace individual-test `sequential: true` annotations with `describe.sequential(() => { ... })` blocks |
+| Importing `expect` from `'vitest/expect'` after v5 upgrade | Entry point `'vitest/expect'` removed in v5; runtime `Cannot find module` error | Replace all `import { expect } from 'vitest/expect'` with `import { expect } from 'vitest'` |
+| V8 coverage threshold failure after Vitest v5 upgrade | V5 V8 now tracks `node:child_process` and `node:worker_threads` — previously uncovered worker code appears; threshold may fail if worker coverage is low | Profile coverage delta on non-blocking branch before upgrading; adjust thresholds for newly-visible worker code |
 
 ## Real-World Gotchas [community]
 
@@ -3514,6 +3522,10 @@ export default env;
 51. **Playwright `page.screencast.start()` called after page navigation completes** [community]: The Screencast API requires `start()` to be called before the actions you want to record. Calling it after `page.goto()` captures nothing from the navigation phase — the first frames show the already-loaded page with no context for how it was reached. In CI, this causes video evidence that omits the most diagnostic part (the navigation and any redirect or error during load). Always call `page.screencast.start()` before the first `page.goto()` call.
 
 52. **`act --validate` passes but `act` run fails due to GitHub-Actions-only features** [community]: `act --validate` validates YAML structure but cannot validate features that require GitHub's live runner environment: `workflow_call` reusable workflow inputs, GitHub OIDC token exchange, `GITHUB_CONTEXT` object shapes, and required secrets. Teams that treat a passing `--validate` as "this workflow is correct" ship workflows that fail in real CI on the first use of these features. Use `act --validate` for YAML structural checks only; test OIDC and reusable workflow features with a real draft PR on a non-protected branch before merging.
+
+53. **Vitest v5 `attachmentsDir` rename not updated in CI upload steps** [community]: Vitest v5.0 corrects a long-standing typo in the default attachments directory name — from `.vitest-attachements/` (double 'e') to `.vitest/attachments/` (correct spelling, under the `.vitest/` directory). CI workflows that reference the old path produce `actions/upload-artifact` warnings or silently upload nothing (no files found at the old path). Run `find . -path '*vitest-attachements*' -name '*'` in your CI artifacts step to detect stale path references before upgrading.
+
+54. **Playwright HAR `urlFilter` regex anchoring — captures wrong requests when unanchored** [community]: A `urlFilter` regex like `/api/` matches any URL containing the string "api" including third-party analytics URLs (`/api.mixpanel.com/...`). Teams that write unanchored `urlFilter` patterns capture 3–5× more requests than intended, producing large HAR files with third-party noise. Use an anchored pattern targeting the API host: `/^https?:\/\/api\.example\.com\//` or use a path-prefix match: `/\/api\//` (note the leading and trailing slashes) to ensure only your application's API calls are captured.
 
 ## Tradeoffs & Alternatives
 |---|---|---|---|
@@ -6507,3 +6519,295 @@ export default defineConfig({
 | Playwright Screencast API (v1.59) | Official docs | https://playwright.dev/docs/api/class-screencast | page.screencast — video recording with action annotations, chapter overlays, JPEG frame streaming for AI vision |
 | Playwright browser.bind() (v1.59) | Official docs | https://playwright.dev/docs/api/class-browser | Multi-client browser sharing: bind a launched browser to a named session for distributed CI |
 | act --validate / --strict (v0.2.79+) | Official docs | https://nektosact.com | Workflow YAML validation flags — catch structural errors locally before pushing to GitHub |
+| Playwright HAR recording as tracing API (v1.60) | Official docs | https://playwright.dev/docs/release-notes | `tracing.startHar()` / `stopHar()` as first-class HAR recording with `await using` disposable pattern; `urlFilter` for scoped network capture |
+| Playwright `locator.drop()` (v1.60) | Official docs | https://playwright.dev/docs/api/class-locator#locator-drop | External drag-and-drop simulation: file uploads and clipboard data without manual drag gestures |
+| Playwright aria snapshot `boxes` option (v1.60) | Official docs | https://playwright.dev/docs/release-notes | Appends bounding box `[box=x,y,w,h]` to aria snapshot output — enables AI vision model consumption of page structure |
+| Vitest v5.0 Release Notes (beta) | Official docs | https://github.com/vitest-dev/vitest/releases | Breaking changes: `attachmentsDir` renamed, `sequential` removed, `vitest/expect` entry removed, blob path changed, V8 covers child_process/worker_threads |
+| Vitest merge-reports multi-environment (v5.0) | Official docs | https://vitest.dev/guide/reporters | Non-sharded multi-environment blob merging: Node + browser results merged into single HTML report without sharding |
+
+Playwright v1.60 promotes HAR recording from a context option (`recordHar: { path: '...' }`) to a first-class tracing API via `context.tracing.startHar()` and `context.tracing.stopHar()`. Like the Screencast API, this gives tests precise start/stop control over recording within the test body rather than requiring pre-configuration in `playwright.config.ts`. HAR captures all network requests and responses as a standard JSON archive — useful for debugging API mismatch failures, replaying requests in isolation, or attaching network evidence to CI failure artifacts.
+
+> [community] Teams that adopt HAR recording for integration test failures report cutting "where did the unexpected 500 come from?" investigation time by 60–80%. The HAR archive captures the full request/response cycle including headers, timing, and body — providing the same information as a network inspector session recorded during the failing run. Teams that previously relied only on traces for network debugging found HAR files significantly more readable for non-engineering stakeholders (QA, support) because they map directly to familiar browser devtools output.
+
+```typescript
+// tests/e2e/payment-flow.spec.ts — HAR recording via first-class tracing API (Playwright v1.60+)
+import { test, expect } from '@playwright/test';
+import * as path from 'path';
+
+test('payment flow — attach HAR on failure for API debugging', async ({ page, context }) => {
+  const harPath = path.join(
+    process.cwd(),
+    'test-results',
+    `payment-flow-${Date.now()}.har`,
+  );
+
+  // Start HAR recording — captures all network requests from this point on
+  await context.tracing.startHar({
+    path: harPath,
+    // urlFilter: record only requests to the API host (ignore CDN, analytics)
+    urlFilter: /api\.example\.com/,
+  });
+
+  try {
+    await page.goto('/checkout');
+    await page.getByRole('button', { name: 'Pay now' }).click();
+    await expect(page.getByRole('heading', { name: 'Payment confirmed' })).toBeVisible();
+  } finally {
+    // Stop HAR recording — finalizes the .har file regardless of pass/fail
+    await context.tracing.stopHar();
+  }
+});
+```
+
+**`await using` for automatic HAR cleanup (TypeScript 5.2+ async disposable pattern):**
+
+```typescript
+// tests/e2e/disposable-har.spec.ts — HAR as async disposable (v1.60+)
+import { test, expect } from '@playwright/test';
+
+test('HAR with automatic cleanup via await using', async ({ page, context }) => {
+  {
+    // context.tracing.startHar() returns an async disposable (like page.screencast)
+    // stopHar() is called automatically when the using block exits — even on throw
+    await using _har = await context.tracing.startHar({
+      path: `test-results/api-evidence-${Date.now()}.har`,
+      urlFilter: /\/api\//,
+    });
+
+    await page.goto('/dashboard');
+    await page.getByRole('button', { name: 'Load data' }).click();
+    // Wait for network request to complete — captured in HAR
+    await page.waitForResponse(resp => resp.url().includes('/api/data'));
+    await expect(page.getByRole('table')).toBeVisible();
+    // _har.stop() called automatically here
+  }
+  // HAR file is fully written at this point — safe to upload as artifact
+});
+```
+
+**GitHub Actions — conditionally attach HAR to PR as debugging artifact:**
+
+```yaml
+# .github/workflows/ci.yml — upload HAR artifacts on e2e failure
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps
+      - run: npx playwright test
+        env: { CI: true }
+      # Upload HAR archives only on failure — provides network evidence for debugging
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: har-evidence-${{ github.run_id }}
+          path: test-results/**/*.har
+          retention-days: 14
+```
+
+> [community] The key behavioral difference between `context.tracing.startHar()` and the `recordHar` context option: `startHar()` can be called at any point within a test, not just at context creation time. For test suites with long setup phases (auth, DB seeding), this means the HAR captures only the business-logic network activity, not the setup noise. Teams report HAR files 60–70% smaller and more actionable when HAR recording starts after setup completes.
+
+> [community] The `urlFilter` parameter is the most overlooked HAR configuration option for CI. Without it, a typical web application test generates a HAR with 100–300 requests (fonts, images, analytics, CDN resources). Filtering to `/api/` reduces this to 5–20 entries — the actual API calls relevant to the test failure. Teams that ship unfiltered HARs to CI artifacts consistently find them ignored by developers due to signal-to-noise ratio.
+
+### Vitest v5 Beta: Breaking Changes to Prepare for [community]
+
+Vitest v5.0 (currently in beta as of 2026-05-12) introduces breaking changes that CI pipelines need to accommodate before upgrading from v4.x. The most impactful changes are directory renames, removal of the `sequential` option, and V8 coverage expansion. Teams planning upgrades should validate CI workflows against the beta on a non-blocking branch before merging.
+
+> [community] The Vitest team's recommendation for v5 upgrades: run `vitest run` with `--reporter=verbose` on the beta first to surface all deprecation warnings before they become errors. Teams that skip this step hit the `attachmentsDir` rename in production CI — the old path `.vitest-attachements/` (note the typo) is no longer created, causing attachment-dependent test workflows to fail silently.
+
+**Key v5.0 breaking changes affecting CI pipelines:**
+
+```typescript
+// vitest.config.ts — v5.0 migration checklist
+
+// 1. attachmentsDir: renamed from .vitest-attachements/ (typo) to .vitest/attachments/
+//    Update any CI steps that upload or reference attachment artifacts
+// BEFORE (v4.x): attachments written to .vitest-attachements/
+// AFTER  (v5.0): attachments written to .vitest/attachments/
+// Fix: update artifact upload paths in GitHub Actions workflows
+
+// 2. sequential option removed — use concurrent explicitly
+// BEFORE: test.concurrent('my test', ...) — opt-in to parallel within describe
+//         sequential implied unless concurrent used
+// AFTER: concurrent is the default for grouped tests; sequential option removed
+//        For serialized tests, use describe.sequential() instead
+
+// 3. inlined expect package — deprecated entry points removed
+// BEFORE: import { expect } from 'vitest/expect' — worked in v4
+// AFTER:  import { expect } from 'vitest' — only valid import path in v5
+// Fix: grep codebase for 'vitest/expect' and replace with 'vitest'
+
+// 4. Blob reporter default path changed
+// BEFORE: blob reports written to blob-report/ (configurable)
+// AFTER:  blob reports written to .vitest/blob/ by default
+// Fix: update artifact upload paths or explicitly set outputDir in blob reporter config
+```
+
+**V8 coverage expanded to track worker contexts (v5.0):**
+
+```typescript
+// vitest.config.ts — V8 coverage now tracks code in node:child_process and node:worker_threads
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    pool: 'threads',
+    maxWorkers: 2,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'json-summary'],
+      // V5: V8 automatically instruments code running in child_process.fork() and worker_threads.Worker()
+      // Teams with worker-heavy codebases will see coverage numbers INCREASE on v5 upgrade
+      // (previously these execution contexts were invisible to V8 coverage)
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: ['src/**/*.d.ts', 'src/**/*.test.ts', 'src/**/*.spec.ts'],
+      thresholds: { lines: 80, branches: 75 },
+    },
+  },
+});
+```
+
+**Non-sharded multi-environment report merging (v5.0 new feature):**
+
+```yaml
+# .github/workflows/ci.yml — Vitest v5 multi-environment report merging without sharding
+jobs:
+  unit-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      # Run node environment tests; blob report includes environment metadata
+      - run: npx vitest run --project node --reporter=blob --outputFile=.vitest/blob/node-results.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vitest-blob-node
+          # V5: default blob path is .vitest/blob/ — update all upload paths
+          path: .vitest/blob/
+
+  unit-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # Run browser environment tests; blob report includes environment metadata
+      - run: npx vitest run --project browser --reporter=blob --outputFile=.vitest/blob/browser-results.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vitest-blob-browser
+          path: .vitest/blob/
+
+  merge-vitest-reports:
+    needs: [unit-node, unit-browser]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: all-blob-reports/
+          pattern: vitest-blob-*
+          merge-multiple: true
+      # V5: merge-reports now handles multi-environment blobs without sharding
+      # Node and browser results merged into a single unified HTML report
+      - run: npx vitest merge-reports --reporter html ./all-blob-reports
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vitest-html-report
+          path: vitest-report/
+          retention-days: 14
+```
+
+**Migration validation CI step (run before upgrading to v5):**
+
+```typescript
+// scripts/vitest-v5-migration-check.ts — validate v5 readiness before upgrade
+import * as fs from 'fs';
+import * as path from 'path';
+import * as glob from 'glob';
+
+interface MigrationIssue {
+  file: string;
+  line: number;
+  issue: string;
+  fix: string;
+}
+
+function checkV5Readiness(srcDir = 'src', workflowDir = '.github/workflows'): MigrationIssue[] {
+  const issues: MigrationIssue[] = [];
+
+  // Check 1: deprecated import path 'vitest/expect'
+  const testFiles = glob.sync(`${srcDir}/**/*.{test,spec}.{ts,tsx}`);
+  for (const file of testFiles) {
+    const content = fs.readFileSync(file, 'utf8');
+    const lines = content.split('\n');
+    lines.forEach((line, i) => {
+      if (line.includes("from 'vitest/expect'") || line.includes('from "vitest/expect"')) {
+        issues.push({
+          file,
+          line: i + 1,
+          issue: "Deprecated import path 'vitest/expect' removed in v5",
+          fix: "Replace with: import { expect } from 'vitest'",
+        });
+      }
+    });
+  }
+
+  // Check 2: CI workflows referencing old blob output path
+  const workflows = glob.sync(`${workflowDir}/**/*.{yml,yaml}`);
+  for (const file of workflows) {
+    const content = fs.readFileSync(file, 'utf8');
+    if (content.includes('blob-report/') && content.includes('vitest')) {
+      issues.push({
+        file,
+        line: 0,
+        issue: "Vitest v5 blob reporter default changed from 'blob-report/' to '.vitest/blob/'",
+        fix: "Update artifact upload path to '.vitest/blob/' or set outputDir explicitly",
+      });
+    }
+    if (content.includes('.vitest-attachements')) {
+      issues.push({
+        file,
+        line: 0,
+        issue: "Old attachmentsDir '.vitest-attachements/' (typo) no longer created in v5",
+        fix: "Update to '.vitest/attachments/' (corrected spelling)",
+      });
+    }
+  }
+
+  return issues;
+}
+
+const issues = checkV5Readiness();
+if (issues.length > 0) {
+  console.error('[vitest-v5-check] Migration issues found:');
+  issues.forEach(i => {
+    const loc = i.line > 0 ? `:${i.line}` : '';
+    console.error(`  ${i.file}${loc}: ${i.issue}`);
+    console.error(`    Fix: ${i.fix}`);
+  });
+  process.exit(1);
+}
+console.log('[vitest-v5-check] No v5 migration issues detected.');
+```
+
+> [community] The Vitest v5 upgrade that causes the most confusion is the removal of `sequential` as a standalone test option. In v4, writing `test('my test', { sequential: true }, ...)` was a no-op for individual tests but communicated intent. In v5, `sequential` is not a valid property — it produces a TypeScript error. The replacement is `describe.sequential(() => { ... })` which serializes all tests within the block. Teams with many individual-test sequential annotations need a mechanical grep-and-replace pass before upgrading.
+
+> [community] V8 coverage expansion to `node:child_process` and `node:worker_threads` in v5 is a double-edged change. Teams with worker-heavy code (background jobs, CPU-intensive processing moved to workers) will see their coverage percentages INCREASE because previously uncovered worker code is now tracked. If a team has a 78% coverage threshold and worker code has 50% coverage, the upgrade may cause threshold failures that weren't present in v4. Profile coverage delta on a non-blocking branch before merging the v5 upgrade.
+
+

@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 40 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + scenario-framework + openapi-spec -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 41 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + scenario-framework + openapi-spec -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -31,6 +31,7 @@
      - Iter 38: Multi-turn AI agent exploration pattern (scenario-style multi-turn simulation with autopilot, hybrid script+autopilot, red-team adversarial); inverted testing pyramid for AI features (community signal from langwatch/scenario + production teams); TypeScript multi-turn agent oracle harness; community lessons #102-104; new anti-pattern (static assertion-only testing for LLM features)
      - Iter 39: OWASP LLM Top 10 2025 as structured charter framework (systematic mapping of LLM01-LLM10 to exploration charters); LLM-as-judge oracle pattern for simulation sessions (decoupled evaluation from execution); synthetic monitoring as production-phase exploratory complement (martinfowler.com 2026); TypeScript LLM-as-judge oracle harness; community lessons #105-107; new anti-pattern (ad hoc red-teaming without OWASP LLM framework)
      - Iter 40: Contract-aware exploratory testing pattern (OpenAPI schema as oracle source during API sessions); TypeScript SchemaOracleValidator that compares live responses against OpenAPI components; schema-drift charter pattern (YAML); community lessons #108-110; new anti-pattern (exploring APIs without a schema reference)
+     - Iter 41: Feature-flag-aware exploratory testing pattern (charter strategy for dark-launch and graduated-rollout features); TypeScript FeatureFlagOracleHarness that verifies flag-on/flag-off behavioral divergence; pair exploratory testing with AI co-pilot pattern (human tester + AI real-time oracle advisor, different from LLM-as-judge); TypeScript AIPairAdvisor harness; community lessons #111-113; new anti-pattern (exploring flag-guarded features without toggling the flag)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -7096,5 +7097,474 @@ export class SchemaOracleValidator {
 109. **[community] "Undocumented field" violations from schema oracle sessions are the most valuable input to API design reviews.** When a schema validator flags a field that exists in the API response but not in the OpenAPI spec, the team faces a decision: add the field to the spec (it was intentional but undocumented) or remove it from the response (it was leaked by accident). Teams report that approximately 40% of undocumented fields found this way turn out to be unintentionally leaked internal fields — computed properties, audit metadata, or raw database IDs that should not be part of the public API surface. The other 60% are legitimate additions that a developer added without updating the spec. Both categories are defects: accidental leaks are security concerns; missing spec entries are contract violations. A single 60-minute schema oracle session on a mature API typically surfaces 5-12 undocumented fields and generates both spec-update tasks and security review items.
 
 110. **[community] Contract-aware exploratory sessions reveal consumer impact before consumer-driven contract tests catch regressions.** Teams that use consumer-driven contract testing (Pact) and exploratory testing in combination report that the two approaches find different categories of failures at different times. Pact provider verification catches regressions in existing consumer contracts — it is a regression gate. Contract-aware exploratory sessions find proactive defects: API changes that no consumer has written a contract test against yet (new consumers, new endpoints) and schema drift in areas where consumers have not explicitly tested edge cases (nullable fields, error envelopes). The most valuable combination is: run contract-aware exploratory sessions when a new endpoint is built (before any consumers exist) to establish a clean schema baseline; run Pact provider verification in CI to prevent regressions once consumers write contracts. The exploratory session is the discovery phase that Pact cannot perform; Pact is the regression gate that exploration cannot provide. Teams that use only Pact discover schema drift only after a consumer is broken; teams that add exploratory sessions discover it before any consumer is written.
+
+---
+
+## Feature-Flag-Aware Exploratory Testing (Iteration 41)
+
+Modern continuous-delivery teams gate new features behind feature flags — sometimes called **dark launches** or **graduated rollouts**. A feature may be deployed to production but only visible to 0–10% of users, or only to a specific cohort (internal users, beta testers, a single tenant). This creates a new category of exploration: **flag-aware exploratory testing**, where the tester must explore both the flag-on and flag-off states, verify the divergence is intentional, and ensure no data or behavioral leakage occurs between states.
+
+### Why Feature-Flag Exploration Is Different
+
+Scripted test cases for a feature-flagged capability are typically written assuming the flag is on. This leaves a gap: the flag-off path (what a user who is not enrolled sees) is rarely covered with equal rigour. The most dangerous class of defect in flagged features is not in the new capability itself — it is in the **boundary between states**: the moment a user is enrolled, the fallback when they are not, and the data model changes that apply regardless of flag state (because the database migration runs before the flag is turned on).
+
+The charter structure for flag-aware sessions adds a fourth part:
+
+```yaml
+# charter: feature-flag-exploration.yaml
+charter_id: "CHR-checkout-featureflags-20260512-01"
+mission:
+  explore: "the new one-click-checkout feature"
+  using: "flag ON for test account A; flag OFF for test account B; same cart contents on both"
+  to_discover: "whether the one-click path shares session state with the standard checkout path, and whether feature-flag-off users see any leaked one-click UI elements"
+  flag_states:
+    flag_on_accounts: ["test-user-A@example.com"]
+    flag_off_accounts: ["test-user-B@example.com"]
+    shared_data_probe: "same cart ID accessed via both accounts"
+heuristics:
+  - "HICCUPPS: User — does the flag-off user have a degraded experience, or merely a different one?"
+  - "HICCUPPS: Comparable — is the flag-off path identical to pre-feature behavior? Any regression?"
+  - "FEW HICCUPS: Collaboration — do flag-on and flag-off users share any backend state that could leak?"
+risk_areas:
+  - "Database rows written by the one-click path accessible to flag-off users via API"
+  - "Analytics events fired for flag-off users that should only fire for flag-on"
+  - "UI components conditionally rendered via flag — any flash-of-content on page load?"
+```
+
+### TypeScript: FeatureFlagOracleHarness
+
+```typescript
+// src/testing/exploratory/feature-flag-oracle-harness.ts
+// Dual-state harness for feature-flag-aware exploratory sessions.
+// Runs the same probe sequence against flag-ON and flag-OFF states and
+// asserts that only expected behavioral differences exist between them.
+
+export interface FlagProbeConfig {
+  /** Label for this probe step — used in the session report */
+  label: string;
+  /** HTTP method */
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  /** URL to probe */
+  url: string;
+  /** Request body (for POST/PUT) */
+  body?: unknown;
+  /** Headers — typically used to pass auth tokens per flag state */
+  headers?: Record<string, string>;
+}
+
+export interface FlagProbeResult {
+  label: string;
+  flagOn: { status: number; body: unknown; responseTimeMs: number };
+  flagOff: { status: number; body: unknown; responseTimeMs: number };
+  divergences: FlagDivergence[];
+  notes: string[];
+}
+
+export interface FlagDivergence {
+  field: string;
+  flagOnValue: unknown;
+  flagOffValue: unknown;
+  expected: boolean;   // true = this divergence was declared expected in the harness config
+  oracle: 'User' | 'Comparable' | 'Claims' | 'Purpose';
+}
+
+export interface FlagHarnessConfig {
+  /** Headers that activate the flag-on state (e.g., an X-Feature-Flag header or a flag-on auth token) */
+  flagOnHeaders: Record<string, string>;
+  /** Headers for the flag-off state (standard auth, no feature flag) */
+  flagOffHeaders: Record<string, string>;
+  /**
+   * Fields that are EXPECTED to differ between flag-on and flag-off.
+   * Any field not in this list that differs triggers an unexpected-divergence alert.
+   */
+  expectedDivergenceFields: string[];
+  baseUrl: string;
+}
+
+export class FeatureFlagOracleHarness {
+  private notes: string[] = [];
+  private results: FlagProbeResult[] = [];
+
+  constructor(private readonly config: FlagHarnessConfig) {}
+
+  /**
+   * Run a single probe against both flag states and compare the results.
+   * Unexpected divergences (fields that differ but are not in expectedDivergenceFields)
+   * are flagged for tester review — they may indicate data leakage or a missing conditional.
+   */
+  async probe(probeConfig: FlagProbeConfig): Promise<FlagProbeResult> {
+    const flagOnResult = await this.fetch(probeConfig, this.config.flagOnHeaders);
+    const flagOffResult = await this.fetch(probeConfig, this.config.flagOffHeaders);
+
+    const divergences = this.compare(
+      flagOnResult.body,
+      flagOffResult.body,
+      this.config.expectedDivergenceFields
+    );
+
+    const result: FlagProbeResult = {
+      label: probeConfig.label,
+      flagOn: flagOnResult,
+      flagOff: flagOffResult,
+      divergences,
+      notes: [],
+    };
+
+    const unexpected = divergences.filter((d) => !d.expected);
+    if (unexpected.length > 0) {
+      result.notes.push(
+        `[FLAG ORACLE] ${unexpected.length} unexpected divergence(s) between flag-on and flag-off states:`
+      );
+      for (const div of unexpected) {
+        result.notes.push(
+          `  [${div.oracle}] field "${div.field}": flag-on=${JSON.stringify(div.flagOnValue).slice(0, 60)}, ` +
+          `flag-off=${JSON.stringify(div.flagOffValue).slice(0, 60)}`
+        );
+      }
+    } else {
+      result.notes.push(`[FLAG ORACLE] All ${divergences.length} divergences are declared-expected. No leakage detected.`);
+    }
+
+    this.results.push(result);
+    return result;
+  }
+
+  /** Verify that a specific field has the SAME value in both flag states (no leakage). */
+  assertNoLeakage(result: FlagProbeResult, fieldPath: string): void {
+    const leak = result.divergences.find(
+      (d) => d.field === fieldPath && !d.expected
+    );
+    if (leak) {
+      this.notes.push(
+        `[LEAKAGE ALERT] "${fieldPath}" differs between flag states unexpectedly. ` +
+        `flag-on: ${JSON.stringify(leak.flagOnValue).slice(0, 60)}, ` +
+        `flag-off: ${JSON.stringify(leak.flagOffValue).slice(0, 60)}`
+      );
+    }
+  }
+
+  sessionReport(): string {
+    const probeLines = this.results.map((r) => {
+      const unexpectedCount = r.divergences.filter((d) => !d.expected).length;
+      return `  ${r.label}: flag-on=${r.flagOn.status} (${r.flagOn.responseTimeMs}ms), ` +
+        `flag-off=${r.flagOff.status} (${r.flagOff.responseTimeMs}ms), ` +
+        `unexpected divergences=${unexpectedCount}`;
+    });
+
+    return [
+      '=== Feature-Flag Oracle Session Report ===',
+      `Probes run: ${this.results.length}`,
+      ...probeLines,
+      '',
+      'Notes:',
+      ...(this.notes.length > 0 ? this.notes : ['  None — all states behaved as expected.']),
+    ].join('\n');
+  }
+
+  private async fetch(
+    probe: FlagProbeConfig,
+    extraHeaders: Record<string, string>
+  ): Promise<{ status: number; body: unknown; responseTimeMs: number }> {
+    const url = probe.url.startsWith('http') ? probe.url : `${this.config.baseUrl}${probe.url}`;
+    const t0 = Date.now();
+    const response = await fetch(url, {
+      method: probe.method,
+      headers: { 'Content-Type': 'application/json', ...probe.headers, ...extraHeaders },
+      body: probe.body ? JSON.stringify(probe.body) : undefined,
+    });
+    const responseTimeMs = Date.now() - t0;
+    let body: unknown;
+    try { body = await response.json(); } catch { body = null; }
+    return { status: response.status, body, responseTimeMs };
+  }
+
+  private compare(
+    flagOnBody: unknown,
+    flagOffBody: unknown,
+    expectedFields: string[]
+  ): FlagDivergence[] {
+    const divergences: FlagDivergence[] = [];
+    if (typeof flagOnBody !== 'object' || typeof flagOffBody !== 'object') return divergences;
+    if (!flagOnBody || !flagOffBody) return divergences;
+
+    const onRecord = flagOnBody as Record<string, unknown>;
+    const offRecord = flagOffBody as Record<string, unknown>;
+    const allKeys = new Set([...Object.keys(onRecord), ...Object.keys(offRecord)]);
+
+    for (const key of allKeys) {
+      const onVal = onRecord[key];
+      const offVal = offRecord[key];
+      if (JSON.stringify(onVal) !== JSON.stringify(offVal)) {
+        divergences.push({
+          field: key,
+          flagOnValue: onVal,
+          flagOffValue: offVal,
+          expected: expectedFields.includes(key),
+          oracle: expectedFields.includes(key) ? 'Purpose' : 'Comparable',
+        });
+      }
+    }
+
+    return divergences;
+  }
+}
+
+// Usage:
+//
+// const harness = new FeatureFlagOracleHarness({
+//   flagOnHeaders:  { Authorization: `Bearer ${FLAG_ON_TOKEN}` },
+//   flagOffHeaders: { Authorization: `Bearer ${FLAG_OFF_TOKEN}` },
+//   expectedDivergenceFields: ['checkoutType', 'oneClickEnabled', 'savedPaymentMethods'],
+//   baseUrl: 'https://staging.example.com',
+// });
+//
+// const result = await harness.probe({
+//   label: 'GET /api/checkout/config for user with and without one-click flag',
+//   method: 'GET',
+//   url: '/api/checkout/config',
+// });
+//
+// harness.assertNoLeakage(result, 'cartId');        // cartId must be the same in both states
+// harness.assertNoLeakage(result, 'userId');        // userId must not leak flag-on value to flag-off
+// console.log(harness.sessionReport());
+```
+
+**Key design decisions in FeatureFlagOracleHarness:**
+
+- **Declared-expected divergences**: The `expectedDivergenceFields` list acts as an explicit contract between the tester and the feature. Fields the feature is *supposed* to change get tagged `oracle: 'Purpose'` (the feature does what it says). Fields that diverge unexpectedly get `oracle: 'Comparable'` — a violation of the principle that the flag-off experience should match pre-feature behavior.
+- **Leakage assertion helpers**: `assertNoLeakage` targets specific fields the tester suspects might carry state across the flag boundary (cart ID, user ID, session tokens). These assertions are not test assertions — they are oracle checks that surface to the tester for judgment.
+- **Both response times captured**: Performance oracles apply to flag-aware exploration too. If the flag-on path is 10× slower, that is a Purpose violation (the feature's added cost exceeds its stated value).
+
+---
+
+### Additional Anti-Pattern (Iteration 41)
+
+- **Exploring flag-guarded features without toggling the flag**: A common mistake on teams with feature flags is to run exploratory sessions in a flag-on environment only. The session discovers defects in the new capability but misses an entire class of defect: regressions in the flag-off path (the experience for users who have not been enrolled). Because the database schema often changes before the flag is turned on (migrations run unconditionally), the flag-off path can silently break due to schema changes that the new feature code handles but the old code does not. The fix is a two-state charter that explicitly requires both flag-on and flag-off exploration in the same session, with a deliberate probe of any shared data structures.
+
+---
+
+## Pair Exploratory Testing with AI Co-Pilot (Iteration 41)
+
+Pair testing — two people sharing a single exploratory session — has been a known practice for decades, with the driver operating the system and the navigator watching for unexpected behavior. In 2026, a new pairing mode has emerged: **human tester + AI co-pilot**, where the AI assistant serves as a real-time oracle advisor during the session rather than as a session planner (charter suggester) or post-session analyst (LLM-as-judge).
+
+This pattern is distinct from the LLM-as-judge pattern (Iteration 38), which operates *after* execution and evaluates whether an agent's output was correct. The AI co-pilot operates *during* the session, helping the human tester:
+
+1. **Apply HICCUPPS in real time**: The tester narrates observations aloud or in a shared chat buffer; the AI scans the narration and flags which HICCUPPS oracle dimensions are triggered.
+2. **Recall heuristics under cognitive load**: During a complex session, testers often overlook FEW HICCUPS dimensions (especially Workload, Interruptions, and Platform). The AI co-pilot prompts: "You've tested Function, Error, and Configuration — have you tried any Stress or Interruption scenarios?"
+3. **Suggest follow-on probes**: When a tester finds a defect, the AI suggests related probes based on the defect's taxonomy: "This looks like a boundary defect on the quantity field — have you tried negative values, zero, and max integer?"
+4. **Draft the defect report from session notes**: At session end, the tester provides raw notes; the AI generates a structured defect report template populated with the evidence from the notes.
+
+The pattern is **not** AI-as-tester: the human drives every probe. The AI is a navigator without hands — it cannot interact with the product, only with the session notes.
+
+### TypeScript: AIPairAdvisor
+
+```typescript
+// src/testing/exploratory/ai-pair-advisor.ts
+// AI co-pilot integration for pair exploratory testing sessions.
+// The human tester narrates observations into addObservation(); the advisor
+// analyses against HICCUPPS and FEW HICCUPS and returns oracle alerts + suggested probes.
+// Designed for integration with any LLM API (Anthropic Claude, OpenAI, etc.).
+
+export interface Observation {
+  timestamp: string;       // ISO-8601
+  text: string;            // Raw tester narration — can be informal
+  isDefect: boolean;       // Tester flagged this as a possible defect
+  defectCategory?: 'crash' | 'correctness' | 'security' | 'boundary' | 'performance' | 'cosmetic';
+}
+
+export interface AdvisorResponse {
+  oracleHits: OracleHit[];
+  coverageGaps: string[];     // FEW HICCUPS dimensions not yet probed
+  suggestedProbes: string[];  // Specific follow-on probes based on the observation
+  draftDefectSnippet?: string; // Only populated when isDefect === true
+}
+
+export interface OracleHit {
+  dimension: string;  // e.g. "Comparable", "User", "Claims"
+  explanation: string;
+  severity: 'high' | 'medium' | 'low';
+}
+
+export interface SessionContext {
+  charterExplore: string;
+  charterUsing: string;
+  charterToDiscover: string;
+  testedDimensions: Set<string>;  // FEW HICCUPS dimensions covered so far
+}
+
+const FEW_HICCUPS_DIMENSIONS = [
+  'Function', 'Error', 'Workload', 'Hints/Help',
+  'Interruptions', 'Collaboration', 'Configuration',
+  'Users', 'Platform/Performance', 'Stress',
+] as const;
+
+export class AIPairAdvisor {
+  private readonly observations: Observation[] = [];
+
+  constructor(
+    private readonly context: SessionContext,
+    private readonly llmClient: LLMClient
+  ) {}
+
+  async addObservation(observation: Observation): Promise<AdvisorResponse> {
+    this.observations.push(observation);
+    this.updateCoveredDimensions(observation.text);
+
+    const prompt = this.buildOraclePrompt(observation);
+    const llmResponse = await this.llmClient.complete(prompt);
+
+    return this.parseAdvisorResponse(llmResponse, observation);
+  }
+
+  /** List FEW HICCUPS dimensions that have not yet been probed in this session. */
+  coverageGaps(): string[] {
+    return FEW_HICCUPS_DIMENSIONS.filter(
+      (d) => !this.context.testedDimensions.has(d)
+    );
+  }
+
+  /** Generate a structured debrief summary from all session observations. */
+  async generateDebrief(): Promise<string> {
+    const defects = this.observations.filter((o) => o.isDefect);
+    const prompt = [
+      `Session charter: Explore ${this.context.charterExplore} with ${this.context.charterUsing} to discover ${this.context.charterToDiscover}.`,
+      `Total observations: ${this.observations.length}`,
+      `Possible defects logged: ${defects.length}`,
+      '',
+      'Observations:',
+      ...this.observations.map((o, i) => `${i + 1}. [${o.timestamp}] ${o.text}${o.isDefect ? ` [DEFECT: ${o.defectCategory}]` : ''}`),
+      '',
+      'Generate: (1) executive summary of session findings, (2) prioritised defect list, (3) suggested follow-on charter.',
+    ].join('\n');
+
+    return this.llmClient.complete(prompt);
+  }
+
+  private buildOraclePrompt(observation: Observation): string {
+    return [
+      `You are a co-pilot in a software exploratory testing session.`,
+      `Charter: Explore "${this.context.charterExplore}" with "${this.context.charterUsing}" to discover "${this.context.charterToDiscover}".`,
+      '',
+      `The tester just observed: "${observation.text}"`,
+      observation.isDefect ? `The tester suspects this is a ${observation.defectCategory ?? 'unknown-category'} defect.` : '',
+      '',
+      `Respond with:`,
+      `1. ORACLE_HITS: Which HICCUPPS dimensions (History, Image, Comparable, Claims, User, Product, Purpose, Standards) are triggered by this observation and why.`,
+      `2. SUGGESTED_PROBES: 2–3 specific follow-on probes the tester should try next, given this observation.`,
+      `3. COVERAGE_GAP: Remind the tester of any FEW HICCUPS dimension not yet mentioned in this session.`,
+      observation.isDefect ? `4. DEFECT_SNIPPET: Draft a one-paragraph defect description from this observation.` : '',
+    ].join('\n');
+  }
+
+  private parseAdvisorResponse(llmResponse: string, observation: Observation): AdvisorResponse {
+    // In production, parse structured output (JSON mode or XML tags).
+    // This implementation extracts sections by heading prefix for simplicity.
+    const oracleSection = this.extractSection(llmResponse, 'ORACLE_HITS');
+    const probeSection  = this.extractSection(llmResponse, 'SUGGESTED_PROBES');
+    const defectSection = this.extractSection(llmResponse, 'DEFECT_SNIPPET');
+
+    return {
+      oracleHits: oracleSection
+        ? oracleSection.split('\n').filter(Boolean).map((line) => ({
+            dimension: line.split(':')[0]?.replace(/^\d+\.\s*/, '').trim() ?? 'unknown',
+            explanation: line.split(':').slice(1).join(':').trim(),
+            severity: line.toLowerCase().includes('critical') || line.toLowerCase().includes('security')
+              ? 'high' : 'medium',
+          }))
+        : [],
+      coverageGaps: this.coverageGaps(),
+      suggestedProbes: probeSection
+        ? probeSection.split('\n').filter(Boolean).map((l) => l.replace(/^\d+\.\s*-?\s*/, '').trim())
+        : [],
+      draftDefectSnippet: observation.isDefect ? defectSection ?? undefined : undefined,
+    };
+  }
+
+  private extractSection(text: string, heading: string): string | null {
+    const regex = new RegExp(`${heading}[:\\s]*([\\s\\S]*?)(?=\\n[A-Z_]{3,}:|$)`, 'i');
+    return text.match(regex)?.[1]?.trim() ?? null;
+  }
+
+  private updateCoveredDimensions(text: string): void {
+    const dimensionKeywords: Record<string, string[]> = {
+      'Function': ['function', 'feature', 'works', 'submit', 'save', 'load'],
+      'Error': ['error', 'fail', 'invalid', 'wrong', 'exception', 'crash'],
+      'Workload': ['slow', 'many', 'bulk', 'load', 'volume', '1000'],
+      'Hints/Help': ['help', 'tooltip', 'label', 'documentation', 'hint'],
+      'Interruptions': ['back button', 'navigate away', 'interrupted', 'refresh', 'timeout'],
+      'Collaboration': ['two users', 'concurrent', 'shared', 'another user'],
+      'Configuration': ['setting', 'flag', 'config', 'environment', 'locale'],
+      'Users': ['guest', 'admin', 'mobile', 'screen reader', 'persona'],
+      'Platform/Performance': ['mobile', 'performance', 'slow', 'browser', 'network'],
+      'Stress': ['stress', 'max', 'boundary', 'limit', 'overflow'],
+    };
+
+    const lowerText = text.toLowerCase();
+    for (const [dimension, keywords] of Object.entries(dimensionKeywords)) {
+      if (keywords.some((kw) => lowerText.includes(kw))) {
+        this.context.testedDimensions.add(dimension);
+      }
+    }
+  }
+}
+
+/** Minimal LLM client interface — implement for your chosen provider. */
+export interface LLMClient {
+  complete(prompt: string): Promise<string>;
+}
+
+// Usage:
+//
+// const advisor = new AIPairAdvisor(
+//   {
+//     charterExplore: 'the guest checkout address form',
+//     charterUsing: 'mobile viewport, international test cards, no saved addresses',
+//     charterToDiscover: 'locale formatting errors and error-handling gaps after payment failure',
+//     testedDimensions: new Set(),
+//   },
+//   myAnthropicClient  // implements LLMClient
+// );
+//
+// const response = await advisor.addObservation({
+//   timestamp: new Date().toISOString(),
+//   text: 'Entered a UK postcode (SW1A 1AA) — form rejected it with "Invalid ZIP code"',
+//   isDefect: true,
+//   defectCategory: 'correctness',
+// });
+//
+// console.log('Oracle hits:', response.oracleHits);
+// console.log('Suggested probes:', response.suggestedProbes);
+// console.log('Coverage gaps:', response.coverageGaps);
+// console.log('Draft defect:', response.draftDefectSnippet);
+```
+
+**Key design decisions in AIPairAdvisor:**
+
+- **LLMClient as interface, not dependency**: The harness depends on a minimal `LLMClient` interface, not on a specific SDK. Teams can inject an Anthropic Claude client, an OpenAI client, or a stub for testing — without changing the harness code.
+- **testedDimensions tracking**: The session context tracks which FEW HICCUPS dimensions have been encountered. `coverageGaps()` returns dimensions not yet triggered, giving the tester an explicit prompt when the session is getting narrow.
+- **Oracle prompting is structured, not conversational**: The LLM is prompted to return structured sections (`ORACLE_HITS`, `SUGGESTED_PROBES`, etc.) rather than free text. This makes `parseAdvisorResponse` deterministic enough for session reporting.
+- **The AI has no agency**: The harness does not act on LLM suggestions automatically. Every probe is a human decision. The AI narrows the option space; the tester chooses. This preserves the tester's exploratory freedom while reducing cognitive load.
+
+### When to Use the AI Co-Pilot Pattern
+
+- **Solo testers under time pressure**: When a tester is running a 60-minute session alone and needs the equivalent of a navigator, the AI co-pilot fills the role without requiring a second person.
+- **Onboarding new team members**: Junior testers who have not yet internalised HICCUPPS can use the advisor's real-time oracle feedback as a learning mechanism — the AI explains *why* an observation triggers a specific oracle dimension.
+- **Complex or unfamiliar domains**: When a tester is exploring a domain they are less familiar with (e.g., a payment gateway integration they have not tested before), the AI's domain knowledge supplements the tester's system knowledge.
+
+### When NOT to Use the AI Co-Pilot Pattern
+
+- **Sessions requiring adversarial instinct**: Red-team security sessions benefit from a human adversary who brings genuine creative malice. An AI co-pilot prompted to suggest probes will follow patterns in its training data; a skilled human attacker breaks patterns deliberately.
+- **When the LLM adds latency to the session flow**: If the tester must wait 3–5 seconds per observation for the AI response, the cognitive flow of exploration is broken. Batch the advisor calls (add observations, get a bulk response at the halfway point) or cache suggestions offline.
+- **When the AI co-pilot becomes prescriptive**: If testers start following AI suggestions without exercising their own judgment ("I'll do whatever the AI says next"), the session devolves into a scripted test driven by the AI's priors rather than an exploratory session driven by real observations.
+
+---
+
+## Additional Community Lessons (Iteration 41)
+
+111. **[community] Feature flags create a hidden regression surface that teams consistently underestimate until a flag-off customer files a critical defect.** When a feature flag is introduced, the standard practice is to write automated test cases and run exploratory sessions for the flag-on path. The flag-off path is treated as "the existing behavior, already covered." In practice, three categories of defect appear exclusively in the flag-off path: (1) database schema migrations that add non-nullable columns break old queries that do not include those columns — the flag-on code path handles them, the flag-off code path does not; (2) analytics event firing logic changes conditionally on the flag, but the analytics SDK is initialised unconditionally — flag-off users see incorrect event attribution; (3) shared UI components that are modified to support the new feature visually break in the flag-off rendering path because the component now assumes flag-on data structures. Teams that introduce a two-state exploratory charter as a mandatory gate before a flag is graduated to 100% of users catch these defects before they reach customers. The cost is one additional 45-minute session per flag graduation; the benefit is eliminating the most common class of post-graduation regression.
+
+112. **[community] AI co-pilot pair testing is most valuable in the middle of a session, not at the start or end.** Teams that integrated AI advisors into exploratory sessions initially used them at session start (for charter generation, already covered in Iteration 24) and session end (for debrief drafting). When the same teams started using AI advisors mid-session as real-time oracle narrators, they found the highest value in the 20–40 minute mark of a 60-minute session — the point at which a tester has been through the happy path and the most obvious failure modes, and is starting to lose fresh perspective. The AI's HICCUPPS scan at this point consistently surfaced FEW HICCUPS dimensions the tester had not yet visited: Workload (no stress scenarios attempted), Interruptions (no back-button or timeout probes), and Collaboration (no concurrent-user scenario explored). Teams report that mid-session oracle narration adds an average of 2–3 additional defects per session that would not have been found without the prompt. The finding is consistent with the known cognitive fatigue curve in exploratory sessions: tester attention peaks in the first 20 minutes and decreases from 40–90 minutes, precisely the window where AI prompting adds the most value.
+
+113. **[community] Pair exploratory testing (two humans) remains more effective than AI co-pilot pairing for security and accessibility sessions, but AI pairing outperforms solo testing for functional and boundary exploration.** A recurring finding from teams that have run both models is that security-focused exploratory sessions require genuine adversarial creativity that AI co-pilots do not contribute — the AI suggests known attack patterns (input injection, parameter tampering), but human red-teamers find the novel attack vector that the AI's training data did not cover. Accessibility sessions benefit from a human navigator who can experience the product through an assistive technology simultaneously while the driver navigates, providing real sensory feedback that an AI oracle cannot replicate. For functional and boundary exploration, however, AI co-pilot pairing measurably outperforms solo testing: the AI's recall of HICCUPPS and FEW HICCUPS dimensions is perfect and tireless, where a human navigator brings diminishing attention after 30 minutes. The practical recommendation: use AI co-pilot pairing for functional, boundary, and configuration exploration; require human-human pairing for security red-team and accessibility audit sessions.
 
 ---

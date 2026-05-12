@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 46 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 47 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -4257,4 +4257,184 @@ import data from './data.json' with { type: 'json' };
 | `process.permission.has()` as a runtime access guard | Only reflects startup flags — not OS-level permissions | Use it to check Node.js permission model grants; rely on OS/RBAC for security |
 | `dirent.path` in Node.js 24+ | Removed — throws `TypeError` on directory iteration | Use `dirent.parentPath` (available since Node.js 21.4) |
 | `new URLPattern({ pathname })` with positional `ignoreCase` | Wrong overload — `ignoreCase` in object form needs different syntax | String form: `new URLPattern(str, { ignoreCase: true })`; object form: set `ignoreCase` per component |
-| `Error.isError` polyfill conflicts with native | Polyfill and native use different brand-check mechanisms — result may differ across realms | Remove the polyfill once your minimum Node.js version is 24+; use feature detection `typeof Error.isError === 'function'` |
+| `Promise.all([])` with object literals requiring named results | Array indices are fragile — adding/removing a promise shifts all indices | Use `Promise.allKeyed({ ... })` (Stage 2.7) for object-shaped concurrent awaiting with named keys |
+| `.chunks(0)` or `.windows(0)` on an iterator | Size-0 chunk/window is undefined behaviour in some runtimes; throws in others | Always pass a positive integer ≥ 1; validate before calling |
+
+---
+
+## `Promise.allKeyed` / `Promise.allSettledKeyed` — Named Concurrent Awaiting (Stage 2.7)
+
+`Promise.allKeyed(object)` accepts an object whose values are Promises, awaits them concurrently, and resolves to an object with the same keys and resolved values. It is the object-shaped counterpart to `Promise.all(array)` and removes the index-coupling fragility of array-based concurrent patterns.
+
+`Promise.allSettledKeyed(object)` is the non-rejecting variant — analogous to `Promise.allSettled()` — where each value in the result is `{ status: 'fulfilled', value }` or `{ status: 'rejected', reason }`.
+
+```javascript
+// ── Problem with array-based Promise.all ─────────────────────────────
+// Adding a third fetch shifts all indices — easy to introduce off-by-one bugs
+const [user, posts] = await Promise.all([fetchUser(id), fetchPosts(id)]);
+// later: const [user, posts, metrics] = ... — adding at end is safe,
+//        but inserting in the middle silently shifts assignments
+
+// ── Promise.allKeyed — object-shaped, named, concurrent ──────────────
+const { user, posts, metrics } = await Promise.allKeyed({
+  user:    fetchUser(id),
+  posts:   fetchPosts(id),
+  metrics: fetchMetrics(id),
+});
+// All three run concurrently; keys make intent self-documenting
+
+// ── Promise.allSettledKeyed — partial results, named ──────────────────
+const results = await Promise.allSettledKeyed({
+  user:    fetchUser(id),
+  posts:   fetchPosts(id),
+  metrics: fetchMetrics(id),   // might fail without affecting the others
+});
+
+// results.user    → { status: 'fulfilled', value: { id, name, ... } }
+// results.metrics → { status: 'rejected',  reason: Error('503') }
+
+const user    = results.user.status    === 'fulfilled' ? results.user.value    : null;
+const metrics = results.metrics.status === 'fulfilled' ? results.metrics.value : null;
+
+// ── Practical: dashboard data with graceful degradation ───────────────
+async function loadDashboard(userId) {
+  const { profile, activity, recommendations } = await Promise.allSettledKeyed({
+    profile:         fetchProfile(userId),
+    activity:        fetchActivityFeed(userId),
+    recommendations: fetchRecommendations(userId),  // non-critical
+  });
+
+  return {
+    profile:         profile.status === 'fulfilled' ? profile.value : null,
+    activity:        activity.status === 'fulfilled' ? activity.value : [],
+    recommendations: recommendations.status === 'fulfilled' ? recommendations.value : [],
+    errors:          Object.entries({ profile, activity, recommendations })
+                       .filter(([, r]) => r.status === 'rejected')
+                       .map(([key, r]) => ({ key, reason: r.reason.message })),
+  };
+}
+```
+
+**Key differences from existing combinators:**
+
+| Method | Input | Output | Rejects on failure? |
+|---|---|---|---|
+| `Promise.all([...])` | Array of Promises | Array of values (same order) | Yes — first rejection |
+| `Promise.allSettled([...])` | Array of Promises | Array of `{status, value/reason}` | Never |
+| `Promise.allKeyed({...})` | Object of Promises | Object of values (same keys) | Yes — first rejection |
+| `Promise.allSettledKeyed({...})` | Object of Promises | Object of `{status, value/reason}` | Never |
+
+**Availability:** Stage 2.7 as of 2026 — not yet in browsers or Node.js natively. Use a polyfill or a helper:
+```javascript
+// Tiny polyfill until Stage 4 lands
+Promise.allKeyed = async (obj) => {
+  const entries = Object.entries(obj);
+  const values  = await Promise.all(entries.map(([, p]) => p));
+  return Object.fromEntries(entries.map(([k], i) => [k, values[i]]));
+};
+```
+
+---
+
+## Iterator Chunking — `.chunks()` and `.windows()` (Stage 2.7)
+
+The Iterator Chunking proposal adds two new methods to `Iterator.prototype`:
+- `.chunks(n)` — splits the iterator into non-overlapping arrays of size `n` (last chunk may be shorter)
+- `.windows(n)` — produces overlapping windows of size `n`, advancing by one element each step
+
+Both are **lazy** — they compose with the full Iterator Helpers chain without materialising the source.
+
+```javascript
+// ── .chunks() — non-overlapping batches ───────────────────────────────
+function* digits() {
+  for (let i = 0; i < 10; i++) yield i;
+}
+
+digits().chunks(3).toArray();
+// [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]   ← last chunk shorter than 3
+
+// Batch API requests — stay under rate-limit per request
+async function batchFetch(ids) {
+  const BATCH_SIZE = 100;
+  for (const batch of ids.values().chunks(BATCH_SIZE)) {
+    const results = await Promise.all(batch.map(id => fetchItem(id)));
+    await processBatch(results);
+  }
+}
+
+// Paginate database rows — 50 rows per page
+async function* pageRows(query) {
+  const rows = await db.queryAll(query);
+  yield* rows.values().chunks(50);
+}
+
+// Grid layout — group items into rows of 4 columns
+function gridRows(items, cols = 4) {
+  return items.values().chunks(cols).toArray();
+}
+// gridRows([1..9], 4) → [[1,2,3,4], [5,6,7,8], [9]]
+
+// ── .windows() — overlapping sliding windows ─────────────────────────
+// Running average of last 3 values in a stream
+function* temperatures() {
+  yield* [20, 21, 23, 22, 25, 24, 26];
+}
+
+const averages = temperatures().windows(3).map(w => {
+  const sum = w.reduce((a, b) => a + b, 0);
+  return sum / w.length;
+}).toArray();
+// [21.33, 22, 23.33, 23.67, 25]
+
+// Pairwise comparison — detect consecutive duplicates
+function hasDuplicate(iter) {
+  return iter.windows(2).some(([a, b]) => a === b);
+}
+hasDuplicate([1, 2, 3].values());     // false
+hasDuplicate([1, 2, 2, 3].values());  // true
+
+// N-gram generation (NLP preprocessing)
+function ngrams(tokens, n) {
+  return tokens.values().windows(n).toArray();
+}
+ngrams(['the', 'quick', 'brown', 'fox'], 2);
+// [['the', 'quick'], ['quick', 'brown'], ['brown', 'fox']]
+
+// ── Compose with other Iterator Helpers ──────────────────────────────
+// Process only the first 5 chunks of a large dataset
+largeDataset.values()
+  .chunks(1000)
+  .take(5)
+  .forEach(batch => processBatch(batch));
+```
+
+**Key rules:**
+- Size must be a **positive integer ≥ 1**; passing `0` is a `RangeError`.
+- `.chunks()`: final chunk contains remaining elements even if fewer than `n`.
+- `.windows()`: stops when fewer than `n` elements remain — no padding by default.
+- Both return iterators, so `.toArray()` materialises them; composing with `.take()` keeps them lazy.
+
+**Availability:** Stage 2.7 as of 2026. Available via `@tc39/iterator-helpers` polyfill or in the `core-js` iterator helpers package.
+
+```javascript
+// Polyfill for .chunks() until Stage 4 ships natively:
+Iterator.prototype.chunks = function* (size) {
+  if (!Number.isInteger(size) || size < 1) throw new RangeError('size must be a positive integer');
+  let chunk = [];
+  for (const item of this) {
+    chunk.push(item);
+    if (chunk.length === size) { yield chunk; chunk = []; }
+  }
+  if (chunk.length > 0) yield chunk;
+};
+```
+
+---
+
+## Additional Community Pitfalls (2026 — Near-Future APIs)
+
+**51. Using `Promise.all([])` for Object-Shaped Concurrent Awaiting** [community] — Destructuring the result of `Promise.all` by array position is fragile: inserting a new promise in the middle silently shifts all downstream variable assignments. WHY it causes problems: adding `const [user, newThing, posts] = await Promise.all([...])` after code already assumed `posts` was index 1 is a silent data-wiring bug that no type checker catches unless you're on TypeScript with `as const` tuples. Fix: use `Promise.allKeyed` (Stage 2.7) for named concurrent awaiting; or at minimum destructure into explicit variable names via a named array: `const [userResult, postsResult] = await Promise.all([fetchUser(), fetchPosts()])`.
+
+**52. Calling `.windows(n)` Expecting Padding on Short Trailing Sequences** [community] — When fewer than `n` elements remain at the end of an iterator, `.windows(n)` silently stops — it does NOT yield a padded window. WHY it causes problems: code expecting `[1,2,3].values().windows(2).toArray()` to yield `[[1,2],[2,3],[3,undefined]]` is surprised to get `[[1,2],[2,3]]` with no trailing window. Fix: if you need trailing padded windows, post-process with a `.flatMap` that adds padding, or use a custom generator.
+
+---

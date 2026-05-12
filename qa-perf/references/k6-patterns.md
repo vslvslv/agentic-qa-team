@@ -1,8 +1,8 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/ -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/ -->
 
-> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Re-run `/qa-refine k6` to refresh.
 
 > **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `--summary-mode=legacy`, `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section. **New in v2.0.0 final:** HTTP API server disabled by default, cloud secrets auto-injected in `--local-execution`, `k6 cloud project list` command, extension tab-completion.
 
@@ -6919,5 +6919,992 @@ prevent the server from starting while still writing the HTML export:
 > connections. Only `K6_WEB_DASHBOARD_PORT=-1` or `K6_WEB_DASHBOARD=false` prevents the
 > process from blocking. This is a common source of "job ran for 6 hours and was cancelled"
 > incidents in CI pipelines that copy the web dashboard examples from local documentation.
+
+---
+
+## Browser Module — Locator Composition & Advanced Selection (k6 v1.4+)
+
+### `locator.filter()` — Narrow Results by Text or Sub-locator
+
+`locator.filter()` returns a new Locator targeting only the matching elements from the
+parent locator's result set. Use it to select a row from a table, a card from a list, or
+any element when you need to combine multiple conditions.
+
+```javascript
+// k6/scripts/browser-locator-filter.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    filter_demo: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 2,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+const APP = __ENV.APP_URL || "http://localhost:3001";
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${APP}/items`);
+
+    // All items on the page
+    const items = page.locator(".item");
+
+    // Narrow to only items containing the text "Active" — returns a new Locator
+    const activeItems = items.filter({ hasText: "Active" });
+
+    // Count active items and verify at least one exists
+    const count = await activeItems.count();
+    check(count, { "at least one active item": (n) => n > 0 });
+
+    // Narrow further: active items that contain a span with class "badge"
+    const badgedActive = activeItems.filter({ has: page.locator(".badge") });
+    const badgedCount = await badgedActive.count();
+    check(badgedCount, { "badged active items ≥ 0": (n) => n >= 0 });
+
+    // Iterate all matching elements — locator.all() returns array of Locator
+    const allActive = await activeItems.all();
+    for (const item of allActive) {
+      const text = await item.textContent();
+      check(text, { "item text non-empty": (t) => t && t.length > 0 });
+    }
+  } finally {
+    await page.close();
+  }
+}
+```
+
+### `locator.nth()` / `first()` / `last()` — Positional Selection
+
+When multiple elements match a selector, use positional methods to select a specific one.
+Unlike CSS `:nth-child()` (DOM-position-based), k6's `nth()` is index into the result set.
+
+```javascript
+// k6/scripts/browser-positional.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    positional: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 2,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/products`);
+
+    const rows = page.locator("table tbody tr");
+
+    // First row
+    const firstRow = rows.first();
+    await firstRow.waitFor({ state: "visible" });
+    const firstText = await firstRow.textContent();
+    check(firstText, { "first row has content": (t) => !!t });
+
+    // Last row
+    const lastRow = rows.last();
+    const lastText = await lastRow.textContent();
+    check(lastText, { "last row has content": (t) => !!t });
+
+    // Third row (0-indexed → nth(2))
+    const thirdRow = rows.nth(2);
+    const exists = await thirdRow.count();
+    if (exists > 0) {
+      const thirdText = await thirdRow.textContent();
+      check(thirdText, { "third row has content": (t) => !!t });
+    }
+  } finally {
+    await page.close();
+  }
+}
+```
+
+> **[community]:** `locator.all()` resolves immediately — it returns all elements currently
+> in the DOM without waiting. If the page is still rendering, call `waitFor()` on the parent
+> locator before calling `.all()` to avoid empty arrays on dynamic content.
+
+---
+
+## Browser Module — Advanced Page APIs (k6 v1.4–v1.6)
+
+### `page.waitForRequest()` — Intercept Outbound HTTP  [community]
+
+`page.waitForRequest(url)` returns a Promise that resolves with the first matching `Request`
+object. Use it with `Promise.all()` to trigger an action and then verify the request fired,
+without polling or hard-coded timeouts.
+
+```javascript
+// k6/scripts/browser-wait-request.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    wait_request: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 2,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+const APP = __ENV.APP_URL || "http://localhost:3001";
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${APP}/dashboard`);
+
+    // Wait for the analytics call AND click the button simultaneously
+    const [analyticsRequest] = await Promise.all([
+      page.waitForRequest(/\/api\/analytics\/event/),  // regex match
+      page.getByRole("button", { name: "Load Data" }).click(),
+    ]);
+
+    // Verify the request was made with the expected payload
+    const url = analyticsRequest.url();
+    check(url, { "analytics request fired": (u) => u.includes("/api/analytics/event") });
+
+    // waitForRequest can also match by exact URL string
+    const [configRequest] = await Promise.all([
+      page.waitForRequest(`${APP}/api/config`),
+      page.reload(),
+    ]);
+    check(configRequest.url(), { "config request on reload": (u) => !!u });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+### `page.waitForEvent()` — Synchronize with Browser Events  [community]
+
+`page.waitForEvent(event)` blocks execution until the specified browser event fires. Use it
+for popup windows, dialog boxes, file downloads, or any DOM event that occurs asynchronously.
+
+```javascript
+// k6/scripts/browser-popup.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    popup_test: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 2,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/`);
+
+    // Wait for a popup (new window/tab) triggered by a link click
+    const [popup] = await Promise.all([
+      page.waitForEvent("popup"),                              // resolves with new Page
+      page.getByRole("link", { name: "Open in new tab" }).click(),
+    ]);
+
+    // Interact with the popup
+    await popup.waitForLoadState("domcontentloaded");
+    const title = await popup.title();
+    check(title, { "popup has title": (t) => t.length > 0 });
+    await popup.close();
+
+    // waitForEvent with a predicate (only resolves when predicate returns true)
+    // Useful when multiple events fire and you need a specific one
+    const [targetPopup] = await Promise.all([
+      page.waitForEvent("popup", {
+        predicate: (p) => p.url().includes("/help"),
+      }),
+      page.getByRole("button", { name: "Help" }).click(),
+    ]);
+    check(targetPopup.url(), { "help popup URL": (u) => u.includes("/help") });
+    await targetPopup.close();
+  } finally {
+    await page.close();
+  }
+}
+```
+
+### `page.on('requestfailed'/'requestfinished')` — Network Monitoring  [community]
+
+Register event listeners for network lifecycle events to detect failed requests, measure
+request timing, and validate that key resources loaded successfully.
+
+```javascript
+// k6/scripts/browser-network-monitor.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+import { Counter } from "k6/metrics";
+
+const failedRequests = new Counter("browser_failed_requests");
+const finishedRequests = new Counter("browser_finished_requests");
+
+export const options = {
+  scenarios: {
+    network_monitor: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 3,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+  thresholds: {
+    "browser_failed_requests": ["count==0"],  // zero tolerance for failed requests
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+
+  // Register BEFORE navigation so early requests are captured
+  page.on("requestfailed", (request) => {
+    failedRequests.add(1);
+    console.error(`[VU ${__VU}] Request FAILED: ${request.url()} — ${request.failure()}`);
+  });
+
+  page.on("requestfinished", (request) => {
+    finishedRequests.add(1);
+    // Optional: log slow requests
+    // const timing = request.timing();
+  });
+
+  try {
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/`);
+    await page.waitForLoadState("networkidle");
+
+    const heading = page.getByRole("heading", { level: 1 });
+    const headingText = await heading.textContent();
+    check(headingText, { "page loaded": (t) => !!t });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+### `frameLocator()` — Iframe Interaction Without Context Switching  [community]
+
+`page.frameLocator(selector)` returns a `FrameLocator` that scopes all subsequent
+locator calls inside the targeted iframe, without requiring explicit `frame()` switching.
+
+```javascript
+// k6/scripts/browser-iframe.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    iframe_test: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 2,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+const APP = __ENV.APP_URL || "http://localhost:3001";
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${APP}/checkout`);
+
+    // Interact with elements inside an embedded payment iframe
+    // frameLocator() scopes all .locator() calls to the iframe content
+    const paymentFrame = page.frameLocator("#payment-iframe");
+
+    await paymentFrame.locator("#card-number").fill("4242424242424242");
+    await paymentFrame.locator("#card-expiry").fill("12/26");
+    await paymentFrame.locator("#card-cvc").fill("123");
+
+    // Nested iframes: chain frameLocator() calls
+    // const nestedFrame = page.frameLocator("#outer-frame").frameLocator("#inner-frame");
+
+    // Back on the main page — regular locators work normally
+    const submitBtn = page.getByRole("button", { name: "Pay Now" });
+    await submitBtn.waitFor({ state: "visible" });
+    check(await submitBtn.isEnabled(), { "pay button enabled": Boolean });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+> **[community]:** `frameLocator()` is a lazy reference — it does not throw if the iframe
+> hasn't loaded yet; the error only surfaces when you call an action (`.fill()`, `.click()`).
+> Add `await page.waitForSelector('#payment-iframe')` before using `frameLocator()` if the
+> iframe is dynamically injected.
+
+### `page.goBack()` / `page.goForward()` — Browser History Navigation  [community]
+
+Navigate browser history in browser module tests — essential for testing multi-step flows
+that use the back button, SPA navigation stacks, and history-based auth flows.
+
+```javascript
+// k6/scripts/browser-history.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    history_nav: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 2,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+const APP = __ENV.APP_URL || "http://localhost:3001";
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${APP}/`);
+    const homeTitle = await page.title();
+
+    await page.goto(`${APP}/products`);
+    check(page.url(), { "on products page": (u) => u.includes("/products") });
+
+    // Go back to home — equivalent to browser Back button
+    await page.goBack();
+    check(page.url(), { "back to home": (u) => !u.includes("/products") });
+
+    const backTitle = await page.title();
+    check(backTitle, { "title restored after back": (t) => t === homeTitle });
+
+    // Go forward to products
+    await page.goForward();
+    check(page.url(), { "forward to products": (u) => u.includes("/products") });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+### `locator.evaluate()` / `locator.evaluateHandle()` — In-Page JS Execution  [community]
+
+Execute JavaScript in the browser context with direct access to the matched DOM element.
+`evaluate()` returns a serializable value; `evaluateHandle()` returns a JSHandle for
+further chaining.
+
+```javascript
+// k6/scripts/browser-evaluate.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    evaluate_test: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 2,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/products`);
+
+    // evaluate() — get computed CSS property (not available via textContent)
+    const priceColor = await page.locator(".price").first().evaluate(
+      (el) => window.getComputedStyle(el).color
+    );
+    check(priceColor, { "price has color": (c) => c && c.length > 0 });
+
+    // evaluate() with args — pass data from k6 to the browser context
+    const isHighlighted = await page.locator(".item").first().evaluate(
+      (el, threshold) => parseInt(el.dataset.score) > threshold,
+      85  // threshold arg passed to the browser function
+    );
+    check(isHighlighted, { "high-score item highlighted": (v) => typeof v === "boolean" });
+
+    // evaluateHandle() — get a JSHandle for an object too complex to serialize
+    const selectHandle = await page.locator("select#sort").evaluateHandle(
+      (el) => el  // returns a JSHandle wrapping the select element
+    );
+    // Can pass the handle back to evaluate() for further processing
+    const selectedValue = await selectHandle.evaluate((el) => el.value);
+    check(selectedValue, { "select has a value": (v) => v !== undefined });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+> **[community]:** `evaluate()` serializes the return value using `JSON.stringify` internally.
+> Functions, DOM nodes, and circular references cannot be returned — use `evaluateHandle()`
+> for those cases. The function runs in the browser context, not in k6: `__ENV` variables
+> and k6 imports are NOT accessible inside the `evaluate()` callback.
+
+---
+
+## Browser Module — `locator.pressSequentially()` (k6 v1.5+)  [community]
+
+`locator.pressSequentially(text, options)` types characters one by one, firing individual
+`keydown`, `keypress`, `keyup`, and `input` events per character. Use it when the target
+input field has a `keyup`-driven listener (e.g., autocomplete, real-time validation) that
+requires individual keystroke events rather than the bulk-paste behavior of `.fill()`.
+
+```javascript
+// k6/scripts/browser-sequential-type.js
+import { browser } from "k6/browser";
+import { check, sleep } from "k6";
+
+export const options = {
+  scenarios: {
+    autocomplete_test: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 3,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+const APP = __ENV.APP_URL || "http://localhost:3001";
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${APP}/search`);
+
+    const searchInput = page.getByPlaceholder("Search products...");
+    await searchInput.waitFor({ state: "visible" });
+
+    // pressSequentially fires one keystroke event per character — triggers autocomplete
+    await searchInput.pressSequentially("widget", {
+      delay: 100,  // ms between keystrokes — simulates human typing speed
+    });
+
+    // Wait for autocomplete dropdown to appear
+    const dropdown = page.locator(".autocomplete-results");
+    await dropdown.waitFor({ state: "visible" });
+
+    const suggestions = await dropdown.locator(".suggestion").all();
+    check(suggestions.length, { "autocomplete has suggestions": (n) => n > 0 });
+
+    // Click the first suggestion
+    if (suggestions.length > 0) {
+      await suggestions[0].click();
+    }
+
+    // Verify search was submitted
+    await page.waitForLoadState("networkidle");
+    check(page.url(), { "search results loaded": (u) => u.includes("search") });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+> **[community]:** The `delay` option in `pressSequentially()` dramatically increases wall
+> clock time for browser scenarios. Keep delay low (50–150ms) for correctness, not for
+> human-speed simulation — k6 browser tests measure performance, not UX feel.
+> For inputs without keystroke listeners, use `.fill()` which is 50–100× faster.
+
+---
+
+## CLI — `k6 deps` Dependency Analysis (k6 v1.6+)  [community]
+
+`k6 deps` analyzes a script's imports and lists all required extensions. Use it in CI
+to verify that a custom binary includes every extension needed before deploying a test.
+
+```bash
+# Analyze a script's dependencies
+k6 deps k6/scripts/load.js
+
+# Example output:
+# Dependency   Version     Source
+# k6/x/redis   >=0.2.0     pragma: use k6 >= "0.2.0"
+# k6/x/sql     *           no pragma
+
+# JSON output for CI parsing — check if extensions are satisfied
+k6 deps --json k6/scripts/load.js | jq '.dependencies[] | select(.satisfied == false)'
+
+# Analyze a pre-built archive
+k6 deps archive.tar
+
+# Set default version constraints via environment variable
+export K6_DEPENDENCIES_MANIFEST=./k6-extensions.json
+k6 run k6/scripts/load.js  # applies manifest constraints automatically
+```
+
+```json
+// k6-extensions.json — dependency manifest format
+{
+  "k6/x/redis": ">=0.2.0",
+  "k6/x/sql":   ">=1.0.0"
+}
+```
+
+> **[community]:** Use `k6 deps` in CI as a pre-flight check before running tests with
+> custom k6 binaries. A missing extension causes a cryptic "SyntaxError: Unknown import"
+> rather than a clear "extension not found" message. The deps command surfaces this
+> before wasting a test run.
+
+---
+
+## CLI — Machine-Readable Summary Output (k6 v1.5+)  [community]
+
+The `--new-machine-readable-summary` flag (k6 v1.5+) emits the test summary as a
+structured JSON document designed for programmatic consumption in CI/CD pipelines.
+Unlike the human-readable text summary, the machine-readable format is stable across
+k6 versions and includes threshold pass/fail status per metric.
+
+```bash
+# Write machine-readable JSON summary alongside the human-readable text summary
+k6 run --new-machine-readable-summary=results/machine-summary.json k6/scripts/load.js
+
+# CI pipeline usage: fail the step if any threshold failed
+k6 run --new-machine-readable-summary=results/summary.json k6/scripts/load.js
+THRESHOLDS_PASSED=$(jq '.thresholds | map(.ok) | all' results/summary.json)
+if [ "$THRESHOLDS_PASSED" != "true" ]; then
+  echo "k6 thresholds failed — see results/summary.json"
+  exit 1
+fi
+```
+
+```javascript
+// Combining with handleSummary — both can coexist
+// Machine-readable summary is written BEFORE handleSummary is called
+export function handleSummary(data) {
+  // data.metrics contains the same info as the machine-readable JSON
+  // Use handleSummary for custom formats; use --new-machine-readable-summary for CI tooling
+  return {
+    stdout: `Tests complete. Threshold failures: ${
+      Object.values(data.metrics)
+        .filter((m) => m.thresholds && Object.values(m.thresholds).some((t) => !t.ok))
+        .length
+    }`,
+  };
+}
+```
+
+> **[community]:** The `--new-machine-readable-summary` flag was introduced to replace the
+> older `--summary-export` (deprecated) with a richer, threshold-aware format. Unlike
+> `--summary-export`, which outputs a flat metrics JSON, the new format includes nested
+> threshold results with per-threshold `ok` booleans — making CI integration simpler
+> without custom `handleSummary` logic.
+
+---
+
+## `page.unroute()` / `page.unrouteAll()` — Dynamic Route Management (k6 v1.4+)  [community]
+
+Remove previously registered route handlers dynamically — useful for multi-phase browser
+tests where you need different stub behavior in each phase.
+
+```javascript
+// k6/scripts/browser-route-lifecycle.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    route_lifecycle: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 2,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+const APP = __ENV.APP_URL || "http://localhost:3001";
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    // Phase 1: stub the feature-flag API to return "enabled"
+    const featureFlagHandler = (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ featureX: true }),
+      });
+    await page.route("**/api/feature-flags", featureFlagHandler);
+
+    await page.goto(`${APP}/`);
+    const featureXVisible = await page.locator("[data-feature='featureX']").count();
+    check(featureXVisible, { "featureX shown when enabled": (n) => n > 0 });
+
+    // Phase 2: remove the stub — real API now responds
+    await page.unroute("**/api/feature-flags", featureFlagHandler);
+
+    await page.reload();
+    // Now the real feature-flag API responds — behavior depends on actual state
+
+    // Remove ALL routes at once (for test cleanup)
+    await page.unrouteAll({ behavior: "ignoreErrors" });  // ignoreErrors: skip if no routes match
+  } finally {
+    await page.close();
+  }
+}
+```
+
+> **[community]:** `unrouteAll()` accepts `{ behavior: "ignoreErrors" | "wait" }`. The
+> `"wait"` option blocks until all in-flight route handlers for those patterns complete.
+> Always call `unrouteAll()` in the `finally` block of long-running browser tests to
+> prevent route handlers from leaking into subsequent iterations.
+
+---
+
+## mcp-k6 — AI-Assisted Load Test Authoring (k6 v1.6+)  [community]
+
+`mcp-k6` is an experimental Model Context Protocol server that integrates k6 with AI
+coding assistants (Cursor, VS Code with GitHub Copilot, Claude Code). Key capabilities:
+- **Script validation**: validate a k6 script without running it
+- **Local test execution**: run scripts directly from the AI assistant
+- **Playwright-to-k6 conversion**: convert existing Playwright browser tests into k6 browser scripts
+
+```bash
+# Install mcp-k6 via Homebrew (macOS/Linux)
+brew install grafana/k6/mcp-k6
+
+# Or via Docker
+docker pull grafana/mcp-k6
+
+# Add to Cursor .cursorrules or VS Code MCP config:
+# {
+#   "mcpServers": {
+#     "k6": {
+#       "command": "mcp-k6",
+#       "args": []
+#     }
+#   }
+# }
+
+# Conversion: Playwright test → k6 browser script
+# In your AI assistant: "Convert this Playwright test to k6 browser script using mcp-k6"
+# mcp-k6 reads the Playwright file and outputs an equivalent k6 browser test
+```
+
+**What mcp-k6 supports:**
+- `validate` — syntax and semantic validation of a k6 script
+- `run` — execute a k6 script with optional parameters
+- `convert` — convert Playwright browser test to k6 format
+- Works with local k6 binary or Docker
+
+> **[community]:** mcp-k6 is marked experimental as of k6 v1.6. The Playwright-to-k6
+> conversion handles the most common Playwright patterns (goto, click, fill, check,
+> getByRole, getByText) but does NOT convert Playwright-specific APIs that have no k6
+> equivalent (e.g., `page.evaluate()` closures with Node.js imports, `page.pdf()`).
+> Review generated scripts before committing them.
+
+---
+
+## OpenTelemetry Output — Stable Since k6 v1.4  [community]
+
+The OpenTelemetry output graduated from experimental to stable in k6 v1.4.0. Use
+`--out opentelemetry` (not `--out experimental-opentelemetry`) to send k6 metrics to
+any OTel-compatible backend (Tempo, Jaeger, Grafana Cloud).
+
+```bash
+# k6 v1.4+: stable OpenTelemetry output
+k6 run \
+  --out opentelemetry \
+  k6/scripts/load.js
+
+# With OTel collector endpoint and TLS
+k6 run \
+  --out opentelemetry \
+  -e K6_OTEL_EXPORTER_PROTOCOL=grpc \
+  -e K6_OTEL_GRPC_EXPORTER_ENDPOINT=otelcol:4317 \
+  -e K6_OTEL_TLS_INSECURE_SKIP_VERIFY=true \
+  k6/scripts/load.js
+```
+
+**Breaking change from k6 v1.4:** Rate metrics now export as a **single counter with
+`is_ratio=true` label** instead of two separate metrics (`total` and `non-zero`). If your
+dashboards were built on the old `*_total` / `*_non_zero` metric names, update them.
+
+```bash
+# Old dashboard query (pre-v1.4):
+# k6_http_req_failed_non_zero / k6_http_req_failed_total
+
+# New dashboard query (v1.4+):
+# k6_http_req_failed{is_ratio="true"}
+```
+
+> **[community]:** The `K6_OTEL_EXPORTER_TYPE` env var was renamed to
+> `K6_OTEL_EXPORTER_PROTOCOL` in k6 v1.4 — CI pipelines using the old name will silently
+> use the default exporter (HTTP). Always run `k6 run --help` after upgrading to check
+> for renamed flags. The `SingleCounterForRate` option was also removed; there is no
+> per-metric opt-out for the new rate format.
+
+---
+
+## WebCrypto — PBKDF2 Key Derivation (k6 v1.6+)  [community]
+
+k6 v1.6.0 added PBKDF2 support to the `k6/experimental/webcrypto` module. Use it to
+test authentication systems that require client-side key derivation (e.g., zero-knowledge
+auth, encrypted local storage initialization).
+
+```javascript
+// k6/scripts/pbkdf2-auth.js — test systems that use PBKDF2-derived keys
+import { browser } from "k6/browser";
+import { crypto } from "k6/experimental/webcrypto";
+import { check } from "k6";
+import http from "k6/http";
+
+export const options = {
+  scenarios: {
+    pbkdf2_test: {
+      executor: "constant-vus",
+      vus: 5,
+      duration: "1m",
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<500"],
+    http_req_failed:   ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+const SALT  = new TextEncoder().encode("fixed-test-salt-32bytes-padding!!");
+
+/**
+ * Derive an AES-GCM key from a password using PBKDF2.
+ * Returns the derived key as a hex string.
+ */
+async function deriveKey(password) {
+  const enc = new TextEncoder();
+
+  // 1. Import the raw password as a PBKDF2 key
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(password),
+    { name: "PBKDF2" },
+    false,   // non-extractable
+    ["deriveBits"]
+  );
+
+  // 2. Derive 256 bits using PBKDF2-SHA256
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: SALT,
+      iterations: 100_000,  // match server-side iterations
+    },
+    baseKey,
+    256   // output bit length
+  );
+
+  // 3. Convert to hex for transmission
+  return Array.from(new Uint8Array(derivedBits))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export default async function () {
+  const password = `test-password-${__VU}`;
+  const derivedKey = await deriveKey(password);
+
+  const res = http.post(
+    `${BASE}/api/auth/zkp-login`,
+    JSON.stringify({ userId: `user-${__VU}`, derivedKey }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+
+  check(res, {
+    "zkp login ok":      (r) => r.status === 200,
+    "has session token": (r) => r.json("token") !== undefined,
+  });
+}
+```
+
+> **[community]:** PBKDF2 in k6 is CPU-intensive — 100,000 iterations per call at 50 VUs
+> can saturate a single CPU core. For load test scripts where authentication is not the
+> focus, derive the key once in `setup()` and share it via the return value, rather than
+> re-deriving per iteration. Consider reducing iterations to 10,000 for load test purposes
+> (flag this divergence from production settings in a comment).
+
+---
+
+## Additional Community Gotchas (Iteration 28)
+
+### 43. `require()` removed in k6 v1.4 — CommonJS imports silently fail  [community]
+
+**What:** k6 v1.4.0 removed support for CommonJS `require()` calls. Scripts using
+`const http = require("k6/http")` will fail with a module resolution error. This
+affects teams that copied k6 examples from older blog posts or Stack Overflow answers.
+
+**WHY:** k6 adopted native ESM (`import`/`export`) as its module system. CommonJS was
+kept temporarily for backward compatibility but was removed to simplify the runtime
+and align with the ES module specification. The removal was announced in v1.3 release notes.
+
+**Fix:**
+```javascript
+// BEFORE (fails in k6 v1.4+)
+const http = require("k6/http");
+const { check, sleep } = require("k6");
+
+// AFTER (correct for all k6 versions)
+import http from "k6/http";
+import { check, sleep } from "k6";
+```
+
+```bash
+# Audit all k6 scripts for require() calls before upgrading
+grep -r "require(" k6/ --include="*.js" --include="*.ts"
+```
+
+### 44. Chromium process cleanup — browser VU leak causes test agent memory exhaustion  [community]
+
+**What:** If a browser VU throws an unhandled exception (e.g., a `check()` call crashes
+before `page.close()`), the underlying Chromium process may not be properly terminated.
+Over many iterations or a long test run, zombie Chromium processes accumulate until the
+CI runner runs out of memory (OOM) or hits the process limit.
+
+**WHY:** k6 relies on the browser context's `finally` block to issue the close signal to
+Chromium. If the k6 VU goroutine panics before `finally` runs, the child process orphan
+is not cleaned up. This is a known issue (GitHub #4317).
+
+**Fix:** Always wrap browser VU code in `try/finally` — the `finally` block runs even
+on panic or unhandled error:
+
+```javascript
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    // ALL browser interactions here
+    await page.goto(URL);
+    // ...
+  } finally {
+    // CRITICAL: this must always run — even if an assertion throws
+    await page.close();
+  }
+}
+```
+
+```bash
+# CI cleanup: kill all orphan Chromium processes after each k6 run
+# (add to your GitHub Actions workflow as a post-step)
+- name: Cleanup orphan Chromium
+  if: always()
+  run: pkill -f chromium || true
+```
+
+### 45. `--vus` flag ignored when `scenarios` are defined — VU count silently wrong  [community]
+
+**What:** The `--vus` CLI flag has no effect when the script defines a `scenarios` object.
+Passing `k6 run --vus 50 script.js` does not increase the VU count to 50 for scenario-
+based tests — it is silently ignored.
+
+**WHY:** The `--vus` flag only applies to the legacy top-level `vus`/`duration` configuration.
+When `scenarios` is present, VU counts are specified per-scenario (`vus`, `preAllocatedVUs`,
+`maxVUs`) inside the `scenarios` object. The CLI flag has no way to override per-scenario VU
+counts.
+
+**Fix:**
+```javascript
+// In the script: use per-scenario VU configuration
+export const options = {
+  scenarios: {
+    my_scenario: {
+      executor: "constant-vus",
+      vus: 50,         // set VU count here — CLI --vus flag is ignored
+      duration: "2m",
+    },
+  },
+};
+
+// Or use --env to parameterize VU counts:
+export const options = {
+  scenarios: {
+    my_scenario: {
+      executor: "constant-vus",
+      vus: parseInt(__ENV.VUS || "10"),  // override via -e VUS=50
+      duration: "2m",
+    },
+  },
+};
+```
+
+```bash
+# Override VU count at the command line via -e flag
+k6 run -e VUS=50 k6/scripts/load.js
+```
+
+### 46. StatsD / CloudWatch Metrics output silently drops data if tags contain special chars  [community]
+
+**What:** When sending k6 metrics to StatsD (and by extension AWS CloudWatch via the
+CloudWatch StatsD agent), metric names or tag values containing characters illegal in
+StatsD protocol (`.`, `=`, `:`, `|`, `@`) are silently dropped — no error, no warning,
+just missing metrics in your dashboard.
+
+**WHY:** The k6 StatsD output serializes tags as label=value pairs separated by `,`.
+Special characters in those values break the protocol framing; the StatsD server silently
+discards the malformed packet.
+
+**Fix:**
+```javascript
+// AVOID: URL paths or query strings as tag values
+const res = http.get(url, { tags: { endpoint: "/api/users?role=admin" } });
+
+// PREFER: sanitized, short tag values
+const res = http.get(url, { tags: { endpoint: "users-admin" } });
+
+// PREFER: name-based URL grouping to avoid dynamic IDs
+const res = http.get(url, { tags: { name: "GET /api/users/:id" } });
+```
+
+```bash
+# Validate tag values before running in production
+# Tag values should match: [a-zA-Z0-9_-]
+```
+
+### 47. WebSocket `bufferedAmount` not tracked for TypedArrays — binary throughput metrics are wrong  [community]
+
+**What:** When sending binary data (e.g., `Uint8Array`, `Float32Array`) via
+`ws.send(typedArray.buffer)`, k6's internal `ws_send_bytes` metric does not count the
+bytes correctly — `bufferedAmount` tracks only `string` sends, not `ArrayBuffer` or
+TypedArray sends (GitHub #5715).
+
+**WHY:** The `k6/websockets` module's byte tracking was implemented for string messages
+(the common case) and was not updated when binary send support was added. The fix is
+planned but not yet released.
+
+**Workaround:** Track binary send throughput manually using a custom Counter metric:
+
+```javascript
+import { WebSocket } from "k6/websockets";
+import { Counter } from "k6/metrics";
+
+const binarySentBytes = new Counter("ws_binary_sent_bytes");
+
+export default function () {
+  const ws = new WebSocket(`${BASE_WS}/ws/stream`);
+
+  ws.onopen = () => {
+    const payload = new Uint8Array(512);   // 512-byte binary payload
+    ws.send(payload.buffer);
+    binarySentBytes.add(payload.byteLength);  // track manually
+    setTimeout(() => ws.close(), 3000);
+  };
+}
+```
+
+> **[community]:** This gotcha means that `ws_send_bytes` in k6's built-in metrics is
+> unreliable for WebSocket tests with mixed text+binary traffic. Use custom Counters for
+> binary payload tracking until the upstream bug is fixed.
+
+---
 
 

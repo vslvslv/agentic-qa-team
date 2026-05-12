@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs, WireMock docs, Awaitility docs, Spring Boot Test docs) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns) | mixed | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs, WireMock docs, Awaitility docs, Spring Boot Test docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis) | mixed | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -602,6 +602,84 @@ public class AsyncOrderService {
     }
 }
 ```
+
+### Hexagonal Architecture (Ports and Adapters)
+Hexagonal Architecture (Alistair Cockburn, 2005) keeps the domain model free of infrastructure concerns by inverting dependencies: infrastructure adapters (databases, HTTP, message queues) implement domain-defined ports (interfaces). The application core never imports framework classes — it only depends on its own interfaces. This makes the core testable without any infrastructure, and swappable (e.g., swap Postgres for in-memory for tests) without touching domain logic.
+
+```java
+// === Domain layer — no framework imports ===
+
+// Port: what the domain needs from persistence (incoming → domain uses this)
+public interface OrderRepository {
+    void save(Order order);
+    Optional<Order> findById(OrderId id);
+}
+
+// Port: what the domain needs for notifications (outgoing → domain drives this)
+public interface OrderEventPublisher {
+    void publish(OrderPlaced event);
+}
+
+// Domain service: depends only on ports — no Spring, no JDBC, no Kafka
+public class PlaceOrderUseCase {
+    private final OrderRepository   orders;
+    private final OrderEventPublisher events;
+
+    public PlaceOrderUseCase(OrderRepository orders, OrderEventPublisher events) {
+        this.orders  = orders;
+        this.events  = events;
+    }
+
+    public OrderId execute(PlaceOrderCommand cmd) {
+        var order = Order.create(cmd.customerId(), cmd.items());
+        orders.save(order);
+        events.publish(new OrderPlaced(order.id(), order.customerId()));
+        return order.id();
+    }
+}
+
+// === Infrastructure layer — implements domain ports ===
+
+// Adapter: JPA implementation of the domain port
+@Repository
+public class JpaOrderRepository implements OrderRepository {
+    private final OrderJpaRepository jpa; // Spring Data JPA interface
+
+    @Override public void save(Order order) { jpa.save(OrderEntity.from(order)); }
+
+    @Override public Optional<Order> findById(OrderId id) {
+        return jpa.findById(id.value()).map(OrderEntity::toDomain);
+    }
+}
+
+// Adapter: Kafka implementation of the publisher port
+@Component
+public class KafkaOrderEventPublisher implements OrderEventPublisher {
+    private final KafkaTemplate<String, Object> kafka;
+
+    @Override
+    public void publish(OrderPlaced event) {
+        kafka.send("orders.placed", event.orderId().value(), event);
+    }
+}
+
+// === Test: domain tested with in-memory adapters, zero infrastructure ===
+class PlaceOrderUseCaseTest {
+    OrderRepository         repo      = new InMemoryOrderRepository();
+    OrderEventPublisher     publisher = new InMemoryEventPublisher();
+    PlaceOrderUseCase       useCase   = new PlaceOrderUseCase(repo, publisher);
+
+    @Test void execute_savesOrderAndPublishesEvent() {
+        var cmd = new PlaceOrderCommand(CustomerId.of("c1"), List.of(item("SKU-1", 2)));
+        var id  = useCase.execute(cmd);
+
+        assertThat(repo.findById(id)).isPresent();
+        assertThat(publisher.published()).hasSize(1);
+    }
+}
+```
+
+**Why it matters in Java:** Java's rich interface system and dependency injection (Spring, Guice, CDI) make hexagonal architecture idiomatic rather than awkward. The pattern forces interface-first design at the architecture level — every infrastructure technology (DB, MQ, HTTP client) is behind an interface the domain defines. This is the structural complement to the **Interface-First Design** principle above; where that principle governs individual classes, hexagonal architecture governs module boundaries.
 
 ---
 
@@ -1538,6 +1616,73 @@ public class ClassFileExample {
 ```
 
 **Note:** The Class-File API is designed for tooling authors, not application developers. It follows the class file format version that the running JVM understands — always generates valid bytecode for the current JVM version. For simple annotation-based code generation, use APT (Annotation Processing Tool) or Lombok instead.
+
+### Java Platform Module System (JPMS) — Strong Encapsulation at the Architecture Level
+The Java Platform Module System (JPMS, Java 9+) introduces `module-info.java` as an explicit contract for what a module exposes and what it depends on. Each module declares its exported packages (accessible to other modules) and its required modules (compile and runtime dependencies). This enables strong encapsulation at the JVM level — `public` inside a non-exported package is inaccessible to other modules, regardless of the access modifier.
+
+```java
+// === module-info.java for the domain module ===
+// File: src/com.example.orders.domain/module-info.java
+module com.example.orders.domain {
+    // Exports the public API — only these packages are accessible outside the module
+    exports com.example.orders.domain.model;
+    exports com.example.orders.domain.ports;
+
+    // Internal packages (impl, spi) are NOT exported — fully encapsulated
+    // com.example.orders.domain.internal is invisible to other modules
+}
+
+// === module-info.java for the infrastructure module ===
+// File: src/com.example.orders.infrastructure/module-info.java
+module com.example.orders.infrastructure {
+    requires com.example.orders.domain;     // depends on domain
+    requires spring.context;                // Spring DI
+    requires java.sql;                      // JDBC
+    requires jakarta.persistence;           // JPA
+
+    // Opens packages to Spring for reflection-based injection
+    // 'opens' = runtime reflection only; 'exports' = compile + runtime access
+    opens com.example.orders.infrastructure.persistence to spring.orm;
+
+    // Qualified export: only the test framework module can access this
+    exports com.example.orders.infrastructure.testing to com.example.orders.application.test;
+}
+
+// === module-info.java for the application entry point ===
+module com.example.orders.application {
+    requires com.example.orders.domain;
+    requires com.example.orders.infrastructure;
+    requires spring.boot;
+    requires spring.boot.autoconfigure;
+}
+
+// === Using ServiceLoader for plugin/extension points ===
+// In module-info: declare a service used by the module
+module com.example.orders.domain {
+    exports com.example.orders.domain.ports;
+    uses com.example.orders.domain.ports.PaymentGateway;  // ServiceLoader SPI
+}
+
+// In the payment-stripe module: provide the implementation
+module com.example.payments.stripe {
+    requires com.example.orders.domain;
+    provides com.example.orders.domain.ports.PaymentGateway
+        with com.example.payments.stripe.StripePaymentGateway;
+}
+
+// Discover all available implementations at runtime — no hardcoded class names
+ServiceLoader<PaymentGateway> gateways = ServiceLoader.load(PaymentGateway.class);
+PaymentGateway gateway = gateways.findFirst()
+    .orElseThrow(() -> new IllegalStateException("No PaymentGateway implementation found"));
+```
+
+**Key JPMS rules:**
+- `exports <package>` — compile-time + runtime accessible to all modules.
+- `opens <package>` — runtime reflection only (for frameworks like Spring, Jackson, Hibernate).
+- `requires transitive` — re-exports a dependency; callers of your module also get access to the dependency.
+- `requires static` — compile-time only dependency (optional at runtime); useful for annotation processors.
+
+**When to use JPMS:** Multi-module Maven/Gradle projects with clear layer boundaries (domain/infra/application), library JAR publishing (to expose only the public API), or applications that use `jlink` to create minimal JVM runtime images. For Spring Boot monoliths or microservices using classpath mode, JPMS is optional — but `module-info.java` in each module enforces boundaries at build time even without the full modular JVM runtime.
 
 ---
 
@@ -2528,6 +2673,77 @@ LoadingCache<String, Data> cache = Caffeine.newBuilder()
 ```
 **WHY:** `WeakHashMap` offers no control over when eviction occurs — it happens at the GC's discretion, which may be milliseconds or hours after the key becomes weakly reachable. In production, unpredictable eviction under load (when GC runs more frequently) causes cache miss spikes. Moreover, iterating a `WeakHashMap` is not thread-safe even if reads are concurrent — you need external synchronization or a `Collections.synchronizedMap(new WeakHashMap<>())` wrapper. Caffeine's `weakKeys()` option provides the same semantic with LRU eviction bounds and thread safety.
 
+**43. Splitting a Package Across JPMS Modules — Split Packages [community]**
+The Java Module System (JPMS) prohibits two different named modules from exporting the same package. A "split package" — where `com.example.util` is defined in both `moduleA` and `moduleB` — causes a module-resolution error at startup: `Error: Module A reads package com.example.util from both A and B`. This is the most common JPMS adoption blocker in large codebases. The root cause is organic code growth where packages were never organized by module boundary. Fix: either merge the modules, rename one of the packages, or move all types to one module and add a `provides`/`uses` ServiceLoader point for extension.
+
+```java
+// BAD — com.example.util.StringUtils exists in BOTH moduleA and moduleB
+// module-info.java in moduleA:
+module moduleA {
+    exports com.example.util;  // com.example.util.StringUtils here
+}
+// module-info.java in moduleB:
+module moduleB {
+    exports com.example.util;  // com.example.util.DateUtils here — SAME package!
+}
+// Result: java.lang.module.FindException at startup — both modules read same package
+
+// GOOD — rename to unique packages per module
+module moduleA {
+    exports com.example.moduleA.util;   // StringUtils lives here
+}
+module moduleB {
+    exports com.example.moduleB.util;   // DateUtils lives here
+}
+
+// GOOD — consolidate into a shared utility module
+module com.example.shared.util {
+    exports com.example.util;  // both StringUtils and DateUtils in one module
+}
+module moduleA {
+    requires com.example.shared.util;  // depends on the shared module
+}
+module moduleB {
+    requires com.example.shared.util;  // same
+}
+```
+**WHY:** JPMS enforces one-module-per-package at the JVM level. This is intentional — split packages break the assumption that a module owns its packages exclusively. In classpath mode (no module-info), the JVM picks the first JAR that provides the package and ignores the rest, causing `ClassNotFoundException` or `NoSuchMethodError` at runtime rather than startup. The JPMS rule surfaces this bug at module-resolution time (before `main()` is called), which is far better than random runtime failures.
+
+**44. Using `instanceof` Checks in Visitor-like Dispatch Instead of Sealed Classes + Switch [community]**
+A chain of `if (obj instanceof Foo foo) ... else if (obj instanceof Bar bar) ...` scattered through the codebase is the classic "type tag" anti-pattern. It couples all dispatch sites to the concrete subtypes, requires modifying all sites when a new subtype is added, and provides no exhaustiveness check. The root cause is applying open-world (arbitrary-subclass) thinking to a closed domain model where all variants are known. Fix: model closed hierarchies with `sealed` classes/interfaces and use pattern-matching `switch` — the compiler enforces exhaustiveness and every dispatch site is automatically up-to-date when a new variant is added.
+
+```java
+// BAD — instanceof chain; no exhaustiveness; fragile when new type added
+public double calculateShipping(Parcel parcel) {
+    if (parcel instanceof LetterParcel lp) {
+        return lp.weight() * 0.5;
+    } else if (parcel instanceof BoxParcel bp) {
+        return bp.volume() * 1.2 + bp.weight() * 0.3;
+    } else if (parcel instanceof PalletParcel pp) {
+        return pp.weight() * 0.8;
+    }
+    throw new IllegalArgumentException("Unknown parcel type: " + parcel.getClass());
+    // Compiler doesn't check if all types are handled — missing type = runtime crash
+}
+
+// GOOD — sealed hierarchy + exhaustive switch; compiler rejects missing cases
+public sealed interface Parcel permits LetterParcel, BoxParcel, PalletParcel {}
+public record LetterParcel(double weight)                        implements Parcel {}
+public record BoxParcel(double weight, double volume)            implements Parcel {}
+public record PalletParcel(double weight)                        implements Parcel {}
+
+public double calculateShipping(Parcel parcel) {
+    return switch (parcel) {
+        case LetterParcel  lp -> lp.weight() * 0.5;
+        case BoxParcel     bp -> bp.volume() * 1.2 + bp.weight() * 0.3;
+        case PalletParcel  pp -> pp.weight() * 0.8;
+        // No default needed — compiler verifies all permits variants are covered
+        // Adding a new Parcel subtype immediately causes a compile error here
+    };
+}
+```
+**WHY:** The `instanceof` chain has a silent completeness assumption that the compiler cannot verify. A new `Parcel` subtype added by a teammate compiles fine, but the shipping calculation silently falls through to the exception. With `sealed + switch`, the compiler flags every `switch` site that doesn't handle the new type — turning a potential runtime bug across the entire codebase into N compile errors that are trivial to fix.
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -2581,6 +2797,9 @@ LoadingCache<String, Data> cache = Caffeine.newBuilder()
 | Missing `@SafeVarargs` on generic varargs | Unchecked warning at every call site; N warnings instead of 1 at declaration | Add `@SafeVarargs` to `final`/`static` methods that only read from varargs |
 | In-memory H2 instead of real DB in tests | Dialect differences (JSON columns, arrays, window functions) hide integration bugs | Use Testcontainers with the production database engine (Postgres, MySQL, etc.) |
 | `Thread.sleep()` in async test assertions | Flaky: too short = false failure, too long = slow CI | Use Awaitility `await().untilAsserted(...)` for polling async state |
+| Split packages across JPMS modules | Module-resolution error at startup; two modules own the same package | Rename packages per module or consolidate into a shared module |
+| `instanceof` chain instead of sealed + switch | Compiler cannot verify exhaustiveness; new subtypes break dispatch silently | Use `sealed` hierarchy + pattern-matching `switch`; compiler enforces all variants |
+| Infrastructure code in domain module | Domain imports Spring/JDBC/Kafka; cannot test domain without starting infrastructure | Apply hexagonal architecture; keep domain behind ports (interfaces); adapters implement ports |
 
 ---
 

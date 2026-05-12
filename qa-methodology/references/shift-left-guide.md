@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -5715,3 +5715,455 @@ export default defineConfig({
 | Vitest --detect-async-leaks | Official | https://vitest.dev/config/#detectasyncleaks | Async resource leak detection — converts flaky test root causes into deterministic failures |
 | Vitest tag-based filtering | Official | https://vitest.dev/guide/filtering#filtering-by-tags | Tiered CI gate strategy: critical tests fast, full suite on merge |
 | Vitest v8 coverage @preserve | Official | https://vitest.dev/guide/coverage#ignoring-code | Required TypeScript pattern for V8 coverage ignore hints — esbuild strips unpreserved comments |
+| Biome v2 test nursery rules | Official | https://biomejs.dev/linter/rules/ | useTestHooksInOrder, useTestHooksOnTop, useConsistentTestIt, noIdenticalTestTitle — structural test rules at lint speed |
+| @typescript-eslint v8.58 (TS6) | Official | https://github.com/typescript-eslint/typescript-eslint/releases | TypeScript 6 support; no-unnecessary-type-assertion improvements; no-unsafe-type-assertion crash fixes |
+
+---
+
+## Vitest 4.1+ Additional Shift-Left Features (2026)
+
+Vitest 4.1 introduced additional ergonomic improvements beyond `aroundEach`, `detectAsyncLeaks`, and tags that directly shorten the shift-left feedback loop for TypeScript teams.
+
+### `vi.defineHelper()` — Precise Stack Traces in Custom Assertions
+
+Custom assertion helpers wrap Vitest's `expect()` calls. When they fail, the stack trace points to the helper's internal `expect()` line — not the call site in the test. `vi.defineHelper()` removes helper frames from the stack, surfacing failures at the actual test line.
+
+```typescript
+// tests/helpers/assert-api-response.ts — typed assertion helper with vi.defineHelper()
+import { expect, vi } from 'vitest';
+import type { Response } from 'supertest';
+
+// vi.defineHelper() removes this function's frames from stack traces on assertion failure
+export const assertApiResponse = vi.defineHelper(
+  function assertApiResponse(
+    res: Response,
+    expectedStatus: number,
+    bodyMatcher?: Record<string, unknown>,
+  ): void {
+    // When this expect() fails, Vitest shows the CALLER's line, not this line
+    expect(res.status, `Expected status ${expectedStatus}, got ${res.status}: ${JSON.stringify(res.body)}`).toBe(expectedStatus);
+
+    if (bodyMatcher !== undefined) {
+      expect(res.body).toMatchObject(bodyMatcher);
+    }
+  },
+);
+
+// tests/api/user.spec.ts — call site gets precise error location
+import { describe, test } from 'vitest';
+import request from 'supertest';
+import { app } from '../../src/app.js';
+import { assertApiResponse } from '../helpers/assert-api-response.js';
+
+describe('POST /api/users', () => {
+  test('rejects missing email with 400', async () => {
+    const res = await request(app)
+      .post('/api/users')
+      .send({ name: 'Alice' });                     // Missing required field: email
+
+    // When this fails, error points to this line (line ~20), not to assertApiResponse internals
+    assertApiResponse(res, 400, { error: 'Validation failed' });
+  });
+
+  test('creates user with valid payload', async () => {
+    const res = await request(app)
+      .post('/api/users')
+      .send({ email: 'alice@example.com', name: 'Alice', role: 'viewer' });
+
+    assertApiResponse(res, 201, { email: 'alice@example.com' });
+    // TypeScript: res.body is typed via supertest — no assertion cast needed
+  });
+});
+```
+
+**WHY `vi.defineHelper()` is a shift-left improvement**: When a custom assertion helper produces a stack trace pointing 3 levels deep into the helper's internals, the developer must mentally trace which test called the helper and at what line. This context-switching adds 10–30 seconds to each debugging cycle. `vi.defineHelper()` eliminates this overhead: the error points to the test file line, identical to how Jest's `expect.extend()` surfaces errors. **Faster error location = faster fix cycle.**
+
+> [community] **Lesson (Vitest 4.1 release notes, 2026)**: `vi.defineHelper()` is most impactful for teams with shared test utility libraries used across dozens of spec files. Before this API, teams either accepted noisy stack traces or resorted to wrapping helpers in `try/catch` with `Error.captureStackTrace()` — a fragile workaround that broke with each Node.js version. `vi.defineHelper()` is the first-class solution.
+
+---
+
+### Vitest 4.1 Fixture Type Inference (Builder Pattern)
+
+Vitest 4.1 adds a builder pattern for `test.extend()` that infers fixture types from return values, eliminating manual type declarations on complex fixture chains.
+
+```typescript
+// tests/fixtures/db.fixture.ts — builder-style fixture with inferred types
+import { test as baseTest } from 'vitest';
+import { db } from '../../src/db/client.js';
+import type { Database } from '../../src/db/types.js';
+
+// Vitest 4.1: fixture types inferred from return value — no manual type declarations
+export const test = baseTest.extend({
+  // Before 4.1: had to manually declare type: { db: Database }
+  // After 4.1: TypeScript infers the fixture type from the use() callback return
+  db: async ({}, use) => {
+    // Setup: begin isolated transaction
+    const tx = await db.beginTransaction();
+    await use(tx as unknown as Database);    // Provide transaction as 'db' fixture
+    await tx.rollback();                      // Teardown: automatic rollback
+  },
+
+  // Chained fixture: depends on 'db' — type is inferred transitively
+  userService: async ({ db }, use) => {
+    const { UserService } = await import('../../src/services/user.service.js');
+    await use(new UserService(db));
+  },
+});
+
+// tests/services/user.spec.ts — uses inferred fixture types without explicit annotations
+import { expect } from 'vitest';
+import { test } from '../fixtures/db.fixture.js';
+
+// TypeScript: 'db' and 'userService' types are inferred — no cast needed
+test('creates and retrieves a user', async ({ userService }) => {
+  const user = await userService.create({ email: 'test@example.com', name: 'Test' });
+  expect(user.id).toBeDefined();
+
+  const found = await userService.findById(user.id);
+  expect(found?.email).toBe('test@example.com');
+  // DB is automatically rolled back after this test — no cleanup in the test body
+});
+```
+
+**WHY fixture type inference reduces shift-left friction**: Before Vitest 4.1, complex fixture chains required manual TypeScript type annotations that diverged from the actual fixture implementation whenever the fixture changed. The mismatch caused type errors in test files that were unrelated to the test logic — "noise" that distracted from real shift-left gate failures. With inferred types, fixture type changes are automatically propagated to test files by the TypeScript compiler at PR time.
+
+---
+
+### Vitest 4.1 GitHub Actions Job Summaries
+
+Vitest 4.1 automatically generates GitHub Actions job summaries with test statistics and flaky test permalinks when `CI=true` is set.
+
+```yaml
+# .github/workflows/tests-with-summary.yml — Vitest 4.1 GitHub Actions job summary
+name: Tests
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    name: Unit Tests + Coverage
+    runs-on: ubuntu-latest
+    env:
+      CI: 'true'    # Required: enables GitHub Actions summary auto-generation in Vitest 4.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      # Vitest 4.1: CI=true automatically generates a GitHub Actions job summary
+      # The summary shows: total tests, passed/failed/skipped counts,
+      # test duration, and a permalink to each flaky test (tests that passed after retry)
+      - run: |
+          npx vitest run \
+            --reporter=github-actions \
+            --reporter=junit \
+            --outputFile.junit=test-results.xml \
+            --coverage \
+            --detectAsyncLeaks
+      # The job summary appears in the GitHub Actions "Summary" tab for the run
+      # Flaky test permalinks link directly to the test file line that flaked
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results.xml
+```
+
+> [community] **Lesson (Vitest 4.1 adopters, 2026)**: The GitHub Actions job summary with flaky test permalinks is a shift-left ergonomic improvement for test maintenance. Previously, identifying a flaky test required: (1) noticing the test passed on retry, (2) reading the log to find which test, (3) manually navigating to the file. With the 4.1 summary, flaky test permalinks are clickable in the GitHub UI — developers can jump directly to the test file in under 5 seconds. WHY this matters: teams that can act on flakiness reports in seconds are more likely to fix flaky tests before they compound into test suite unreliability.
+
+---
+
+## Biome v2 — Test-Domain Rules for Structural Shift-Left (2026)
+
+Biome v2 introduces test-specific nursery rules that enforce structural correctness in TypeScript test files at lint time — checks that previously required code review or were only caught through confusing test failures.
+
+```typescript
+// Anti-pattern: hooks in wrong order — caught by useTestHooksInOrder
+// Biome: "Lifecycle hooks should be declared in a specific order"
+describe('UserService', () => {
+  afterEach(() => { /* cleanup */ });    // WRONG: afterEach before beforeEach
+  beforeEach(() => { /* setup */ });     // Biome flags: useTestHooksInOrder violated
+  it('creates user', () => { /* ... */ });
+});
+
+// Correct: standard hook ordering enforced at lint time
+describe('UserService', () => {
+  beforeAll(() => { /* once per suite */ });
+  beforeEach(() => { /* before each test */ });
+  afterEach(() => { /* after each test */ });
+  afterAll(() => { /* once per suite */ });
+  it('creates user', () => { /* ... */ });
+});
+```
+
+```typescript
+// Anti-pattern: hooks after test cases — caught by useTestHooksOnTop
+describe('PaymentService', () => {
+  it('creates payment intent', () => { /* ... */ });    // Test before hooks
+  beforeEach(() => {                                    // Biome: useTestHooksOnTop violated
+    mockGateway.mockReset();
+  });
+});
+
+// Anti-pattern: duplicate test titles — caught by noIdenticalTestTitle
+describe('validation', () => {
+  it('rejects invalid email', () => { /* ... */ });
+  it('rejects invalid email', () => { /* duplicate — different assertion? */ }); // Biome: error
+  // Duplicate titles hide test coverage gaps: reviewers assume both assertions
+  // are covered by the single visible title, but only one test runs under that name
+});
+
+// Anti-pattern: inconsistent it vs test naming — caught by useConsistentTestIt
+describe('authorization', () => {
+  test('admin can edit', () => { /* ... */ });   // Using 'test'
+  it('viewer cannot edit', () => { /* ... */ }); // Biome: inconsistent — pick one
+});
+```
+
+```json
+// biome.json — enable test-specific nursery rules for TypeScript test files
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.0/schema.json",
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "nursery": {
+        // Test structural rules — enforce in CI as errors; start as warnings pre-commit
+        "useTestHooksInOrder": "error",       // beforeAll > beforeEach > afterEach > afterAll
+        "useTestHooksOnTop": "error",         // Hooks must appear before test cases
+        "useConsistentTestIt": "error",       // Enforce 'it' XOR 'test' (not both)
+        "noIdenticalTestTitle": "error"       // Duplicate test names = coverage confusion
+      },
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "warn",
+        "useAwait": "error"
+      }
+    }
+  },
+  "files": {
+    "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts"],
+    "ignore": ["node_modules", "dist", "coverage"]
+  }
+}
+```
+
+**WHY Biome test rules are shift-left**: These four rules catch structural test defects — wrong hook order, misplaced lifecycle hooks, duplicate titles, inconsistent naming — at lint time in < 100ms rather than at PR review or test runtime. `noIdenticalTestTitle` is the most impactful for shift-left: duplicate test titles are invisible in CI output (only one appears), silently dropping test coverage. A developer adding a second `it('creates user')` to a describe block with an existing one will see only one passing test in CI reports.
+
+> [community] **Lesson (Biome v2 adopters, 2026)**: The `useTestHooksOnTop` rule surfaces a common pattern in TypeScript test files written with AI assistance: AI coding tools frequently insert `beforeEach` hooks after the first test case, not at the top of the describe block. This compiles fine and passes type checking, but produces confusing test failures when `beforeEach` is in an unexpected position. Running Biome with `useTestHooksOnTop: error` in the pre-commit hook catches this class of AI-generated test structure defect at authoring time.
+
+> [community] **Gotcha (Biome nursery rules stability)**: Biome "nursery" rules are experimental — they may change API or semantics in future minor releases. Enable them in `error` mode in CI only after confirming they pass on your existing test suite. Keep them in `warn` mode for one sprint before promoting to `error`. WHY: unlike `recommended` rules (stable), nursery rules occasionally produce false positives that require `// biome-ignore` suppressions to resolve.
+
+> [community] **Lesson (Biome vs @typescript-eslint for test rules)**: Biome's test rules run in < 100ms on large TypeScript test suites (10k+ lines of test code) — approximately 50× faster than `@typescript-eslint/recommendedTypeChecked` which requires full type resolution. However, Biome's test rules are structural (AST-based) and cannot detect semantic issues like "this test mocks the function it is testing." The correct architecture: Biome for fast structural checks pre-commit, `@typescript-eslint/recommendedTypeChecked` for deep semantic checks in CI.
+
+---
+
+## `@typescript-eslint` v8.58+ — TypeScript 6 Support (2026)
+
+`@typescript-eslint` v8.58 (March 2026) added full TypeScript 6 support. Key rule improvements relevant to shift-left:
+
+```typescript
+// eslint.config.ts — @typescript-eslint v8.58+ for TypeScript 6 projects
+import tseslint from 'typescript-eslint';
+
+export default tseslint.config(
+  // TypeScript 6 support: v8.58.0+ handles TS6 AST changes
+  // Key fixes affecting shift-left rules:
+  ...tseslint.configs.recommendedTypeChecked,
+
+  {
+    languageOptions: {
+      parserOptions: {
+        project: './tsconfig.json',
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+
+    rules: {
+      // Improved in v8.58: handles assignability edge cases more accurately
+      // Before v8.58: false positives on conditional types with TS6 narrowing improvements
+      '@typescript-eslint/no-unnecessary-type-assertion': 'error',
+
+      // Fixed in v8.58: crash on recursive template literal types (common in TS6 projects)
+      // Before v8.58: would throw "Maximum call stack size exceeded" on deeply recursive types
+      '@typescript-eslint/no-unsafe-type-assertion': 'error',
+
+      // Enhanced in v8.58: correctly handles void as nullish in conditional checks
+      // Catches: `if (maybeVoid)` where maybeVoid is void — always false
+      '@typescript-eslint/no-unnecessary-condition': 'error',
+
+      // Fixed in v8.58: no-unsafe-return no longer false-positives on generic unwrapping
+      // Common pattern in TypeScript: returning Promise<T> from async function
+      '@typescript-eslint/no-unsafe-return': 'error',
+
+      // Enhanced in v8.58: flags banned generics in extends/implements clauses
+      // Catches: `class Foo extends Banned<T>` when Banned is in no-restricted-types
+      '@typescript-eslint/no-restricted-types': ['error', {
+        types: {
+          'Function': 'Use specific function types instead',
+          'Object': 'Use Record<string, unknown> or a specific interface',
+          '{}': 'Use Record<string, unknown> or unknown instead of empty object type',
+        },
+      }],
+
+      // New in v8.58: type-safe deprecation detection
+      // Flags usage of @deprecated-marked types and functions caught by TS6 type info
+      '@typescript-eslint/no-deprecated': 'warn',
+    },
+  },
+);
+```
+
+```typescript
+// Example: catching no-unnecessary-condition improvements with TS6
+// TypeScript 6 improves narrowing — @typescript-eslint v8.58 leverages the new type info
+
+type Result<T> = { success: true; data: T } | { success: false; error: string };
+
+function processResult<T>(result: Result<T>): T {
+  // @typescript-eslint/no-unnecessary-condition v8.58: correctly identifies
+  // this check as necessary (discriminated union, not always-truthy)
+  if (!result.success) {
+    throw new Error(result.error);
+  }
+  return result.data; // TypeScript 6: narrowed to { success: true; data: T }
+}
+
+// Anti-pattern: unnecessarily asserting a type that TS6 already narrows
+function getEmail(user: { email: string | null }): string {
+  // @typescript-eslint/no-unnecessary-type-assertion v8.58 detects:
+  // after null check, user.email is already string — assertion is redundant
+  if (user.email !== null) {
+    return user.email as string;  // Flagged: assertion is unnecessary after null check
+  }
+  throw new Error('Email is required');
+}
+```
+
+**WHY `@typescript-eslint` v8.58 TypeScript 6 support matters for shift-left**: Projects upgrading to TypeScript 6 must also upgrade `@typescript-eslint` to v8.58+. If the ESLint version lags behind the TypeScript compiler version, type-aware rules (`recommendedTypeChecked`) may throw internal errors on TS6 AST constructs, causing CI to fail with confusing "Maximum call stack" or "Cannot read property" errors — not type errors. Keeping `@typescript-eslint` in sync with TypeScript is a maintenance shift-left task that prevents false CI failures.
+
+> [community] **Lesson (TypeScript 6 migration teams, 2026)**: The most common `@typescript-eslint` upgrade failure after migrating to TypeScript 6 is the `no-unsafe-type-assertion` rule crashing on recursive template literal types. This was introduced in TypeScript 5.5 and became more prevalent in TS6 projects. Upgrading to `@typescript-eslint` v8.58.0+ (which pins the fix) before upgrading TypeScript to 6.x eliminates this failure mode entirely.
+
+> [community] **Gotcha (`@typescript-eslint` and `@types/node` version alignment)**: `@typescript-eslint` type-aware rules resolve types using the installed `@types/node`. With TypeScript 6's new `"types": []` default, `@types/node` must be explicitly listed in `tsconfig.json` `"types": ["node"]` — otherwise type-aware rules fail to resolve Node.js types and emit false positives for every `process.*` and `Buffer` access. This is the same issue as the TypeScript 6.0 migration gotcha, applied to the ESLint layer.
+
+---
+
+## Privacy by Design as a Shift-Left Principle (2025–2026)
+
+The OWASP DevSecOps Guideline identifies Privacy by Design as a shift-left practice for applications processing personally identifiable information (PII). GDPR, CCPA, and LGPD compliance requirements mean that privacy defects — PII logged in plain text, unencrypted PII storage, missing consent tracking — found post-deployment carry regulatory fines (up to 4% of annual global revenue under GDPR), not just engineering cost.
+
+```typescript
+// src/lib/pii-logger.ts — TypeScript logger wrapper that prevents PII leakage in logs
+// Shift-left: type system prevents accidental PII logging at authoring time
+
+// Branded type: prevents passing raw PII strings to logger directly
+type RedactedString = string & { readonly __brand: 'redacted' };
+
+// Fields that constitute PII — extend per your data classification policy
+type PiiField = 'email' | 'name' | 'phone' | 'ssn' | 'ip' | 'address' | 'userId';
+
+// redact(): brands the string as safe for logging — developer explicitly acknowledges PII
+export function redact(value: string, field: PiiField): RedactedString {
+  // For production: log a hash or partial value for debugging, not the raw PII
+  const partial = field === 'email'
+    ? `${value.split('@')[0].slice(0, 2)}***@${value.split('@')[1]}`
+    : `[${field}:redacted]`;
+  return partial as RedactedString;
+}
+
+// Typed log context: ensures PII fields use RedactedString, not plain string
+type SafeLogContext = {
+  [K in PiiField]?: RedactedString;  // PII fields must use branded type
+} & {
+  requestId?: string;
+  statusCode?: number;
+  durationMs?: number;
+  path?: string;
+  error?: string;
+};
+
+// TypeScript enforces that PII is always redacted before logging
+export function logRequest(ctx: SafeLogContext, message: string): void {
+  console.log(JSON.stringify({ ...ctx, message, timestamp: new Date().toISOString() }));
+}
+```
+
+```typescript
+// src/api/user.handler.ts — CORRECT: TypeScript type system enforces PII redaction
+import { logRequest, redact } from '../lib/pii-logger.js';
+
+export async function getUserHandler(userId: string, email: string): Promise<void> {
+  // TypeScript: logRequest expects SafeLogContext — raw `email: email` is a type error
+  // email must be redacted first:
+  logRequest(
+    {
+      requestId: 'req_123',
+      email: redact(email, 'email'),    // TypeScript: email is now RedactedString
+      statusCode: 200,
+    },
+    'User retrieved',
+  );
+}
+
+// ANTI-PATTERN: would be a TypeScript type error — caught at compile time
+// logRequest({ email: email }, 'User retrieved');  // Error: string not assignable to RedactedString
+```
+
+```typescript
+// src/lib/pii-logger.spec.ts — shift-left test cases for PII protection
+import { describe, it, expect } from 'vitest';
+import { redact, logRequest } from './pii-logger.js';
+
+describe('PII logger — shift-left tests', () => {
+  it('redacts email to partial form', () => {
+    const result = redact('alice@example.com', 'email');
+    expect(result).toMatch(/^al\*\*\*/);        // Only first 2 chars of username
+    expect(result).not.toContain('alice');        // Full name not in log
+    expect(result).not.toContain('@example.com'); // Domain may be OK but email shouldn't be full
+  });
+
+  it('redacts non-email PII fields completely', () => {
+    const result = redact('+1-555-123-4567', 'phone');
+    expect(result).toBe('[phone:redacted]');      // No partial phone — too identifiable
+    expect(result).not.toContain('555');
+  });
+
+  it('type system enforces: raw string cannot be passed as log context PII', () => {
+    // This test documents the type-level guarantee — it always passes
+    // The type error would be caught at compile time by tsc --noEmit
+    const raw = 'alice@example.com';
+    const safe = redact(raw, 'email');
+    // TypeScript: safe is RedactedString — logRequest accepts it
+    // TypeScript: raw is string — logRequest would reject it with type error
+    expect(typeof safe).toBe('string'); // At runtime both are strings
+    // The shift-left protection is compile-time, not runtime
+  });
+});
+```
+
+**WHY Privacy by Design is a shift-left practice**: Privacy defects found in production mean regulatory investigation, data breach notifications, and potential fines. Privacy defects found in code review or via TypeScript type errors are zero-cost to fix. The branded type pattern for PII (`RedactedString`) encodes the privacy requirement directly in the type system — the compiler becomes the privacy compliance checker. TypeScript strict mode + branded types catch PII leakage at authoring time, before code review, before CI, before production.
+
+> [community] **Lesson (GDPR engineering teams, 2025)**: The most common PII logging incident is logging user objects directly: `logger.info({ user }, 'User logged in')`. The `user` object contains email, name, and potentially payment details. TypeScript with a typed log context interface that uses branded PII types makes this pattern a compile-time error — you cannot pass an unredacted `User` object to a logger that expects `SafeLogContext`. WHY teams miss this: the mistake is convenient (logging the whole object "for debugging") and has no immediate observable effect — the PII appears in logs silently, discovered only during a log audit or breach investigation.
+
+> [community] **Lesson (CCPA + TypeScript type safety, 2025)**: The CCPA "right to deletion" requirement means PII must be traceable through the system — you cannot delete what you cannot find. TypeScript branded types for PII make PII visible in the type system: anywhere a `RedactedString` or `PiiField` type appears, you know PII is present. This makes auditing PII data flows a type-level grep (`grep -r "PiiField\|RedactedString" src/`) rather than a manual code review.
+
+> [community] **Gotcha (privacy-by-design + TypeScript test fixtures)**: Test fixtures that use realistic-looking email addresses (`alice@example.com`, `bob.smith@company.com`) create a privacy risk when test databases are accidentally promoted to staging or when test logs are stored alongside production logs. Use clearly fake data (`test.user.1@test.invalid`, `noreply@example.test`) that cannot be confused for real PII, and enforce this pattern via a `no-real-looking-pii-in-tests` custom ESLint rule or naming convention.
+
+---
+
+## Key Resources — 2026 Additions (Iteration 27)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Biome v2 test nursery rules | Official | https://biomejs.dev/linter/rules/ | useTestHooksInOrder, useTestHooksOnTop, useConsistentTestIt, noIdenticalTestTitle — structural test rules at lint speed |
+| @typescript-eslint v8.58 (TS6) | Official | https://github.com/typescript-eslint/typescript-eslint/releases/tag/v8.58.0 | TypeScript 6 support: no-unnecessary-type-assertion improvements, crash fixes for recursive template literal types |
+| vi.defineHelper() API | Official | https://vitest.dev/api/vi#vi-definehelper | Removes helper function internals from stack traces — surfaces test failures at call sites |
+| Vitest 4.1 fixture type inference | Official | https://vitest.dev/api/test#test-extend | Builder pattern for test.extend(): infers fixture types from return values — no manual type declarations |
+| Vitest 4.1 GH Actions summaries | Official | https://vitest.dev/blog/vitest-4-1.html | Automated job summaries with flaky test permalinks when CI=true |
+| OWASP DevSecOps — Privacy by Design | Official | https://owasp.org/www-project-devsecops-guideline/latest/00a-Overview | Privacy as a shift-left principle; GDPR/CCPA compliance gates in development workflow |

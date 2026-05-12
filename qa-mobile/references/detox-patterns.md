@@ -1,9 +1,10 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 45 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 46 | score: 100/100 | date: 2026-05-12 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 <!-- iteration 44 (2026-05-12) adds: WebView testing (by.web() matchers, web element interactions, hybrid app patterns), visual regression with device.takeScreenshot() + external tools, JUnit XML CI reporting (jest-junit), React Native 0.78+ New Architecture strict mode notes, device.resetContentAndSettings() for deep iOS simulator reset, network activity tracking (NetworkSynchronizationEnabled per-configuration), 7 new community gotchas (44–50: by.web() IPC latency vs native sync, visual diff false positives from dynamic content, jest-junit path collision in sharded CI, device.resetContentAndSettings() permission re-grant pattern, Android API 35 predictive back gesture breaking by.system() back button, Hermes debugger port conflict on parallel CI jobs, and WebView URL not yet updated when Detox selector fires) -->
 <!-- iteration 45 (2026-05-12) adds: by.system() full dialog workflow (permissions/alerts/sheets), device.openURL() deep link testing pattern, parallel worker configuration for large suites, by.traits() iOS accessibility traits testing, element.getAttributes() extended inspection, device.shake() shake gesture testing, 6 new community gotchas (51–56: by.system() label locale mismatch, deep link cold-start race condition, parallel workers sharing global launchArgs, by.traits() not available on Android, getAttributes() returning null for off-screen elements, device.shake() no-op on physical devices without shake hardware) -->
+<!-- iteration 46 (2026-05-12) adds: Pattern 47 (element.swipe() startNormalizedX/Y precision swipe control), Pattern 48 (Detox test tagging with describe-based smoke/regression tiers + --testNamePattern selective CI), 7 new community gotchas (57–63: iOS 18 "Precise Location" prompt blocks by.system() selectors, device.setStatusBar() state bleed across tests without afterAll reset, element.longPress() 0 ms duration behaves as tap() on Android, Expo SDK 53 expo-modules-core v2 requires Detox 20.9+, --loglevel verbose CI log overflow, waitFor.whileElement.scroll('up') skips SectionList headers on Android, device.setOrientation() no-op on Android Emulator API 34+ without hardware rendering flag) -->
 
 ## Core Principles
 
@@ -6753,7 +6754,723 @@ it('opens the debug menu via shake (iOS Simulator only)', async () => {
 
 ---
 
-## Updated Anti-Patterns Checklist (iteration 45 additions)
+### Pattern 47 — `element.swipe()` with `startNormalizedX`/`startNormalizedY` for precision swipe control
+
+Detox's `element.swipe(direction, speed, normalizedOffset)` signature covers most cases, but
+some UI elements require a swipe that begins at a specific point within the element:
+
+- **Carousels with edge-based snap zones** — a swipe starting from the center may be
+  intercepted by a nested scroll child; starting near the left/right edge hits the carousel's
+  gesture recognizer directly.
+- **Pull-to-refresh triggered only in the top 20% of a scroll view** — a swipe starting at
+  `startNormalizedY: 0.1` (10% from the top) reliably triggers the refresh indicator; starting
+  from the midpoint (the default) may not reach the threshold.
+- **Horizontal carousels embedded in vertical scroll views** — starting the horizontal swipe
+  at `startNormalizedY: 0.5` (vertical midpoint) prevents the parent vertical scroll from
+  consuming the gesture first.
+
+```js
+// e2e/carousel.test.js
+// element.swipe(direction, speed, normalizedOffset, startNormalizedX, startNormalizedY)
+// normalizedOffset: how far to swipe (0.0–1.0 fraction of element size)
+// startNormalizedX: X start point within the element (0.0 = left edge, 1.0 = right edge)
+// startNormalizedY: Y start point within the element (0.0 = top edge, 1.0 = bottom edge)
+
+describe('Carousel interactions', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  it('advances a carousel slide by swiping left from the right edge', async () => {
+    await waitFor(element(by.id('featured-carousel')))
+      .toBeVisible()
+      .withTimeout(5000);
+
+    // Start the swipe near the right edge (startNormalizedX: 0.85) to avoid
+    // triggering the nested tap recognizer that responds to center-origin swipes
+    await element(by.id('featured-carousel')).swipe('left', 'fast', 0.6, 0.85, 0.5);
+
+    await waitFor(element(by.id('carousel-slide-2')))
+      .toBeVisible()
+      .withTimeout(3000);
+  });
+
+  it('triggers pull-to-refresh from the top quarter of a scroll view', async () => {
+    await waitFor(element(by.id('feed-scroll-view')))
+      .toBeVisible()
+      .withTimeout(5000);
+
+    // Start swipe from the top 10% of the scroll view — the only area where
+    // the PTR gesture recognizer has higher priority than the scroll gesture
+    await element(by.id('feed-scroll-view')).swipe('down', 'slow', 0.5, 0.5, 0.1);
+
+    await waitFor(element(by.id('refresh-indicator')))
+      .toBeVisible()
+      .withTimeout(3000);
+
+    // Wait for refresh to complete
+    await waitFor(element(by.id('refresh-indicator')))
+      .not.toBeVisible()
+      .withTimeout(8000);
+  });
+
+  it('horizontally swipes a carousel embedded inside a vertical scroll', async () => {
+    // Scroll the parent list to show the embedded carousel
+    await waitFor(element(by.id('horizontal-carousel-row')))
+      .toBeVisible()
+      .whileElement(by.id('home-scroll-view'))
+      .scroll(200, 'down');
+
+    // Use startNormalizedY: 0.5 to hit the horizontal carousel exactly at midpoint
+    // — prevents the parent vertical scroll from intercepting the gesture
+    await element(by.id('horizontal-carousel-row')).swipe('left', 'slow', 0.4, 0.1, 0.5);
+
+    await waitFor(element(by.id('carousel-item-2')))
+      .toBeVisible()
+      .withTimeout(3000);
+  });
+});
+```
+
+**Signature reference:**
+
+```js
+// Full swipe() signature
+await element(matcher).swipe(
+  direction,           // 'left' | 'right' | 'up' | 'down'
+  speed,               // 'slow' | 'fast' (default: 'fast')
+  normalizedOffset,    // 0.0–1.0, how far to swipe as fraction of element size (default: 0.75)
+  startNormalizedX,    // 0.0–1.0, X start point within element (default: 0.5 — center)
+  startNormalizedY,    // 0.0–1.0, Y start point within element (default: 0.5 — center)
+);
+```
+
+**When to use `startNormalizedX`/`Y`:**
+
+| Scenario | Recommended start point |
+|---|---|
+| Pull-to-refresh | `startNormalizedY: 0.1` (top 10%) |
+| Swipe-to-dismiss (modal bottom sheet) | `startNormalizedY: 0.9` (bottom 10%) |
+| Carousel in vertical scroll | `startNormalizedY: 0.5`, `startNormalizedX: 0.1`–`0.9` |
+| Map pan interaction | Custom coordinates to avoid controls overlay |
+| Tab bar swipe (gesture navigation) | `startNormalizedX: 0.02` (near left edge for back swipe) |
+
+---
+
+### Pattern 48 — Test tagging with describe groups and `--testNamePattern` for smoke/regression/full CI tiers
+
+Large Detox test suites (50+ test files) benefit from organizing tests into tiered groups:
+**smoke** (critical path, ≤5 min), **regression** (full feature coverage, ≤20 min), and
+**full** (edge cases + visual regression, uncapped). This allows CI pipelines to run the
+right tier for the right trigger — smoke on every PR, regression on merge, full on nightly.
+
+Detox uses Jest under the hood. Jest's `--testNamePattern` flag filters by the test/describe
+name string. The convention is to prefix describe blocks with a tier tag:
+
+```js
+// e2e/auth.test.js
+// [smoke] prefix = include in the smoke tier
+// [regression] prefix = include in regression + full tiers (not smoke)
+// No prefix = full tier only
+
+describe('[smoke] Login critical path', () => {
+  it('logs in with valid credentials and reaches dashboard', async () => {
+    // ...
+  });
+
+  it('shows error on invalid password', async () => {
+    // ...
+  });
+});
+
+describe('[regression] Login edge cases', () => {
+  it('handles locked account message', async () => {
+    // ...
+  });
+
+  it('preserves email after failed login attempt', async () => {
+    // ...
+  });
+});
+
+describe('Login visual regression', () => {
+  // No tag — full tier only
+  it('matches baseline screenshot for login screen', async () => {
+    // ...
+  });
+});
+```
+
+```js
+// package.json — CI scripts for each tier
+{
+  "scripts": {
+    "test:e2e:smoke":      "detox test -c ios.sim.release --testNamePattern='\\[smoke\\]'",
+    "test:e2e:regression": "detox test -c ios.sim.release --testNamePattern='\\[(smoke|regression)\\]'",
+    "test:e2e:full":       "detox test -c ios.sim.release"
+  }
+}
+```
+
+```yaml
+# GitHub Actions — run smoke on every PR, regression on merge to main, full nightly
+name: E2E Tests
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * *'  # Nightly at 02:00 UTC
+
+jobs:
+  detox-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npx detox build -c ios.sim.release
+      - run: npm run test:e2e:smoke
+
+  detox-regression:
+    if: github.event_name == 'push'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npx detox build -c ios.sim.release
+      - run: npm run test:e2e:regression
+
+  detox-full:
+    if: github.event_name == 'schedule'
+    runs-on: macos-15
+    strategy:
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npx detox build -c ios.sim.release
+      - run: npx detox test -c ios.sim.release --shard-index=${{ matrix.shard }} --shard-count=3 --forceExit
+```
+
+**Tag conventions and escape rules:**
+- Jest's `--testNamePattern` matches against the full test title string (describe block name
+  concatenated with `it()` name). The `[smoke]` prefix must be in the `describe` block name,
+  not the `it()` name, so that all tests under that describe are included.
+- On the command line, `[` and `]` are regex special characters and must be escaped:
+  `--testNamePattern='\\[smoke\\]'` (double-backslash in shell strings).
+- The `|` operator in `--testNamePattern` allows multiple tag matches without separate runs:
+  `'\\[(smoke|regression)\\]'` matches both `[smoke]` and `[regression]`.
+
+---
+
+## Real-World Gotchas (iteration 46 additions)
+
+### 57. iOS 18 "Precise Location" confirmation prompt blocks `by.system()` selectors [community]
+
+**Root cause**: iOS 18 introduced a new secondary permission prompt when an app first requests
+`kCLAuthorizationStatusAuthorizedWhenInUse` with the "Precise" accuracy level. After granting
+the base location permission, iOS 18 shows a second system dialog: *"Allow [App] to use your
+precise location?"* with options "Keep My Precise Location On" / "One Time" / "Don't Use".
+This second dialog is a native system alert with labels that differ from the base location
+dialog, and it appears at a different point in the permission flow.
+
+**WHY teams are surprised**: The base location permission dialog was handled correctly with
+`launchApp({ permissions: { location: 'inuse' } })` on iOS 16 and earlier. After upgrading
+CI to iOS 18 Simulator (Xcode 16+), tests that test location features start hanging in the
+`waitFor(element(by.id('map-screen')))` step — the test is actually waiting for the map but
+the system is blocked behind the undismissed "Precise Location" dialog.
+
+**Symptoms**: Test times out waiting for a screen that should be visible. The artifacts
+screenshot shows the "Precise Location" system dialog overlaid on the app. `by.system()`
+selectors written for the base location dialog do not match the precise-location dialog.
+
+**Fix**: There are two mitigation strategies:
+
+```js
+// Strategy 1: Pre-grant via launchApp permissions — most reliable
+// 'always' + preciselocation: 'YES' suppresses both prompts on iOS 18+
+beforeAll(async () => {
+  await device.launchApp({
+    newInstance: true,
+    permissions: {
+      location: 'always',         // grant location permission at the 'always' level
+      preciselocation: 'YES',     // suppress the secondary "Precise Location" prompt
+    },
+  });
+});
+```
+
+```js
+// Strategy 2: Handle the precise location dialog via by.system() if pre-grant is unavailable
+// Build a locale-aware label map for the iOS 18 precise location dialog
+const PRECISE_LOCATION_ALLOW = {
+  'en': 'Keep My Precise Location On',
+  'fr': 'Conserver ma position précise activée',
+  'de': 'Genauen Standort aktiviert lassen',
+  // Add other locales as needed
+};
+
+async function dismissPreciseLocationPromptIfPresent() {
+  const locale = (await device.getLocale?.()) ?? 'en';
+  const label = PRECISE_LOCATION_ALLOW[locale] ?? PRECISE_LOCATION_ALLOW['en'];
+  try {
+    await waitFor(element(by.system().label(label)))
+      .toBeVisible()
+      .withTimeout(3000);
+    await element(by.system().label(label)).tap();
+  } catch (_) {
+    // Prompt did not appear — already granted or iOS < 18
+  }
+}
+
+// Call after granting base location permission
+it('shows map after location grant', async () => {
+  await element(by.id('enable-location-button')).tap();
+  // Handle base location dialog
+  await element(by.system().label('Allow While Using App')).tap();
+  // Handle iOS 18 precise location follow-up dialog
+  await dismissPreciseLocationPromptIfPresent();
+  // Now proceed with the actual test
+  await waitFor(element(by.id('map-screen'))).toBeVisible().withTimeout(5000);
+});
+```
+
+**WHY `preciselocation: 'YES'` is the right default for CI**: Most apps need GPS accuracy
+for the feature under test. Pre-granting at launch avoids dialog timing races entirely —
+the app never shows the prompt. Use `preciselocation: 'NO'` only for tests that specifically
+verify degraded-accuracy behavior.
+
+---
+
+### 58. `device.setStatusBar()` state bleeds across test files unless reset in `afterAll` [community]
+
+**Root cause**: `device.setStatusBar()` applies status bar overrides (time, battery level,
+signal strength) to the iOS Simulator at the OS level, not the app level. The override persists
+for the lifetime of the Simulator session — it is NOT automatically reset when Detox reloads
+the React Native bundle (`device.reloadReactNative()`) or even when a new app instance is
+launched (`device.launchApp({ newInstance: true })`). If a visual regression test suite sets
+`time: '9:41'` but a later test suite takes screenshots without resetting the status bar, all
+screenshots in the later suite will also show `9:41` — even though those tests didn't intend
+to freeze the clock.
+
+**WHY it's a silent failure**: The screenshots look "correct" to human reviewers (9:41 is a
+plausible time) and baseline images were captured the same way. The issue surfaces only when
+the baseline was captured with a different status bar override and the diff shows a mismatch
+in the time string.
+
+**Fix**: Always pair `device.setStatusBar()` with a reset in `afterAll`:
+
+```js
+// e2e/visual-regression.test.js
+const STATUS_BAR_OVERRIDE = {
+  time: '9:41',
+  batteryLevel: 100,
+  batteryState: 'charging',
+  cellularMode: 'active',
+  cellularBars: 4,
+  wifiMode: 'active',
+  wifiBars: 3,
+  dataNetwork: 'wifi',
+};
+
+describe('Visual regression — Login screen', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+    // Set deterministic status bar for all screenshots in this suite
+    if (device.getPlatform() === 'ios') {
+      await device.setStatusBar(STATUS_BAR_OVERRIDE);
+    }
+  });
+
+  afterAll(async () => {
+    // CRITICAL: reset status bar so subsequent test files get the live status bar
+    if (device.getPlatform() === 'ios') {
+      await device.resetStatusBar();  // Detox 20.8+ API
+      // If resetStatusBar() is not available (older Detox), use setStatusBar with 'auto' values:
+      // await device.setStatusBar({ time: '' });  // empty string restores live clock
+    }
+  });
+
+  it('matches login screen baseline', async () => {
+    await element(by.id('login-screen')).tap();
+    const screenshot = await device.takeScreenshot('login-screen-baseline');
+    // ... pixelmatch comparison ...
+  });
+});
+```
+
+**Note on Android**: `device.setStatusBar()` is iOS Simulator only. On Android Emulator,
+use ADB to set the demo mode: `adb shell settings put global sysui_demo_allowed 1 && adb shell am broadcast -a com.android.systemui.demo -e command clock -e hhmm 0941`. Reset with `adb shell am broadcast -a com.android.systemui.demo -e command exit`.
+
+---
+
+### 59. `element.longPress()` with `duration: 0` behaves as `tap()` on Android — minimum duration is platform-dependent [community]
+
+**Root cause**: `element.longPress(duration)` accepts a duration in milliseconds. On iOS
+Simulator, a duration of `0` ms correctly registers as a long press (the UIKit gesture
+recognizer threshold is ~500 ms by default, and Detox signals it directly). On Android,
+the `MotionEvent` system requires the long-press `downTime` to remain held for at least the
+system's long-press threshold (~400 ms on most devices). Passing `0` ms causes Detox to
+send `ACTION_DOWN` and `ACTION_UP` in immediate succession — which Android interprets as a
+single tap.
+
+**WHY teams encounter this**: Tests written on iOS pass; the same test on Android silently
+taps instead of long-pressing, and the long-press menu never appears. The test does not
+throw an error — it simply waits for the context menu and times out.
+
+**Fix**: Always use the platform default duration or an explicit safe minimum:
+
+```js
+// e2e/contextMenu.test.js
+
+it('opens the long-press context menu on a list item', async () => {
+  await waitFor(element(by.id('message-item-0')))
+    .toBeVisible()
+    .withTimeout(5000);
+
+  // DO NOT use duration: 0 — it behaves as tap() on Android
+  // Instead, use platform-appropriate defaults:
+  if (device.getPlatform() === 'ios') {
+    // iOS: Detox default longPress duration (500 ms) works well
+    await element(by.id('message-item-0')).longPress();
+  } else {
+    // Android: explicit 800 ms gives a comfortable margin above the 400 ms threshold
+    await element(by.id('message-item-0')).longPress(800);
+  }
+
+  await waitFor(element(by.id('context-menu')))
+    .toBeVisible()
+    .withTimeout(3000);
+});
+```
+
+```js
+// Reusable helper — cross-platform safe long press
+async function safeLongPress(matcher, durationIos = 500, durationAndroid = 800) {
+  const duration = device.getPlatform() === 'ios' ? durationIos : durationAndroid;
+  await element(matcher).longPress(duration);
+}
+
+// Usage
+await safeLongPress(by.id('message-item-0'));
+await waitFor(element(by.id('context-menu'))).toBeVisible().withTimeout(3000);
+```
+
+**Related**: The `longPressAndDrag()` API has a separate first argument for the hold
+duration before dragging begins. Apply the same minimum-800-ms rule on Android for the
+`duration` parameter in `longPressAndDrag(duration, normalizedPositionX, normalizedPositionY, ...)`.
+
+---
+
+### 60. Expo SDK 53 + `expo-modules-core` v2 requires Detox 20.9+ — older Detox hangs at app launch [community]
+
+**Root cause**: Expo SDK 53 (released May 2025) ships `expo-modules-core` v2.0, which
+migrates the core module registration from the legacy `AppDelegate` pattern to a new
+`ExpoAppDelegate` Swift/Kotlin class (part of the "Expo Modules Architecture v2"). The
+Detox synchronization bridge attaches to the app by hooking into the `AppDelegate`
+lifecycle. Detox versions older than 20.9 do not recognize the new `ExpoAppDelegate`
+hook points and fail to establish the synchronization channel — the app launches
+visually but Detox cannot detect the "app idle" state. Tests hang indefinitely waiting
+for the initial `waitFor`.
+
+**Symptoms**:
+- `npx detox test` hangs after "Waiting for app to launch" with no timeout error
+- The Simulator shows the app running normally
+- `--debug-synchronization` output shows "Waiting for JS runloop to become idle" repeating forever
+
+**Fix**: Update Detox to 20.9+ before upgrading to Expo SDK 53:
+
+```bash
+# Check current version
+npx detox --version
+
+# Update Detox (Detox 20.9+ includes Expo Modules Architecture v2 support)
+npm install --save-dev detox@^20.9.0
+
+# Also update expo-modules-core to SDK 53 version
+npx expo install expo-modules-core
+
+# If using Expo prebuild, regenerate native code
+npx expo prebuild --clean
+```
+
+**`.detoxrc.js` updates for Expo SDK 53:**
+
+```js
+// .detoxrc.js — Expo SDK 53 managed workflow
+module.exports = {
+  testRunner: {
+    args: { $0: 'jest', config: 'e2e/jest.config.js' },
+    jest: { setupTimeout: 300000 },
+  },
+  apps: {
+    'ios.release': {
+      type: 'ios.app',
+      // SDK 53: build path includes the new ExpoAppDelegate framework
+      binaryPath: 'ios/build/Build/Products/Release-iphonesimulator/YourApp.app',
+      build: [
+        'xcodebuild',
+        '-workspace ios/YourApp.xcworkspace',
+        '-scheme YourApp',
+        '-configuration Release',
+        '-sdk iphonesimulator',
+        '-derivedDataPath ios/build',
+        'CODE_SIGNING_ALLOWED=NO',
+        '| xcpretty'
+      ].join(' '),
+    },
+  },
+  devices: {
+    simulator: {
+      type: 'ios.simulator',
+      device: { type: 'iPhone 16' },
+    },
+  },
+  configurations: {
+    'ios.sim.release': { device: 'simulator', app: 'ios.release' },
+  },
+};
+```
+
+**[community] gotcha — SDK 53 deprecates `expo-dev-client` `launchMode: 'most-recent'`.**
+SDK 53 changes how `expo-dev-client` selects the app to launch. Detox tests that used
+`launchMode: 'most-recent'` in their dev client config may get an unexpected "Select a
+Development Server" UI instead of immediately launching. Fix: set `launchMode: 'launcher'`
+and point Detox's `launchArgs` to the pre-built release binary, not the dev client.
+
+---
+
+### 61. `--loglevel verbose` (or `trace`) overflows GitHub Actions log buffer, silently truncating output [community]
+
+**Root cause**: GitHub Actions has a per-step log output buffer limit of approximately
+50 MB. Detox with `--loglevel verbose` generates between 2–8 KB of log output per test
+action (device command, synchronization wait, element interaction). On a suite with 300
+tests averaging 20 interactions each, that is 6,000 × 5 KB = ~30 MB per shard — and with
+`--loglevel trace` (which additionally logs all IPC messages between the JS and native
+layers), the output easily exceeds 200 MB per shard. When the buffer is exceeded, GitHub
+Actions silently truncates the log from the **beginning**, discarding the setup and
+early-test output — the exact portion most useful for diagnosing build failures.
+
+**WHY teams use `--loglevel verbose` on CI**: It was added temporarily to diagnose a
+flakiness issue and never removed. Or the team added it to the `test:e2e:ci` script without
+realizing the log volume implications.
+
+**Fix**: Use `--loglevel warn` for normal CI runs and save verbose logs only to the artifact
+file (Detox's `log` artifact plugin captures the full trace to disk without going through
+the GitHub Actions stdout buffer):
+
+```bash
+# In GitHub Actions step — use warn level for stdout, rely on artifact log for details
+- name: Run Detox tests
+  run: |
+    npx detox test \
+      -c ios.sim.release \
+      --loglevel warn \
+      --record-logs failing \
+      --forceExit
+
+# NOT this (overflows stdout buffer):
+# npx detox test -c ios.sim.release --loglevel verbose
+```
+
+```js
+// .detoxrc.js — configure artifact log collection (captures full trace to disk)
+artifacts: {
+  rootDir: '.artifacts',
+  plugins: {
+    log: {
+      enabled: true,
+      keepOnlyFailedTestsArtifacts: true,  // saves disk space — only failing test logs
+    },
+    screenshot: {
+      enabled: true,
+      shouldTakeAutomaticSnapshots: true,
+      takeWhen: { testFailure: true },
+    },
+  },
+},
+```
+
+**Loglevel reference:**
+
+| Level | Output volume | When to use |
+|---|---|---|
+| `error` | Minimal | Production CI — only hard errors |
+| `warn` | Low | Normal CI — warnings + errors (recommended) |
+| `info` | Medium | Default — Detox lifecycle + test milestones |
+| `debug` | High | Local investigation of a specific failure |
+| `verbose` | Very high | Deep investigation — includes all device commands |
+| `trace` | Extreme | Full IPC trace — almost never appropriate in CI |
+
+**Tip**: Use `--record-logs failing` (Detox's artifact plugin shorthand) rather than
+`--loglevel verbose`. `record-logs` writes the verbose log to disk for failed tests only,
+without flooding stdout.
+
+---
+
+### 62. `waitFor().whileElement().scroll('up')` skips Android `SectionList` section headers [community]
+
+**Root cause**: Detox's `whileElement().scroll(100, 'up')` drives a native scroll gesture
+upward. On Android, `SectionList` renders section headers as sticky views that are
+rendered at the OS level above the scroll container — they are not part of the scrollable
+content. When Detox sends a scroll-up gesture and checks `toBeVisible()`, Android's
+accessibility layer reports the element's scroll position relative to the scrollable
+content frame, not the full window frame. As a result, `waitFor(element(by.id('section-header-B'))).toBeVisible().whileElement(by.id('list')).scroll(100, 'up')` may
+scroll past the header without `toBeVisible()` ever returning `true` — the header is
+technically "visible" in the window but the scroll container's `isAccessibilityFocused`
+returns `false` for a stuck sticky header, causing Detox to keep scrolling.
+
+**Symptoms**: The test keeps scrolling upward past the target section header. It
+eventually exceeds `withTimeout()` and fails with "element not found" — even though
+the section header is clearly visible in the artifact screenshot.
+
+**Fix**: Use `waitFor + whileElement` with `scroll('down')` first to ensure you overshoot,
+then scroll back up with small steps, OR target a non-sticky element inside the section
+instead of the sticky header itself:
+
+```js
+// UNRELIABLE on Android — sticky section header may not report visibility correctly
+await waitFor(element(by.id('section-header-B')))
+  .toBeVisible()
+  .whileElement(by.id('section-list'))
+  .scroll(100, 'up');
+
+// RELIABLE — scroll to a known item BELOW the section header
+// The header becomes visible as a side effect of the item becoming visible
+await waitFor(element(by.id('section-B-item-0')))
+  .toBeVisible()
+  .whileElement(by.id('section-list'))
+  .scroll(100, 'up');
+
+// Then optionally assert the header after reaching its section
+await expect(element(by.id('section-header-B'))).toBeVisible();
+```
+
+```js
+// ALTERNATIVE — use scrollTo('top') to jump to top, then scroll down to section
+// When the section order is known, this avoids the ambiguous-direction problem entirely
+it('scrolls to Section B in an alphabetical contact list', async () => {
+  // Reset to top first
+  await element(by.id('contacts-list')).scrollTo('top');
+
+  // Then scroll down until the first item in Section B is visible
+  await waitFor(element(by.id('contact-bob')))
+    .toBeVisible()
+    .whileElement(by.id('contacts-list'))
+    .scroll(100, 'down');
+});
+```
+
+**iOS behavior**: iOS `SectionList` sticky headers are implemented differently —
+`toBeVisible()` correctly detects them during `scroll('up')` on iOS. This is an
+Android-specific issue with sticky view accessibility reporting.
+
+---
+
+### 63. `device.setOrientation()` has no effect on Android Emulator API 34+ when hardware acceleration is active [community]
+
+**Root cause**: Android 14 (API 34) changed the Emulator's default renderer from
+`swiftshader_indirect` to hardware-accelerated ANGLE (on compatible host GPUs). With
+hardware acceleration enabled, the emulator's window manager requires the orientation
+change to be driven by the host window system, not by ADB / Detox API calls. Detox's
+`device.setOrientation('landscape')` sends the equivalent of `adb shell content insert
+--uri content://settings/system --bind name:s:user_rotation --bind value:i:1` — which
+only works with the software renderer. With ANGLE rendering, the orientation change
+appears to apply (no error is thrown) but the emulator display does not rotate, and
+subsequent assertions about landscape-specific UI layout fail.
+
+**Symptoms**:
+- `device.setOrientation('landscape')` returns without error
+- The test assertions for landscape layout (wider navigation bar, side-by-side panels)
+  fail with "element not found"
+- Artifact screenshot shows the emulator still in portrait orientation
+- Test passes locally on a Mac M-series host where the ANGLE renderer path differs
+
+**Fix**: Force the software renderer for CI Android Emulators that test orientation:
+
+```js
+// .detoxrc.js — force swiftshader renderer for orientation tests
+devices: {
+  emulator: {
+    type: 'android.emulator',
+    device: { avd: 'Pixel_6_API_34' },
+    // Explicitly request software rendering — REQUIRED for device.setOrientation() on API 34+
+    bootArgs: '-no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim',
+    headless: true,
+  },
+},
+```
+
+```yaml
+# GitHub Actions — reactivecircus/android-emulator-runner with explicit GPU flag
+- name: Run Detox tests (Android)
+  uses: reactivecircus/android-emulator-runner@v2
+  with:
+    api-level: 34
+    target: google_apis
+    arch: x86_64
+    # Explicitly use swiftshader so device.setOrientation() works
+    emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+    disable-animations: true
+    script: npx detox test -c android.emu.release --forceExit
+```
+
+```js
+// e2e/orientation.test.js — always reset orientation in afterEach
+describe('Landscape layout', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  afterEach(async () => {
+    // Always restore portrait — setOrientation state is not automatically reset
+    // between tests (same issue as setStatusBar — persists across the session)
+    await device.setOrientation('portrait');
+  });
+
+  it('shows side-by-side panel layout in landscape', async () => {
+    await device.setOrientation('landscape');
+
+    await waitFor(element(by.id('left-panel')))
+      .toBeVisible()
+      .withTimeout(3000);
+    await waitFor(element(by.id('right-panel')))
+      .toBeVisible()
+      .withTimeout(3000);
+  });
+});
+```
+
+**Note on iOS**: `device.setOrientation()` works reliably on iOS Simulator regardless of
+host GPU because UIKit processes orientation changes through the Simulator's software
+rotation pipeline. The ANGLE regression is Android-only.
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 46 additions)
+
+| Anti-Pattern | Fix |
+|---|---|
+| `element.swipe()` without `startNormalizedX`/`Y` on carousels or embedded scrolls | Use explicit start point (e.g., `startNormalizedX: 0.85`) to avoid nested scroll intercepting the gesture (Pattern 47) |
+| All tests in a single tier running on every PR | Tag `describe` blocks with `[smoke]`/`[regression]` prefixes and use `--testNamePattern` to run the right tier per trigger (Pattern 48) |
+| `by.system()` selectors hard-coded for iOS 17 location dialog | Add iOS 18 "Precise Location" follow-up dialog handling with `preciselocation: 'YES'` in `launchApp` permissions (Gotcha 57) |
+| `device.setStatusBar()` called in `beforeAll` without `afterAll` reset | Call `device.resetStatusBar()` in `afterAll` — status bar overrides persist across test files (Gotcha 58) |
+| `element.longPress(0)` or `element.longPress()` in cross-platform tests | Use platform-specific duration: iOS default (500 ms) and Android explicit 800+ ms minimum (Gotcha 59) |
+| Expo SDK 53 project running Detox < 20.9 | Upgrade to Detox 20.9+ before adopting `expo-modules-core` v2 (Gotcha 60) |
+| `--loglevel verbose` or `--loglevel trace` in CI run scripts | Use `--loglevel warn` for stdout; capture full logs via `--record-logs failing` artifact plugin (Gotcha 61) |
+| `waitFor().whileElement().scroll('up')` targeting sticky SectionList headers on Android | Target the first item below the header instead; assert the header visibility after item is visible (Gotcha 62) |
+| `device.setOrientation()` on Android Emulator API 34+ without `-gpu swiftshader_indirect` | Set `bootArgs: '-gpu swiftshader_indirect'` in emulator device config; hardware ANGLE renderer ignores orientation commands (Gotcha 63) |
+
+## Anti-Patterns Checklist (prior iterations)
 
 | Anti-Pattern | Fix |
 |---|---|

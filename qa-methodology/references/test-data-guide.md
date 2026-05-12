@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
@@ -10,6 +10,7 @@
 <!-- iter-35: Vitest 4.1 builder pattern for test.extend() (return-based, automatic TypeScript type inference); aroundEach hook (transaction-per-test pattern); test.override() per-suite fixture overrides; vi.defineHelper() for clean factory assertion stack traces; Vitest 4.x coverage.all/coverage.extensions removal + mandatory coverage.include; community gotcha #23; new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-37: Vitest 4.0 expect.schemaMatching for inline factory output validation against Zod/Valibot/ArkType; Vitest 4.0 getSeed() API for programmatic seed access; Vitest 4.1 experimental viteModuleRunner:false for native Node.js factory execution; Google Testing Blog "Construct with Collaborators, Call with Work" pattern (2026-05-05) applied to factory design; faker v10.4.0 latest stable (2026-03-23); fishery v2.4.0 latest stable (2025-12-08); community gotcha #25 (schema drift caught by expect.schemaMatching); updated Key Resources (2026-05-12) -->
+<!-- iter-38: Playwright 1.59 async disposables (await using for route handlers, pages, tracing — Symbol.asyncDispose in E2E test data); Playwright 1.60 HAR-based record/replay (routeFromHAR + tracing.startHar as a native Self-Initializing Fake for E2E); Playwright 1.57 testProject.workers for per-project parallelism in test data isolation; Playwright @tag syntax for conditional E2E fixture setup; community gotcha #26 (HAR fixture drift — routeFromHAR has no automatic re-recording signal); updated Key Resources (2026-05-12) -->
 
 ---
 
@@ -6238,6 +6239,10 @@ test data technical debt from accumulating.
 - [ ] Large fixture suites use `mergeTests()` to compose domain-aligned fixture modules rather than one monolithic fixture file
 - [ ] Worker-scoped fixtures (expensive setup) are scoped with `{ scope: 'worker' }` to share cost across tests in the same worker
 - [ ] All Playwright fixtures have guaranteed teardown — no `afterAll` skipped on test failure
+- [ ] Playwright ≥ 1.59: use `await using` for scoped mid-test resources (route overrides, init scripts) instead of manual `unroute()`/`evaluate()` cleanup
+- [ ] `playwright.config.ts` uses `testProject.workers` to right-size parallelism per project (DB-heavy projects capped at 2–4; UI-only projects at full workers)
+- [ ] CI pipelines use `--grep @smoke` for fast pre-commit checks and `--grep @integration` for merge-queue runs; `globalSetup` gates DB provisioning on the grep filter
+- [ ] HAR fixture files (`.har`) committed to source control have a nightly CI job that deletes and re-records them to catch third-party API drift
 
 **Vitest configuration checklist (Vitest 4.x):**
 - [ ] `poolOptions` is NOT used — settings are top-level (`isolate`, `maxWorkers`, `pool`)
@@ -6723,3 +6728,475 @@ test('premium user accesses analytics dashboard', () => {
 | Google Testing Blog — Construct with Collaborators | Blog | https://testing.googleblog.com/2026/05/construct-with-collaborators-call-with.html | Principle: separate collaborator construction from work calls; applies directly to factory + fixture design |
 | @faker-js/faker v10.4.0 | Official | https://github.com/faker-js/faker/releases/tag/v10.4.0 | Latest stable faker release (March 23, 2026) — ESM-only, UUID v7, 70+ locales |
 | fishery v2.4.0 | Official | https://github.com/thoughtbot/fishery/releases/tag/v2.4.0 | Latest stable fishery release (December 8, 2025) — TypeScript-first factory library with build/create separation |
+
+---
+
+## Playwright 1.59 Async Disposables — `await using` for E2E Test Data Cleanup  [community]
+
+Playwright 1.59 (2025) extended TypeScript 5.2's `await using` / `Symbol.asyncDispose`
+support to Playwright's own fixture APIs: `context.newPage()`, `page.route()`,
+`page.addInitScript()`, and `context.tracing.startHar()` now all return async disposables.
+This means you can scope E2E test data infrastructure (route interception, init scripts,
+HAR recording) with block-scope lifetime — cleanup fires automatically when the block
+exits, with no `try/finally` or `afterEach` hook required.
+
+**Why it matters for test data in E2E tests:** Playwright fixture teardown is already
+guaranteed via the fixture lifecycle. But within a test body, ad-hoc resources such as
+per-test route overrides (`page.route()`) and init scripts that inject seed data into
+`localStorage` or `sessionStorage` had no scoped cleanup — they persisted for the lifetime
+of the page. With async disposables, you can scope these mid-test resources to an inner
+block, cleanly separating "baseline fixture data" from "scenario-specific overrides".
+
+```typescript
+// specs/checkout-data-injection.spec.ts
+// Playwright 1.59+ async disposable APIs for scoped E2E test data
+
+import { test, expect } from '@playwright/test';
+
+test('checkout flow with per-scenario injected cart data', async ({ context }) => {
+  // Worker-scoped page — lasts for the entire test
+  await using page = await context.newPage();
+
+  // Navigate to baseline state
+  await page.goto('/checkout');
+
+  // Inner block: inject a specific cart configuration and verify its effect
+  // The route override is removed automatically when the block exits
+  {
+    // Scope the route override to this scenario block only
+    await using _cartRoute = await page.route('/api/cart', (route) => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            { productId: 'prod-premium-001', quantity: 2, unitPriceCents: 4999 },
+          ],
+          totalCents: 9998,
+          currency: 'USD',
+        }),
+      });
+    });
+
+    // Within this block, /api/cart returns our factory-injected data
+    await page.reload();
+    await expect(page.locator('[data-testid="cart-total"]')).toContainText('$99.98');
+    await expect(page.locator('[data-testid="item-count"]')).toContainText('2');
+    // _cartRoute is automatically removed as this block exits — route reverts to default
+  }
+
+  // After the block: page is back to real /api/cart behavior
+  // Next scenario can inject a different cart without residual route state
+  {
+    await using _emptyCartRoute = await page.route('/api/cart', (route) => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [], totalCents: 0, currency: 'USD' }),
+      });
+    });
+
+    await page.reload();
+    await expect(page.locator('[data-testid="empty-cart-message"]')).toBeVisible();
+  }
+  // page is also cleaned up automatically — context.newPage() returned a disposable
+});
+```
+
+```typescript
+// Using await using with init scripts for localStorage seeding
+test('returns user to their last-viewed product (from localStorage)', async ({ context }) => {
+  await using page = await context.newPage();
+
+  {
+    // Inject test data into localStorage before page load — scoped to this block
+    await using _initScript = await page.addInitScript(() => {
+      window.localStorage.setItem('lastViewedProduct', JSON.stringify({
+        id: 'prod-e2e-001',
+        name: 'E2E Test Widget',
+        viewedAt: '2024-06-15T10:00:00Z',
+      }));
+    });
+
+    await page.goto('/shop');
+    // The init script fires before page load — localStorage is seeded correctly
+    await expect(page.locator('[data-testid="last-viewed"]')).toContainText('E2E Test Widget');
+    // _initScript removed at block exit — next goto() starts without the injected data
+  }
+
+  // Verify that without the injected localStorage, the section is absent
+  await page.reload();
+  await expect(page.locator('[data-testid="last-viewed"]')).not.toBeVisible();
+});
+```
+
+**Requirements:**
+- Playwright ≥ 1.59
+- TypeScript ≥ 5.2 (for `await using` keyword)
+- `"target": "ES2022"` or higher and `"lib": ["es2022", "esnext.disposable"]` in `tsconfig.json`
+
+**Comparison with Playwright fixture teardown:**
+
+| Mechanism | Scope | Use case |
+|---|---|---|
+| Playwright `test.extend()` fixture | Test or worker | Persistent DB state, authenticated sessions, shared containers |
+| `await using` in test body | Block (inner `{}`) | Scenario-specific route overrides, init script variants within one test |
+| `try/finally` (pre-1.59) | Manual | Same as `await using` but verbose; cleanup skipped if `return` is hit |
+| `afterEach` hook | Entire test file | Bulk teardown; cannot scope to one test's inner block |
+
+---
+
+## Playwright 1.60 HAR Record/Replay — Native Self-Initializing Fake for E2E  [community]
+
+Playwright 1.60 promoted HAR (HTTP Archive) recording to a **first-class tracing API**
+via `context.tracing.startHar()` / `stopHar()`. Combined with the existing
+`page.routeFromHAR()` and `browserContext.routeFromHAR()` APIs, this provides a
+Playwright-native implementation of the Self-Initializing Fake pattern — recording real
+third-party API responses on first run and replaying them deterministically in subsequent
+test runs, without any custom MSW plumbing.
+
+**Why it matters vs the MSW self-initializing-fake:** The MSW-based implementation
+(described earlier in this guide) requires custom handler code and a fixture management
+directory. Playwright's `routeFromHAR()` is a zero-boilerplate alternative that records
+the exact HTTP responses the real browser received, including response headers, status codes,
+timing, and multipart responses — closer to real-world fidelity than a hand-coded MSW handler.
+
+```typescript
+// fixtures/playwright-har-fixtures.ts — HAR-based self-initializing fake via Playwright 1.60
+import { test as base, expect } from '@playwright/test';
+import { existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
+
+const HAR_DIR = join(__dirname, '../__har__');
+
+type HarFixtures = {
+  // Fixture that routes all external API calls through a HAR file
+  // First run: records real API responses to the HAR file
+  // Subsequent runs: replays from the HAR file (no network calls)
+  harPage: import('@playwright/test').Page;
+};
+
+export const test = base.extend<HarFixtures>({
+  harPage: async ({ context }, use, testInfo) => {
+    mkdirSync(HAR_DIR, { recursive: true });
+    const harFile = join(HAR_DIR, `${testInfo.titlePath.join('-').replace(/\s+/g, '_')}.har`);
+
+    if (existsSync(harFile)) {
+      // Replay mode: serve all matching requests from the HAR file
+      await context.routeFromHAR(harFile, {
+        // Only replay requests to third-party APIs; let internal API pass through
+        url: /^https:\/\/api\.(stripe|twilio|sendgrid)\.com/,
+        // Strict mode: fail the test if a request isn't in the HAR
+        notFound: 'fallback',
+        update: false,
+      });
+
+      const page = await context.newPage();
+      await use(page);
+      await page.close();
+    } else {
+      // Record mode: capture real responses into the HAR file
+      // Requires live API keys in the environment — only runs when HAR doesn't exist
+      const page = await context.newPage();
+
+      // Playwright 1.60: tracing.startHar() as a first-class API
+      await context.tracing.startHar({
+        path: harFile,
+        content: 'omit',    // omit response bodies > 64KB to keep HAR files small
+        mode: 'minimal',    // record only URL + status + headers (no full body)
+        urlFilter: /^https:\/\/api\.(stripe|twilio|sendgrid)\.com/,
+      });
+
+      await use(page);
+
+      await context.tracing.stopHar();
+      await page.close();
+
+      console.log(`[har-fixture] Recorded HAR: ${harFile} — commit this file.`);
+    }
+  },
+});
+
+export { expect };
+```
+
+```typescript
+// specs/payment-integration.spec.ts — Stripe API responses replayed from HAR
+import { test, expect } from '../fixtures/playwright-har-fixtures';
+
+// First run (no HAR file): calls real Stripe sandbox API, records responses
+// Subsequent runs (HAR file exists): replays recorded responses — no Stripe key needed in CI
+test('checkout successfully charges card via Stripe', async ({ harPage }) => {
+  await harPage.goto('/checkout');
+  await harPage.fill('[data-testid="card-number"]', '4242424242424242');
+  await harPage.fill('[data-testid="card-expiry"]', '12/30');
+  await harPage.fill('[data-testid="card-cvc"]', '123');
+  await harPage.click('[data-testid="pay-button"]');
+
+  // This test exercises the real Stripe.js API flow on first run,
+  // then replays the recorded responses deterministically in CI
+  await expect(harPage.locator('[data-testid="order-confirmation"]')).toBeVisible();
+  await expect(harPage.locator('[data-testid="order-id"]')).not.toBeEmpty();
+});
+```
+
+```typescript
+// scripts/refresh-har-recordings.ts — nightly job to re-record HAR files
+// Run as a scheduled CI job (cron), not on PRs — requires live API credentials
+import { readdirSync, rmSync } from 'fs';
+import { join } from 'path';
+
+const HAR_DIR = join(__dirname, '../__har__');
+
+// Delete all HAR files to force re-recording on next test run
+readdirSync(HAR_DIR).forEach((file) => {
+  if (file.endsWith('.har')) {
+    rmSync(join(HAR_DIR, file));
+    console.log(`[har-refresh] Deleted: ${file}`);
+  }
+});
+// CI then runs the Playwright suite with live credentials → HAR files are regenerated
+// Commit the new HAR files to source control if the suite passes
+```
+
+**`routeFromHAR()` vs MSW self-initializing fake comparison:**
+
+| Dimension | Playwright `routeFromHAR()` | MSW self-initializing fake |
+|---|---|---|
+| Setup cost | Zero — Playwright built-in | Custom handler code + fixture manager |
+| Response fidelity | Exact browser-level response (headers, status, timing) | Programmatic mock (only what you specify) |
+| Binary/multipart responses | Captured natively | Requires custom serialization |
+| Scope | Browser context level (all pages) | Per-handler (fine-grained) |
+| Drift detection | Manual re-recording (no CI signal) | Nightly CI deletion + re-record pattern |
+| Unit test support | No — Playwright only | Yes — works in Vitest/Jest unit tests |
+| Best for | E2E tests consuming third-party APIs | Unit and integration tests mocking internal APIs |
+
+**Commit HAR files to source control.** They document the exact contract between your
+application and the third-party API at the time of recording. PRs that change the
+integration code can be reviewed against the committed HAR to verify expected API behavior.
+
+---
+
+## Playwright `testProject.workers` — Per-Project Parallelism for Test Data Isolation  [community]
+
+Playwright 1.57 added `testProject.workers`, which allows specifying the number of
+concurrent workers **per project** within a `playwright.config.ts`. This is directly
+relevant to test data isolation: integration-heavy projects that share a database need
+fewer workers (to reduce connection pool pressure), while pure UI projects can run at
+full parallelism.
+
+**Why it matters:** Before `testProject.workers`, the global `workers` setting applied
+equally to all projects. A config with `workers: 4` would spin up 4 workers for the
+database-heavy integration project *and* 4 for the lightweight UI project — potentially
+exhausting the test DB connection pool while the UI tests wasted slots they didn't need.
+Per-project worker limits let you right-size each project's parallelism independently.
+
+```typescript
+// playwright.config.ts — per-project worker counts for test data isolation
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  // Global maximum — no project can exceed this
+  workers: 8,
+
+  projects: [
+    {
+      name: 'unit-like',
+      testMatch: '**/*.unit.spec.ts',
+      // No DB involvement — run at full parallelism
+      // workers omitted → uses global workers: 8
+    },
+    {
+      name: 'ui-smoke',
+      testMatch: '**/*.smoke.spec.ts',
+      use: { browserName: 'chromium' },
+      // Moderate parallelism — each worker creates a new page, no shared DB state
+      workers: 4,
+    },
+    {
+      name: 'integration',
+      testMatch: '**/*.integration.spec.ts',
+      use: { baseURL: process.env.TEST_API_URL },
+      // DB-heavy — limit to 2 workers to stay within connection pool size
+      // Each worker uses a separate transaction-rollback connection
+      workers: 2,
+    },
+    {
+      name: 'e2e-checkout',
+      testMatch: '**/checkout/**/*.spec.ts',
+      // Sequential — Stripe sandbox has rate limits that parallel runs hit
+      workers: 1,
+    },
+  ],
+});
+```
+
+```typescript
+// fixtures/db-fixture.ts — per-worker DB connection pool sized to testProject.workers
+// With workers: 2 for the integration project, max: 2 pool matches exactly
+import { test as base } from '@playwright/test';
+import { Pool } from 'pg';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import * as schema from '../db/schema';
+
+// Pool sized to the project's workers setting — no spare connections wasted
+const pool = new Pool({
+  connectionString: process.env.TEST_DATABASE_URL,
+  max: 2,  // matches workers: 2 in playwright.config.ts
+  idleTimeoutMillis: 5000,
+});
+
+export const test = base.extend({
+  db: async ({}, use) => {
+    const db = drizzle(pool, { schema });
+    // Transaction-rollback isolation: each test begins a transaction and rolls back
+    const client = await pool.connect();
+    await client.query('BEGIN');
+
+    // Provide a transaction-scoped db to the test
+    const txDb = drizzle(client, { schema });
+    await use(txDb);
+
+    await client.query('ROLLBACK');
+    client.release();
+  },
+});
+```
+
+**Factory strategy by project worker count:**
+
+| Workers | Factory strategy | Isolation mechanism |
+|---|---|---|
+| 1 | Any strategy | Sequential — no isolation needed |
+| 2–4 | Namespace prefix OR transaction rollback | Low contention on shared DB |
+| 5–8 | Per-worker DB via Testcontainers or Neon branch | Each worker gets its own DB |
+| Unlimited (no DB) | Pure in-memory factories | No DB state to isolate |
+
+---
+
+## Playwright `@tag` Syntax — Conditional E2E Fixture Setup  [community]
+
+Playwright supports test tags via the `@tag` prefix in test titles or the `tag` option in
+test options. Combined with `--grep`/`--grep-invert` CLI filters, tags enable conditional
+E2E fixture setup — the Playwright equivalent of Vitest's `TestRunner.matchesTags()` for
+skipping expensive DB seeding when running only smoke tests.
+
+**Why it matters for test data:** E2E test suites often have two distinct data needs:
+- **Smoke tests** (`@smoke`): stateless, use MSW/HAR fixtures only — no DB seeding required
+- **Integration E2E tests** (`@integration`): need a seeded DB, Testcontainers, or Neon branch
+
+Without tags, all tests run with the same global setup, meaning `globalSetup` always
+provisions the DB — even when CI is running only smoke tests for a fast pre-merge check.
+Playwright tags let CI pipelines explicitly skip DB provisioning for smoke-only runs.
+
+```typescript
+// playwright.config.ts — global setup with tag-aware DB provisioning
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  globalSetup: './test/global-setup.ts',
+  globalTeardown: './test/global-teardown.ts',
+  workers: process.env.CI ? 2 : undefined,
+});
+```
+
+```typescript
+// test/global-setup.ts — conditional DB seeding based on active tag filter
+// Playwright does not expose a TestRunner.matchesTags() equivalent, but the
+// --grep filter is readable via process.env.PLAYWRIGHT_GREP (set by Playwright CLI)
+export default async function globalSetup(): Promise<void> {
+  const grepFilter = process.env.PLAYWRIGHT_GREP ?? '';
+  const grepInvertFilter = process.env.PLAYWRIGHT_GREP_INVERT ?? '';
+
+  // Detect if integration tests are included in this run
+  const isIntegrationRun =
+    grepFilter.includes('@integration') ||       // explicitly included
+    (!grepFilter && !grepInvertFilter) ||          // no filter = run all = includes integration
+    (grepFilter === '' && grepInvertFilter !== '@integration');  // all except explicitly excluded
+
+  if (isIntegrationRun) {
+    console.log('[globalSetup] Provisioning test database (integration tests detected)...');
+    // Start Testcontainers or create Neon branch
+    await provisionTestDatabase();
+    await seedBaselineData();
+  } else {
+    console.log('[globalSetup] Skipping DB provision (smoke/unit tag filter active)');
+  }
+}
+```
+
+```typescript
+// specs/checkout.spec.ts — tagged tests for conditional setup
+import { test, expect } from '@playwright/test';
+
+// @smoke: runs against MSW/HAR fixtures only — no DB required
+test('checkout button is visible @smoke', async ({ page }) => {
+  await page.goto('/checkout');
+  await expect(page.locator('[data-testid="checkout-button"]')).toBeVisible();
+});
+
+// @integration: requires a seeded DB with real users and orders
+test('checkout completes for authenticated user @integration', async ({ page }) => {
+  // This test requires DB seeding from globalSetup
+  await page.goto('/login');
+  await page.fill('[data-testid="email"]', 'e2e-user@test.com');
+  await page.fill('[data-testid="password"]', 'Test@12345');
+  await page.click('[data-testid="submit"]');
+  await page.waitForURL('/dashboard');
+  // ... complete checkout flow
+});
+```
+
+```bash
+# CI pipeline — smoke-only run (no DB provisioning, ~8 seconds)
+npx playwright test --grep @smoke
+
+# Full integration run (with DB provisioning, ~45 seconds)
+npx playwright test --grep @integration
+
+# All tests except known-flaky (exclude, not include)
+npx playwright test --grep-invert @flaky
+
+# Exclude slow HAR-recording tests from PR checks
+npx playwright test --grep-invert "@har-record"
+```
+
+**[community] Production lesson:** A team that adopted Playwright `@tag` filtering for CI
+stages reduced their pre-commit Playwright run from 3 minutes to 25 seconds. The smoke
+suite (`@smoke`) required no infrastructure setup and caught layout regressions. The full
+integration suite ran only on the main branch merge queue — where the longer runtime was
+acceptable. DB provisioning in `globalSetup` was gated on the grep pattern, eliminating
+Testcontainers startup for all smoke-only runs.
+
+---
+
+26. **[community] HAR fixture drift — `routeFromHAR()` has no automatic re-recording signal, unlike API-backed tests.**
+    The Playwright `routeFromHAR()` pattern (described in the HAR Record/Replay section above) replays recorded third-party API responses from committed `.har` files. Unlike the MSW self-initializing fake (which can be wired to a nightly CI job that deletes and re-records fixtures), HAR files committed to source control have **no built-in expiry signal**. When the third-party API adds a new required response field, the HAR file silently replays the old response format — tests continue passing while production breaks. The fix is a scheduled CI job (nightly cron) that deletes all `.har` files and re-runs the Playwright suite with live credentials, committing the updated HAR files if the suite passes. **Teams that adopt `routeFromHAR()` without this nightly re-recording job accumulate invisible API contract drift.** Set a calendar reminder or CI job within 1 week of adopting `routeFromHAR()` — otherwise, the first time the upstream API changes, the production issue will be discovered in a user report, not in CI.
+
+    ```bash
+    # .github/workflows/refresh-har-recordings.yml
+    # Schedule: runs nightly on main branch only
+    # on:
+    #   schedule:
+    #     - cron: '0 2 * * *'  # 2am UTC daily
+    #   workflow_dispatch: {}   # allow manual trigger
+
+    # Steps:
+    # 1. Checkout repo
+    # 2. Delete all .har files: find . -name "*.har" -delete
+    # 3. Run Playwright with live credentials: npx playwright test --grep @har-record
+    # 4. If tests pass: git add __har__/*.har && git commit -m "chore: refresh HAR recordings"
+    # 5. If tests fail: create a GitHub issue alerting the team of API drift
+    ```
+
+---
+
+## Key Resources (iter-38 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright 1.59 release notes | Official | https://playwright.dev/docs/release-notes#version-159 | Async disposable APIs: `await using page`, `route()`, `addInitScript()`, `startHar()` for scoped E2E test data |
+| Playwright 1.60 release notes | Official | https://playwright.dev/docs/release-notes#version-160 | HAR as first-class tracing API: `tracing.startHar()` with `content`/`mode`/`urlFilter` options |
+| Playwright `routeFromHAR()` docs | Official | https://playwright.dev/docs/api/class-browsercontext#browser-context-route-from-har | Native HAR record/replay — zero-boilerplate Self-Initializing Fake for Playwright E2E suites |
+| Playwright `testProject.workers` | Official | https://playwright.dev/docs/api/class-testproject#test-project-workers | Per-project worker count for right-sizing test data isolation per test type |
+| Playwright test annotations docs | Official | https://playwright.dev/docs/test-annotations | `@tag` syntax, `tag` option, `--grep`/`--grep-invert` for conditional E2E fixture setup |

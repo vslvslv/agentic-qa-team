@@ -1,5 +1,5 @@
 # Learning Sources: Programming Languages
-<!-- updated: 2026-05-12 | entries: 84 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-12 | entries: 91 | skill-version: 1.12.0.0 -->
 
 Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 
@@ -72,6 +72,12 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | System.Collections.Frozen | https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen | official-docs | C# / .NET | 2026-05-12 | ⭐ FrozenDictionary<K,V> / FrozenSet<T> — read-optimized immutable collections for static lookup tables |
 | System.Buffers.SearchValues | https://learn.microsoft.com/en-us/dotnet/api/system.buffers.searchvalues | official-docs | C# / .NET | 2026-05-12 | ⭐ SIMD-accelerated char/byte/string set search in spans; multi-string extension in .NET 9 |
 | OrderedDictionary<TKey,TValue> (.NET 9) | https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ordereddictionary-2 | official-docs | C# / .NET | 2026-05-12 | ⭐ Insertion-order generic dict with O(1) key lookup and index-based access/removal |
+| .NET 10 Runtime What's New | https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-10/runtime | official-docs | C# / .NET | 2026-05-12 | ⭐ JIT: struct arg promotion, loop inversion, array devirtualization, code layout, stack alloc improvements, AVX10.2, Arm64 write-barrier |
+| .NET 10 Libraries What's New | https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-10/libraries | official-docs | C# / .NET | 2026-05-12 | ⭐ ZipArchive async, ActivitySourceOptions, ISOWeek DateOnly, StringNormalizationExtensions, UTF-8 hex, OrderedDictionary index, Tensor<T> stable, ExportPkcs12 algorithm |
+| C# Lambda Expressions Reference | https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/lambda-expressions | official-docs | C# | 2026-05-12 | ⭐ Static lambdas, lambda attributes, C# 14 modifiers without explicit types, natural type inference, default params |
+| C# LINQ Standard Query Operators | https://learn.microsoft.com/en-us/dotnet/csharp/linq/standard-query-operators/ | official-docs | C# | 2026-05-12 | ⭐ Full SQO overview — deferred vs immediate, IEnumerable vs IQueryable, classification by execution timing |
+| System.Numerics.Tensors | https://learn.microsoft.com/en-us/dotnet/api/system.numerics.tensors | official-docs | C# / .NET | 2026-05-12 | ⭐ Tensor<T> stable .NET 10 API — IReadOnlyTensor, slice views, extension operators |
+| System.Diagnostics.ActivitySourceOptions | https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.activitysourceoptions | official-docs | C# / .NET | 2026-05-12 | ⭐ ActivitySourceOptions constructor pattern; TelemetrySchemaUrl for OpenTelemetry schema alignment |
 
 ---
 

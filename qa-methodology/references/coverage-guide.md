@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -8,7 +8,9 @@
      vitest.dev/blog/vitest-4.html (fetched 2026-05-12: Vitest 4 coverage API changes) |
      vitest.dev/blog/vitest-4-1 (fetched 2026-05-12: coverage.changed, agent reporter, htmlDir) |
      vitest.dev/config/coverage (fetched 2026-05-12: full config reference — autoUpdate, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks) |
+     vitest.dev/config/coverage (re-fetched 2026-05-12: reportOnFailure, processingConcurrency, watermarks, thresholds.100, allowExternal, cleanOnRerun — fill in config reference gaps) |
      github.com/vitest-dev/vitest/releases (fetched 2026-05-12: v4.1.4–v4.1.6 + v5.0.0-beta.2; V8 child_process/worker_threads coverage, Istanbul instrumenter option, agent skipFull, blob dir change) |
+     stryker-mutator.io/docs/stryker-js/configuration/ (re-fetched 2026-05-12: allowEmpty option, incremental.force flag, disableTypeChecks v7.0 default change) |
      stryker-mutator.io/blog/vscode-plugin (fetched 2026-05-12: VS Code plugin features, MSP protocol, inline mutant visualization) |
      vitest.dev/guide/coverage#coverage-ignore-hints (fetched 2026-05-12: start/stop ignore directives for v8+istanbul; -- @preserve suffix format) |
      github.com/vitest-dev/vitest/pull/9818 (fetched 2026-05-12: Vitest 5 coverage include/exclude glob pattern breaking change — "too eager" fix) |
@@ -1869,6 +1871,243 @@ previously mutated to empty strings, causing module-not-found errors that inflat
 timeout counts. This change reduces noise in projects using dynamic imports for
 code splitting.
 
+### Pattern 28 — Vitest `coverage.reportOnFailure` and `coverage.watermarks`: coverage data on failing runs and visual thresholds  [community]
+
+Two Vitest coverage options are frequently overlooked during initial setup. `reportOnFailure`
+ensures coverage data is written even when tests fail — critical for debugging test failures
+that are tied to coverage gaps. `watermarks` controls the colour-coded thresholds used in the
+HTML and terminal reporters, making it easy to see at a glance which files are well-covered
+(green), acceptable (yellow), or under-tested (red).
+
+```typescript
+// vitest.config.ts — reportOnFailure + watermarks for richer CI feedback
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/**/__mocks__/**', 'src/**/index.ts'],
+      all: true,
+      reporter: ['text', 'html', 'lcov', 'json-summary'],
+      reportsDirectory: './coverage',
+
+      // Write a coverage report even when test cases fail.
+      // Without this, a failing test run produces no coverage artefact —
+      // CI jobs that upload to Codecov or download the HTML report then
+      // fail on a missing artefact, masking the original test failure.
+      // Set to true when you need coverage data for a debugging session
+      // on a partially broken test suite.
+      reportOnFailure: true,
+
+      // Colour thresholds for the HTML and text reporters (default: [50, 80]).
+      // Files below the first number appear red; between the two numbers, yellow;
+      // above the second number, green. Adjust to match your team's quality bar
+      // rather than relying on the library defaults.
+      watermarks: {
+        statements: [70, 90],
+        functions: [70, 90],
+        branches: [65, 85],
+        lines: [70, 90],
+      },
+
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+        perFile: true,
+      },
+    },
+  },
+});
+```
+
+**`reportOnFailure` production pattern**: in GitHub Actions, always set `reportOnFailure: true`
+on CI coverage jobs so the HTML artefact upload step does not fail when one test case breaks.
+The coverage report helps diagnose *which* branches the failing test is responsible for — without
+it, debugging requires another full run after the fix. The option does **not** change exit codes:
+Vitest still exits non-zero when tests fail; it only guarantees coverage files are written.
+
+**`watermarks` tuning**: the default `[50, 80]` range means files at 50–80 % appear yellow.
+Teams whose global threshold is 75 % often lower the yellow floor to `[60, 80]` so yellow
+indicates meaningful work remaining (60–80 %) rather than including files near the minimum.
+Watermarks affect only the visual display — they do not gate CI. Pair watermarks with
+`thresholds` for hard enforcement.
+
+### Pattern 29 — Vitest `coverage.processingConcurrency`, `coverage.allowExternal`, and `coverage.cleanOnRerun`  [community]
+
+Three Vitest coverage options that are rarely documented but matter in specific project setups:
+`processingConcurrency` for large monorepos, `allowExternal` for shared library coverage, and
+`cleanOnRerun` for watch-mode incremental development.
+
+```typescript
+// vitest.config.ts — advanced coverage control options
+import { defineConfig } from 'vitest/config';
+import os from 'node:os';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',              // Vitest 3.2+: AST-remapped V8 = Istanbul accuracy
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/**/__mocks__/**', 'src/**/index.ts'],
+      all: true,
+      reporter: ['text', 'html', 'lcov', 'json-summary'],
+      reportsDirectory: './coverage',
+
+      // Limit how many coverage result files are processed in parallel.
+      // Default: Math.min(20, os.availableParallelism() || os.cpus().length)
+      // Lower this on resource-constrained CI runners (e.g., 2-vCPU GitHub Actions
+      // free tier) to prevent OOM crashes during large Istanbul coverage merges.
+      // Raise it on high-CPU runners (32+ vCPU) to speed up post-collection processing.
+      processingConcurrency: Math.min(4, os.availableParallelism?.() ?? os.cpus().length),
+
+      // Include coverage for files outside the project root (default: false).
+      // Use case: monorepo packages where source lives in a sibling directory
+      // (e.g., ../../shared-lib/src). Without allowExternal: true, these files
+      // are silently excluded from coverage even if tests import them.
+      allowExternal: false,         // set to true for cross-package coverage in monorepos
+
+      // Whether to clean coverage data between watch-mode reruns (default: true).
+      // With cleanOnRerun: true  — each watch rerun shows coverage only for the
+      //   re-executed tests. Accurate per-rerun snapshot but not cumulative.
+      // With cleanOnRerun: false — coverage accumulates across watch reruns,
+      //   giving a running total as you iteratively fix tests. Useful during
+      //   a focused debugging session on a single module.
+      cleanOnRerun: true,
+
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+      },
+    },
+  },
+});
+```
+
+```typescript
+// Alternative: thresholds.100 shortcut — require 100 % on all metrics
+// Use for pure utility libraries or critical security modules where
+// any gap is unacceptable. Equivalent to setting lines/branches/functions/statements to 100.
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',
+      include: ['src/utils/**/*.ts'],       // scope to a specific well-tested sub-tree
+      exclude: ['src/utils/**/*.d.ts'],
+      all: true,
+      reporter: ['text', 'html'],
+      thresholds: {
+        // Shorthand for lines: 100, branches: 100, functions: 100, statements: 100
+        100: true,                          // Vitest 4.x+: any gap fails CI immediately
+        perFile: true,
+      },
+    },
+  },
+});
+```
+
+**`processingConcurrency` guidance**: the default dynamically scales to available CPUs. Only
+override it when coverage post-processing is causing OOM (reduce) or when you have a large
+CI runner and want faster merge times (increase). Monitor `coverage/` directory write times
+in CI — if it takes more than 30 s after tests complete, the processing step is the bottleneck.
+
+**`allowExternal: true` warning**: enabling it without also setting explicit `include` patterns
+can pull in coverage data for `node_modules` or other unintended external paths. Always pair
+`allowExternal: true` with a narrow `include` that names the specific external paths you want.
+
+**`cleanOnRerun: false` in watch mode**: most useful during TDD sessions where you are building
+up coverage incrementally on a new module. Set `cleanOnRerun: false` in your local
+`vitest.config.local.ts` (git-ignored) and keep `cleanOnRerun: true` in the committed config
+so CI always measures a fresh run.
+
+### Pattern 30 — Stryker `allowEmpty` and `incremental.force`: CI dry-run safety and baseline reset  [community]
+
+Two Stryker options that are critical for edge cases in CI pipelines and incremental mutation
+testing workflows, but are rarely included in getting-started guides.
+
+**`allowEmpty`** prevents Stryker from failing when the initial dry run finds no tests for a
+mutant. In CI matrix jobs that scope mutations to a specific module, some modules may have
+no test files in the `testFiles` glob — without `allowEmpty: true`, Stryker exits with a
+hard error before running any mutations.
+
+**`incremental: true` with `force: true`** forces a full re-mutation run even when a valid
+incremental state file exists. Use this after significant test refactors, tool version upgrades
+(Stryker 9.6.1 + Vitest 4.1 hitcount fix — see G41), or when you suspect the incremental
+baseline is stale.
+
+```typescript
+// stryker.config.ts — CI-hardened configuration with allowEmpty and incremental.force
+import type { PartialStrykerOptions } from '@stryker-mutator/api/core';
+
+const isForceReset = process.env.STRYKER_FORCE_RESET === 'true';
+
+const config: PartialStrykerOptions = {
+  testRunner: 'vitest',
+  vitest: { configFile: 'vitest.config.ts' },
+  coverageAnalysis: 'perTest',
+  checkers: ['typescript'],
+  tsconfigFile: 'tsconfig.json',
+  mutate: [
+    'src/**/*.ts',
+    '!src/**/*.spec.ts',
+    '!src/**/*.test.ts',
+    '!src/**/__mocks__/**',
+    '!src/**/index.ts',
+  ],
+  thresholds: { high: 80, low: 60, break: 50 },
+  reporters: ['html', 'progress', 'json'],
+  timeoutMS: 5000,
+  concurrency: 4,
+  ignoreStatic: true,
+
+  // Incremental mode: persist mutation state across runs.
+  incremental: true,
+  incrementalFile: '.stryker-tmp/incremental.json',
+
+  // Force a full re-run even if an incremental state file exists.
+  // Use in CI when upgrading Stryker or Vitest to invalidate stale baselines.
+  // Toggle via env var: STRYKER_FORCE_RESET=true npx stryker run
+  ...(isForceReset ? { force: true } : {}),
+
+  // Allow Stryker to complete even when some mutants have no covering tests.
+  // Critical for CI matrix jobs scoped to a single module where some patterns
+  // may produce mutants with zero test coverage (NoCoverage status).
+  // Without this: Stryker exits code 1 with "No tests were executed" when a
+  // module's test files are missing or the testFiles glob matches nothing.
+  allowEmpty: true,
+};
+
+export default config;
+```
+
+```bash
+# Force a full mutation baseline reset (e.g., after Stryker 9.6.1 upgrade for Vitest 4.1 fix):
+STRYKER_FORCE_RESET=true npx stryker run
+
+# Standard incremental run (typical PR workflow):
+npx stryker run --since=origin/main
+
+# Verify incremental file is being used (log shows "Using incremental report"):
+npx stryker run --logLevel=info 2>&1 | grep -i incremental
+```
+
+**`allowEmpty` vs `force`**:
+- `allowEmpty: true` — allow mutants with `NoCoverage` status to not block the run. Does NOT
+  change the mutation score; `NoCoverage` mutants are counted the same as `Survived` mutants
+  in the final report unless your threshold logic excludes them. The option only prevents the
+  "no tests found" hard error from aborting the entire run.
+- `force: true` — ignores any existing incremental state and re-runs all mutants from scratch.
+  After the run completes, the incremental file is rewritten with the fresh results. Use for
+  baseline reset events: tool upgrades, test refactors, or when the incremental file has grown
+  stale (e.g., after removing many test files).
+
 ---
 
 ## Anti-Patterns
@@ -2806,6 +3045,37 @@ and "write the test that kills the mutant."
 - The plugin reads `stryker.config.ts` / `stryker.config.mjs` from the workspace root. Projects
   with non-standard config file names or monorepo-root configs must verify path resolution before use.
 
+### G47 — Stryker `allowEmpty: true` silently changes NoCoverage semantics in threshold calculations  [community]
+When `allowEmpty: true` is enabled to prevent CI hard failures on modules with no covering
+tests, teams sometimes misread mutation scores as higher than reality. By default, Stryker
+counts `NoCoverage` mutants identically to `Survived` mutants when computing the Mutation
+Score Indicator — a mutant with no covering tests is as dangerous as one that survived
+a test. **WHY it matters**: in CI matrix jobs using `allowEmpty: true` to tolerate
+modules with thin test coverage, the mutation score is genuinely low (NoCoverage
+contributes to the denominator). Setting `thresholds.break: 50` and finding that the
+matrix job passes despite a module sitting at 20 % MSI (because `allowEmpty` masked
+the hard error) creates a false sense of completeness. Always check the HTML report
+for `NoCoverage` counts — a high NoCoverage count means the test coverage investment
+is incomplete, not that the mutant was killed. Use `allowEmpty: true` only as a
+transitional option while building test coverage, not as a permanent CI configuration.
+
+### G48 — Stryker `disableTypeChecks` default changed in v7.0: existing configs may have redundant settings  [community]
+Before Stryker 7.0, `disableTypeChecks` defaulted to a glob string (e.g.,
+`'{test,tests,__tests__}/**/*.ts'`) targeting test directories. In Stryker 7.0, the default
+changed to `true` — type checking is disabled **globally** for all files by default.
+**WHY it matters**: TypeScript projects that were explicitly setting
+`disableTypeChecks: 'src/**/*.ts'` in their Stryker config to disable type checks on
+source files are now double-disabling (the default `true` already covers all files).
+More importantly, teams that relied on the old glob default to keep type checking active
+on source files are now running without type checking at all — mutants that introduce
+type errors are no longer detected as `CompileError` and may instead be classified as
+`Survived` or `Timeout`, inflating mutation scores. After upgrading to Stryker 7+, check
+your `stryker.config.ts` for `disableTypeChecks`: if the intent was to keep type checking
+active on source files, set `checkers: ['typescript']` explicitly (the TypeScript checker
+plugin) and remove or re-scope `disableTypeChecks`. The TypeScript checker (`@stryker-mutator/typescript-checker`)
+is the correct mechanism for compile-time mutant validation; `disableTypeChecks` is a
+performance escape hatch for generated files and mocks.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -2918,7 +3188,7 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | c8 — V8 coverage CLI (bcoe) | Official | https://github.com/bcoe/c8 | Lightweight V8 coverage wrapper for any Node test runner including ESM TypeScript |
 | Meta ACH: Mutation-Guided LLM Test Generation | Research | https://arxiv.org/abs/2501.12862 | arXiv:2501.12862 — selective mutant generation + LLM synthesis; 73 % engineer acceptance at Meta scale |
 | Jest 30 configuration docs | Official | https://jestjs.io/docs/configuration | Jest 30 (Oct 2025) reference; negative thresholds, moduleFileExtensions optimisation |
-| Stryker configuration reference | Official | https://stryker-mutator.io/docs/stryker-js/configuration/ | Full config reference: ignoreStatic, disableTypeChecks, coverageAnalysis, timeoutFactor, concurrency, testFiles, typescriptChecker, ignorers |
+| Stryker configuration reference | Official | https://stryker-mutator.io/docs/stryker-js/configuration/ | Full config reference: ignoreStatic, disableTypeChecks (v7 default changed to true), coverageAnalysis, timeoutFactor, concurrency, testFiles, typescriptChecker, ignorers, allowEmpty, incremental.force |
 | Stryker Dashboard | Official | https://dashboard.stryker-mutator.io/ | Track mutation scores over time, generate badges, integrate with CI |
 | Stryker GitHub Releases | Official | https://github.com/stryker-mutator/stryker-js/releases | Release notes for Stryker 9.x: Node 20+ requirement, Vitest v2+/v4, percentage-based concurrency, testFiles option (9.5.1); v9.6.1 Vitest 4.1 hitcount fix |
 | Vitest 4 release notes | Official | https://vitest.dev/blog/vitest-4.html | Vitest 4 new features: stable Browser Mode, dynamic enableCoverage/disableCoverage API, expect.schemaMatching |
@@ -2929,4 +3199,4 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Stryker.NET MTP runner preview | Official | https://stryker-mutator.io/blog/ | Stryker.NET 4.13 MTP runner: keep test process alive across mutations; YAML config support; MTP vs VSTest tradeoffs |
 | Qodo Cover (formerly Codium cover-agent) — ARCHIVED | Community | https://github.com/Codium-ai/cover-agent | ⚠️ No longer maintained (June 2025). LLM-based coverage gap filler; see G34 and AP13 for replacement strategy using mutation-guided prompting |
 | Stryker VS Code Plugin | Official | https://stryker-mutator.io/blog/vscode-plugin/ | Inline mutation results in VS Code gutter (StrykerJS v9.3.0+, Nov 2025); uses MSP; replaces HTML-report-in-browser workflow |
-| Vitest coverage config reference | Official | https://vitest.dev/config/coverage | Full coverage config: autoUpdate, changed, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks, reportOnFailure, processingConcurrency |
+| Vitest coverage config reference | Official | https://vitest.dev/config/coverage | Full coverage config: autoUpdate, changed, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks, reportOnFailure, processingConcurrency, allowExternal, cleanOnRerun, thresholds.100 |

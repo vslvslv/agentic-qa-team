@@ -1,8 +1,8 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide -->
-<!-- new in this iteration (37): cy.prompt() BDD Gherkin + placeholder loop caching (pattern 115), Cypress Module API expose + posixExitCodes deep example (pattern 116), cy.env() multi-key single-call + log:false (pattern 117), 7 new community gotchas (94-100): .invoke() throws on Promise (Cy15), cy.wait([]) routeId crash (15.14.2), Chrome 137 --load-extension removal, transitive CVE monitoring, cy.prompt() rate-limit exhaustion in parallel CI, experimentalStudio flag removal causes parse error (Cy 15.4+), injectDocumentDomain removal in Cy 15 -->
-<!-- previous iteration: cy.url()/cy.location() automation-client change in v15 (cross-origin gotcha), cy.fixture() cache invalidation stale-data gotcha after cy.writeFile(), cy.wrap() circular reference protection, synchronous XHR route handler browser freeze (v15.8 fix), defaultBrowser config option for local developer DX, 4 new community gotchas (90-93), pattern 114 (defaultBrowser + browser override patterns) -->
+<!-- new in this iteration (38): cy.intercept() middleware routing for global header injection (pattern 118), cy.press() focus trap testing pattern (pattern 119), Cypress Cloud UI Coverage AI-generated test suggestions (pattern 120), cy.session() parallel CI caveats + multi-machine cache isolation (pattern 121), 5 new community gotchas (101-105): cacheAcrossSpecs false-sharing across CI machines, cy.intercept() resourceType deprecated, cy.session() validate() called before setup on first warmup, UI Coverage test gen rate limiting in large suites, cy.press() F-key browser shortcut interception -->
+<!-- previous iteration (37): cy.prompt() BDD Gherkin + placeholder loop caching (pattern 115), Cypress Module API expose + posixExitCodes deep example (pattern 116), cy.env() multi-key single-call + log:false (pattern 117), 7 new community gotchas (94-100): .invoke() throws on Promise (Cy15), cy.wait([]) routeId crash (15.14.2), Chrome 137 --load-extension removal, transitive CVE monitoring, cy.prompt() rate-limit exhaustion in parallel CI, experimentalStudio flag removal causes parse error (Cy 15.4+), injectDocumentDomain removal in Cy 15 -->
 
 ## Core Principles
 
@@ -7272,5 +7272,352 @@ it('lists products', () => {
 ---
 
 **[community]** WHY: Without `defaultBrowser`, Cypress 13+ defaults to Electron when opening the test runner locally. Electron is convenient for CI (no browser installation required) but differs from production Chrome in several ways: Electron uses an older Chromium base than the latest stable Chrome, does not support extensions, and its CDP implementation diverges for a few automation APIs. Teams that develop tests locally in Electron but run CI in Chrome regularly hit false-local-passes: the test works in Electron's Chromium but fails in Chrome due to subtle CSS rendering differences (particularly for animations and `contain: strict` layout), Web Crypto API availability, or `navigator.userAgent` checks in the application. Setting `defaultBrowser: 'chrome'` ensures every developer opens the same browser as CI, catching these discrepancies immediately. The trade-off: Chrome must be installed on developer machines, whereas Electron ships bundled with Cypress.
+
+---
+
+## Patterns Added in Iteration 38
+
+### 118. `cy.intercept()` Middleware Routing — Global Header Injection  [community]
+
+The `{ middleware: true }` option on `cy.intercept()` registers the handler as a **pre-interceptor**: it runs before any other matching route handlers and does not terminate the request chain. This is the correct pattern for adding global headers (auth tokens, correlation IDs, tracing headers) to every request without duplicating the logic in every individual intercept.
+
+Without middleware routing, teams typically put authorization header injection inside every `cy.intercept()` call or rely on `cy.session()` to set cookies that the browser sends automatically. Neither approach covers the case where you need to inject a custom header for a machine-to-machine service call (e.g., an internal service token passed as `X-Service-Auth`) where the browser has no built-in mechanism to attach it.
+
+```typescript
+// cypress/support/e2e.ts — register once, applies to ALL requests matching /api/*
+
+beforeEach(() => {
+  // Middleware intercept: runs first, injects header, then continues to the real server
+  // or to the next matching cy.intercept() in registration order.
+  cy.intercept({ url: '/api/**', middleware: true }, (req) => {
+    // Inject internal service correlation header on every API call
+    req.headers['x-correlation-id'] = `cypress-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    // Inject internal service auth token (read from Cypress env to avoid hardcoding)
+    req.headers['x-service-token'] = Cypress.env('SERVICE_TOKEN');
+
+    // Do NOT call req.reply() — let the request continue to the next handler or real server
+    // req.continue() is implicit when middleware:true and the handler returns without reply()
+  }).as('globalApiMiddleware');
+});
+
+// Specific intercept registered AFTER the middleware — receives the mutated request
+it('creates an order with the service token attached', () => {
+  cy.intercept('POST', '/api/orders', (req) => {
+    // At this point req.headers['x-service-token'] is already set by the middleware
+    expect(req.headers['x-service-token']).to.equal(Cypress.env('SERVICE_TOKEN'));
+    req.continue();
+  }).as('createOrder');
+
+  cy.get('[data-cy="place-order"]').click();
+  cy.wait('@createOrder').its('request.headers.x-service-token').should('exist');
+});
+```
+
+```typescript
+// Pattern: middleware intercept for response body transformation
+// Use case: apply a response normalizer to every API call that returns paginated data,
+// so tests never need to unwrap the pagination envelope themselves.
+
+beforeEach(() => {
+  cy.intercept({ url: '/api/**', middleware: true }, (req) => {
+    req.continue((res) => {
+      // Only modify responses that look like paginated envelopes
+      if (res.body && typeof res.body === 'object' && 'data' in res.body && 'pagination' in res.body) {
+        // Expose the raw data array at the top level for simpler test assertions
+        // Tests can then do: cy.wait('@someRoute').its('response.body').should('be.an', 'array')
+        // instead of: cy.wait('@someRoute').its('response.body.data')
+        res.body = res.body.data;
+      }
+    });
+  });
+});
+```
+
+**Key rules for middleware routing:**
+- Register middleware interceptors in `beforeEach` (not `before`) — they are reset when the test clears intercepts.
+- Call order matters: Cypress processes interceptors in reverse registration order. Register middleware interceptors **first** (in `beforeEach`) so they run after any test-specific interceptors registered in the test body, not before.
+- Never call `req.reply()` inside a middleware handler. Doing so terminates the chain and prevents subsequent handlers from running. Use `req.continue()` to forward to the real server, or simply return without calling either — Cypress implicitly continues in middleware mode.
+- `req.alias` set inside a middleware handler is visible to `cy.wait()` but only captures the **first** matching request for that test.
+
+**[community]** WHY: The most common mistake with middleware interceptors is calling `req.reply()` inside the handler, which silently stubs ALL matching requests instead of just injecting headers. The bug manifests as network isolation in tests that should hit the real server — no backend calls are made at all, but all assertions pass against the stubbed response. Check with `cy.wait('@globalApiMiddleware')` and inspect `request.url` to confirm real requests are being forwarded.
+
+---
+
+### 119. `cy.press()` Focus Trap Testing  [community]
+
+`cy.press()` dispatches native keyboard events (added in Cypress 14.3+). Unlike `cy.type('{tab}')` which uses synthetic events, `cy.press('Tab')` fires the actual browser keydown/keypress/keyup event chain, making it the correct tool for testing ARIA focus traps, dialog/modal keyboard navigation, and skip-navigation links.
+
+Focus trap testing verifies that keyboard users cannot Tab outside a modal, combobox, or overlay until they explicitly close it — a WCAG 2.1 requirement (Success Criterion 2.1.2). This pattern was previously untestable with pure Cypress because `cy.type('{tab}')` does not trigger the browser's built-in focus management logic.
+
+```typescript
+// Test: focus is trapped inside a modal dialog and cycles back to the first focusable element
+it('traps keyboard focus inside the confirmation dialog', () => {
+  cy.get('[data-cy="delete-button"]').click();
+
+  // Dialog must be visible before pressing Tab
+  cy.get('[role="dialog"]').should('be.visible');
+
+  // First focusable element inside the dialog receives focus automatically (aria-autofocus)
+  cy.focused().should('have.attr', 'data-cy', 'cancel-button');
+
+  // Tab through all focusable elements in the dialog
+  cy.press('Tab');
+  cy.focused().should('have.attr', 'data-cy', 'confirm-button');
+
+  // One more Tab — focus should wrap to the FIRST focusable element (focus trap)
+  cy.press('Tab');
+  cy.focused().should('have.attr', 'data-cy', 'cancel-button');  // wrapped back
+
+  // Shift+Tab moves backward — should land on the LAST focusable element
+  cy.press('Shift+Tab');
+  cy.focused().should('have.attr', 'data-cy', 'confirm-button');
+
+  // Escape should close the dialog and return focus to the trigger
+  cy.press('Escape');
+  cy.get('[role="dialog"]').should('not.exist');
+  cy.focused().should('have.attr', 'data-cy', 'delete-button');  // focus restored
+});
+```
+
+```typescript
+// Test: skip navigation link — Tab from the page body reaches the skip link first,
+// pressing Enter navigates to main content, second Tab goes to the first nav item
+it('skip navigation link bypasses header for keyboard users', () => {
+  cy.visit('/');
+
+  // Before any Tab press, the body has no focused element.
+  // The FIRST Tab press should focus the skip link (it must be the first focusable element)
+  cy.press('Tab');
+  cy.focused()
+    .should('have.attr', 'href', '#main-content')
+    .and('contain.text', 'Skip to main content');
+
+  // Activate the skip link with Enter (press sends native Enter event)
+  cy.press('Enter');
+
+  // Focus should now be on the #main-content landmark
+  cy.focused().should('have.attr', 'id', 'main-content');
+});
+```
+
+```typescript
+// Test: combobox keyboard interaction — Arrow keys navigate the listbox, Enter selects
+it('combobox accepts keyboard selection', () => {
+  cy.get('[data-cy="country-combobox"]').click();
+  cy.get('[role="listbox"]').should('be.visible');
+
+  // Arrow down moves highlight to the first option
+  cy.press('ArrowDown');
+  cy.get('[role="option"][aria-selected="true"]').should('contain', 'Afghanistan');
+
+  // Arrow down again moves to the second option
+  cy.press('ArrowDown');
+  cy.get('[role="option"][aria-selected="true"]').should('contain', 'Albania');
+
+  // Enter selects the highlighted option and closes the listbox
+  cy.press('Enter');
+  cy.get('[role="listbox"]').should('not.exist');
+  cy.get('[data-cy="country-combobox"]').should('have.value', 'Albania');
+});
+```
+
+**cy.press() vs cy.type() selector:**
+- Use `cy.press('Tab')` for focus management, focus trap, and skip navigation tests — `cy.type('{tab}')` does not fire native focus events and does not trigger browser-managed tab order.
+- Use `cy.press('Enter')` on buttons and links for native form submission and activation — more reliable than `.click()` for keyboard-only interaction tests.
+- Use `cy.type('text')` for entering multiple characters — `cy.press()` only sends a single key event.
+- `cy.press()` yields `null` — do not chain assertions from it. Assert on the next focused element using `cy.focused()`.
+
+**[community]** WHY: `cy.type('{tab}')` has a documented limitation: it sends a synthetic `keydown` event via JavaScript but does NOT cause the browser to move focus to the next element. The browser's built-in Tab navigation is handled by the browser engine before the JavaScript event fires, not by the event itself. As a result, `cy.type('{tab}')` appears to do nothing visually, making focus trap tests written with `cy.type('{tab}')` always pass (the modal is never exited) regardless of whether the trap is implemented correctly. `cy.press('Tab')` dispatches the native event through the browser's input pipeline, correctly exercising the focus trap.
+
+---
+
+### 120. Cypress Cloud UI Coverage — AI-Generated Test Suggestions  [community]
+
+Cypress Cloud (2025+) introduced **UI Coverage**, an automated analysis of which parts of the application's DOM have been exercised by your test suite. It instruments the production build to track which elements receive user interactions (clicks, form input, navigation) and highlights uncovered interactive elements in a visual heatmap.
+
+UI Coverage works alongside `cy.prompt()` to generate new test steps targeting uncovered elements. The workflow is: run your suite with recording → view the UI Coverage dashboard → click "Generate tests" for uncovered components → `cy.prompt()` generates Cypress steps targeting those elements → export the generated steps to source control.
+
+```typescript
+// cypress.config.ts — enable UI Coverage instrumentation
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  projectId: 'your-project-id',   // required for Cloud recording
+
+  e2e: {
+    // UI Coverage is enabled automatically for recorded runs.
+    // No explicit config flag is required — it activates when --record is set.
+    // For local development (no --record), UI Coverage instrumentation is skipped
+    // to avoid performance overhead during interactive debugging.
+
+    setupNodeEvents(on, _config) {
+      // Optional: emit coverage breadcrumbs from cy.task() for non-DOM interactions
+      on('task', {
+        'coverage:report-api-call'({ endpoint, method }: { endpoint: string; method: string }) {
+          // Custom events can be pushed to Cloud to mark API interactions as covered
+          // even when there is no corresponding DOM element (headless cy.request() calls)
+          console.log(`API covered: ${method} ${endpoint}`);
+          return null;
+        },
+      });
+    },
+  },
+});
+```
+
+```typescript
+// Usage in a spec: annotate tests with coverage context for better Cloud grouping
+// The @tag annotation and cy.task() breadcrumb work together with UI Coverage metadata
+
+describe('Checkout flow', { tags: ['@checkout', '@ui-coverage'] }, () => {
+  it('completes purchase with credit card', () => {
+    // All interactions in this test are tracked by UI Coverage:
+    // - cy.get().click() → marks the element as covered
+    // - cy.get().type() → marks the input as covered
+    // - cy.select() → marks the select as covered
+    // Elements NOT interacted with in any test appear in the UI Coverage gap report
+
+    loginAsUser('buyer@example.com', Cypress.env('BUYER_PASS'));
+    cy.visit('/checkout');
+    cy.get('[data-cy="card-number"]').type('4242424242424242');
+    cy.get('[data-cy="card-expiry"]').type('12/28');
+    cy.get('[data-cy="card-cvc"]').type('123');
+    cy.get('[data-cy="place-order"]').click();
+    cy.get('[data-cy="order-confirmation"]').should('be.visible');
+  });
+});
+```
+
+**CI integration for UI Coverage:**
+
+```yaml
+# .github/workflows/cypress.yml — UI Coverage is collected automatically when --record is set
+- name: Cypress run with UI Coverage
+  uses: cypress-io/github-action@v6
+  with:
+    record: true
+    parallel: true
+    group: 'UI-Chrome'
+  env:
+    CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # GITHUB_TOKEN is required for Smart Orchestration to correctly identify reruns
+    # and prevent "new build with zero specs remaining" false-cancellation (see Gotcha #68)
+```
+
+**Key caveats:**
+- UI Coverage only tracks elements that receive Cypress commands (`.click()`, `.type()`, `.check()`, `.select()`, `.focus()`). Elements that are asserted upon with `.should()` but never interacted with are NOT marked as covered — assertion ≠ coverage.
+- Dynamic elements (e.g., a dropdown that only renders after clicking a trigger) only appear in coverage if they are interacted with in at least one test. If no test opens the dropdown, the dropdown items are reported as uncovered.
+- UI Coverage computes element identity by a fingerprint of tag + data attributes + position in the DOM. If your application generates non-stable IDs (sequential IDs, UUID-based IDs), coverage fingerprints will not match across runs — use stable `data-cy` attributes to ensure consistent coverage tracking.
+
+**[community]** WHY: Teams that measure code coverage via Istanbul/NYC at the unit level often have a "coverage theater" problem: 95%+ code coverage but large sections of the UI have never been clicked end-to-end. UI Coverage fills this gap by measuring interaction coverage from the user's perspective rather than line coverage from the developer's perspective. The most impactful finding in a first UI Coverage run is typically the settings, admin, and error-state UIs — they have correct unit test coverage (because the components work in isolation) but no E2E test ever navigates to them and actually clicks through them.
+
+---
+
+### 121. `cy.session()` Parallel CI — Cache Scope and Multi-Machine Isolation  [community]
+
+`cy.session()` with `cacheAcrossSpecs: true` caches session state **within a single Cypress process on a single machine**. The cache is stored in the Cypress runner's memory and is NOT shared across parallel CI workers, across machines, or across runs. Each worker in a parallelized run maintains its own independent session cache.
+
+This is the most common misconception about `cacheAcrossSpecs: true`: teams enable it expecting it to function like a shared Redis cache or a distributed session store — but it only eliminates redundant logins across spec files *on the same runner instance*. In a 5-worker parallel run, each worker still calls `setup()` once, resulting in 5 total login operations rather than the 1 that teams expect.
+
+```typescript
+// cypress/support/auth.ts
+// CORRECT mental model for cy.session() in parallel CI:
+//
+// Worker 1: setup() → cache(worker-1-spec-1) → restore(worker-1-spec-2) → restore(worker-1-spec-3)
+// Worker 2: setup() → cache(worker-2-spec-4) → restore(worker-2-spec-5) → restore(worker-2-spec-6)
+// Worker 3: setup() → cache(worker-3-spec-7) → ...
+//
+// Total logins = number of parallel workers, NOT 1.
+// cacheAcrossSpecs:true saves: (specs-per-worker - 1) logins per worker.
+
+export function loginAsAdmin(): void {
+  cy.session(
+    ['admin'],
+    () => {
+      // This runs ONCE per worker, NOT once per entire CI run.
+      // If your login takes 3s and you have 5 workers, you spend 15s total on logins in CI.
+      cy.request({
+        method:  'POST',
+        url:     '/api/auth/login',
+        body:    { email: 'admin@example.com', password: Cypress.env('ADMIN_PASS') },
+        failOnStatusCode: true,
+      }).then(({ body }) => {
+        // Store the token in localStorage so subsequent spec files can restore it
+        window.localStorage.setItem('auth_token', body.token);
+        window.localStorage.setItem('auth_user', JSON.stringify(body.user));
+      });
+    },
+    {
+      validate() {
+        // validate() runs BEFORE setup() when restoring a cached session.
+        // It also runs on the very first call for a given worker to check whether
+        // a previous unexpired session might already exist (e.g., from a --reuse run).
+        // If validate() fails, setup() re-runs.
+        cy.request({ url: '/api/auth/me', failOnStatusCode: false })
+          .its('status').should('eq', 200);
+      },
+      cacheAcrossSpecs: true,
+    }
+  );
+}
+```
+
+```typescript
+// Pattern: Worker-scoped shared setup via cy.origin() — avoids per-spec logins
+// when the auth state can be seeded once and accessed by all specs on the worker.
+//
+// This is an advanced pattern for services where login issues a persistent JWT
+// and the token can be injected via localStorage without navigating to the login page.
+
+// In beforeEach or a fixture-style support command:
+export function injectToken(): void {
+  cy.session(
+    ['injected-token'],
+    () => {
+      // Directly seed the localStorage token via cy.task() database lookup
+      // Avoids UI-based login entirely — fastest possible session setup
+      cy.task('db:createSession', { role: 'admin' }).then((token: string) => {
+        cy.visit('/');  // cy.session requires at least one cy command
+        window.localStorage.setItem('auth_token', token);
+      });
+    },
+    {
+      validate() {
+        // Check token expiry without a network call
+        cy.window().then((win) => {
+          const token = win.localStorage.getItem('auth_token');
+          if (!token) throw new Error('Token missing from localStorage');
+          // Decode and check expiry (for JWT)
+          const payload = JSON.parse(atob(token.split('.')[1]));
+          if (payload.exp * 1000 < Date.now()) throw new Error('Token expired');
+        });
+      },
+      cacheAcrossSpecs: true,
+    }
+  );
+}
+```
+
+**Parallel CI session isolation checklist:**
+- Do NOT rely on `cacheAcrossSpecs: true` to achieve a single login for the entire parallelized run — it cannot. Each worker always performs at least one login.
+- DO include the worker role or credential set in the session cache key. If two spec files on the same worker both call `loginAsAdmin()` with the same key, the second call restores the cached session (the intended behavior).
+- DO make the `validate()` function fast — it runs on every test that calls `cy.session()` when a cached session already exists. A validate that fires a full `/api/me` request adds latency on every `beforeEach`. Prefer checking token presence in `localStorage` as shown in the `injectToken()` example above.
+- DO NOT call `cy.session()` in `before()` hooks (only called once per spec) when `testIsolation: true` — Cypress clears cookies and localStorage between tests, invalidating the cached session data before the second test in the file runs. Use `beforeEach()` so the session is restored before each test.
+
+---
+
+## Additional Real-World Gotchas (Iteration 38) [community]
+
+101. **`cacheAcrossSpecs: true` does NOT share sessions across parallel CI workers — each worker always runs `setup()` once** [community] — The name `cacheAcrossSpecs` implies global persistence within a CI run, but the session cache is scoped to the Cypress process on a single machine. In a 10-worker parallel run, each of the 10 workers calls `setup()` once. Teams that see "we still have 10 logins in the logs when we expected 1" after enabling `cacheAcrossSpecs: true` are surprised because the marketing material often says "cache sessions across spec files" without clarifying the per-worker scope. The correct expectation: each worker performs exactly one login (assuming `validate()` doesn't expire it mid-run), and that login state is reused for all specs assigned to that worker. If you need truly shared distributed session state, seed it via `cy.task()` connecting to a shared cache store (Redis, Postgres session table) rather than relying on Cypress's built-in session cache.
+
+102. **`cy.intercept()` `resourceType` property was deprecated in Cypress 14 and may be removed in a future major release** [community] — Prior to Cypress 14, developers used `cy.intercept({ resourceType: 'fetch' }, ...)` to match only `fetch` requests and skip `XHR` or `document` requests. Cypress 14 deprecated the `resourceType` property on both the `RouteMatcher` input object and the `IncomingHttpRequest` object (the `req` passed to the handler). The property still works in Cypress 14–15 but logs a deprecation warning in the runner. The forward-compatible replacement is to filter by URL pattern, method, and body content — which provides more precise matching without relying on the Chromium resource type classification, which can be unreliable for same-origin requests that browsers classify inconsistently between versions.
+
+103. **`cy.session()` calls `validate()` before `setup()` on the very first warm-up, not just on cache restoration** [community] — Teams often assume `validate()` only runs when a cached session exists (i.e., it's a "guard before restore"). In reality, `validate()` is called on every `cy.session()` invocation, including the first one per worker per run. On the first call, Cypress checks for an existing unexpired session (which may exist if using `--reuse` mode or if Cypress Cloud session replay is involved). `validate()` runs first; only if it fails does `setup()` run. This matters when `validate()` has side effects — such as calling `cy.visit()` or making API requests — because those side effects happen on the first invocation before `setup()` has run, potentially navigating the app to an unexpected state. Keep `validate()` pure: read-only assertions on cookies, localStorage, or lightweight API calls only, with no navigation.
+
+104. **Cypress Cloud UI Coverage AI-generation throttles to 50 elements per "Generate tests" request — large coverage gaps stall** [community] — The "Generate tests" feature in Cypress Cloud calls the same underlying AI service as `cy.prompt()` and is subject to the same rate limits. When a UI Coverage gap report contains 200+ uncovered elements (common on the first run of a legacy application), clicking "Generate tests" triggers multiple batched AI calls. On free and entry-tier plans, the 100-prompt/hour limit is exhausted by the third batch, leaving 75%+ of the coverage gap without generated tests and showing a "quota exceeded" warning in the Cloud dashboard with no partial results saved. Mitigation: run UI Coverage scoped to a single feature area (use `--spec cypress/e2e/checkout/**` rather than the full suite), generate tests for the highest-priority gap first, export them, then re-run for the next area. Do not click "Generate all" on a large initial coverage gap in a single Cloud session.
+
+105. **`cy.press()` silently does nothing for F1–F12 keys — the test passes but no event fires** [community] — The `cy.press()` command (Cypress 14.3+) explicitly blocks F1–F12 keys because the browser intercepts these at the OS/browser level before JavaScript event handlers can process them (F1 opens browser help, F5 refreshes, F12 opens DevTools, etc.). When you call `cy.press('F5')` or `cy.press('F12')`, Cypress logs the command as successful in the Command Log but no keyboard event reaches the application. This silently passes any test that asserts `after pressing F5, the page is refreshed` — because the assertion is never actually exercised. If your application uses F-key bindings (common in data-grid or spreadsheet-like UIs), test them via `cy.window().trigger('keydown', { key: 'F2', keyCode: 113 })` with a direct DOM event dispatch, or use a `cy.task()` approach with the `robotjs` Node library for true OS-level key injection. Document the limitation in your test helper to prevent future contributors from adding F-key tests using `cy.press()`.
 
 ---

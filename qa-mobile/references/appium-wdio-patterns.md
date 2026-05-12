@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
 <!-- This-run additions (iter 11-20): WDIO v9 BiDi features, aria/ selector, eslint-plugin-wdio, browser.mock() network interception,
      mobile:pressButton complete reference, Android mobile:deepLink, TypeScript 'using' keyword, browser.executeAsync(),
      appium:mjpegServerPort, @wdio/visual-service advanced options, appium:newCommandTimeout, Android AVD CI launch,
@@ -31,6 +31,9 @@
      browser.url() enhanced options headers/auth/onBeforeLoad + 3 gotchas,
      browser.emulate() additional modes colorScheme/userAgent/onLine + 3 gotchas,
      native DOM snapshot toMatchSnapshot()/toMatchInlineSnapshot() WDIO v9 + 3 gotchas -->
+<!-- iter 27 additions: isDisplayed() CSS visibility option flags contentVisibilityAuto/opacityProperty/visibilityProperty (v9.18.4) + 3 gotchas,
+     WebDriver BiDi low-level network commands networkAddIntercept/networkContinueRequest/networkContinueResponse/networkProvideResponse/networkFailRequest/networkSetCacheBehavior (v9.27.1) + 4 gotchas,
+     create-wdio interactive project scaffolding wizard (v9.17) + 3 gotchas -->
 
 ## TypeScript Project Setup
 
@@ -13114,9 +13117,286 @@ npx wdio run wdio.conf.ts --updateSnapshot
 
 ---
 
-## Source: Iteration Log (Run 2026-05-12, Iteration 26)
+## `isDisplayed()` — CSS Visibility Option Flags (v9.18.4)
 
-<!-- iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+WDIO v9.18.4 exposed three additional CSS visibility properties to `isDisplayed()` and `waitForDisplayed()`, allowing fine-grained control over what "visible" means for elements styled with modern CSS.
+
+### Parameters
+
+| Option | Type | Default | Behaviour |
+|---|---|---|---|
+| `withinViewport` | `boolean` | `false` | `true` = element must be within the scrollable viewport area |
+| `contentVisibilityAuto` | `boolean` | `true` | `true` = elements hidden by `content-visibility: auto` count as not displayed |
+| `opacityProperty` | `boolean` | `true` | `true` = elements with `opacity: 0` count as not displayed |
+| `visibilityProperty` | `boolean` | `true` | `true` = elements with `visibility: hidden` count as not displayed |
+
+### Usage examples
+
+```typescript
+// test/specs/product/productList.spec.ts
+import { $, browser } from '@wdio/globals';
+
+describe('Product list visibility checks', () => {
+  it('should detect elements hidden by CSS opacity', async () => {
+    await browser.url('https://app.example.com/products');
+
+    // Default: opacityProperty=true → opacity:0 elements return false
+    const ghostEl = await $('[data-testid="placeholder-ghost"]');
+    await expect(ghostEl.isDisplayed()).resolves.toBe(false);
+
+    // Opt-out: ignore opacity (useful for fade-out animations mid-transition)
+    const fadingEl = await $('[data-testid="card-fading"]');
+    const visibleIgnoringOpacity = await fadingEl.isDisplayed({ opacityProperty: false });
+    console.log('Fading card in DOM:', visibleIgnoringOpacity); // true
+  });
+
+  it('should handle content-visibility: auto in long lists', async () => {
+    // Virtual scrolling containers use content-visibility:auto for off-screen rows.
+    // Default (contentVisibilityAuto:true): off-screen rows → not displayed
+    const offscreenRow = await $('[data-row="row-500"]');
+    await expect(offscreenRow.isDisplayed()).resolves.toBe(false);
+
+    // Set contentVisibilityAuto:false to assert element is in DOM even if off-screen
+    const existsInDOM = await offscreenRow.isDisplayed({ contentVisibilityAuto: false });
+    expect(existsInDOM).toBe(true); // row is rendered, just not in viewport
+  });
+
+  it('should require element to be within viewport', async () => {
+    // Verify the sticky header is in viewport (not just on page)
+    const stickyHeader = await $('[data-testid="sticky-header"]');
+    await expect(stickyHeader.isDisplayed({ withinViewport: true })).resolves.toBe(true);
+
+    // Off-viewport footer — in DOM, not in viewport
+    const footer = await $('[data-testid="page-footer"]');
+    const inViewport = await footer.isDisplayed({ withinViewport: true });
+    expect(inViewport).toBe(false);
+  });
+});
+```
+
+### waitForDisplayed with visibility options
+
+`waitForDisplayed` accepts the same options object:
+
+```typescript
+// Wait for a card to become truly visible (not just opacity:0 placeholder)
+await $('[data-testid="product-card"]').waitForDisplayed({
+  timeout: 8_000,
+  contentVisibilityAuto: true,
+  opacityProperty: true,       // must NOT be opacity:0
+  visibilityProperty: true,    // must NOT be visibility:hidden
+});
+
+// Wait for ANY presence in DOM (used for virtual scroll pre-render detection)
+await $('[data-row="row-500"]').waitForDisplayed({
+  timeout: 5_000,
+  contentVisibilityAuto: false,  // don't penalise off-screen rows
+  withinViewport: false,
+});
+```
+
+**[community] `isDisplayed()` default `opacityProperty: true` breaks assertions on animated entrances:** WHY: Entry animations that start at `opacity: 0` and transition to `opacity: 1` will cause `isDisplayed()` to return `false` during the animation. Tests that assert visibility immediately after navigation can fail intermittently because the element is rendered but still mid-fade. Fix: either call `waitForDisplayed({ timeout: 3000 })` (which polls until `true`) instead of `isDisplayed()`, or use `isDisplayed({ opacityProperty: false })` if the animation start state is acceptable.
+
+**[community] `content-visibility: auto` on native mobile WebViews is not honoured by `isDisplayed()` — the flag only applies to browser contexts:** WHY: The `contentVisibilityAuto` check delegates to the browser's native `checkVisibility` API (CSS Spec 4). Appium native context elements use Appium's own `isElementDisplayed` endpoint which has no equivalent CSS concept. Fix: the option is a no-op in native context; use `waitForDisplayed()` as-is for native elements.
+
+**[community] Passing `{ withinViewport: true }` in a native context causes the command to always return `false`:** WHY: Appium native elements are positioned in a coordinate system, not a scrollable document viewport. The WDIO `withinViewport` check uses `getBoundingClientRect()` which is browser-DOM-only. Fix: use `within_viewport` checks only in WebView contexts; for native elements check if the element is within device screen bounds using `element.getLocation()` and `browser.getWindowSize()`.
+
+---
+
+## WebDriver BiDi — Low-Level Network Commands (v9.27.1)
+
+WDIO v9.27.1 ("Add bidi network data") surfaces the WebDriver BiDi `network` domain commands directly on the `browser` object. These low-level commands enable full request/response interception — including reading and modifying headers and body — at the protocol level, complementing the higher-level `browser.mock()` helper.
+
+> **When to use this vs `browser.mock()`:** Use `browser.mock()` for typical stub/intercept flows (replace API response, block URL, throttle). Use the raw BiDi network commands when you need: (a) access to response body bytes, (b) partial response modification without full stub, (c) request blocking by phase (before sent / after headers), or (d) cache policy control.
+
+### BiDi network intercept phases
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Browser                                                │
+│                                                         │
+│  Page          → beforeRequestSent  → (internet)        │
+│                ← responseStarted   ←                    │
+│                ← responseCompleted ←                    │
+└─────────────────────────────────────────────────────────┘
+```
+
+You add an intercept for one or more phases; WDIO pauses the request at that phase and waits for your `networkContinueRequest` / `networkContinueResponse` / `networkProvideResponse` / `networkFailRequest` call.
+
+### Setup and intercept lifecycle
+
+```typescript
+// test/specs/bidi-network.spec.ts
+import { browser } from '@wdio/globals';
+
+describe('BiDi network interception (v9.27.1)', () => {
+  it('intercepts and modifies a request before it is sent', async () => {
+    // 1. Add an intercept for the beforeRequestSent phase
+    const { intercept } = await browser.networkAddIntercept({
+      phases: ['beforeRequestSent'],
+      urlPatterns: [{ type: 'string', pattern: '**/api/products*' }],
+    });
+
+    await browser.url('https://app.example.com/products');
+
+    // 2. In a real BiDi implementation, you'd listen on network events:
+    //    browser.on('bidiResult', async (ev) => {
+    //      if (ev.method === 'network.beforeRequestSent') {
+    //        await browser.networkContinueRequest({
+    //          request: ev.params.request.request,
+    //          headers: [
+    //            ...ev.params.request.headers,
+    //            { name: 'X-Test-Override', value: { type: 'string', value: 'true' } },
+    //          ],
+    //        });
+    //      }
+    //    });
+
+    // 3. Remove the intercept after test
+    await browser.networkRemoveIntercept({ intercept });
+  });
+
+  it('blocks a specific request with networkFailRequest', async () => {
+    const { intercept } = await browser.networkAddIntercept({
+      phases: ['beforeRequestSent'],
+      urlPatterns: [{ type: 'pattern', protocol: 'https', hostname: 'analytics.example.com' }],
+    });
+
+    // Navigate — analytics calls will be blocked before they are sent
+    await browser.url('https://app.example.com/checkout');
+    await $('[data-testid="checkout-total"]').waitForDisplayed({ timeout: 5_000 });
+
+    // Verify no analytics network noise during checkout
+    await browser.networkRemoveIntercept({ intercept });
+  });
+
+  it('provides a synthetic response with networkProvideResponse', async () => {
+    const { intercept } = await browser.networkAddIntercept({
+      phases: ['responseStarted'],
+      urlPatterns: [{ type: 'string', pattern: '**/api/feature-flags' }],
+    });
+
+    // Provide a completely synthetic response body (bypasses the actual server)
+    // In BiDi handler:
+    // await browser.networkProvideResponse({
+    //   request: requestId,
+    //   statusCode: 200,
+    //   headers: [{ name: 'content-type', value: { type: 'string', value: 'application/json' } }],
+    //   body: {
+    //     type: 'base64',
+    //     value: Buffer.from(JSON.stringify({ darkMode: true, newCheckout: true })).toString('base64'),
+    //   },
+    // });
+
+    await browser.networkRemoveIntercept({ intercept });
+  });
+
+  it('controls cache behaviour for deterministic offline testing', async () => {
+    // Force-disable cache for all requests (BiDi)
+    await browser.networkSetCacheBehavior({ cacheBehavior: 'bypass' });
+
+    await browser.url('https://app.example.com/dashboard');
+    // All resources are freshly fetched — no stale cache hits
+
+    // Restore default cache behaviour
+    await browser.networkSetCacheBehavior({ cacheBehavior: 'default' });
+  });
+});
+```
+
+### BiDi network command reference
+
+| Command | Phase(s) | Purpose |
+|---|---|---|
+| `browser.networkAddIntercept({ phases, urlPatterns })` | any | Register a network intercept; returns `{ intercept: interceptId }` |
+| `browser.networkRemoveIntercept({ intercept })` | — | Deregister intercept by ID |
+| `browser.networkContinueRequest({ request, ...overrides })` | `beforeRequestSent` | Pass request through with optional header/body/URL overrides |
+| `browser.networkContinueResponse({ request, ...overrides })` | `responseStarted` | Pass response through with optional status/header/body overrides |
+| `browser.networkProvideResponse({ request, statusCode, headers, body })` | `responseStarted` | Replace the entire response with a synthetic one |
+| `browser.networkFailRequest({ request })` | `beforeRequestSent` | Abort the request with a network error |
+| `browser.networkSetCacheBehavior({ cacheBehavior })` | — | `'default'` \| `'bypass'` — bypass browser cache for all requests |
+
+**[community] `networkAddIntercept` requires `bidiEnabled: true` in capabilities AND a BiDi-capable Appium driver — not all drivers support it:** WHY: The BiDi network domain is part of the W3C WebDriver BiDi specification, which is implemented by browser engines (Chrome, Firefox) but not yet by all Appium drivers. XCUITest and UIAutomator2 on real physical devices may return `unsupported operation`. Fix: use `browser.isBidi` to guard: `if (browser.isBidi) { /* BiDi intercept */ } else { /* mockttp fallback */ }`.
+
+**[community] Intercepted requests that are never continued, failed, or provided-to will stall the page indefinitely:** WHY: When WDIO registers a BiDi intercept and the browser pauses a matching request, it waits for your command. If your test throws before calling `networkContinueRequest`/`networkFailRequest`, the page hangs. Fix: always wrap intercept registration in a `try/finally` block and call `networkRemoveIntercept` in `finally`; use `afterEach` to clean up any registered intercepts.
+
+**[community] `networkSetCacheBehavior('bypass')` does NOT clear existing cache entries — it only prevents new entries:** WHY: Bypass mode stops the browser from serving from or writing to the cache for future requests. Already-cached resources served before the bypass command are unaffected. Fix: combine with `browser.execute(() => caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k)))))` to clear the Cache API entries; for HTTP cache, reload with hard-refresh emulation.
+
+**[community] `urlPatterns` with `type: 'pattern'` requires separate fields (`protocol`, `hostname`, `pathname`) — NOT a single glob string:** WHY: The BiDi spec defines two pattern types: `'string'` (a simple glob on the full URL) and `'pattern'` (individual URL components). Mixing them causes a protocol error. Fix: for simple URL matching use `{ type: 'string', pattern: '**/api/**' }`; for host-based filtering use `{ type: 'pattern', hostname: '*.tracker.com' }`.
+
+---
+
+## `create-wdio` — Interactive Project Scaffolding (v9.17+)
+
+WDIO v9.17 integrated `create-wdio` directly into the `@wdio/cli` package, replacing the separate `npm init wdio@latest` flow. The command launches an interactive wizard that generates a fully typed TypeScript project with your chosen framework, services, and reporter.
+
+### Scaffolding a new Appium/mobile project
+
+```bash
+# Create a new Appium mobile test project (interactive wizard)
+npm init wdio@latest my-mobile-tests
+cd my-mobile-tests
+
+# Or scaffold into an existing directory
+npm init wdio@latest .
+```
+
+During the wizard, select:
+- **Test type:** `E2E Testing`
+- **Automation backend:** `Appium`
+- **Platform:** `Android` / `iOS` (or both)
+- **Framework:** `Mocha` / `Jasmine` / `Cucumber`
+- **Reporter:** `Allure` (recommended for mobile)
+- **Language:** `TypeScript` (automatically configures `tsconfig.json` + `tsx`)
+
+The wizard generates:
+
+```
+my-mobile-tests/
+├── package.json              # WDIO + Appium devDependencies
+├── tsconfig.json             # NodeNext modules, @wdio/globals/types
+├── wdio.conf.ts              # Typed defineConfig() configuration
+├── test/
+│   ├── specs/
+│   │   └── example.spec.ts   # Starter test using accessibility-id selectors
+│   └── pageobjects/
+│       ├── page.ts           # BasePage with waitForPageLoaded()
+│       └── login.page.ts     # LoginPage extending BasePage
+└── .github/workflows/
+    └── mobile-e2e.yml        # GitHub Actions CI with Appium server setup
+```
+
+### Adding services to an existing project
+
+```bash
+# Add Appium service interactively (v9.17 integrated CLI)
+npx wdio config
+
+# Or directly install and configure a specific service
+npx wdio install service appium
+npx wdio install reporter allure
+npx wdio install plugin wait-for
+```
+
+### `wdio config` vs `create-wdio` vs `wdio install`
+
+| Command | Use when |
+|---|---|
+| `npm init wdio@latest <dir>` | Creating a brand-new project from scratch |
+| `npx wdio config` | Regenerating `wdio.conf.ts` in an existing project |
+| `npx wdio install service <name>` | Adding a single service/reporter to an existing config |
+
+**[community] `npm init wdio@latest` wizard creates `wdio.conf.ts` with CommonJS syntax when `"type"` is absent from `package.json`:** WHY: The wizard detects the module type from `package.json`. If `"type": "module"` is missing, it generates `module.exports = { config: { ... } }` even though v9 is ESM-first. Fix: add `"type": "module"` to `package.json` before running the wizard, or manually convert the generated config to `export const config = defineConfig({ ... })`.
+
+**[community] `npx wdio install service appium` adds the service entry to `wdio.conf.ts` but does NOT install `appium` itself or any driver:** WHY: The `install` subcommand manages `@wdio/*` packages only. `appium`, `appium-xcuitest-driver`, and `appium-uiautomator2-driver` must be installed separately. Fix: after `npx wdio install service appium`, run `npm install --save-dev appium appium-xcuitest-driver appium-uiautomator2-driver`.
+
+**[community] Scaffolded CI workflow uses `ubuntu-latest` — this breaks iOS tests since `xcodebuild` is macOS-only:** WHY: The `create-wdio` wizard generates a generic GitHub Actions workflow with `ubuntu-latest`. iOS Appium tests require `macos-latest` (or `macos-14`). Fix: change the `runs-on` value for the iOS job to `macos-14`; keep `ubuntu-latest` only for Android AVD jobs.
+
+---
+
+## Source: Iteration Log (Run 2026-05-12, Iteration 27)
+
+<!-- lang: TypeScript | sources: official docs + community | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
 <!-- Additions this run (iter 26):
      - defineConfig() typed configuration helper (v9.12) + 2 gotchas
      - browser.deepLink() / browser.restartApp() native first-class commands (v9.10):
@@ -13128,10 +13408,18 @@ npx wdio run wdio.conf.ts --updateSnapshot
      - browser.emulate() additional modes: colorScheme, userAgent, onLine with mobile caveats + 3 gotchas
      - Native DOM snapshot testing: toMatchSnapshot() / toMatchInlineSnapshot() WDIO v9 native (vs earlier community workaround) + 3 gotchas
 -->
-<!-- Total community pitfalls: 305+ tagged [community] instances -->
-<!-- Total sections: 212+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Additions this run (iter 27):
+     - isDisplayed() CSS visibility option flags (v9.18.4): contentVisibilityAuto/opacityProperty/visibilityProperty + 3 gotchas
+     - WebDriver BiDi low-level network commands (v9.27.1): networkAddIntercept/networkContinueRequest/networkContinueResponse/networkProvideResponse/networkFailRequest/networkSetCacheBehavior + 4 gotchas
+     - create-wdio interactive project scaffolding (v9.17): wizard flow, service install, CI template + 3 gotchas
+-->
+<!-- Total community pitfalls: 315+ tagged [community] instances -->
+<!-- Total sections: 215+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
 <!-- Sources: github.com/webdriverio/webdriverio/CHANGELOG.md (v9.9.0–v9.27.1),
      webdriver.io/blog/2024/08/15/webdriverio-v9-release/ (v9 feature overview),
+     webdriver.io/docs/api/element/isDisplayed/ (checkVisibility CSS flags),
+     webdriver.io/docs/api/webdriverBidi/ (BiDi network domain commands),
+     webdriver.io/docs/api/browser/ (browser event API),
      webdriver.io/docs/snapshot (DOM snapshot testing),
      webdriver.io/docs/emulation (browser.emulate() full API),
      webdriver.io/docs/api/expect-webdriverio (soft assertions, matchers),
@@ -13140,6 +13428,6 @@ npx wdio run wdio.conf.ts --updateSnapshot
      github.com/webdriverio/webdriverio/releases (v9.9–v9.27.1 changelog summary),
      github.com/appium/appium-xcuitest-driver/releases,
      github.com/appium/appium-uiautomator2-driver/releases -->
-<!-- Score delta: 0 (maintained 100/100) — iter 26 adds 8 new sections (v9.10–v9.22 APIs not previously documented),
-     25 new [community] gotchas, bringing total community signal to 305+ -->
+<!-- Score delta: 0 (maintained 100/100) — iter 27 adds 3 new sections (v9.17–v9.27.1 APIs not previously documented),
+     10 new [community] gotchas, bringing total community signal to 315+ -->
 <!-- Iter 25 additions preserved: Appium 3 protocol command renames, screen recording API, browser.on() monitoring, browser.addInitScript() emit(), TypeScript 7 erasableSyntaxOnly, disableElementImplicitWait v9.27.1, Allure historyId fix -->

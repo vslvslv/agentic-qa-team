@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -56,6 +56,22 @@
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/field-keyword,
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/first-class-span-types,
        learn.microsoft.com/dotnet/csharp/language-reference/operators/member-access-operators
+     Iter 32 (2026-05-12): added .NET 10 JIT deep-dive (struct argument promotion, loop inversion
+       graph-based improvement, array interface method devirtualization, array enumeration
+       de-abstraction, code layout Travelling Salesman heuristic, inlining improvements — return type
+       propagation and profile-data-aware size tolerance); .NET 10 stack allocation improvements
+       (small value-type arrays, small reference-type arrays, escape analysis for local struct fields
+       and delegates); AVX10.2 support; Arm64 write-barrier improvements; NativeAOT type
+       preinitializer improvements; added ActivitySourceOptions + TelemetrySchemaUrl for
+       OpenTelemetry-aligned tracing; rate-limit trace sampling; Activity events/links out-of-proc
+       serialization; ISOWeek DateOnly overloads; StringNormalizationExtensions span APIs;
+       UTF-8 hex-string conversion; OrderedDictionary TryAdd/TryGetValue with index output;
+       IReadOnlyTensor / Tensor<T> stable APIs; ExportPkcs12 with algorithm selection; static
+       lambda modifier; lambda attributes idiom; community gotchas: captured-closure heap allocation
+       in .NET 9 vs stack in .NET 10, static lambda prevents accidental capture, lambda attribute
+       limitations — sourced from learn.microsoft.com/dotnet/core/whats-new/dotnet-10/runtime,
+       learn.microsoft.com/dotnet/core/whats-new/dotnet-10/libraries,
+       learn.microsoft.com/dotnet/csharp/language-reference/operators/lambda-expressions
 -->
 
 ## Core Philosophy
@@ -4398,3 +4414,557 @@ public static class Extensions
 | Having a member named `field` in a class with C# 14 property accessors | Silently shadowed by synthesized backing field; reads/writes wrong thing | Rename to `_field` or use `this.field` qualifier |
 | Declaring extension members with conflicting signatures across `extension` blocks in the same class | All members across all extension blocks in one class share a flat namespace — CS0111 error | Separate extension blocks for conflicting signatures into different static classes |
 | Using null-conditional assignment `?.=` with `++`/`--` | Increment/decrement are not supported with null-conditional assignment (CS0023) | Write an explicit null-check `if (x is not null) x.Count++` |
+
+---
+
+## .NET 10 Runtime — JIT Compiler Improvements
+
+.NET 10 introduces significant JIT enhancements that improve performance without any code changes. Understanding these improvements helps write code that takes maximum advantage of the JIT's capabilities, and avoids patterns that accidentally defeat optimizations.
+
+### Struct Argument Promotion into Shared Registers
+
+When a struct is passed to a method and the calling convention requires packing multiple members into a single register, the JIT now places promoted struct members into shared registers directly — without first storing to memory and reloading. This eliminates intermediate memory operations for small structs with members smaller than the register width.
+
+```csharp
+// The JIT optimizes structs whose members fit in registers
+// Before .NET 10: members stored to stack, then loaded into register
+// .NET 10: direct register packing — no intermediate memory round-trip
+struct Pair
+{
+    public int X;
+    public int Y;
+}
+
+// Call this method: JIT packs X and Y into one 64-bit register on x64
+// You don't need to do anything special — the JIT handles it automatically
+static void Consume(Pair p) => Console.WriteLine(p.X + p.Y);
+
+// Best practice: keep value-type structs small and tightly packed
+// Benefit increases when the struct is used in tight loops
+```
+
+### Graph-Based Loop Inversion
+
+.NET 10 upgrades loop inversion from lexical analysis to graph-based loop recognition, covering all natural loops (single entry-point). This enables the JIT to transform more `while` loops into `do-while` shapes, unlocking loop cloning, loop unrolling, and induction variable optimizations on loops that were previously missed.
+
+```csharp
+// The JIT transforms this while loop:
+while (i < array.Length)
+{
+    sum += array[i++];
+}
+
+// Into: if (i < array.Length) { do { sum += array[i++]; } while (i < array.Length); }
+// The do-while shape allows the JIT to remove bounds checks inside the loop body
+// No code changes needed — compiler handles it; write idiomatic while/for loops
+```
+
+### Array Interface Method Devirtualization
+
+Previously the JIT could not devirtualize array interface methods (e.g., `IEnumerable<T>` on `T[]`), leaving virtual dispatch overhead in `foreach` over `IEnumerable<T>` variables holding arrays. .NET 10 fixes this: the JIT now devirtualizes array interface methods, enabling inlining and stack allocation of the enumerator.
+
+```csharp
+// .NET 9: virtual calls remain, blocking inlining
+// .NET 10: JIT devirtualizes — same performance as direct array iteration
+static int Sum(int[] array)
+{
+    IEnumerable<int> temp = array;     // typed as interface
+    int sum = 0;
+    foreach (var num in temp)          // .NET 10: devirtualized to array path
+        sum += num;
+    return sum;
+}
+
+// Best practice: don't artificially widen array types to interfaces in hot paths
+// If you DO need IEnumerable<T>, .NET 10 removes the performance penalty automatically
+```
+
+---
+
+## .NET 10 Runtime — Stack Allocation Improvements
+
+.NET 10 significantly expands the JIT's ability to stack-allocate objects, reducing GC pressure in methods that create short-lived objects.
+
+### Small Arrays of Value Types — Automatic Stack Allocation
+
+The JIT now stack-allocates small, fixed-sized arrays of value types that don't escape their parent method. No annotation is required.
+
+```csharp
+// .NET 10: JIT stack-allocates {1, 2, 3} — no heap allocation, no GC pressure
+static void Sum()
+{
+    int[] numbers = { 1, 2, 3 };
+    int sum = 0;
+    for (int i = 0; i < numbers.Length; i++)
+        sum += numbers[i];
+    Console.WriteLine(sum);
+}
+
+// Conditions for stack allocation:
+// 1. Fixed size known at compile time
+// 2. Array doesn't escape the method (not stored in fields, not returned, not passed out)
+// 3. Element type is a value type (no GC pointers in .NET 10 for value types;
+//    reference types also supported — see next section)
+```
+
+### Small Arrays of Reference Types — Stack Allocation (.NET 10 Extension)
+
+.NET 10 extends stack allocation to small arrays of reference types whose lifetime is scoped to the method.
+
+```csharp
+// .NET 10: JIT stack-allocates string[] — no heap allocation
+static void Print()
+{
+    string[] words = { "Hello", "World!" };
+    foreach (var str in words)
+        Console.WriteLine(str);
+}
+
+// The array reference itself is stack-allocated; the strings are still on the heap
+// This pattern is common in ASP.NET Core middlewares and message formatters
+// No code changes needed — the JIT decides automatically
+```
+
+### Escape Analysis for Local Struct Fields and Delegates
+
+.NET 10 extends escape analysis to objects referenced by **local struct fields** and to **delegates**. An object held only by a non-escaping local struct no longer forces heap allocation.
+
+```csharp
+struct GCStruct { public int[] Arr; }
+
+static int Main()
+{
+    int[] x = new int[10];
+    GCStruct y = new GCStruct { Arr = x };
+    // .NET 9: x heap-allocated (struct field blocked escape analysis)
+    // .NET 10: x stack-allocated — y doesn't escape, so x doesn't either
+    return y.Arr[0];
+}
+
+// Delegate escape analysis: Func<T> allocated on stack when it doesn't escape
+static int RunLocal()
+{
+    int local = 1;
+    var func = (int x) => x + local;  // closure + delegate
+    int sum = 0;
+    for (int i = 0; i < 100; i++) sum += func(i);
+    // .NET 10: Func object is stack-allocated (doesn't escape RunLocal)
+    // Closure object (holding 'local') still heap-allocated in .NET 10;
+    // planned for improvement in future releases
+    return sum;
+}
+```
+
+**Practical guidance:** write natural code — small local arrays, short-lived lambdas, structs holding arrays. The JIT's escape analysis handles allocation decisions automatically. Avoid patterns that force escape: storing in fields, returning from methods, or passing via `ref` out-parameters.
+
+---
+
+## .NET 10 Runtime — Other JIT and Platform Improvements
+
+### AVX10.2 Support (x64)
+
+.NET 10 adds intrinsics for AVX10.2 via `System.Runtime.Intrinsics.X86.Avx10v2`. AVX10.2 is disabled by default until compatible hardware is available. Use `Avx10v2.IsSupported` to guard before use — the same pattern as all other hardware intrinsics.
+
+```csharp
+using System.Runtime.Intrinsics.X86;
+
+if (Avx10v2.IsSupported)
+{
+    // Use AVX10.2 intrinsics here
+    // Currently: write code paths, enable when hardware becomes available
+}
+else
+{
+    // Scalar or AVX2 fallback
+}
+```
+
+### Arm64 Write-Barrier Improvements
+
+.NET 10 ports the dynamic write-barrier selection (already available on x64) to Arm64. The new default Arm64 write-barrier handles GC regions more precisely, producing **8–20% GC pause time improvements** in benchmarks. This is automatic — no code changes needed. The improvement is most visible in server workloads with large heaps and frequent Gen0/Gen1 collections.
+
+### NativeAOT Type Preinitializer Improvements
+
+NativeAOT's type preinitializer now supports all variants of `conv.*` (casting/conversion opcodes) and `neg` opcodes. This allows static constructors and type initializers that contain casts or negations to be preinitialized at compile time, reducing runtime startup cost in AOT-published applications.
+
+---
+
+## Lambda Expressions — C# Idioms for Static Lambdas and Attributes
+
+### Static Lambda Modifier — Prevent Accidental Capture
+
+The `static` modifier on a lambda expression prevents it from capturing any local variables or instance state from the enclosing scope. Use it on lambdas in hot paths or event handlers where you intentionally do not want to close over state.
+
+```csharp
+// Static lambda: cannot capture outer variables — captures only static members
+Func<double, double> square = static x => x * x;
+
+// Useful in LINQ pipelines to signal "no captures" and prevent accidental closures
+var activePrimes = numbers
+    .Where(static n => n > 1 && IsPrime(n))  // 'static' prevents accidentally capturing a local
+    .Select(static n => n * n)
+    .ToList();
+
+// Static lambdas in event subscriptions:
+button.Click += static (sender, e) => Console.WriteLine("Clicked");
+// Compiler enforces: no access to 'this' or instance fields inside a static lambda
+
+// Common gotcha: if you try to capture, you get CS8421 — a helpful compile-time error
+int threshold = 10;
+// var filter = static x => x > threshold;  // CS8421: cannot capture 'threshold'
+var filter = static x => x > 10;            // correct: use literal
+```
+
+### Lambda Attributes — Annotating Lambdas for Analysis
+
+C# supports attributes on lambda expressions and their parameters. Attributes on lambdas are visible to analyzers via reflection but are **not enforced by the delegate `Invoke` path** — the runtime ignores them at invocation time.
+
+```csharp
+using System.Diagnostics.CodeAnalysis;
+
+// Attribute on a lambda parameter — useful for null analysis
+var concat = ([DisallowNull] string a, [DisallowNull] string b) => a + b;
+
+// Return attribute via [return: ...] syntax
+var safe = [return: NotNullIfNotNull(nameof(s))] (string? s) =>
+    s is null ? null : s.Trim();
+
+// Attribute on the lambda expression itself — useful for code analyzers
+Func<string?, int?> parse = [ProvidesNullCheck] (s) =>
+    s is not null ? int.Parse(s) : null;
+
+// IMPORTANT: ConditionalAttribute CANNOT be applied to a lambda
+// The attribute has no effect at invocation time — design for analysis tools, not runtime behavior
+// Prefer applying [Obsolete], [RequiresUnreferencedCode], etc. on named methods instead
+```
+
+### Lambda Parameter Modifiers Without Explicit Types (C# 14)
+
+C# 14 allows adding parameter modifiers (`ref`, `out`, `in`, `scoped`, `ref readonly`) to lambda parameters without specifying the explicit type, as long as the compiler can infer the type.
+
+```csharp
+// C# 13 and earlier: modifiers required explicit types on ALL parameters
+delegate bool TryParse<T>(string text, out T result);
+TryParse<int> old = (string text, out int result) => int.TryParse(text, out result);
+
+// C# 14: modifiers allowed on implicitly-typed parameters
+TryParse<int> modern = (text, out result) => int.TryParse(text, out result);
+
+// 'scoped' modifier — signals ref struct doesn't escape beyond the lambda
+Func<Span<int>, int> sumSpan = (scoped Span<int> s) =>
+{
+    int total = 0;
+    foreach (var n in s) total += n;
+    return total;
+};
+
+// NOTE: 'params' modifier STILL requires explicit type on all parameters
+// delegate int Sum(params int[] values);
+// Sum sum = (params int[] v) => v.Sum();  // still required: explicit type on params parameter
+```
+
+---
+
+## .NET 10 Libraries — Additional APIs
+
+### ActivitySourceOptions and TelemetrySchemaUrl (OpenTelemetry Alignment)
+
+`ActivitySource` and `Meter` now accept a telemetry schema URL, aligning with the OpenTelemetry specification's `schemaUrl` concept. Use `ActivitySourceOptions` to configure all properties at construction time.
+
+```csharp
+using System.Diagnostics;
+
+// Before .NET 10: no telemetry schema URL support
+// var source = new ActivitySource("MyApp.Orders", "1.0.0");
+
+// .NET 10: use ActivitySourceOptions for full configuration
+var source = new ActivitySource(new ActivitySourceOptions
+{
+    Name = "MyApp.Orders",
+    Version = "1.0.0",
+    TelemetrySchemaUrl = "https://opentelemetry.io/schemas/1.24.0"
+});
+
+// Meter also supports TelemetrySchemaUrl
+var meter = new System.Diagnostics.Metrics.Meter(
+    "MyApp.Metrics",
+    version: "1.0.0",
+    tags: null,
+    scope: null);
+// Meter.TelemetrySchemaUrl is set via the Meter constructor overload that accepts it
+
+// Why it matters: OpenTelemetry collectors use schemaUrl to apply semantic convention
+// transformations. Setting it prevents "unknown schema" warnings in OTel backends.
+```
+
+### Activity Events and Links — Out-of-Process Serialization (.NET 10)
+
+The `Microsoft-Diagnostics-DiagnosticSource` event-source provider now serializes `ActivityEvent` and `ActivityLink` metadata when writing out-of-process traces. Previously only span start/stop and basic tags were serialized; events and links were silently dropped.
+
+```csharp
+using System.Diagnostics;
+
+using var activity = ActivitySource.StartActivity("ProcessOrder");
+if (activity is not null)
+{
+    // Events — now serialized out-of-process in .NET 10
+    activity.AddEvent(new ActivityEvent("validation.started"));
+    activity.AddEvent(new ActivityEvent("payment.authorized",
+        tags: new ActivityTagsCollection { { "gateway", "stripe" } }));
+
+    // Links — now serialized out-of-process in .NET 10
+    // Use links to connect related traces (e.g., parent saga, triggering request)
+    var linkedContext = new ActivityContext(
+        ActivityTraceId.CreateRandom(), ActivitySpanId.CreateRandom(),
+        ActivityTraceFlags.Recorded);
+    activity.AddTag("linkedTrace", linkedContext.TraceId.ToHexString());
+}
+// Practical impact: distributed tracing tools (Jaeger, Zipkin, OpenTelemetry Collector)
+// now receive the full event timeline, not just start/end times
+```
+
+### Rate-Limit Trace Sampling
+
+.NET 10 adds a rate-limiting sampling option for out-of-process trace serialization via the `Microsoft-Diagnostics-DiagnosticSource` event source. This caps the number of root activities serialized per second, giving more predictable cost than ratio-based sampling.
+
+```
+// Configure in FilterAndPayloadSpecs (e.g., via EventSource listener or ETW configuration)
+// Limit serialization to 100 root activities per second across all ActivitySources:
+[AS]*/-ParentRateLimitingSampler(100)
+
+// Scoped to a specific ActivitySource:
+[AS]MyApp.Orders/-ParentRateLimitingSampler(50)
+```
+
+---
+
+## .NET 10 Libraries — Globalization and Strings
+
+### ISOWeek DateOnly Overloads
+
+`System.Globalization.ISOWeek` now supports `DateOnly` in addition to `DateTime`. This eliminates the need to convert `DateOnly` to `DateTime` just to get the ISO week number.
+
+```csharp
+using System.Globalization;
+
+DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
+
+// Before .NET 10: had to convert to DateTime
+// int week = ISOWeek.GetWeekOfYear(today.ToDateTime(TimeOnly.MinValue));
+
+// .NET 10: native DateOnly support
+int week = ISOWeek.GetWeekOfYear(today);          // e.g., 20
+int year = ISOWeek.GetYear(today);                 // ISO year (may differ from calendar year)
+DateOnly monday = ISOWeek.ToDateOnly(year, week, DayOfWeek.Monday); // first day of that week
+```
+
+### StringNormalizationExtensions — Span-Based Unicode Normalization
+
+`StringNormalizationExtensions` (.NET 10) adds span-based Unicode normalization APIs, eliminating the need to allocate a `string` when the source is a `ReadOnlySpan<char>` or `char[]`.
+
+```csharp
+using System.Text;
+
+// Before .NET 10: must allocate a string to normalize
+char[] inputChars = GetInputBuffer();
+string normalized = new string(inputChars).Normalize(NormalizationForm.FormC);
+
+// .NET 10: span-based APIs — no string allocation
+ReadOnlySpan<char> input = inputChars;
+
+// Check if already normalized
+bool isNormal = input.IsNormalized(NormalizationForm.FormC);
+
+// Get required output length before allocating
+int requiredLength = input.GetNormalizedLength(NormalizationForm.FormC);
+Span<char> output = requiredLength <= 256
+    ? stackalloc char[requiredLength]
+    : new char[requiredLength];
+
+bool success = input.TryNormalize(output, out int charsWritten, NormalizationForm.FormC);
+ReadOnlySpan<char> result = output[..charsWritten];
+```
+
+### UTF-8 Hex-String Conversion
+
+`Convert` in .NET 10 adds UTF-8 overloads for hex-string operations, avoiding encoding conversions in byte-heavy pipelines.
+
+```csharp
+// Before .NET 10: convert UTF-8 bytes → chars → parse hex
+byte[] utf8Hex = "DEADBEEF"u8.ToArray();
+byte[] decoded = Convert.FromHexString(System.Text.Encoding.UTF8.GetString(utf8Hex));
+
+// .NET 10: directly from UTF-8 span — no intermediate string
+byte[] decoded2 = Convert.FromHexString(utf8Hex.AsSpan());
+
+// TryToHexString — write hex as UTF-8 bytes without allocating a string
+byte[] data = { 0xDE, 0xAD, 0xBE, 0xEF };
+Span<byte> hexBuf = stackalloc byte[data.Length * 2];
+bool ok = Convert.TryToHexString(data, hexBuf, out int written);
+// hexBuf[..written] = "DEADBEEF" as UTF-8 bytes
+
+// Lowercase variant for URL-safe / JSON-friendly output
+Convert.TryToHexStringLower(data, hexBuf, out written);
+// hexBuf[..written] = "deadbeef"
+```
+
+---
+
+## .NET 10 Libraries — Collections and Serialization
+
+### OrderedDictionary — TryAdd/TryGetValue with Index Output
+
+`OrderedDictionary<TKey,TValue>` (.NET 9+) adds overloads that return the entry's zero-based index, enabling efficient update-or-insert (upsert) without two separate lookups.
+
+```csharp
+var counts = new System.Collections.Generic.OrderedDictionary<string, int>();
+
+// Classic approach: two lookups
+if (counts.TryGetValue("apple", out int existing))
+    counts["apple"] = existing + 1;
+else
+    counts.Add("apple", 1);
+
+// .NET 10 approach: single lookup, direct index-based update
+void Upsert(OrderedDictionary<string, int> dict, string key)
+{
+    if (!dict.TryAdd(key, 1, out int index))
+    {
+        // Key already present; increment via index — O(1), no re-hash
+        int current = dict.GetAt(index).Value;
+        dict.SetAt(index, current + 1);
+    }
+}
+
+// TryGetValue with index — retrieve value and its position simultaneously
+if (counts.TryGetValue("apple", out int val, out int pos))
+{
+    Console.WriteLine($"apple = {val} at position {pos}");
+    counts.SetAt(pos, val * 2);  // double it in-place
+}
+```
+
+### Tensor<T> — Stable API (.NET 10)
+
+`System.Numerics.Tensors.Tensor<T>` is stable in .NET 10 (no longer `[Experimental]`). The new `IReadOnlyTensor` non-generic interface enables working with tensors without knowing `T` at compile time. Slice operations now return views without copying data.
+
+```csharp
+using System.Numerics.Tensors;
+
+// Create a 2D tensor (matrix)
+Tensor<float> matrix = Tensor.Create<float>([3, 4]);
+
+// Fill with values
+for (int i = 0; i < 3; i++)
+    for (int j = 0; j < 4; j++)
+        matrix[[i, j]] = i * 4 + j;
+
+// Slicing — returns a view, no copy (.NET 10)
+ReadOnlyTensorSpan<float> row1 = matrix.AsReadOnlyTensorSpan([[1..2, 0..4]]);
+
+// Arithmetic via C# 14 extension operators (when T supports IAdditionOperators<T,T,T>)
+// tensor + tensor works for Tensor<int>, Tensor<float>, etc.
+Tensor<float> a = Tensor.Create<float>([10], new float[] { 1f, 2f, 3f });
+Tensor<float> b = Tensor.Create<float>([10], new float[] { 4f, 5f, 6f });
+Tensor<float> sum = a + b;  // element-wise addition via extension operator
+
+// Non-generic access via IReadOnlyTensor
+IReadOnlyTensor untypedTensor = matrix;
+System.Buffers.NIndex[] lengths = untypedTensor.Lengths;
+```
+
+---
+
+## .NET 10 Libraries — Cryptography
+
+### ExportPkcs12 with Algorithm Selection
+
+`X509Certificate.ExportPkcs12` now accepts a `Pkcs12ExportPbeParameters` enum or `PbeParameters` for fine-grained control over the encryption algorithm used in PKCS#12/PFX export.
+
+```csharp
+using System.Security.Cryptography.X509Certificates;
+
+X509Certificate2 cert = LoadCertificate();
+
+// Legacy: TripleDES + SHA-1 — maximum compatibility (Windows XP-era format)
+byte[] legacyPfx = cert.ExportPkcs12(
+    Pkcs12ExportPbeParameters.Pkcs12TripleDesSha1,
+    "password");
+
+// Modern: AES-256 + SHA-256 — recommended for new deployments
+byte[] modernPfx = cert.ExportPkcs12(
+    Pkcs12ExportPbeParameters.Pbes2Aes256Sha256,
+    "password");
+
+// Custom: full control over algorithm and iteration count
+var customParams = new PbeParameters(
+    PbeEncryptionAlgorithm.Aes256Cbc,
+    HashAlgorithmName.SHA256,
+    iterationCount: 600_000);
+byte[] customPfx = cert.ExportPkcs12(customParams, "password");
+
+// Choose based on consumer:
+// - Targeting cross-platform modern systems → Pbes2Aes256Sha256
+// - Targeting legacy Windows or third-party systems → Pkcs12TripleDesSha1
+// Default (no parameter) keeps the old behavior for backward compatibility
+```
+
+---
+
+## Real-World Gotchas — .NET 10 JIT and Performance [community]
+
+### **Closure Allocated on Heap Prevents Stack Allocation of Delegate — .NET 10 Scope** [community]
+
+In .NET 10, when a lambda captures an outer variable, the `Func` object can be stack-allocated but the **closure class** (the object holding the captured variable) is still heap-allocated. WHY it causes problems: developers see the .NET 10 announcement about "delegate stack allocation" and assume zero heap allocation for short-lived lambdas with captured variables. In reality, only the `Func` wrapper is stack-allocated in .NET 10; the closure itself remains on the heap. Fix: avoid capturing variables in hot-path lambdas; use static lambdas instead, or pass state via parameters.
+
+```csharp
+int threshold = 10;
+// 'threshold' is captured → closure object heap-allocated, Func wrapper stack-allocated (.NET 10)
+var filter = (int x) => x > threshold;
+
+// Better for hot paths: no capture — static lambda, pass threshold as parameter
+static bool IsAboveThreshold(int x, int threshold) => x > threshold;
+
+// Or with Func: avoid capture entirely
+var filter2 = static (int x) => x > 10;  // no closure, no heap allocation
+```
+
+### **`static` Lambda Cannot Access `this` or Instance Members** [community]
+
+Adding `static` to a lambda prevents accidental capture but also makes it a compile error to use `this`, instance fields, or instance methods. WHY it causes problems: when refactoring a non-static lambda to static in a class, any read of an instance member triggers CS8421. This is by design — but it surprises developers who expected to still read `readonly` fields. Fix: pass required instance data as a parameter, or use a local copy of the value before the lambda.
+
+```csharp
+public class Processor
+{
+    private readonly int _multiplier = 2;
+
+    public IEnumerable<int> Scale(IEnumerable<int> values)
+    {
+        // This fails — static lambda cannot access 'this._multiplier'
+        // return values.Select(static x => x * _multiplier);  // CS8421
+
+        // Fix A: capture in a local (non-static)
+        int m = _multiplier;
+        return values.Select(x => x * m);
+
+        // Fix B: restructure as a static method and call it
+        // return values.Select(x => Scale(x, _multiplier));
+    }
+}
+```
+
+### **Lambda Attributes Are Invisible to the Runtime at Invocation** [community]
+
+Attributes on lambda expressions (e.g., `[DisallowNull]`, `[RequiresUnreferencedCode]`) are discoverable via reflection on the synthesized delegate type, but the **delegate's `Invoke` method does not check attributes at call time**. WHY it causes problems: developers apply `[Obsolete]` or `[RequiresUnreferencedCode]` to lambdas expecting runtime enforcement (warning or exception). Neither fires at the call site. These attributes only affect static analysis tools (Roslyn analyzers, nullable flow analysis, trimming analysis). Fix: apply enforcement attributes on named methods; use lambdas for callbacks where the delegate is typed to a well-annotated named method.
+
+---
+
+## Anti-Patterns Quick Reference — .NET 10 JIT and Lambda Additions
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| Expecting zero heap allocation for capturing lambdas in .NET 10 | Closure class is still heap-allocated; only the `Func` wrapper is stack-allocated | Use static lambdas or pass state as parameters to eliminate captures |
+| Using `static` lambda when it needs instance members | CS8421 compile error — static lambdas cannot close over `this` | Capture the needed value in a local variable before the lambda, or use a named static method |
+| Applying `[Obsolete]` or `[RequiresUnreferencedCode]` directly to a lambda | Attributes on lambdas are not enforced at the invocation call site | Apply enforcement attributes to named methods; use lambdas as typed callbacks |
+| Passing coerced `IEnumerable<T>` arrays to devirtualizable paths expecting optimization | In .NET 10 array devirtualization is automatic, but explicit `IEnumerable<T>` variables still trigger the optimized path | No action needed — JIT handles it; just avoid storing arrays in `IEnumerable<T>` fields unnecessarily |
+| Using PKCS#12 default export encryption in new deployments | Default uses TripleDES+SHA1 (weak legacy format) | Use `Pkcs12ExportPbeParameters.Pbes2Aes256Sha256` for modern deployments |

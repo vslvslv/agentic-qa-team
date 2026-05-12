@@ -1,6 +1,7 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 50 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 51 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
+<!-- Iteration 51: Pattern 78 (Vitest 4.1 conditional retry with error condition predicate); Pattern 79 (Playwright v1.53 TestStepInfo.skip() conditional — step-level quarantine); Pattern 80 (Playwright v1.60 testInfoError.errorContext aria snapshot for flakiness diagnosis); Pattern 81 (Vitest 4.1 test.meta for custom flakiness metadata in reporters); AP41 (conditional retry masking real failures); Quick Reference additions (iteration 51) -->
 <!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog, vitest.dev/api/hooks, playwright.dev/docs/api/class-tracing, playwright.dev/docs/api/class-browsercontext -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
 <!-- Iteration 50: Pattern 74 (Vitest 4.1 page.mark() for trace annotation in browser mode); Pattern 75 (Vitest 4.1 mockThrow/mockThrowOnce + chai-style assertions); Pattern 76 (Playwright MCP server @playwright/mcp for agentic flaky test investigation); Pattern 77 (Vitest 4.1 experimental.viteModuleRunner: false for production-fidelity isolation); AP39 (unawaited page.mark()); AP40 (mockThrow on async function); Gotcha 45 (Trunk AI failure fingerprinting vs string matching for variant flakiness) -->
@@ -6455,3 +6456,605 @@ error message crossed the string-matching threshold.
 | Playwright MCP Server | Official | https://playwright.dev/docs/api/class-browser#browser-bind | `@playwright/mcp` — 60+ browser automation tools via MCP for agentic test debugging (v1.59) |
 | Vitest `experimental.viteModuleRunner` | Official | https://vitest.dev/config/#experimental-vitemodulerunner | Native Node.js import mode — surfaces module singleton flakiness hidden by Vite's runner (v4.1) |
 | Trunk AI Failure Fingerprinting | Community | https://trunk.io/flaky-tests | AI-powered root cause grouping — detects variant flakiness that string-matching tools miss |
+
+---
+
+## Pattern 78 — Vitest 4.1 Conditional Retry with Error Predicate  [official]
+
+Vitest 4.1 extended the `retry` option from a plain number to a structured object with three
+fields: `count`, `delay`, and `condition`. The `condition` field accepts either a `RegExp`
+(matched against the error message) or a `(error: TestError) => boolean` predicate, enabling
+**error-type-specific retry policies** — the most precise form of retry budget management in
+the TypeScript test ecosystem.
+
+**Why this matters for flakiness:** A global `retry: 2` retries ALL failures, including genuine
+application defects. This conceals real bugs behind retry passes — the opposite of what flakiness
+management should do. A conditional retry policy can target infrastructure flakiness
+(`ECONNRESET`, `TimeoutError`) while immediately failing on assertion errors
+(`AssertionError`, `expect()` failures), ensuring retries are diagnostic, not masking.
+
+```typescript
+// TypeScript type (Vitest 4.1+)
+type Retry = number | {
+  count?: number;                                           // max retry attempts
+  delay?: number;                                           // ms between attempts
+  condition?: RegExp | ((error: TestError) => boolean);    // condition to trigger retry
+};
+
+// TestError interface (available via 'vitest' import for typing in predicate)
+interface TestError {
+  message: string;
+  stack?: string;
+  cause?: unknown;
+}
+```
+
+```typescript
+// vitest.config.ts — global retry policy targeting only infrastructure errors
+import { defineConfig } from 'vitest/config';
+import type { TestError } from 'vitest';
+
+// List of error message patterns that indicate infrastructure flakiness (not code defects)
+const INFRASTRUCTURE_FLAKINESS_PATTERNS = [
+  /ECONNRESET/,        // TCP connection reset — network transient error
+  /ECONNREFUSED/,      // Service not ready yet — startup race
+  /socket hang up/i,   // HTTP connection dropped mid-request
+  /TimeoutError/,      // Playwright/puppeteer operation timeout
+  /net::ERR_/,         // Chrome network error codes
+  /Service Unavailable/, // 503 from upstream services
+];
+
+export default defineConfig({
+  test: {
+    // Object form (Vitest 4.1+) — retry only on infrastructure errors
+    retry: {
+      count: 2,       // max 2 retries
+      delay: 500,     // 500ms between retries (give services time to recover)
+      // Only retry if the error matches an infrastructure pattern.
+      // AssertionErrors, TypeErrors, and ReferenceErrors propagate immediately as failures.
+      condition: (error: TestError) =>
+        INFRASTRUCTURE_FLAKINESS_PATTERNS.some(pattern => pattern.test(error.message)),
+    },
+  },
+});
+```
+
+```typescript
+// Per-test conditional retry — for known-flaky tests under investigation
+// The RegExp form is more concise when error patterns are stable
+import { describe, it, expect } from 'vitest';
+import { PaymentGateway } from './PaymentGateway';
+
+describe('PaymentGateway — integration', () => {
+  // PROJ-3101: webhook callback timing under CI load — retries only on timeout
+  // When the root cause is fixed (timeout eliminated), remove the retry condition
+  it(
+    'processes refund webhook within 3 seconds',
+    {
+      retry: {
+        count: 3,
+        delay: 1000,
+        // Only retry on timeout — never retry on assertion failures (they indicate a real bug)
+        condition: /TimeoutError|timed out after/i,
+      },
+    },
+    async () => {
+      const gw = new PaymentGateway({ endpoint: process.env.GATEWAY_URL! });
+      const refund = await gw.refund({ transactionId: 'TXN-001', amount: 50_00 });
+      // This assertion will NOT be retried if it fails — a wrong refund status is a real defect
+      expect(refund.status).toBe('refunded');
+    }
+  );
+
+  // Stable test: no retry — any failure here is a genuine defect
+  it('rejects negative refund amount', async () => {
+    const gw = new PaymentGateway({ endpoint: process.env.GATEWAY_URL! });
+    await expect(gw.refund({ transactionId: 'TXN-001', amount: -100 }))
+      .rejects.toThrow('amount must be positive');
+  });
+});
+```
+
+```typescript
+// Advanced: function predicate for multi-condition retry logic
+// Use when the retry policy depends on error type hierarchy, not just message pattern
+import { it, expect } from 'vitest';
+import type { TestError } from 'vitest';
+
+function isTransientInfraError(error: TestError): boolean {
+  const msg = error.message.toLowerCase();
+  // Retry on known transient infra errors
+  if (/(timeout|econnreset|service unavailable|503|econnrefused)/.test(msg)) return true;
+  // Also retry if the cause is a network error (chained errors)
+  if (error.cause instanceof Error && /(network|socket|connect)/.test(error.cause.message.toLowerCase())) return true;
+  // NEVER retry on assertion failures — they represent code defects
+  if (/assertionerror|expect\(received\)|expected .+ to equal/i.test(msg)) return false;
+  // Default: don't retry on unknown errors (conservative — fail fast on surprises)
+  return false;
+}
+
+it('fetches user from API with conditional retry', { retry: { count: 2, condition: isTransientInfraError } }, async () => {
+  const response = await fetch('/api/users/1');
+  const user = await response.json() as { id: string; name: string };
+  // Only this assertion's failure will NOT trigger retry (AssertionError)
+  expect(user.name).toBe('Alice');
+});
+```
+
+**`delay` option — why it matters for flakiness:**
+
+Without `delay`, Vitest retries immediately. For infrastructure flakiness (service not ready,
+connection pool exhausted), an immediate retry often fails for the same reason — the transient
+condition hasn't resolved. Adding `delay: 500` gives services time to recover between attempts
+and dramatically improves retry success rates for connection-related flakiness.
+
+**Caveats:**
+- The `condition` function form is only available in test files, not in `vitest.config.ts`.
+  For global config, use the RegExp form.
+- Conditional retry is a diagnostic aid during flakiness investigation, not a permanent solution.
+  Track retried tests with `onTestFailed` (Pattern 59) and quarantine once the root cause is identified.
+
+---
+
+## Pattern 79 — Playwright v1.53 `TestStepInfo.skip()` for Conditional Step Quarantine  [official]
+
+Playwright v1.53 promoted `TestStepInfo` to a first-class object passed to `test.step()`
+callback, exposing `skip()` and `skip(condition, description)` overloads and the `titlePath`
+property. The `skip()` method inside a step is distinct from `test.skip()` (which aborts the
+entire test case) — it aborts only the current step and continues the rest of the test.
+
+**Why this matters for flakiness:** A common challenge with multi-step E2E tests is that a
+single known-flaky step forces the entire test case into quarantine. With `TestStepInfo.skip()`,
+you can quarantine precisely the flaky step — leaving the rest of the test active and green —
+while `titlePath` provides an unambiguous step identifier for tracking and reporting.
+
+```typescript
+// playwright — TestStepInfo API (v1.53+)
+// test.step(title, callback) now passes a TestStepInfo to the callback as the first argument
+
+import { test, expect } from '@playwright/test';
+
+test('checkout with optional coupon', async ({ page, browserName }) => {
+  await test.step('navigate to checkout', async () => {
+    await page.goto('/checkout');
+    await expect(page.getByRole('heading', { name: 'Checkout' })).toBeVisible();
+  });
+
+  // Step with conditional skip — skip on WebKit due to known coupon field rendering bug (PROJ-3200)
+  // The rest of the test (payment, confirmation) still runs on WebKit
+  await test.step('apply discount coupon', async (step) => {
+    // Conditionally skip this step — the description appears in the HTML report
+    step.skip(
+      browserName === 'webkit',
+      'PROJ-3200: coupon input has rendering defect in WebKit — skip until fix is deployed'
+    );
+    // Only runs on Chromium/Firefox — safe to interact with the coupon field
+    await page.getByTestId('coupon-input').fill('SUMMER20');
+    await page.getByRole('button', { name: 'Apply Coupon' }).click();
+    await expect(page.getByTestId('discount-line')).toContainText('-20%');
+  });
+
+  // This step always runs — not affected by the step skip above
+  await test.step('complete payment', async () => {
+    await page.fill('[name="card-number"]', '4111111111111111');
+    await page.fill('[name="expiry"]', '12/28');
+    await page.fill('[name="cvv"]', '123');
+    await page.route('**/api/orders', route =>
+      route.fulfill({ status: 201, json: { orderId: 'ORD-TEST-001' } })
+    );
+    await page.getByRole('button', { name: 'Place Order' }).click();
+    await expect(page.getByTestId('confirmation-number')).toBeVisible({ timeout: 5_000 });
+  });
+});
+```
+
+```typescript
+// Using TestStepInfo.titlePath for step-level flakiness tracking
+// titlePath returns the full path from the test file to the current step
+// Format: ['test-file.spec.ts', 'test title', 'step title']
+import { test, expect } from '@playwright/test';
+
+test('full order flow diagnostic', async ({ page }, testInfo) => {
+  await test.step('add item to cart', async (step) => {
+    // titlePath identifies this step unambiguously — useful for logging and tracking
+    // step.titlePath: ['checkout.spec.ts', 'full order flow diagnostic', 'add item to cart']
+    console.log('[STEP] Starting:', step.titlePath.join(' > '));
+
+    await page.goto('/products/laptop');
+    await page.getByRole('button', { name: 'Add to Cart' }).click();
+    await expect(page.getByTestId('cart-count')).toHaveText('1');
+
+    console.log('[STEP] Completed:', step.titlePath.join(' > '));
+  });
+
+  await test.step('proceed to checkout', async (step) => {
+    // Unconditional skip — this step is currently broken and tracked separately
+    // Appears as "skipped" in the HTML report with the reason visible
+    step.skip(); // no condition — always skipped; equivalent to commenting out but traceable
+
+    await page.getByRole('link', { name: 'Checkout' }).click();
+    await page.waitForURL('**/checkout');
+  });
+
+  // Test continues here even though the previous step was skipped
+  await test.step('verify cart contents', async () => {
+    await page.goto('/cart');
+    await expect(page.getByTestId('cart-item-laptop')).toBeVisible();
+  });
+});
+```
+
+**TestStepInfo.skip() overloads:**
+
+```typescript
+// From Playwright's type definitions (v1.53+):
+interface TestStepInfo {
+  /** Abort the currently running step and mark it as skipped. */
+  skip(): void;
+  /** Conditionally abort the currently running step and mark it as skipped. */
+  skip(condition: boolean, description?: string): void;
+  /** Full title path from test file to this step. */
+  readonly titlePath: string[];
+}
+```
+
+**When to use `TestStepInfo.skip()` vs. `test.step.skip()` (Pattern 61):**
+
+| API | Version | Use case |
+|-----|---------|----------|
+| `test.step.skip()` (static) | v1.55+ | Skip a step at the call site — the entire step body is never created |
+| `TestStepInfo.skip()` (runtime) | v1.53+ | Skip from inside the step body — useful for conditional logic involving runtime values (e.g., `browserName`, feature flags) |
+
+Use `test.step.skip()` when the skip decision is static (known at write time).
+Use `TestStepInfo.skip(condition, description)` when the skip decision depends on runtime
+values not available until the step executes.
+
+---
+
+## Pattern 80 — Playwright v1.60 `testInfoError.errorContext` for Aria-Snapshot Flakiness Diagnosis  [official]
+
+Playwright v1.60 added `testInfoError.errorContext` — a property that provides the accessibility
+tree (ARIA snapshot) of the page element that was the target of a failing `expect()` matcher at
+the moment of failure. This captures the DOM state that the assertion saw, making it possible to
+diagnose flakiness root causes from CI artifacts without re-running the test manually.
+
+**Why this matters for flakiness:** The most common question when a Playwright assertion flakes is
+"what did the DOM look like at the moment of failure?" Previously, you needed a trace or screenshot
+to answer this. `errorContext` provides a lightweight, text-representable answer — the element's
+accessibility tree — that is embedded directly in the test result and reportable in JUnit XML,
+step summary, and CI dashboards without loading a trace file.
+
+```typescript
+// playwright — accessing errorContext in a custom reporter for flakiness diagnosis
+// Reporters receive TestResult objects which include an array of TestResultError
+
+import type { Reporter, TestCase, TestResult, TestResultError } from '@playwright/test/reporter';
+
+class FlakinessContextReporter implements Reporter {
+  onTestEnd(test: TestCase, result: TestResult): void {
+    if (result.status !== 'failed' && result.status !== 'flaky') return;
+
+    for (const error of result.errors) {
+      // errorContext is present when the failure is from an expect() matcher
+      // It contains additional diagnostic context such as the ARIA snapshot
+      const ctx = (error as TestResultError & { errorContext?: string }).errorContext;
+      if (ctx) {
+        console.error(`[FLAKY CONTEXT] Test: "${test.title}"`);
+        console.error(`[FLAKY CONTEXT] Error: ${error.message?.slice(0, 100)}`);
+        console.error(`[FLAKY CONTEXT] ARIA snapshot at failure:\n${ctx}`);
+        // In a real reporter, write this to a structured log or attach to the CI summary
+      }
+    }
+  }
+}
+
+export default FlakinessContextReporter;
+```
+
+```typescript
+// playwright.config.ts — include custom reporter alongside standard reporters
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: process.env.CI ? 2 : 0,
+  failOnFlakyTests: !!process.env.CI,
+
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    ['junit', { outputFile: 'test-results/results.xml' }],
+    // Custom reporter that surfaces errorContext ARIA snapshots in CI logs
+    ['./reporters/flakiness-context-reporter.ts'],
+  ],
+  use: {
+    trace: 'on-first-retry',
+  },
+});
+```
+
+```typescript
+// Using errorContext in a test's afterEach for inline flakiness diagnosis
+// Useful during active investigation of a specific known-flaky test case
+import { test, expect } from '@playwright/test';
+
+test.afterEach(async ({}, testInfo) => {
+  // Only log diagnostics when a test case failed after all retries
+  if (testInfo.status !== 'failed') return;
+
+  for (const error of testInfo.errors) {
+    // TypeScript: errorContext is typed as string | undefined in Playwright v1.60+
+    const ctx = (error as { errorContext?: string }).errorContext;
+    if (ctx) {
+      console.error(
+        `\n[ARIA SNAPSHOT at failure]\n` +
+        `Test: ${testInfo.title}\n` +
+        `Step: ${testInfo.titlePath.join(' > ')}\n` +
+        `Context:\n${ctx}\n`
+      );
+    }
+  }
+});
+
+test('product page shows correct price', async ({ page }) => {
+  await page.goto('/products/laptop-pro');
+  // If this flakes (e.g., price renders with stale cached value), the afterEach above
+  // will print the ARIA snapshot of #product-price at the moment the assertion failed —
+  // telling you what text was actually in the element
+  await expect(page.getByTestId('product-price')).toHaveText('$999.00');
+});
+```
+
+**What `errorContext` contains:**
+
+When an `expect(locator).toHaveText(...)` or `expect(locator).toBeVisible()` fails,
+`errorContext` contains the accessibility representation of the locator's matched element
+at the time of failure. For example:
+```
+heading "Laptop Pro" [focused]
+  text "$1099.00"  ← actual value — stale cache served an old price
+```
+
+This is more actionable than a generic timeout message and more lightweight than a full
+trace file. It is especially useful for diagnosing **content flakiness** — where an element
+is present but has wrong text (e.g., stale server-side cache, race between price update
+and page render).
+
+**Caveats:**
+- `errorContext` is only populated for `expect(locator)` failures where the locator can be
+  evaluated — it is `undefined` for timeout failures, network errors, and non-locator assertions.
+- The ARIA snapshot reflects the element's accessibility tree, not raw HTML — dynamic `data-*`
+  attributes and CSS class names are not included unless they have an ARIA mapping.
+
+---
+
+## Pattern 81 — Vitest 4.1 `test.meta` for Custom Flakiness Metadata in Reporters  [official]
+
+Vitest 4.1 introduced the `meta` test option, which attaches arbitrary key-value metadata to
+a test case. Metadata is available to reporters via the `TaskMeta` object on each task result.
+For flakiness management, `meta` enables teams to embed structured quarantine information
+(ticket number, owner, flakiness root cause family) directly on the test case — making the
+metadata machine-readable by dashboards and custom reporters without parsing comment strings.
+
+**Why this matters for flakiness:** Existing quarantine patterns rely on comments
+(`// [QUARANTINE] PROJ-1234`) or test name prefixes (`it.skip('[QUARANTINE] ...')`) that are
+human-readable but hard to query programmatically. `test.meta` makes quarantine metadata
+first-class, enabling automated reports like "all flaky tests tagged `timing`, opened > 14 days
+ago, with no owner assigned."
+
+```typescript
+// Extended TaskMeta interface — augment Vitest's types for strict metadata checking
+// Add to vitest-env.d.ts or a global type declaration file
+
+declare module 'vitest' {
+  interface TaskMeta {
+    /** JIRA/Linear/GitHub issue number tracking this flaky test's root cause */
+    quarantineIssue?: string;
+    /** GitHub handle of the engineer responsible for the fix */
+    owner?: string;
+    /** Resolution SLA — ISO date string */
+    sla?: string;
+    /** Flakiness root cause family (see Root Causes Taxonomy, Pattern 1) */
+    flakinessFamily?: 'timing' | 'shared-state' | 'external-dep' | 'order-dependency' | 'randomness';
+    /** Estimated flakiness rate as observed in CI (e.g., 0.15 = 15%) */
+    flakinessRate?: number;
+    /** Whether this test should be skipped in CI while quarantined */
+    quarantineSkip?: boolean;
+  }
+}
+```
+
+```typescript
+// Usage: attach structured metadata to quarantined test cases
+import { describe, it, expect } from 'vitest';
+
+describe('PaymentGateway — integration', () => {
+  // Standard test: no meta needed
+  it('rejects invalid card', async () => {
+    const gw = new PaymentGateway({ endpoint: process.env.GATEWAY_URL! });
+    await expect(gw.charge({ cardNumber: '0000', amount: 10_00 }))
+      .rejects.toThrow('invalid card');
+  });
+
+  // Quarantined test: structured metadata for dashboard tracking
+  it(
+    'processes refund webhook within 5 seconds',
+    {
+      meta: {
+        quarantineIssue: 'PROJ-3012',
+        owner: '@bob',
+        sla: '2026-05-30',
+        flakinessFamily: 'timing',
+        flakinessRate: 0.12,   // observed 12% failure rate in nightly sweep
+        quarantineSkip: true,  // skip in CI — active quarantine
+      },
+      // Combine meta with conditional skip: skip in CI when quarantine is active
+      skip: process.env.CI === 'true',
+    },
+    async () => {
+      const gw = new PaymentGateway({ endpoint: process.env.GATEWAY_URL! });
+      const refund = await gw.refund({ transactionId: 'TXN-001', amount: 50_00 });
+      expect(refund.status).toBe('refunded');
+    }
+  );
+});
+```
+
+```typescript
+// Custom Vitest reporter: generate a quarantine dashboard from test.meta
+// Add to vitest.config.ts reporters list: ['./reporters/quarantine-dashboard.ts']
+import type { Reporter, RunnerTestFile } from 'vitest';
+import { writeFileSync } from 'fs';
+
+interface QuarantineEntry {
+  title: string;
+  issue: string;
+  owner: string;
+  sla: string;
+  flakinessFamily: string;
+  flakinessRate: number;
+  ageInDays: number;
+}
+
+export default class QuarantineDashboardReporter implements Reporter {
+  onFinished(files?: RunnerTestFile[]): void {
+    if (!files) return;
+
+    const quarantined: QuarantineEntry[] = [];
+
+    for (const file of files) {
+      for (const suite of (file.tasks ?? [])) {
+        for (const task of (Array.isArray((suite as any).tasks) ? (suite as any).tasks : [suite])) {
+          const meta = task.meta as Record<string, unknown> | undefined;
+          if (meta?.quarantineIssue) {
+            const slaDate = new Date(meta.sla as string);
+            const ageInDays = Math.floor((Date.now() - slaDate.getTime()) / 86_400_000);
+            quarantined.push({
+              title: task.name as string,
+              issue: meta.quarantineIssue as string,
+              owner: (meta.owner as string) ?? 'unassigned',
+              sla: meta.sla as string,
+              flakinessFamily: (meta.flakinessFamily as string) ?? 'unknown',
+              flakinessRate: (meta.flakinessRate as number) ?? 0,
+              ageInDays: Math.abs(ageInDays),
+            });
+          }
+        }
+      }
+    }
+
+    if (quarantined.length === 0) {
+      console.log('[QuarantineDashboard] No quarantined tests.');
+      return;
+    }
+
+    // Write machine-readable JSON for dashboard ingestion
+    const report = {
+      generatedAt: new Date().toISOString(),
+      totalQuarantined: quarantined.length,
+      byFamily: quarantined.reduce<Record<string, number>>((acc, e) => {
+        acc[e.flakinessFamily] = (acc[e.flakinessFamily] ?? 0) + 1;
+        return acc;
+      }, {}),
+      tests: quarantined.sort((a, b) => b.flakinessRate - a.flakinessRate), // highest rate first
+    };
+
+    writeFileSync('quarantine-report.json', JSON.stringify(report, null, 2));
+    console.log(`[QuarantineDashboard] ${quarantined.length} quarantined tests — report: quarantine-report.json`);
+
+    // Alert if any test is past its SLA
+    const overdue = quarantined.filter(e => new Date(e.sla) < new Date());
+    if (overdue.length > 0) {
+      console.error(`[QuarantineDashboard] OVERDUE SLA: ${overdue.length} test(s):`);
+      overdue.forEach(e => console.error(`  - ${e.issue}: "${e.title}" (owner: ${e.owner})`));
+      process.exitCode = 1; // fail the build if quarantine SLAs are overdue
+    }
+  }
+}
+```
+
+**Migration from comment-based quarantine to `test.meta`:**
+
+| Old approach | New approach |
+|---|---|
+| `// [QUARANTINE] PROJ-1234 \| owner: @bob \| SLA: 2026-05-30` | `meta: { quarantineIssue: 'PROJ-1234', owner: '@bob', sla: '2026-05-30' }` |
+| `grep -r '\[QUARANTINE\]'` to find all quarantined tests | Query `quarantine-report.json` for structured data |
+| Manual count of quarantined tests in check-quarantine-backlog.ts (Pattern 3) | Reporter reads `task.meta.quarantineIssue` automatically |
+
+Both approaches can coexist during migration — the Pattern 3 backlog check continues to work on
+`[QUARANTINE]` comment markers, while new tests use `meta` for richer, machine-readable tracking.
+
+---
+
+## Anti-Patterns (iteration 51)
+
+### AP41 — Conditional Retry Masking Real Failures with Overly Broad Predicates  [community]
+
+**What:** Setting `retry.condition` to a function that returns `true` for too many error types —
+effectively making the conditional retry behave like an unconditional retry.
+
+**Why harmful:** A common example is returning `true` for all `Error` instances, or catching
+`AssertionError` alongside network errors. When an assertion like `expect(order.status).toBe('refunded')`
+fails because the code is genuinely broken (not flaky), the retry gives the broken code two
+more chances to pass — and on the third failure, the signal is "infrastructure flakiness" rather
+than "application defect". This is worse than unconditional retry because it adds a misleading
+semantic: the developer sees "retried (condition matched)" and assumes transient infrastructure
+failure rather than investigating the assertion.
+
+**Fix:** Write predicates that match ONLY the specific error text that characterizes your
+infrastructure's transient failures. Test the predicate against real failure logs before deploying.
+Add a log statement inside the predicate to confirm it fires only on expected errors.
+
+```typescript
+// BAD: predicate catches AssertionErrors — retries real code defects
+const retry = {
+  count: 2,
+  condition: (error: TestError) => error instanceof Error, // too broad — matches EVERYTHING
+};
+
+// ALSO BAD: regexes that match common assertion output
+const retry2 = {
+  count: 2,
+  condition: /expected|received|toBe/, // matches Jest/Vitest assertion output — retries real failures
+};
+
+// GOOD: predicate only matches infrastructure error messages
+const retry3 = {
+  count: 2,
+  delay: 500,
+  condition: /ECONNRESET|ECONNREFUSED|socket hang up|503 Service Unavailable/i,
+};
+
+// GOOD: function predicate with explicit exclusion of assertion errors
+const retry4 = {
+  count: 2,
+  condition: (error: TestError) => {
+    const msg = error.message;
+    // Never retry assertion failures
+    if (/AssertionError|expect\(received\)|expected .+ to equal/i.test(msg)) return false;
+    // Retry only known infrastructure patterns
+    return /(ECONNRESET|ECONNREFUSED|timeout|503)/i.test(msg);
+  },
+};
+```
+
+---
+
+## Quick Reference additions (iteration 51)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Global retry hides genuine assertion failures as "flaky" | Unconditional retry | Pattern 78 (conditional retry with error predicate) | AP41 (overly broad condition predicate) |
+| One step in a multi-browser E2E flow fails on specific browser | Browser-specific defect, not suite-wide flakiness | Pattern 79 (TestStepInfo.skip(condition)) | Quarantining the entire test case for a browser-specific step |
+| Flaky assertion: "what did the DOM look like when it failed?" | No element snapshot at failure | Pattern 80 (testInfoError.errorContext aria snapshot) | Relying on full trace file for every content-flakiness diagnosis |
+| Quarantine comment strings are hard to query for dashboards | Comment-only metadata | Pattern 81 (test.meta for machine-readable quarantine) | grep-based quarantine counting with no structured metadata |
+
+---
+
+## Key Resources (iteration 51 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest retry option (object form) | Official | https://vitest.dev/api/#test-retry | `count`, `delay`, `condition` fields — conditional retry by error type (v4.1) |
+| Playwright TestStepInfo | Official | https://playwright.dev/docs/api/class-teststepinfo | `skip()`, `skip(condition, description)`, `titlePath` — step-level quarantine (v1.53) |
+| Playwright testInfoError.errorContext | Official | https://playwright.dev/docs/api/class-testinfoerror#test-info-error-error-context | ARIA snapshot of failing element at assertion time — lightweight content-flakiness diagnosis (v1.60) |
+| Vitest test.meta / TaskMeta | Official | https://vitest.dev/api/#test-meta | Machine-readable test metadata for reporters — enables structured quarantine dashboards (v4.1) |

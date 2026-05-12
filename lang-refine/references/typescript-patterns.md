@@ -1,6 +1,12 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 32 (2026-05-12): added two missing TS 6.0 default changes to the defaults table
+       (noUncheckedSideEffectImports → true by default; libReplacement → false by default);
+       added pprof-it CPU profiling tool to Performance Diagnostics; added TSServer editor
+       tracing setting ("typescript.tsserver.enableTracing") to editor performance flags section;
+       sourced from typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html and
+       github.com/microsoft/TypeScript/wiki/Performance (re-verified 2026-05-12)
      Iter 31 (2026-05-12): added TypeScript 6.0 Removed vs Deprecated precision table — clarifies
        which options are fully removed vs only deprecated (es5 target removed, moduleResolution classic
        removed, esModuleInterop false/allowSyntheticDefaultImports false removed, no-default-lib removed,
@@ -1730,6 +1736,8 @@ TypeScript 6.0 is a **breaking transition release**. All deprecated options work
 | `target` | `es5` | `es2025` | Modern JavaScript assumed; no downleveling. **Note: `"target": "es5"` is fully removed (hard error), not just deprecated.** |
 | `types` | `["*"]` (all @types) | `[]` (none) | Must add `"types": ["node"]` etc. explicitly |
 | `rootDir` | inferred | `.` (tsconfig dir) | May shift output directory structure |
+| `noUncheckedSideEffectImports` | `false` | `true` | Side-effect imports (`import "./polyfill"`) that TypeScript cannot resolve now error by default — catches typos in CSS/polyfill imports |
+| `libReplacement` | `true` | `false` | In TS 5.8 `libReplacement: true` let tools swap `lib.*.d.ts` files; TS 6.0 now defaults to `false` (opt-in). Most projects unaffected. |
 
 **New ECMAScript APIs added in TS 6.0 (`"target": "es2025"`):**
 
@@ -3122,6 +3130,12 @@ npx tsc --generateTrace ./trace-output --noEmit
 # Open trace-output/trace.json in https://ui.perfetto.dev
 # Prefer @typescript/analyze-trace for a text summary: npx @typescript/analyze-trace ./trace-output
 
+# Alternative: pprof-it — smaller, more readable CPU profiles than --generateCpuProfile
+# Produces a pprof-format profile viewable in https://profiler.firefox.com or pprof CLI
+npx pprof-it tsc --noEmit
+# pprof-it wraps the TypeScript compiler and captures a V8 CPU profile in pprof format.
+# Use when analyze-trace shows a hot path inside the compiler itself (not in your types).
+
 # Find the 10 slowest type instantiations
 npx tsc --extendedDiagnostics 2>&1 | grep "Instantiations" -A 20
 ```
@@ -3159,6 +3173,21 @@ npx tsc --extendedDiagnostics 2>&1 | grep "Instantiations" -A 20
 ```
 
 These two flags have zero effect on `tsc --build` (command-line compilation) — they only control editor behavior. They are safe to add to any `tsconfig.json` in a multi-project workspace.
+
+**TSServer tracing — diagnose editor-specific performance issues:**
+
+When VS Code feels slow (slow completions, delayed type-checking overlays) rather than slow builds, the problem is in `tsserver` rather than `tsc`. Enable TSServer tracing in VS Code to capture a detailed log of what the language service is doing:
+
+```json
+// .vscode/settings.json — enable TSServer tracing for one session
+{
+  "typescript.tsserver.enableTracing": true
+}
+```
+
+After enabling, reproduce the slowdown, then open the output panel → "TypeScript" to find the trace file path. The trace logs every request the editor sends to `tsserver` and how long each response took. Look for `completions`, `getSemanticDiagnostics`, or `references` calls that take >500ms — those indicate which language service operation is the bottleneck. Disable tracing after investigation; the log files are large.
+
+[community] **Pitfall:** Teams debugging editor slowness often immediately reach for `--generateTrace` (a build-time tool) when the real bottleneck is in `tsserver`'s language service. Build traces capture type-checking during `tsc --build`; TSServer traces capture the different code path that runs during interactive editing. If your build is fast but your IDE is slow, use TSServer tracing, not `--generateTrace`.
 
 ---
 

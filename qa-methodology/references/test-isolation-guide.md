@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 16 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 17 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -26,6 +26,14 @@
 <!--          Jest config: workerIdleMemoryLimit, resetModules, showSeed+randomize (jestjs.io)       -->
 <!--          jest-util protectProperties for globalsCleanup exemption,                              -->
 <!--          Vitest test tags + TestRunner.matchesTags() for conditional setup (2026-05-12)         -->
+<!--          Vitest 4.1 vi.setTimerTickMode (manual/nextTimerAsync/interval),                       -->
+<!--          Vitest 3.2 vi.mockObject with spy option (vitest.dev/api/vi#vi-mockobject),             -->
+<!--          Vitest 4.1 test.override (replaces deprecated test.scoped),                             -->
+<!--          Vitest 4.1 FixtureAccessError for undefined fixture access in suite hooks,              -->
+<!--          Vitest 4.1 vi.doMock() disposable return + vi.defineHelper() stack-trace cleanup,      -->
+<!--          Vitest fixture scope hierarchy (worker > file > test) — vitest.dev/guide/test-context, -->
+<!--          Vitest 4.1 Chai-style mock assertions (.to.have.been.called),                          -->
+<!--          martinfowler.com/articles/nonDeterminism.html — teardown exception cascade taxonomy     -->
 
 ---
 
@@ -3118,3 +3126,530 @@ describe('AuditService — scoped implementation overrides', () => {
 | Jest Config — `showSeed` + `randomize` | Official | https://jestjs.io/docs/configuration#showseed-boolean | Prints randomization seed to reproduce order-dependent failures with `--seed=<N>` |
 | Vitest Guide — Test Tags | Official | https://vitest.dev/guide/test-tags.html | Tag-based test categorization; `TestRunner.matchesTags()` for conditional expensive setup |
 | `jest-util` — `protectProperties` | Official | https://jestjs.io/docs/configuration#testEnvironmentOptions | Exempts specific globals from `globalsCleanup: 'on'` sweep |
+
+---
+
+## Community Lessons — Iteration 17  [community]
+
+68. **`vi.setTimerTickMode('nextTimerAsync')` eliminates manual `advanceTimersByTime()` boilerplate in promise-heavy async tests.** [community]
+    Vitest 4.1 adds `vi.setTimerTickMode()` with three modes: `'manual'` (default), `'nextTimerAsync'`, and `'interval'`. The `nextTimerAsync` mode automatically advances fake timers to the next pending callback after each macrotask resolves — eliminating the need to manually call `vi.advanceTimersByTime()` for every `await` in async code. Teams testing code with interleaved `setTimeout`/`setInterval` and Promise chains frequently discover that `advanceTimersByTime()` fires callbacks in the wrong phase because the awaited microtask queue has not yet drained. `nextTimerAsync` solves this by synchronizing timer advancement with the microtask boundary. WHY: `advanceTimersByTime` is a synchronous operation that fires pending timers immediately, but async code expects timers to fire *after* awaited Promises resolve. The mismatch causes tests where `await somePromise()` never resolves because the timer that resolves it was already consumed.
+    ```typescript
+    // vitest: nextTimerAsync mode — automatic timer advancement between awaits
+    import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+    import { RetryQueue } from './retryQueue';
+
+    describe('RetryQueue — nextTimerAsync mode', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setTimerTickMode('nextTimerAsync'); // automatically advance between awaits
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('retries with exponential backoff and eventually resolves', async () => {
+        const handler = vi.fn<() => Promise<string>>()
+          .mockRejectedValueOnce(new Error('transient'))
+          .mockResolvedValue('success');
+
+        const queue = new RetryQueue(handler, { baseDelay: 1000, maxRetries: 3 });
+
+        // With nextTimerAsync, awaiting the result auto-advances through each retry delay
+        // No manual advanceTimersByTime(1000) calls needed between retries
+        const result = await queue.enqueue('job-1');
+
+        expect(result).toBe('success');
+        expect(handler).toHaveBeenCalledTimes(2); // 1 fail + 1 success
+      });
+
+      it('rejects after max retries are exhausted', async () => {
+        const handler = vi.fn<() => Promise<string>>()
+          .mockRejectedValue(new Error('permanent'));
+
+        const queue = new RetryQueue(handler, { baseDelay: 500, maxRetries: 2 });
+
+        await expect(queue.enqueue('job-2')).rejects.toThrow('permanent');
+        expect(handler).toHaveBeenCalledTimes(3); // initial + 2 retries
+      });
+    });
+    ```
+    **When NOT to use:** `nextTimerAsync` mode can cause unexpected timer advancement if test code contains `await Promise.resolve()` gaps that you intended to use as checkpoints. Use `'manual'` mode when you need precise control over which timer fires and when — for example, when asserting intermediate states between timer ticks.
+
+69. **`vi.mockObject({ spy: true })` enables call verification without replacing implementations — the isolation-preserving spy alternative to `vi.mock()`.** [community]
+    `vi.mockObject(obj, { spy: true })` (Vitest 3.2+) deeply wraps an object's methods with spy instrumentation while preserving the original implementation. This is the idiomatic choice when you need to verify that a real collaborator was called correctly without replacing its behavior — as opposed to `vi.mock()` which replaces the entire module with stubs. The key isolation advantage: `{ spy: true }` preserves production behavior for happy-path tests while still tracking calls, removing the need for a separate integration test just to verify "was the method actually called." WHY: teams that reach for `vi.mock()` as a default to verify call counts pay the price of maintaining stub implementations that drift from the real interface. `vi.mockObject({ spy: true })` stays in sync automatically because the real implementation remains active.
+    ```typescript
+    import { describe, it, expect, vi, afterEach } from 'vitest';
+    import { EmailValidator } from './emailValidator';
+    import { UserRegistrationService } from './userRegistrationService';
+
+    describe('UserRegistrationService — spy without stub', () => {
+      // Spy on the real EmailValidator — real validation logic runs, but calls are tracked
+      const validator = vi.mockObject(new EmailValidator(), { spy: true });
+      const service = new UserRegistrationService(validator);
+
+      afterEach(() => {
+        // Reset call history; real implementation remains unchanged
+        vi.clearAllMocks();
+      });
+
+      it('validates the email address before persisting the user', async () => {
+        await service.register({ email: 'alice@example.com', name: 'Alice' });
+
+        // Verify the real validator was called — no stub needed, real logic ran
+        expect(validator.validate).toHaveBeenCalledWith('alice@example.com');
+        expect(validator.validate).toHaveBeenCalledTimes(1);
+      });
+
+      it('rejects invalid email addresses using real validation logic', async () => {
+        // The real validator actually runs — this is NOT a stub returning a canned value
+        await expect(
+          service.register({ email: 'not-an-email', name: 'Bob' }),
+        ).rejects.toThrow(/invalid email/i);
+      });
+    });
+    ```
+    **When to prefer over `jest.Mocked<T>` / `vi.mocked()`:** Use `{ spy: true }` when the collaborator's real logic matters for the test (e.g., format validation, calculations). Use full mocking when you need to control return values or simulate failures the real object cannot produce.
+
+70. **`test.override()` (Vitest 4.1) replaces deprecated `test.scoped` — use it to apply fixture overrides to a suite without a wrapper `test.extend()`.** [community]
+    `test.override(fixtureName, value)` overrides a named fixture for all tests within the current `describe` block and its nested suites. It is the successor to the deprecated `test.scoped` API, which had implicit scoping semantics. The key isolation benefit: suites testing different configuration variants (e.g., prod vs staging, auth vs unauth) can override a `config` fixture locally without affecting other test suites. Without `test.override`, teams resort to either (a) a wrapper `test.extend()` that creates a new `test` object per describe block, or (b) mutating module-level variables in `beforeEach` — both worse options. WHY: the fixture override is scoped to the `describe` block's lifetime by the Vitest framework, ensuring it cannot leak into sibling or parent suites — unlike `beforeEach` mutation which requires manual restore.
+    ```typescript
+    import { test as baseTest, describe, expect } from 'vitest';
+    import type { AppConfig } from './config';
+
+    // Base fixture providing default config
+    const test = baseTest.extend<{ config: AppConfig }>({
+      config: async ({}, use) => {
+        await use({ environment: 'development', apiUrl: 'http://localhost:3000', timeout: 5000 });
+      },
+    });
+
+    // Default suite — uses config from the fixture as-is
+    describe('UserService — development', () => {
+      test('uses the development API URL', ({ config }) => {
+        expect(config.apiUrl).toBe('http://localhost:3000');
+      });
+    });
+
+    // Production suite — overrides config fixture; sibling describe is unaffected
+    describe('UserService — production', () => {
+      // test.override replaces the fixture value for ALL tests in this describe block
+      test.override('config', { environment: 'production', apiUrl: 'https://api.example.com', timeout: 30000 });
+
+      test('uses the production API URL', ({ config }) => {
+        expect(config.apiUrl).toBe('https://api.example.com');
+        expect(config.timeout).toBe(30000);
+      });
+
+      test('has the production environment label', ({ config }) => {
+        expect(config.environment).toBe('production');
+      });
+    });
+
+    // This suite is unaffected — fixture value is back to development defaults
+    describe('UserService — staging', () => {
+      test.override('config', { environment: 'staging', apiUrl: 'https://staging.api.example.com', timeout: 10000 });
+
+      test('uses the staging API URL', ({ config }) => {
+        expect(config.apiUrl).toBe('https://staging.api.example.com');
+      });
+    });
+    ```
+    **Migration from `test.scoped`:** Replace `test.scoped({ fixtureName: value })` with `test.override(fixtureName, value)`. The semantics are the same; `test.scoped` was deprecated in Vitest 4.1 and will be removed in a future major version.
+
+71. **`FixtureAccessError` in Vitest 4.1 surfaces the root cause of a common suite-level hook isolation bug.** [community]
+    Vitest 4.1 throws a `FixtureAccessError` when a suite-level hook (`beforeAll` / `afterAll`) tries to access a test-scoped fixture — a fixture that has no value outside an individual test body. Before 4.1, the undefined fixture would be silently passed as `undefined`, causing confusing `TypeError: Cannot read properties of undefined` failures attributed to unrelated test code. WHY: test-scoped fixtures are created fresh per test and destroyed after the test ends. They are meaningless at the `beforeAll` level (before any test runs) or `afterAll` level (after all tests have run). The correct fix is to either: (a) use `test.beforeAll` (which receives the fixture context only if the suite's `test.extend` provides it) or (b) upgrade the fixture's scope from `'test'` (default) to `'file'` or `'worker'` if it should survive multiple tests.
+    ```typescript
+    import { test as baseTest, describe, expect, beforeAll } from 'vitest';
+    import { createDbConnection, closeDbConnection } from './db';
+
+    const test = baseTest.extend<{ db: ReturnType<typeof createDbConnection> }>({
+      // Default scope is 'test' — a fresh db per test
+      db: async ({}, use) => {
+        const conn = await createDbConnection();
+        await use(conn);
+        await closeDbConnection(conn);
+      },
+    });
+
+    describe('DataService', () => {
+      // BROKEN in Vitest 4.1 — throws FixtureAccessError because `db` is test-scoped
+      // beforeAll(({ db }) => { db.seed(); }); // FixtureAccessError!
+
+      // CORRECT — use test.beforeAll to access fixture context
+      test.beforeAll(async ({ db }) => {
+        // test.beforeAll receives the fixture context from test.extend
+        await db.seed();
+      });
+
+      test('reads a seeded record', async ({ db }) => {
+        const record = await db.findById('seed-1');
+        expect(record).toBeDefined();
+      });
+    });
+
+    // ALTERNATIVE — upgrade scope to 'file' if the db should be shared across tests
+    const sharedTest = baseTest.extend<{ db: ReturnType<typeof createDbConnection> }>({
+      db: {
+        scope: 'file', // One db connection per file — accessible in beforeAll/afterAll
+        async fixture({}, use) {
+          const conn = await createDbConnection();
+          await use(conn);
+          await closeDbConnection(conn);
+        },
+      },
+    });
+    ```
+
+72. **`vi.doMock()` now returns a disposable (Vitest 4.1) — enabling `using`-based mock cleanup without `vi.doUnmock()`.** [community]
+    `vi.doMock()` (the non-hoisted counterpart to `vi.mock()`) now returns a `Disposable` object in Vitest 4.1. Combined with TypeScript 5.2's `using` keyword, this allows mock registration and cleanup to be co-located in the test body — the mock is automatically unregistered when the block scope exits. This solves the primary ordering problem with `vi.doMock()`: teams previously needed to remember to call `vi.doUnmock()` in `afterEach`, and forgetting it caused the mock to persist into subsequent tests. WHY: `vi.mock()` is hoisted (runs before module imports), which is correct for most module mocks. `vi.doMock()` is called at runtime (inside the test body), which is needed when the mock factory depends on runtime values. The disposable pattern eliminates the cleanup burden for the runtime-mock use case.
+    ```typescript
+    import { describe, it, expect, vi } from 'vitest';
+
+    describe('feature flag module isolation (vi.doMock disposable)', () => {
+      it('uses the real analytics module when flag is off', async () => {
+        // doMock returns a Disposable — using ensures cleanup when this test ends
+        using _mock = vi.doMock('./analytics', () => ({
+          track: vi.fn().mockResolvedValue(undefined),
+        }));
+
+        // Dynamic import picks up the mock registered above
+        const { track } = await import('./analytics');
+
+        track('event', { userId: 'u1' });
+
+        expect(track).toHaveBeenCalledWith('event', { userId: 'u1' });
+        // When this test ends, _mock[Symbol.dispose]() is called — vi.doUnmock('./analytics') fires
+        // The next test that imports './analytics' gets the real module
+      });
+
+      it('real analytics module is restored — no mock leak', async () => {
+        // This test sees the real module because the previous test's `using` disposed the mock
+        const { track } = await import('./analytics');
+        // track is the real implementation — calling it does not use a mock
+        expect(vi.isMockFunction(track)).toBe(false);
+      });
+    });
+    ```
+    **When to prefer over `vi.mock()`:** Use `vi.doMock()` with `using` when the mock factory depends on a runtime variable (e.g., a test-specific configuration value) that is not available at module-parse time. Use `vi.mock()` when the mock is the same for all tests in the file and can be declared at file scope.
+
+73. **`vi.defineHelper()` isolates assertion helper internals from test stack traces — critical for diagnosing isolation failures in shared helper libraries.** [community]
+    Vitest 4.1's `vi.defineHelper(fn)` wraps a function so that when an assertion inside the helper fails, the stack trace points to the *call site* (where the helper was invoked in the test) rather than the assertion line inside the helper. Without this, shared test assertion helpers produce stack traces that look like: `AssertionError at helper.ts:42` — making it impossible to quickly identify which test triggered the failure. WHY: in test suites that share assertion helpers for common domain checks (e.g., `expectValidApiResponse(res)`, `expectIsolatedDatabase(conn)`), the assertion point is meaningless without call-site attribution. `vi.defineHelper` is the Vitest analogue of `expect.extend` (which does the same for custom matchers) but for arbitrary helper functions.
+    ```typescript
+    import { expect, vi } from 'vitest';
+    import type { HttpResponse } from '../src/types';
+
+    // WITHOUT vi.defineHelper — stack trace points to line 9 (inside the helper), not the call site
+    export function expectValidApiResponse(res: HttpResponse): void {
+      expect(res.status).toBeGreaterThanOrEqual(200);
+      expect(res.status).toBeLessThan(300);
+      expect(res.body).toBeDefined();
+      expect(res.headers['content-type']).toMatch(/application\/json/);
+    }
+
+    // WITH vi.defineHelper — stack trace points to where expectValidApiResponse() was called
+    export const expectValidApiResponseSafe = vi.defineHelper(
+      function expectValidApiResponse(res: HttpResponse): void {
+        expect(res.status).toBeGreaterThanOrEqual(200);
+        expect(res.status).toBeLessThan(300);
+        expect(res.body).toBeDefined();
+        expect(res.headers['content-type']).toMatch(/application\/json/);
+      }
+    );
+
+    // In tests — when the second version fails, you see WHICH test called it, not WHERE inside the helper
+    import { test, expect } from 'vitest';
+    import { expectValidApiResponseSafe } from './testHelpers';
+
+    test('GET /users returns a valid JSON response', async () => {
+      const res = await fetch('http://localhost:3000/users').then(r =>
+        r.json().then(body => ({ status: r.status, body, headers: Object.fromEntries(r.headers) }))
+      );
+
+      // If this fails, stack trace shows THIS LINE — not line 9 in testHelpers.ts
+      expectValidApiResponseSafe(res);
+    });
+    ```
+    **Isolation relevance:** When an isolation helper (`expectIsolatedDatabase`, `expectCleanEnvironment`) fails and the stack trace points into the helper, teams waste time investigating the helper code rather than the test that triggered the contamination. `vi.defineHelper` makes isolation failures immediately attributable.
+
+74. **Vitest fixture scope hierarchy (worker > file > test) determines the isolation boundary — mismatched scopes are a silent source of cross-test contamination.** [community]
+    Vitest's `test.extend()` fixtures have four scopes: `'test'` (default, fresh per test), `'file'` (shared across all tests in one file), `'worker'` (shared across all files processed by the same worker process), and `'suite'` (shared within a describe block). Choosing the wrong scope is one of the most common fixture-related isolation bugs, because the framework does not warn when a test-scoped fixture depends on a file-scoped one that has already been torn down. The scope contract: a fixture can only use fixtures with equal or longer-lived scope (worker ≥ file ≥ suite ≥ test). Violating this causes `FixtureAccessError` in Vitest 4.1 (Gotcha 71) — but in earlier versions, it produced silent `undefined` dependencies. WHY: teams building test frameworks on top of Vitest often start with file-scoped shared databases, then discover that tests that write data corrupt subsequent tests in the same file because the teardown only runs at end-of-file, not between tests. The fix is either transaction rollback within each test (using `aroundEach`, Pattern 24) or downgrading the database fixture to test scope with a fresh connection per test.
+    ```typescript
+    import { test as baseTest } from 'vitest';
+    import { seedData } from './testHelpers/seed';
+    import { createConnection, closeConnection } from './db';
+
+    // Scope hierarchy example — matching fixture lifetime to test requirements
+    const test = baseTest.extend({
+      // Worker-scoped: loaded ONCE across all files on this worker — only for read-only config
+      appConfig: {
+        scope: 'worker',
+        async fixture({}, use) {
+          const config = await loadConfig(); // expensive — do once per worker
+          await use(config);
+          // No teardown needed — config is read-only
+        },
+      },
+
+      // File-scoped: one connection per test FILE — read-only seed data
+      readonlyDb: {
+        scope: 'file',
+        async fixture({ appConfig }, use) {
+          const conn = await createConnection(appConfig.dbUrl);
+          await seedData(conn); // seed once for all tests in this file
+          await use(conn);
+          await closeConnection(conn); // runs after all tests in the file complete
+        },
+      },
+
+      // Test-scoped (default): fresh writable connection per test — for mutation tests
+      writableDb: async ({ appConfig }, use) => {
+        const conn = await createConnection(appConfig.dbUrl);
+        await use(conn);
+        await conn.query('TRUNCATE test_mutations'); // clean up mutations
+        await closeConnection(conn);
+      },
+    });
+
+    // Rule: never use writableDb in beforeAll/afterAll — those run at file scope
+    // Use test.beforeAll to access readonlyDb; use test body for writableDb
+    ```
+    **Anti-pattern to avoid:** Using a `'file'`-scoped mutable database and trying to reset it between tests in `beforeEach` — the reset is a test-level operation but the fixture is file-scoped, creating an asymmetric cleanup that leaves uncommitted transactions or orphaned rows when tests run concurrently.
+
+---
+
+## Extended Patterns — Iteration 17
+
+### Pattern 28: `vi.setTimerTickMode('nextTimerAsync')` for async retry loop isolation (TypeScript, Vitest 4.1+)  [community]
+
+`nextTimerAsync` mode removes the manual timer-advancement boilerplate from tests that interleave Promises and timers. The mode automatically fires the next pending timer callback after each macrotask completes, keeping fake timers and async code synchronized without `advanceTimersByTime()` calls between every `await`.
+
+```typescript
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ExponentialBackoff } from './exponentialBackoff';
+
+describe('ExponentialBackoff (nextTimerAsync mode)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // nextTimerAsync: timers fire automatically after each awaited Promise resolves
+    vi.setTimerTickMode('nextTimerAsync');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers(); // always restore — timer mode leaks if not reset
+  });
+
+  it('resolves on second attempt after first transient failure', async () => {
+    const operation = vi.fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('503 Service Unavailable'))
+      .mockResolvedValue('data-payload');
+
+    const backoff = new ExponentialBackoff(operation, {
+      initialDelay: 1000,
+      multiplier: 2,
+      maxAttempts: 3,
+    });
+
+    // No manual vi.advanceTimersByTime() needed — nextTimerAsync handles the 1000ms delay
+    const result = await backoff.run();
+
+    expect(result).toBe('data-payload');
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws after all attempts are exhausted', async () => {
+    const operation = vi.fn<() => Promise<string>>()
+      .mockRejectedValue(new Error('permanent failure'));
+
+    const backoff = new ExponentialBackoff(operation, {
+      initialDelay: 500,
+      multiplier: 2,
+      maxAttempts: 3,
+    });
+
+    await expect(backoff.run()).rejects.toThrow('permanent failure');
+    // 3 attempts: initial + 500ms delay + 1000ms delay
+    expect(operation).toHaveBeenCalledTimes(3);
+  });
+
+  it('manual mode: delays are not automatically advanced', async () => {
+    // Switch to manual to verify that WITHOUT nextTimerAsync, you'd need explicit advancement
+    vi.setTimerTickMode('manual');
+
+    const operation = vi.fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('transient'))
+      .mockResolvedValue('ok');
+
+    const backoff = new ExponentialBackoff(operation, { initialDelay: 200, maxAttempts: 2 });
+
+    const runPromise = backoff.run();
+    // Promise is pending — backoff is waiting for the 200ms timer
+    expect(operation).toHaveBeenCalledTimes(1); // only first attempt fired
+
+    vi.advanceTimersByTime(200); // manually fire the delay
+    const result = await runPromise;
+
+    expect(result).toBe('ok');
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
+});
+```
+
+**Key rule:** Always pair `vi.setTimerTickMode()` with `vi.useRealTimers()` in `afterEach`. The timer tick mode is part of the fake timer state — it is NOT automatically reset between tests even with `clearMocks: true` in config. Failing to reset causes subsequent tests that expect manual mode to fire timers automatically.
+
+### Pattern 29: `vi.mockObject({ spy: true })` for classicist-style call verification (TypeScript, Vitest 3.2+)  [community]
+
+`vi.mockObject(realInstance, { spy: true })` is the classicist's alternative to full object mocking. It wraps every method with a spy while executing the real implementation — enabling call-count assertions without sacrificing the real behavior. This is the correct tool for the common pattern: "I want to verify this method was called, but I also need the real logic to run for the assertion to be meaningful."
+
+```typescript
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { PricingCalculator } from './pricingCalculator';
+import { OrderService } from './orderService';
+
+describe('OrderService — call verification with real pricing logic', () => {
+  // Real PricingCalculator — real logic runs, calls are tracked
+  const calculator = vi.mockObject(new PricingCalculator({ vatRate: 0.2 }), { spy: true });
+  const service = new OrderService(calculator);
+
+  afterEach(() => {
+    // Clear call history between tests; real implementation is unchanged
+    vi.clearAllMocks();
+  });
+
+  it('calls calculateLineTotal once per order item', async () => {
+    const order = {
+      items: [
+        { sku: 'sku-1', qty: 2, unitPrice: 10.00 },
+        { sku: 'sku-2', qty: 1, unitPrice: 25.00 },
+      ],
+    };
+
+    const total = await service.processOrder(order);
+
+    // Real calculator ran: (2 * 10 * 1.2) + (1 * 25 * 1.2) = 24 + 30 = 54
+    expect(total).toBeCloseTo(54.00, 2);
+
+    // Call verification: method was called once per item
+    expect(calculator.calculateLineTotal).toHaveBeenCalledTimes(2);
+    expect(calculator.calculateLineTotal).toHaveBeenNthCalledWith(1, { sku: 'sku-1', qty: 2, unitPrice: 10.00 });
+    expect(calculator.calculateLineTotal).toHaveBeenNthCalledWith(2, { sku: 'sku-2', qty: 1, unitPrice: 25.00 });
+  });
+
+  it('applies VAT via the real calculateVat method — not a stub', async () => {
+    const lineTotal = 100.00;
+
+    // Real vatRate (0.2) is used — verifies real behavior, not a canned value
+    const withVat = calculator.applyVat(lineTotal);
+
+    expect(withVat).toBeCloseTo(120.00, 2);
+    expect(calculator.applyVat).toHaveBeenCalledWith(100.00);
+  });
+});
+```
+
+**When NOT to use:** Do not use `{ spy: true }` when the real collaborator makes network calls, writes to a database, or reads from the file system — the real implementation would execute and introduce side effects. Use full mocking (`vi.mock()` or `jest.Mocked<T>`) for I/O-bound collaborators.
+
+### Pattern 30: `test.override()` for environment-variant test suites (TypeScript, Vitest 4.1+)  [community]
+
+`test.override(fixtureName, value)` overrides a fixture value for an entire `describe` block without creating a new `test` variable. This is the correct tool for multi-environment test suites where each `describe` block represents a different configuration variant.
+
+```typescript
+import { test as baseTest, describe, expect, beforeAll } from 'vitest';
+import type { ServiceConfig } from './config';
+import { createApiClient } from './apiClient';
+
+interface ApiFixture {
+  client: ReturnType<typeof createApiClient>;
+  config: ServiceConfig;
+}
+
+const test = baseTest.extend<ApiFixture>({
+  config: async ({}, use) => {
+    // Default config — development environment
+    await use({
+      baseUrl: 'http://localhost:3000',
+      timeout: 5000,
+      retries: 1,
+      environment: 'development',
+    });
+  },
+  // `client` depends on `config` — picks up the overridden value automatically
+  client: async ({ config }, use) => {
+    const c = createApiClient(config);
+    await use(c);
+    c.destroy();
+  },
+});
+
+// Default suite — uses development config
+describe('ApiClient — development', () => {
+  test('sends requests to the development endpoint', ({ config, client }) => {
+    expect(config.baseUrl).toBe('http://localhost:3000');
+    expect(client.baseUrl).toBe('http://localhost:3000');
+  });
+});
+
+// Production variant — overrides config; client fixture is re-initialized with overridden config
+describe('ApiClient — production', () => {
+  test.override('config', {
+    baseUrl: 'https://api.example.com',
+    timeout: 30000,
+    retries: 3,
+    environment: 'production',
+  });
+
+  test('sends requests to the production endpoint', ({ config, client }) => {
+    expect(config.baseUrl).toBe('https://api.example.com');
+    expect(config.retries).toBe(3);
+    expect(client.baseUrl).toBe('https://api.example.com'); // client re-initialized
+  });
+
+  test('uses the production timeout', ({ config }) => {
+    expect(config.timeout).toBe(30000);
+  });
+});
+
+// Staging variant — independent override; production suite is unaffected
+describe('ApiClient — staging', () => {
+  test.override('config', {
+    baseUrl: 'https://staging.api.example.com',
+    timeout: 15000,
+    retries: 2,
+    environment: 'staging',
+  });
+
+  test('uses the staging endpoint and retries', ({ config }) => {
+    expect(config.environment).toBe('staging');
+    expect(config.retries).toBe(2);
+  });
+});
+```
+
+**Key advantage over `beforeEach` mutation:** With `beforeEach` mutation, restoring the original config value requires a manual save/restore pattern (anti-pattern in Pattern 5 of this guide). `test.override` handles restoration automatically — when the `describe` block exits, the fixture reverts to its pre-override value without any teardown code.
+
+---
+
+## Quick Reference Additions — Iteration 17
+
+| Problem | Symptom | Vitest 4.1+ Solution | Jest equivalent |
+|---------|---------|---------------------|-----------------|
+| Manual `advanceTimersByTime` between every `await` | Test has 10+ `vi.advanceTimersByTime()` calls; breaks with timing changes | `vi.setTimerTickMode('nextTimerAsync')` — auto-advance between awaits | No equivalent; manual advance required |
+| Real implementation + call verification | Must choose: stub OR real behavior — not both | `vi.mockObject(instance, { spy: true })` — real logic + call tracking | `jest.spyOn(instance, 'method')` per method (no bulk option) |
+| Per-suite fixture override without a new `test` variable | `beforeEach` mutation with manual save/restore | `test.override('fixtureName', value)` inside `describe` | No equivalent; create new `test = baseTest.extend(...)` |
+| Undefined fixture in `beforeAll` | Silently receives `undefined`; confusing `TypeError` in test body | `FixtureAccessError` thrown immediately (Vitest 4.1) → fix scope | No equivalent; no error at hook registration time |
+| `vi.doMock()` cleanup forgotten in `afterEach` | Mock persists across tests; next test sees unexpected stub | `using _mock = vi.doMock(...)` — auto-disposes when test ends | No equivalent for `jest.doMock` cleanup |
+| Assertion helper stack trace points into helper code | Cannot tell which test triggered isolation failure | `vi.defineHelper(fn)` — stack trace redirects to call site | `expect.extend()` for custom matchers only |
+| Wrong fixture scope causes cross-test contamination | Tests pass individually, fail in suite; order-dependent | Explicit `scope: 'file'` or `scope: 'worker'`; use `aroundEach` for transaction rollback | N/A — Jest has no fixture scope system |
+
+---
+
+## Key Resources — Iteration 17 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest API — `vi.setTimerTickMode` | Official | https://vitest.dev/api/vi#vi-settimertickmode | Three timer advancement modes: manual, nextTimerAsync, interval — eliminates advanceTimersByTime boilerplate |
+| Vitest API — `vi.mockObject` | Official | https://vitest.dev/api/vi#vi-mockobject | Deep object spy/mock with `{ spy: true }` option for classicist call verification |
+| Vitest API — `test.override` | Official | https://vitest.dev/api/#test-override | Suite-scoped fixture override; replaces deprecated `test.scoped` |
+| Vitest Guide — Test Context & Fixture Scopes | Official | https://vitest.dev/guide/test-context | Fixture scope hierarchy (worker/file/suite/test) and lifetime contracts |
+| Vitest API — `vi.defineHelper` | Official | https://vitest.dev/api/vi#vi-definehelper | Call-site stack trace attribution for shared assertion helper functions |
+| Vitest 4.1 Blog — What's New | Official | https://vitest.dev/blog/vitest-4-1.html | `aroundEach`/`aroundAll`, `detectAsyncLeaks`, `onCleanup` builder, `mockThrow`, `vi.defineHelper`, test tags, `viteModuleRunner: false` |

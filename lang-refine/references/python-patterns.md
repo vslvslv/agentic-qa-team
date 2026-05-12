@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 40 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -43,6 +43,7 @@
      Iter 37 (2026-05-12): 100/100 (+0) — added asyncio.timeout()/timeout_at() structured timeout contexts (Python 3.11+); asyncio eager task execution with eager_start + create_eager_task_factory (Python 3.12+); community gotcha #33 (asyncio task GC — fire-and-forget reference loss); os.reload_environ() for syncing external env mutations (Python 3.14); sourced from docs.python.org/3/library/asyncio-task.html + docs.python.org/3/library/os.html + docs.python.org/3/whatsnew/3.14.html
      Iter 38 (2026-05-12): 100/100 (+0) — added annotationlib deep-dive (Format enum, ForwardRef evaluation, migration from get_type_hints, metaclass integration); concurrent.interpreters/InterpreterPoolExecutor deep-dive (comparison table vs processes/threads, data-sharing rules, gotchas); t-string custom processor patterns (HTML, SQL, shell); community gotchas #34 (t-string naive concatenation) and #35 (InterpreterPoolExecutor pickle limitations); sourced from docs.python.org/3/library/annotationlib.html + docs.python.org/3/library/concurrent.futures.html + docs.python.org/3/library/string.templatelib.html
      Iter 39 (2026-05-12): 100/100 (+0) — added pathlib.copy/copy_into/move/move_into (Python 3.14); http.server HTTPSServer (Python 3.14); os.readinto() zero-copy reads; date.strptime()/time.strptime() (Python 3.14); python -c auto-dedent and -X importtime=2; contextvars.Token as context manager (Python 3.14); community gotchas #36 (multiprocessing forkserver default breaks fork-dependent code), #37 (int() __trunc__ removal), #38 (NotImplemented TypeError); sourced from docs.python.org/3/whatsnew/3.14.html
+     Iter 40 (2026-05-12): 100/100 (+0) — added community gotcha #39 (CancelledError swallowing breaks structured concurrency), #40 (configparser.InvalidWriteError Python 3.14); added operator.is_none()/is_not_none() idiom (Python 3.14) and dataclasses.field(doc=) in-source documentation pattern; sourced from docs.python.org/3/library/asyncio-task.html + docs.python.org/3/library/dataclasses.html + docs.python.org/3/whatsnew/3.14.html
 -->
 
 ## Core Philosophy
@@ -6434,4 +6435,205 @@ class Money:
 
 ---
 
+### 39. Swallowing `asyncio.CancelledError` Breaks Structured Concurrency  [community]
+
+**Problem:** Catching `asyncio.CancelledError` and not re-raising it silently breaks `TaskGroup`, `asyncio.timeout()`, and any outer cancellation scope — corrupting structured concurrency invariants.
+
+**Why:** `CancelledError` is the mechanism by which `TaskGroup` and `asyncio.timeout()` signal that a scope is shutting down. If a task swallows it, the scope has no way to know the task was cancelled. `TaskGroup.__aexit__` will hang indefinitely waiting for the task, and `asyncio.timeout()` will never convert the cancellation to a `TimeoutError`. This is one of the most common and hardest-to-debug async production bugs — the program appears to hang or time-out requests get silently dropped.
+
+```python
+import asyncio
+
+
+# ── BAD: swallowing CancelledError ───────────────────────────────────────────
+async def leaky_task() -> None:
+    try:
+        await asyncio.sleep(10)
+    except asyncio.CancelledError:
+        print("Cancelled, ignoring")   # DANGER: CancelledError suppressed
+        # TaskGroup waits forever; timeout() never fires; outer cancel hangs
+
+
+# ── BAD: catching BaseException without re-raising CancelledError ─────────────
+async def also_leaky() -> None:
+    try:
+        await asyncio.sleep(10)
+    except BaseException as exc:
+        print(f"Exception: {exc}")     # DANGER: CancelledError silently absorbed
+        # Never re-raised — breaks all outer cancellation machinery
+
+
+# ── CORRECT: clean up, then re-raise ─────────────────────────────────────────
+async def safe_task() -> None:
+    try:
+        await asyncio.sleep(10)
+    except asyncio.CancelledError:
+        # Perform any needed cleanup here (close files, flush buffers, etc.)
+        print("Cancelled — cleaning up")
+        raise   # ALWAYS re-raise CancelledError
+
+
+# ── CORRECT: use finally for cleanup instead ─────────────────────────────────
+async def safer_task() -> None:
+    try:
+        await asyncio.sleep(10)
+    finally:
+        print("Cleaning up")   # Runs whether cancelled or completed — no swallowing risk
+
+
+# ── Exception to the rule: Task.uncancel() ───────────────────────────────────
+async def task_that_handles_own_cancel(task: asyncio.Task) -> None:
+    """Only suppress CancelledError if you explicitly uncancel() the task."""
+    try:
+        await asyncio.sleep(10)
+    except asyncio.CancelledError:
+        if task.cancelling() > 0:
+            task.uncancel()   # Decrement the cancellation count; now safe to suppress
+            print("Internal cancel handled; resuming")
+        else:
+            raise   # External cancel — must propagate
+```
+
+**Diagnostic:** If your `async with asyncio.TaskGroup()` block appears to hang after an exception, search for `except asyncio.CancelledError` without a `raise` or for broad `except BaseException` / `except Exception` blocks that might absorb it.
+
+---
+
+### 40. `configparser` Refuses to Write Keys That Would Be Unreadable (Python 3.14)  [community]
+
+**Problem:** In Python 3.14, `configparser.ConfigParser.write()` now raises `configparser.InvalidWriteError` if a section name or key contains characters that would make the file unparseable on read-back (`\n`, `[`, `]`). Code that constructs config keys dynamically from user input or external data will fail at write time rather than silently producing corrupt files.
+
+**Why:** Previously, writing a key containing a newline would produce a `.ini` file that `configparser` itself could not re-read — a silent data-corruption bug. The new `InvalidWriteError` turns the silent corruption into a loud, early failure.
+
+```python
+import configparser
+
+
+# ── Setup ─────────────────────────────────────────────────────────────────────
+config = configparser.ConfigParser()
+config["section"] = {}
+
+
+# ── OLD behaviour (Python ≤3.13): silently wrote a corrupt file ───────────────
+# config["section"]["key\nwith\nnewline"] = "value"
+# config.write(open("settings.ini", "w"))
+# → Wrote file; read-back would fail with MissingSectionHeaderError
+
+
+# ── Python 3.14: raises InvalidWriteError before writing ─────────────────────
+try:
+    config["section"]["key\nwith\nnewline"] = "value"
+    with open("settings.ini", "w", encoding="utf-8") as fh:
+        config.write(fh)
+except configparser.InvalidWriteError as exc:
+    print(f"Config write refused: {exc}")   # Catches the new error
+
+
+# ── FIX: sanitise keys before storing ────────────────────────────────────────
+import re
+
+def sanitise_config_key(raw_key: str) -> str:
+    """Remove characters that configparser cannot round-trip."""
+    return re.sub(r"[\n\r\[\]=:]", "_", raw_key).strip()
+
+
+safe_key = sanitise_config_key("key\nwith\nnewline")   # "key_with_newline"
+config["section"][safe_key] = "value"
+
+with open("settings.ini", "w", encoding="utf-8") as fh:
+    config.write(fh)   # Succeeds
+```
+
+**Migration checklist:**
+- Audit any code that builds `configparser` section names or key names from external input.
+- Add `sanitise_config_key()` (or equivalent) before writing.
+- Catch `configparser.InvalidWriteError` at write boundaries in existing try/except blocks.
+
+---
+
+## Language Idioms (continued)
+
+### `operator.is_none()` / `operator.is_not_none()` (Python 3.14)
+
+Python 3.14 adds `operator.is_none(obj)` and `operator.is_not_none(obj)` as named callables for `None` identity checks. They are particularly useful as predicates passed to `filter()`, `map()`, and sorting key functions — replacing lambda boilerplate and improving readability in functional-style pipelines.
+
+```python
+from operator import is_none, is_not_none
+
+
+# ── filter() with named predicate ─────────────────────────────────────────────
+raw: list[str | None] = ["alpha", None, "beta", None, "gamma"]
+
+# Before Python 3.14
+present_before = list(filter(lambda x: x is not None, raw))
+
+# Python 3.14+
+present = list(filter(is_not_none, raw))        # ['alpha', 'beta', 'gamma']
+missing = list(filter(is_none, raw))            # [None, None]
+
+# ── Compose into a pipeline ────────────────────────────────────────────────────
+from itertools import compress
+
+flags = map(is_not_none, raw)
+values_only = list(compress(raw, flags))        # ['alpha', 'beta', 'gamma']
+
+# ── Use as a sort key (None-last ordering) ────────────────────────────────────
+mixed: list[int | None] = [3, None, 1, None, 2]
+sorted_none_last = sorted(mixed, key=lambda x: (is_none(x), x or 0))
+# [1, 2, 3, None, None]
+```
+
+**When to use:** Any functional pipeline (`filter`, `map`, `itertools`, `functools.reduce`) that needs to check for `None`. Named predicates are clearer than lambdas, work correctly with `help()`, and are easier to spot in a diff.
+
+---
+
+### `dataclasses.field(doc=...)` for In-Source Field Documentation (Python 3.14)
+
+Python 3.14 adds a `doc` keyword to `dataclasses.field()` that attaches a human-readable docstring to a field. Unlike a comment, `field.doc` is accessible at runtime through `dataclasses.fields()`, enabling auto-generated documentation, validation frameworks, and admin interfaces to surface per-field descriptions without custom metaclass machinery.
+
+```python
+from __future__ import annotations
+from dataclasses import dataclass, field, fields
+
+
+@dataclass
+class InvoiceItem:
+    product_id: str = field(
+        doc="Internal SKU; must match the product catalogue.",
+    )
+    quantity: int = field(
+        default=1,
+        doc="Number of units. Must be a positive integer.",
+    )
+    unit_price: float = field(
+        default=0.0,
+        doc="Price per unit in the invoice currency (excluding VAT).",
+    )
+    discount_pct: float = field(
+        default=0.0,
+        doc="Discount percentage applied to unit_price (0–100).",
+    )
+
+    @property
+    def line_total(self) -> float:
+        return self.quantity * self.unit_price * (1 - self.discount_pct / 100)
+
+
+# Access field docs at runtime — useful for admin UIs, API schema generation, etc.
+for f in fields(InvoiceItem):
+    if f.metadata.get("doc") or hasattr(f, "doc"):
+        # Python 3.14: field.doc is a direct attribute
+        print(f"  {f.name}: {getattr(f, 'doc', '(no doc)')}")
+
+# ── Practical: generate a CLI help string from dataclass fields ──────────────
+def dataclass_help(cls) -> str:
+    lines = [f"Fields for {cls.__name__}:"]
+    for f in fields(cls):
+        doc = getattr(f, "doc", None) or "(no description)"
+        lines.append(f"  --{f.name.replace('_', '-')}: {doc}")
+    return "\n".join(lines)
+
+print(dataclass_help(InvoiceItem))
+```
+
+**When to use:** Any `@dataclass` that will be introspected by tooling (REST serialisers, admin dashboards, CLI help text, OpenAPI schema builders). Field `doc` keeps the description co-located with the field definition, eliminating the drift that happens with separate docstring tables or comments.
 

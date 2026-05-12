@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
@@ -9,10 +9,11 @@
 <!-- new (2026-05-12 iter 35): TypeScript 6.0 breaking default changes (types:[], strict:true, module:esnext, rootDir:.) — silent test pipeline breakage; Vitest 5.0.0-beta.2 (May 5, 2026) — inline expect, sequential removal, directory restructure; Playwright v1.60 HAR tracing API (tracing.startHar) + locator.drop() drag-and-drop; Google "The Way of TDD" (Mar 2026) blog post -->
 <!-- new (2026-05-12 iter 36): Vitest 3.2 (Jun 2025) — Annotation API, Scoped Fixtures (scope:file|worker), explicit resource management (using vi.spyOn), Test Signal API (AbortSignal), multi-project sequence.groupOrder, watchTriggerPatterns, workspace→projects deprecation; TypeScript 5.8 — --module node18 stable, import with {type:"json"}, watch mode perf; Playwright v1.51 storageState({indexedDB:true}) for IndexedDB auth; Vitest 4.1.4+ browser locators exact option + Aria snapshots in browser mode -->
 <!-- new (2026-05-12 iter 37): Playwright v1.56-v1.60 series — Agents (planner/generator/healer AI agents for e2e test creation/maintenance), v1.57 Speedboard HTML reporter tab + testConfig.webServer.wait named capture groups + Chrome for Testing + Service Worker BrowserContext routing, v1.59 page.screencast API + browser.bind(), v1.60 browser.on('context') + getByRole description option + toHaveCSS pseudo option + testInfoError.errorContext + webSocketRoute.protocols(); Vitest 4.1 — vi.defineHelper (custom assertion stack traces), coverage.changed (coverage only for changed files), page.mark()/locator.mark() trace annotations; TypeScript 6.0 — esModuleInterop always true (breaks import * as X patterns in test files), #/ subpath imports shorthand; new community gotchas: AI agent test generation pyramid governance, WebSocket testing at integration level, Service Worker test gaps, Playwright Agents healer loop gotcha -->
+<!-- new (2026-05-12 iter 38): Node.js v22.18.0 (Jul 2025) — TypeScript type stripping on by default (no flag needed on Node 22.18+), run .ts test files with bare `node`; Node.js 24 test runner — auto-wait subtests (BREAKING: t.test() no longer returns Promise), global setup/teardown, per-test --test-timeout, JSON module mocking; Node.js native TS limitations for test files: no enums, no decorators, no parameter properties, no legacy namespaces; Vitest 4.1 — mockThrow/mockThrowOnce API, GitHub Actions Job Summary reporter with flaky-test highlighting + permalink URLs, agent reporter mode (AI coding agents), Vite 8 dependency deduplication, browser mode locator strict-mode enforcement; Vitest 5.0 beta additional: multi-environment merge reports (non-sharded), configDefaults.reporters, logger.formatError, JUnit jest-junit-compatible naming, locator-as-object representation; Vitest 3.2 — custom project name colors, locators.extend browser API, V8 AST-aware coverage remapping, watchTriggerPatterns for non-static file relationships; community gotchas: Node.js native TS execution fails for NestJS (decorators unsupported), Node.js 24 t.test() promise removal breaks existing pipelines, Vitest 4.1 strict browser locators catch multi-match bugs silently hidden before -->
 
 ---
 
-> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. New patterns (2026 iter 35): TypeScript 6.0 silently breaks test `tsconfig.json` (`types` defaults to `[]`, `strict` defaults to `true`, `module` defaults to `esnext`, `rootDir` defaults to `.`) — most test configs need explicit opt-ins after upgrading; Vitest 5.0.0-beta.2 (May 5, 2026) in active development — inline expect package, `sequential` removal, `.vitest/` directory restructure; Playwright v1.60 adds `tracing.startHar()` first-class HAR API + `locator.drop()` for drag-and-drop e2e tests. New patterns (2026 iter 36): Vitest 3.2 — Annotation API (structured test metadata for JUnit/HTML reporters), Scoped Fixtures (`scope:'file'|'worker'` in `test.extend`), `using vi.spyOn()` automatic spy restore, Test Signal API (AbortSignal for timeout cleanup), `sequence.groupOrder` replaces `&&`-chained CI commands for fail-fast ordering; TypeScript 5.8 — `--module node18` stable, `import with {type:'json'}` replaces deprecated `assert`, faster watch mode; Vitest 3.2 `workspace` config key deprecated in favour of inline `test.projects`. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI. New patterns (2026 iter 37): Playwright Agents (v1.56 — planner/generator/healer AI agents for e2e test creation and maintenance; pyramid governance required), Playwright v1.57 Speedboard reporter tab for identifying slow e2e tests + testConfig.webServer.wait named capture groups + Chrome for Testing + Service Worker BrowserContext routing, Playwright v1.59 page.screencast API, Playwright v1.60 browser.on('context') + getByRole description option + toHaveCSS pseudo-element option + webSocketRoute.protocols() for WebSocket integration tests + testInfoError.errorContext improved failure diagnostics; Vitest 4.1 vi.defineHelper (clean stack traces in custom assertions) + coverage.changed (per-PR coverage delta without slowing CI) + page.mark()/locator.mark() trace annotations in browser mode; TypeScript 6.0 esModuleInterop always true breaks legacy `import * as X` in test files + #/ subpath import shorthand.
+> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. New patterns (2026 iter 35): TypeScript 6.0 silently breaks test `tsconfig.json` (`types` defaults to `[]`, `strict` defaults to `true`, `module` defaults to `esnext`, `rootDir` defaults to `.`) — most test configs need explicit opt-ins after upgrading; Vitest 5.0.0-beta.2 (May 5, 2026) in active development — inline expect package, `sequential` removal, `.vitest/` directory restructure; Playwright v1.60 adds `tracing.startHar()` first-class HAR API + `locator.drop()` for drag-and-drop e2e tests. New patterns (2026 iter 36): Vitest 3.2 — Annotation API (structured test metadata for JUnit/HTML reporters), Scoped Fixtures (`scope:'file'|'worker'` in `test.extend`), `using vi.spyOn()` automatic spy restore, Test Signal API (AbortSignal for timeout cleanup), `sequence.groupOrder` replaces `&&`-chained CI commands for fail-fast ordering; TypeScript 5.8 — `--module node18` stable, `import with {type:'json'}` replaces deprecated `assert`, faster watch mode; Vitest 3.2 `workspace` config key deprecated in favour of inline `test.projects`. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI. New patterns (2026 iter 37): Playwright Agents (v1.56 — planner/generator/healer AI agents for e2e test creation and maintenance; pyramid governance required), Playwright v1.57 Speedboard reporter tab for identifying slow e2e tests + testConfig.webServer.wait named capture groups + Chrome for Testing + Service Worker BrowserContext routing, Playwright v1.59 page.screencast API, Playwright v1.60 browser.on('context') + getByRole description option + toHaveCSS pseudo-element option + webSocketRoute.protocols() for WebSocket integration tests + testInfoError.errorContext improved failure diagnostics; Vitest 4.1 vi.defineHelper (clean stack traces in custom assertions) + coverage.changed (per-PR coverage delta without slowing CI) + page.mark()/locator.mark() trace annotations in browser mode; TypeScript 6.0 esModuleInterop always true breaks legacy `import * as X` in test files + #/ subpath import shorthand. New patterns (2026 iter 38): Node.js v22.18.0 (Jul 2025) — TypeScript type stripping on by default, run `.ts` unit test files with bare `node` (no transpiler); Node.js 24 test runner — auto-wait subtests (BREAKING: `t.test()` no longer returns Promise), global setup/teardown, per-test `--test-timeout`; Node.js native TS limitations: no enums, no decorators, no parameter properties — NestJS integration tests cannot use bare `node`; Vitest 4.1 — `mockThrow`/`mockThrowOnce` for cleaner unit error scenarios, GitHub Actions Job Summary reporter (flaky-test highlighting + permalink URLs), agent reporter mode (AI coding tools get minimal output); Vitest 5.0 beta — multi-environment merge reports (non-sharded), JUnit jest-junit naming, `configDefaults.reporters`; Vitest 3.2 — `locators.extend` browser API, V8 AST-aware coverage, `watchTriggerPatterns`.
 
 ---
 
@@ -2332,6 +2333,278 @@ The change is compile-time only — `esModuleInterop: true` was already the runt
 
 ---
 
+### Node.js v22.18+ Native TypeScript Execution for Unit Tests  [community]
+
+Node.js v22.18.0 (released July 31, 2025, LTS codename 'Jod') ships with TypeScript type stripping enabled by default. On Node.js 22.18+, test files written in TypeScript can be executed directly with bare `node` — no `tsx`, `ts-node`, or Vitest transpilation required for simple cases. The old `--experimental-strip-types` flag is no longer needed on this release and later.
+
+```bash
+# Node.js 22.18+ — run a TypeScript unit test file directly
+node src/pricing/discount.unit.test.ts
+# Previously required: npx tsx src/pricing/discount.unit.test.ts
+```
+
+This changes the economics of the unit test level: for pure-logic TypeScript test files (no decorators, no enums, no legacy namespaces), the startup overhead of a transpiler step disappears. Paired with `--erasableSyntaxOnly` in TypeScript 5.8+, teams can enforce that production code stays within Node.js's strippable subset at compile time.
+
+**Critical limitations for the test pyramid:**
+
+| Feature | Supported by bare `node` | Workaround |
+|---------|--------------------------|------------|
+| `interface`, `type`, `as`, `: Type` annotations | Yes | — |
+| Generic type parameters | Yes | — |
+| `export type` / `import type` | Yes | — |
+| `enum` declarations | No (`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`) | `--experimental-transform-types` or Vitest |
+| `namespace` with values | No | Avoid legacy namespaces |
+| Parameter properties (`constructor(public name: string)`) | No | Use explicit `public name: string;` then assign in body |
+| Decorators (`@Injectable`, `@Module`, `@Component`) | No | Use Vitest (esbuild transform) for NestJS/Angular projects |
+| Non-`type` import specifiers for type-only symbols | No (may cause runtime errors) | Always use `import type { X }` for type-only imports |
+
+The practical consequence for the test pyramid: **NestJS integration test cases cannot use bare `node` for execution**. NestJS modules use `@Injectable()`, `@Module()`, `@Controller()`, and constructor parameter properties extensively — all of which are unsupported by the stripper. For NestJS projects, Vitest (which uses esbuild transform) remains the required test runner. Reserve bare `node` execution for plain TypeScript utility/service test files with no decorator usage.
+
+```typescript
+// src/pricing/discount.unit.test.ts — compatible with bare node execution
+// Requires: Node.js 22.18+ AND no enums/decorators/parameter properties/legacy namespaces
+// Run: node --test src/pricing/discount.unit.test.ts
+
+// Node.js built-in test runner (no Vitest needed for simple unit tests)
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { calculateDiscount } from './discount.js';
+import type { DiscountInput } from './discount.js';
+
+describe('calculateDiscount', () => {
+  it('applies 10% for standard members over $100', () => {
+    const input: DiscountInput = { total: 150, membershipTier: 'standard' };
+    assert.strictEqual(calculateDiscount(input), 15);
+  });
+
+  it('applies no discount for orders under $100', () => {
+    const input: DiscountInput = { total: 80, membershipTier: 'standard' };
+    assert.strictEqual(calculateDiscount(input), 0);
+  });
+
+  it('applies 20% for gold members regardless of total', () => {
+    const input: DiscountInput = { total: 50, membershipTier: 'gold' };
+    assert.strictEqual(calculateDiscount(input), 10);
+  });
+});
+```
+
+Note: the Node.js built-in test runner (`node:test`) uses `assert` from `node:assert/strict` rather than Vitest's `expect`. This produces a two-runner situation if some test cases use Vitest and others use `node:test`. For codebases with a unified Vitest pyramid, use Vitest for all test levels — the startup cost difference between Vitest and bare `node` is negligible for a full test run. Reserve bare `node` for isolated utility scripts that double as tests (e.g., a build-time schema validation script). [official: nodejs.org/en/learn/typescript/run-natively, nodejs.org/en/blog/release/v22.18.0]
+
+---
+
+### Node.js 24 Test Runner: Breaking Changes and New Capabilities  [community]
+
+Node.js 24 (released April 2025) introduced semver-major changes to the built-in test runner that break existing test pipelines using `node:test`. Teams maintaining test suites that use the built-in runner alongside Vitest (e.g., in CI scripts or in `package.json` scripts using `--test`) need to audit before upgrading.
+
+**Breaking change: `t.test()` and `test()` no longer return Promises.**
+
+Prior to Node.js 24, `t.test()` returned a `Promise<void>`, allowing this pattern:
+
+```typescript
+// BEFORE Node.js 24 — pattern that BREAKS
+import { test } from 'node:test';
+
+// Old pattern: await the inner test to control ordering
+await test('parent test', async (t) => {
+  const result = await t.test('child test', () => {
+    // assertions
+  });
+  // result was Promise<void> — awaiting gave ordering control
+});
+```
+
+In Node.js 24, `t.test()` returns `void`. The test runner automatically waits for all subtests before proceeding. The correct pattern after Node.js 24:
+
+```typescript
+// AFTER Node.js 24 — correct pattern
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+test('parent test', (t) => {
+  // No await needed — runner handles ordering automatically
+  t.test('child test', () => {
+    assert.strictEqual(1 + 1, 2);
+  });
+  // The runner waits for all t.test() calls automatically
+});
+```
+
+**Pyramid impact:** Any CI script that uses `node --test` and previously relied on `await t.test()` will silently succeed on Node.js 24 (the call is now `void`; `await void` is a no-op), but timing-dependent tests may run in unexpected order. Audit with `grep -r "await t.test\|await test(" --include="*.ts"` before upgrading Node.js.
+
+**New capabilities in Node.js 24 test runner:**
+
+| Feature | Use in the pyramid |
+|---------|--------------------|
+| Global setup and teardown | Integration-level: set up shared containers once per run; analogous to Vitest's `globalSetup` option |
+| Per-test `--test-timeout` | Unit level: enforce the `< 10 ms` unit test constraint at the runner level rather than per-`it()` |
+| JSON module mocking (`t.mock.module('data.json')`) | Unit level: mock JSON config files without touching the file system |
+| Watch mode restart duration accuracy | Development workflow: accurate elapsed time in hot-reload test cycles |
+
+```bash
+# CI usage: per-test timeout enforced at runner level
+node --test --test-timeout=10000 src/**/*.unit.test.ts
+# Integration tests: longer timeout
+node --test --test-timeout=60000 tests/integration/**/*.test.ts
+```
+
+Node.js 24 also marks TypeScript type stripping as a "release candidate" (`--experimental-strip-types` is stabilising) and introduces `import.meta.main` for ESM (analogous to `if __name__ == '__main__'` in Python — useful for test files that are also runnable scripts). [official: nodejs.org/en/blog/release/v24.0.0]
+
+---
+
+### Vitest 4.1 Additional Ergonomic Improvements  [community]
+
+Three Vitest 4.1 additions not covered in the previous section improve developer experience at the unit and integration test levels:
+
+**`mockThrow` / `mockThrowOnce`:** Creates cleaner error-path unit test cases. The previous pattern (`vi.fn().mockImplementation(() => { throw new Error('...') })`) was verbose. `mockThrow` is the direct equivalent:
+
+```typescript
+// src/orders/orders.service.unit.test.ts — Vitest 4.1 mockThrow
+import { describe, it, expect, vi } from 'vitest';
+import { OrdersService } from './orders.service.js';
+import type { OrderRepository } from './order.repository.js';
+
+const mockRepo: OrderRepository = {
+  create: vi.fn(),
+  findById: vi.fn(),
+  findAll: vi.fn(),
+  delete: vi.fn(),
+};
+
+describe('OrdersService error paths', () => {
+  it('surfaces repository errors without swallowing them', async () => {
+    const service = new OrdersService(mockRepo);
+    const dbError = new Error('connection refused');
+
+    // Vitest 4.1: mockThrow — more readable than mockImplementation(() => { throw ... })
+    vi.mocked(mockRepo.create).mockThrow(dbError);
+
+    await expect(
+      service.create({ customerId: 'c1', items: [{ sku: 'A1', qty: 1 }] }),
+    ).rejects.toThrow('connection refused');
+  });
+
+  it('uses mockThrowOnce for error on first call, success on retry', async () => {
+    const service = new OrdersService(mockRepo);
+    const savedOrder = { id: 'ord_001', customerId: 'c1', items: [], status: 'pending' as const, createdAt: new Date() };
+
+    // First call throws; second call succeeds — tests retry logic
+    vi.mocked(mockRepo.create)
+      .mockThrowOnce(new Error('transient error'))
+      .mockResolvedValue(savedOrder);
+
+    // Assumes service has retry logic for transient errors
+    const result = await service.createWithRetry({ customerId: 'c1', items: [{ sku: 'A1', qty: 1 }] });
+    expect(result.id).toBe('ord_001');
+  });
+});
+```
+
+**GitHub Actions Job Summary reporter:** When running in GitHub Actions, Vitest 4.1 automatically generates a job summary that includes: test count per level, failure details, and — critically — a flaky tests section that lists any test cases that required retries before passing. Each entry includes a permalink URL to the source file at the exact line. This surfaces flaky test cases in the PR interface without requiring developers to read raw CI logs. Enable `--reporter=github-actions` (or add it to the `reporters` array) to activate the summary generation; the `jobSummary` configuration option controls whether the summary includes test run metadata.
+
+**Agent reporter mode:** Vitest 4.1 ships a minimal reporter (`reporter: 'agent'`) that suppresses all output except failing tests and their error messages. It is auto-enabled when `AI_AGENT=copilot` (or equivalent) is set in the environment — `std-env` detects common AI coding tool contexts automatically. The practical pyramid use case: AI coding assistants (GitHub Copilot, Claude Code, Cursor) that run tests as part of their agentic loop no longer receive thousands of lines of passing-test output, reducing token consumption and improving the agent's ability to act on the actual failures.
+
+```typescript
+// vitest.config.ts — GitHub Actions Job Summary + agent mode configuration
+import { defineConfig, defineProject } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // In CI: add github-actions to see flaky test highlights in PR job summary
+    reporters: process.env['GITHUB_ACTIONS']
+      ? ['default', 'github-actions']
+      : ['default'],
+    // Agent reporter is auto-detected via std-env;
+    // to force it: reporters: ['agent']
+  },
+});
+```
+
+**Vite 8 dependency deduplication (Vitest 4.1):** Vitest 4.1 now uses the project's installed `vite` version directly rather than bundling a separate copy. This eliminates the TypeScript type inconsistencies that appeared when `vitest.config.ts` types from bundled Vite conflicted with application `vite.config.ts` types — a common error in monorepos where the application and test runner share a `vite.config.ts` root. No configuration change required; the deduplication is automatic. [official: vitest.dev/blog/vitest-4-1.html]
+
+---
+
+### Vitest 3.2: Additional Low-Level Improvements  [community]
+
+Three Vitest 3.2 capabilities that improve the operational side of a three-level test pyramid:
+
+**Custom project name colors:** Each Vitest project in a workspace can now specify a `color` property (`'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan'`). In a three-project pyramid setup, assigning distinct colors to `unit` (green), `integration` (yellow), and `e2e` (red) makes multi-project parallel output immediately scannable — test failures in the expensive e2e level are visually distinct from fast unit failures:
+
+```typescript
+// vitest.config.ts — project name colors for visual pyramid distinction
+import { defineConfig, defineProject } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    projects: [
+      defineProject({
+        extends: true,
+        test: { name: { label: 'unit', color: 'green' }, include: ['src/**/*.unit.test.ts'] },
+      }),
+      defineProject({
+        extends: true,
+        test: { name: { label: 'integration', color: 'yellow' }, include: ['src/**/*.integration.test.ts'] },
+      }),
+      defineProject({
+        extends: true,
+        test: { name: { label: 'e2e', color: 'red' }, include: ['e2e/**/*.e2e.test.ts'] },
+      }),
+    ],
+  },
+});
+```
+
+**`locators.extend` for browser-mode test maintenance:** Vitest 3.2 browser mode introduced a `locators.extend` API that allows projects to define application-specific locators as first-class selectors with built-in retry behaviour. Instead of falling back to brittle CSS selectors when a semantic ARIA locator isn't available, teams can register custom locators for domain-specific elements (e.g., `page.getByTestStatus('pending')` maps to a `data-test-status="pending"` attribute query with retry). This is the browser-mode equivalent of Playwright's `locator.filter()` chains — reducing locator maintenance cost in large component test suites.
+
+**V8 AST-aware coverage remapping:** Vitest 3.2 replaced the previous V8 coverage source-map approach with `ast-v8-to-istanbul` — an AST-based remapping that aligns V8 coverage output with Istanbul's branch coverage semantics. The practical effect: branch coverage numbers for TypeScript projects become more accurate (fewer phantom uncovered branches from TypeScript decorators and type assertions) and the coverage report's highlighted branches match what a human would consider a real branch. Teams running Stryker mutation testing alongside Vitest coverage may see coverage percentage changes after upgrading to 3.2 — not because coverage changed, but because the measurement became more accurate. [official: vitest.dev/blog/vitest-3-2.html]
+
+---
+
+### Vitest 5.0 Beta: Additional Changes for CI Pipelines  [community]
+
+Beyond the breaking changes documented in the earlier Vitest 5.0 section (sequential removal, attachment directory, expect inlining), three new capabilities in the beta affect CI pipeline integration:
+
+**Non-sharded multi-environment merge reports:** Previously, Vitest's `--merge-reports` command required all reports to come from a sharded (parallelised) run of the same environment. Vitest 5.0 beta lifts this restriction: reports from separate environments (e.g., `unit` project run on one machine and `integration` project run on another) can be merged into a single HTML/JUnit report. This is particularly useful in matrix CI pipelines where unit tests run on every OS and integration tests run only on Linux — the final merged report covers the full pyramid.
+
+```yaml
+# .github/workflows/test.yml — multi-environment merge report (Vitest 5.0+)
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: vitest run --project unit --reporter=blob --outputFile=.vitest/blob/unit-${{ matrix.os }}.blob
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - run: vitest run --project integration --reporter=blob --outputFile=.vitest/blob/integration.blob
+  report:
+    needs: [unit, integration]
+    steps:
+      # Download all blob artifacts
+      - run: vitest merge-reports .vitest/blob/ --reporter=html
+      # Vitest 5.0: accepts blobs from different environments (unit + integration) in one merge
+```
+
+**JUnit jest-junit-compatible naming:** Vitest 5.0 adds options to the JUnit reporter that match `jest-junit`'s configuration keys (`classname`, `suiteName`, `ancestorSeparator`). This eases migration from Jest to Vitest without requiring updates to test reporting infrastructure (Datadog CI Visibility, JetBrains TeamCity, Azure DevOps) that parse JUnit XML with `jest-junit`-specific attribute names.
+
+**`configDefaults.reporters`:** The `configDefaults` export from `vitest/config` now includes the `reporters` array, allowing CI scripts to programmatically read the default reporter list and add to it rather than replacing it — preventing accidental loss of the default `verbose` or `dots` reporter when adding `json` for CI artifact collection. [community: github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2]
+
+---
+
+36. **Node.js native TypeScript execution fails silently for NestJS integration test cases** [community] — Node.js 22.18+ enables TypeScript type stripping by default, and many teams begin running `node test.ts` directly without reading the limitations. The most common failure: NestJS integration test cases use `@Injectable()`, `@Module()`, `@Controller()`, and constructor parameter property shorthand (`constructor(private readonly repo: OrderRepo)`) — all of which are unsupported by Node.js's type stripper. The failure mode is a cryptic `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` at runtime, not a TypeScript compile error. Fix: continue using Vitest (which transpiles via esbuild) for all NestJS-related test levels. Reserve bare `node` execution for utility test files with zero decorators, zero `enum` declarations, and zero parameter property constructors. Add a CI check: `grep -r "constructor(private\|constructor(public\|constructor(protected" tests/ && echo "ERROR: parameter properties — use Vitest, not bare node"`. [official: nodejs.org/api/typescript.html#type-stripping]
+
+37. **Node.js 24 `t.test()` returning `void` silently invalidates await-based test ordering** [community] — Before Node.js 24, `t.test()` returned a `Promise`. Teams wrote `await t.test('step 1', ...)` to enforce sequential execution of nested test cases. In Node.js 24, `t.test()` returns `void` — `await void` is a no-op — so the ordering guarantee vanishes silently. Tests may run out of the expected sequence, producing non-deterministic results for test cases that share mutable state. The defect is especially common in integration test scripts that spin up resources in parent test setup and tear them down in a later `t.test()` call that was formerly awaited for sequencing. Fix: use the runner's `before`/`after` hooks instead of nested `t.test()` sequences for resource lifecycle, and use Vitest's `sequence.groupOrder` for explicit pyramid-level ordering. Audit with `grep -rn "await t\.test\|await test(" --include="*.ts" tests/` before upgrading to Node.js 24. [official: nodejs.org/en/blog/release/v24.0.0 — semver-major test_runner changes]
+
+38. **Vitest 4.1 browser mode strict locators silently hide multi-match defects in earlier versions** [community] — Before Vitest 4.1, the browser mode locator resolution for WebdriverIO and Preview providers allowed a locator to silently resolve to the first matching element when multiple elements matched. Test cases passed even when the intended element was ambiguous — a hidden defect that only surfaced when the DOM order changed. Vitest 4.1 enforces strict mode by default: if a locator resolves to multiple elements, Vitest throws a "strict mode violation" error immediately. Teams upgrading to 4.1 often discover pre-existing ambiguous locators in their component test suite that were previously masked. This is a desirable behaviour improvement, but it produces a wave of test failures at upgrade time that must be triaged before the suite can pass. Fix: audit all `page.getBy*()` calls in browser-mode test files for potential multi-match; add `{ strict: false }` only where intentional (e.g., asserting that multiple elements exist). Prefer `getByRole`, `getByLabel`, and `getByText` with precise text over CSS-class-based locators. [official: vitest.dev/blog/vitest-4-1.html — browser locators strict mode]
+
+39. **Node.js 22.18+ `enum` in shared test utility files breaks native execution transitively** [community] — Many TypeScript codebases define shared test constants using `enum` declarations in a `tests/helpers/` directory (e.g., `enum TestStatus { Pass, Fail, Skip }`). When Node.js 22.18+ is used with bare `node` for unit test execution and a test file imports from a helper that contains an `enum`, the import fails at runtime even if the calling test file itself has no `enum`. The error is `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` at the point of the import — not at the test file level. This makes the root cause hard to identify because the failing file is a helper, not the test itself. Fix: replace all `enum` declarations in test helpers with `const` objects + `as const` assertions (`const TestStatus = { Pass: 'pass', Fail: 'fail', Skip: 'skip' } as const`), which are erasable and compatible with Node.js native execution. Run `grep -r "^enum " src/ tests/ --include="*.ts"` to find all `enum` declarations in the codebase. [official: nodejs.org/api/typescript.html#type-stripping — unsupported syntax list]
+
+40. **Vitest 5.0 beta `locator` representation change breaks custom assertion helpers** [community] — Vitest 5.0 beta changes how locators are serialized in error messages and assertion output: previously represented as a string (e.g., `"getByRole('button', {name: 'Submit'})"`) they are now represented as an object. Teams with custom assertion helpers that parse the locator string representation (e.g., to extract the role name for a custom error message) will encounter runtime errors after upgrading. This pattern is uncommon but appears in large component test suites that built tooling around Vitest's output. The fix is to stop parsing locator strings and instead use Vitest's `locator.evaluate()` or the locator's structured properties. Pin to `vitest@^4.1` until Vitest 5.0 stable is released and locator API documentation is finalised. [community: github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2]
+
+---
+
+## Key Resources
+
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
 | TestPyramid (Fowler) | Official | https://martinfowler.com/bliki/TestPyramid.html | Canonical definition and original rationale |
@@ -2374,3 +2647,8 @@ The change is compile-time only — `esModuleInterop: true` was already the runt
 | Vitest 5.0 Beta | Tool | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2 | Next major version (beta May 2026): inline expect, sequential removal, .vitest/ directory restructure, V8 worker coverage — audit before upgrading |
 | Playwright Agents | Tool | https://playwright.dev/docs/test-agents | v1.56+: planner/generator/healer AI agents for e2e test creation; pyramid governance required to prevent e2e over-generation |
 | Playwright HTML Speedboard | Tool | https://playwright.dev/docs/test-reporters#html-reporter | v1.57+: Speedboard tab in HTML report — sorts test cases by execution duration; identifies pyramid push-down candidates |
+| Node.js v22.18.0 Release | Official | https://nodejs.org/en/blog/release/v22.18.0 | TypeScript type stripping enabled by default (LTS, Jul 2025); run `.ts` unit tests with bare `node`; NestJS projects must continue using Vitest |
+| Node.js TypeScript API Docs | Official | https://nodejs.org/api/typescript.html | Definitive list of unsupported TypeScript syntax (enums, decorators, parameter properties, namespaces) for native type-stripping execution |
+| Node.js v24.0.0 Release | Official | https://nodejs.org/en/blog/release/v24.0.0 | BREAKING: `t.test()` no longer returns Promise; global setup/teardown; per-test `--test-timeout`; JSON module mocking |
+| Vitest 4.1 Release (full) | Tool | https://vitest.dev/blog/vitest-4-1.html | mockThrow/mockThrowOnce, GitHub Actions Job Summary reporter (flaky-test highlight + permalinks), agent reporter mode, Vite 8 deduplication, browser strict locators |
+| Vitest 3.2 Release (full) | Tool | https://vitest.dev/blog/vitest-3-2.html | Annotation API, Scoped Fixtures, `using vi.spyOn()`, Test Signal API, sequence.groupOrder, workspace deprecated, locators.extend, V8 AST-aware coverage, watchTriggerPatterns, custom project colors |
