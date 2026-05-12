@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -17,6 +17,7 @@
      stryker-mutator.io/blog (fetched 2026-05-12: Stryker.NET 4.13 MTP runner preview — keep-alive across mutations, YAML config) |
      github.com/Codium-ai/cover-agent (fetched 2026-05-12: Qodo Cover archived June 2025 — no longer maintained) |
      typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html (fetched 2026-05-12: TS 6.0 default changes — module/target/types/rootDir/strict; removed options: outFile, classic moduleResolution; ignoreDeprecations bridge flag) |
+     vitest.dev/config/coverage (re-fetched 2026-05-12: coverage.thresholds[glob-pattern] per-pattern syntax, global threshold still applies to pattern-matched files — differs from Jest) |
      community: production experience patterns synthesized from training knowledge -->
 
 ## Core Principles
@@ -2109,6 +2110,111 @@ npx stryker run --logLevel=info 2>&1 | grep -i incremental
   baseline reset events: tool upgrades, test refactors, or when the incremental file has grown
   stale (e.g., after removing many test files).
 
+### Pattern 31 — Vitest per-glob-pattern thresholds: risk-tiered enforcement without per-workspace split  [community]
+
+Vitest's `coverage.thresholds` supports **glob pattern keys** in addition to the global scalar values
+and the `perFile` boolean. This allows risk-tiered threshold enforcement within a single package without
+requiring a separate `vitest.config.ts` per directory — useful for monolith TypeScript projects or
+repos where splitting workspaces is not practical.
+
+**Critical behavioural difference from Jest**: Vitest counts files matching glob-pattern threshold keys
+**also toward the global threshold calculation**. In Jest, `coverageThreshold['./src/payments/']` is
+evaluated only for files in that directory and does not double-count toward the global aggregate.
+In Vitest, a file matching `'**/payments/**'` contributes to both the pattern threshold AND the global
+threshold simultaneously. This means setting a strict per-pattern threshold does NOT prevent a file from
+also being measured against the global floor.
+
+```typescript
+// vitest.config.ts — risk-tiered glob-pattern thresholds (Vitest 4.x+)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',             // Vitest 3.2+: AST-remapped V8 = Istanbul accuracy
+      include: ['src/**/*.ts'],
+      exclude: [
+        'src/**/*.d.ts',
+        'src/**/index.ts',
+        'src/**/__mocks__/**',
+        'src/**/*.stories.ts',
+      ],
+      all: true,
+      reporter: ['text', 'html', 'lcov', 'json-summary'],
+      reportsDirectory: './coverage',
+
+      thresholds: {
+        // Global floor — all files must meet this minimum.
+        // Note: files matching glob patterns below ALSO count toward this global calculation.
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+
+        // Critical modules — stricter branch and line requirements.
+        // Files here are evaluated against both this pattern threshold AND the global above.
+        'src/payments/**/*.ts': {
+          lines: 95,
+          branches: 90,
+          functions: 95,
+          statements: 95,
+        },
+        'src/auth/**/*.ts': {
+          lines: 92,
+          branches: 88,
+          functions: 92,
+          statements: 92,
+        },
+
+        // Utility/pure-function modules — 100% shortcut (all metrics → 100).
+        // The `100: true` shorthand is equivalent to lines: 100, branches: 100,
+        // functions: 100, statements: 100 applied to matching files only.
+        'src/utils/math*.ts': {
+          100: true,
+        },
+
+        // Infrastructure / generated modules — lower floor, no per-file enforcement.
+        // Setting values below the global floor is valid (acts as an explicit exemption):
+        'src/generated/**/*.ts': {
+          lines: 0,
+          branches: 0,
+          functions: 0,
+          statements: 0,
+        },
+      },
+    },
+  },
+});
+```
+
+**Important caveats:**
+
+1. **Global threshold still applies** — a file matching `'src/payments/**/*.ts'` is measured against
+   BOTH the `payments` pattern threshold (branches: 90) AND the global (branches: 75). A payment file
+   at 88 % branch coverage fails the pattern threshold but passes the global. The test run will exit
+   non-zero from the pattern failure regardless.
+
+2. **Unspecified metrics are NOT inherited from global** — if a pattern threshold only specifies
+   `branches: 90`, the `lines`, `functions`, and `statements` metrics for matching files are **not**
+   automatically set to the global values for that pattern. Only the global threshold applies for
+   unspecified metrics. This means `'src/payments/**/*.ts': { branches: 90 }` enforces 90 % branches
+   AND the global 80 % for lines/functions/statements — but the pattern itself does not know about the
+   global values; they are evaluated independently.
+
+3. **Glob matching uses the same engine as `include`/`exclude`** — in Vitest 5.0+, bare directory
+   names in threshold keys are NOT auto-expanded (see G45). Use explicit globs:
+   `'src/payments/**/*.ts'` not `'src/payments'`.
+
+**Jest vs Vitest glob threshold comparison:**
+
+| Behaviour | Jest `coverageThreshold['./src/payments/']` | Vitest `thresholds['src/payments/**/*.ts']` |
+|-----------|---------------------------------------------|----------------------------------------------|
+| Per-directory/pattern enforcement | Yes | Yes |
+| Glob syntax | No — directory path only | Yes — full minimatch glob |
+| Files count toward global | No — independent | Yes — also evaluated against global |
+| Unspecified metrics | Inherit global | Not inherited — independently evaluated |
+| Negative thresholds (absolute count) | Yes (`-N`) | No — percentage only |
+
 ---
 
 ## Anti-Patterns
@@ -3145,6 +3251,32 @@ plugin) and remove or re-scope `disableTypeChecks`. The TypeScript checker (`@st
 is the correct mechanism for compile-time mutant validation; `disableTypeChecks` is a
 performance escape hatch for generated files and mocks.
 
+### G50 — Vitest glob-pattern thresholds still contribute to global: migrating from Jest causes unexpected double-enforcement  [community]
+
+Teams migrating coverage configuration from Jest to Vitest often replicate Jest's
+`coverageThreshold['./src/payments/']` pattern as Vitest's `thresholds['src/payments/**/*.ts']`.
+The two look equivalent but behave differently: Jest evaluates per-path thresholds
+**independently** from the global; Vitest evaluates matching files against **both** the
+pattern threshold and the global threshold simultaneously. **WHY it matters**: a Vitest config
+that sets `'src/payments/**/*.ts': { branches: 90 }` with a global `branches: 75` will fail
+the run if payment files drop below 90 % branches — as expected — BUT those same payment files
+also count toward the global 75 % calculation. If payment files are the only well-tested modules,
+removing them from the global calculation (as Jest would) could mask a global deficit. Conversely,
+if global threshold failures are unexpected after a Jest → Vitest migration, check whether the
+per-pattern strict thresholds are failing independently of the global.
+
+**Detection**: run `npx vitest --coverage` with `reporter: ['json-summary']` and compare
+`coverage-summary.json` totals against the Vitest threshold log output — if the run fails with
+multiple threshold messages (one for the pattern, one for the global), both thresholds are being
+applied to the same files. This is correct Vitest behaviour, not a bug.
+
+**Migration checklist for Jest → Vitest threshold configs**:
+1. Replace `coverageThreshold['./src/path/']` (Jest directory key) with `thresholds['src/path/**/*.ts']` (glob)
+2. Note that Vitest `thresholds[pattern]` does **not** support negative values (`-N`); use the
+   programmatic approach (Pattern 17) or Jest for absolute-count enforcement
+3. Verify the global threshold is still appropriate after extracting per-module values — Vitest
+   measures both simultaneously, unlike Jest's independent evaluation
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -3234,6 +3366,12 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
   These changes cause `ts-jest` and Istanbul to silently fail or instrument zero files if `tsconfig.json`
   is not updated. Use `"ignoreDeprecations": "6.0"` as a temporary bridge and update defaults
   explicitly (see G49). Treat TypeScript major upgrades as coverage-tooling risk events.
+- **Vitest per-glob-pattern threshold migration from Jest**: Vitest's `thresholds['src/path/**']` and Jest's
+  `coverageThreshold['./src/path/']` look equivalent but have different semantics — Vitest evaluates matching
+  files against both the pattern and the global threshold simultaneously, while Jest evaluates per-path thresholds
+  independently. See Pattern 31 and G50. Additionally, Vitest does not support negative (`-N`) absolute-count
+  thresholds in pattern keys — only percentages. Projects that rely on Jest's negative threshold syntax for legacy
+  module debt management must use the programmatic approach (Pattern 17) after migrating to Vitest.
 
 ---
 
@@ -3273,5 +3411,5 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Stryker.NET MTP runner preview | Official | https://stryker-mutator.io/blog/ | Stryker.NET 4.13 MTP runner: keep test process alive across mutations; YAML config support; MTP vs VSTest tradeoffs |
 | Qodo Cover (formerly Codium cover-agent) — ARCHIVED | Community | https://github.com/Codium-ai/cover-agent | ⚠️ No longer maintained (June 2025). LLM-based coverage gap filler; see G34 and AP13 for replacement strategy using mutation-guided prompting |
 | Stryker VS Code Plugin | Official | https://stryker-mutator.io/blog/vscode-plugin/ | Inline mutation results in VS Code gutter (StrykerJS v9.3.0+, Nov 2025); uses MSP; replaces HTML-report-in-browser workflow |
-| Vitest coverage config reference | Official | https://vitest.dev/config/coverage | Full coverage config: autoUpdate, changed, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks, reportOnFailure, processingConcurrency, allowExternal, cleanOnRerun, thresholds.100 |
+| Vitest coverage config reference | Official | https://vitest.dev/config/coverage | Full coverage config: autoUpdate, changed, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks, reportOnFailure, processingConcurrency, allowExternal, cleanOnRerun, thresholds.100, thresholds[glob-pattern] per-pattern syntax |
 | TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | TS 6.0 default changes (module, target, types, rootDir) and removed options (outFile, classic moduleResolution) that silently break coverage tooling; ignoreDeprecations bridge flag |

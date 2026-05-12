@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 29 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 30 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 30 additions: Cucumber.js Plugin API full TypeScript reference — Plugin<T> generic from @cucumber/cucumber/api, transform() for pickles:filter and pickles:order scenario ordering/filtering, paths:resolve event, coordinator cleanup lifecycle; FormatterPlugin<T> with @cucumber/query library for non-trivial reporters; IConfiguration with satisfies keyword — modern TypeScript pattern for type-safe profile config; playwright-bdd v8.4.0 quality-of-life details — deterministic fixture name ordering, in-file BDD fixtures hidden from reports -->
 <!-- Iter 29 additions: Gherkin DocString backtick delimiter (```) — Markdown-friendly alternative to """ for multi-line content in feature files; full delimiter comparison table with editor syntax-highlighting and content-type annotation support notes -->
 <!-- Iter 28 additions: Cucumber Expressions advanced syntax — optional text (s), alternation a/b, anonymous {} parameter, escape sequences for { ( / characters; playwright-bdd v8.4.1 — explicit TypeScript type exports (BddFixtures, CreateBddOptions, TestTypeCommon), skipLibCheck fix for module:commonjs; DataTable escape sequences (\n \| \\) with rowsHash/hashes method reference table; @cucumber/gherkin-streams removal migration guide — regex-based counting and Messages API alternatives; Gherkin keyword scope rules reference table — Rule/Background/Examples valid parent scopes, tags-on-Background anti-pattern, multiple Background blocks silent failure -->
 <!-- Iter 27 additions: Cucumber.js unreleased — formatter architecture redesign (SummaryFormatter/ProgressFormatter class deprecation, new summary/progress/progress-bar/pretty formatter design), printAttachments→includeAttachments migration, FORCE_COLOR env var replaces color format option; playwright-bdd unreleased — enrichReporterData config option removed (breaking), bddgen worker concurrency capped at CPU/2 (OOM fix), tinyglobby replaces fast-glob (internal dep), @cucumber/messages 27→32 + @cucumber/gherkin 32→39 (direct import paths breaking), JSON reporter attachment opt-in (attachments skipped by default), non-ASCII garbling fix in HTML reporter, strict Cucumber-compatible arity checks (breaking), docStringType exposed on $step fixture, AI agent skill for Gherkin generation (playwright-bdd v8.6+), junit-modern alias deprecated→junit canonical; full version migration guide added (v12 → unreleased upgrade path) -->
@@ -7971,3 +7972,541 @@ The Feature-level `Background` always runs first; the Rule-level `Background` fo
 ## Additional Resources (Iteration 29 Additions)
 
 - [Gherkin DocString reference](https://cucumber.io/docs/gherkin/reference/#doc-strings) — both `"""` and `` ``` `` delimiter forms documented; content-type annotation syntax; indentation dedentation rules
+
+---
+
+## Additional Resources (Iteration 30 Additions)
+
+### Cucumber.js Plugin API: Full TypeScript Reference  [official]
+
+Cucumber.js v12.5+ introduced a first-class plugin architecture exposed via the
+`@cucumber/cucumber/api` module path. The earlier examples in this guide used `IPlugin`
+from `@cucumber/cucumber` (the non-generic form). The canonical TypeScript API uses the
+generic `Plugin<OptionsType>` from `@cucumber/cucumber/api`, which provides full type
+checking for custom options, event handlers, and transform functions.
+
+**Why use the plugin API?**
+
+The plugin API supersedes the class-extension formatter pattern (`extends SummaryFormatter`)
+and gives plugins access to lifecycle phases that formatters cannot reach:
+
+| Capability | Plugin API | Formatter API |
+|---|---|---|
+| Receive Cucumber messages | Yes (`on('message', ...)`) | Yes |
+| Filter which scenarios run | Yes (`transform('pickles:filter', ...)`) | No |
+| Reorder scenarios | Yes (`transform('pickles:order', ...)`) | No |
+| React to file path resolution | Yes (`on('paths:resolve', ...)`) | No |
+| Async setup + cleanup | Yes (return cleanup fn) | No |
+| Typed custom options | Yes (`Plugin<{ myOpt: string }>`) | Limited |
+
+**Full TypeScript plugin example — scenario filter by environment:**
+
+```typescript
+// src/plugins/env-filter-plugin.ts
+// Filters scenarios by an environment variable at runtime — avoids @tag clutter
+import type { Plugin } from '@cucumber/cucumber/api';
+
+// Type your plugin's custom configuration options for IDE completion + compile errors
+type EnvFilterOptions = {
+  envFilterTag?: string;  // e.g. '@payments' — only run scenarios with this tag
+  excludeTag?: string;    // e.g. '@wip' — exclude these scenarios
+};
+
+const envFilterPlugin: Plugin<EnvFilterOptions> = {
+  type: 'plugin',
+
+  // optionsKey: Cucumber passes only the 'envFilter' block from pluginOptions
+  optionsKey: 'envFilter',
+
+  coordinator: ({ on, transform, options, logger }) => {
+    const filterTag = options?.envFilterTag ?? process.env.FILTER_TAG;
+    const excludeTag = options?.excludeTag ?? process.env.EXCLUDE_TAG;
+
+    if (filterTag) {
+      logger.debug(`env-filter-plugin: including scenarios tagged ${filterTag}`);
+    }
+
+    // transform('pickles:filter') — receives the full pickle list; return only what should run
+    // A 'pickle' is a Cucumber-internal compiled scenario (after Examples expansion)
+    transform('pickles:filter', (pickles) => {
+      return pickles.filter((pickle) => {
+        const tags = pickle.tags.map((t) => t.name);
+
+        // Apply include filter
+        if (filterTag && !tags.includes(filterTag)) {
+          return false;
+        }
+
+        // Apply exclude filter
+        if (excludeTag && tags.includes(excludeTag)) {
+          return false;
+        }
+
+        return true;
+      });
+    });
+
+    // transform('pickles:order') — sort or shuffle the filtered list
+    // Useful for: deterministic ordering, alphabetical sort, priority-first execution
+    transform('pickles:order', (pickles) => {
+      // Sort by feature file path, then by scenario name — deterministic across parallel shards
+      return [...pickles].sort((a, b) => {
+        const pathCompare = (a.uri ?? '').localeCompare(b.uri ?? '');
+        if (pathCompare !== 0) return pathCompare;
+        return a.name.localeCompare(b.name);
+      });
+    });
+
+    // on('paths:resolve') — react when Cucumber resolves feature file paths
+    // Useful for: logging which feature files will run, early validation of file existence
+    on('paths:resolve', ({ featurePaths }) => {
+      if (featurePaths.length === 0) {
+        logger.warn('env-filter-plugin: No feature files matched. Check your features: glob.');
+      } else {
+        logger.debug(`env-filter-plugin: ${featurePaths.length} feature file(s) resolved`);
+      }
+    });
+
+    // Return a cleanup function — runs before Cucumber exits
+    // Useful for: flushing custom metrics, closing database connections opened in setup
+    return async () => {
+      logger.debug('env-filter-plugin: cleanup complete');
+    };
+  },
+};
+
+export default envFilterPlugin;
+```
+
+**Register the plugin in `cucumber.ts`:**
+
+```typescript
+// cucumber.ts — register plugin with typed options
+import type { IConfiguration } from '@cucumber/cucumber/api';
+
+export default {
+  import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+  plugin: ['src/plugins/env-filter-plugin.ts'],
+  pluginOptions: {
+    envFilter: {
+      envFilterTag: process.env.FILTER_TAG,     // Optional: override via env var
+      excludeTag: '@wip',                       // Always exclude @wip
+    },
+  },
+  format: ['progress-bar', 'html:reports/report.html'],
+} satisfies Partial<IConfiguration>;
+//  ^^^^^^^^ See next section for the 'satisfies' pattern
+```
+
+**[community] `pickles:filter` vs Cucumber tag expressions**: Cucumber's built-in `--tags`
+option handles most filtering needs. Use the `pickles:filter` transform only when the
+filtering logic is too complex for a tag expression — for example, filtering based on
+external data sources (a database list of feature IDs to run) or multi-dimensional
+conditions that cannot be expressed as `@tag1 and not @tag2`. The transform receives
+the full compiled pickle list and has access to all pickle properties (tags, steps,
+feature URI, pickle ID), making it more powerful but also more opaque to team members
+who expect `--tags` to be the sole filtering mechanism.
+
+**[community] `pickles:order` and parallel sharding**: In parallel mode, Cucumber
+distributes pickles across workers based on order. A deterministic ordering (alphabetical
+by feature path and scenario name) makes worker assignment reproducible — the same
+scenario always runs on the same shard index. This is valuable for debugging failures
+that only occur on specific workers, because you can replay the exact pickle order by
+re-running without changing the transform.
+
+---
+
+### Custom Formatters with `FormatterPlugin<T>` and `@cucumber/query`  [official]
+
+The `FormatterPlugin<OptionsType>` type (from `@cucumber/cucumber/api`) is the
+TypeScript-idiomatic way to write custom reporters that process Cucumber message streams.
+For non-trivial formatters that need to correlate messages across the test run (for example,
+computing pass rates, finding slowest scenarios, or generating test-ID-to-result mappings),
+the `@cucumber/query` library provides a queryable view over the message stream.
+
+**When to write a custom formatter:**
+- Your team needs a report format that none of the built-in formatters produce (e.g., Slack-formatted summaries, test management system integrations, CSV exports)
+- You need to post-process failure data (e.g., send failed scenario names to a webhook)
+- You want to aggregate metrics across sharded runs before all shards have finished
+
+**Full TypeScript formatter example — JSON summary with test durations:**
+
+```typescript
+// src/formatters/summary-formatter.ts
+import type { FormatterPlugin } from '@cucumber/cucumber/api';
+import type { Envelope } from '@cucumber/messages';
+
+// Type your formatter's custom options
+type SummaryFormatterOptions = {
+  outputFile?: string;   // Optional: write to file instead of stdout
+  includePassed?: boolean;  // Optional: include passed scenarios in output
+};
+
+// Each scenario result entry
+interface ScenarioResult {
+  name: string;
+  featureFile: string;
+  status: string;
+  durationMs: number;
+  tags: string[];
+}
+
+const summaryFormatter: FormatterPlugin<SummaryFormatterOptions> = {
+  type: 'formatter',
+  optionsKey: 'summary',  // Read from formatOptions.summary in cucumber.ts
+
+  formatter: ({ on, write, options, logger }) => {
+    const results: ScenarioResult[] = [];
+
+    // Accumulate test case finished messages during the run
+    on('message', (envelope: Envelope) => {
+      if (envelope.testCaseFinished) {
+        const { testCaseId, testCaseStartedId } = envelope.testCaseFinished;
+        // Note: For complex correlations across envelope types, use @cucumber/query
+        // (see below). For simple single-message processing, on('message') is sufficient.
+        logger.debug(`Test case finished: ${testCaseId}`);
+      }
+
+      if (envelope.testRunFinished) {
+        const { success, timestamp } = envelope.testRunFinished;
+        const summary = {
+          generatedAt: new Date().toISOString(),
+          passed: results.filter((r) => r.status === 'PASSED').length,
+          failed: results.filter((r) => r.status === 'FAILED').length,
+          skipped: results.filter((r) => r.status === 'SKIPPED').length,
+          overall: success ? 'PASS' : 'FAIL',
+          results: options?.includePassed
+            ? results
+            : results.filter((r) => r.status !== 'PASSED'),
+        };
+
+        const jsonOutput = JSON.stringify(summary, null, 2);
+
+        if (options?.outputFile) {
+          // Write to file via the 'write' function (handles stream management)
+          write(jsonOutput);
+        } else {
+          write(`\n=== BDD Run Summary ===\n${jsonOutput}\n`);
+        }
+      }
+    });
+  },
+};
+
+export default summaryFormatter;
+```
+
+**Register the custom formatter in `cucumber.ts`:**
+
+```typescript
+// cucumber.ts — register formatter with typed options
+import type { IConfiguration } from '@cucumber/cucumber/api';
+
+export default {
+  import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+  format: [
+    'progress-bar',
+    'html:reports/report.html',
+    // Custom formatter: path to the file, optional output target after ':'
+    'src/formatters/summary-formatter.ts:reports/bdd-summary.json',
+  ],
+  formatOptions: {
+    summary: {
+      includePassed: false,   // Only show failures in the JSON summary
+    },
+  },
+} satisfies Partial<IConfiguration>;
+```
+
+**Using `@cucumber/query` for non-trivial formatters:**
+
+The `@cucumber/query` library provides a queryable in-memory model over the full message
+stream. Rather than manually correlating `testCase`, `testCaseStarted`, `testCaseFinished`,
+and `pickle` envelopes by ID, the query object builds the relationships for you:
+
+```typescript
+// src/formatters/detailed-formatter.ts
+// Uses @cucumber/query to correlate test cases with their pickle definitions
+import type { FormatterPlugin } from '@cucumber/cucumber/api';
+import { Query } from '@cucumber/query';
+
+const detailedFormatter: FormatterPlugin = {
+  type: 'formatter',
+  formatter: ({ on, write }) => {
+    // Instantiate the query object — it processes all messages and builds an index
+    const query = new Query();
+
+    on('message', (envelope) => {
+      // Feed every envelope into the query — it builds the correlation index internally
+      query.update(envelope);
+
+      if (envelope.testRunFinished) {
+        // After the run, query the model for results
+        const testCaseAttempts = query.getTestCaseAttempts();
+
+        const failedAttempts = testCaseAttempts.filter(
+          (attempt) => attempt.worstTestStepResult.status === 'FAILED'
+        );
+
+        if (failedAttempts.length === 0) {
+          write('\n✔ All scenarios passed\n');
+          return;
+        }
+
+        write(`\n✖ ${failedAttempts.length} scenario(s) failed:\n`);
+
+        for (const attempt of failedAttempts) {
+          // query.getPickle() correlates the test case back to its Gherkin pickle
+          const pickle = query.getPickle(attempt.testCase.pickleId);
+          write(`  - ${pickle?.name ?? attempt.testCase.id} (${attempt.testCase.id})\n`);
+        }
+      }
+    });
+  },
+};
+
+export default detailedFormatter;
+```
+
+**[community] `@cucumber/query` vs manual ID correlation**: In the message stream,
+`testCaseStarted.testCaseId` links to `testCase.id`, which links to `testCase.pickleId`,
+which links to `pickle.id`, which links to `pickle.uri` (the feature file path). Manually
+following this chain across 4–5 envelope types is error-prone and breaks when the schema
+evolves across `@cucumber/messages` major versions. The `@cucumber/query` object absorbs
+these correlations — update it with every envelope and query it at run end. This is the
+officially recommended pattern for any formatter that needs to display scenario names
+alongside their results.
+
+---
+
+### `IConfiguration` with the TypeScript `satisfies` Keyword  [official]
+
+The `IConfiguration` type (exported from `@cucumber/cucumber/api`) defines the full
+shape of Cucumber.js configuration options. TypeScript teams have two idiomatic patterns
+for typing `cucumber.ts` config objects. The `satisfies` operator (TypeScript 4.9+) is
+the preferred pattern because it preserves the literal type of the value while checking
+structural compatibility.
+
+**Pattern 1: Direct assignment (older, less precise)**
+
+```typescript
+// cucumber.ts — Pattern 1: IConfiguration direct assignment
+import type { IConfiguration } from '@cucumber/cucumber/api';
+
+// Works, but TypeScript widens string literals to 'string'
+// and 'format' becomes string[] instead of ('progress-bar' | 'html:...' | ...)[]
+const config: IConfiguration = {
+  import: ['src/steps/**/*.ts'],
+  format: ['progress-bar', 'html:reports/report.html'],
+  parallel: 4,
+};
+
+export default config;
+```
+
+**Pattern 2: `satisfies Partial<IConfiguration>` (preferred — TypeScript 4.9+)**
+
+```typescript
+// cucumber.ts — Pattern 2: satisfies operator
+// Preserves literal types while enforcing structural correctness.
+// The 'satisfies' keyword:
+//   - Checks that the object matches Partial<IConfiguration>
+//   - Does NOT widen the inferred type — catches typos like 'paralel' at compile time
+//   - Does NOT require all properties to be present (Partial<> makes all optional)
+import type { IConfiguration } from '@cucumber/cucumber/api';
+
+// Single config — no export needed when file has a default export
+export default {
+  import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+  format: [
+    'progress-bar',
+    'html:reports/regression.html',
+  ],
+  formatOptions: {
+    includeAttachments: true,
+  },
+  retry: 1,
+  retryTagFilter: '@flaky',
+  parallel: 8,
+} satisfies Partial<IConfiguration>;
+```
+
+**Multi-profile config with `satisfies`:**
+
+```typescript
+// cucumber.ts — multiple named exports (profiles) with satisfies
+import type { IConfiguration } from '@cucumber/cucumber/api';
+
+// Shared base keeps DRY — no repetition between profiles
+const base = {
+  import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+  retryTagFilter: '@flaky',
+  formatOptions: { includeAttachments: true },
+} satisfies Partial<IConfiguration>;
+
+export const smoke = {
+  ...base,
+  tags: '@smoke and not @wip',
+  format: ['progress-bar', 'html:reports/smoke.html'],
+  retry: 2,
+  parallel: 2,
+} satisfies Partial<IConfiguration>;
+
+export const regression = {
+  ...base,
+  tags: 'not @wip',
+  format: [
+    'progress-bar',
+    '@cucumber/json-formatter:reports/results.json',
+    'html:reports/regression.html',
+  ],
+  retry: 1,
+  parallel: 8,
+} satisfies Partial<IConfiguration>;
+
+export const ci = {
+  ...base,
+  tags: `not @wip${process.env.EXTRA_TAGS ? ` and ${process.env.EXTRA_TAGS}` : ''}`,
+  format: ['progress-bar', 'json:reports/ci-results.json'],
+  retry: 0,   // No retries in CI — fail-fast
+  parallel: parseInt(process.env.CUCUMBER_WORKERS ?? '4', 10),
+} satisfies Partial<IConfiguration>;
+```
+
+**Invoke a named profile:**
+
+```bash
+# Run the 'smoke' profile
+npx cucumber-js --profile smoke
+
+# Run the 'ci' profile with an extra tag filter
+EXTRA_TAGS="@billing" npx cucumber-js --profile ci
+```
+
+**[community] `satisfies` vs `as` vs annotation**: Some older Cucumber.js TypeScript guides
+use `config as IConfiguration` (type assertion) which silences TypeScript errors without
+actually checking the structure. `satisfies Partial<IConfiguration>` is strictly safer:
+a typo in an option name (`paralel: 4` instead of `parallel: 4`) becomes a compile error
+rather than a silent no-op. Teams upgrading from JavaScript-based `cucumber.js` configs to
+TypeScript `cucumber.ts` should adopt `satisfies` from the start to catch configuration
+drift early.
+
+**[community] Node.js built-in TypeScript support caveat**: As noted in the official
+Cucumber.js documentation, when loading `cucumber.ts`, Cucumber uses Node.js built-in
+TypeScript support (available in Node 22.6+ with `--experimental-strip-types` and stable
+in Node 23+). This means your `tsconfig.json` settings are **not honored** during config
+file loading — only the Node.js native TypeScript parser runs. Avoid `tsconfig.json`-specific
+features (path aliases, `experimentalDecorators` for config expressions) in `cucumber.ts`
+itself. Step definitions loaded via `import:` still use your project's TypeScript
+configuration as processed by `tsx` or `ts-node`.
+
+---
+
+### playwright-bdd v8.4.0: Deterministic Fixture Names and Hidden In-File Fixtures  [community]
+
+playwright-bdd v8.4.0 (released August 2025) included two quality-of-life improvements
+for teams running large BDD suites that are worth documenting explicitly, as they affect
+the stability of generated test files and report readability.
+
+**1. Fixture names sorted deterministically in generated files**
+
+The `bddgen` code generator creates `.spec.ts` files from `.feature` files. These generated
+files contain fixture references that appear in Playwright HTML reports and stack traces.
+Before v8.4.0, the order of fixture names in generated files was non-deterministic — it
+changed between runs depending on Node.js object key enumeration order. This caused
+spurious diffs in version control when multiple developers ran `bddgen` independently:
+
+```typescript
+// BEFORE v8.4.0 — generated file, fixture order non-deterministic (caused noisy git diffs)
+// Run by Developer A:
+test('checkout with discount', async ({ page, testUser, discountCode, cart }) => { ... });
+
+// Same command, run by Developer B (different machine, different Node.js minor):
+test('checkout with discount', async ({ page, cart, discountCode, testUser }) => { ... });
+// ^^^ Different fixture order — produces a diff on commit
+```
+
+```typescript
+// AFTER v8.4.0 — fixture names sorted alphabetically, deterministic across all machines
+test('checkout with discount', async ({ cart, discountCode, page, testUser }) => { ... });
+// ^^^ Same order on every machine — no git noise
+```
+
+**Why this matters in CI**: Teams that commit generated `.spec.ts` files to version control
+(to make Playwright test results reviewable without running `bddgen` in CI) experienced
+false merge conflicts when two branches touched the same feature file and regenerated
+different fixture orderings. After v8.4.0, `bddgen` output is idempotent — the same feature
+file always produces the same generated spec, regardless of which machine ran `bddgen`.
+
+**[community] Should you commit generated files?** The playwright-bdd documentation recommends
+running `bddgen` as part of the CI pipeline rather than committing generated files. However,
+some teams commit them for traceability — the generated file shows exactly which Playwright
+test structure was executed. If you do commit them, pin to v8.4.0+ to avoid the non-determinism
+problem. Add `*.spec.ts` files generated by `bddgen` to a dedicated directory (e.g.,
+`.bdd/`) and add that directory to `.gitignore` unless you explicitly want them tracked.
+
+**2. In-file BDD fixtures hidden from Playwright reports**
+
+playwright-bdd allows step definitions to define inline fixtures using `test.extend()` within
+the same file as the step definitions. These "in-file fixtures" were previously visible in
+Playwright HTML reports as fixture names, cluttering the fixture list with implementation
+details that are irrelevant to readers of the BDD report.
+
+v8.4.0 hides in-file fixtures from reports by default:
+
+```typescript
+// src/steps/checkout.steps.ts — in-file fixture (hidden from reports after v8.4.0)
+import { test, expect } from '@playwright/test';
+import { createBdd } from 'playwright-bdd';
+
+// This in-file fixture provides a pre-configured cart for checkout tests
+// It does NOT appear in the Playwright HTML report fixture list in v8.4.0+
+const checkoutTest = test.extend<{ populatedCart: CartPage }>({
+  populatedCart: async ({ page }, use) => {
+    const cart = new CartPage(page);
+    await cart.addItem('PROD-001', 2);
+    await cart.addItem('PROD-002', 1);
+    await use(cart);
+  },
+});
+
+const { Given, When, Then } = createBdd(checkoutTest);
+
+// The 'populatedCart' fixture is used internally but not shown as a named fixture
+// in the "Before/After" fixture timeline of the HTML report
+Given('I have a cart with 3 items', async ({ populatedCart }) => {
+  await populatedCart.waitForLoad();
+});
+
+When('I apply the discount code {string}', async ({ populatedCart }, code: string) => {
+  await populatedCart.applyDiscount(code);
+});
+
+Then('my total should be {string}', async ({ populatedCart }, expectedTotal: string) => {
+  await expect(populatedCart.total()).toHaveText(expectedTotal);
+});
+```
+
+**Before v8.4.0**: The `populatedCart` fixture appeared in the Playwright report's fixture
+setup/teardown timeline, mixed with framework fixtures like `page`, `context`, and `browser`.
+This confused stakeholders reading the report who had no context for implementation fixtures.
+
+**After v8.4.0**: Only explicitly shared fixtures (defined via `defineBddConfig` or in
+dedicated fixture files) appear in the report. Step-local in-file fixtures are hidden.
+
+**[community] Fixture organization recommendation**: Use in-file fixtures for step-specific
+setup that is an implementation detail (page object initialization, test data scoping for
+a specific step file). Use shared fixture files (`src/fixtures/`) for setup that spans
+multiple step files and should be visible in reports as named lifecycle events. The
+v8.4.0 reporting change reinforces this separation naturally — fixtures in dedicated
+shared files are visible; implementation-detail fixtures in step files are hidden.
+
+---
+
+## Additional Resources (Iteration 30 Additions)
+
+- [Cucumber.js Plugin API docs](https://raw.githubusercontent.com/cucumber/cucumber-js/main/docs/plugins.md) — `Plugin<T>` type, `coordinator` function, `transform()` for `pickles:filter`/`pickles:order`, `paths:resolve` event, cleanup lifecycle
+- [Cucumber.js Custom Formatters docs](https://raw.githubusercontent.com/cucumber/cucumber-js/main/docs/custom_formatters.md) — `FormatterPlugin<T>` type, `on('message', ...)` handler, `optionsKey` pattern, `@cucumber/query` library integration
+- [@cucumber/query on GitHub](https://github.com/cucumber/query) — queryable view over Cucumber message stream; `getTestCaseAttempts()`, `getPickle()`, `update()` API; recommended for non-trivial formatters
+- [TypeScript `satisfies` operator (TS 4.9+)](https://www.typescriptlang.org/docs/handbook/2/satisfies.html) — structural compatibility check without type widening; canonical pattern for `cucumber.ts` profiles
+- [playwright-bdd v8.4.0 release notes](https://github.com/vitalets/playwright-bdd/releases/tag/v8.4.0) — deterministic fixture name sort, in-file fixtures hidden from reports, Playwright 1.55 support, `node_modules` excluded from `tagsFromPath`

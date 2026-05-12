@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description/highlight), /api/class-apirequestcontext, /api/class-tracing (startHar/stopHar), /api/class-test (abort), /api/class-browser (on-context) -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.60 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.60 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.60 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.60 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes) -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed) -->
 
 ---
 
@@ -8444,3 +8444,274 @@ await using har = await context.tracing.startHar('trace.har', {
 ```
 
 > **WHY:** `content: 'embed'` is the default for convenience, but in suites that test file download pages or media streaming endpoints, the accumulated buffer grows linearly with the number of tests and can exhaust worker memory mid-run. Use `urlFilter` to scope what gets embedded. [community]
+
+---
+
+## `response.httpVersion()` and `request.existingResponse()` — HTTP Protocol Assertions (v1.59)
+
+Two new network inspection APIs added in v1.59 for non-blocking response inspection and HTTP version verification.
+
+### `response.httpVersion()` — Assert HTTP/2 or HTTP/3 Usage
+
+Returns the HTTP version string used for the response (`'HTTP/1.1'`, `'HTTP/2.0'`, `'HTTP/3.0'`). Use this to guard against regressions where CDN or reverse-proxy config changes silently downgrade protocol negotiation.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test('critical API endpoint negotiates HTTP/2', async ({ page }) => {
+  const [response] = await Promise.all([
+    page.waitForResponse(/\/api\/data/),
+    page.goto('/dashboard'),
+  ]);
+
+  // Assert the protocol version — guard against CDN misconfiguration
+  expect(response.httpVersion()).toBe('HTTP/2.0');
+});
+
+test('static assets served over HTTP/2', async ({ context }) => {
+  const request = context.request;
+
+  const response = await request.get('https://example.com/static/app.js');
+  expect(response.httpVersion()).toBe('HTTP/2.0');
+  await response.dispose();
+});
+```
+
+> **WHY:** A CDN config change that disables HTTP/2 multiplexing can double page load times silently — the UI still renders but performance regresses significantly. Adding `httpVersion()` assertions to smoke tests catches this class of infrastructure regression before it impacts users. [community]
+
+---
+
+### `request.existingResponse()` — Non-Blocking Response Inspection
+
+`request.existingResponse()` returns the `Response` if the request has already completed, or `null` if the response hasn't arrived yet. Unlike `page.waitForResponse()`, it never blocks — it's a synchronous snapshot of network state at the time of the call.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test('inspect already-completed prefetch response', async ({ page }) => {
+  // Navigate — browser prefetches several resources during load
+  await page.goto('/product/123');
+
+  // Find a specific request that should have completed during page load
+  const requests = page.request.all?.() ??
+    (await page.evaluate(() => performance.getEntriesByType('resource')));
+
+  // Check a route handler that inspects in-flight requests
+  await page.route('**/api/related-products', async route => {
+    const existing = route.request().existingResponse();
+    if (existing) {
+      // Response already cached — fulfill from existing to avoid double-fetch
+      await route.fulfill({ response: existing });
+    } else {
+      // Not cached yet — let it pass through
+      await route.continue();
+    }
+  });
+
+  await page.getByRole('button', { name: 'See related' }).click();
+  await expect(page.getByTestId('related-products')).toBeVisible();
+});
+```
+
+> **WHY:** Before `existingResponse()`, a route handler that wanted to conditionally intercept based on whether a response existed had to track request state externally in a `Map`. The new API provides a native, race-condition-free way to inspect in-flight state. [official]
+
+---
+
+## Planner → Generator → Healer: Three-Agent Workflow (v1.56+)
+
+The `npx playwright init-agents` command generates three agent definition files, each with a distinct role in AI-assisted test authoring. The workflow runs sequentially: Planner creates a plan, Generator produces tests from the plan, Healer repairs failing tests.
+
+```typescript
+// Directory structure after npx playwright init-agents --loop=claude
+// repo/
+//   .github/          ← agent definition files (commit these!)
+//   specs/            ← Markdown test plans (Planner output)
+//     checkout-flow.md
+//   tests/            ← Generated Playwright specs (Generator output)
+//     seed.spec.ts    ← Human-written seed test for environment bootstrap
+//     checkout-basic.spec.ts
+//   playwright.config.ts
+```
+
+### Planner Agent
+
+Explores the application and produces structured Markdown test plans. It runs the seed test to establish the correct test environment before generating plans.
+
+```markdown
+<!-- specs/checkout-flow.md — example Planner output -->
+# Test Plan: Checkout Flow
+
+## Scenario: Guest checkout with credit card
+1. Navigate to /products
+2. Add item to cart
+3. Proceed to checkout (skip login)
+4. Fill shipping details
+5. Enter credit card number (test: 4242 4242 4242 4242)
+6. Assert order confirmation page visible
+7. Assert order number in confirmation email link
+
+## Edge cases
+- Empty cart redirect to /products
+- Invalid card number shows inline error
+```
+
+### Generator Agent
+
+Transforms Markdown plans into runnable Playwright tests. It verifies selectors live by executing the scenario against the real application.
+
+```typescript
+// tests/checkout-basic.spec.ts — example Generator output
+import { test, expect } from '@playwright/test';
+
+test('guest checkout with credit card', async ({ page }) => {
+  await test.step('Navigate to products', async () => {
+    await page.goto('/products');
+    await expect(page.getByRole('heading', { name: /products/i })).toBeVisible();
+  });
+
+  await test.step('Add item to cart', async () => {
+    await page.getByRole('button', { name: /add to cart/i }).first().click();
+    await expect(page.getByRole('status')).toContainText('1 item');
+  });
+
+  await test.step('Proceed to checkout', async () => {
+    await page.getByRole('link', { name: /checkout/i }).click();
+    await page.getByRole('button', { name: /guest checkout/i }).click();
+  });
+  // ... further steps generated from plan
+});
+```
+
+### Healer Agent
+
+Runs failing tests, replays steps, inspects the current UI state, and suggests patches. It operates on first retry — the standard Playwright retry mechanism triggers it.
+
+```typescript
+// The healer fires when a test fails and retries is >= 1
+// In playwright.config.ts:
+export default defineConfig({
+  retries: process.env.CI ? 2 : 0,
+  // On retry, the healer agent analyses the failure, patches the locator,
+  // and re-runs. If it can't heal after `retries` attempts, it marks
+  // the test as `flaky` or `failed` with a patch suggestion in the report.
+});
+```
+
+**Healer-agent-aware locator hygiene:** Write locators that give the healer enough context to find the "equivalent element" after a UI change. Role-based locators (`getByRole`) are the easiest for the healer to repair because semantic roles survive component refactors.
+
+> **WHY:** The Planner-Generator workflow eliminates the blank-page problem for new test suites — you get a full spec from a description, not from scratch. The Healer removes the test maintenance burden after UI changes: instead of manually updating dozens of selectors, the healer proposes a patch that a developer reviews and merges. [official]
+
+---
+
+## Additional Key APIs (Iteration 31 — v1.59)
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `response.httpVersion()` | Returns HTTP version string (`'HTTP/1.1'`, `'HTTP/2.0'`) (v1.59+) | Assert CDN/proxy config hasn't downgraded protocol |
+| `request.existingResponse()` | Returns response if already received, `null` otherwise (v1.59+) | Conditional route logic based on cached response state |
+| `page.screencast.showChapter(title)` | Display named chapter overlay during recording (v1.59+) | Annotate screencast at key test steps for demo videos |
+| `page.screencast.showActions({ position })` | Highlight clicked/typed elements in recording (v1.59+) | Make test evidence videos self-documenting |
+| `locator.normalize()` | Convert brittle locator to best-practice equivalent (v1.59+) | Refactoring tool — use in development, hardcode result |
+| `browserContext.setStorageState(path)` | Replace all cookies/storage in existing context (v1.59+) | Role-switch without creating a new browser context |
+| `context.isClosed()` | Returns `true` after context is disposed (v1.59+) | Guard teardown fixtures against double-close |
+| `consoleMessage.timestamp()` | Unix timestamp (ms) of when the console message was emitted (v1.59+) | Correlate console errors with network events in custom reporters |
+| `tracing.start({ live: true })` | Flush trace incrementally during test (v1.59+) | Real-time trace inspection on long-running suites |
+| `request.existingResponse()` | Non-blocking response state check (v1.59+) | Detect cached responses in route handlers |
+| `browserType.connectOverCDP({ noDefaults: true })` | Connect without Playwright's default context overrides (v1.60+) | Integration with Chromium instances that manage their own defaults |
+
+---
+
+## Gotchas — v1.59/v1.61 Edition
+
+### 44. `page.screencast` is Chromium-only — throws in Firefox/WebKit [community]
+
+`page.screencast.start()` throws a "not implemented" or similar runtime error when the test project uses Firefox or WebKit. The Screencast API depends on Chromium DevTools Protocol (CDP) capabilities not available in other engines.
+
+```typescript
+// ❌ Will throw at runtime on Firefox/WebKit projects
+test('record checkout flow', async ({ page, browserName }) => {
+  await page.screencast.start({ path: 'checkout.webm' }); // ← throws on FF/WebKit
+});
+
+// ✅ Guard with browserName or skip in non-Chromium projects
+test('record checkout flow', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Screencast API is Chromium-only');
+  await page.screencast.start({ path: 'checkout.webm' });
+  await page.goto('/checkout');
+  await page.screencast.stop();
+});
+
+// ✅ Or configure Screencast recording only in the chromium project:
+// playwright.config.ts
+// projects: [
+//   { name: 'chromium', use: { ...devices['Desktop Chrome'] } },  // screencast works
+//   { name: 'firefox',  use: { ...devices['Desktop Firefox'] } }, // skip screencast tests
+// ]
+```
+
+> **WHY:** The Screencast API wraps CDP's `Page.startScreencast` command, which has no equivalent in the WebDriver BiDi protocol used by Firefox and WebKit. Teams that run cross-browser matrix tests must gate screencast tests to the Chromium project or conditionally skip. [community]
+
+---
+
+### 45. `request.existingResponse()` returns `null` inside a route handler before `route.fetch()` [community]
+
+In a `page.route()` handler, `route.request().existingResponse()` returns `null` until the actual HTTP response arrives. Since route handlers intercept requests *before* a response exists, calling `existingResponse()` inside the handler always returns `null` unless a previous route or intercept has already resolved the response.
+
+```typescript
+// ❌ Incorrect: existingResponse() is null inside route handler for NEW requests
+await page.route('/api/data', async route => {
+  const existing = route.request().existingResponse();
+  if (existing) {
+    await route.fulfill({ response: existing }); // ← never reached for first request
+  }
+  await route.continue();
+});
+
+// ✅ Correct: use existingResponse() in page-level listeners for SUBSEQUENT navigation
+page.on('requestfinished', request => {
+  const response = request.existingResponse();
+  if (response && request.url().includes('/api/data')) {
+    // response is now available — log, assert, or store
+  }
+});
+
+// ✅ Use case: detect duplicate requests to same endpoint
+const seen = new Set<string>();
+page.on('requestfinished', request => {
+  const key = `${request.method()}:${request.url()}`;
+  if (seen.has(key)) {
+    console.warn(`Duplicate request detected: ${key}`);
+  }
+  seen.add(key);
+});
+```
+
+> **WHY:** `existingResponse()` is a polling accessor, not a trigger. Its primary use case is in `page.on('requestfinished')` or `page.on('response')` listeners — not inside `page.route()` where the response doesn't exist yet. Confusing the two causes route handlers that silently fall through without the expected intercept behavior. [community]
+
+---
+
+### 46. `locator.normalize()` may produce `getByTestId()` instead of `getByRole()` [community]
+
+`locator.normalize()` upgrades brittle CSS/XPath locators to Playwright best practices using heuristics. However, when an element has both a `data-testid` attribute and a semantic ARIA role, `normalize()` may prefer `getByTestId()` over `getByRole()`. This is technically correct (testids are stable) but violates the recommended selector hierarchy where `getByRole()` is preferred for better accessibility test coverage.
+
+```typescript
+// Element: <button data-testid="submit-btn" aria-label="Submit order">Submit</button>
+
+const brittle = page.locator('button.submit-btn');
+const normalized = brittle.normalize();
+// normalize() might return: page.getByTestId('submit-btn')
+// But the preferred selector is: page.getByRole('button', { name: 'Submit order' })
+
+// ✅ Always review normalize() output before hardcoding
+// If normalize() suggests getByTestId, check if getByRole would work instead:
+const preferred = page.getByRole('button', { name: /submit order/i });
+
+// ✅ Use normalize() as a starting point, not a final answer
+// Steps:
+// 1. brittle.normalize() → see what it suggests
+// 2. If getByTestId: verify the element has a meaningful ARIA role
+// 3. If role + accessible name unambiguously identifies it: use getByRole
+// 4. If element has no role or the role is generic (div/span): accept getByTestId
+```
+
+> **WHY:** `locator.normalize()` optimizes for selector stability and uniqueness, not for ARIA coverage. In projects that use `data-testid` extensively (common with React component libraries), `normalize()` will systematically produce `getByTestId()` suggestions — which are stable but bypass accessibility assertions. The locator hierarchy (`getByRole` > `getByLabel` > `getByText` > `getByTestId`) is a human judgment call that automation cannot fully make for you. [community]

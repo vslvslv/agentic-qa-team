@@ -1,5 +1,5 @@
 # Learning Sources: Programming Languages
-<!-- updated: 2026-05-12 | entries: 91 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-12 | entries: 93 | skill-version: 1.12.0.0 -->
 
 Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 
@@ -82,6 +82,8 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | C# Async Scenarios | https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/async-scenarios | official-docs | C# | 2026-05-12 | ⭐ I/O-bound vs CPU-bound, Task.Run, async LINQ pitfalls, GetAwaiter().GetResult() vs .Result, ConfigureAwait guidance |
 | C# Async Streams (IAsyncEnumerable) | https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream | official-docs | C# | 2026-05-12 | ⭐ async iterator yield return, await foreach, [EnumeratorCancellation], .WithCancellation(), .ConfigureAwait() on IAsyncEnumerable |
 | ValueTask<TResult> Struct | https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.valuetask-1 | official-docs | C# / .NET | 2026-05-12 | ⭐ Await once only; .AsTask() for multi-await; default choice is Task not ValueTask; performance tradeoff guidance |
+| .NET HTTP Resilience (Polly v8) | https://learn.microsoft.com/en-us/dotnet/core/resilience/http-resilience | official-docs | C# / .NET | 2026-05-12 | ⭐ AddStandardResilienceHandler, AddStandardHedgingHandler, AddResilienceHandler — retry/circuit-breaker/timeout/hedging via Microsoft.Extensions.Http.Resilience |
+| Polly v8 Resilience Strategies | https://learn.microsoft.com/en-us/dotnet/core/resilience/ | official-docs | C# / .NET | 2026-05-12 | ⭐ ResiliencePipeline, ResiliencePipelineBuilder; retry/circuit-breaker/timeout/hedging/rate-limiter strategies; TimeoutRejectedException |
 
 ---
 

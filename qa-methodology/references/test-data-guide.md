@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 40 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
@@ -8,7 +8,7 @@
 <!-- iter-33: Vitest 4.0 pool config migration (poolOptions.vmForks → top-level isolate; singleFork → maxWorkers: 1; poolMatchGlobs/environmentMatchGlobs → projects; workspace → projects); community gotcha #21; Key Resources updated (2026-05-12) -->
 <!-- iter-34: Playwright mergeTests() modular fixture composition; Playwright box fixture (box:true/box:'self') for clean test reports; Vitest 4.x singleThread also removed (not just singleFork); vi.resetModules() required with isolate:false; VITEST_MAX_WORKERS replaces VITEST_MAX_THREADS/MAX_FORKS; community gotcha #22; 2 new checklists (Playwright fixtures, Vitest 4.x config); 2 new Key Resources (2026-05-12) -->
 <!-- iter-35: Vitest 4.1 builder pattern for test.extend() (return-based, automatic TypeScript type inference); aroundEach hook (transaction-per-test pattern); test.override() per-suite fixture overrides; vi.defineHelper() for clean factory assertion stack traces; Vitest 4.x coverage.all/coverage.extensions removal + mandatory coverage.include; community gotcha #23; new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
-<!-- iter-39: Playwright fixture { option: true } per-project factory parameterization (playwright.dev/docs/test-fixtures#fixture-option); Playwright 1.59 browserContext.setStorageState() for auth test data injection; Vitest 5.0 beta migration notes for factory authors (sequential removal, inline expect package); community gotcha #27 (Vitest 5.0 test.concurrent default change affects factory isolation); updated checklists + Key Resources (2026-05-12) -->
+<!-- iter-40: faker v10 new APIs for factory authors (word error strategy 'fail', BigInt number generation, book module, UPC barcodes, simple coordinate methods, generic sex type); Playwright 1.46 component testing router fixture for MSW test data injection; community gotcha #28 (faker.word default 'fail' error strategy breaks word-based factories); updated Key Resources (2026-05-12) -->
 <!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-37: Vitest 4.0 expect.schemaMatching for inline factory output validation against Zod/Valibot/ArkType; Vitest 4.0 getSeed() API for programmatic seed access; Vitest 4.1 experimental viteModuleRunner:false for native Node.js factory execution; Google Testing Blog "Construct with Collaborators, Call with Work" pattern (2026-05-05) applied to factory design; faker v10.4.0 latest stable (2026-03-23); fishery v2.4.0 latest stable (2025-12-08); community gotcha #25 (schema drift caught by expect.schemaMatching); updated Key Resources (2026-05-12) -->
 <!-- iter-38: Playwright 1.59 async disposables (await using for route handlers, pages, tracing — Symbol.asyncDispose in E2E test data); Playwright 1.60 HAR-based record/replay (routeFromHAR + tracing.startHar as a native Self-Initializing Fake for E2E); Playwright 1.57 testProject.workers for per-project parallelism in test data isolation; Playwright @tag syntax for conditional E2E fixture setup; community gotcha #26 (HAR fixture drift — routeFromHAR has no automatic re-recording signal); updated Key Resources (2026-05-12) -->
@@ -7576,6 +7576,577 @@ test('needs sequential execution', { concurrent: false }, async () => { ... });
     // let _seq = 0;
     // export function buildUser(): User { return { id: `usr-${++_seq}`, ... }; }
     ```
+
+---
+
+## faker v10 New APIs for Factory Authors — Complete Reference  [community]
+
+`@faker-js/faker` v10.x (v10.0.0 released August 2025 through v10.4.0 March 2026) introduced
+several new modules and API changes that affect factory authors beyond the ESM-only change
+and UUID v7 (covered earlier in this guide). This section documents the remaining v10 additions.
+
+### `faker.word` — Default Error Strategy Changed to `'fail'`
+
+In faker v10.0.0, the `word` module changed its default error strategy from silent fallback
+to `'fail'` (throws an error). In v9, calling `faker.word.sample({ length: 999 })` (requesting
+a word longer than any in faker's dictionary) returned a random word silently. In v10, it
+throws `FakerError: No word found for length 999`. Factory files that use `faker.word.*`
+with unbounded or oversized length parameters will throw at factory call time.
+
+**Why it matters:** The old silent fallback was masking factory misconfiguration — factories that
+requested unrealistically long single words were silently producing random shorter words,
+producing test data that didn't match the factory's intent. The `'fail'` default makes
+misconfigured word factories immediately visible.
+
+```typescript
+// Anti-pattern caught by v10 'fail' strategy:
+// This silently produced a short random word in v9; throws in v10
+// faker.word.sample({ length: 50 })  // FakerError: No word found for length 50
+
+// Correct patterns for word-length-constrained factory data:
+import { faker } from '@faker-js/faker';
+
+export function buildProductFactory(overrides: Partial<Product> = {}): Product {
+  return {
+    id: faker.string.uuid(),
+    // Safe: generate a realistic product name (no unrealistic length constraint)
+    sku: faker.string.alphanumeric(8).toUpperCase(),  // use string, not word, for codes
+    name: faker.commerce.productName(),               // commerce module, not word
+    // If you need a short word tag (1-3 syllables): bound the length realistically
+    tag: faker.word.sample({ length: { min: 3, max: 8 } }),  // safe range
+    ...overrides,
+  };
+}
+
+// Override the error strategy to 'warn' if you intentionally want fallback behavior:
+// (e.g., in a factory that tries short words but accepts longer ones as fallback)
+const shortTag = faker.word.sample({
+  length: { min: 3, max: 6 },
+  strategy: 'closest',  // v10: returns the closest matching word instead of throwing
+});
+// Available strategies: 'fail' (default v10), 'warn' (logs and falls back), 'any-length', 'closest'
+```
+
+**Migration for existing factories:**
+```typescript
+// Audit command: find factories using faker.word.* with fixed length constraints
+// grep -r "faker\.word\." src/factories/ test/factories/
+// Then review each: is the length realistic? Could it fail in v10?
+
+// Before v10 (silent fallback):
+// faker.word.adjective(15)  // silently returned a random adjective, ignoring length
+
+// v10 equivalent (explicit strategy):
+faker.word.adjective({ length: { min: 5, max: 12 }, strategy: 'closest' })
+// Returns the adjective closest to the requested length range
+```
+
+---
+
+### `faker.number` — BigInt Support via `multipleOf`
+
+faker v10.0.0 added BigInt support to `faker.number.bigInt()` with a `multipleOf` parameter.
+This is relevant for factories testing code that uses database BigInt primary keys, large
+numeric financial values (e.g., sub-cent precision for crypto), or bit-manipulation IDs.
+
+**Why it matters for factories:** TypeScript projects using `bigint` primary keys (common in
+Postgres with `bigserial` or large-scale distributed systems with 64-bit IDs) previously
+required custom factory helpers to generate valid `bigint` test IDs. `faker.number.bigInt()`
+is now the idiomatic approach.
+
+```typescript
+// factories/bigint-id.factory.ts — BigInt ID generation for large-scale schemas
+import { faker } from '@faker-js/faker'; // requires faker v10.0.0+
+
+// Postgres bigserial / snowflake-style ID factory
+export function buildBigIntId(): bigint {
+  // Generate a random BigInt ID in the valid Postgres bigint range (1 to 2^63-1)
+  return faker.number.bigInt({
+    min: BigInt(1),
+    max: BigInt('9223372036854775807'),  // Postgres bigint max
+  });
+}
+
+// BigInt IDs that are multiples of a specific value (for sharding logic tests)
+export function buildShardedId(shardFactor: bigint = BigInt(1000)): bigint {
+  return faker.number.bigInt({
+    min: shardFactor,
+    max: BigInt('9223372036854775807'),
+    multipleOf: shardFactor,  // v10: IDs that are always multiples of shardFactor
+  });
+}
+
+// Domain object with BigInt primary key
+interface LargeScaleOrder {
+  id: bigint;
+  userId: bigint;
+  totalCents: bigint;     // sub-cent precision for crypto or micropayment systems
+  currency: string;
+  createdAt: Date;
+}
+
+export function buildLargeScaleOrder(overrides: Partial<LargeScaleOrder> = {}): LargeScaleOrder {
+  return {
+    id: faker.number.bigInt({ min: BigInt(1), max: BigInt('9223372036854775807') }),
+    userId: faker.number.bigInt({ min: BigInt(1), max: BigInt('9223372036854775807') }),
+    totalCents: faker.number.bigInt({ min: BigInt(0), max: BigInt('1000000000000') }),
+    currency: 'SATS',  // satoshi micropayments
+    createdAt: new Date(),
+    ...overrides,
+  };
+}
+```
+
+**Serialization warning for BigInt in JSON fixtures:**
+```typescript
+// BigInt does not serialize with JSON.stringify() by default:
+// JSON.stringify({ id: BigInt(123) })  → TypeError: Do not know how to serialize a BigInt
+
+// For test fixtures that need JSON serialization of BigInt fields, convert to string:
+export function serializeBigIntFactory(order: LargeScaleOrder): Record<string, unknown> {
+  return {
+    ...order,
+    id: order.id.toString(),       // serialize BigInt as string for JSON fixtures
+    userId: order.userId.toString(),
+    totalCents: order.totalCents.toString(),
+  };
+}
+
+// Or configure Drizzle ORM to handle BigInt serialization:
+// In Drizzle schema: bigint('id', { mode: 'bigint' }) uses JS BigInt natively
+// In Prisma schema:  BigInt maps to BigInt in JS — requires JSON.stringify reviver
+```
+
+---
+
+### `faker.book` Module — Content-Heavy Factory Data (v10.1.0)
+
+faker v10.1.0 added a `book` module with localized data for titles, authors, genres, publishers,
+series, and formats. This is directly useful for factories in e-commerce (bookstores),
+content management systems, and library applications.
+
+**Why it matters:** Previously, factories for book/content domain entities had to use generic
+`faker.commerce.productName()` (e.g., "Ergonomic Rubber Keyboard") for book titles — visually
+nonsensical in snapshot tests and Storybook stories. `faker.book.*` generates realistic
+bibliographic data.
+
+```typescript
+// factories/book.factory.ts — using faker.book module (faker v10.1.0+)
+import { faker } from '@faker-js/faker'; // requires faker v10.1.0+
+
+interface Book {
+  id: string;
+  isbn: string;
+  title: string;
+  author: string;
+  genre: string;
+  publisher: string;
+  series: string | null;
+  format: 'paperback' | 'hardcover' | 'ebook' | 'audiobook';
+  pageCount: number;
+  publicationYear: number;
+}
+
+export function buildBook(overrides: Partial<Book> = {}): Book {
+  return {
+    id: faker.string.uuid(),
+    // faker.book module — realistic bibliographic data (v10.1.0+)
+    isbn: faker.commerce.isbn(),             // from commerce module (pre-v10)
+    title: faker.book.title(),              // realistic book title
+    author: faker.book.author(),            // realistic author name
+    genre: faker.book.genre(),              // e.g. 'Science Fiction', 'Mystery'
+    publisher: faker.book.publisher(),       // e.g. 'Penguin Random House'
+    series: faker.datatype.boolean({ probability: 0.3 })
+      ? faker.book.series()                 // e.g. 'Harry Potter', 'Discworld'
+      : null,
+    format: faker.helpers.arrayElement(['paperback', 'hardcover', 'ebook', 'audiobook'] as const),
+    pageCount: faker.number.int({ min: 50, max: 1200 }),
+    publicationYear: faker.number.int({ min: 1950, max: 2026 }),
+    ...overrides,
+  };
+}
+
+// Library catalogue factory — list of books with unique ISBNs
+export function buildBookCatalogue(count: number, overrides: Partial<Book> = {}): Book[] {
+  const isbnSet = new Set<string>();
+  return Array.from({ length: count }, () => {
+    let book: Book;
+    do {
+      book = buildBook(overrides);
+    } while (isbnSet.has(book.isbn)); // ensure unique ISBNs
+    isbnSet.add(book.isbn);
+    return book;
+  });
+}
+
+// In a Storybook story — book titles now look realistic in previews:
+// { title: 'The Silence of the Deep', author: 'Elena Marchetti', genre: 'Thriller' }
+// vs. old: { title: 'Ergonomic Rubber Keyboard', author: 'Lorem Ipsum', genre: 'Category' }
+```
+
+---
+
+### `faker.commerce` — UPC Barcode Generation (v10.2.0)
+
+faker v10.2.0 added UPC (Universal Product Code) barcode generation to the commerce module.
+This complements the existing `faker.commerce.isbn()` (EAN-13 for books) and is relevant
+for factories in retail, inventory, and point-of-sale applications.
+
+```typescript
+// factories/product.factory.ts — UPC barcodes for retail product factories
+import { faker } from '@faker-js/faker'; // requires faker v10.2.0+
+
+interface RetailProduct {
+  id: string;
+  barcode: string;       // UPC-A (12 digits) or EAN-13 (13 digits)
+  sku: string;
+  name: string;
+  price: number;
+  category: string;
+}
+
+export function buildRetailProduct(overrides: Partial<RetailProduct> = {}): RetailProduct {
+  return {
+    id: faker.string.uuid(),
+    // faker.commerce UPC methods (v10.2.0+):
+    // faker.commerce.upcA() — 12-digit UPC-A code (North American standard)
+    // faker.commerce.ean13() — 13-digit EAN-13 code (international standard)
+    barcode: faker.helpers.arrayElement([
+      faker.commerce.upcA(),   // UPC-A: '012345678905'
+      faker.commerce.ean13(),  // EAN-13: '5901234123457'
+    ]),
+    sku: faker.string.alphanumeric(8).toUpperCase(),
+    name: faker.commerce.productName(),
+    price: faker.number.float({ min: 0.99, max: 999.99, fractionDigits: 2 }),
+    category: faker.commerce.department(),
+    ...overrides,
+  };
+}
+
+// Barcode uniqueness — important for inventory system tests
+export function buildUniqueProductList(count: number): RetailProduct[] {
+  const barcodeSet = new Set<string>();
+  return Array.from({ length: count }, () => {
+    let product: RetailProduct;
+    do {
+      product = buildRetailProduct();
+    } while (barcodeSet.has(product.barcode));
+    barcodeSet.add(product.barcode);
+    return product;
+  });
+}
+```
+
+---
+
+### `faker.location` — Simple Coordinate Methods (v10.0.0)
+
+faker v10.0.0 added `faker.location.latitude()` and `faker.location.longitude()` as simple
+top-level methods for generating GPS coordinates. Previously, the only coordinate generation
+method was `faker.location.nearbyGPSCoordinate()` (which required a reference coordinate).
+The new methods generate standalone coordinates within the global valid range.
+
+**Why it matters:** Factories for geospatial applications (delivery, ride-sharing, logistics,
+store locators) previously required either `nearbyGPSCoordinate()` with a hardcoded reference
+point or manual `faker.number.float()` with the valid lat/long ranges. The new methods
+are self-documenting and semantically correct.
+
+```typescript
+// factories/location.factory.ts — GPS coordinate factory (faker v10.0.0+)
+import { faker } from '@faker-js/faker';
+
+interface DeliveryAddress {
+  id: string;
+  street: string;
+  city: string;
+  postalCode: string;
+  country: string;
+  latitude: number;   // -90 to 90
+  longitude: number;  // -180 to 180
+}
+
+export function buildDeliveryAddress(overrides: Partial<DeliveryAddress> = {}): DeliveryAddress {
+  return {
+    id: faker.string.uuid(),
+    street: faker.location.streetAddress(),
+    city: faker.location.city(),
+    postalCode: faker.location.zipCode(),
+    country: faker.location.countryCode('alpha-2'),
+    // v10.0.0: simple standalone coordinate generation
+    latitude: faker.location.latitude(),          // random: -90.0 to 90.0
+    longitude: faker.location.longitude(),        // random: -180.0 to 180.0
+    ...overrides,
+  };
+}
+
+// Bounded region factory — for testing region-specific delivery logic
+export function buildAddressInRegion(options: {
+  latMin: number; latMax: number;
+  lonMin: number; lonMax: number;
+}): DeliveryAddress {
+  return buildDeliveryAddress({
+    latitude: faker.location.latitude({ min: options.latMin, max: options.latMax }),
+    longitude: faker.location.longitude({ min: options.lonMin, max: options.lonMax }),
+  });
+}
+
+// Usage — addresses within continental US bounds:
+const usAddress = buildAddressInRegion({
+  latMin: 24.4, latMax: 49.4,   // US latitude range
+  lonMin: -125.0, lonMax: -66.9, // US longitude range
+});
+```
+
+**Migration from `nearbyGPSCoordinate()`:**
+```typescript
+// Before v10 (still works, but more verbose for standalone coordinates):
+// const [lat, lon] = faker.location.nearbyGPSCoordinate({
+//   origin: [40.7128, -74.0060],  // NYC — required reference point
+//   radius: 100, isMetric: true
+// });
+
+// v10.0.0 (standalone, no reference point needed):
+const lat = faker.location.latitude();
+const lon = faker.location.longitude();
+```
+
+---
+
+### `faker.person.sex` — `'generic'` Sex Type (v10.3.0)
+
+faker v10.3.0 added `'generic'` as a valid value for `sex` parameters in `faker.person.*`
+methods. This enables factories for inclusive domain models where sex/gender is not binary.
+
+**Why it matters for test data:** Applications with user profiles, medical systems, or HR software
+may store non-binary gender/sex options. Factories using `faker.person.sex()` previously
+only returned `'male'` or `'female'`. With `'generic'`, factories can generate test data
+covering non-binary sex classifications without custom workarounds.
+
+```typescript
+// factories/person.factory.ts — inclusive sex/gender test data (faker v10.3.0+)
+import { faker } from '@faker-js/faker';
+
+interface UserProfile {
+  id: string;
+  firstName: string;
+  lastName: string;
+  sex: 'male' | 'female' | 'non-binary' | 'prefer-not-to-say';
+  email: string;
+}
+
+export function buildUserProfile(overrides: Partial<UserProfile> = {}): UserProfile {
+  // faker.person.sex() now returns 'male', 'female', or (v10.3.0+) 'generic'
+  // Map faker's 'generic' to your domain's non-binary representation
+  const fakerSex = faker.helpers.arrayElement(['male', 'female', 'generic'] as const);
+  const domainSex = fakerSex === 'generic' ? 'non-binary' : fakerSex;
+
+  // faker.person.firstName() uses sex to generate culturally appropriate names
+  const firstName = faker.person.firstName(fakerSex === 'generic' ? undefined : fakerSex);
+
+  return {
+    id: faker.string.uuid(),
+    firstName,
+    lastName: faker.person.lastName(),
+    sex: domainSex,
+    email: faker.internet.email({ firstName }),
+    ...overrides,
+  };
+}
+
+// Explicit inclusive factory variants for parametric test cases:
+export const ProfileVariants = {
+  male: (): UserProfile => buildUserProfile({ sex: 'male',
+    firstName: faker.person.firstName('male') }),
+  female: (): UserProfile => buildUserProfile({ sex: 'female',
+    firstName: faker.person.firstName('female') }),
+  nonBinary: (): UserProfile => buildUserProfile({ sex: 'non-binary',
+    firstName: faker.person.firstName() }),  // 'generic' → no gender-specific name
+  preferNotToSay: (): UserProfile => buildUserProfile({ sex: 'prefer-not-to-say',
+    firstName: faker.person.firstName() }),
+};
+```
+
+---
+
+## Playwright Component Testing `router` Fixture — MSW Test Data for Components  [community]
+
+Playwright's component testing mode (experimental, `@playwright/test`'s `@playwright/experimental-ct-*`
+packages) added a `router` fixture in v1.46 that accepts MSW request handlers directly. This
+enables the same MSW test data injection pattern used in Vitest/Jest component tests to work
+in Playwright's browser-rendered component tests — without an additional `setupServer()` call.
+
+**Why it matters:** Component tests that render in a real browser (via Playwright CT) have
+traditionally been harder to wire with MSW than jsdom-based tests. The `router` fixture is
+a first-class bridge: pass your existing MSW handlers and Playwright CT injects them as
+network interceptors in the browser context. Factory-generated MSW handlers can be shared
+between Vitest unit tests and Playwright CT tests, keeping test data consistent across layers.
+
+```typescript
+// factories/component-handlers.factory.ts — MSW handlers for component tests
+// Reusable across Vitest (setupServer) and Playwright CT (router fixture)
+import { http, HttpResponse } from 'msw';
+import { buildUser, buildUserList } from './user.factory';
+import { buildOrder } from './order.factory';
+
+// Base handlers — shared between Vitest and Playwright CT test suites
+export const componentHandlers = [
+  http.get('/api/users/:id', ({ params }) => {
+    return HttpResponse.json(buildUser({ id: params.id as string }));
+  }),
+  http.get('/api/users', () => {
+    return HttpResponse.json({ data: buildUserList(5), total: 5 });
+  }),
+  http.get('/api/orders', ({ request }) => {
+    const userId = new URL(request.url).searchParams.get('userId') ?? 'usr-default';
+    return HttpResponse.json(Array.from({ length: 3 }, () => buildOrder({ userId })));
+  }),
+];
+
+// Error scenario handlers for component error-state tests
+export const errorHandlers = {
+  userNotFound: (id: string) =>
+    http.get(`/api/users/${id}`, () =>
+      HttpResponse.json({ message: 'User not found' }, { status: 404 })
+    ),
+  serverError: () =>
+    http.get('/api/users', () =>
+      HttpResponse.json({ message: 'Internal Server Error' }, { status: 500 })
+    ),
+};
+```
+
+```typescript
+// ct-tests/UserCard.ct.test.tsx — Playwright CT with router fixture (v1.46+)
+import { test, expect } from '@playwright/experimental-ct-react';
+import { UserCard } from '../src/components/UserCard';
+import { componentHandlers, errorHandlers } from '../factories/component-handlers.factory';
+import { buildUser } from '../factories/user.factory';
+
+// Install shared MSW handlers via the router fixture — no setupServer() call needed
+test.beforeEach(async ({ router }) => {
+  await router.use(...componentHandlers);
+});
+
+test('renders active user with correct badge color', async ({ mount }) => {
+  const user = buildUser({ status: 'active', subscriptionTier: 'premium' });
+  const component = await mount(<UserCard userId={user.id} />);
+
+  // The router fixture intercepts /api/users/:id and returns factory-built data
+  await expect(component.getByTestId('status-badge')).toHaveText('Active');
+  await expect(component.getByTestId('tier-badge')).toHaveText('Premium');
+});
+
+test('renders error state when API returns 404', async ({ mount, router }) => {
+  // Override the default handler for this specific test
+  await router.use(errorHandlers.userNotFound('usr-nonexistent'));
+
+  const component = await mount(<UserCard userId="usr-nonexistent" />);
+  await expect(component.getByTestId('error-message')).toBeVisible();
+  await expect(component.getByTestId('error-message')).toContainText('User not found');
+});
+
+test('renders loading skeleton while fetching', async ({ mount, router }) => {
+  // Delay the response to test loading state
+  await router.use(
+    http.get('/api/users/:id', async () => {
+      await new Promise((r) => setTimeout(r, 500));
+      return HttpResponse.json(buildUser());
+    })
+  );
+
+  const component = await mount(<UserCard userId="usr-any" />);
+  // Immediately after mount: loading state should be visible
+  await expect(component.getByTestId('skeleton-loader')).toBeVisible();
+  // After 500ms: real data renders
+  await expect(component.getByTestId('user-name')).toBeVisible({ timeout: 1000 });
+});
+```
+
+**Using `router.use()` vs the standard Vitest `setupServer()` pattern:**
+
+```typescript
+// vitest unit test (jsdom) — uses setupServer + server.use()
+import { setupServer } from 'msw/node';
+import { componentHandlers } from '../factories/component-handlers.factory';
+
+const server = setupServer(...componentHandlers);
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
+// Playwright CT test — uses router fixture instead
+// The SAME handler array is reused — no duplication
+test.beforeEach(async ({ router }) => {
+  await router.use(...componentHandlers);
+});
+```
+
+**Advantages of `router` fixture vs `setupServer()`:**
+- No `beforeAll`/`afterAll` lifecycle management — Playwright CT handles it
+- `router.use()` in individual tests overrides globally installed handlers (same as `server.use()`)
+- Handlers reset automatically between tests (same as `server.resetHandlers()`)
+- Works with React, Vue, Svelte, and Solid CT packages (`@playwright/experimental-ct-*`)
+- Shares the same factory-generated handlers used in Vitest unit tests — single source of truth
+
+**Current limitation:** The `router` fixture is experimental and only available in Playwright CT.
+It cannot be used in standard end-to-end tests (use `page.route()` or MSW's browser integration
+for E2E MSW). Check `playwright.config.ts` has `ctPort` configured and the appropriate
+`@playwright/experimental-ct-*` package installed.
+
+```typescript
+// playwright-ct.config.ts — component testing configuration
+import { defineConfig } from '@playwright/experimental-ct-react';
+
+export default defineConfig({
+  testDir: './ct-tests',
+  use: {
+    ctPort: 3100,                          // dedicated port for CT server
+    ctViteConfig: () => import('./vite.config'),
+  },
+});
+```
+
+---
+
+28. **[community] `faker.word` error strategy changed to `'fail'` in v10.0.0 — word-length constraints in factories now throw instead of silently degrading.**
+    Before faker v10, calls like `faker.word.adjective(20)` (requesting a 20-character adjective) silently returned a random adjective, ignoring the length constraint. This masked factory misconfiguration: factories intended to generate short tag-like strings were actually generating random-length words that happened to pass tests. In faker v10.0.0, the default error strategy changed to `'fail'` — the same call now throws `FakerError: No word found for length 20`. Factory files that use `faker.word.*` with fixed length parameters break immediately on upgrade. The symptom is test suite startup failures (factories are called at module load in some patterns) or test failures in the first test that touches a word-based factory. **The fix is to replace fixed length parameters with ranged lengths or switch to `strategy: 'closest'`**, but this requires auditing every `faker.word.*` call in the codebase. Run `grep -r "faker\.word\." src/ test/` before upgrading to faker v10 to enumerate affected files.
+
+    ```typescript
+    // Audit and migration pattern for faker.word in factories:
+
+    // BREAKS in v10 (fixed length that faker cannot satisfy):
+    // faker.word.adjective(15)         → FakerError: No word found for length 15
+    // faker.word.sample({ length: 50 }) → FakerError: No word found for length 50
+    // faker.word.noun(30)              → FakerError: No word found for length 30
+
+    // Fix 1: use ranged length (safe in both v9 and v10)
+    faker.word.adjective({ length: { min: 4, max: 10 } })
+
+    // Fix 2: use 'closest' strategy (v10+ only) — returns nearest available word
+    faker.word.noun({ length: 15, strategy: 'closest' })
+
+    // Fix 3: switch to a different module if the intent is generating strings, not words
+    faker.string.alpha({ length: { min: 5, max: 12 } })    // for code-like strings
+    faker.commerce.department()                              // for category labels
+    faker.lorem.word()                                       // for generic filler words
+
+    // Detection script for CI: fail if any factory uses faker.word with a plain number length
+    // Add to package.json scripts or pre-commit hook:
+    // "lint:factory-word": "grep -rn 'faker\\.word\\.\\w\\+([0-9]' src/ test/ && exit 1 || exit 0"
+    ```
+
+---
+
+## Key Resources (iter-40 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| @faker-js/faker v10.0.0 migration | Official | https://next.fakerjs.dev/guide/upgrading | v10 breaking changes: ESM-only, word error strategy 'fail', bigint multipleOf, coordinate methods |
+| @faker-js/faker — book module | Official | https://fakerjs.dev/api/book | faker.book.title/author/genre/publisher/series — realistic bibliographic test data |
+| @faker-js/faker — location coords | Official | https://fakerjs.dev/api/location | faker.location.latitude()/longitude() — simple standalone GPS coordinate generation |
+| @faker-js/faker — commerce UPC | Official | https://fakerjs.dev/api/commerce | faker.commerce.upcA()/ean13() — barcode generation for retail domain factories |
+| Playwright CT router fixture | Official | https://playwright.dev/docs/test-components | `router.use(...handlers)` — MSW test data injection in Playwright component tests |
+| @playwright/experimental-ct-react | Official | https://www.npmjs.com/package/@playwright/experimental-ct-react | Playwright CT package for React component tests with router fixture support |
 
 ---
 

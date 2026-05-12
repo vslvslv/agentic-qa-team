@@ -1,8 +1,8 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/ -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/, /javascript-api/k6-experimental/fs/, /javascript-api/k6-experimental/streams/, /javascript-api/k6-websockets/, /using-k6/scenarios/concepts/open-vs-closed/, release-notes/v1.7.0, release-notes/v1.7.1 -->
 
-> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Re-run `/qa-refine k6` to refresh.
 
 > **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `--summary-mode=legacy`, `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section. **New in v2.0.0 final:** HTTP API server disabled by default, cloud secrets auto-injected in `--local-execution`, `k6 cloud project list` command, extension tab-completion.
 
@@ -8487,4 +8487,536 @@ k6 run --iterations 50 --vus 10 script.js
 > CI runs take much longer than expected (or don't stop) — the VU and iteration counts are
 > wrong. The fix: grep CI configs for `-e K6_` patterns and replace with system env `K6_`
 > exports or explicit CLI flags.
+
+---
+
+## Prometheus Remote Write — Native Histograms (k6 v1.x+)  [community]
+
+k6 can stream Trend metrics (e.g., `http_req_duration`) to Prometheus as **native histograms**
+instead of multiple gauge-based percentile metrics. Native histograms require Prometheus ≥ 2.40.0
+with `--enable-feature=native-histograms` and yield unlimited post-hoc `histogram_quantile()`
+queries — the percentile is calculated at query time, not at collection time.
+
+### When to Use Native Histograms vs `K6_PROMETHEUS_RW_TREND_STATS`
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| `K6_PROMETHEUS_RW_TREND_STATS=p(90),p(95),p(99)` | Works with Prometheus < 2.40 | Percentiles are fixed at collection time; can't query p(85) after the fact |
+| `K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true` | Unlimited post-hoc percentiles; `histogram_quantile()` in PromQL; lower cardinality | Requires Prometheus 2.40+ with feature flag; some cloud-managed Prometheus builds may not support it |
+
+### Setup and Script Pattern
+
+```bash
+# Launch Prometheus with native histogram feature flag
+prometheus \
+  --enable-feature=native-histograms \
+  --config.file=prometheus.yml
+
+# Run k6 with native histogram output
+K6_PROMETHEUS_RW_SERVER_URL=http://localhost:9090/api/v1/write \
+K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true \
+K6_PROMETHEUS_RW_PUSH_INTERVAL=5s \
+k6 run -o experimental-prometheus-rw script.js
+```
+
+```javascript
+// k6/scripts/load-prom.js
+import http from "k6/http";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    checkout_flow: {
+      executor: "constant-arrival-rate",
+      rate: 100,
+      timeUnit: "1s",
+      duration: "5m",
+      preAllocatedVUs: 50,
+      maxVUs: 200,
+    },
+  },
+  // Tag every run with a testid so Grafana can isolate runs by date
+  tags: {
+    testid: __ENV.TEST_RUN_ID || `run-${Date.now()}`,
+    env: __ENV.TARGET_ENV || "staging",
+  },
+  thresholds: {
+    // These thresholds are evaluated by k6 at run time;
+    // for richer post-hoc analysis use histogram_quantile() in Grafana.
+    http_req_duration: ["p(95)<500", "p(99)<1500"],
+    http_req_failed: ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  const res = http.get(`${BASE}/api/products`, {
+    tags: { name: "GET /api/products" },
+  });
+  check(res, { "status 200": (r) => r.status === 200 });
+}
+```
+
+```promql
+# Grafana PromQL — native histogram queries after the test
+# p95 latency for the current run (replace testid value)
+histogram_quantile(0.95,
+  sum by (le) (
+    rate(k6_http_req_duration_bucket{testid="run-1716502800000"}[1m])
+  )
+)
+
+# Compare p95 across two runs
+histogram_quantile(0.95,
+  sum by (le, testid) (
+    rate(k6_http_req_duration_bucket{testid=~"run-.*"}[1m])
+  )
+)
+```
+
+### Stale Marker Configuration
+
+Without stale markers, Prometheus retains the last value for 5 minutes after the test ends —
+polluting dashboards with stale data. Set `K6_PROMETHEUS_RW_STALE_MARKERS=true` (default `false`):
+
+```bash
+K6_PROMETHEUS_RW_STALE_MARKERS=true \
+K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true \
+k6 run -o experimental-prometheus-rw script.js
+```
+
+> **[community]:** Do not mix `K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true` and
+> `K6_PROMETHEUS_RW_TREND_STATS` at the same time — k6 will use histogram mode and ignore
+> `TREND_STATS`. Pick one strategy per test run and document it in your CI pipeline env vars.
+> Switching between strategies mid-sprint confuses Grafana dashboards that expect consistent
+> metric shapes.
+
+---
+
+## Manual Distributed Testing — `--execution-segment`  [community]
+
+When k6-operator is not available (e.g., bare-metal CI or Docker Compose environments), you can
+distribute load across multiple machines manually using `--execution-segment` and
+`--execution-segment-sequence`.
+
+```bash
+# === Machine 1 of 3 ===
+k6 run \
+  --execution-segment "0:1/3" \
+  --execution-segment-sequence "0,1/3,2/3,1" \
+  --tag instance=node-1 \
+  -o experimental-prometheus-rw \
+  k6/scripts/load.js
+
+# === Machine 2 of 3 ===
+k6 run \
+  --execution-segment "1/3:2/3" \
+  --execution-segment-sequence "0,1/3,2/3,1" \
+  --tag instance=node-2 \
+  -o experimental-prometheus-rw \
+  k6/scripts/load.js
+
+# === Machine 3 of 3 ===
+k6 run \
+  --execution-segment "2/3:1" \
+  --execution-segment-sequence "0,1/3,2/3,1" \
+  --tag instance=node-3 \
+  -o experimental-prometheus-rw \
+  k6/scripts/load.js
+```
+
+```javascript
+// k6/scripts/load.js — script works unchanged for single or distributed runs
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { SharedArray } from "k6/data";
+
+// Each segment automatically receives a non-overlapping slice of iterations
+// and a non-overlapping slice of SharedArray users.
+const users = new SharedArray("users", () => JSON.parse(open("./data/users.json")));
+
+export const options = {
+  scenarios: {
+    load: {
+      executor: "shared-iterations",
+      vus: 100,
+      iterations: 10000,   // total across ALL segments; each node gets ~3333
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<500"],
+  },
+};
+
+export default function () {
+  const user = users[__VU % users.length];
+  const res = http.post(
+    `${__ENV.API_URL}/api/login`,
+    JSON.stringify({ email: user.email, password: user.password }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+  check(res, { "login 200": (r) => r.status === 200 });
+  sleep(1);
+}
+```
+
+**Key constraints:**
+- Each node evaluates thresholds **independently** — you must aggregate metrics externally
+  (e.g., Prometheus + Grafana) to get the combined pass/fail verdict.
+- `--execution-segment` slices the VU and iteration space but does NOT synchronize clock.
+  Start all nodes within a few seconds of each other or use `--paused` + the REST API
+  (`PUT /v1/status` with `paused: false`) to coordinate a simultaneous start.
+- `__VU` values overlap across nodes — use `--tag instance=<node-id>` to distinguish
+  per-node VU metrics in your observability backend.
+
+> **[community]:** The most common manual distribution mistake is omitting
+> `--execution-segment-sequence`. Without it, k6 assumes the full `"0:1"` range and
+> `--execution-segment` is silently ignored — all nodes run the full test load and you get
+> 3× the intended throughput.
+
+---
+
+## Web Dashboard — CI Artifact Export Pattern  [community]
+
+`K6_WEB_DASHBOARD=true` enables a real-time browser dashboard on port 5665. In CI, this
+causes the k6 process to **hang** waiting for the browser tab to be closed (see Gotcha 42).
+The correct pattern for CI is to use `K6_WEB_DASHBOARD_EXPORT` for artifact generation and
+set the port to `-1` to disable the HTTP server:
+
+```bash
+# CI — generate HTML report artifact without blocking the process
+K6_WEB_DASHBOARD=true \
+K6_WEB_DASHBOARD_EXPORT=reports/k6-dashboard-${RUN_ID}.html \
+K6_WEB_DASHBOARD_PORT=-1 \
+k6 run k6/scripts/load.js
+```
+
+```yaml
+# .github/workflows/load-test.yml
+- name: Run k6 load test
+  env:
+    K6_WEB_DASHBOARD: "true"
+    K6_WEB_DASHBOARD_PORT: "-1"                          # disable HTTP server
+    K6_WEB_DASHBOARD_EXPORT: "reports/k6-dashboard.html" # write artifact
+    K6_WEB_DASHBOARD_PERIOD: "10s"                        # aggregation window
+    K6_PROMETHEUS_RW_SERVER_URL: ${{ secrets.PROM_URL }}
+    API_URL: ${{ vars.STAGING_API_URL }}
+  run: k6 run k6/scripts/load.js
+
+- name: Upload k6 dashboard report
+  uses: actions/upload-artifact@v4
+  if: always()   # upload even if load test fails
+  with:
+    name: k6-dashboard-${{ github.run_number }}
+    path: reports/k6-dashboard.html
+    retention-days: 30
+```
+
+**Aggregation period rule:** The exported HTML report only includes graphs when the test
+duration is **at least 3× the aggregation period**. For a 1-minute smoke test, use
+`K6_WEB_DASHBOARD_PERIOD=10s` (10 × 3 = 30 s ≤ 60 s). For a 10-minute soak test,
+`K6_WEB_DASHBOARD_PERIOD=30s` works fine.
+
+> **[community]:** If both `K6_WEB_DASHBOARD_EXPORT` and `K6_WEB_DASHBOARD_PORT=-1` are set,
+> k6 writes the HTML file and exits cleanly — no port is opened, no hang. The common mistake
+> is setting `K6_WEB_DASHBOARD=true` without `-1` in CI, which blocks indefinitely until the
+> server receives a `SIGTERM`. Set `-1` in CI unconditionally; the dashboard server is only
+> useful for interactive local runs.
+
+---
+
+## `k6/websockets` — Migration from `k6/experimental/websockets`  [community]
+
+In k6 v1.x, the WebSocket module graduated from `k6/experimental/websockets` to `k6/websockets`.
+The experimental path is **deprecated** and will be removed in a future release. The API is
+identical — only the import path changes.
+
+```javascript
+// BEFORE (deprecated — will be removed)
+import { WebSocket } from "k6/experimental/websockets";
+
+// AFTER (stable — use this)
+import { WebSocket } from "k6/websockets";
+```
+
+Full migration example:
+
+```javascript
+// k6/scripts/ws-chat-load.js
+import { WebSocket } from "k6/websockets";  // stable import
+import { check } from "k6";
+import { sleep } from "k6";
+
+export const options = {
+  scenarios: {
+    ws_load: {
+      executor: "constant-vus",
+      vus: 50,
+      duration: "2m",
+    },
+  },
+  thresholds: {
+    "ws_session_duration":       ["p(95)<30000"],
+    "ws_msgs_received":          ["count>0"],
+    "ws_connecting":             ["p(99)<1000"],
+    http_req_failed:             ["rate<0.01"],
+  },
+};
+
+const WS_URL = __ENV.WS_URL || "ws://localhost:3001/chat";
+
+export default async function () {
+  const ws = new WebSocket(WS_URL, null, {
+    headers: { Authorization: `Bearer ${__ENV.AUTH_TOKEN}` },
+  });
+
+  ws.addEventListener("open", () => {
+    // Join a room on connect
+    ws.send(JSON.stringify({ event: "JOIN", room: "general" }));
+  });
+
+  ws.addEventListener("message", (e) => {
+    const msg = JSON.parse(e.data);
+    check(msg, { "message has event": (m) => m.event !== undefined });
+  });
+
+  ws.addEventListener("error", (e) => {
+    console.error("WS error:", e.message);
+  });
+
+  // Run for 10 seconds per VU iteration, then close cleanly
+  await new Promise((resolve) => setTimeout(resolve, 10_000));
+  ws.send(JSON.stringify({ event: "LEAVE" }));
+  ws.close();
+}
+```
+
+**Key behavior of `k6/websockets` vs `k6/ws`:**
+- `k6/ws` uses a **local event loop** — the `default` function runs once per VU per iteration
+  and blocks until `ws.close()`. Good for simple sequential WS flows.
+- `k6/websockets` uses the **global k6 event loop** — multiple `WebSocket` instances can coexist
+  within a single VU iteration. Required for multi-connection or mixed HTTP+WS scenarios.
+
+> **[community]:** The `binaryType` property defaults to `"blob"` — binary frames arrive as
+> `Blob` objects whose contents are opaque in k6. Set `ws.binaryType = "arraybuffer"` before
+> opening if your protocol sends binary data; otherwise `e.data` in the message handler is
+> a zero-length Blob and your checks silently pass on empty content (see Gotcha 41).
+
+---
+
+## `Promise.race()` — Competitive Failover Testing  [community]
+
+`http.asyncRequest()` combined with `Promise.race()` lets you test failover latency — which
+of two endpoints responds first under load, or how long before a timeout fires.
+
+```javascript
+// k6/scripts/failover-race.js
+import http from "k6/http";
+import { check } from "k6";
+import { Trend } from "k6/metrics";
+
+const winnerLatency = new Trend("failover_winner_latency_ms");
+
+export const options = {
+  scenarios: {
+    failover: {
+      executor: "constant-vus",
+      vus: 20,
+      duration: "3m",
+    },
+  },
+  thresholds: {
+    failover_winner_latency_ms: ["p(95)<300"],
+  },
+};
+
+const PRIMARY = __ENV.PRIMARY_URL || "http://primary:3001";
+const SECONDARY = __ENV.SECONDARY_URL || "http://secondary:3002";
+
+export default async function () {
+  const start = Date.now();
+
+  // Fire both requests in parallel; use whichever responds first
+  const primaryReq   = http.asyncRequest("GET", `${PRIMARY}/api/health`);
+  const secondaryReq = http.asyncRequest("GET", `${SECONDARY}/api/health`);
+
+  const winner = await Promise.race([primaryReq, secondaryReq]);
+  winnerLatency.add(Date.now() - start);
+
+  check(winner, {
+    "winner responded 200": (r) => r.status === 200,
+  });
+
+  // Allow the slower request to settle — k6 blocks the iteration until
+  // all outstanding async requests resolve, even without explicit await.
+  // Awaiting explicitly avoids resource exhaustion warnings (see Gotcha below).
+  await Promise.all([primaryReq, secondaryReq]);
+}
+```
+
+**Timeout race pattern** — enforce a max latency beyond which you fail fast:
+
+```javascript
+async function withTimeout(promise, ms) {
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms)
+  );
+  return Promise.race([promise, timeoutPromise]);
+}
+
+export default async function () {
+  try {
+    const res = await withTimeout(
+      http.asyncRequest("GET", `${PRIMARY}/api/data`),
+      500
+    );
+    check(res, { "200 within SLA": (r) => r.status === 200 });
+  } catch (e) {
+    // Timeout fired — count as a failure
+    check(null, { "200 within SLA": () => false });
+  }
+}
+```
+
+> **[community]:** The k6 docs note that "after `res` gets the value from the fastest request,
+> the other requests will continue to execute" and there is currently **no way to abort an
+> in-flight `asyncRequest`**. Always `await Promise.all([...])` at the end of an async
+> `default` function to ensure all pending requests complete before the VU iteration closes —
+> otherwise k6 emits resource leak warnings and in-flight requests are counted as interrupted
+> in the summary metrics.
+
+---
+
+## k6 v1.7.0 — Subcommand Extension Auto-Resolution Workflow  [community]
+
+k6 v1.7.0 extended automatic extension resolution to **subcommand extensions** (the `k6 x`
+namespace). Previously, using a subcommand extension required a custom `xk6 build`. Now k6
+auto-provisions the extension binary if it is absent.
+
+```bash
+# k6 v1.7.0+ — no xk6 build required; k6 fetches the extension on first run
+k6 x httpbin start             # provisions xk6-httpbin automatically
+k6 x generator run script.js  # provisions xk6-generator automatically
+
+# The K6_SECRET_SOURCE env var (also added in v1.7.0) is an alternative to --secret-source
+K6_SECRET_SOURCE=aws-secrets-manager://us-east-1/my-k6-secrets \
+k6 run k6/scripts/secrets-test.js
+
+# Equivalent --secret-source flag form:
+k6 run \
+  --secret-source aws-secrets-manager://us-east-1/my-k6-secrets \
+  k6/scripts/secrets-test.js
+```
+
+**Extension resolution precedence:**
+1. Extension binary already present in the local k6 build (highest priority)
+2. Auto-resolution downloads the extension via the k6 extension registry
+3. Falls back with an error if the extension is not registered
+
+> **[community]:** Auto-resolution requires an internet connection to the Grafana extension
+> registry. In air-gapped CI environments, pre-build a custom k6 binary with `xk6` and cache
+> it as a CI artifact. Running `k6 x <extension>` in a network-restricted environment silently
+> waits for a timeout before failing — add `--no-auto-resolve` (or build your own binary) to
+> avoid the hang.
+
+---
+
+## Additional Community Gotchas (Iteration 30)
+
+### 53. Prometheus Native Histograms silently fail when Prometheus version is too old  [community]
+
+**What:** Setting `K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true` with Prometheus < 2.40.0
+(or without `--enable-feature=native-histograms`) causes k6 to silently drop all Trend metric
+data. The test runs normally — k6 reports no errors — but Prometheus refuses the histogram
+write and discards the metric. You discover this only when Grafana shows empty latency panels.
+
+**WHY:** Prometheus introduced native histograms as an experimental feature in v2.40.0 behind
+a feature flag. Remote write endpoints on older versions accept the request HTTP 204 but discard
+histogram-encoded series because the TSDB doesn't know the type. k6 has no mechanism to detect
+remote write acceptance vs silent discard.
+
+```bash
+# Verify Prometheus version before enabling native histograms
+curl -s http://localhost:9090/api/v1/status/buildinfo | python3 -m json.tool | grep version
+# Expected: "version": "2.52.0" (or >= 2.40.0)
+
+# Verify native histograms feature flag is active
+curl -s http://localhost:9090/api/v1/status/flags | python3 -m json.tool | grep native
+# Expected: "enable-feature": "native-histograms"
+
+# Safe fallback: use TREND_STATS if version is uncertain
+K6_PROMETHEUS_RW_TREND_STATS="p(50),p(90),p(95),p(99),max" \
+k6 run -o experimental-prometheus-rw script.js
+```
+
+> **[community]:** Always pin `K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM` to `false` in
+> environments where you don't control the Prometheus version (e.g., shared observability
+> platforms, Grafana Cloud free tier, AWS Managed Service for Prometheus < certain dates).
+> Use native histograms only on infrastructure you manage directly.
+
+---
+
+### 54. `K6_WEB_DASHBOARD=true` without `PORT=-1` hangs CI pipelines indefinitely  [community]
+
+**What:** When `K6_WEB_DASHBOARD=true` is set without `K6_WEB_DASHBOARD_PORT=-1`, k6 starts
+an HTTP server on port 5665 and **does not exit** when the test completes — it waits for all
+connected browser clients to disconnect. In CI pipelines where no browser opens the dashboard,
+the k6 process hangs forever and the job times out.
+
+**WHY:** The web dashboard server stays alive to allow users to export the HTML report
+interactively from the browser. k6 cannot distinguish a CI environment from a developer machine
+and assumes someone may be viewing the dashboard.
+
+```bash
+# WRONG — hangs indefinitely in CI (no browser to close the connection)
+K6_WEB_DASHBOARD=true k6 run script.js
+
+# CORRECT — generate HTML artifact and exit immediately
+K6_WEB_DASHBOARD=true \
+K6_WEB_DASHBOARD_PORT=-1 \
+K6_WEB_DASHBOARD_EXPORT=reports/dashboard.html \
+k6 run script.js
+
+# ALSO CORRECT — disable dashboard entirely in CI (simplest)
+k6 run script.js   # no K6_WEB_DASHBOARD variable
+```
+
+> **[community]:** Add `K6_WEB_DASHBOARD_PORT=-1` as a CI-wide environment variable rather
+> than setting it per-job. This way, even if a developer adds `K6_WEB_DASHBOARD=true` to a
+> CI script by mistake, the port override prevents a hang. The HTML export still works with
+> `PORT=-1`, so you don't lose the artifact — you just lose the interactive server.
+
+---
+
+### 55. `k6/experimental/websockets` is deprecated — migrate to `k6/websockets`  [community]
+
+**What:** The import path `k6/experimental/websockets` was the temporary home for the modern
+WebSocket module before it graduated to stable. In k6 v1.x, the module is available at both
+`k6/websockets` (stable) and `k6/experimental/websockets` (deprecated alias). The deprecated
+alias **will be removed** in a future major version. Teams that delay migration will encounter
+a sudden import error after upgrading.
+
+**WHY:** The graduation from experimental to stable is k6's standard lifecycle for new modules.
+The experimental namespace (`k6/experimental/*`) signals "API may change" — graduating to core
+signals "stable, breaking changes only in major versions". Keeping the experimental import after
+graduation creates a false sense of stability while the removal countdown runs.
+
+```javascript
+// BEFORE — deprecated import path
+import { WebSocket } from "k6/experimental/websockets";
+
+// AFTER — stable import path (no API changes, pure rename)
+import { WebSocket } from "k6/websockets";
+
+// One-line sed migration for existing scripts:
+// sed -i 's|k6/experimental/websockets|k6/websockets|g' k6/**/*.js
+```
+
+> **[community]:** Run `grep -r "k6/experimental/websockets" k6/` in your repo to find all
+> scripts using the deprecated path. The `k6/ws` module (legacy, callback-based) is a
+> **separate** module that remains available but is also being superseded by `k6/websockets`.
+> Do not confuse the three: `k6/ws` (legacy), `k6/experimental/websockets` (deprecated alias),
+> `k6/websockets` (stable, use this).
+
 

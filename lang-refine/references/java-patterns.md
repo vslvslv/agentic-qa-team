@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs, WireMock docs, Awaitility docs, Spring Boot Test docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics) | mixed | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs, WireMock docs, Awaitility docs, Spring Boot Test docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs) | mixed | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -3951,4 +3951,297 @@ HeavyResource r = resources.get("key1").get();
 - `StableValue`: lazy, instance-scoped, concurrency-safe, JIT-friendly (JVM can inline after first initialization), no boilerplate.
 
 **Note:** `StableValue` is a preview feature in Java 25. Enable with `--enable-preview` and `--source 25`. The API may change before standardization. Track [JEP 502](https://openjdk.org/jeps/502) for final API details.
+
+---
+
+### Thread.Builder API — Explicit Virtual and Platform Thread Creation (Java 21+)
+`Thread.ofVirtual()` and `Thread.ofPlatform()` return a `Thread.Builder` that replaces the verbose `new Thread(...)` constructor pattern. They give fine-grained control over name prefix, daemon flag, stack size, and uncaught-exception handler before starting, and they support both one-off threads and `ThreadFactory` instances for use with `ExecutorService`.
+
+```java
+import java.lang.Thread;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+// Explicit virtual thread with name and uncaught-exception handler
+Thread vt = Thread.ofVirtual()
+    .name("order-processor-", 0)            // name prefix + auto-incrementing suffix
+    .uncaughtExceptionHandler((t, ex) ->
+        System.err.println(t.getName() + " failed: " + ex.getMessage()))
+    .unstarted(() -> processOrders());       // returns Thread, not yet running
+vt.start();
+
+// Platform thread with custom stack size
+Thread platform = Thread.ofPlatform()
+    .name("batch-writer")
+    .daemon(true)
+    .stackSize(512 * 1024)                  // 512 KB stack — reduce for many threads
+    .unstarted(this::writeBatch);
+platform.start();
+
+// ThreadFactory for use with ExecutorService.newThreadPerTaskExecutor()
+import java.util.concurrent.ThreadFactory;
+
+ThreadFactory virtualFactory = Thread.ofVirtual()
+    .name("req-", 0)
+    .factory();   // returns a ThreadFactory that creates named virtual threads
+
+ExecutorService executor = Executors.newThreadPerTaskExecutor(virtualFactory);
+// Each submitted task runs on a virtual thread named req-0, req-1, req-2, ...
+executor.submit(() -> handleRequest(request));
+```
+
+**Why prefer `Thread.Builder` over `new Thread(...)`:**
+- Constructor-chained configuration is clearer than a seven-parameter constructor.
+- `name(prefix, start)` automatically generates sequential names (req-0, req-1, …) without a counter variable.
+- `factory()` produces a `ThreadFactory` compatible with all `ExecutorService` APIs that accept one.
+- `unstarted()` creates the thread without starting it — useful when you need the thread reference before the task begins.
+
+---
+
+### StructuredTaskScope.Joiner — Custom Join Policies (Java 25 preview — JEP 505)
+Java 25 updated Structured Concurrency (JEP 505) to add `StructuredTaskScope.Joiner<T, R>`, a functional interface that encapsulates the join policy of a scope. The previous `ShutdownOnFailure` / `ShutdownOnSuccess` classes are now built on top of `Joiner`. This enables custom aggregation policies — for example, collecting all successes while ignoring failures — without subclassing `StructuredTaskScope`.
+
+```java
+import java.util.concurrent.StructuredTaskScope;
+import java.util.concurrent.StructuredTaskScope.Subtask;
+import java.util.concurrent.StructuredTaskScope.Joiner;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
+
+// Built-in joiners — recommended for most use cases
+public OrderDetails buildOrderDetails(long orderId) throws Exception {
+
+    // ShutdownOnFailure: cancel all if any subtask fails (most common)
+    try (var scope = StructuredTaskScope.open(Joiner.awaitAllSuccessfulOrThrow())) {
+        Subtask<User>      user      = scope.fork(() -> userService.findById(orderId));
+        Subtask<Inventory> inventory = scope.fork(() -> inventoryService.check(orderId));
+        scope.join();   // waits for all; throwIfFailed() not needed — awaitAllSuccessfulOrThrow does it
+
+        return new OrderDetails(user.get(), inventory.get());
+    }
+}
+
+// Custom Joiner: collect all successful results, log failures
+public List<String> fetchAllAvailable(List<String> urls) throws Exception {
+    List<String> successes = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    try (var scope = StructuredTaskScope.open(
+        Joiner.<String, Void>custom(
+            (subtask, state) -> {
+                if (subtask.state() == Subtask.State.SUCCESS) {
+                    successes.add(subtask.get());
+                }
+                // returning null means "continue; don't short-circuit the scope"
+                return null;
+            },
+            () -> null   // finisher: returns Void — all subtasks ran to completion
+        )
+    )) {
+        urls.forEach(url -> scope.fork(() -> httpClient.fetch(url)));
+        scope.join();   // all subtasks finish; failures are collected not thrown
+        return List.copyOf(successes);
+    }
+}
+```
+
+**When to use custom `Joiner`:**
+- You need partial results (collect successes, discard/log failures) rather than fail-fast.
+- You need a custom short-circuit policy (e.g., stop after 3 successes out of N attempts).
+- Built-in `awaitAllSuccessfulOrThrow()` (fail-fast) and `anySuccessfulResultOrThrow()` (first-success) cover 80% of use cases — reach for a custom `Joiner` only when neither fits.
+
+---
+
+### HikariCP — Production Connection Pool Configuration
+HikariCP is the standard JDBC connection pool for Java applications. Default configuration is functional but suboptimal for production; the most impactful settings are `maximumPoolSize`, `minimumIdle`, `connectionTimeout`, and `keepaliveTime`. Misconfigured pools are a leading cause of production database outages.
+
+```java
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+
+HikariConfig config = new HikariConfig();
+
+// ── Connection identity ──────────────────────────────────────────────────────
+config.setJdbcUrl("jdbc:postgresql://db-host:5432/myapp");
+config.setUsername(System.getenv("DB_USER"));
+config.setPassword(System.getenv("DB_PASS"));
+config.setDriverClassName("org.postgresql.Driver");
+
+// ── Pool sizing ──────────────────────────────────────────────────────────────
+// Rule of thumb: maximumPoolSize = Tn × (Cm / Cn) + 1
+// Tn = number of threads, Cm = response time with connection, Cn = wait for connection
+// For a typical web service: cores × 2 + 1 (empirical starting point)
+config.setMaximumPoolSize(10);
+config.setMinimumIdle(5);              // keep 5 connections warm; avoids cold-start latency
+
+// ── Timeouts ─────────────────────────────────────────────────────────────────
+config.setConnectionTimeout(30_000);  // max ms to wait for a connection from pool (30s)
+config.setIdleTimeout(600_000);       // max ms a connection can sit idle before eviction (10m)
+config.setMaxLifetime(1_800_000);     // max connection lifetime (30m); must be < DB timeout
+config.setKeepaliveTime(30_000);      // send keepalive query every 30s to prevent stale connections
+
+// ── Connection validation ────────────────────────────────────────────────────
+config.setConnectionTestQuery("SELECT 1");           // only needed if JDBC4 isValid() unavailable
+config.setValidationTimeout(5_000);
+
+// ── Pool name (appears in metrics, JMX, and log output) ─────────────────────
+config.setPoolName("orders-db-pool");
+
+// ── Performance options ──────────────────────────────────────────────────────
+config.addDataSourceProperty("cachePrepStmts",          "true");   // cache prepared statements
+config.addDataSourceProperty("prepStmtCacheSize",       "250");
+config.addDataSourceProperty("prepStmtCacheSqlLimit",   "2048");
+config.addDataSourceProperty("useServerPrepStmts",      "true");   // PostgreSQL
+
+// ── Metrics integration (Micrometer) ─────────────────────────────────────────
+// config.setMetricRegistry(meterRegistry);   // enables hikaricp.* in Actuator/Prometheus
+
+HikariDataSource dataSource = new HikariDataSource(config);
+```
+
+**Key HikariCP gotchas [community]:**
+1. **`maxLifetime` must be less than the database's `wait_timeout`** — if the DB closes an idle connection but HikariCP still has it in the pool, the next borrow throws `Connection is closed`. Set `maxLifetime` to 25–30 seconds less than the DB wait timeout.
+2. **`connectionTimeout` is not a socket timeout** — it is the maximum wait for a free connection *from the pool*. Set the JDBC driver's `socketTimeout` separately for network-level timeout protection.
+3. **Never set `minimumIdle = 0` in production** — the pool will empty under low traffic and then spike latency when traffic returns because new connections take 50–200 ms to establish.
+4. **Pool size ≠ thread count** — a pool of 100 rarely outperforms a pool of 10 if the database can only handle 10 concurrent connections efficiently. Use connection pool metrics (HikariCP `pending` gauge) to right-size.
+
+---
+
+### Spring `@Async` Self-Invocation Bypass — Same Proxy Problem as `@Transactional` [community]
+Spring `@Async` has the same AOP proxy limitation as `@Transactional`: calling an `@Async` method from within the same bean executes it **synchronously** because the call never goes through the Spring proxy. The method runs in the calling thread, not the task executor, which can cause UI-blocking, deadlocks, or missing thread-context propagation (security, MDC logging, request scope).
+
+```java
+// BAD — @Async method called internally; runs on calling thread, not async executor
+@Service
+public class ReportService {
+
+    public void generateDailyReports() {
+        for (String tenant : tenants) {
+            this.generateReport(tenant);    // "this" call bypasses proxy — NOT async!
+        }
+    }
+
+    @Async("reportExecutor")
+    public CompletableFuture<Void> generateReport(String tenantId) {
+        // Expected to run in 'reportExecutor' thread pool — but doesn't when self-invoked
+        reportEngine.build(tenantId);
+        return CompletableFuture.completedFuture(null);
+    }
+}
+
+// GOOD — extract @Async method to a separate Spring-managed bean
+@Service
+public class AsyncReportRunner {
+    @Async("reportExecutor")
+    public CompletableFuture<Void> run(String tenantId) {
+        reportEngine.build(tenantId);
+        return CompletableFuture.completedFuture(null);
+    }
+}
+
+@Service
+public class ReportService {
+    private final AsyncReportRunner runner;   // injected — call goes through proxy
+
+    public void generateDailyReports() {
+        tenants.forEach(tenant -> runner.run(tenant));   // proxied → actually async
+    }
+}
+```
+
+**Three additional `@Async` pitfalls [community]:**
+1. **`void` return type on `@Async` swallows exceptions** — `void` async methods have no `CompletableFuture` to attach a handler to. Use `CompletableFuture<Void>` and always attach `.exceptionally(...)` or use an `AsyncUncaughtExceptionHandler`.
+2. **Missing `@EnableAsync` on the configuration class** — `@Async` annotations compile and deploy fine but execute synchronously until `@EnableAsync` is on a `@Configuration` class. This is invisible in unit tests where the real Spring context isn't loaded.
+3. **MDC logging context is lost in async threads** — the async executor thread doesn't inherit the calling thread's SLF4J MDC (trace ID, user ID). Use `MDC.getCopyOfContextMap()` before the async call and restore it at the start of the `@Async` method, or configure a `TaskDecorator` on the executor.
+
+```java
+// GOOD — TaskDecorator propagates MDC to async threads
+@Bean(name = "reportExecutor")
+public Executor reportExecutor() {
+    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+    executor.setCorePoolSize(4);
+    executor.setMaxPoolSize(8);
+    executor.setQueueCapacity(100);
+    executor.setTaskDecorator(runnable -> {
+        Map<String, String> contextMap = MDC.getCopyOfContextMap();    // capture on caller thread
+        return () -> {
+            try {
+                if (contextMap != null) MDC.setContextMap(contextMap); // restore on async thread
+                runnable.run();
+            } finally {
+                MDC.clear();   // clean up to avoid thread-pool contamination
+            }
+        };
+    });
+    executor.initialize();
+    return executor;
+}
+```
+**WHY:** Without a `TaskDecorator`, every log line emitted from an `@Async` method is missing the trace ID or correlation ID from the originating request — making distributed tracing impossible in production. This is the most common silent failure when teams first add `@Async` to an existing service.
+
+---
+
+### Hibernate Second-Level Cache — When Not to Enable It [community]
+Hibernate's second-level cache (2LC) stores entity data in a shared cache (Ehcache, Infinispan, Caffeine) across sessions. It reduces database reads for frequently-accessed, rarely-changed entities. However, enabling it naively on entities that are frequently written causes stale reads, cache stampedes, and consistency bugs that are harder to debug than the original N+1 query problem.
+
+```java
+// APPROPRIATE — 2LC on read-mostly, rarely changed entities
+@Entity
+@Cache(usage = CacheConcurrencyStrategy.READ_ONLY)  // safest strategy; entity never modified
+@Table(name = "countries")
+public class Country {
+    @Id Long id;
+    String name;
+    String isoCode;
+    // Never updated after initial data load
+}
+
+// APPROPRIATE — READ_WRITE for entities updated infrequently
+@Entity
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)  // soft-lock on update; consistent
+@Table(name = "product_catalog")
+public class Product {
+    @Id Long id;
+    String name;
+    BigDecimal price;  // changes perhaps daily, not every second
+}
+
+// BAD — 2LC on a high-write entity causes stale reads and cache invalidation storm
+@Entity
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)  // too noisy; invalidation on every tx
+@Table(name = "order_events")  // INSERT-heavy; never read by ID in a cached pattern
+public class OrderEvent { ... }
+
+// CHECK cache effectiveness — enable Hibernate statistics in dev
+SessionFactory sf = emf.unwrap(SessionFactory.class);
+sf.getStatistics().setStatisticsEnabled(true);
+// After test suite:
+// getStatistics().getSecondLevelCacheHitCount() should be >> miss count
+// If hit rate < 50%, the cache is hurting more than helping (invalidation overhead)
+```
+
+**When second-level cache makes sense [community]:**
+- Entities are read far more often than they are written (ratio > 10:1).
+- Entity size is small (< 10 KB) — large blobs waste cache memory.
+- Cache TTL tolerance: stale data for a few seconds is acceptable.
+- Entity is looked up by primary key (`findById`) — not by complex JPQL queries (query cache is separate and riskier).
+
+**When NOT to use 2LC:**
+- High-write entities (order status, inventory counts, event logs) — every write invalidates every cached copy.
+- Multi-node deployments without a distributed cache (Infinispan, Redis) — each node has a stale local copy after another node writes.
+- Entities with frequently-changed associations — Hibernate invalidates parent cache when a collection member changes.
+
+---
+
+## Additional Anti-Patterns Quick Reference
+
+| Anti-Pattern | Why it's harmful | What to do instead |
+|---|---|---|
+| `new Thread(...)` constructor | No name, stack size, or uncaught-exception control; hard to trace in thread dumps | Use `Thread.ofVirtual().name(...).unstarted(...)` or `Thread.ofPlatform()` builder |
+| `@Async` self-invocation | Same proxy bypass as `@Transactional`; method runs synchronously without warning | Extract `@Async` method to a separate Spring-managed bean |
+| `@Async` with `void` return type | Exceptions are silently swallowed; no way to attach error handler | Return `CompletableFuture<Void>`; attach `exceptionally()` handler |
+| Missing MDC propagation in `@Async` executor | Trace ID and correlation ID lost in async threads; distributed tracing breaks | Configure a `TaskDecorator` that copies MDC to the async thread |
+| Hibernate 2LC on write-heavy entities | Cache invalidation on every write adds overhead; stale reads under load | Enable 2LC only for read-mostly entities (`READ_ONLY` or `READ_WRITE` with hit rate > 50%) |
+| HikariCP `maxLifetime` >= DB `wait_timeout` | DB closes connection while pool still holds it; next borrow throws `Connection is closed` | Set `maxLifetime` ≥ 30s less than DB wait timeout |
+| HikariCP `minimumIdle = 0` in production | Pool empties at low traffic; reconnects on spike add 50–200 ms latency | Keep `minimumIdle` ≥ 2–5 to maintain warm connections |
+| `StructuredTaskScope` without `Joiner` custom policy | `ShutdownOnFailure` cancels all on first error; may not fit partial-success use cases | Use `Joiner.custom(...)` to collect all successes and log failures independently |
 

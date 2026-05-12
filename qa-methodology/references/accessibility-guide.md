@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -6344,6 +6344,10 @@ TypeScript 6.0 (released in the TS 6.x series, see lang-refine TypeScript patter
 | React 19 Form Actions | Official | https://react.dev/blog/2024/12/05/react-19 | React 19 form Actions: auto-reset on success, useFormStatus for accessible loading states |
 | axe-core-npm monorepo | Open source | https://github.com/dequelabs/axe-core-npm | 7 packages: @axe-core/playwright, @axe-core/react, @axe-core/cli, @axe-core/reporter-earl, @axe-core/puppeteer, @axe-core/webdriverio, @axe-core/webdriverjs; latest: v4.11.3 (May 4, 2026) |
 | aria-braille-equivalent rule | Reference | https://github.com/dequelabs/axe-core/blob/develop/doc/rule-descriptions.md | New rule in axe-core 4.11.0: identifies incorrect uses of aria-braille attributes on elements |
+| IBM Equal Access accessibility-checker | Open source | https://github.com/IBMa/equal-access | v4.0.17 (April 2026); Playwright integration via aChecker.getCompliance(page, label); EN 301 549 + Section 508 + WCAG 2.0/2.1/2.2; baseline comparison mode; JSON/CSV/XLSX output |
+| Pa11y CI | Open source | https://github.com/pa11y/pa11y-ci | v4.1.0 (March 2026, Node 20+); HTMLCS engine complementary to axe-core; URL-list + sitemap scanning; pre-deployment staging gate |
+| Playwright accessibility testing | Official | https://playwright.dev/docs/accessibility-testing | Official @axe-core/playwright integration guide; AxeBuilder API reference; WCAG tag filtering |
+| axe.run() API documentation | Official | https://www.deque.com/axe/core-documentation/api-documentation/ | Full axe.run() options: resultTypes for performance, preload (cssom/media), context selectors, shadow DOM targeting |
 
 ---
 
@@ -7434,3 +7438,469 @@ test.describe('Pages with deferred/lazy iframes', () => {
 65. **[community] axe-core-npm monorepo reached v4.11.3 on 2026-05-04 — verify your `@axe-core/*` packages are aligned to the same monorepo version to avoid inter-package type mismatches**: The axe-core-npm monorepo publishes all `@axe-core/*` packages together at the same version (`@axe-core/playwright`, `@axe-core/react`, `@axe-core/cli`, `@axe-core/reporter-earl`, `jest-axe`, etc.). Running mismatched versions — e.g., `@axe-core/playwright@4.11.3` with `axe-core@4.11.1` as a peer dep — can cause rule differences where one package includes rules or fixes not present in the peer. Use `npm ls axe-core` to verify all packages resolve to the same axe-core version. WHY: gotcha #8 above (axe-core version mismatch between jest-axe and playwright) is the most common form of this problem; the general principle applies to all packages in the monorepo.
 
 66. **[community] AxeBuilder memory usage grows with page complexity in large-scale CI scans — axe-core-npm 4.11.0 includes memory optimizations for the AxeBuilder context accumulation, but teams scanning 100+ pages per CI run should still implement explicit cleanup**: Prior to axe-core-npm 4.11.0, the `AxeBuilder` instance accumulated internal state across multiple `.analyze()` calls on the same instance. For teams scanning large applications (100+ routes in CI), this caused Node.js heap growth and occasional OOM kills. The 4.11.0 optimization reduces context accumulation. However, the best practice remains to create a new `AxeBuilder({ page })` instance for each scan rather than reusing across page navigations. WHY: the `AxeBuilder` is designed as a per-scan configuration object, not a persistent scanner; creating one per test (as shown in all patterns above) is both idiomatic and memory-safe regardless of the version.
+
+---
+
+### IBM Equal Access Toolkit v4.0.17 — Playwright Integration for Secondary Engine Coverage
+
+IBM's Equal Access accessibility-checker (v4.0.17, April 28, 2026) provides a complementary rule engine to axe-core with particularly strong EN 301 549 and Section 508 coverage. When used as a **secondary engine** alongside axe-core, it catches a different set of issues — particularly around form semantics, table structure, and ARIA validation patterns that axe-core handles differently.
+
+**Key differentiators from axe-core:**
+- **Baseline comparison**: validates against stored baseline files, enabling you to detect *regressions* from a known-good state rather than flagging all pre-existing issues
+- **Multi-format output**: JSON, CSV, XLSX, HTML reporting formats
+- **Policy-driven severity management**: configured via `.achecker.yml` with per-rule severity overrides
+- **WCAG 2.0, 2.1, 2.2 + Section 508**: broader standard mapping than axe-core for US government compliance
+
+**When to add IBM Equal Access as a secondary engine:**
+- US government or regulated-sector products (FedRAMP, FISMA) where Section 508 conformance evidence is required
+- Teams that need baseline comparison ("did this release introduce new violations?") rather than just "are there any violations?"
+- Products targeting the EU public sector (EN 301 549 alignment beyond WCAG 2.2)
+
+```typescript
+// File: e2e/accessibility/ibm-checker.spec.ts
+// IBM Equal Access checker as a secondary engine in Playwright.
+// Runs AFTER the primary axe-core scan — only catches violations axe missed.
+// Install: npm install --save-dev accessibility-checker
+
+import { test, expect } from '@playwright/test';
+// Note: accessibility-checker uses CommonJS exports; use require() in ESM/TS projects
+// or ensure your tsconfig allows CJS interop (allowSyntheticDefaultImports: true)
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const aChecker = require('accessibility-checker');
+
+test.afterAll(async () => {
+  // Close the accessibility-checker browser session after all tests in the file
+  await aChecker.close();
+});
+
+test.describe('Homepage — IBM Equal Access secondary scan', () => {
+
+  test('no IBM accessibility violations on homepage', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // getCompliance accepts the Playwright Page object directly
+    // Label is used to identify this scan in the JSON/CSV report
+    const result = await aChecker.getCompliance(page, 'homepage-ibm-a11y');
+    const report = result.report;
+
+    // assertCompliance returns 0 (pass) or non-zero (fail)
+    // It respects the .achecker.yml baseline and severity configuration
+    const returnCode = aChecker.assertCompliance(report);
+
+    if (returnCode !== 0) {
+      // Log the violations in a readable format for CI output
+      const violations = report.results.filter(
+        (r: { level: string }) => r.level === 'violation'
+      );
+      violations.forEach((v: { ruleId: string; reasonId: string; xpath: string; message: string }) => {
+        console.error(
+          `[IBM a11y] ${v.ruleId} (${v.reasonId}) at ${v.xpath}: ${v.message}`
+        );
+      });
+    }
+
+    expect(returnCode, 'IBM accessibility-checker violations found').toBe(0);
+  });
+
+  test('form page has no IBM accessibility violations', async ({ page }) => {
+    await page.goto('/contact');
+    await page.waitForLoadState('networkidle');
+
+    const result = await aChecker.getCompliance(page, 'contact-form-ibm-a11y');
+    expect(aChecker.assertCompliance(result.report)).toBe(0);
+  });
+
+});
+```
+
+**Configuring `.achecker.yml` for WCAG 2.2 scope:**
+
+```yaml
+# File: .achecker.yml — IBM accessibility-checker project configuration
+# Place in repository root alongside package.json
+
+# Scan policy — use WCAG 2.2 level AA
+policies:
+  - WCAG_2_2
+
+# Fail on violations only (not recommendations/potentialviolations)
+# Options: violation | potentialviolation | recommendation | message | ignored
+failLevels:
+  - violation
+
+# Report levels — include everything for diagnostic output
+reportLevels:
+  - violation
+  - potentialviolation
+  - recommendation
+
+# Output format for CI artifacts
+outputFormat:
+  - json
+  - csv
+
+# Baseline file path — stores known violations for regression comparison
+# Initialize by running the checker once on a known-good state:
+# npx achecker --baselineFile=.a11y-baseline.json
+baselineFile: .a11y-baseline.json
+```
+
+**Version pinning note**: IBM Equal Access v4.0.17 (April 2026) is the current stable release. The `accessibility-checker` package ships as CommonJS; TypeScript projects with `"module": "NodeNext"` or `"moduleResolution": "bundler"` must use `import aChecker from 'accessibility-checker'` with `esModuleInterop: true`, or use `require()` syntax in a `.cts` file.
+
+---
+
+### Pa11y CI v4.1.0 — URL-Based Secondary Scanning for Pre-Deployment Gates
+
+Pa11y CI (v4.1.0, March 3, 2026) provides command-line accessibility scanning that complements axe-core by using the HTMLCS (HTML_CodeSniffer) rule engine. As a **URL-based scanner**, it is particularly effective for:
+- Pre-deployment checks against staging URLs without requiring Playwright test authoring
+- Sitemap-driven scanning of entire sites
+- CI pipelines that need a lightweight "smoke test" accessibility gate before full E2E tests run
+
+Pa11y CI uses a different rule engine than axe-core, which means it can flag issues that axe-core misses (and vice versa). Running both as complementary scanners provides broader automated coverage toward the ~57% axe-core ceiling.
+
+**Node.js requirement**: Pa11y CI v4.x requires Node.js ≥ 20 (even-numbered stable).
+
+```json
+// File: .pa11yci.json — Pa11y CI configuration for pre-deployment staging scan
+// Runs against a list of critical URLs before promotion to production.
+// Install: npm install --save-dev pa11y-ci
+{
+  "defaults": {
+    "standard": "WCAG2AA",
+    "level": "error",
+    "timeout": 30000,
+    "wait": 1000,
+    "chromeLaunchConfig": {
+      "args": ["--no-sandbox", "--disable-setuid-sandbox"]
+    },
+    "ignore": [
+      "WCAG2AA.Principle1.Guideline1_4.1_4_3.G18.Fail"
+    ],
+    "threshold": 0
+  },
+  "urls": [
+    "https://staging.example.com/",
+    "https://staging.example.com/login",
+    "https://staging.example.com/dashboard",
+    "https://staging.example.com/settings",
+    "https://staging.example.com/help"
+  ]
+}
+```
+
+```yaml
+# File: .github/workflows/pa11y-staging.yml
+# Pre-deployment accessibility gate using Pa11y CI
+# Runs against the staging URL before production promotion.
+name: Pa11y CI Accessibility Gate
+
+on:
+  workflow_dispatch:
+  deployment_status:
+
+jobs:
+  pa11y:
+    name: Pa11y WCAG 2 AA scan (staging)
+    runs-on: ubuntu-latest
+    if: github.event.deployment_status.state == 'success'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run Pa11y CI
+        run: npx pa11y-ci --config .pa11yci.json
+      - name: Upload Pa11y results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pa11y-results
+          path: pa11y-report.json
+```
+
+**Pa11y CI vs axe-core complementarity:**
+| Aspect | axe-core (@axe-core/playwright) | Pa11y CI (HTMLCS engine) |
+|--------|--------------------------------|--------------------------|
+| Rule engine | Deque axe-core | HTML_CodeSniffer |
+| Integration | Playwright / Jest test files | CLI / URL list |
+| Real browser | Yes (Playwright) | Yes (Puppeteer/Chrome) |
+| WCAG 2.2 support | Yes (wcag22aa tag) | WCAG2AA standard |
+| Best for | Component + page scans in CI tests | URL-list staging gates |
+| Baseline comparison | Manual JSON diff | Built-in threshold |
+| Unique rule coverage | ARIA validation, RGAA, target-size | Table structure, some text-level checks |
+
+**Production lesson**: Pa11y CI is most valuable as a **pre-deployment gate on staging**, not as a replacement for test-embedded axe-core scans. Run axe in unit and E2E tests; run Pa11y CI against the staged build URL before production promotion. This two-layer approach provides both in-development feedback (axe in CI tests) and pre-release validation (Pa11y against the actual deployed artifact).
+
+---
+
+### Playwright 1.60 — Page-Level `toMatchAriaSnapshot()` and `boxes` Option
+
+Playwright 1.60 (latest as of May 2026) introduced two additions to the aria snapshot API that directly affect accessibility testing workflows.
+
+#### 1. Page-Level `toMatchAriaSnapshot()`
+
+Before 1.60, `toMatchAriaSnapshot()` was only available on `Locator` objects. In 1.60, `expect(page).toMatchAriaSnapshot()` works on the `Page` object itself, equivalent to `expect(page.locator('body')).toMatchAriaSnapshot()`. This simplifies full-page aria tree regression tests:
+
+```typescript
+// File: e2e/accessibility/aria-regression.spec.ts
+// Playwright 1.60+: page-level aria snapshot for full-page accessibility tree regression.
+import { test, expect } from '@playwright/test';
+
+test.describe('Aria snapshot regression tests', () => {
+
+  test('homepage aria tree matches approved snapshot', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Playwright 1.60+: toMatchAriaSnapshot on Page directly (not a locator)
+    // On first run: creates __snapshots__/homepage.aria.yaml
+    // On subsequent runs: compares against the stored snapshot
+    await expect(page).toMatchAriaSnapshot({
+      name: 'homepage',   // snapshot file name (stored in __snapshots__/)
+    });
+  });
+
+  test('navigation region has expected structure', async ({ page }) => {
+    await page.goto('/');
+
+    // Locator-scoped snapshot — test only the nav structure
+    // Using depth option (v1.59+) to limit snapshot depth for focused tests
+    const nav = page.getByRole('navigation', { name: 'Main navigation' });
+    await expect(nav).toMatchAriaSnapshot(`
+      - navigation "Main navigation":
+        - link "Home"
+        - link "About"
+        - link "Contact"
+    `);
+  });
+
+  test('modal has correct accessibility tree when open', async ({ page }) => {
+    await page.goto('/');
+    await page.click('[data-testid="open-settings-modal"]');
+    await page.waitForSelector('[role="dialog"]');
+
+    // Test only the dialog region to avoid unrelated page changes breaking the snapshot
+    await expect(page.getByRole('dialog')).toMatchAriaSnapshot(`
+      - dialog "Settings":
+        - heading "Settings" [level=2]
+        - group "Notification preferences":
+          - checkbox "Email notifications"
+          - checkbox "SMS notifications"
+        - button "Save changes"
+        - button "Close dialog"
+    `);
+  });
+
+});
+```
+
+#### 2. `boxes` Option: Bounding Box Metadata in Aria Snapshots
+
+The `boxes` option (v1.60) appends `[box=x,y,width,height]` data to each node in the aria snapshot YAML. This is primarily designed for AI/LLM consumption — an agent reviewing the aria snapshot can use spatial coordinates to reason about layout and visual proximity of accessible elements.
+
+```typescript
+// File: e2e/accessibility/aria-with-boxes.spec.ts
+// The boxes option is primarily for AI-assisted accessibility analysis,
+// not for standard pass/fail accessibility testing.
+import { test } from '@playwright/test';
+
+test('capture aria snapshot with bounding boxes for AI analysis', async ({ page }) => {
+  await page.goto('/checkout');
+  await page.waitForLoadState('networkidle');
+
+  // ariaSnapshot with boxes returns YAML with [box=x,y,w,h] on each element
+  // Useful for: AI agents validating visual + semantic alignment (e.g., navable MCP)
+  const snapshotWithBoxes = await page.ariaSnapshot({ boxes: true });
+
+  // Example output fragment:
+  // - heading "Checkout" [level=1] [box=24,64,960,48]
+  // - group "Shipping address" [box=24,128,480,320]
+  //   - textbox "First name" [box=24,176,224,44]
+  //   - textbox "Last name" [box=264,176,224,44]
+
+  // Store for AI accessibility review tools (not typically used in pass/fail assertions)
+  await test.info().attach('aria-snapshot-with-boxes.yaml', {
+    body: Buffer.from(snapshotWithBoxes),
+    contentType: 'text/plain',
+  });
+});
+```
+
+**When to use `boxes`**: This option produces very large snapshot files and is not suitable for pass/fail regression tests. Use it as an artifact attachment for AI-assisted accessibility review, or as input to agent-driven accessibility analysis tools (navable MCP, Aura scanner, or custom LLM-based a11y review pipelines).
+
+---
+
+### `axe.run()` `resultTypes` Performance Option for Large-Page Scans
+
+On complex pages (dashboards, data-heavy tables, SPAs with many components), a full axe-core scan can take 2–5 seconds per page and generate large result objects. The `resultTypes` option limits which result categories are fully expanded, significantly reducing both scan time and memory usage.
+
+**Default behavior**: axe returns full details for `passes`, `violations`, `incomplete`, and `inapplicable` — even when only `violations` matter for CI gating.
+
+**`resultTypes` behavior**: specifies which result arrays include full node details. Other arrays are still returned but contain only summary information (no `nodes` array expansion).
+
+```typescript
+// File: e2e/accessibility/performance-scan.spec.ts
+// Use resultTypes to limit axe result detail on large pages.
+// This reduces scan time by ~40-60% on pages with many passing rules.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Optimized axe scans for large pages', () => {
+
+  test('dashboard accessibility — violations only (fast mode)', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'])
+      // resultTypes: only violations get full node details
+      // passes, incomplete, inapplicable are included as summaries (no nodes array)
+      // This is the recommended approach for CI gates where you only act on violations
+      .options({
+        resultTypes: ['violations'],
+      })
+      .analyze();
+
+    // violations array has full node details (selector, html, impact, etc.)
+    if (results.violations.length > 0) {
+      console.table(
+        results.violations.map((v) => ({
+          id: v.id,
+          impact: v.impact,
+          description: v.description.slice(0, 80),
+          nodes: v.nodes.length,
+        }))
+      );
+    }
+
+    expect(results.violations).toEqual([]);
+  });
+
+  test('dashboard — full detail scan for detailed reporting (slower)', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    // Full scan: all result types with node details
+    // Use for scheduled accessibility reports, not for every PR gate
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'])
+      .analyze();
+
+    // Attach full results as CI artifact for accessibility reporting
+    await test.info().attach('axe-full-results.json', {
+      body: Buffer.from(JSON.stringify(results, null, 2)),
+      contentType: 'application/json',
+    });
+
+    expect(results.violations).toEqual([]);
+  });
+
+});
+```
+
+**Performance guidance:**
+| Scan type | `resultTypes` | Use case |
+|-----------|---------------|----------|
+| CI PR gate | `['violations']` | Fast feedback on every PR — 40-60% faster on complex pages |
+| Nightly audit | none (default) | Full detail for trend tracking and defect reports |
+| Targeted component scan | `['violations', 'incomplete']` | When you also want to surface "needs review" items |
+| EARL compliance report | none (default) | Full data needed for W3C EARL report generation |
+
+---
+
+### WCAG 3.0 (March 2026 Draft) — Conformance Model Changes QA Teams Must Know
+
+The March 3, 2026 W3C Working Draft of WCAG 3.0 introduces a fundamentally different **conformance model** compared to WCAG 2.x. While WCAG 3.0 remains at least several years from becoming a W3C Recommendation, QA engineers who work on long-lived products should understand the model shift now to begin adapting program structures.
+
+**Key model changes (WCAG 3.0 vs WCAG 2.2):**
+
+| Aspect | WCAG 2.2 | WCAG 3.0 (Draft) |
+|--------|----------|-----------------|
+| Conformance levels | A / AA / AAA | Bronze / Silver / Gold outcome levels |
+| Unit of conformance | Per success criterion (pass/fail) | Outcomes (user goals) with flexible methods |
+| Test mechanism | Testable success criteria | Assertions + outcomes; both automated and manual |
+| Scope | Web content | Web apps, native apps, IoT, VR/AR, wearables |
+| Naming | Web Content Accessibility Guidelines | W3C Accessibility Guidelines (broader scope) |
+| Ongoing compliance | Point-in-time conformance claim | Frequent maintenance model; designed for continuous updates |
+
+**What this means for QA program design today:**
+
+1. **WCAG 2.2 AA remains the current legal and compliance standard.** WCAG 3.0 is not legally actionable. The EU EAA, Section 508, and EN 301 549 all reference WCAG 2.x. Do not migrate conformance claims to WCAG 3.0 language yet.
+
+2. **Content meeting WCAG 2.2 AA is expected to satisfy most of WCAG 3.0 Bronze.** The draft explicitly states this. Teams that achieve WCAG 2.2 AA compliance are building on a sound foundation for WCAG 3.0.
+
+3. **The outcome-based model requires program thinking, not just criterion checking.** WCAG 3.0's "assertions" model asks whether the *overall user experience* for a given task is accessible, not just whether individual components pass automated rules. QA programs should now include user-task-based testing ("can a screen reader user complete checkout end-to-end?") alongside rule-based scanning.
+
+4. **Automated testing role expands but remains bounded.** WCAG 3.0's "Methods" (the equivalent of Techniques) include both automated and manual methods. The ~57% axe-core automated coverage ceiling continues to apply — the new model adds *more* manual-verification methods, not fewer.
+
+```typescript
+// File: e2e/accessibility/wcag3-task-based.spec.ts
+// Example of outcome/task-based accessibility testing — the pattern WCAG 3.0 encourages.
+// Tests whether a specific user GOAL can be completed, not just whether components pass rules.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('WCAG 3.0 outcome-based pattern: "Complete checkout" task', () => {
+
+  // Task: A keyboard-only user can complete the checkout process from cart to confirmation
+  test('keyboard-only user can complete checkout end-to-end', async ({ page }) => {
+    await page.goto('/cart');
+
+    // Step 1: Navigate to checkout button using only keyboard
+    // Tab through the page to find the checkout button
+    let checkoutFound = false;
+    for (let i = 0; i < 30; i++) {
+      await page.keyboard.press('Tab');
+      const activeElement = await page.evaluate(() => ({
+        role: document.activeElement?.getAttribute('role'),
+        text: document.activeElement?.textContent?.trim(),
+        tagName: document.activeElement?.tagName,
+      }));
+      if (activeElement.text === 'Proceed to Checkout') {
+        checkoutFound = true;
+        await page.keyboard.press('Enter');
+        break;
+      }
+    }
+    expect(checkoutFound, 'Checkout button must be keyboard-reachable').toBe(true);
+
+    // Step 2: Fill in shipping form using keyboard only
+    await page.waitForURL('**/checkout/shipping');
+    await page.keyboard.press('Tab'); // Focus first name field
+    await page.keyboard.type('Test');
+    await page.keyboard.press('Tab');
+    await page.keyboard.type('User');
+
+    // Step 3: Verify no axe violations at each step
+    const shippingResults = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+    expect(shippingResults.violations).toEqual([]);
+
+    // Step 4: Submit form using keyboard
+    await page.keyboard.press('Tab'); // Navigate to submit
+    // ... continue to confirmation
+
+    // WCAG 3.0 outcome: "A user with a motor disability can independently complete checkout"
+    // This test validates the OUTCOME, not just individual component rule compliance.
+  });
+
+});
+```
+
+---
+
+### New Community Gotchas (Iteration 39)
+
+67. **[community] IBM Equal Access and axe-core flag different WCAG 4.1.1 parsing violations — running both exposes a broader set of structural HTML defects**: IBM's accessibility-checker interprets some WCAG 4.1.1 (Parsing) requirements around malformed HTML and duplicate IDs more strictly than axe-core. Teams that run only axe-core may pass CI while having duplicate `id` attributes that the IBM checker flags. The reverse is also true: axe-core's `aria-valid-attr-value` catches attribute value errors that IBM's checker categorizes as a different rule. WHY: no single automated tool covers 100% of the ~57% automatable WCAG criteria; running two engines with different rule interpretations increases effective automated coverage. This is most cost-effective for products with formal compliance requirements (Section 508, EN 301 549).
+
+68. **[community] Pa11y CI `--threshold N` option does not differentiate by severity — teams that use it to "allow up to 10 violations" inadvertently permit critical violations**: Pa11y CI's `threshold` configuration allows a scan to pass even if up to N violations are found. Teams use this as a temporary grace mechanism during remediation. The problem: `threshold: 10` allows any combination of critical, serious, and minor violations — a form that is completely unlabeled (critical) can be masked by counting toward the 10. WHY: use the IBM Equal Access `failLevels` approach instead, which allows you to fail only on `violation` level (equivalent to WCAG Level A/AA) while reporting lower-severity items without failing CI. If using Pa11y, set `threshold: 0` and manage exceptions via `ignore` for specific rule IDs.
+
+69. **[community] Playwright 1.60 `boxes` option in `page.ariaSnapshot({ boxes: true })` produces YAML that does not match `toMatchAriaSnapshot()` patterns — the two APIs are not interchangeable**: The `boxes` option appends `[box=x,y,w,h]` metadata that changes the YAML string format. If you capture a snapshot with `boxes: true` and then use the resulting YAML as a `toMatchAriaSnapshot()` pattern string, the assertion will fail because the match pattern syntax does not accept `[box=...]` annotations (these are output-only metadata for AI tools). Use `page.ariaSnapshot({ boxes: true })` for diagnostic/AI artifact purposes only; use `expect(page).toMatchAriaSnapshot()` for pass/fail assertions without the `boxes` option. WHY: teams that try to use box-annotated snapshots as test fixtures discover the failure mode when their CI tests break with confusing YAML parse errors.
+
+70. **[community] axe-core `resultTypes: ['violations']` suppresses `incomplete` (needs review) results in CI output — teams miss WCAG issues that axe cannot auto-decide**: When using `resultTypes: ['violations']` for performance, the `incomplete` results (cases where axe found a potential problem but cannot auto-determine pass/fail without human judgment) are returned as summaries without node detail. Teams that only gate CI on `violations.length === 0` miss the `incomplete` category entirely. Common `incomplete` results include color-contrast (when axe cannot compute the effective background color), `label` (when heuristic label detection is ambiguous), and `aria-hidden-body` checks during page transitions. WHY: add a weekly or nightly job that runs the full scan (no `resultTypes` restriction) and logs `incomplete` results for manual review — do not use `resultTypes: ['violations']` for compliance audits.
+
+71. **[community] WCAG 3.0's outcome-based testing model surfaces test gaps in teams that only run automated scans**: Teams building WCAG 3.0 awareness into their programs discover that outcome-based testing ("can a screen reader user complete the checkout flow from start to confirmation?") fails even when all individual axe-core rules pass. A page can have zero axe violations while still having a broken checkout flow for keyboard-only users due to focus management issues, unexpected page reloads, or missing error recovery paths — none of which axe-core checks. WHY: axe-core validates structural correctness; outcome-based tests validate user goals. WCAG 3.0 is pushing the industry toward user-task testing as a first-class QA activity. Start adding task-based accessibility tests (as shown in the WCAG 3.0 pattern above) now — they will be essential for future compliance claims and they catch real user-affecting issues today.

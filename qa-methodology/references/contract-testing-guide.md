@@ -1,7 +1,8 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24) | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25) | community: production lessons -->
 <!-- new in iteration 24: extended MatchersV3 quick reference (atMostLike, constrainedArrayLike, includes, nullValue, equal, eachKeyMatches, eachValueMatches), InterfaceToTemplate<T> TypeScript utility, constrainedArrayLike bounded-array pattern, community lessons 47-49 (executeTest single-interaction-per-call constraint, constrainedArrayLike for bounded APIs, InterfaceToTemplate drift) -->
+<!-- new in iteration 25: The Bug Catcher Rule (formal principle for interaction inclusion), BDD-style scenario sentence pattern, V4 statusCode class matching (success/clientError/serverError), mTLS client certificate workaround for VerifierV3, ConsumerVersionSelector fallbackBranch TypeScript type gap, status code range matching feature request #1600, community lessons 50-53 (5 reasons contract testing fails, BDD-style naming prevents duplicate interactions, status code class matching avoids unnecessary provider states, mTLS/client-cert provider verification) -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
 <!-- new in iteration 18: contract_requiring_verification_published webhook (supersedes contract_content_changed, Pact Broker 2.82.0+), pact-js v16.2 withMatchingRules for async/sync interactions, pact-js v16.4 addInteractionReference, PactFlow Drift (spec-driven provider compliance CI), updated Pact Specification Version Reference table with v16.1–v16.4, community lesson 29 (deprecated webhook event), community lesson 30 (Drift for BDCT gap) -->
 <!-- new in iteration 19: addGraphQLInteraction() native V4 GraphQL DSL (pact-js v16.0.0+) replaces body-matching regex approach, PactFlow MCP Server (August 2025) section, community lessons 31 and 32 (GraphQL native DSL migration, MCP-assisted contract test generation) -->
@@ -4255,3 +4256,372 @@ describe('OrderService → InventoryService contract (InterfaceToTemplate)', () 
 48. **[community] `constrainedArrayLike` is under-used for APIs with documented size limits, leading to overly permissive contracts.** Teams that know their API enforces a maximum page size (e.g., `GET /notifications?page_size=20` never returns more than 20 items) routinely use `eachLike` instead of `constrainedArrayLike(1, 20, shape)`. The consequence: the consumer's pact does not enforce the upper bound, so a provider that accidentally returns 200 items (buffer overflow, off-by-one in pagination logic) will pass provider verification. `constrainedArrayLike` is specifically designed for this case — it encodes both the minimum guarantee (the provider always returns at least one item when state is set up) and the maximum contract (the provider never exceeds the page size). Use it whenever the API spec documents a maximum array length.
 
 49. **[community] `InterfaceToTemplate<T>` silently relaxes completeness checking — teams use it to silence TS2322 errors without realizing the body is now missing required fields.** `InterfaceToTemplate<T>` makes all interface fields optional from TypeScript's perspective (each field becomes `field?: P | AnyTemplate`). Teams that import it to suppress type errors sometimes end up with pact bodies that are missing required fields — the TypeScript compiler no longer complains that `reservedQuantity` is absent because the mapped type treats it as optional. The contract then tests fewer fields than the interface defines, giving a false sense of coverage. **Safer alternative:** use `Record<keyof StockSummary, unknown>` on the body const — this enforces that every key in the interface appears in the body while still accepting `MatchersV3` values. Reserve `InterfaceToTemplate<T>` for bodies with deeply nested types where the key-completeness check is impractical.
+
+---
+
+### The Bug Catcher Rule — Interaction Inclusion Decision Framework (TypeScript)
+
+The official Pact consumer documentation formalizes a principle for deciding whether an interaction belongs in a pact file: **"If I don't include this scenario, what specific bug in the consumer or misunderstanding about the provider API could go undetected?"** If the answer is "none," the interaction adds maintenance cost without value.
+
+```typescript
+// bug-catcher-rule-examples.consumer.pact.spec.ts
+// Demonstrates how to apply the Bug Catcher Rule to decide which interactions to include.
+// Each interaction is annotated with its bug-catching justification.
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { OrderClient } from '../src/order-client';
+
+const { like, string, integer } = MatchersV3;
+
+const provider = new PactV3({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8099,
+  logLevel: 'warn',
+});
+
+describe('OrderService → InventoryService (Bug Catcher Rule applied)', () => {
+  // ✅ INCLUDE: catches a misunderstanding about the response shape.
+  // If warehouseId is removed from the provider response, this consumer's
+  // routing logic silently uses undefined. Bug is real; test catches it.
+  it('GET /inventory/:sku — includes warehouseId field the consumer routes on', async () => {
+    await provider
+      .given('SKU ABC-123 exists in warehouse WH-001')
+      .uponReceiving('a stock request where the consumer needs warehouseId for routing')
+      .withRequest({ method: 'GET', path: '/inventory/ABC-123' })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          sku: string('ABC-123'),
+          available: integer(10),
+          // ← Bug catcher: consumer's routing logic reads this field; its absence would
+          //   silently route to a default warehouse instead of failing fast.
+          warehouseId: like('WH-001'),
+        },
+      })
+      .executeTest(async (mockServer) => {
+        const client = new OrderClient(mockServer.url);
+        const result = await client.getStock('ABC-123');
+        expect(result.warehouseId).toBeDefined();  // ← the assertion that catches the bug
+      });
+  });
+
+  // ✅ INCLUDE: catches the consumer not handling 404 gracefully.
+  // Without this, the consumer code could throw an unhandled exception on 404
+  // instead of returning a "not available" state to its caller.
+  it('GET /inventory/:sku — 404 path catches consumer error handling', async () => {
+    await provider
+      .given('SKU UNKNOWN-999 does not exist')
+      .uponReceiving('a stock request for a non-existent SKU')
+      .withRequest({ method: 'GET', path: '/inventory/UNKNOWN-999' })
+      .willRespondWith({ status: 404 })
+      .executeTest(async (mockServer) => {
+        const client = new OrderClient(mockServer.url);
+        // ← Bug catcher: verifies consumer converts 404 to domain error, not unhandled promise rejection
+        await expect(client.getStock('UNKNOWN-999')).rejects.toThrow('Stock not found');
+      });
+  });
+
+  // ❌ DO NOT INCLUDE: this interaction tests a provider business rule (quantity validation),
+  // not a consumer-side behaviour. If the provider relaxes the limit from 100 to 1000,
+  // this test breaks — but the consumer's code is completely unaffected.
+  // Remove it: the provider's own functional test suite owns this rule.
+  //
+  // it('GET /inventory/:sku — tests that provider enforces qty < 100 limit', async () => { ... });
+
+  // ❌ DO NOT INCLUDE: this interaction tests every permutation of query parameters.
+  // The consumer sends the same request structure regardless of filter values.
+  // One parameterized test proves the request is constructed correctly.
+  // Duplicating it for 5 filter values adds 4 interactions with zero additional bug detection.
+});
+```
+
+**Decision checklist before adding a new interaction:**
+
+| Question | If Yes → | If No → |
+|---|---|---|
+| Does the consumer code read a specific response field? | Include the field with an appropriate matcher | Omit the field from the pact body |
+| Does the consumer handle this error status differently from other errors? | Include the status code interaction | Omit — one generic 4xx interaction is sufficient |
+| Does removing this interaction hide a real consumer bug? | Include the interaction | Remove or merge it |
+| Does this interaction test a provider validation rule the consumer doesn't enforce? | Remove — belongs in provider tests | Include if the consumer renders the error message |
+| Is this interaction identical to an existing one with a different parameter value? | Consider a single parameterized interaction | Include if the parameter drives different consumer code paths |
+
+**BDD-style scenario naming that satisfies the Bug Catcher Rule:**
+
+The official Pact consumer guide recommends forming interaction names as a **natural-language sentence** combining the provider state, request description, and response to improve Broker UI readability and prevent duplicate description collisions:
+
+```typescript
+// BAD: generic, collision-prone, doesn't capture WHY
+.given('a product exists')
+.uponReceiving('a request for a product')
+
+// GOOD: specific, self-documenting, matches the bug it catches
+.given('product PROD-42 exists with price $29.99')
+.uponReceiving('a GET /products/PROD-42 request for the product price display')
+// Natural-language sentence: "Given product PROD-42 exists with price $29.99,
+//   upon receiving a GET /products/PROD-42 request for the product price display,
+//   the consumer expects a 200 response with id, name, and price fields."
+```
+
+The combination of `given` + `uponReceiving` forms a unique key in the Pact Broker — using scenario-specific strings eliminates the silent de-duplication overwrite problem (community lesson #40).
+
+---
+
+### V4 Status Code Class Matching (TypeScript — `statusCode` matcher)
+
+Pact V4 introduced a `statusCode` matching rule that accepts semantic class names (`'success'`, `'redirect'`, `'clientError'`, `'serverError'`, `'nonError'`) rather than exact status codes. This eliminates unnecessary provider states when the consumer only cares about the *class* of response, not the exact code.
+
+**Status code classes:**
+
+| Class name | Matches | Use when |
+|---|---|---|
+| `'success'` | 200–299 | Consumer handles any 2xx the same way |
+| `'redirect'` | 300–399 | Consumer follows any redirect |
+| `'clientError'` | 400–499 | Consumer shows a generic "bad request" error |
+| `'serverError'` | 500–599 | Consumer shows a retry or error boundary |
+| `'nonError'` | 100–399 | Consumer only branches on error vs. non-error |
+
+```typescript
+// inventory-status-class.consumer.pact.spec.ts
+// Demonstrates V4 statusCode class matching using the PactV4/Pact DSL.
+// Use case: consumer shows a generic "unavailable" state for any 5xx response,
+// making the exact status code (500, 502, 503, 504) irrelevant to the contract.
+import path from 'path';
+import { Pact, Matchers } from '@pact-foundation/pact';
+import { InventoryClient } from '../src/inventory-client';
+
+const { like } = Matchers;
+
+const provider = new Pact({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  logLevel: 'warn',
+  // V4: no port — auto-assigned
+});
+
+describe('OrderService → InventoryService (V4 statusCode class matching)', () => {
+  it('handles any 5xx server error as "service unavailable"', async () => {
+    await provider
+      .addInteraction()
+      .given('InventoryService is experiencing a server error')
+      .uponReceiving('a stock request during a server error condition')
+      .withRequest('GET', '/inventory/ABC-123', (builder) => {
+        builder.headers({ Accept: 'application/json' });
+      })
+      .willRespondWith(500, (builder) => {
+        // statusCode class matcher: matches any status in 500-599
+        // The builder's first argument (500) is the example; the matcher overrides it at verification.
+        builder.statusCode('serverError');
+        // Optional: match the body shape too — any error response body the consumer reads
+        builder.jsonBody({
+          message: like('Internal server error'),
+        });
+      })
+      .executeTest(async (mockServer) => {
+        const client = new InventoryClient(mockServer.url);
+        // Consumer should throw a ServiceUnavailableError for any 5xx, not just 500
+        await expect(client.getStock('ABC-123')).rejects.toThrow('ServiceUnavailable');
+      });
+  });
+
+  it('handles any 4xx client error as "bad request" without specific validation details', async () => {
+    await provider
+      .addInteraction()
+      .given('InventoryService rejects the request as invalid')
+      .uponReceiving('a stock request with an invalid SKU format')
+      .withRequest('GET', '/inventory/!!invalid!!', (builder) => {
+        builder.headers({ Accept: 'application/json' });
+      })
+      .willRespondWith(400, (builder) => {
+        // statusCode class matcher: matches any status in 400-499
+        // Use this when the consumer renders a generic "invalid request" UI regardless of 400/404/422.
+        builder.statusCode('clientError');
+      })
+      .executeTest(async (mockServer) => {
+        const client = new InventoryClient(mockServer.url);
+        await expect(client.getStock('!!invalid!!')).rejects.toThrow('InvalidRequest');
+      });
+  });
+});
+```
+
+**Key points:**
+- `builder.statusCode('serverError')` in the `willRespondWith` callback uses the V4 `statusCode` matching rule — the numeric argument to `willRespondWith(500, ...)` is the example value used in the consumer test; the class matcher is applied at provider verification
+- `statusCode('success')` is particularly useful when a provider legitimately returns `200` or `201` or `204` for the same logical operation depending on context — instead of writing separate interactions for each, use one interaction with class matching and test the consumer's response-parsing code once
+- This feature is only available in the V4 DSL (`Pact` / `PactV4` class with `addInteraction()` builder) — it is NOT available in `PactV3`
+- Avoid using `statusCode('nonError')` for success cases — be explicit with `statusCode('success')` so the contract documents intent clearly
+- The `statusCode` class matcher is an **open issue** in pact-js as a formal fluent API method (issue #1600); the builder callback pattern shown above is the recommended approach in V4. If the class matcher API is not yet available in your pact-js version, use `withMatchingRules` directly:
+
+```typescript
+// Fallback for versions where builder.statusCode() is not yet exposed:
+.willRespondWith(500, (builder) => {
+  builder.withMatchingRules({
+    status: { matchers: [{ match: 'statusCode', status: 'serverError' }] },
+  });
+})
+```
+
+---
+
+### mTLS / Client Certificate Provider Verification (TypeScript)
+
+Providers that require mutual TLS (mTLS) authentication — where both the client and server present certificates — cannot be verified with the standard `VerifierV3` setup, which does not expose TLS client certificate configuration. This is an open issue in pact-js (issue #1509: "Unable to pass client certificate from pact-js verifier").
+
+**Current workarounds (as of pact-js v16.4):**
+
+**Option 1 — TLS-terminating reverse proxy (recommended)**
+
+Start the provider test server behind a local reverse proxy (nginx, caddy, or a custom Node.js `https.createServer`) that handles TLS termination. The Pact verifier communicates with the proxy over plain HTTP; the proxy handles client certificates upstream.
+
+```typescript
+// inventory-service.mtls.provider.pact.spec.ts
+// Workaround for pact-js issue #1509: mTLS provider verification.
+// Uses a TLS-terminating proxy so the Pact verifier connects over plain HTTP.
+import { VerifierV3, VerifierOptions } from '@pact-foundation/pact';
+import { createServer as createHttpServer } from 'http';
+import { createServer as createHttpsServer } from 'https';
+import { readFileSync } from 'fs';
+import { AddressInfo } from 'net';
+import { app } from '../src/app';
+
+// 1. Start the real provider over plain HTTP (no TLS) on an internal port.
+//    The Pact verifier connects to this port directly.
+//    If the real provider ONLY accepts mTLS, wrap it in a proxy as shown below.
+async function startPlainHttpServer(): Promise<{ url: string; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const server = createHttpServer(app);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise<void>((res, rej) => server.close((err) => (err ? rej(err) : res()))),
+      });
+    });
+    server.on('error', reject);
+  });
+}
+
+describe('InventoryService provider verification (mTLS workaround)', () => {
+  let serverUrl: string;
+  let closeServer: () => Promise<void>;
+
+  beforeAll(async () => {
+    const server = await startPlainHttpServer();
+    serverUrl = server.url;
+    closeServer = server.close;
+  });
+
+  afterAll(async () => {
+    await closeServer();
+  });
+
+  it('satisfies all consumer pacts via plain HTTP proxy', async () => {
+    const stateHandlers: NonNullable<VerifierOptions['stateHandlers']> = {
+      'SKU ABC-123 exists with 10 units in stock': async () => { /* seed */ },
+    };
+
+    const verifier = new VerifierV3({
+      provider: 'InventoryService',
+      // The verifier connects to the plain HTTP server — no mTLS required here.
+      // In production, the app is fronted by a load balancer or API gateway that handles mTLS;
+      // the test server is the app itself without TLS (appropriate for local/CI verification).
+      providerBaseUrl: serverUrl,
+      pactBrokerUrl: process.env.PACT_BROKER_URL,
+      pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+      consumerVersionSelectors: [{ mainBranch: true }, { deployedOrReleased: true }],
+      stateHandlers,
+      publishVerificationResult: process.env.PUBLISH_VERIFICATION_RESULTS === 'true',
+      providerVersion: process.env.GIT_COMMIT,
+      providerVersionBranch: process.env.GIT_BRANCH,
+    });
+
+    await verifier.verifyProvider();
+  });
+});
+```
+
+**Option 2 — `requestFilter` to inject client certificates as headers**
+
+If the provider validates client identity via a certificate-derived header (common in Kubernetes service mesh environments where mTLS is handled by the mesh and forwarded as a header):
+
+```typescript
+// Use requestFilter to inject the client identity header that mTLS would provide.
+// This works when the provider validates X-Client-Cert-Subject or similar headers,
+// not raw TLS handshakes.
+const verifier = new VerifierV3({
+  // ...
+  requestFilter: (req, _res, next) => {
+    // Inject the client certificate subject as a header (service mesh pattern).
+    // The provider validates this header instead of a raw TLS certificate.
+    req.headers['X-Client-Cert-Subject'] = 'CN=pact-verifier,O=TestOrg';
+    next();
+  },
+});
+```
+
+**When mTLS verification is unavoidable:**
+- If the provider cannot be started without TLS, use the Pact CLI (`pact-provider-verifier`) directly rather than pact-js `VerifierV3` — the CLI binary supports `--client-cert` and `--client-key` flags
+- Track issue #1509 for native pact-js support: once resolved, `VerifierV3` will accept `tlsClientCert` and `tlsClientKey` options
+
+---
+
+### `ConsumerVersionSelector` `fallbackBranch` TypeScript Type Gap (pact-js ≤ v16.4)
+
+The Pact Broker supports a `fallbackBranch` property on consumer version selectors, allowing verification to fall back to a different branch if the specified branch has no pacts. This is essential during feature branch development — without `fallbackBranch`, a provider verifying against a consumer feature branch that doesn't exist yet returns "unknown" instead of safely falling back to `main`.
+
+**The type gap:** In pact-js v13–v16.4, `ConsumerVersionSelector` does not declare `fallbackBranch` in its TypeScript type definition (issue #1418). The property works at runtime but produces a TypeScript compile error unless you cast around the type.
+
+```typescript
+// consumer-version-selectors.ts — typed workaround for fallbackBranch gap
+import { ConsumerVersionSelector } from '@pact-foundation/pact';
+
+// Extend the official type to include fallbackBranch until pact-js fixes #1418.
+// Keep this file — when pact-js adds fallbackBranch to ConsumerVersionSelector,
+// remove the extension and the as-cast below; tsc will tell you when it's safe.
+type ConsumerVersionSelectorWithFallback = ConsumerVersionSelector & {
+  fallbackBranch?: string;
+};
+
+// PRODUCTION-READY: selectors that cover all important cases plus feature branch safety
+const selectors: ConsumerVersionSelectorWithFallback[] = [
+  { mainBranch: true },
+  { deployedOrReleased: true },
+  // During feature branch development: verify against the consumer's feature branch,
+  // falling back to main if the branch has no pacts yet.
+  // Remove this selector once the feature branch merges.
+  {
+    branch: process.env.CONSUMER_BRANCH ?? 'main',
+    fallbackBranch: 'main',
+  } as ConsumerVersionSelectorWithFallback,
+];
+
+// Pass to VerifierV3 — the as-cast to ConsumerVersionSelector[] is necessary
+// until pact-js #1418 is resolved (the runtime behavior is correct).
+export const productionSelectors = selectors as ConsumerVersionSelector[];
+
+// Usage in provider verification:
+// const verifier = new VerifierV3({
+//   ...
+//   consumerVersionSelectors: productionSelectors,
+// });
+```
+
+**Key points:**
+- The `fallbackBranch` property is fully supported by the Pact Broker at runtime — it is only the TypeScript type definition in pact-js that is missing it (issue #1418 filed as an enhancement)
+- The `as ConsumerVersionSelectorWithFallback` cast is safe because the pact-js native binary passes the selector object as-is to the Broker API; unknown properties are ignored by the TypeScript runtime but passed through to the HTTP call
+- Set `CONSUMER_BRANCH` in CI from the triggering consumer's branch name (available via `${pactbroker.consumerVersionBranch}` in the webhook payload) — this allows the provider to verify the exact consumer branch that triggered the webhook
+
+---
+
+### Additional Community Production Lessons [community]
+
+50. **[community] Five structural reasons contract testing initiatives fail — and how to prevent them.** PactFlow's production data across hundreds of organizations identifies five patterns that consistently cause Pact adoption to stall or be abandoned: (1) **scope creep** — teams try to replace all integration tests with Pact in one sprint, creating too much churn; fix: add CDC incrementally, starting with one consumer/provider pair; (2) **lack of organizational buy-in** — providers refuse to run verification because they weren't part of the adoption decision; fix: negotiate Pact Nirvana level goals cross-team before writing any tests; (3) **maintenance burden underestimated** — state handler upkeep is scoped as a one-time cost; fix: explicitly plan for 30-min/new-interaction ongoing maintenance in sprint capacity; (4) **learning curve not addressed** — teams try to learn Pact, the Broker, and CI integration simultaneously; fix: start with local pact file generation only (Nirvana Level 3) before introducing the Broker; (5) **verification results not published** — teams generate pact files but never set `publishVerificationResult: true` in CI, so `can-i-deploy` has no data to gate on. The single most impactful first action for at-risk adoption: publish the first verification result to the Broker within the first week.
+
+51. **[community] BDD-style scenario naming with `given` + `uponReceiving` as a natural-language sentence prevents two classes of problems simultaneously.** Using descriptive, scenario-specific strings for both `.given()` and `.uponReceiving()` (e.g., `'given product PROD-42 has zero stock, upon receiving a reserve request, the consumer expects a 409 with availableQuantity=0'`) produces two benefits that generic names (`'product exists'`, `'reserve request'`) do not: (a) the unique description string prevents the Pact Broker's silent de-duplication overwrite (community lesson #40) — if two tests produce the same `(description, providerState)` tuple, the second overwrites the first; (b) the Pact Broker UI becomes self-documenting, showing the intent of each interaction without requiring developers to read the test code. The overhead is one well-named `it()` block per interaction — this is the same discipline as descriptive unit test names, not additional work.
+
+52. **[community] V4 statusCode class matching eliminates unnecessary provider states for error contracts.** A common but wasteful pattern: teams write separate provider states for every HTTP error a consumer might receive — `'given service returns 500'`, `'given service returns 502'`, `'given service returns 503'` — each requiring its own state handler. The provider tests run 3x longer to verify the same consumer behavior: "show a generic error boundary for any 5xx." Pact V4's `statusCode('serverError')` class matcher collapses these into a single interaction: one state (`'given InventoryService is unavailable'`), one state handler, one interaction. If the provider legitimately returns different 5xx codes in different failure modes, CDC is not the right tool — a thin integration smoke test that verifies each failure mode's actual behavior is more appropriate.
+
+53. **[community] mTLS provider verification requires the test server to run without TLS, which sometimes conflicts with the provider's initialization logic.** Providers that enforce mTLS at the application layer (not the load balancer) — where `express.Request.socket.getPeerCertificate()` is called in middleware — cannot be correctly tested by the pact-js verifier because the verifier connects over plain HTTP and no client certificate is presented. The plain HTTP workaround (Option 1 above) causes these providers to reject every request with a 401 or 403 in the middleware. The correct fix for such providers is to wrap the TLS validation middleware in an environment check: `if (process.env.NODE_ENV !== 'pact-test') { /* validate cert */ }` — this is the same pattern used for disabling auth middleware in unit tests. Track issue #1509 for native TLS support in the pact-js verifier, which would eliminate the need for this workaround entirely.

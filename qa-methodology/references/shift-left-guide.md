@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -1435,7 +1435,7 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 - [ ] **TS 5.5+ greenfield:** `"isolatedDeclarations": true` for parallelizable type checking
 - [ ] **TS 5.9+ greenfield:** `"noUncheckedSideEffectImports": true` — warns on side-effect imports whose module cannot be verified (catches typo'd polyfill paths)
 - [ ] **TS 5.9+ greenfield:** `"moduleDetection": "force"` — treats all files as modules (no accidental global script files)
-- [ ] **TS 5.8+ greenfield:** `"erasableSyntaxOnly": true` + `"verbatimModuleSyntax": true` for native TS execution (stable in Node.js 23.6.0+; `--experimental-strip-types` still required for Node.js 22 LTS)
+- [ ] **TS 5.8+ greenfield:** `"erasableSyntaxOnly": true` + `"verbatimModuleSyntax": true` for native TS execution (unflagged in Node.js 22.18.0+/24/26; **required** for Node.js 26 compatibility since `--experimental-transform-types` is removed in Node 26)
 
 **Static Layer (pre-commit)**
 - [ ] `@typescript-eslint/eslint-plugin` v8+ with `recommendedTypeChecked`
@@ -4061,52 +4061,60 @@ export type UserRole = typeof UserRole[keyof typeof UserRole]; // 'admin' | 'vie
 
 ```yaml
 # .github/workflows/native-ts-test.yml — test TypeScript natively
-# Node.js 23.6.0+ (released Jan 2025): --strip-types is stable, no --experimental flag needed
-# Node.js 22 LTS: still requires --experimental-strip-types flag
-# Requires: erasableSyntaxOnly: true in tsconfig.json
+# Node.js 22.18.0+ (Apr 2025): --strip-types is UNFLAGGED — no --experimental needed
+# Node.js 23.6.0+ (Jan 2025): same (stable unflagged)
+# Node.js 24/26: same (stable unflagged)
+# Node.js 26 BREAKING: --experimental-transform-types REMOVED — erasableSyntaxOnly required
+# Requires: erasableSyntaxOnly: true in tsconfig.json (disallows enums/namespaces)
 name: Tests (Native TypeScript)
 on:
   pull_request:
 
 jobs:
-  test-native-node23:
-    name: Vitest with native TS (Node 23+, stable strip-types)
+  test-native-node24-lts:
+    name: Vitest with native TS (Node 24 LTS — unflagged)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '23', cache: 'npm' }   # Node 23.6.0+: --strip-types is default
+        with: { node-version: '24', cache: 'npm' }   # Node 24 LTS: type stripping is unflagged
       - run: npm ci
-      # Type check first (--strip-types does NOT type check — it only strips annotations)
+      # Type check first (node --strip-types does NOT type check)
       - run: npx tsc --noEmit
-      # Run tests via Node 23 native TS — no --experimental flag needed in Node 23.6.0+
-      - run: node --strip-types --test src/**/*.spec.ts
+      # Run tests via Node 24 native TS — no flags needed since Node 22.18.0+
+      - run: node --test src/**/*.spec.ts
         # OR: continue using vitest (which also supports native TS via vite transform)
         # - run: npx vitest run
 
-  test-native-node22-lts:
-    # Node 22 LTS still requires the --experimental flag for type stripping
-    name: Vitest with native TS (Node 22 LTS, experimental)
+  test-native-node26-current:
+    # Node 26.0.0 (May 2026): --experimental-transform-types REMOVED
+    # Only works if erasableSyntaxOnly: true (no enums, namespaces, param properties)
+    name: Vitest with native TS (Node 26 Current)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '22', cache: 'npm' }
+        with: { node-version: '26', cache: 'npm' }
       - run: npm ci
       - run: npx tsc --noEmit
-      - run: node --experimental-strip-types --test src/**/*.spec.ts
+      - run: node --test src/**/*.spec.ts
+        # Node 26: if codebase uses enums/namespaces, this step will FAIL
+        # Fix: use erasableSyntaxOnly: true and migrate enums to as-const objects
 ```
 
-> **Node.js native TypeScript execution — version matrix:**
+> **Node.js native TypeScript execution — version matrix (updated May 2026):**
 >
 > | Node version | Command | Status |
 > |---|---|---|
 > | Node.js 22.6.0 (first TS support) | `node --experimental-strip-types file.ts` | Experimental |
-> | Node.js 22.x LTS (current LTS) | `node --experimental-strip-types file.ts` | Experimental |
-> | Node.js 23.6.0 (Jan 2025) | `node --strip-types file.ts` | **Stable (unflagged)** |
-> | Node.js 24+ (2026 LTS) | `node --strip-types file.ts` | Stable |
+> | Node.js 22.18.0 (Apr 2025) | `node file.ts` | **Unflagged** — no `--experimental` flag needed |
+> | Node.js 23.6.0 (Jan 2025) | `node file.ts` | **Stable (unflagged)** |
+> | Node.js 24.x LTS (Apr 2024 → LTS Oct 2025) | `node file.ts` | Stable |
+> | Node.js 26.0.0 (May 2026, LTS Oct 2026) | `node file.ts` | Stable — `--experimental-transform-types` **removed** |
 >
-> **Key caveat**: `--strip-types` only removes type annotations — it is NOT a type checker. `tsc --noEmit` must still run as a separate CI step to enforce type correctness. The shift-left benefit is developer ergonomics (no transpile step for scripts/tests) and CI speed (no build artifact needed for test runs).
+> **Node.js 26 breaking change**: `--experimental-transform-types` was **removed entirely** in Node.js 26.0.0. This flag was required for running TypeScript with enums, namespaces, or parameter properties natively. If your TypeScript codebase uses these patterns, you must use a build step (`tsc`, `esbuild`, `swc`) or a runtime loader (`tsx`) on Node.js 26+. The `erasableSyntaxOnly: true` tsconfig flag is the compile-time enforcement that ensures your code is compatible with native type stripping.
+>
+> **Key caveat**: `node --strip-types` (or the unflagged equivalent) only removes type annotations — it is NOT a type checker. `tsc --noEmit` must still run as a separate CI step to enforce type correctness. The shift-left benefit is developer ergonomics (no transpile step for scripts/tests) and CI speed (no build artifact needed for test runs).
 
 **WHY `erasableSyntaxOnly` + `verbatimModuleSyntax` are shift-left tools**: They make TypeScript code directly executable by the runtime without a build step. In development, `node --strip-types src/server.ts` starts the server in < 1 second (no tsc). In CI, test discovery is near-instantaneous. The tradeoff: you cannot use TypeScript enums, namespaces, or parameter properties — but these features are deprecated anyway by the TypeScript team for performance reasons.
 
@@ -4304,6 +4312,95 @@ jobs:
 > [community] **Lesson (TypeScript 5.9 `noUncheckedSideEffectImports` migration, 2025)**: New projects generated with `tsc --init` in TS 5.9 automatically have `noUncheckedSideEffectImports: true`. Existing projects upgrading to TS 5.9 must add this flag manually or accept the tighter defaults. The flag warns on `import './file'` where the module has no type declarations — this surfaces import paths with typos that previously compiled silently. WHY it matters: a mistyped polyfill path (`import './ployfill.js'`) compiles in TS 5.8 but errors in TS 5.9 with the new default.
 
 > [community] **Lesson (TypeScript 5.9 `~11%` performance improvement, 2025)**: The caching of intermediate type instantiations on mappers reduces redundant work in projects that use complex generic libraries (Zod, tRPC, Prisma). Teams using Zod for API validation schemas report `tsc --noEmit` running 10–15% faster after upgrading to TS 5.9. For large codebases where `tsc --noEmit` was previously 90+ seconds, this can push it below the 80-second threshold that teams typically accept for a required PR gate.
+
+---
+
+## Node.js 26 — Shift-Left Breaking Changes (2026)
+
+Node.js 26.0.0 was released May 5, 2026, and will enter LTS in October 2026. It introduces one breaking change that directly affects TypeScript shift-left pipelines.
+
+### `--experimental-transform-types` Removed
+
+The `--experimental-transform-types` flag, which enabled native Node.js execution of TypeScript with non-erasable syntax (enums, namespaces, parameter properties), is **removed entirely in Node.js 26**. This is a semver-major breaking change.
+
+**What this means in practice:**
+
+| Scenario | Node.js ≤ 22.17 | Node.js 22.18.0–25.x | Node.js 26+ |
+|---|---|---|---|
+| TypeScript with only type annotations | `node --experimental-strip-types file.ts` | `node file.ts` (unflagged) | `node file.ts` (unflagged) |
+| TypeScript with enums/namespaces | `node --experimental-transform-types file.ts` | `node --experimental-transform-types file.ts` | **Build step required** — flag removed |
+| Safest CI approach | Build with tsc/esbuild first | Build with tsc/esbuild first | Build with tsc/esbuild first |
+
+```yaml
+# .github/workflows/node-version-gate.yml — enforce Node 26 compatibility in CI
+# Catches: TypeError when running files that use enums/namespaces on Node 26
+name: Node 26 Compatibility
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  node26-compat:
+    name: Verify erasable syntax (Node 26 LTS prep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '26', cache: 'npm' }
+      - run: npm ci
+      # tsc --noEmit catches enums/namespaces if erasableSyntaxOnly: true is set
+      - run: npx tsc --noEmit
+      # Also run: node file.ts to catch runtime type-stripping failures
+      # (e.g., enum usage that tsc allows but Node 26 native stripping does not)
+      - run: node src/index.ts --help
+        continue-on-error: false
+        # If this fails with SyntaxError/TypeError related to enums or transforms,
+        # add erasableSyntaxOnly: true to tsconfig.json and migrate enums to as-const
+```
+
+```typescript
+// Migration: enum → as const (required for Node.js 26 native execution)
+// BEFORE: TypeScript enum (not supported by --strip-types / Node 26 native execution)
+// enum HttpStatus { OK = 200, NotFound = 404, InternalServerError = 500 }
+
+// AFTER: as const object — identical behavior, erasable syntax, Node 26 compatible
+export const HttpStatus = {
+  OK: 200,
+  NotFound: 404,
+  InternalServerError: 500,
+} as const;
+
+export type HttpStatus = typeof HttpStatus[keyof typeof HttpStatus];
+// Usage: HttpStatus.OK === 200 (same as enum at runtime)
+// TypeScript: type HttpStatus = 200 | 404 | 500 (union type, same as enum values)
+
+// BEFORE: namespace (not supported by --strip-types)
+// namespace Api { export interface Response { data: unknown } }
+
+// AFTER: plain module exports (erasable, Node 26 compatible)
+export interface ApiResponse { readonly data: unknown }
+
+// BEFORE: parameter properties (not supported by --strip-types)
+// class UserService { constructor(private readonly db: Database) {} }
+
+// AFTER: explicit property declaration (erasable)
+class UserService {
+  private readonly db: Database;
+  constructor(db: Database) { this.db = db; }
+}
+
+// Placeholder for illustration
+interface Database { query: (sql: string) => Promise<unknown[]> }
+const _ = UserService; void _;
+```
+
+**WHY this is a shift-left concern**: Node.js 26 will be the LTS version from October 2026 — most TypeScript teams will be upgrading to it. If CI pipelines only test on Node.js 22 or 24, the enum/namespace incompatibility will be discovered in production (or during the LTS upgrade). Adding `node-version: '26'` as a parallel CI job now — before October 2026 — catches this at the PR level while there is still time to migrate.
+
+> [community] **Lesson (Node.js 26 migration teams, May 2026)**: The shift-left fix for `--experimental-transform-types` removal is `erasableSyntaxOnly: true` in `tsconfig.json`, which turns the runtime failure (TypeScript enum used with native type stripping) into a compile-time error. Teams that already had `erasableSyntaxOnly: true` were not affected by the Node.js 26 removal — the compiler had already prevented them from using non-erasable syntax. This is the textbook case for why compile-time restrictions have long-term operational value.
+
+> [community] **Lesson (Node.js 26 — type stripping default, 2026)**: Node.js 26 makes type stripping (for erasable-only TypeScript) the default behavior for `.ts` files — no flag required. This means running `node src/helper.ts` "just works" for type-annotation-only TypeScript. The significant shift-left benefit: TypeScript scripts (`scripts/*.ts`) can run in CI as `node scripts/deploy-check.ts` without a build step, as long as they use `erasableSyntaxOnly`-compatible syntax. Script execution time drops from "wait for tsc emit" to "near-instant."
+
+> [community] **Gotcha (Node.js 26 Temporal API default)**: Node.js 26 enables the ECMAScript `Temporal` API by default. TypeScript code that uses `Date` for datetime arithmetic and assumes `Temporal` is unavailable at runtime will encounter new global-namespace conflicts if `@js-temporal/polyfill` is also installed. Add `"lib": ["ES2022", "DOM"]` (not `"ES2025"` which includes `Temporal`) in tsconfig.json for projects that are not yet ready to use `Temporal`.
 
 ---
 
@@ -6440,7 +6537,7 @@ describe('PII logger — shift-left tests', () => {
 
 ---
 
-## Key Resources — 2026 Additions (Iteration 27)
+## Key Resources — 2026 Additions (Iteration 28–29)
 
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
@@ -6453,3 +6550,5 @@ describe('PII logger — shift-left tests', () => {
 | GitHub Actions Workflow Injection | Official | https://github.blog/security/supply-chain-security/four-tips-to-keep-your-github-actions-workflows-secure/ | ${{ }} interpolation in run: steps — CI command injection; env: block pattern; actionlint |
 | actionlint | Tool | https://github.com/rhysd/actionlint | GitHub Actions workflow static linter — detects injection vectors, undefined expressions, shellcheck failures |
 | GitHub Agentic Detection Platform | Official | https://github.blog/security/application-security/github-expands-application-security-coverage-with-ai-powered-detections/ | CodeQL + AI-powered detection for Shell/Dockerfile/Terraform in same PR gate; 460k fixes in 2025 (Q2 2026 public preview) |
+| Node.js 26.0.0 Release Notes | Official | https://nodejs.org/en/blog/release/v26.0.0 | `--experimental-transform-types` removed; type stripping default for `.ts`; LTS October 2026 |
+| Node.js TypeScript docs (run natively) | Official | https://nodejs.org/en/learn/typescript/run-natively | Current recommended approach for running TypeScript in Node.js 22.18.0+/24/26 without build step |

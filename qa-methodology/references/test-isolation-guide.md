@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 18 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 19 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -39,6 +39,12 @@
 <!--            mock registry (needs vi.unmock() separately), Construct-with-Collaborators DI        -->
 <!--            principle (Google Testing Blog May 2026), vi.mock() ES import-only restriction,      -->
 <!--            Chai-style assertion migration gotcha (.to.have.been.called vs toHaveBeenCalled)     -->
+<!--          Iteration 19 (2026-05-12): Jest 30.3 jest.setTimerTickMode (object param, 3 modes:    -->
+<!--            manual/nextAsync/interval; Jest uses {mode:'nextAsync'} vs Vitest's 'nextTimerAsync')-->
+<!--            Jest 30.4 Temporal API fake timer support (Temporal.Instant/ZonedDateTime in         -->
+<!--            setSystemTime + useFakeTimers({now}); Temporal.Now.* faked; Temporal.Now.timeZoneId -->
+<!--            NOT faked); Jest 30.4 clearMocksOnScope(scope) on ModuleMocker; Vitest 5.0-beta      -->
+<!--            deprecates test.sequential in favour of concurrent: false (Pattern 16 updated)       -->
 
 ---
 
@@ -1229,7 +1235,11 @@ describe('CacheService integration', () => {
 });
 ```
 
-### Pattern 16: Vitest `test.sequential` for enforcing order within a concurrent suite  [community]
+### Pattern 16: Vitest `test.sequential` / `concurrent: false` for enforcing order within a concurrent suite  [community]
+
+**Note (Vitest 5.0):** `test.sequential` is deprecated in Vitest 5.0-beta in favour of the `concurrent: false` option.
+Use `test('name', { concurrent: false }, () => { ... })` or the chained form `test.concurrent(false)('name', ...)` in
+new code. For existing suites, `test.sequential` still works in Vitest 4.x. See migration note below the example.
 
 In Vitest, `describe.concurrent` runs all tests in the block in parallel. When most tests in a
 concurrent suite are truly independent but a small subset cannot be parallelized (e.g., two tests
@@ -1283,6 +1293,12 @@ describe.concurrent('UserService integration', () => {
 common over-correction teams make when migrating from Jest (which runs tests serially by default)
 to Vitest (which defaults to concurrent). `test.sequential` isolates the serialization requirement
 to the tests that actually need it.
+
+**Vitest 5.0 migration:** Replace `test.sequential('name', fn)` with `test('name', { concurrent: false }, fn)`.
+The `{ concurrent: false }` option is the idiomatic way to opt specific tests out of inherited concurrency.
+It works inside both `describe.concurrent` and globally-concurrent suites. The deprecation aligns Vitest's
+API surface with the `concurrent: true` option already available on individual tests — removing the asymmetric
+`sequential` naming in favour of a single boolean dimension.
 
 ### Pattern 17: Snapshot test isolation — replacing non-deterministic values before asserting  [community]
 
@@ -3875,3 +3891,315 @@ describe('registerUser (vi.mock module promise)', () => {
 | Vitest API — `vi.resetModules` + `vi.unmock` distinction | Official | https://vitest.dev/api/vi#vi-resetmodules | `resetModules` clears load cache only; mock registry is separate — `vi.unmock()` needed for full reset |
 | Google Testing Blog — Construct with Collaborators, Call with Work | Community | https://testing.googleblog.com/ | May 2026 TotT: DI principle — collaborators at constructor, work data at call time; enables single-instance multi-test pattern |
 | Vitest API — Chai-style mock assertions | Official | https://vitest.dev/api/expect#to-have-been-called | `.to.have.been.called` property chain (sinon-chai style); no parentheses on `called` — distinct from `toHaveBeenCalled()` |
+
+---
+
+## Community Lessons — Iteration 19  [community]
+
+80. **Jest 30.3 `jest.setTimerTickMode()` uses an object parameter with a `mode` key — distinct from Vitest's string argument.** [community]
+    Jest 30.3 adds `jest.setTimerTickMode(config)` as a companion to Vitest's `vi.setTimerTickMode()`.
+    The two APIs serve the same purpose — controlling how fake timers advance — but have different
+    parameter shapes. Vitest accepts a **string** (`'manual'`, `'nextTimerAsync'`, `'interval'`);
+    Jest accepts an **object** (`{mode: 'manual'}`, `{mode: 'nextAsync'}`, `{mode: 'interval', delta?: number}`).
+    A critical naming difference: Jest's auto-advance-between-awaits mode is `'nextAsync'` (not `'nextTimerAsync'`
+    as in Vitest). Teams sharing test-helper code across both frameworks must branch on the framework when
+    calling this API.
+    ```typescript
+    // Jest 30.3+ — object parameter; mode name differs from Vitest
+    jest.useFakeTimers();
+    jest.setTimerTickMode({mode: 'nextAsync'});    // auto-advances between awaits (Jest)
+    // vs Vitest: vi.setTimerTickMode('nextTimerAsync');
+    jest.setTimerTickMode({mode: 'manual'});       // manual control (both frameworks)
+    jest.setTimerTickMode({mode: 'interval', delta: 50}); // auto at 50ms intervals (Jest)
+    // Note: requires modern fake timers — NOT compatible with {legacyFakeTimers: true}
+    ```
+    WHY: adopting `{mode: 'nextAsync'}` in Jest test suites eliminates the same problem as
+    Vitest's `nextTimerAsync` mode — the need to manually call `jest.advanceTimersByTime()` between
+    every `await` in async retry/backoff tests. Without it, awaited Promises can never resolve because
+    the timer that unblocks them was never fired. After upgrading to Jest 30.3, teams should audit
+    timer-heavy async tests and replace chains of `jest.advanceTimersByTime()` calls with a single
+    `setTimerTickMode({mode: 'nextAsync'})` in `beforeEach`.
+
+81. **Jest 30.4 fake timers now support the TC39 Temporal API — `Temporal.Instant`, `Temporal.ZonedDateTime`, and `Temporal.Now.*` are all fakeable.** [community]
+    Jest 30.4 extends its fake timer system to handle the `Temporal` global (Node.js v26+, TC39 Stage 3+).
+    Three isolation-relevant changes:
+    - `jest.setSystemTime()` and `useFakeTimers({now})` accept `Temporal.Instant` and `Temporal.ZonedDateTime`
+      in addition to `number` and `Date`. This means tests can anchor the fake clock to a precise timezone-aware
+      instant without converting to a Unix timestamp.
+    - `Temporal.Now.instant()`, `Temporal.Now.zonedDateTimeISO()`, and `Temporal.Now.plainDateTimeISO()`
+      are automatically driven by the fake clock when `jest.useFakeTimers()` is active.
+    - **Exception:** `Temporal.Now.timeZoneId()` is NOT faked — it always returns the real system timezone.
+      Tests that call code reading `Temporal.Now.timeZoneId()` in combination with a faked `Temporal.Now.instant()`
+      may see inconsistencies.
+    ```typescript
+    // jest.config.ts — ensure modern fake timers (legacy mode does not support Temporal)
+    // jest.useFakeTimers() automatically fakes Temporal.Now.* on Node 26+
+
+    import { Temporal } from 'temporal-polyfill'; // or native Node 26 global
+
+    describe('InvoiceService — Temporal clock isolation', () => {
+      beforeEach(() => {
+        jest.useFakeTimers();
+      });
+
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      it('marks invoice as overdue when Temporal.Now is past the due date', () => {
+        // Set fake clock to a Temporal.Instant (timezone-aware)
+        const fixedInstant = Temporal.Instant.from('2026-06-01T10:00:00Z');
+        jest.setSystemTime(fixedInstant); // Temporal.Now.instant() returns this
+
+        const invoice = {
+          id: 'inv-1',
+          dueDate: Temporal.PlainDate.from('2026-05-31'),
+        };
+
+        // InvoiceService.isOverdue() calls Temporal.Now.plainDateISO() internally
+        expect(isOverdue(invoice)).toBe(true);
+      });
+
+      it('uses ZonedDateTime for timezone-sensitive billing cutoff', () => {
+        const fixedZDT = Temporal.ZonedDateTime.from({
+          timeZone: 'America/New_York',
+          year: 2026, month: 5, day: 31, hour: 23, minute: 59,
+        });
+        jest.setSystemTime(fixedZDT);
+
+        expect(isBillingCutoffReached(fixedZDT.toInstant())).toBe(true);
+      });
+    });
+    ```
+    WHY: code that uses `Temporal` instead of `Date` for timezone-aware date logic was previously
+    untestable in isolation — there was no way to freeze `Temporal.Now.*` without a custom wrapper.
+    Teams that migrated from `Date` to `Temporal` for correctness had to add a `Clock` interface
+    abstraction (Pattern 3) just to regain testability. Jest 30.4 makes that abstraction optional
+    for unit tests by providing first-class `Temporal.Now` faking.
+
+82. **`test.sequential` is deprecated in Vitest 5.0-beta — replace with `{ concurrent: false }` option on individual tests.** [community]
+    Vitest 5.0's concurrent-first model removes the `test.sequential` shorthand. The replacement is
+    the `concurrent: false` option passed in the test's options object:
+    ```typescript
+    // Vitest ≤ 4.x (still works in 4.1) — deprecated in 5.0
+    test.sequential('name', async () => { ... });
+
+    // Vitest 5.0+ — idiomatic replacement
+    test('name', { concurrent: false }, async () => { ... });
+    ```
+    The `{ concurrent: false }` option has the same effect: within a `describe.concurrent` block,
+    the annotated test runs sequentially after all preceding concurrent tests complete. The key
+    behavioral difference: in Vitest 5.0, tests default to **concurrent execution** by default
+    (unless the suite is explicitly sequential), so `{ concurrent: false }` is now an opt-out
+    rather than an opt-in. WHY: renaming `sequential` to `concurrent: false` creates a single
+    boolean axis (`concurrent: true | false`) rather than two separate API surfaces
+    (`test.concurrent` and `test.sequential`). Teams maintaining large test suites can use a
+    codemod to replace `test.sequential(` with `test(` + `{ concurrent: false }` across all files.
+    The deprecation is in the beta; `test.sequential` is still available in all 4.x stable releases.
+
+---
+
+## Extended Patterns — Iteration 19
+
+### Pattern 32: Jest 30.3 `jest.setTimerTickMode()` for async retry loop isolation (TypeScript)  [community]
+
+`jest.setTimerTickMode({mode: 'nextAsync'})` is the Jest 30.3+ equivalent of Vitest's
+`vi.setTimerTickMode('nextTimerAsync')`. It eliminates manual `jest.advanceTimersByTime()`
+boilerplate from tests that interleave Promises and fake timers. Note the parameter shape
+difference: Jest uses an **object** with a `mode` key and an optional `delta`; Vitest uses a
+**string**.
+
+```typescript
+import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
+import { ExponentialBackoff } from './exponentialBackoff';
+
+describe('ExponentialBackoff (Jest 30.3 nextAsync mode)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    // Jest 30.3+ — object parameter; mode is 'nextAsync' (NOT 'nextTimerAsync')
+    jest.setTimerTickMode({ mode: 'nextAsync' });
+  });
+
+  afterEach(() => {
+    // Always restore real timers — setTimerTickMode state is part of the fake timer state
+    jest.useRealTimers();
+  });
+
+  it('resolves on second attempt after first transient failure', async () => {
+    const operation = jest.fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('503 Unavailable'))
+      .mockResolvedValue('payload');
+
+    const backoff = new ExponentialBackoff(operation, {
+      initialDelay: 1000,
+      multiplier: 2,
+      maxAttempts: 3,
+    });
+
+    // With mode: 'nextAsync', awaiting the result auto-advances through each retry delay
+    // No manual jest.advanceTimersByTime(1000) calls needed
+    const result = await backoff.run();
+
+    expect(result).toBe('payload');
+    expect(operation).toHaveBeenCalledTimes(2); // 1 fail + 1 success
+  });
+
+  it('rejects after max retries with correct attempt count', async () => {
+    const operation = jest.fn<() => Promise<string>>()
+      .mockRejectedValue(new Error('permanent'));
+
+    const backoff = new ExponentialBackoff(operation, {
+      initialDelay: 500,
+      multiplier: 2,
+      maxAttempts: 3,
+    });
+
+    await expect(backoff.run()).rejects.toThrow('permanent');
+    expect(operation).toHaveBeenCalledTimes(3); // initial + 2 retries
+  });
+
+  it('interval mode: timers fire automatically at a fixed delta', async () => {
+    // Switch to interval mode for a polling test — timers advance every 20ms automatically
+    jest.setTimerTickMode({ mode: 'interval', delta: 20 });
+
+    const callback = jest.fn();
+    const notifier = new PollingNotifier(callback, 100); // fires every 100ms
+    notifier.start();
+
+    // Advance time long enough for 3 polls to fire (3 × 100ms)
+    await jest.advanceTimersByTimeAsync(310);
+
+    expect(callback).toHaveBeenCalledTimes(3);
+    notifier.stop();
+  });
+});
+```
+
+**Framework comparison table:**
+
+| Feature | Jest 30.3+ | Vitest 4.1+ |
+|---------|-----------|-------------|
+| API | `jest.setTimerTickMode({mode: 'nextAsync'})` | `vi.setTimerTickMode('nextTimerAsync')` |
+| Auto-advance mode name | `'nextAsync'` | `'nextTimerAsync'` |
+| Manual mode | `{mode: 'manual'}` | `'manual'` |
+| Interval mode | `{mode: 'interval', delta?: number}` | `'interval'` (no delta parameter) |
+| Parameter type | **object** | **string** |
+| Reset requirement | `jest.useRealTimers()` in `afterEach` | `vi.useRealTimers()` in `afterEach` |
+
+**Key rule:** Always call `jest.useRealTimers()` in `afterEach` when using `setTimerTickMode`. The timer tick mode is part of the fake timer state and is **not** reset by `clearMocks: true` in jest config.
+
+### Pattern 33: Jest 30.4 Temporal API fake clock for timezone-aware test isolation (TypeScript)  [community]
+
+When TypeScript code uses the TC39 `Temporal` API (Node.js v26+) instead of `Date` for timezone-aware
+date logic, Jest 30.4's extended `jest.useFakeTimers()` + `jest.setSystemTime()` supports
+`Temporal.Instant` and `Temporal.ZonedDateTime` directly. `Temporal.Now.instant()`,
+`Temporal.Now.zonedDateTimeISO()`, and `Temporal.Now.plainDateTimeISO()` are automatically driven
+by the fake clock — no `Clock` interface abstraction needed for unit tests.
+
+```typescript
+// billingCutoff.ts — uses Temporal for timezone-correct billing logic
+import { Temporal } from 'temporal-polyfill'; // or native Node.js v26 global
+
+export function isBillingWindowOpen(timezone: string): boolean {
+  // Business rule: billing window is Mon–Fri 08:00–18:00 in the given timezone
+  const now = Temporal.Now.zonedDateTimeISO(timezone);
+  const hour = now.hour;
+  const dayOfWeek = now.dayOfWeek; // 1=Mon, 7=Sun (ISO 8601)
+  return dayOfWeek >= 1 && dayOfWeek <= 5 && hour >= 8 && hour < 18;
+}
+
+// billingCutoff.test.ts — Jest 30.4 Temporal fake timer isolation
+import type { Config } from 'jest';
+// jest.config.ts: { preset: 'ts-jest', testEnvironment: 'node' } — no legacyFakeTimers
+
+describe('isBillingWindowOpen — Temporal fake clock', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    // Requires Node.js v26+ or temporal-polyfill; modern fake timers mode only
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('returns true at 10:00 AM Wednesday in New York', () => {
+    // ZonedDateTime gives precise timezone-aware control over the fake clock
+    const fixedZDT = Temporal.ZonedDateTime.from(
+      '2026-06-03T10:00:00[America/New_York]'
+    );
+    jest.setSystemTime(fixedZDT); // Temporal.Now.* driven by this value
+
+    expect(isBillingWindowOpen('America/New_York')).toBe(true);
+  });
+
+  it('returns false at 07:59 AM (just before window opens)', () => {
+    const fixedZDT = Temporal.ZonedDateTime.from(
+      '2026-06-03T07:59:00[America/New_York]'
+    );
+    jest.setSystemTime(fixedZDT);
+
+    expect(isBillingWindowOpen('America/New_York')).toBe(false);
+  });
+
+  it('returns false on Saturday regardless of hour', () => {
+    // Saturday June 6 2026
+    const fixedZDT = Temporal.ZonedDateTime.from(
+      '2026-06-06T12:00:00[America/New_York]'
+    );
+    jest.setSystemTime(fixedZDT);
+
+    expect(isBillingWindowOpen('America/New_York')).toBe(false);
+  });
+
+  it('useFakeTimers({now}) also accepts Temporal.Instant directly', () => {
+    const instant = Temporal.Instant.from('2026-06-03T17:59:00Z');
+    // Pass Temporal.Instant in the initial useFakeTimers config
+    jest.useFakeTimers({ now: instant });
+
+    // Temporal.Now.instant() returns the faked value
+    const faked = Temporal.Now.instant();
+    expect(faked.epochMilliseconds).toBe(instant.epochMilliseconds);
+  });
+});
+```
+
+**What IS and IS NOT faked:**
+
+| Temporal API | Faked by Jest 30.4? |
+|-------------|---------------------|
+| `Temporal.Now.instant()` | Yes |
+| `Temporal.Now.zonedDateTimeISO()` | Yes |
+| `Temporal.Now.plainDateTimeISO()` | Yes |
+| `Temporal.Now.plainDateISO()` | Yes |
+| `Temporal.Now.plainTimeISO()` | Yes |
+| `Temporal.Now.timeZoneId()` | **No** — always returns real system timezone |
+
+**Isolation gotcha:** If production code uses `Temporal.Now.timeZoneId()` to get the timezone and
+then passes it to `Temporal.Now.zonedDateTimeISO()`, the timezone will be real while the datetime
+is faked — the combination is still deterministic as long as you pin the `ZonedDateTime` to the
+correct timezone in `jest.setSystemTime()`. To bypass the gap, use the explicit `timezone` form:
+`Temporal.Now.zonedDateTimeISO('America/New_York')` (ignores `timeZoneId`) rather than
+`Temporal.Now.zonedDateTimeISO()` (which would use the real system timezone as the calendar).
+
+---
+
+## Quick Reference Additions — Iteration 19
+
+| Problem | Symptom | Jest 30.3+ Solution | Vitest equivalent |
+|---------|---------|---------------------|-----------------|
+| Manual `advanceTimersByTime` between every `await` in Jest | Test has 10+ `jest.advanceTimersByTime()` calls | `jest.setTimerTickMode({mode: 'nextAsync'})` | `vi.setTimerTickMode('nextTimerAsync')` |
+| Temporal.Now non-determinism in tests | Tests fail based on real system time (timezone/DST) | `jest.useFakeTimers()` + `jest.setSystemTime(Temporal.ZonedDateTime.from(...))` | `vi.useFakeTimers()` + `vi.setSystemTime(Temporal.ZonedDateTime.from(...))` |
+| `test.sequential` compile warning after Vitest 5 upgrade | Deprecated API warning; will be removed in stable 5.0 | N/A | Replace `test.sequential('name', fn)` with `test('name', { concurrent: false }, fn)` |
+| `Temporal.Now.timeZoneId()` returns real timezone despite fake clock | Tests pass locally (correct tz) but fail in CI (UTC) | Use explicit timezone arg: `Temporal.Now.zonedDateTimeISO('America/New_York')` | Same |
+
+---
+
+## Key Resources — Iteration 19 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Jest 30.3 Release Notes — `setTimerTickMode` | Official | https://github.com/jestjs/jest/releases/tag/v30.3.0 | Adds `setTimerTickMode({mode: 'manual'|'nextAsync'|'interval'})` — object param, 'nextAsync' not 'nextTimerAsync' |
+| Jest 30.4 Release Notes — Temporal API | Official | https://github.com/jestjs/jest/releases/tag/v30.4.0 | Temporal.Instant/ZonedDateTime in `setSystemTime`; `Temporal.Now.*` faked; `timeZoneId` not faked |
+| Jest Docs — `jest.setTimerTickMode` | Official | https://jestjs.io/docs/jest-object#jestsettimertickmodemode | Full parameter reference: mode types, delta for interval mode, compatibility requirements |
+| Vitest 5.0-beta — `test.sequential` deprecation | Official | https://vitest.dev/api/#test-sequential | `concurrent: false` option replaces `test.sequential`; Vitest 5 concurrent-first model |
+| TC39 Temporal Proposal | Standard | https://tc39.es/proposal-temporal/ | Authoritative reference for `Temporal.Now.*`, `Temporal.Instant`, `Temporal.ZonedDateTime` APIs |

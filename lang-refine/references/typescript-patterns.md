@@ -1,6 +1,13 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 34 (2026-05-12): added `rootDir` inference removal migration with directory tree example
+       (concrete before/after showing dist/src/index.js vs dist/index.js output path shift);
+       added `types: ["*"]` anti-pattern with 20-50% build degradation warning (sourced from
+       typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html); added `PartialExcept<T,K>`
+       combined utility type pattern for update APIs that require some keys mandatory; added community
+       pitfall about `tsc --init` TS 5.9 minimal defaults including `"jsx": "react-jsx"` for non-React
+       projects; sourced from typescriptlang.org release notes and github.com/microsoft/TypeScript/wiki/Performance
      Iter 33 (2026-05-12): added Generic Parameter Defaults as Overload Replacement section
        (rules, patterns, team pitfalls — replaces multi-overload APIs with single typed declaration);
        added TypeScript 7.0 — Parallel Type Checking and Deterministic Ordering section
@@ -2176,6 +2183,9 @@ const box: ReadOnlyBox<string | number> = {
 | Manual set operations (filter/reduce) instead of Set composition methods | Verbose, allocation-heavy, error-prone compared to built-in ES2025 Set methods | Use `.union()`, `.intersection()`, `.difference()` etc. (`"target": "es2025"+`) |
 | `new Promise()` wrapper around sync throw instead of `Promise.try()` | Requires try/catch inside the constructor callback; error propagation is non-obvious | Use `Promise.try(() => syncThrowingFn())` to convert sync throws to rejected promises (ES2025) |
 | `#root/*` subpath import pattern when `#/*` is available | Extra naming indirection; `#root/` is a legacy Node.js workaround | Use `"#/*": "./dist/*.js"` in `package.json` imports with `--moduleResolution nodenext/bundler` |
+| `"types": ["*"]` to restore TS 6.0 defaults | Wildcard re-enables auto-inclusion of all `@types/*` packages — 20–50% build performance degradation | Explicitly list only needed packages: `"types": ["node"]`, add `"jest"` etc. in test-only tsconfig |
+| Using `tsc --init` output as-is | TS 5.9+ generates opinionated defaults (`jsx: react-jsx`, `noUncheckedIndexedAccess`, etc.) that require project-specific review | Treat `tsc --init` as a menu — review and remove inapplicable options before committing |
+| `Partial<T>` for update payloads when primary key must always be present | Makes identity key optional; database update can silently omit the required row identifier | Use `PartialExcept<T, 'id'>` (`Partial<T> & Required<Pick<T, 'id'>>`) to keep the key required |
 | Variance annotations (`in`/`out`) to enforce immutability or change behavior | Annotations only affect instantiation-based comparison; structural comparisons ignore them | Use `Readonly<T>` / `readonly` modifiers for actual read-only enforcement; add variance annotations only after profiling confirms a type-check bottleneck |
 | Multiple overloads for the same generic function | Overload sprawl; each overload must be maintained separately | Use generic parameter defaults (`<T = DefaultType>`) to make parameters optional while preserving type inference |
 | `"stableTypeOrdering": true` in production `tsconfig.json` | Adds ~25% compile overhead; intended only as a TS 7.0 migration diagnostic | Keep in a separate `tsconfig.check-7.0.json`; remove before merging to main |
@@ -4375,5 +4385,181 @@ export function parseConfig(raw: string) {
   return JSON.parse(raw) as AppConfig;  // return type must be inferred
 }
 ```
+
+---
+
+## TypeScript 6.0 — `rootDir` Inference Removal: Output Path Migration
+
+TypeScript 6.0 changed the default value of `rootDir` from _inferred_ to the directory containing the `tsconfig.json`. Before this change, TypeScript inferred `rootDir` by finding the longest common ancestor of all included files. After this change, it defaults to `.` (the tsconfig directory). This shifts the output structure for projects that relied on inference without an explicit `rootDir`.
+
+**Concrete example — before/after the TS 6.0 default:**
+
+```
+project/
+  tsconfig.json          ← compilerOptions.outDir = "dist"
+  src/
+    index.ts
+    utils/
+      helpers.ts
+```
+
+```typescript
+// TypeScript 5.9 (inferred rootDir = "src"):
+// dist/
+//   index.js            ← previously: dist/index.js (rootDir inferred as ./src)
+//   utils/
+//     helpers.js
+
+// TypeScript 6.0 (default rootDir = "." — the tsconfig directory):
+// dist/
+//   src/                ← NEW extra level introduced by the default change
+//     index.js
+//     utils/
+//       helpers.js
+
+// ✅ Fix: add explicit rootDir to restore the TS 5.9 behavior
+// tsconfig.json:
+// {
+//   "compilerOptions": {
+//     "rootDir": "./src",   // explicit — no longer inferred
+//     "outDir": "./dist"
+//   }
+// }
+```
+
+**Why this breaks CI and deployment:** Most projects deploy artifacts by looking for files at hardcoded paths (`dist/index.js`, `dist/server.js`). When the extra `src/` level appears, Docker `COPY`, deployment scripts, and `"main"` entries in `package.json` silently point to the wrong path — the build succeeds but the application fails to start.
+
+**Migration checklist:**
+1. Add `"rootDir": "./src"` (or wherever your source lives) to all `tsconfig.json` files.
+2. Verify `"main"` in `package.json` still resolves after the rootDir change.
+3. Check Dockerfile `COPY dist/index.js` paths and CI artifact upload steps.
+4. Use `tsc --listEmittedFiles --noEmit` to preview where files will land before committing.
+
+[community] **Pitfall: `ts5to6` migrates `baseUrl` and `paths` but does NOT automatically add `rootDir`.** The automated migration tool handles the `baseUrl` → `paths` transformation well, but `rootDir` inference removal requires a manual audit of each `tsconfig.json`. Run `tsc --listEmittedFiles` after upgrading to detect the extra directory level before it reaches production.
+
+---
+
+## `types: ["*"]` — Anti-Pattern: Restoring the TS 6.0 Legacy Default
+
+TypeScript 6.0 changed the default value of `types` from auto-including all `@types/*` packages to an empty list (`[]`). When projects hit "Cannot find name 'process'" or "Cannot find name 'describe'" after upgrading, the first impulse is to restore the old behavior with `"types": ["*"]`.
+
+**Do not use `"types": ["*"]`:** The wildcard syntax re-enables auto-inclusion of every `@types/*` package in `node_modules`, which carries a **20–50% build performance penalty** compared to an explicit list. The TypeScript compiler must parse and type-check every ambient declaration file it discovers, whether or not your code uses it.
+
+```json
+// ❌ Tempting but harmful — restores old behavior but degrades build time 20-50%
+{
+  "compilerOptions": {
+    "types": ["*"]
+  }
+}
+
+// ✅ Correct — list only the @types packages your project actually uses
+{
+  "compilerOptions": {
+    "types": ["node"]                  // Node.js project
+  }
+}
+
+// ✅ Correct — test-framework globals scoped to test tsconfig
+// tsconfig.test.json — extends base, adds test framework types
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "jest"]          // add jest only in test context
+  }
+}
+```
+
+**How to audit what `@types` packages you need:**
+1. Run `tsc --noEmit` with `"types": []` and read every "Cannot find name X" error.
+2. For each missing global, find which `@types/*` package declares it (`@types/node` → `process`, `Buffer`; `@types/jest` → `describe`, `it`, `expect`).
+3. Add only those packages to `"types"`.
+
+[community] **Pitfall:** Splitting `types` between a root `tsconfig.json` and a `tsconfig.test.json` is the correct pattern, but teams often forget to update both files when adding a new test framework. If `@types/vitest` or `@types/jest` is added to the root config, it pollutes production code with test globals — `describe` and `it` will be available everywhere. The fix is to keep test-framework types exclusively in a test-scoped tsconfig and never in the production config.
+
+---
+
+## `PartialExcept<T, K>` — Required Keys with Optional Rest
+
+A common update-API pattern requires that some keys must always be provided (primary key, discriminant) while all other fields are optional for partial updates. TypeScript's built-in `Partial<T>` makes _everything_ optional; `Required<T>` makes everything required. Neither model an update payload where the identity key is mandatory and everything else is optional.
+
+```typescript
+// Custom utility: make K required, rest optional
+type PartialExcept<T, K extends keyof T> = Partial<T> & Required<Pick<T, K>>;
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+  createdAt: Date;
+}
+
+// Update payload: id is required, everything else is optional
+type UserUpdate = PartialExcept<User, 'id'>;
+// Equivalent to: { id: number } & { name?: string; email?: string; role?: ...; createdAt?: Date }
+
+function updateUser(patch: UserUpdate): Promise<User> {
+  // patch.id is always present — no need to guard
+  return db.update('users', patch.id, patch);
+}
+
+// ✅ Valid: only id required
+updateUser({ id: 42, name: 'Alice' });
+updateUser({ id: 42 });
+
+// ❌ Error: id is missing — TypeScript correctly rejects this
+// updateUser({ name: 'Alice' });
+
+// Variant: require multiple keys (e.g., composite key)
+type CommentUpdate = PartialExcept<Comment, 'postId' | 'commentId'>;
+```
+
+**When to use vs `Partial<T>`:**
+- Use `Partial<T>` for configuration objects where nothing is required.
+- Use `PartialExcept<T, 'id'>` for update/patch payloads where the primary key must be present.
+- Use `Required<Pick<T, K>>` alone when you need an extract of required-only fields.
+
+[community] **Pitfall:** `PartialExcept<T, K>` combined with `exactOptionalPropertyTypes: true` behaves differently from `Partial<T>`. The `Partial` intersection makes remaining fields `T[K] | undefined` (optional key), while `Required<Pick<T, K>>` makes the primary key required but NOT `undefined`. If you use `exactOptionalPropertyTypes`, test that `undefined` values in `Partial` fields are intentional — they will be encoded differently from absent keys in JSON serialization.
+
+---
+
+## Community Pitfall: `tsc --init` (TS 5.9+) Generates Opinionated Defaults
+
+TypeScript 5.9 changed `tsc --init` from a verbose commented template to a minimal, prescriptive `tsconfig.json`. The new defaults include settings that are inappropriate for many projects.
+
+```json
+// What `tsc --init` generates in TS 5.9+:
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "target": "esnext",
+    "types": [],
+    "sourceMap": true,
+    "declaration": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "strict": true,
+    "jsx": "react-jsx",           // ← included even for non-React projects
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "noUncheckedSideEffectImports": true,
+    "moduleDetection": "force",
+    "skipLibCheck": true
+  }
+}
+```
+
+**Problematic defaults to review:**
+
+| Setting | Problem for non-React/Node projects | Fix |
+|---|---|---|
+| `"jsx": "react-jsx"` | Errors on `.tsx` files unless `react-jsx` transform is available; dead config for non-React projects | Remove entirely if not using JSX |
+| `"module": "nodenext"` | Requires `.js` extensions on imports — surprising for new projects expecting `import './utils'` | Use `"bundler"` for Vite/webpack projects; keep `nodenext` for Node-only |
+| `"noUncheckedIndexedAccess": true` | Makes array/object index lookups return `T | undefined` — correct but breaks existing code using indexes without null-checks | Keep enabled on new projects; disable temporarily when migrating |
+| `"exactOptionalPropertyTypes": true` | Prevents `undefined` from being explicitly assigned to optional fields — correct but a breaking change for existing Partial-based update patterns | Address `PartialExcept` pattern before enabling |
+| `"isolatedModules": true` | Errors on `const enum` and `namespace` — correct for bundler builds but breaks some legacy code patterns | Enable on all new projects; may require enum-to-string migration |
+
+[community] **Pitfall:** Teams running `tsc --init` on a new project in TS 5.9+ then immediately starting to write code hit a wall of errors from `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. These are _correct_ flags but they should be adopted deliberately with team buy-in, not silently enabled by a scaffolding command. Always review each flag in the generated `tsconfig.json` before committing it — treat `tsc --init` output as a _menu of options_, not a ready-to-use config.
 
 [community] **Pitfall: enabling `stableTypeOrdering` in a production `tsconfig.json` accidentally.** Teams test with this flag and forget to remove it before shipping. The 25% compile slowdown is invisible in small projects but significant in large monorepos — it appears as a regression in CI build time with no obvious cause. Keep `stableTypeOrdering` in a separate `tsconfig.check-7.0.json` and never merge it into the main `tsconfig.json`.

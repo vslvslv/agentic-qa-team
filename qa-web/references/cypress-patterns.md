@@ -1,9 +1,9 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide -->
-<!-- new in this iteration (38): cy.intercept() middleware routing for global header injection (pattern 118), cy.press() focus trap testing pattern (pattern 119), Cypress Cloud UI Coverage AI-generated test suggestions (pattern 120), cy.session() parallel CI caveats + multi-machine cache isolation (pattern 121), 5 new community gotchas (101-105): cacheAcrossSpecs false-sharing across CI machines, cy.intercept() resourceType deprecated, cy.session() validate() called before setup on first warmup, UI Coverage test gen rate limiting in large suites, cy.press() F-key browser shortcut interception -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 40 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide, /app/tooling/typescript-support, /app/references/experiments, /guides/references/cypress-studio -->
+<!-- new in this iteration (40): cy.press() modifier key limitations + cy.type() chord fallback (pattern 125), Studio AI assertion suggestions workflow (pattern 126), cy.prompt() CT + browser restrictions (pattern 127), experimentalFastVisibility shadow DOM caveat (pattern 128), Cypress 15 tsx config parsing + TypeScript 6 + Vite 8 setup (pattern 129), Brotli compression proxy (pattern 130), 6 new community gotchas (111-116): cy.press() modifier key chord limitation, experimentalFastVisibility shadow DOM break, cy.prompt() CT-only restriction, cy.prompt() Chromium-only, ts-loader upgrade webpack config break (15.14.2), Brotli proxy corruption pre-15.11 -->
 <!-- new in this iteration (39): Next.js 16 Component Testing (pattern 122), cy.prompt() Command Log self-healing badge visibility (pattern 123), Command Log Hide HTTP Requests toggle (pattern 124), 5 new community gotchas (106-110): cy.wait() unhandled rejection on teardown (15.14.2), cy.prompt() beforeunload navigation hang, cy.press() yields null cannot chain, Next.js 16 Turbopack not supported in CT, cy.press() focuses document.body when no focused element -->
-<!-- previous iteration (37): cy.prompt() BDD Gherkin + placeholder loop caching (pattern 115), Cypress Module API expose + posixExitCodes deep example (pattern 116), cy.env() multi-key single-call + log:false (pattern 117), 7 new community gotchas (94-100): .invoke() throws on Promise (Cy15), cy.wait([]) routeId crash (15.14.2), Chrome 137 --load-extension removal, transitive CVE monitoring, cy.prompt() rate-limit exhaustion in parallel CI, experimentalStudio flag removal causes parse error (Cy 15.4+), injectDocumentDomain removal in Cy 15 -->
+<!-- previous iteration (38): cy.intercept() middleware routing for global header injection (pattern 118), cy.press() focus trap testing pattern (pattern 119), Cypress Cloud UI Coverage AI-generated test suggestions (pattern 120), cy.session() parallel CI caveats + multi-machine cache isolation (pattern 121), 5 new community gotchas (101-105): cacheAcrossSpecs false-sharing across CI machines, cy.intercept() resourceType deprecated, cy.session() validate() called before setup on first warmup, UI Coverage test gen rate limiting in large suites, cy.press() F-key browser shortcut interception -->
 
 ## Core Principles
 
@@ -7868,5 +7868,531 @@ before(() => {
 109. **Next.js 16 Turbopack is not supported in Cypress component testing — tests silently run under Webpack** [community] — When a Next.js 16 project uses `next dev --turbopack` for local development and CI, developers assume the Cypress CT dev server also uses Turbopack. It does not — Cypress CT always starts its own Webpack 5 dev server, ignoring the `experimental.turbopack` or `bundler: 'turbopack'` settings in `next.config.ts`. The most common symptom is a CSS Module or path alias that works in `next dev --turbopack` but causes a "Cannot resolve module" or "unknown rule" error in Cypress CT. Debug by running `cypress open --component` and checking the browser console for bundler errors; the error message references Webpack, not Turbopack. Fix: ensure `next.config.ts`'s `webpack()` callback handles the same path aliases and loaders that Turbopack handles via its `resolveAlias` config. As of Cypress 15.14, the Cypress team has not announced a Turbopack CT timeline.
 
 110. **`cy.press()` dispatches the key event to `document.body` when no element has focus — may silently miss the intended target** [community] — `cy.press()` sends a native keyboard event to whatever element currently has focus in the browser. If no test command has explicitly focused an element (via `.focus()`, `.click()`, or `.type()`), the event lands on `document.body`. For most keyboard shortcuts, this is correct behavior (global shortcuts are intentionally body-scoped). However, for widget-specific keyboard interactions (arrow-key navigation inside a `<select>` replacement, Enter to confirm an autocomplete), calling `cy.press()` without first asserting or setting focus on the widget produces a test that passes locally (where leftover focus state from a previous test may coincidentally point to the right element) but fails in CI (where each test starts with a clean, focus-free page). Always pair `cy.press()` with an explicit focus assertion: `cy.get('[data-cy="dropdown"]').focus(); cy.press(Cypress.Keyboard.Keys.DOWN);`
+
+---
+
+### 125. `cy.press()` Modifier Key Limitations — Use `cy.type()` for Chords
+
+`cy.press()` (Cypress 14.3+) dispatches a **single key** as a native browser keyboard event. It does not support modifier key combinations (Ctrl+C, Shift+Tab, Alt+F4, Cmd+K). For any key chord, use `cy.type()` with brace notation instead.
+
+```typescript
+// ✅ cy.press() — single named key (use Cypress.Keyboard.Keys constants)
+cy.get('[data-cy="search-input"]').focus();
+cy.press(Cypress.Keyboard.Keys.ESC);          // dismiss suggestion dropdown
+
+cy.get('[data-cy="data-grid"]').click();
+cy.press(Cypress.Keyboard.Keys.HOME);          // jump to first row
+
+cy.get('[data-cy="modal"]').focus();
+cy.press(Cypress.Keyboard.Keys.TAB);           // Tab to next focusable element
+cy.press(Cypress.Keyboard.Keys.ENTER);         // confirm selection
+
+// ✅ cy.type() — modifier key chords (NOT cy.press())
+cy.get('[data-cy="editor"]').type('{ctrl}a');  // Select All
+cy.get('[data-cy="editor"]').type('{ctrl}c');  // Copy
+cy.get('[data-cy="editor"]').type('{ctrl}v');  // Paste
+cy.get('[data-cy="editor"]').type('{shift}{tab}');  // Reverse tab (focus previous)
+cy.get('[data-cy="editor"]').type('{cmd}k');   // Cmd+K shortcut (macOS)
+cy.get('[data-cy="editor"]').type('{meta}k');  // same key, portable form
+
+// Named keys available via Cypress.Keyboard.Keys (full reference):
+// .UP .DOWN .LEFT .RIGHT       — arrow keys
+// .ESC                         — Escape
+// .END .HOME                   — line navigation
+// .PAGEDOWN .PAGEUP            — scroll
+// .ENTER                       — Enter/Return
+// .TAB                         — Tab (forward only — use {shift}{tab} for reverse)
+// .BACKSPACE .DELETE .INSERT   — edit keys
+// .SPACE                       — Space bar
+// F1–F12 are NOT supported     — browser intercepts these; use cy.type() workaround:
+//   cy.get('[data-cy="editor"]').type('{f5}')  — works for F5 (refresh blocked on some OS)
+```
+
+```typescript
+// Decision matrix: cy.press() vs cy.type()
+//
+// Single key, no modifier → cy.press() + Cypress.Keyboard.Keys constant
+// Key chord (Ctrl/Shift/Alt/Meta + key) → cy.type() with {modifier}key
+// Typing text into an input → cy.type()
+// Multi-character string → cy.type()
+// Native event required (Tab order, transient activation) → cy.press()
+//
+// Example: testing a keyboard shortcut toolbar
+it('bold shortcut Ctrl+B wraps selection', () => {
+  cy.get('[data-cy="editor"]').type('Hello World');
+  // Select text with keyboard
+  cy.get('[data-cy="editor"]').type('{shift}{home}');  // select current line (← cy.type chord)
+  // Apply bold with keyboard shortcut
+  cy.get('[data-cy="editor"]').type('{ctrl}b');         // bold (← cy.type chord)
+  cy.get('[data-cy="bold-indicator"]').should('have.class', 'active');
+});
+
+it('Escape closes modal and returns focus to trigger', () => {
+  cy.get('[data-cy="open-modal-btn"]').click();
+  cy.get('[data-cy="modal"]').should('be.visible');
+  cy.press(Cypress.Keyboard.Keys.ESC);  // ← cy.press single key — correct choice here
+  cy.get('[data-cy="modal"]').should('not.exist');
+  cy.get('[data-cy="open-modal-btn"]').should('have.focus');  // focus returned to trigger
+});
+```
+
+**[community]** WHY: The most common `cy.press()` misuse is attempting `cy.press(Cypress.Keyboard.Keys.TAB + Cypress.Keyboard.Keys.SHIFT)` — this concatenates the string constants and passes `"TabShift"` to the browser, which is silently ignored (no error is thrown). The test passes because `.should('have.focus')` on the expected element passes vacuously when the command was no-op'd. Always check: if you need a modifier, you need `cy.type()`. The `cy.press()` command is purpose-built for single-key native events only.
+
+---
+
+### 126. Studio AI Assertion Suggestions (Cypress 15.13+)
+
+Cypress Studio in Cypress 15.13+ includes **Studio AI**, which observes DOM changes between recorded interactions and suggests meaningful assertions — no manual `.should()` authoring required.
+
+```typescript
+// WORKFLOW (cypress open only — Studio is not available in cypress run):
+//
+// 1. Open cypress open → navigate to your spec → click "Edit in Studio"
+// 2. Click through your application flow normally
+// 3. After each interaction, Studio AI shows "before and after" DOM snapshots
+// 4. AI suggests assertions based on detected changes (e.g., "assert text changed to 'Saved'")
+// 5. Accept, reject, or edit each suggestion individually
+// 6. Click "Save Commands" — Studio writes the recorded + asserted commands to your spec file
+
+// Example output from Studio AI recording a form submission:
+it('submits the product form', () => {
+  cy.visit('/products/new');
+  // Studio-recorded interaction:
+  cy.get('[data-cy="product-name"]').click();
+  cy.get('[data-cy="product-name"]').type('Blue Widget');
+  cy.get('[data-cy="product-price"]').click();
+  cy.get('[data-cy="product-price"]').type('29.99');
+  cy.get('[data-cy="submit-btn"]').click();
+
+  // Studio AI-generated assertion (from DOM diff after click):
+  cy.get('[data-cy="success-toast"]').should('have.text', 'Product created successfully');
+  // Studio AI also suggested: cy.url().should('include', '/products/') — accepted
+  cy.url().should('include', '/products/');
+});
+```
+
+```typescript
+// Configuring selectorPriority affects BOTH Studio and cy.prompt() selector generation:
+// (in cypress/support/e2e.ts)
+Cypress.ElementSelector.defaults({
+  // Studio AI will prefer data-cy, then aria-label, then id
+  selectorPriority: [
+    'data-cy',
+    'attribute:aria-label',
+    'id',
+    'class',
+  ],
+});
+
+// After this config, Studio generated selector for:
+// <button aria-label="Delete product" class="btn-danger">Delete</button>
+//   → '[aria-label="Delete product"]'    (without data-cy, falls through to aria-label)
+// vs. default behavior (without config):
+//   → '.btn-danger'                      (falls through to class — fragile!)
+```
+
+```typescript
+// Adding a new test while focused on an existing one:
+// Cypress 15.13 added the ability to add a new test via Studio while in the context of a
+// single spec test. This is useful when you want to test a new variation of an existing flow.
+//
+// In cypress open:
+// 1. Right-click on a test name → "Add test below in Studio"
+// 2. Studio creates a new empty it() block immediately below the current test
+// 3. Record interactions and accept AI suggestions as usual
+//
+// This is particularly valuable for creating data-variation tests without context switching.
+```
+
+**Studio AI vs cy.prompt() — when to use each:**
+
+| Need | Tool | Reason |
+|------|------|--------|
+| Record new test from scratch | Studio AI | Visual recording with AI assertion suggestions |
+| Write tests in plain English during `cypress run` | `cy.prompt()` | Studio not available in run mode |
+| Generate one-time boilerplate test code | Studio AI → export to code | Static code runs in CI without Cypress Cloud |
+| Add self-healing to a production test | `cy.prompt()` | Runtime AI-assisted selector repair |
+| Add assertions to an existing test | Studio AI | DOM diff shows exactly what changed |
+
+**[community]** WHY: Studio AI's "before and after" DOM diff is uniquely valuable for spotting what actually changed after a user interaction — something that `cy.prompt()` does not provide. Teams adopting Cypress Studio report that the AI assertion suggestions catch edge cases they would have missed manually (e.g., a hidden `aria-live` region that updates with status text — invisible in the UI but captured in the DOM diff). The optimal workflow: use Studio AI to generate tests with good assertions, export to static code, then add `cy.prompt()` only for flows that require self-healing due to frequent DOM churn.
+
+---
+
+### 127. `cy.prompt()` Restrictions: E2E-Only and Chromium-Only
+
+`cy.prompt()` (Cypress 15.13+ beta) has two hard restrictions that are not immediately obvious from the documentation. Understanding these prevents silent failures and confusing error messages.
+
+```typescript
+// RESTRICTION 1: cy.prompt() does NOT work in Component Testing
+//
+// Attempting to use cy.prompt() in a component test spec will throw:
+//   "cy.prompt() is only supported in E2E Testing mode"
+//
+// The restriction exists because cy.prompt() uses Cypress Cloud's AI model
+// to interpret DOM context from a full browser page, and Component Testing
+// provides an isolated component mount, not a full navigable page.
+
+// ❌ This will throw at runtime in a component test:
+// src/components/CheckoutForm.cy.tsx
+describe('CheckoutForm', () => {
+  it('completes checkout', () => {
+    cy.mount(<CheckoutForm />);
+    cy.prompt(['When the user fills in the card number']);  // THROWS — E2E-only
+  });
+});
+
+// ✅ Correct: use standard locator patterns in component tests
+describe('CheckoutForm', () => {
+  it('completes checkout', () => {
+    cy.mount(<CheckoutForm />);
+    cy.get('[data-cy="card-number"]').type('4111111111111111');
+    cy.get('[data-cy="expiry"]').type('12/28');
+    cy.get('[data-cy="cvv"]').type('123');
+    cy.get('[data-cy="submit"]').click();
+    cy.get('[data-cy="success-msg"]').should('be.visible');
+  });
+});
+```
+
+```typescript
+// RESTRICTION 2: cy.prompt() only works in Chromium-based browsers
+//   Supported:  Chrome, Edge, Electron
+//   Unsupported: Firefox, Safari/WebKit
+//
+// In Firefox or WebKit, cy.prompt() throws:
+//   "cy.prompt() is only supported in Chromium-based browsers"
+//
+// Guard pattern for cross-browser suites:
+describe('Checkout flow', () => {
+  // Use cy.prompt() only when running in Chrome/Electron:
+  it('completes checkout (AI-assisted)', { browser: 'chrome' }, () => {
+    cy.visit('/checkout');
+    cy.prompt([
+      'Given the cart has 2 items',
+      'When the user fills in payment details',
+      'Then the order confirmation is shown',
+    ]);
+  });
+
+  // Deterministic fallback for Firefox CI:
+  it('completes checkout (deterministic)', { browser: '!chrome' }, () => {
+    cy.visit('/checkout');
+    cy.get('[data-cy="quantity"]').should('have.text', '2');
+    cy.get('[data-cy="card-number"]').type('4111111111111111');
+    cy.get('[data-cy="expiry"]').type('12/28');
+    cy.get('[data-cy="cvv"]').type('123');
+    cy.get('[data-cy="submit-order"]').click();
+    cy.get('[data-cy="order-confirmation"]').should('be.visible');
+  });
+});
+```
+
+```typescript
+// Cross-browser CI matrix pattern in cypress.config.ts:
+// Avoid scheduling cy.prompt() tests on Firefox/WebKit shards
+
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    setupNodeEvents(on, config) {
+      // On Firefox runner: exclude specs that contain cy.prompt() calls
+      if (config.browser?.name === 'firefox') {
+        config.excludeSpecPattern = [
+          '**/ai-prompt/**',     // separate folder for cy.prompt() specs
+          '**/*.prompt.cy.ts',   // convention: .prompt.cy.ts suffix
+        ];
+      }
+      return config;
+    },
+  },
+});
+```
+
+**Restriction summary table:**
+
+| Mode | Supported? | Error thrown |
+|------|-----------|-------------|
+| E2E + Chrome | Yes | — |
+| E2E + Edge | Yes | — |
+| E2E + Electron | Yes | — |
+| E2E + Firefox | No | "only supported in Chromium-based browsers" |
+| E2E + WebKit | No | "only supported in Chromium-based browsers" |
+| Component Testing | No | "only supported in E2E Testing mode" |
+| Canvas/iframe content | No | AI cannot read canvas pixel data |
+
+**[community]** WHY: Teams that run cross-browser CI matrices with Chrome + Firefox shards discover the Chromium restriction when their Firefox shard crashes with an unhelpful error. The fix — isolating `cy.prompt()` specs to Chrome-only runs — requires restructuring spec folders or adding browser guards. Do this at the start of `cy.prompt()` adoption rather than after migrating a large suite. Component test developers who try `cy.prompt()` to speed up test authoring hit the E2E-only restriction immediately; the workaround is Cypress Studio (visual) or standard locators in component specs.
+
+---
+
+### 128. `experimentalFastVisibility` — Shadow DOM Caveat and Algorithm Details
+
+`experimentalFastVisibility` (Cypress 15.8+) uses a **point-sampling algorithm** instead of the legacy recursive coverage algorithm for visibility detection. It is significantly faster but does not yet support Shadow DOM.
+
+```typescript
+// cypress.config.ts — enable experimentalFastVisibility
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    experimentalFastVisibility: true,
+    // Shadow DOM users: keep false until Shadow DOM support is added
+  },
+  component: {
+    devServer: { framework: 'react', bundler: 'vite' },
+    experimentalFastVisibility: true,
+  },
+});
+```
+
+```typescript
+// ALGORITHM: Point-sampling corner + center check
+// - Checks element corners (top-left, top-right, bottom-left, bottom-right) + center
+// - If all 5 points are visible: element is visible (constant-time best case)
+// - If any point is covered: recursively subdivides to find minimal covered area
+// - Bounded exponential worst case — avoids O(n²) full pixel scan of legacy algorithm
+
+// SHADOW DOM LIMITATION: experimentalFastVisibility: true BREAKS shadow DOM assertions
+//
+// ❌ Will fail with experimentalFastVisibility: true:
+it('shadow DOM element is visible', () => {
+  cy.get('[data-cy="web-component"]')
+    .shadow()
+    .find('[data-cy="inner-button"]')
+    .should('be.visible');  // false negative — fast algorithm misses shadow root traversal
+});
+
+// ✅ Workaround: disable per-spec for shadow DOM specs
+// At the top of your shadow DOM spec file:
+Cypress.config('experimentalFastVisibility', false as any);
+
+// Or: guard with browser check if Chrome DevTools shadow support differs
+before(() => {
+  if (Cypress.env('hasShadowComponents')) {
+    Cypress.config('experimentalFastVisibility', false as any);
+  }
+});
+```
+
+```typescript
+// MEMORY BENEFIT: legacy algorithm can OOM on large DOMs
+// Before experimentalFastVisibility, Cypress could run out of memory on dashboards
+// with 500+ DOM elements (all potentially covering each other). The fast algorithm
+// avoids full-page pixel maps.
+
+// PERFORMANCE BENCHMARK (approximate, varies by DOM complexity):
+// Legacy:  20-80ms per .should('be.visible') check on large DOM
+// Fast:     2-5ms  per .should('be.visible') check (point-sampling)
+// Benefit: ~10x faster visibility assertions on large SPAs
+
+// PRODUCTION CHECKLIST: before enabling experimentalFastVisibility:
+// 1. Search codebase for .shadow() calls — disable fast vis for those specs
+// 2. Search for includeShadowDom: true in config — check for shadow DOM coverage
+// 3. Run shadow DOM specs separately with experimentalFastVisibility: false
+// 4. Enable for all non-shadow specs to get the performance benefit
+```
+
+**[community]** WHY: The shadow DOM limitation of `experimentalFastVisibility` is a silent failure — the `.should('be.visible')` assertion on a shadow DOM element returns false even when the element is clearly visible on screen, causing spurious test failures. Teams that enable `experimentalFastVisibility` globally and have any shadow DOM components will see intermittent failures that don't reproduce without the flag. The fix requires per-spec disabling, not a global on/off — most specs can use the fast algorithm, while shadow DOM specs opt out. Track the Cypress GitHub issue for Shadow DOM support updates before doing a global enable in mixed codebases.
+
+---
+
+### 129. Cypress 15 Config Parsing: tsx Replaces ts-node, TypeScript 6, Vite 8
+
+Cypress 15 replaced `ts-node` with `tsx` for parsing `cypress.config.ts`. This eliminates several Node.js module system limitations but introduces new behavior for edge cases.
+
+```typescript
+// cypress.config.ts — valid in Cypress 15 (tsx-parsed, TypeScript 6 compatible)
+import { defineConfig } from 'cypress';
+import { seedDatabase, cleanDatabase } from './cypress/plugins/db';
+import { loadEnvFile } from './cypress/plugins/env';
+
+// Top-level await is now supported (tsx resolves ESM correctly):
+const envConfig = await loadEnvFile('.env.test');  // ✅ works in Cypress 15 with tsx
+
+export default defineConfig({
+  e2e: {
+    baseUrl: envConfig.BASE_URL,
+    experimentalFastVisibility: true,
+    hideHttpRequests: !!process.env.CI,   // suppress intercept log in CI
+    setupNodeEvents(on, config) {
+      on('task', {
+        'db:seed': (scenario: string) => seedDatabase(scenario),
+        'db:clean': () => cleanDatabase(),
+      });
+      return config;
+    },
+  },
+  component: {
+    devServer: {
+      framework: 'react',
+      bundler: 'vite',   // Vite 8 supported as of Cypress 15.14.0
+    },
+    specPattern: 'src/**/*.cy.{ts,tsx}',
+  },
+});
+```
+
+```typescript
+// TypeScript 6 note: Cypress 15.14+ officially supports TypeScript 6
+// TypeScript 6 introduces "erasableSyntaxOnly" mode — const enum is no longer erasable
+// If your Cypress test code uses const enum (unusual but possible in shared type packages),
+// migrate to plain enum or object literal before upgrading to TS 6.
+
+// cypress/tsconfig.json — recommended for Cypress 15 + TypeScript 6
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",   // use 'bundler' for Vite + tsx compat
+    "types": ["cypress", "node"],    // prevents @types/jest clash
+    "strict": true,
+    "jsx": "react-jsx"               // for .tsx component test files
+  },
+  "include": ["cypress/**/*.ts", "cypress/**/*.tsx"],
+  "exclude": ["node_modules"]
+}
+```
+
+```typescript
+// Vite 8 component testing setup (Cypress 15.14+):
+// Vite 8 changed the default value of 'optimizeDeps.entries' — Cypress CT now
+// explicitly sets entries to avoid missing component dependencies.
+
+// cypress.config.ts (Vite 8 + React):
+import { defineConfig } from 'cypress';
+import { mergeConfig } from 'vite';
+import viteConfig from './vite.config.ts';
+
+export default defineConfig({
+  component: {
+    devServer: {
+      framework: 'react',
+      bundler: 'vite',
+      viteConfig: mergeConfig(viteConfig, {
+        optimizeDeps: {
+          // Explicit entries required with Vite 8 (auto-discovery changed):
+          entries: ['src/**/*.{ts,tsx}', 'cypress/**/*.cy.{ts,tsx}'],
+        },
+      }),
+    },
+  },
+});
+```
+
+**tsx vs ts-node — what changed:**
+
+| Behavior | ts-node (Cy 14) | tsx (Cy 15) |
+|---------|-----------------|-------------|
+| Top-level await in config | No | Yes |
+| ESM imports in config | Partial | Full |
+| CommonJS require() | Supported | Supported |
+| `__dirname` in ESM config | undefined | undefined (use `import.meta.dirname`) |
+| Config parse speed | ~300ms | ~80ms |
+| ts-node project config | Respected | Ignored (tsx uses its own defaults) |
+
+**[community]** WHY: The ts-node → tsx switch is transparent for most configs, but teams that rely on a `tsconfig.json` with `ts-node` overrides (e.g., `ts-node.compilerOptions.module = 'CommonJS'` to force CJS module resolution in config) will find those overrides silently ignored in Cypress 15. The `__dirname` breakage is the most common surprise: `import.meta.dirname` is the correct ESM equivalent, but many older Cypress plugin templates use `path.resolve(__dirname, ...)` which becomes `undefined` in ESM mode under tsx. The safest migration: replace `__dirname` with `new URL('.', import.meta.url).pathname` or add `"module": "CommonJS"` to the Cypress-specific `tsconfig.json`.
+
+---
+
+### 130. Brotli-Encoded API Responses — Cypress 15.11+ Proxy Support
+
+Cypress 15.11 added **Brotli compression support** to the built-in proxy. Before 15.11, intercepting requests to APIs that returned `Content-Encoding: br` (Brotli) could produce garbled response bodies in `cy.intercept()` handlers.
+
+```typescript
+// Before Cypress 15.11: Brotli-encoded responses were not decompressed by the proxy.
+// cy.intercept() handler received raw binary data instead of the JSON body.
+// Symptom: cy.wait('@apiCall').its('response.body') returns a Buffer or garbled string.
+//
+// After Cypress 15.11: Brotli is decompressed transparently — req.body/res.body
+// are always decoded strings/objects as expected.
+
+// ✅ Pattern: assert on Brotli-encoded API responses (Cypress 15.11+)
+it('loads dashboard stats from Brotli-encoded API', () => {
+  cy.intercept('GET', '/api/dashboard/stats', (req) => {
+    req.continue((res) => {
+      // With Cypress 15.11+: res.body is a decoded JSON object, not a binary buffer
+      expect(res.body).to.have.property('visitors');
+      expect(res.body.visitors).to.be.a('number');
+    });
+  }).as('getDashboardStats');
+
+  cy.visit('/dashboard');
+  cy.wait('@getDashboardStats');
+  cy.get('[data-cy="visitor-count"]').should('not.have.text', '0');
+});
+
+// ✅ Pattern: stub Brotli API with plain JSON — Cypress handles compression negotiation
+it('renders dashboard with stubbed stats', () => {
+  cy.intercept('GET', '/api/dashboard/stats', {
+    statusCode: 200,
+    // Just provide plain JSON — Cypress CT handles content-encoding negotiation
+    body: { visitors: 1234, conversions: 56, revenue: 9876.50 },
+  }).as('getDashboardStats');
+
+  cy.visit('/dashboard');
+  cy.wait('@getDashboardStats');
+  cy.get('[data-cy="visitor-count"]').should('have.text', '1,234');
+});
+```
+
+```typescript
+// MIGRATION: upgrading from Cypress < 15.11 with Brotli workarounds
+//
+// Before 15.11, a common workaround was to force gzip in test environments:
+//   // In Node.js test setup (e.g., Express middleware):
+//   app.use((req, res, next) => {
+//     if (process.env.CYPRESS === 'true') {
+//       req.headers['accept-encoding'] = 'gzip, deflate';  // strip br
+//     }
+//     next();
+//   });
+//
+// After upgrading to Cypress 15.11+:
+//   1. Remove the CYPRESS=true Accept-Encoding header manipulation
+//   2. Remove any manual Buffer.from(res.body, 'base64') decoding in intercept handlers
+//   3. Re-run intercept-heavy tests to confirm body values are plain objects/strings
+
+// TESTING THAT BROTLI IS ACTIVE:
+it('verifies Brotli encoding is active (informational test)', () => {
+  cy.intercept('GET', '/api/products', (req) => {
+    req.continue((res) => {
+      // Cypress 15.11+ decompresses Brotli — you see the Content-Encoding header
+      // but the body is already decoded. This is the correct Cypress 15.11+ behavior.
+      cy.log('Encoding was:', res.headers['content-encoding'] ?? 'none');
+      expect(res.body).to.be.an('array');  // body is decoded JSON array
+    });
+  });
+
+  cy.visit('/products');
+});
+```
+
+**When Brotli support matters:**
+
+| Scenario | Cypress < 15.11 | Cypress 15.11+ |
+|----------|----------------|----------------|
+| API behind CDN with Brotli (Cloudflare, Fastly) | `res.body` is binary buffer | `res.body` is decoded object |
+| Local Express server with `compression()` (gzip default) | Works fine | Works fine |
+| Nginx with `brotli on` module | `res.body` is garbled | Decoded correctly |
+| Stubbing response (no real server) | Works fine | Works fine |
+
+**[community]** WHY: Brotli is the default compression algorithm for most modern CDNs (Cloudflare enables it automatically for eligible content types). Teams testing against staging environments behind Cloudflare or Fastly would see `cy.intercept()` response body handlers receive a binary Buffer instead of a parsed JSON object — a confusing failure since the same request works fine in the browser's Network tab (because browsers decompress Brotli natively). The standard workaround was to force gzip in the test environment, which is a maintenance burden. Cypress 15.11's native Brotli proxy support eliminates this workaround permanently.
+
+---
+
+## Additional Real-World Gotchas (Iteration 40) [community]
+
+111. **`cy.press()` does not support modifier key combinations — `cy.type()` is required for chords** [community] — `cy.press()` accepts only a single keycode or named key constant from `Cypress.Keyboard.Keys`. Attempting to use modifier combinations (Ctrl+C, Shift+Tab, Cmd+K) by passing a concatenated constant (`Cypress.Keyboard.Keys.TAB + 'Shift'`) results in the string `"TabShift"` being dispatched to the browser as a literal key name. The browser ignores unknown key names silently, so `cy.press()` becomes a no-op and any `.should()` assertion that happens to pass vacuously allows the test to succeed. For key chords, always use `cy.type()` with brace notation: `cy.get('[data-cy="editor"]').type('{shift}{tab}')`. This distinction is easy to miss because the documentation lists `cy.press()` as the modern keyboard API, leading teams to assume it replaced `cy.type()` for all keyboard interactions.
+
+112. **`experimentalFastVisibility: true` causes false-negative `not.be.visible` on Shadow DOM elements** [community] — The fast point-sampling algorithm in `experimentalFastVisibility` does not traverse Shadow DOM boundaries when checking element coverage. A shadow DOM element that is visually rendered and accessible returns false for `.should('be.visible')` because the algorithm's point samples are checked against the light DOM only. The failure is silent — no error about shadow DOM is thrown — so it appears as if the element is genuinely not visible. Always disable `experimentalFastVisibility` for specs that use `.shadow()`, `includeShadowDom: true`, or test custom web components. Use per-spec `Cypress.config('experimentalFastVisibility', false as any)` rather than a global config disable, to preserve the performance benefit for non-shadow specs.
+
+113. **`cy.prompt()` throws silently when used in a Component Testing spec** [community] — `cy.prompt()` can only be called from E2E Testing specs (`cypress/e2e/**`). In a Component Testing spec (`src/**/*.cy.tsx`), calling `cy.prompt()` throws `"cy.prompt() is only supported in E2E Testing mode"`. This is caught as a test failure but without a stack trace pointing to the `cy.prompt()` call — the error appears as an unhandled exception in the Cypress runner. Teams that share a utility file between E2E and CT specs (e.g., a `cy-helpers.ts` that calls `cy.prompt()`) will have all CT specs that import the helper fail. Guard the `cy.prompt()` call with `if (Cypress.testingType === 'e2e')` or keep AI-assisted helpers in a folder that is only included in the E2E support file.
+
+114. **`cy.prompt()` only works in Chromium-based browsers — Firefox/WebKit runs throw an unsuppressable error** [community] — When `cy.prompt()` executes in Firefox or Safari/WebKit (experimentalWebKitSupport), Cypress throws `"cy.prompt() is only supported in Chromium-based browsers"` before the AI call is made. Unlike most Cypress errors which can be caught with `cy.on('fail', ...)`, this error cannot be suppressed mid-test. In a cross-browser CI matrix where all browsers run the same spec file, every Firefox and WebKit run will fail on the first `cy.prompt()` call. The fix: isolate `cy.prompt()` specs to Chrome/Electron using `{ browser: 'chrome' }` test metadata or `excludeSpecPattern` in `setupNodeEvents` based on `config.browser.name`. Never add `cy.prompt()` to a shared spec that is expected to run cross-browser.
+
+115. **Cypress 15.14.2 `ts-loader` upgrade (9.5.2 → 9.5.7) breaks projects that pin ts-loader as a peer dependency in custom webpack preprocessor config** [community] — Cypress 15.14.2 updated `ts-loader` from 9.5.2 to 9.5.7 as a dependency. Projects that use `@cypress/webpack-preprocessor` with a custom `webpack.config.ts` that explicitly installs and pins `ts-loader@9.5.2` (a common pattern to ensure version consistency) will get a version conflict warning in npm/pnpm and may get duplicate ts-loader instances if the package manager installs both. The symptom is TypeScript compile errors during Cypress startup that don't appear in the normal `tsc --noEmit` run — the duplicate ts-loader resolves types differently. Fix: remove the explicit `ts-loader` pin from `devDependencies` and let Cypress manage the version, or set `"ts-loader": ">=9.5.2"` as a peer dependency to accept any compatible version.
+
+116. **APIs behind Brotli-compressing CDNs produce binary `res.body` in `cy.intercept()` handlers on Cypress < 15.11** [community] — Staging and production APIs served behind Cloudflare, Fastly, or Nginx with Brotli enabled return `Content-Encoding: br` responses that Cypress versions before 15.11 do not decompress. In `cy.intercept()` route handlers, `res.body` is a binary Buffer or base64 string instead of the expected JavaScript object. The failure is non-obvious because the Network tab in DevTools shows the decoded JSON (browsers handle Brotli natively), but the Cypress runner receives raw bytes. The standard workaround was to set `Accept-Encoding: gzip, deflate` on all intercepted requests, which forces gzip and avoids Brotli. Upgrade to Cypress 15.11+ to eliminate this workaround — Brotli decompression is now built into the proxy.
 
 ---

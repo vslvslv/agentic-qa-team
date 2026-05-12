@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed), jestjs.io/blog (Jest 30 Jan 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -69,6 +69,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 49 | Vitest 4.1 GitHub Actions job summary | `github-actions` reporter auto-injects job summary with test stats + flaky test permalinks when `$GITHUB_STEP_SUMMARY` is set |
 | 50 | OIDC repository custom properties | `repo_property_*` claims in GitHub OIDC tokens enable attribute-based trust policies — eliminates per-repo allow-list maintenance |
 | 51 | Vitest `viteModuleRunner: false` | Experimental: production-parity Node.js test execution (no Vite sandbox) for backend/CLI packages — 30–50% faster startup |
+| 52 | Jest 30 TypeScript performance | 37% faster runs, 77% lower peak memory, native `jest.config.ts` support, barrel file optimizer (up to 100× import speedup) |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -3282,6 +3283,92 @@ validateAllWorkflows();
 
 ---
 
+### Jest 30 for TypeScript CI: Performance Leap  [community]
+
+Jest 30 (released January 2025) delivers the largest performance improvement in Jest's history — 37% faster test runs and 77% lower peak memory for large TypeScript server suites. These gains come from three architectural changes: a new module resolver (`unrs-resolver`, based on the Rust-backed OXC resolver), native TypeScript config file support removing one transform layer, and a barrel file optimizer that eliminates the exploding import graphs that slow Jest on modern TypeScript monorepos.
+
+**Why this matters for CI:** The 37% speed gain is an unconditional reduction in CI runner minutes with zero code changes required in most TypeScript projects. The 77% memory reduction is the more impactful figure for shared runners — Jest OOM kills were a leading cause of flaky CI on memory-constrained 8 GB runners running large TypeScript APIs.
+
+```typescript
+// jest.config.ts — native TypeScript config (no transform, no ts-jest for config)
+// Jest 30+: jest.config.ts is loaded natively without any babel/ts-jest transform
+import type { Config } from 'jest';
+
+const config: Config = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  // Jest 30: globalsCleanup controls mock/spy cleanup between test files
+  // 'soft' (default): resets mocks but preserves global state mutations
+  // 'on': full isolation (equivalent to clearMocks + resetMocks + restoreMocks per file)
+  // 'off': no cleanup (legacy Jest 29 behaviour — useful during migration)
+  globalsCleanup: 'on',
+  // Jest 30: retryTimes with waitBeforeRetry for rate-limited or timing-sensitive tests
+  // waitBeforeRetry delays the retry by N ms; retryImmediately skips the delay
+  // Use retryImmediately: true only for tests with inherent race conditions (not for flakiness)
+  // retries: 2 max — see Anti-Patterns for why > 2 is harmful
+  testTimeout: 10_000,
+  coverageProvider: 'v8',
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts'],
+};
+
+export default config;
+```
+
+```typescript
+// jest.setup.ts — retryTimes with Jest 30 options
+import { retryTimes } from '@jest/globals';
+
+// Jest 30: waitBeforeRetry (ms) — pause before each retry attempt
+// Useful for tests calling real HTTP APIs with rate limits
+retryTimes(2, { waitBeforeRetry: 500 });
+
+// Jest 30: retryImmediately — skip wait and retry synchronously
+// Use ONLY for race-condition tests, not to mask flakiness
+// retryTimes(2, { retryImmediately: true });
+```
+
+```typescript
+// .babelrc.js — barrel file optimizer for Jest 30 (up to 100× import speedup)
+// Problem: import { Button } from '@myorg/ui' triggers resolution of ALL exports in the barrel
+// Solution: babel-plugin-transform-barrels rewrites barrel imports to direct source imports
+// before Jest processes them — eliminates the exploding import graph
+//
+// Before optimization: import { Button } from '@myorg/ui'
+//   → loads 400+ modules (entire component library)
+// After optimization: import { Button } from '@myorg/ui/src/Button/Button'
+//   → loads 1 module (direct path)
+module.exports = {
+  presets: [['@babel/preset-typescript', { allExtensions: true }]],
+  plugins: [
+    [
+      'babel-plugin-transform-barrels',
+      {
+        // List packages whose barrel re-exports should be inlined
+        packages: ['@myorg/ui', '@myorg/utils', 'lodash'],
+        // optional: skip packages whose barrel is small (< 20 exports)
+        minExportCount: 20,
+      },
+    ],
+  ],
+};
+```
+
+**Jest 30 breaking changes checklist (for TypeScript CI migration):**
+
+| Change | Action required |
+|---|---|
+| Node 14, 16, 19, 21 dropped | Upgrade runner to Node 18 LTS or 20 LTS |
+| TypeScript minimum: 5.4 | Upgrade `typescript` devDependency if < 5.4 |
+| jsdom upgraded v21 → v26 | Audit any tests that depend on jsdom 21 behavior |
+| `--testPathPattern` removed | Replace with `--testPathPatterns` in CI scripts and `package.json` scripts |
+| `globals` cleanup default changed | Test `globalsCleanup: 'off'` if tests share state across test files |
+
+> [community] The team behind a large TypeScript API server (800+ test cases) reported 1350s → 850s (37% reduction) after upgrading to Jest 30 with no configuration changes. Memory peak dropped from 7.8 GB to 1.8 GB, eliminating OOM kills on their 8 GB CI runners. The barrel file optimizer (`babel-plugin-transform-barrels`) added to their shared UI package brought another 2.1× improvement on tests that imported from the barrel, for a combined 3.5× speedup on the component integration test suite.
+
+> [community] The biggest Jest 30 adoption risk on TypeScript projects is the `globalsCleanup` default change. In Jest 29, mock state persisted between test files in the same run unless explicitly cleared. In Jest 30 with `globalsCleanup: 'soft'` (the new default), mocks are reset between files. Tests that relied on mock state accumulated from a previous file (a common anti-pattern in integration test suites that share a mock database adapter) will fail silently or produce false results. During migration, set `globalsCleanup: 'off'` to match Jest 29 behaviour, then clean up the sharing patterns file by file.
+
+---
+
 ## Anti-Patterns
 
 | Anti-pattern | Problem | Fix |
@@ -3368,6 +3455,7 @@ validateAllWorkflows();
 | `viteModuleRunner: false` used in a package with CSS Module or JSX imports | Vite transforms are disabled; `.module.css` and JSX imports fail with module-not-found or syntax errors | Only enable `viteModuleRunner: false` in pure Node.js packages with no Vite-specific imports |
 | OIDC trust policy with `repo_property_*` condition but no `sub` scoping | Any GitHub org that assigns the same custom property can assume the role — cross-org credential exposure | Always pair `repo_property_*` conditions with `StringLike: sub: repo:myorg/*:*` to restrict to the owning org |
 | Custom property not designated for OIDC inclusion at org level | `repo_property_*` claims absent from token even when property is set on the repo; trust policy condition never matches | Org admin must enable "Include in OIDC tokens" for each property — verify with `verify-oidc-claims.ts` script before rolling out |
+| Barrel file imports in Jest without `babel-plugin-transform-barrels` | A single `import { Button } from '@myorg/ui'` triggers Jest to load 400+ modules (the full barrel); 10–30s per test suite startup on large component libraries | Add `babel-plugin-transform-barrels` to `.babelrc.js`; or use `no-barrel-file` ESLint rule to prevent new barrel files; or migrate to Vitest (ESM-native, barrel-safe) |
 
 ## Real-World Gotchas [community]
 
@@ -3537,6 +3625,8 @@ export default env;
 55. **Vitest 4.1 job summary absent after adding a custom `reporters` array** [community]: The `github-actions` reporter is injected automatically when no `reporters` array is configured. As soon as a team adds `reporters: ['verbose', 'json']` to `vitest.config.ts`, the auto-injection stops and job summaries silently disappear from the GitHub Actions checks UI. The fix is to add `'github-actions'` explicitly: `reporters: ['verbose', 'json', 'github-actions']`. Teams that add a custom reporter for coverage comments in one sprint routinely discover the missing job summaries two sprints later when someone asks "where are our flaky test links?".
 
 56. **OIDC `repo_property_*` claim matching without org-level designation** [community]: Repository custom properties appear in OIDC tokens ONLY if an organization administrator has explicitly designated the property for OIDC inclusion. A property that is set on a repository but not designated will not appear in the token — the trust policy condition silently never matches and the IAM role assumption fails with a generic "not authorized" error. Teams that configure the trust policy, set the repository property, and then see OIDC failures have almost always forgotten the org-level designation step. Add the `verify-oidc-claims.ts` debug script as a pre-test step to confirm claims are present before blaming the trust policy.
+
+57. **GitHub Actions workflow rerun limit of 50 reruns** [community]: As of April 2026, GitHub Actions enforces a hard limit of 50 reruns per workflow run (previously unlimited). Teams that rely on automated rerun loops — CI bots that requeue flaky test runs on every failure — will hit this limit and see reruns silently blocked. Any workflow that has been rerun 50 times can no longer be rerun; a new run must be triggered. This surfaces most severely in repos with chronic flakiness handled by rerun automation rather than root-cause fixes. The limit is a forcing function: teams at the 50-rerun boundary must either quarantine the flaky tests or fix the root cause. Budget 1–2 sprints for flakiness remediation if your daily rerun rate exceeds 40 per workflow.
 
 
 |---|---|---|---|

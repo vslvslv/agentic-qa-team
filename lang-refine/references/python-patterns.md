@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 46 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -45,6 +45,11 @@
      Iter 39 (2026-05-12): 100/100 (+0) — added pathlib.copy/copy_into/move/move_into (Python 3.14); http.server HTTPSServer (Python 3.14); os.readinto() zero-copy reads; date.strptime()/time.strptime() (Python 3.14); python -c auto-dedent and -X importtime=2; contextvars.Token as context manager (Python 3.14); community gotchas #36 (multiprocessing forkserver default breaks fork-dependent code), #37 (int() __trunc__ removal), #38 (NotImplemented TypeError); sourced from docs.python.org/3/whatsnew/3.14.html
      Iter 40 (2026-05-12): 100/100 (+0) — added community gotcha #39 (CancelledError swallowing breaks structured concurrency), #40 (configparser.InvalidWriteError Python 3.14); added operator.is_none()/is_not_none() idiom (Python 3.14) and dataclasses.field(doc=) in-source documentation pattern; sourced from docs.python.org/3/library/asyncio-task.html + docs.python.org/3/library/dataclasses.html + docs.python.org/3/whatsnew/3.14.html
      Iter 41 (2026-05-12): 100/100 (+0) — added Unpack[TypedDict] dedicated idiom section (PEP 692), NamedTuple keyword-syntax deprecation community gotcha #41 (removal in Python 3.15), super() pickling/copying idiom (Python 3.14), pow() __rpow__ fallback idiom (Python 3.14); sourced from docs.python.org/3/library/typing.html + docs.python.org/3/whatsnew/3.14.html + practitioner synthesis
+     Iter 42 (2026-05-12): 100/100 (+0) — added t-string advanced edge cases (empty-string handling, debug specifier, raw prefix, no-equality semantics, Template concatenation strictness); PEP 750 sourced from peps.python.org/pep-0750/
+     Iter 43 (2026-05-12): 100/100 (+0) — added Python 3.14 asyncio call-graph introspection (python -m asyncio ps/pstree, capture_call_graph/print_call_graph); free-threaded Python patterns (sys._is_gil_enabled(), adaptive executor, thread-safe shared state); sourced from docs.python.org/3/howto/free-threading-python.html
+     Iter 44 (2026-05-12): 100/100 (+0) — added Executor.map() buffersize parameter (Python 3.14); ProcessPoolExecutor.terminate_workers() / kill_workers(); fnmatch.filterfalse(); community gotcha #42 (unbounded Executor.map backpressure); sourced from docs.python.org/3/library/concurrent.futures.html + docs.python.org/3/library/fnmatch.html
+     Iter 45 (2026-05-12): 100/100 (+0) — added inspect.ispackage() / CO_HAS_DOCSTRING / CO_METHOD / frame.f_generator idioms (Python 3.14); Signature.format(quote_annotation_strings=False); community gotcha #43 (free-threaded shared iterator race); sourced from docs.python.org/3/library/inspect.html + docs.python.org/3/howto/free-threading-python.html
+     Iter 46 (2026-05-12): 100/100 (+0) — added structured logging with StructuredLogMessage t-string processor; adaptive threading strategy pattern; asyncio.timeout() dynamic rescheduling; community gotcha #44 (f_locals cross-thread crash in free-threaded mode); sourced from peps.python.org/pep-0750/ + docs.python.org/3/library/asyncio-task.html + practitioner synthesis
 -->
 
 ## Core Philosophy
@@ -6875,4 +6880,545 @@ assert isinstance(p, Point)     # True
 - If the name must be dynamic (e.g., generated at runtime), keep the positional-list form: `NamedTuple("NT", [("x", int)])`.
 
 ---
+
+## Language Idioms (continued — iterations 42–46)
+
+### T-String Advanced Edge Cases (PEP 750, Python 3.14)
+
+Beyond the basic t-string processor pattern already documented, five edge cases trip up practitioners who first use t-strings in production.
+
+```python
+from string.templatelib import Template, Interpolation
+
+
+# ── Edge 1: Adjacent interpolations produce empty strings in .strings ─────────
+# t"{a}{b}" → strings=("", "", ""), interpolations=(a, b)
+# __iter__() skips empty strings — only use .strings when you need exact indexing
+first = "A"
+second = "B"
+tmpl = t"{first}{second}"
+assert tmpl.strings == ("", "", "")
+assert list(tmpl) == list(tmpl.interpolations)   # iter skips empty strings
+
+
+# ── Edge 2: {value=} debug specifier splits into string + conversion ──────────
+name = "World"
+dbg = t"Hello {name=}"
+assert dbg.strings[0] == "Hello name="           # static text includes "name="
+assert dbg.interpolations[0].conversion == "r"   # implicit repr() conversion
+
+
+# ── Edge 3: Nested format specs are eagerly evaluated at template creation ─────
+value = 3.14159
+precision = 3
+tmpl2 = t"Pi is {value:.{precision}f}"
+# format_spec already resolved — you cannot recover the original ".{precision}f"
+assert tmpl2.interpolations[0].format_spec == ".3f"
+
+
+# ── Edge 4: Template + str raises TypeError — use explicit Template() wrapper ──
+try:
+    bad = t"Hello " + "world"         # TypeError: must be Template, not str
+except TypeError:
+    pass
+# Implicit juxtaposition works (compile-time join):
+name2 = "World"
+combined = t"Hello " t"{name2}!"      # OK — compiler merges at parse time
+
+
+# ── Edge 5: Raw t-strings preserve backslashes (rt prefix) ────────────────────
+trade = "shrubbery"
+raw_tmpl = rt'Did you say "{trade}"?\n'
+assert raw_tmpl.strings[1] == r'"?\n'  # literal \n, not newline
+```
+
+**Rule of thumb:** Always iterate `template` (not `template.strings`) in your processors so empty-string pairs from adjacent interpolations are transparent. Only index `.strings[i]` when you need exact positional alignment with `.interpolations[i]`.
+
+---
+
+### Structured Logging via T-String Processor
+
+T-strings enable structured log records that carry both a human-readable message and a machine-readable dict of interpolated values — without any string parsing.
+
+```python
+from __future__ import annotations
+import json
+import logging
+from string.templatelib import Template, Interpolation
+
+
+class StructuredLogMessage:
+    """Wraps a t-string so logging.info(t"...") emits structured JSON context."""
+
+    def __init__(self, template: Template) -> None:
+        self.template = template
+
+    @property
+    def message(self) -> str:
+        """Human-readable rendered string."""
+        parts: list[str] = []
+        for chunk in self.template:
+            if isinstance(chunk, str):
+                parts.append(chunk)
+            else:
+                val = chunk.value
+                if chunk.conversion == "r":
+                    val = repr(val)
+                elif chunk.conversion == "s":
+                    val = str(val)
+                parts.append(format(val, chunk.format_spec) if chunk.format_spec else str(val))
+        return "".join(parts)
+
+    @property
+    def context(self) -> dict[str, object]:
+        """Key-value pairs from every named interpolation."""
+        return {
+            chunk.expression: chunk.value
+            for chunk in self.template
+            if isinstance(chunk, Interpolation) and chunk.expression
+        }
+
+    def __str__(self) -> str:
+        return f"{self.message} | {json.dumps(self.context, default=str)}"
+
+
+log = logging.getLogger(__name__)
+
+# Usage — works with any standard logging handler
+user_id = 42
+action = "checkout"
+amount = 99.95
+
+log.info(StructuredLogMessage(t"User {user_id} performed {action} for ${amount:.2f}"))
+# Emits: "User 42 performed checkout for $99.95 | {"user_id": 42, "action": "checkout", "amount": 99.95}"
+```
+
+**Why this beats f-strings for structured logging:** The expression name (`user_id`, `action`, `amount`) is preserved as the key, so the JSON side-channel is automatically generated without duplicating field names. Log aggregation systems can index the JSON fields independently of the human message.
+
+---
+
+### Free-Threaded Python: Adaptive Executor Pattern (Python 3.13+)
+
+Python 3.13+ ships free-threaded builds (PYTHON_GIL=0 / `-X gil=0`). The GIL is per-interpreter, not per-process; disabling it enables true CPU-bound thread parallelism at the cost of ~1–8% single-threaded overhead.
+
+```python
+from __future__ import annotations
+import sys
+from concurrent.futures import Executor, ThreadPoolExecutor, ProcessPoolExecutor
+from contextlib import contextmanager
+
+
+def _is_free_threaded() -> bool:
+    """True if the running interpreter has the GIL disabled."""
+    try:
+        return not sys._is_gil_enabled()     # CPython 3.13+
+    except AttributeError:
+        return False                         # Older Python — assume GIL present
+
+
+@contextmanager
+def best_executor(*, max_workers: int = 4, io_bound: bool = True):
+    """
+    Yield the right executor type for the workload:
+      - Free-threaded build + CPU-bound → ThreadPoolExecutor (true parallelism)
+      - GIL build + CPU-bound          → ProcessPoolExecutor
+      - Any build + I/O-bound          → ThreadPoolExecutor
+    """
+    if io_bound or _is_free_threaded():
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            yield ex
+    else:
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            yield ex
+
+
+# ── CPU-bound: will use threads in free-threaded, processes in GIL mode ───────
+def cpu_transform(n: int) -> int:
+    return sum(i * i for i in range(n))
+
+with best_executor(max_workers=4, io_bound=False) as ex:
+    results = list(ex.map(cpu_transform, [1_000_000] * 8))
+
+
+# ── Thread safety still required even without the GIL ─────────────────────────
+import threading
+
+class ThreadSafeCounter:
+    """Without the GIL, += on a shared int is NOT atomic — use a Lock."""
+    def __init__(self) -> None:
+        self._value = 0
+        self._lock = threading.Lock()
+
+    def increment(self) -> None:
+        with self._lock:
+            self._value += 1
+
+    @property
+    def value(self) -> int:
+        with self._lock:
+            return self._value
+```
+
+**Key facts:**
+- Built-in container operations (dict/list single reads/writes) remain individually atomic.
+- Multi-step check-then-act sequences (`if key not in d: d[key] = ...`) are NOT atomic — use `Lock` or `dict.setdefault()`.
+- Context variables are inherited by threads in free-threaded mode (unlike the GIL build).
+
+---
+
+### `Executor.map()` with `buffersize` (Python 3.14)
+
+The `buffersize` parameter added to `Executor.map()` in Python 3.14 prevents the submitter from queuing unbounded futures when the consumer is slow.
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+import time
+
+
+def slow_consumer(n: int) -> int:
+    time.sleep(0.1)          # simulate slow downstream processing
+    return n * n
+
+
+# ── Without buffersize: all 1000 tasks submitted immediately ──────────────────
+with ThreadPoolExecutor(max_workers=4) as ex:
+    # Memory usage spikes — 1000 futures created before any result is consumed
+    for r in ex.map(slow_consumer, range(1000)):
+        process(r)           # process() can't keep up, but submission already done
+
+
+# ── With buffersize: submission pauses until buffer drains ────────────────────
+with ThreadPoolExecutor(max_workers=4) as ex:
+    # At most 10 unread results buffered; generator pauses automatically
+    for r in ex.map(slow_consumer, range(1000), buffersize=10):
+        process(r)           # Backpressure applied — ~10 results ahead at most
+
+
+# ── ProcessPoolExecutor: graceful vs forceful shutdown ───────────────────────
+from concurrent.futures import ProcessPoolExecutor
+import os, signal
+
+with ProcessPoolExecutor(max_workers=4) as ex:
+    futures = [ex.submit(slow_consumer, n) for n in range(20)]
+    # If workers become unresponsive:
+    ex.terminate_workers()   # sends SIGTERM to each worker process
+    # ex.kill_workers()      # sends SIGKILL — use when terminate is insufficient
+
+
+def process(result: int) -> None:
+    print(result)
+```
+
+**Rule:** Use `buffersize` whenever the iterable is large and downstream processing is slower than task submission. This avoids OOM conditions in streaming pipelines. Default (`None`) preserves pre-3.14 behaviour — collect all results eagerly.
+
+---
+
+### `fnmatch.filterfalse()` (Python 3.14)
+
+`fnmatch.filter()` keeps names matching a pattern; `fnmatch.filterfalse()` does the inverse — keeping names that do NOT match.
+
+```python
+import fnmatch
+from pathlib import Path
+
+
+# ── Basic usage ────────────────────────────────────────────────────────────────
+files = ["report.txt", "chart.png", "summary.txt", "data.csv", "logo.png"]
+
+text_files = fnmatch.filter(files, "*.txt")           # ['report.txt', 'summary.txt']
+non_text   = fnmatch.filterfalse(files, "*.txt")      # ['chart.png', 'data.csv', 'logo.png']
+
+
+# ── Practical: exclude generated files from a build directory ─────────────────
+def source_files(directory: Path, exclude_pattern: str = "*.pyc") -> list[Path]:
+    """Return source files, skipping any that match exclude_pattern."""
+    names = [p.name for p in directory.iterdir() if p.is_file()]
+    kept  = fnmatch.filterfalse(names, exclude_pattern)
+    return [directory / name for name in kept]
+
+
+# ── Combine filter and filterfalse for set algebra ───────────────────────────
+all_items = ["a.py", "b.pyc", "c.pyi", "d.py", "__pycache__"]
+py_source  = fnmatch.filter(all_items, "*.py")       # ['a.py', 'd.py']
+not_dunder = fnmatch.filterfalse(py_source, "__*")   # ['a.py', 'd.py'] (none match __)
+```
+
+**Pre-3.14 equivalent:** `[n for n in names if not fnmatch.fnmatch(n, pat)]`. The built-in version is C-accelerated and avoids the repeated Python-level `fnmatch.fnmatch()` call overhead.
+
+---
+
+### `inspect` Introspection Additions (Python 3.14)
+
+Three new code-object flags and two new functions make it easier to programmatically inspect Python source structure.
+
+```python
+import inspect
+
+
+# ── inspect.ispackage() — distinguish packages from plain modules ─────────────
+import os, sys, json
+
+inspect.ispackage(os)      # True  — os is a package (has __path__)
+inspect.ispackage(sys)     # False — sys is a built-in module, no __path__
+inspect.ispackage(json)    # True  — json/ is a package directory
+
+
+# ── CO_HAS_DOCSTRING — check if a function has a docstring at bytecode level ──
+def with_doc() -> None:
+    """Does something."""
+
+def without_doc() -> None:
+    pass
+
+assert bool(with_doc.__code__.co_flags & inspect.CO_HAS_DOCSTRING)
+assert not bool(without_doc.__code__.co_flags & inspect.CO_HAS_DOCSTRING)
+
+
+# ── CO_METHOD — detect functions defined in class scope ───────────────────────
+class MyClass:
+    def method(self) -> None: ...
+    @staticmethod
+    def static_m() -> None: ...
+
+assert bool(MyClass.method.__code__.co_flags & inspect.CO_METHOD)
+# Note: CO_METHOD reflects the definition context, not whether @staticmethod was used.
+
+
+# ── frame.f_generator — access the owning coroutine from within a frame ───────
+import asyncio
+
+async def trace_self() -> None:
+    frame = inspect.currentframe()
+    coro = frame.f_generator   # The coroutine object that owns this frame
+    assert asyncio.iscoroutine(coro)
+
+asyncio.run(trace_self())
+
+
+# ── Signature.format() with quote_annotation_strings ─────────────────────────
+def greet(name: str, times: int = 1) -> None: ...
+
+sig = inspect.signature(greet)
+print(sig.format())                                  # (name: str, times: int = 1) -> None
+print(sig.format(quote_annotation_strings=False))    # Same — no quoting needed for simple types
+
+# Useful when annotations contain forward references stored as strings
+def delayed(x: "Pending") -> "Result": ...
+sig2 = inspect.signature(delayed)
+print(sig2.format(quote_annotation_strings=True))    # (x: 'Pending') -> 'Result'  (default)
+print(sig2.format(quote_annotation_strings=False))   # (x: Pending) -> Result
+```
+
+---
+
+### `asyncio.timeout()` Dynamic Rescheduling (Python 3.11+)
+
+`asyncio.timeout()` is already documented above; the `Timeout.reschedule()` method enables patterns where the deadline is dynamic — e.g., reset after each successful heartbeat.
+
+```python
+from __future__ import annotations
+import asyncio
+
+
+async def watchdog(task_coro, *, initial_timeout: float, refresh_timeout: float):
+    """
+    Run task_coro with an initial timeout.
+    Call cm.reschedule() inside task_coro to extend the deadline.
+    Raises TimeoutError if no reschedule occurs within the window.
+    """
+    loop = asyncio.get_running_loop()
+
+    async with asyncio.timeout(initial_timeout) as cm:
+        await task_coro(cm, loop, refresh_timeout)
+
+
+async def long_worker(cm: asyncio.Timeout, loop: asyncio.AbstractEventLoop, refresh: float):
+    """Simulates work with periodic progress, each progress extends the deadline."""
+    for step in range(5):
+        await asyncio.sleep(0.5)                           # simulate work unit
+        new_deadline = loop.time() + refresh               # reset watchdog clock
+        cm.reschedule(new_deadline)                        # extend timeout
+
+
+asyncio.run(watchdog(long_worker, initial_timeout=2.0, refresh_timeout=2.0))
+# Each 0.5-second step resets the 2-second window → never times out
+
+
+# ── Pattern: conditionally disable timeout ────────────────────────────────────
+async def fetch_with_optional_timeout(url: str, *, timeout: float | None) -> bytes:
+    async with asyncio.timeout(timeout):   # timeout=None → no deadline
+        return await do_fetch(url)
+
+
+async def do_fetch(url: str) -> bytes:
+    await asyncio.sleep(0.1)
+    return b""
+```
+
+**When to use `reschedule()` vs nesting contexts:** Use `reschedule()` when a single logical operation has variable sub-steps with individual progress deadlines (streaming, chunked uploads). Use nested `asyncio.timeout()` when each sub-step has its own independent deadline.
+
+---
+
+## Real-World Gotchas (continued — iterations 43–46)
+
+### 42. Unbounded `Executor.map()` Backpressure (Pre-Python 3.14)  [community]
+
+**Problem:** `Executor.map()` without `buffersize` (all Python versions before 3.14, or when using the default) submits all tasks from the iterable immediately — before any result is consumed. For large iterables and slow consumers this silently allocates thousands of `Future` objects and associated memory.
+
+**Why:** The pre-3.14 implementation eagerly submits the full iterable into the thread/process pool and stores all pending futures in a list. It then yields results lazily, but the submission is already complete. If your iterable has 100,000 items and each task returns a 1MB result, all 100,000 futures are in flight simultaneously. OOM errors appear far from the actual `ex.map()` call, making them hard to trace.
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+
+# ── SYMPTOM: OOM or extreme memory usage on large iterables ──────────────────
+def fetch_chunk(url: str) -> bytes:
+    import urllib.request
+    with urllib.request.urlopen(url) as r:
+        return r.read()   # Returns ~1 MB per call
+
+urls = [f"https://data.example.com/chunk/{i}" for i in range(100_000)]
+
+with ThreadPoolExecutor(max_workers=8) as ex:
+    # All 100,000 futures submitted instantly — ~100GB of pending results buffered
+    for data in ex.map(fetch_chunk, urls):
+        store(data)
+
+
+# ── FIX (Python 3.14+): use buffersize ────────────────────────────────────────
+with ThreadPoolExecutor(max_workers=8) as ex:
+    for data in ex.map(fetch_chunk, urls, buffersize=16):   # max 16 unread results
+        store(data)
+
+
+# ── FIX (pre-3.14): manual chunking with semaphore ────────────────────────────
+import asyncio
+from itertools import islice
+
+def chunked(iterable, n):
+    it = iter(iterable)
+    while chunk := list(islice(it, n)):
+        yield chunk
+
+with ThreadPoolExecutor(max_workers=8) as ex:
+    for batch in chunked(urls, 32):
+        for data in ex.map(fetch_chunk, batch):
+            store(data)
+
+
+def store(data: bytes) -> None:
+    pass   # write to disk / DB
+```
+
+**Rule:** For any `Executor.map()` over a large or unbounded iterable, either use `buffersize` (Python 3.14+) or submit work in explicit batches. Never assume `map()` is lazy in its submission.
+
+---
+
+### 43. Free-Threaded Python: Shared Iterator Race Condition  [community]
+
+**Problem:** Sharing a single iterator across multiple threads without synchronisation produces non-deterministic behaviour in the free-threaded build (and in GIL builds, though the GIL reduces the frequency). The `next()` call is not atomic: the iterator's internal state can be corrupted by concurrent advances.
+
+**Why:** In GIL-enabled Python, the GIL serialises most bytecode operations, so shared iterators usually appear to work — each thread gets distinct items (though not guaranteed). In free-threaded Python (GIL disabled), two threads can simultaneously enter `__next__()`, read the same position, and both return the same value — or both advance past a value and skip it.
+
+```python
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+
+# ── BAD: shared iterator across threads ────────────────────────────────────────
+shared = iter(range(20))
+
+def consume_bad():
+    for item in shared:       # NOT thread-safe
+        print(f"{threading.current_thread().name}: {item}")
+
+# With the GIL: probably works, but no guarantee
+# Without the GIL: duplicates, skips, or crashes
+with ThreadPoolExecutor(max_workers=4) as ex:
+    futures = [ex.submit(consume_bad) for _ in range(4)]
+
+
+# ── GOOD: use queue.Queue as thread-safe dispatcher ──────────────────────────
+from queue import Queue, Empty
+
+def fill_queue(q: Queue, items) -> None:
+    for item in items:
+        q.put(item)
+    q.put(None)   # sentinel per consumer
+
+def consume_safe(q: Queue) -> None:
+    while True:
+        item = q.get()
+        if item is None:
+            q.put(None)   # re-enqueue sentinel for other consumers
+            break
+        print(f"{threading.current_thread().name}: {item}")
+
+q: Queue = Queue()
+fill_queue(q, range(20))
+
+with ThreadPoolExecutor(max_workers=4) as ex:
+    for _ in range(4):
+        ex.submit(consume_safe, q)
+```
+
+**Rule:** Every iterator in Python has mutable state (`__next__` advances a position pointer). Treat iterators as single-owner objects. If multiple threads need the same sequence, put the items in a `queue.Queue` before spawning threads.
+
+---
+
+### 44. `frame.f_locals` Cross-Thread Access Crashes in Free-Threaded Mode  [community]
+
+**Problem:** Accessing `frame.f_locals` from a thread that does not own the frame causes a crash or undefined behaviour in the free-threaded Python build. In GIL-enabled Python this is unsafe too, but the GIL reduces the exposure window; in free-threaded Python it is a reliability hazard.
+
+**Why:** `frame.f_locals` reads the frame's fast locals array and constructs a dict. The frame object's internal array belongs to the thread that created the frame. In free-threaded mode, there is no GIL to prevent another thread from modifying those locals concurrently, so cross-thread reads can see torn state or reference-count corruptions. The official guidance is: **never pass frame objects to other threads.**
+
+```python
+import sys
+import threading
+
+
+# ── UNSAFE: capturing a frame and reading it from another thread ──────────────
+def unsafe_profiler():
+    frame = sys._getframe()   # frame owned by this thread
+    captured_locals = None
+
+    def read_in_other_thread():
+        nonlocal captured_locals
+        captured_locals = frame.f_locals   # CRASH / torn state in free-threaded mode
+
+    t = threading.Thread(target=read_in_other_thread)
+    t.start()
+    t.join()
+    return captured_locals   # May be garbage
+
+
+# ── SAFE: snapshot f_locals in the owning thread, pass the snapshot ───────────
+def safe_snapshot():
+    frame = sys._getframe()
+    snapshot = dict(frame.f_locals)   # copy on the owning thread
+
+    def read_snapshot():
+        print(snapshot)   # Safe — plain dict, not a live frame view
+
+    t = threading.Thread(target=read_snapshot)
+    t.start()
+    t.join()
+    return snapshot
+
+
+# ── SAFE: use inspect.currentframe() within the target thread ─────────────────
+import inspect
+
+def per_thread_introspection():
+    """Each thread introspects its OWN frame — no sharing."""
+    frame = inspect.currentframe()
+    if frame is not None:
+        return dict(frame.f_locals)
+    return {}
+
+with ThreadPoolExecutor(max_workers=4) as ex:
+    results = list(ex.map(lambda _: per_thread_introspection(), range(4)))
+```
+
+**Rule:** Frame objects are not thread-safe. If you need locals from another thread's frame (e.g., for profiling or debugging), snapshot them as a plain `dict` on the owning thread and pass the dict across the boundary. Never share raw frame objects across threads.
 

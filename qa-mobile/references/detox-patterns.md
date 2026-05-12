@@ -1,11 +1,12 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 47 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 48 | score: 100/100 | date: 2026-05-12 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 <!-- iteration 44 (2026-05-12) adds: WebView testing (by.web() matchers, web element interactions, hybrid app patterns), visual regression with device.takeScreenshot() + external tools, JUnit XML CI reporting (jest-junit), React Native 0.78+ New Architecture strict mode notes, device.resetContentAndSettings() for deep iOS simulator reset, network activity tracking (NetworkSynchronizationEnabled per-configuration), 7 new community gotchas (44–50: by.web() IPC latency vs native sync, visual diff false positives from dynamic content, jest-junit path collision in sharded CI, device.resetContentAndSettings() permission re-grant pattern, Android API 35 predictive back gesture breaking by.system() back button, Hermes debugger port conflict on parallel CI jobs, and WebView URL not yet updated when Detox selector fires) -->
 <!-- iteration 45 (2026-05-12) adds: by.system() full dialog workflow (permissions/alerts/sheets), device.openURL() deep link testing pattern, parallel worker configuration for large suites, by.traits() iOS accessibility traits testing, element.getAttributes() extended inspection, device.shake() shake gesture testing, 6 new community gotchas (51–56: by.system() label locale mismatch, deep link cold-start race condition, parallel workers sharing global launchArgs, by.traits() not available on Android, getAttributes() returning null for off-screen elements, device.shake() no-op on physical devices without shake hardware) -->
 <!-- iteration 46 (2026-05-12) adds: Pattern 47 (element.swipe() startNormalizedX/Y precision swipe control), Pattern 48 (Detox test tagging with describe-based smoke/regression tiers + --testNamePattern selective CI), 7 new community gotchas (57–63: iOS 18 "Precise Location" prompt blocks by.system() selectors, device.setStatusBar() state bleed across tests without afterAll reset, element.longPress() 0 ms duration behaves as tap() on Android, Expo SDK 53 expo-modules-core v2 requires Detox 20.9+, --loglevel verbose CI log overflow, waitFor.whileElement.scroll('up') skips SectionList headers on Android, device.setOrientation() no-op on Android Emulator API 34+ without hardware rendering flag) -->
 <!-- iteration 47 (2026-05-12) adds: Pattern 49 (device.setStatusBar()/resetStatusBar() comprehensive status-bar simulation), Pattern 50 (Detox + Allure reporting integration), Pattern 51 (network request interception via launchArgs + lightweight mock server for offline/error simulation), Pattern 52 (toHaveText/toHaveLabel/toHaveValue disambiguation guide), 7 new community gotchas (64–70: Allure stepStatus colliding with Detox afterEach cleanup, mock server port conflict on parallel workers, toHaveLabel vs toHaveText ordering ambiguity in double-accessible elements, device.setStatusBar() batteryLevel float precision silently clamped, Detox server port collision in monorepo multi-configuration CI, RN 0.79+ Metro bundler lazy requires increasing cold-start wait thresholds, jest-circus vs jest-jasmine2 afterAll ordering causing device.terminateApp() deadlocks) -->
+<!-- iteration 48 (2026-05-12) adds: Pattern 53 (React Navigation v7 static config + testID-screen mapping for deep navigation testing), Pattern 54 (device.reverseTcp() + reversePorts advanced Android network routing patterns), Pattern 55 (GitHub Actions step summary integration for Detox test results), 8 new community gotchas (71–78: React Native 0.80+ Package Exports breaking Detox metro resolver, iOS 18.2+ Settings app restructure breaking by.system() location permission dialogs, Android Gradle 8.x + AGP 8.4+ build flag changes for Detox release builds, device.setLocation() on Android Emulator API 35 requires cold-start permission grant, Detox test timeout silently extended when device.reloadReactNative() is called inside waitFor scope, jest-junit v17 default output format change breaks Detox shard reporting, element.tap() on disabled Pressable silently succeeds and fires onPress on Android, waitFor.not.toBeVisible() resolves too early during React Navigation shared element transitions); 55 patterns total; 7920+ lines -->
 
 ## Core Principles
 
@@ -8234,7 +8235,856 @@ async function doLogin() {
 
 ---
 
-## Updated Anti-Patterns Checklist (iteration 47 additions)
+### Pattern 53 — React Navigation v7 static configuration and testID-screen mapping for deep navigation testing
+
+React Navigation v7 (released 2025) introduced a **static API** for route configuration
+(`createStaticNavigation`) that replaces the JSX tree approach. Detox tests that previously
+relied on navigating through screens interactively benefit greatly from a centralized
+`SCREEN_TEST_IDS` map that ties route names to their primary `testID` — this makes navigation
+assertions deterministic regardless of how deep in the stack the test starts.
+
+```js
+// navigation/screens.js — centralized testID map (shared between app and e2e)
+// React Navigation v7 static config approach
+const SCREENS = {
+  Home:       { testID: 'home-screen',        route: 'Home' },
+  Login:      { testID: 'login-screen',       route: 'Login' },
+  Dashboard:  { testID: 'dashboard-screen',   route: 'Dashboard' },
+  ProductList:{ testID: 'product-list-screen',route: 'ProductList' },
+  Cart:       { testID: 'cart-screen',        route: 'Cart' },
+  Checkout:   { testID: 'checkout-screen',    route: 'Checkout' },
+  Settings:   { testID: 'settings-screen',    route: 'Settings' },
+};
+
+module.exports = { SCREENS };
+```
+
+```js
+// In each screen component — apply the testID to the root View
+// screens/HomeScreen.js
+import { SCREENS } from '../navigation/screens';
+export function HomeScreen() {
+  return (
+    <View testID={SCREENS.Home.testID} style={styles.container}>
+      {/* ... */}
+    </View>
+  );
+}
+```
+
+```js
+// e2e/helpers/navigation.js — screen-wait helper using the shared map
+const { SCREENS } = require('../../navigation/screens');
+const { TIMEOUT } = require('../constants');
+
+/**
+ * Wait for a named screen to become visible.
+ * @param {keyof typeof SCREENS} screenName
+ */
+async function waitForScreen(screenName) {
+  const screen = SCREENS[screenName];
+  if (!screen) throw new Error(`Unknown screen: ${screenName}`);
+  await waitFor(element(by.id(screen.testID)))
+    .toBeVisible()
+    .withTimeout(TIMEOUT.long);
+}
+
+/**
+ * Assert a named screen is currently visible (no wait).
+ */
+async function expectScreen(screenName) {
+  const screen = SCREENS[screenName];
+  if (!screen) throw new Error(`Unknown screen: ${screenName}`);
+  await expect(element(by.id(screen.testID))).toBeVisible();
+}
+
+module.exports = { waitForScreen, expectScreen };
+```
+
+```js
+// e2e/checkout.test.js — using the helpers
+const { waitForScreen, expectScreen } = require('./helpers/navigation');
+
+describe('Checkout flow', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true, permissions: { notifications: 'YES' } });
+  });
+
+  beforeEach(async () => {
+    await device.reloadReactNative();
+    await loginAs('user');
+    await waitForScreen('Dashboard');
+  });
+
+  it('completes a purchase from cart to confirmation', async () => {
+    await element(by.id('shop-tab')).tap();
+    await waitForScreen('ProductList');
+
+    await element(by.id('product-item-1-add-to-cart')).tap();
+    await element(by.id('cart-tab')).tap();
+    await waitForScreen('Cart');
+
+    await element(by.id('checkout-button')).tap();
+    await waitForScreen('Checkout');
+
+    await element(by.id('place-order-button')).tap();
+    await waitForScreen('OrderConfirmation');
+    await expect(element(by.id('order-number'))).toBeVisible();
+  });
+});
+```
+
+**React Navigation v7 `createStaticNavigation` compatibility note [community]**: In v7 static config,
+screen `name` props are inferred from the object key — the route name IS the object key.
+If you use `createStaticNavigation` and rename a key, all deep-link URLs and `navigate('RouteName')`
+calls change silently. The `SCREENS` map above makes the testID the single source of truth;
+rename the key in one place to update tests, app code, and assertions simultaneously.
+
+---
+
+### Pattern 54 — `device.reverseTcp()` and `reversePorts` advanced Android network routing
+
+Android Emulators run inside a virtual network where `localhost` and `127.0.0.1` refer to
+the emulator's own loopback interface, not the host machine. Detox mock servers running on
+the host are unreachable unless you explicitly reverse the port. There are two mechanisms:
+
+| Mechanism | When to use | How it works |
+|-----------|------------|-------------|
+| `reversePorts` in `.detoxrc.js` | Detox-managed setup — runs `adb reverse` automatically before app launch | Declarative, CI-safe |
+| `device.reverseTcp(port)` | Dynamic port numbers only known at test runtime (e.g., OS-assigned mock server port) | Imperative, call inside `beforeAll` |
+
+```js
+// .detoxrc.js — use reversePorts for known, fixed ports (preferred)
+module.exports = {
+  apps: {
+    'android.debug': {
+      type: 'android.apk',
+      binaryPath: '...',
+      reversePorts: [8088, 8089],  // adb reverse tcp:8088 tcp:8088 before launch
+    },
+  },
+};
+```
+
+```js
+// e2e/setup.js — use device.reverseTcp() for OS-assigned dynamic ports
+const { createServer } = require('http');
+
+let mockServer;
+let mockPort;
+
+beforeAll(async () => {
+  // Start mock server on an OS-assigned port (port 0)
+  mockServer = createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok' }));
+  });
+
+  await new Promise((resolve) => {
+    mockServer.listen(0, '127.0.0.1', () => {
+      mockPort = mockServer.address().port;
+      resolve();
+    });
+  });
+
+  // Reverse the dynamically-assigned port into the emulator
+  if (device.getPlatform() === 'android') {
+    await device.reverseTcp(mockPort);
+  }
+
+  // Launch app with the dynamic port — emulator can reach it via localhost
+  await device.launchApp({
+    newInstance: true,
+    launchArgs: { API_BASE_URL: `http://localhost:${mockPort}` },
+  });
+});
+
+afterAll(async () => {
+  await new Promise((resolve) => mockServer.close(resolve));
+});
+```
+
+```js
+// Cross-platform helper — use 10.0.2.2 as fallback when reverseTcp is unavailable
+function getBaseUrl(port) {
+  if (device.getPlatform() === 'android' && !process.env.DETOX_REVERSE_TCP) {
+    // Fallback: hardcoded Android emulator host alias
+    // Use this ONLY if reverseTcp/reversePorts are not configured
+    return `http://10.0.2.2:${port}`;
+  }
+  return `http://localhost:${port}`;
+}
+```
+
+**Important constraints [community]:**
+- `device.reverseTcp()` must be called AFTER `device.launchApp()` on some Android versions.
+  If the app makes API calls during initialization (splash screen), call `reverseTcp` before
+  `launchApp` — but this requires the mock server to be running first (catch-22 with dynamic
+  ports). Resolution: use a fixed port for the mock server when you need it available
+  during app init.
+- `adb reverse` tunnels only work over USB or local ADB — they do NOT work on cloud device
+  farms (AWS Device Farm, Sauce Labs) where the ADB connection goes through a proxy. Use
+  HTTPS endpoints with a real staging server on cloud farms.
+- Multiple emulators on the same machine each have their own ADB connection. When running
+  parallel Detox workers, each worker's emulator needs its own `adb -s <serial> reverse`
+  call. `device.reverseTcp()` routes to the correct emulator automatically when Detox manages
+  the device — do not call raw `adb reverse` from test code.
+
+---
+
+### Pattern 55 — GitHub Actions step summary integration for Detox test results
+
+GitHub Actions supports writing Markdown content to `$GITHUB_STEP_SUMMARY` — a file that
+renders as a formatted summary table on the Actions run page. Adding a Detox summary hook
+gives you pass/fail counts, timing, and artifact links without leaving the GitHub UI.
+
+```js
+// e2e/reporters/github-summary.js — custom Jest reporter for GitHub Actions
+const fs = require('fs');
+const path = require('path');
+
+class GitHubSummaryReporter {
+  constructor(globalConfig, options) {
+    this._options = options || {};
+    this._results = [];
+    this._startTime = Date.now();
+  }
+
+  onTestResult(test, testResult) {
+    this._results.push({
+      file: path.relative(process.cwd(), test.testFilePath),
+      passed: testResult.numPassingTests,
+      failed: testResult.numFailingTests,
+      skipped: testResult.numPendingTests,
+      duration: testResult.perfStats.end - testResult.perfStats.start,
+      failures: testResult.testResults
+        .filter((r) => r.status === 'failed')
+        .map((r) => ({ name: r.fullName, message: r.failureMessages[0]?.slice(0, 200) })),
+    });
+  }
+
+  onRunComplete() {
+    const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+    if (!summaryFile) return;  // no-op outside GitHub Actions
+
+    const totalPassed  = this._results.reduce((s, r) => s + r.passed, 0);
+    const totalFailed  = this._results.reduce((s, r) => s + r.failed, 0);
+    const totalSkipped = this._results.reduce((s, r) => s + r.skipped, 0);
+    const elapsed = ((Date.now() - this._startTime) / 1000).toFixed(1);
+
+    const status = totalFailed === 0 ? '✅ Passed' : '❌ Failed';
+    const shard = process.env.DETOX_SHARD_INDEX
+      ? ` (shard ${process.env.DETOX_SHARD_INDEX}/${process.env.DETOX_SHARD_COUNT})`
+      : '';
+
+    let md = `## Detox E2E Results${shard} — ${status}\n\n`;
+    md += `| Metric | Value |\n|--------|-------|\n`;
+    md += `| Total passed | ${totalPassed} |\n`;
+    md += `| Total failed | ${totalFailed} |\n`;
+    md += `| Total skipped | ${totalSkipped} |\n`;
+    md += `| Duration | ${elapsed}s |\n\n`;
+
+    if (totalFailed > 0) {
+      md += `### Failures\n\n`;
+      for (const result of this._results.filter((r) => r.failures.length > 0)) {
+        md += `**${result.file}**\n`;
+        for (const failure of result.failures) {
+          md += `- \`${failure.name}\`: ${failure.message}\n`;
+        }
+      }
+      md += '\n';
+    }
+
+    // Link to artifacts uploaded by the upload-artifact step
+    if (process.env.GITHUB_RUN_ID) {
+      md += `[View Detox artifacts](https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})\n`;
+    }
+
+    fs.appendFileSync(summaryFile, md);
+  }
+}
+
+module.exports = GitHubSummaryReporter;
+```
+
+```js
+// e2e/jest.config.js — add the summary reporter alongside the default Detox reporter
+module.exports = {
+  rootDir: '..',
+  testMatch: ['<rootDir>/e2e/**/*.test.js'],
+  testTimeout: 120000,
+  globalSetup: 'detox/runners/jest/globalSetup',
+  globalTeardown: 'detox/runners/jest/globalTeardown',
+  testEnvironment: 'detox/runners/jest/testEnvironment',
+  reporters: [
+    'detox/runners/jest/reporter',        // standard Detox console output
+    ['<rootDir>/e2e/reporters/github-summary.js', {}],  // GitHub Actions summary
+    // Optional: jest-junit for TCMS integration
+    ['jest-junit', {
+      outputDirectory: '<rootDir>/test-results',
+      outputName: `junit-shard-${process.env.DETOX_SHARD_INDEX || '1'}.xml`,
+      classname: '{classname}',
+      title: '{title}',
+    }],
+  ],
+};
+```
+
+```yaml
+# .github/workflows/e2e.yml — full iOS Detox CI with step summary
+name: Detox E2E
+
+on: [push, pull_request]
+
+jobs:
+  e2e-ios:
+    runs-on: macos-14
+    strategy:
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Detox build
+        uses: actions/cache@v4
+        with:
+          path: ios/build
+          key: detox-ios-${{ hashFiles('ios/**/*.xcodeproj', 'ios/Podfile.lock') }}
+
+      - name: Build for Detox
+        run: npx detox build -c ios.sim.release
+
+      - name: Run Detox tests (shard ${{ matrix.shard }}/3)
+        env:
+          DETOX_SHARD_INDEX: ${{ matrix.shard }}
+          DETOX_SHARD_COUNT: 3
+        run: |
+          npx detox test -c ios.sim.release \
+            --shard-index ${{ matrix.shard }} \
+            --shard-count 3 \
+            --loglevel warn \
+            --record-logs failing \
+            --artifacts-location .artifacts
+
+      - name: Upload test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detox-artifacts-shard-${{ matrix.shard }}
+          path: .artifacts/
+          retention-days: 7
+
+      - name: Upload JUnit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-shard-${{ matrix.shard }}
+          path: test-results/junit-shard-${{ matrix.shard }}.xml
+```
+
+**Shard index environment variable note [community]**: The `DETOX_SHARD_INDEX` and
+`DETOX_SHARD_COUNT` env vars used in the reporter are custom conventions — set them yourself
+in the workflow `env:` block before calling `detox test`. Detox does not set them
+automatically; the `--shard-index`/`--shard-count` CLI flags control Detox's test splitting
+independently of environment variables.
+
+---
+
+### 71. React Native 0.80+ Package Exports (`exports` field in `package.json`) breaks Detox Metro resolver [community]
+
+**Root cause**: React Native 0.80 (released Q2 2026) enables **Package Exports** resolution
+by default in Metro (`resolver.unstable_enablePackageExports: true` becomes the default). Many
+Detox-compatible libraries (e.g., `react-native-mmkv`, `react-native-reanimated`, certain
+internal Detox test utilities) export sub-paths using the `exports` field that differ between
+`react-native` and `node` conditions. When Metro resolves these with the `react-native`
+condition during a Detox build (which runs in a Node.js test environment, not a bundled
+runtime), it may pick the wrong export variant, causing `SyntaxError: Unexpected token`
+crashes at import time.
+
+**Symptoms**: App launches in Detox, immediately throws in `globalSetup` or during the first
+`launchApp`, with a Metro error referencing a file inside `node_modules` that uses ESM syntax
+(`export default`, `import`).
+
+**Fix**: Pin `resolver.unstable_enablePackageExports` to `false` in the Metro config used for
+Detox builds only:
+
+```js
+// metro.config.js — disable Package Exports for Detox build compatibility
+const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
+
+const defaultConfig = getDefaultConfig(__dirname);
+
+const detoxCompatConfig = process.env.DETOX_CONFIGURATION
+  ? {
+      resolver: {
+        // Revert to classic file-extension resolution until affected deps update
+        unstable_enablePackageExports: false,
+      },
+    }
+  : {};
+
+module.exports = mergeConfig(defaultConfig, detoxCompatConfig);
+```
+
+Then set `DETOX_CONFIGURATION` in your Detox build command:
+
+```bash
+DETOX_CONFIGURATION=ios.sim.release npx detox build -c ios.sim.release
+DETOX_CONFIGURATION=ios.sim.release npx detox test -c ios.sim.release
+```
+
+Or add it to `.detoxrc.js` as a build-time environment variable:
+
+```js
+// .detoxrc.js — pass env var to the xcodebuild step
+apps: {
+  'ios.release': {
+    type: 'ios.app',
+    binaryPath: '...',
+    build: 'DETOX_CONFIGURATION=ios.sim.release xcodebuild ...',
+  },
+},
+```
+
+---
+
+### 72. iOS 18.2+ Settings app restructure breaks `by.system()` location permission dialogs [community]
+
+**Root cause**: iOS 18.2 reorganized the Settings app — the **Privacy & Security** section was
+renamed to **Privacy** and location permission sub-menus moved one level deeper. Any
+`by.system()` workflow that navigated through the Settings app hierarchy (e.g., to change a
+previously-denied permission from "Never" to "While Using") now fails because the element
+path has changed.
+
+This is distinct from the iOS 18.0 "Precise Location" prompt (Gotcha 57) — that affects
+runtime dialogs. This gotcha affects tests that use `device.openURL('App-Prefs:')` or
+`by.system()` to navigate Settings app screens for mid-test permission changes.
+
+**WHY it matters for Detox**: Teams that test "user denies, then re-grants" permission flows
+drive the Settings app navigation via `by.system()` label matching. The label map from iOS 18.1
+is incompatible with iOS 18.2+.
+
+**Fix**: Use a locale-aware, version-aware label map with an `os.version` branch:
+
+```js
+// e2e/helpers/settings-nav.js — iOS version-aware Settings navigation labels
+const { version: osVersionStr } = require('os');
+
+/**
+ * Returns the Settings app label path for location permissions.
+ * Differs between iOS 18.0–18.1 and 18.2+.
+ */
+function getLocationPermissionLabels() {
+  // device.getPlatform() === 'ios' is a precondition — always guard before calling
+  // Parse the iOS version from device attributes if available
+  // Fallback: use the conservative 18.2+ path (more levels, works on both)
+  return {
+    privacySection: 'Privacy',          // was 'Privacy & Security' in iOS 16/17
+    locationServices: 'Location Services',
+    appPermission: 'While Using the App',
+  };
+}
+
+// e2e/helpers/grant-location-mid-test.js
+async function reGrantLocationPermission(appName = 'MyApp') {
+  if (device.getPlatform() !== 'ios') return;
+
+  const labels = getLocationPermissionLabels();
+
+  // Open Settings directly to Location Services (deep link avoids menu traversal)
+  await device.openURL({ url: 'App-Prefs:Privacy&path=LOCATION' });
+
+  // Wait for the Location Services screen
+  await waitFor(element(by.system().label(labels.locationServices)))
+    .toBeVisible()
+    .withTimeout(5000);
+
+  // Tap the app entry
+  await element(by.system().label(appName)).tap();
+
+  // Set to "While Using"
+  await element(by.system().label(labels.appPermission)).tap();
+
+  // Return to the app
+  await device.launchApp({ newInstance: false });
+}
+
+module.exports = { reGrantLocationPermission };
+```
+
+---
+
+### 73. Android Gradle 8.x + AGP 8.4+ build flag changes break Detox release builds [community]
+
+**Root cause**: Android Gradle Plugin (AGP) 8.4+ changed how debug symbols are packaged.
+The flag `android.enableDexingArtifactTransform.desugaring` was removed, and several
+`gradle.properties` flags that Detox instrumentation builds relied on for reproducible
+output paths are now no-ops that emit deprecation warnings — or cause build failures when
+set alongside `buildFeatures.buildConfig = true` which is now required explicitly.
+
+**Symptoms**: `npx detox build -c android.emu.release` fails with:
+```
+> Could not set unknown property 'enableDexingArtifactTransform.desugaring'
+```
+or the build succeeds but `device.launchApp()` hangs with "Could not find test APK at..."
+because the output path changed from `app/build/outputs/apk/release/app-release.apk` to
+a path variant under `app/build/outputs/apk/release/app-release-unsigned.apk`.
+
+**Fix**: Update `android/gradle.properties` and `android/app/build.gradle`:
+
+```properties
+# android/gradle.properties — remove deprecated flags for AGP 8.4+
+# DELETE these lines if present:
+# android.enableDexingArtifactTransform.desugaring=false
+# android.enableDexingArtifactTransform=false
+
+# ADD: explicitly opt into R8 full mode for release builds (AGP 8.4+ default)
+android.enableR8.fullMode=true
+```
+
+```groovy
+// android/app/build.gradle — add buildConfig feature and fix output path
+android {
+    buildFeatures {
+        buildConfig true  // Required explicitly in AGP 8.4+
+    }
+    buildTypes {
+        release {
+            // AGP 8.4+: signing config required even for debug keys in CI
+            signingConfig signingConfigs.debug  // use debug key for Detox builds
+            minifyEnabled false  // disable for Detox — Detox needs uninstrumented code
+        }
+    }
+}
+```
+
+```js
+// .detoxrc.js — handle signed vs unsigned APK path depending on AGP version
+apps: {
+  'android.release': {
+    type: 'android.apk',
+    // AGP 8.4+: unsigned path when no signing config is set for release
+    binaryPath: process.env.AGP_SIGNED_RELEASE
+      ? 'android/app/build/outputs/apk/release/app-release.apk'
+      : 'android/app/build/outputs/apk/release/app-release-unsigned.apk',
+    testBinaryPath: 'android/app/build/outputs/apk/androidTest/release/app-release-androidTest.apk',
+    build: 'cd android && ./gradlew assembleRelease assembleAndroidTest -DtestBuildType=release',
+    reversePorts: [8088],
+  },
+},
+```
+
+---
+
+### 74. `device.setLocation()` on Android Emulator API 35 requires cold-start app restart to propagate [community]
+
+**Root cause**: Android 15 (API 35) tightened location privacy by requiring apps to re-request
+location data after the GPS coordinates change at the OS level. On API 35+, calling
+`device.setLocation(lat, lon)` from Detox updates the emulator's mocked GPS but the app's
+`FusedLocationProvider` cache returns the previous coordinates until the app process restarts.
+This does not occur on API 33/34 or on iOS Simulator (which pushes location updates
+via `CoreLocation` callback immediately).
+
+**WHY it's hard to detect**: `device.setLocation()` returns without error. The app's location
+UI may update eventually (after the cache TTL of ~30 seconds), but assertions that fire
+within 5 seconds see stale coordinates.
+
+**Fix**: Call `device.setLocation()` before launching the app (or after a newInstance
+restart):
+
+```js
+describe('Location-aware features', () => {
+  // Set location BEFORE launchApp — ensures the emulator is at the target coordinates
+  // when the app initializes FusedLocationProvider on API 35+
+  beforeAll(async () => {
+    if (device.getPlatform() === 'android') {
+      // Set coordinates first, then launch — avoids cache-stale issue on API 35+
+      await device.setLocation(37.7749, -122.4194);  // San Francisco
+    }
+    await device.launchApp({
+      newInstance: true,
+      permissions: { location: 'always' },
+      launchArgs: { E2E_SKIP_LOCATION_CACHE: '1' },  // optional: bypass app-level cache
+    });
+    if (device.getPlatform() === 'ios') {
+      // iOS: setLocation works at any time — fine to call after launch
+      await device.setLocation(37.7749, -122.4194);
+    }
+  });
+
+  it('shows stores near San Francisco', async () => {
+    await element(by.id('find-nearby-button')).tap();
+    await waitFor(element(by.id('store-list-item-0')))
+      .toBeVisible()
+      .withTimeout(10000);
+    await expect(element(by.id('store-location-badge'))).toHaveText('San Francisco, CA');
+  });
+
+  afterEach(async () => {
+    // Reset to null island between tests to prevent stale location state
+    await device.setLocation(0, 0);
+  });
+});
+```
+
+**API 35 CI matrix note**: If your CI runs tests against multiple API levels, always verify
+which API the emulator is running before applying this workaround:
+
+```js
+// e2e/helpers/android-api-level.js
+const { execSync } = require('child_process');
+
+function getAndroidApiLevel() {
+  if (device.getPlatform() !== 'android') return null;
+  try {
+    const serial = process.env.ANDROID_SERIAL || '';
+    const args = serial ? `-s ${serial}` : '';
+    const output = execSync(`adb ${args} shell getprop ro.build.version.sdk`, { timeout: 5000 })
+      .toString()
+      .trim();
+    return parseInt(output, 10);
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { getAndroidApiLevel };
+```
+
+---
+
+### 75. Detox test `withTimeout` silently extends when `device.reloadReactNative()` is called inside a `waitFor` scope [community]
+
+**Root cause**: `device.reloadReactNative()` re-boots the React Native JS bundle. Any
+`waitFor(...).withTimeout(N)` call that is in progress when `reloadReactNative()` is called
+will have its timer reset — because Detox's synchronization engine restarts from idle-detected
+baseline after the reload completes. The `withTimeout` clock does not freeze during the reload;
+it restarts. This means a test can run far longer than its declared timeout without Jest
+enforcing it — Jest's `testTimeout` applies to the full test, but the `withTimeout` inside
+`waitFor` is a Detox-internal deadline.
+
+**WHY it causes silent CI slowdowns**: A `waitFor(...).withTimeout(5000)` inside a test that
+calls `reloadReactNative()` mid-test can effectively wait up to `reloadTime + 5000 ms` before
+failing. On CI, `reloadReactNative()` takes 8–15 seconds. Tests that should fail in 5 seconds
+quietly hang for 20+ seconds before reporting failure.
+
+**Fix**: Avoid calling `device.reloadReactNative()` inside test bodies (inside `it()` blocks).
+Reserve it for `beforeEach` where the timing is predictable:
+
+```js
+// BAD — reloadReactNative inside a test body resets waitFor timers
+it('resets the app and checks loading state', async () => {
+  await device.reloadReactNative();  // AVOID inside it() blocks
+  await waitFor(element(by.id('home-screen')))
+    .toBeVisible()
+    .withTimeout(5000);  // May wait 20s+ on CI
+});
+
+// GOOD — reload in beforeEach, test body only asserts
+describe('Home screen', () => {
+  beforeEach(async () => {
+    await device.reloadReactNative();
+    // Wait for the app to reach its initial state BEFORE the test starts
+    await waitFor(element(by.id('home-screen')))
+      .toBeVisible()
+      .withTimeout(15000);  // Explicit generous timeout in setup, not in test
+  });
+
+  it('shows the welcome banner', async () => {
+    // By the time this runs, we're guaranteed to be at the home screen
+    await expect(element(by.id('welcome-banner'))).toBeVisible();
+  });
+});
+```
+
+---
+
+### 76. `jest-junit` v17+ default output format changes break Detox shard report merging [community]
+
+**Root cause**: `jest-junit` v17 (released late 2025) changed the default `classname` template
+from `{classname}` to `{filepath}` and introduced a new `suiteNameTemplate` field that
+defaults to `{filepath}` as well. Detox CI setups that merge multiple shard JUnit XML files
+into a single report (for TCMS or GitHub test reporting) rely on consistent `classname`
+attributes to de-duplicate test cases across shards. After upgrading to v17, shard merge
+tools (e.g., `junit-report-merger`, `jrm`) fail to match the same test class across shards
+because the classname changed from `Login > logs in with valid credentials` to
+`e2e/login.test.js > logs in with valid credentials`, causing duplicate test entries in the
+merged report.
+
+**Fix**: Pin the `jest-junit` v17 options to preserve the v16 behavior:
+
+```js
+// e2e/jest.config.js — explicit jest-junit v17+ options to preserve v16 classname format
+module.exports = {
+  reporters: [
+    'detox/runners/jest/reporter',
+    ['jest-junit', {
+      outputDirectory: '<rootDir>/test-results',
+      outputName: `junit-shard-${process.env.JEST_WORKER_ID || '1'}.xml`,
+      // Pin to v16-compatible format to avoid shard-merge classname mismatch
+      classNameTemplate: '{classname}',          // use describe block name (v16 default)
+      titleTemplate: '{title}',                  // use it() name (v16 default)
+      ancestorSeparator: ' > ',
+      suiteName: 'Detox E2E',
+      // New in v17 — set explicitly to avoid filepath-based suite grouping
+      suiteNameTemplate: '{suiteName}',          // overrides v17 filepath default
+    }],
+  ],
+};
+```
+
+**Version pinning note**: If you cannot upgrade `jest-junit` immediately, pin in `package.json`:
+```json
+{
+  "devDependencies": {
+    "jest-junit": "^16.0.0"
+  }
+}
+```
+
+---
+
+### 77. `element.tap()` on a disabled `Pressable` silently succeeds and fires `onPress` on Android [community]
+
+**Root cause**: React Native's `Pressable` component sets `pointerEvents="none"` on the
+underlying native view when `disabled={true}` on Android (API 28+). However, Detox's
+`element.tap()` uses the Android `ViewInteraction.perform(click())` Espresso action, which
+operates at the native view level and bypasses `pointerEvents` restrictions. The tap
+physically lands on the view, and if the `onPress` handler doesn't check the `disabled`
+prop internally, it fires — even though the button appears disabled in the UI.
+
+**WHY it's a real bug source**: Tests that assert "disabled button cannot submit the form"
+may pass the Detox assertion (`toBeVisible()` is true for a disabled `Pressable`) but the
+`tap()` still triggers the handler, making the test miss a real bug where the `disabled`
+prop has no effect in the component implementation.
+
+**Fix**: Assert the disabled state explicitly before tapping, and use `getAttributes()` to
+verify the native `enabled` property:
+
+```js
+// e2e/checkout.test.js — asserting disabled state before testing tap behavior
+it('does not submit the form when required fields are empty', async () => {
+  // Verify the submit button is disabled at the native accessibility level
+  const attrs = await element(by.id('submit-button')).getAttributes();
+  expect(attrs.enabled).toBe(false);  // fails if Pressable disabled prop not wired
+
+  // On Android, element.tap() on a disabled Pressable may still fire onPress
+  // So we verify via the RESULT (no navigation), not just by checking the button
+  await element(by.id('submit-button')).tap();
+
+  // If the submit fired, we'd be on the confirmation screen — assert we're NOT
+  await expect(element(by.id('form-screen'))).toBeVisible();
+  await expect(element(by.id('confirmation-screen'))).not.toBeVisible();
+
+  // Also verify the error feedback for empty fields IS visible
+  await expect(element(by.id('email-error'))).toBeVisible();
+});
+```
+
+```js
+// e2e/helpers/assert-disabled.js — reusable disabled-state assertion
+async function assertElementIsDisabled(testID) {
+  const attrs = await element(by.id(testID)).getAttributes();
+
+  if (device.getPlatform() === 'android') {
+    // Android: check native enabled property via getAttributes
+    expect(attrs.enabled).toBe(false);
+  } else {
+    // iOS: both enabled and accessibilityTraits provide disabled signal
+    expect(attrs.enabled).toBe(false);
+    // Optional: also assert it has the iOS 'notEnabled' trait (Pattern 44)
+    // await expect(element(by.id(testID))).toHaveLabel(expect.stringContaining(''));
+  }
+}
+
+module.exports = { assertElementIsDisabled };
+```
+
+---
+
+### 78. `waitFor(...).not.toBeVisible()` resolves too early during React Navigation shared element transitions [community]
+
+**Root cause**: React Navigation's **shared element transitions** (available via
+`@react-navigation/native-stack` with `sharedTransitionTag`) keep both the source and
+destination screen components mounted simultaneously during the transition animation.
+The element on the **source screen** remains mounted and visible (in the React tree) while
+the animation plays — then unmounts at animation end. `waitFor(sourceEl).not.toBeVisible()`
+resolves the moment the animation *begins* on some devices (the element starts fading), even
+though the transition is still in-flight. The next assertion fires while the source screen is
+still partially visible, causing intermittent failures.
+
+**WHY it affects CI more than local**: Shared element transitions are GPU-accelerated.
+On CI emulators running with software rendering (`-gpu swiftshader_indirect`), the transition
+frames render more slowly — the source element remains at non-zero opacity longer.
+`waitFor().not.toBeVisible()` uses a visibility threshold of approximately 50% opacity;
+on slow CI GPUs the element hovers near that threshold, causing the assertion to flip between
+passing and failing.
+
+**Fix**: Add a brief post-transition wait or assert the *destination* element is visible
+(which only becomes true after the full transition completes) before asserting the source
+is gone:
+
+```js
+// BAD — waitFor source to disappear; resolves too early during shared element transition
+it('navigates to product detail', async () => {
+  await element(by.id('product-item-1')).tap();
+  await waitFor(element(by.id('product-list-screen')))
+    .not.toBeVisible()
+    .withTimeout(3000);  // may resolve mid-transition
+  await expect(element(by.id('product-detail-screen'))).toBeVisible();
+});
+
+// GOOD — wait for destination to be fully visible; proves transition completed
+it('navigates to product detail', async () => {
+  await element(by.id('product-item-1')).tap();
+
+  // Wait for the destination screen's root container — ensures transition completed
+  await waitFor(element(by.id('product-detail-screen')))
+    .toBeVisible()
+    .withTimeout(5000);
+
+  // Only THEN assert the source is gone (belt-and-suspenders for cleanup checks)
+  await expect(element(by.id('product-list-screen'))).not.toBeVisible();
+});
+```
+
+**Animation-off workaround**: If shared element transitions are enabled only in production
+builds, disable them for Detox builds using a `launchArgs` flag:
+
+```js
+// In the RN app component
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+const Stack = createNativeStackNavigator();
+
+const DETOX_MODE = global.__DETOX_MODE__ === '1';
+
+<Stack.Screen
+  name="ProductDetail"
+  component={ProductDetailScreen}
+  options={{
+    sharedTransitionTag: DETOX_MODE ? undefined : 'product-image',
+  }}
+/>
+```
+
+```js
+// .detoxrc.js — pass the flag in launchArgs
+launchArgs: {
+  __DETOX_MODE__: '1',
+},
+```
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 48 additions)
 
 | Anti-Pattern | Fix |
 |---|---|

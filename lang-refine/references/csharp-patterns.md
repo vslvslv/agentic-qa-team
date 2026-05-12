@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -56,6 +56,10 @@
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/field-keyword,
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/first-class-span-types,
        learn.microsoft.com/dotnet/csharp/language-reference/operators/member-access-operators
+     Iter 34 (2026-05-12): added Polly v8 / Microsoft.Extensions.Http.Resilience — AddStandardResilienceHandler,
+       AddStandardHedgingHandler, AddResilienceHandler custom pipeline (retry/circuit-breaker/timeout), DisableForUnsafeHttpMethods,
+       dynamic options reload, TimeoutRejectedException vs TimeoutException gotcha, Application Insights ordering gotcha;
+       sources: learn.microsoft.com/dotnet/core/resilience/http-resilience
      Iter 33 (2026-05-12): added Channel<T> multi-producer/multi-consumer fan-out pattern, BoundedChannelFullMode
        drop modes (DropOldest/DropNewest/DropWrite) with itemDropped callback; added sync-over-async bridge
        pattern (GetAwaiter().GetResult() vs Task.Run wrapping, deadlock risks); added LINQ-async interaction
@@ -5223,3 +5227,267 @@ var results = await Task.WhenAll(items.Select(x => FetchAsync(x)).ToArray());
 | `Task.WhenAll(items.Select(...))` without `.ToArray()` | LINQ deferred execution runs tasks serially | `.ToArray()` before `Task.WhenAll` to start all tasks concurrently |
 | `.Result` or `.Wait()` on `Task` in sync-over-async bridge | Wraps exceptions in `AggregateException`; higher deadlock risk | Use `.GetAwaiter().GetResult()`; prefer `Task.Run(async () => ...).GetAwaiter().GetResult()` in sync-context environments |
 | Blocking on async inside `SynchronizationContext` without `Task.Run` | Context deadlock: awaiter tries to marshal back to blocked thread | Escape context via `Task.Run(() => asyncMethod())` before blocking |
+
+---
+
+## HTTP Resilience — Polly v8 / `Microsoft.Extensions.Http.Resilience`
+
+Transient failures (network blips, overloaded dependencies, DNS flaps) are unavoidable in distributed systems. The `Microsoft.Extensions.Http.Resilience` package (built on Polly v8) adds retry, circuit-breaker, timeout, rate-limiting, and hedging strategies directly to `IHttpClientBuilder`, composing them into a resilience pipeline that wraps every request through a typed/named `HttpClient`.
+
+```
+dotnet add package Microsoft.Extensions.Http.Resilience
+```
+
+### Standard Resilience Handler — One-Line Defense-in-Depth
+
+`AddStandardResilienceHandler` applies five strategies in a sensible default order:
+
+| Layer | Strategy | Default |
+|---|---|---|
+| 1 | Rate limiter | 1 000 permits, no queue |
+| 2 | Total timeout | 30 s (including retries) |
+| 3 | Retry | 3 retries, exponential back-off + jitter, 2 s base delay |
+| 4 | Circuit breaker | 10 % failure rate over 30 s, 100 req min throughput, 5 s break |
+| 5 | Attempt timeout | 10 s per attempt |
+
+```csharp
+// Program.cs — add the standard resilience pipeline to a typed client
+builder.Services
+    .AddHttpClient<CatalogClient>(c =>
+        c.BaseAddress = new Uri("https://catalog.example.com"))
+    .AddStandardResilienceHandler();
+
+// CatalogClient.cs
+public class CatalogClient(HttpClient client)
+{
+    public IAsyncEnumerable<Product?> GetProductsAsync(CancellationToken ct = default)
+        => client.GetFromJsonAsAsyncEnumerable<Product>("/products", ct);
+}
+
+// Disable retries for non-idempotent methods (POST, PUT, DELETE, PATCH, CONNECT)
+// to avoid duplicate inserts or unintended side effects
+builder.Services
+    .AddHttpClient<OrderClient>(c => c.BaseAddress = new Uri("https://orders.example.com"))
+    .AddStandardResilienceHandler(options =>
+    {
+        options.Retry.DisableForUnsafeHttpMethods();
+        // Or selectively: options.Retry.DisableFor(HttpMethod.Post, HttpMethod.Delete);
+    });
+```
+
+**Important:** only call `AddStandardResilienceHandler` **once** per client. Stacking multiple handlers multiplies retry counts — if you need to customise, use `AddResilienceHandler` instead.
+
+### Custom Resilience Pipeline — `AddResilienceHandler`
+
+For fine-grained control, compose strategies explicitly. Strategies execute from the outermost (first registered) to the innermost (closest to the network call).
+
+```csharp
+builder.Services
+    .AddHttpClient<PaymentClient>(c =>
+        c.BaseAddress = new Uri("https://payments.example.com"))
+    .AddResilienceHandler("PaymentPipeline", pipeline =>
+    {
+        // 1. Retry — exponential back-off, up to 4 attempts, jitter prevents thundering herd
+        pipeline.AddRetry(new HttpRetryStrategyOptions
+        {
+            MaxRetryAttempts = 4,
+            BackoffType       = DelayBackoffType.Exponential,
+            UseJitter         = true,
+            Delay             = TimeSpan.FromSeconds(1)
+        });
+
+        // 2. Circuit breaker — trips after 20% failure rate over 10-second window
+        pipeline.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
+        {
+            SamplingDuration   = TimeSpan.FromSeconds(10),
+            FailureRatio       = 0.2,
+            MinimumThroughput  = 5,
+            BreakDuration      = TimeSpan.FromSeconds(15),
+            // Only count 5xx and 408/429 as failures; don't trip on 4xx domain errors
+            ShouldHandle = args => ValueTask.FromResult(
+                args.Outcome.Result?.StatusCode is
+                    >= HttpStatusCode.InternalServerError or
+                    HttpStatusCode.RequestTimeout or
+                    HttpStatusCode.TooManyRequests)
+        });
+
+        // 3. Per-attempt timeout — gives each try a hard deadline
+        pipeline.AddTimeout(TimeSpan.FromSeconds(8));
+    });
+```
+
+**Ordering matters:** timeout → circuit-breaker → retry is the canonical inside-out order. Placing retry outside timeout means timeouts count as retriable failures. Placing circuit-breaker outside retry means the breaker trips after the full retry sequence exhausts itself, not after individual fast-failing attempts.
+
+### Hedging — Parallel Speculative Retries
+
+Hedging fires a duplicate request after a configurable delay if the first request hasn't returned. Use it when latency matters more than extra load on the dependency.
+
+```csharp
+// Use standard hedging handler — fires a second attempt if the first hasn't responded
+// within the hedge delay (default 2 s), keeping a per-endpoint circuit-breaker pool
+builder.Services
+    .AddHttpClient<SearchClient>(c =>
+        c.BaseAddress = new Uri("https://search.example.com"))
+    .AddStandardHedgingHandler();
+
+// For A/B testing: route weighted traffic across two endpoints
+builder.Services
+    .AddHttpClient<FeatureClient>(c =>
+        c.BaseAddress = new Uri("https://stable.example.com"))
+    .AddStandardHedgingHandler(routing =>
+    {
+        routing.ConfigureWeightedGroups(opts =>
+        {
+            opts.Groups.Add(new WeightedUriEndpointGroup
+            {
+                Endpoints =
+                {
+                    new() { Uri = new("https://stable.example.com"),      Weight = 90 },
+                    new() { Uri = new("https://experimental.example.com"), Weight = 10 }
+                }
+            });
+        });
+    });
+```
+
+### Dynamic Retry Options via `IOptionsMonitor`
+
+Resilience options can be reloaded at runtime without restarting the app. Bind the options to a configuration section and call `EnableReloads` inside `AddResilienceHandler`.
+
+```csharp
+// appsettings.json:
+// "RetryOptions": { "Retry": { "MaxRetryAttempts": 5, "BackoffType": "Linear" } }
+
+builder.Services
+    .Configure<HttpStandardResilienceOptions>(
+        builder.Configuration.GetSection("RetryOptions"));
+
+builder.Services
+    .AddHttpClient<CatalogClient>(c =>
+        c.BaseAddress = new Uri("https://catalog.example.com"))
+    .AddResilienceHandler("DynamicPipeline",
+        (pipeline, ctx) =>
+        {
+            // Enable live-reload: when IOptionsMonitor detects a change, the pipeline rebuilds
+            ctx.EnableReloads<HttpStandardResilienceOptions>("RetryOptions");
+
+            var opts = ctx.GetOptions<HttpStandardResilienceOptions>("RetryOptions");
+            pipeline.AddRetry(opts.Retry);
+        });
+```
+
+**Why it matters:** in Kubernetes deployments, you can tune retry counts and back-off via ConfigMap hot-reload without a pod restart. Combine with `IOptionsMonitor<T>` for other configuration sections too.
+
+---
+
+## Real-World Gotchas — Resilience [community]
+
+### **`TimeoutRejectedException` Is Not `TimeoutException`** [community]
+
+When using Polly's timeout strategy (directly or via `AddStandardResilienceHandler`), a timed-out attempt throws `Polly.Timeout.TimeoutRejectedException`, which inherits from `Exception` — **not** from `System.TimeoutException`. WHY it causes problems: a `catch (TimeoutException)` block will silently miss Polly timeouts, and retry `ShouldHandle` predicates that filter on `TimeoutException` will not recognize Polly-generated timeouts. Fix: catch or filter on `TimeoutRejectedException` from the `Polly` namespace, or combine both in a union catch.
+
+```csharp
+using Polly.Timeout;
+
+// BAD: silently misses Polly timeout — TimeoutRejectedException is NOT TimeoutException
+try
+{
+    var result = await _client.GetStringAsync("/resource", ct);
+}
+catch (TimeoutException ex) // WON'T catch Polly timeout!
+{
+    _logger.LogWarning("Timed out: {Msg}", ex.Message);
+}
+
+// GOOD: catch Polly's timeout exception explicitly
+try
+{
+    var result = await _client.GetStringAsync("/resource", ct);
+}
+catch (TimeoutRejectedException ex)
+{
+    _logger.LogWarning("Polly timeout: {Msg}", ex.Message);
+}
+
+// In ShouldHandle delegate: handle TimeoutRejectedException explicitly
+pipeline.AddRetry(new HttpRetryStrategyOptions
+{
+    ShouldHandle = args => ValueTask.FromResult(
+        args.Outcome.Exception is TimeoutRejectedException or HttpRequestException)
+});
+```
+
+### **Retrying Non-Idempotent HTTP Methods — Duplicate Inserts** [community]
+
+`AddStandardResilienceHandler` retries **all** HTTP methods by default, including `POST`. WHY it causes problems: a `POST /orders` that creates a record in the database may succeed on the server, but the network drops the response before the client receives it. The retry fires a second `POST`, creating a duplicate order. Fix: always call `options.Retry.DisableForUnsafeHttpMethods()` for any client that calls state-mutating endpoints, or design APIs to be idempotent with client-generated idempotency keys.
+
+```csharp
+// BAD: retries POST — may create duplicate orders if response is lost
+services.AddHttpClient<OrderClient>()
+    .AddStandardResilienceHandler();
+
+// GOOD: disable retries for POST/PUT/DELETE/PATCH
+services.AddHttpClient<OrderClient>()
+    .AddStandardResilienceHandler(opts =>
+        opts.Retry.DisableForUnsafeHttpMethods());
+
+// BEST for state-mutating APIs: send idempotency key in request header
+// so the server can detect and deduplicate replayed requests
+public async Task<Order?> CreateOrderAsync(CreateOrderRequest request, CancellationToken ct)
+{
+    var idempotencyKey = Guid.NewGuid().ToString();
+    using var message = new HttpRequestMessage(HttpMethod.Post, "/orders");
+    message.Headers.Add("Idempotency-Key", idempotencyKey);
+    message.Content = JsonContent.Create(request);
+    var response = await _client.SendAsync(message, ct);
+    response.EnsureSuccessStatusCode();
+    return await response.Content.ReadFromJsonAsync<Order>(ct);
+}
+```
+
+### **Stacking Multiple Resilience Handlers — Multiplicative Retries** [community]
+
+Calling `AddStandardResilienceHandler` twice, or calling it alongside `AddResilienceHandler`, compounds the pipelines. WHY it causes problems: two retry layers with 3 retries each yield up to 9 attempts (3 × 3), multiplying load on an already-stressed dependency. The outer layer sees the inner layer's retries as a single slow response, potentially tripping the circuit breaker prematurely. Fix: call `RemoveAllResilienceHandlers()` before `AddResilienceHandler` when you need to override a default registered via `ConfigureHttpClientDefaults`.
+
+```csharp
+// BAD: global default + per-client handler — retries compound
+services.ConfigureHttpClientDefaults(b => b.AddStandardResilienceHandler());
+services.AddHttpClient<SpecialClient>()
+    .AddResilienceHandler("Extra", p => p.AddRetry(...));  // now 3*N retries!
+
+// GOOD: clear the inherited handler before adding custom one
+services.AddHttpClient<SpecialClient>()
+    .RemoveAllResilienceHandlers()
+    .AddResilienceHandler("Custom", p =>
+    {
+        p.AddRetry(new HttpRetryStrategyOptions { MaxRetryAttempts = 2 });
+        p.AddTimeout(TimeSpan.FromSeconds(5));
+    });
+```
+
+### **Registering Resilience Before Application Insights — Missing Telemetry** [community]
+
+When using .NET Application Insights ≤ 2.22.0 alongside `Microsoft.Extensions.Http.Resilience`, registering resilience services **before** `AddApplicationInsightsTelemetry` causes all Application Insights telemetry to be dropped. WHY it causes problems: resilience registration mutates the `IHttpClientFactory` pipeline in a way that conflicts with Application Insights' internal HTTP interception hooks when AI services haven't been set up yet. Fix: always call `AddApplicationInsightsTelemetry` first, or upgrade to Application Insights ≥ 2.23.0 which resolves the ordering dependency.
+
+```csharp
+// BAD: resilience registered first — all AI telemetry missing
+services.AddHttpClient().AddStandardResilienceHandler();
+services.AddApplicationInsightsTelemetry();  // No telemetry captured!
+
+// GOOD: register Application Insights before resilience
+services.AddApplicationInsightsTelemetry();
+services.AddHttpClient().AddStandardResilienceHandler();
+```
+
+---
+
+## Anti-Patterns Quick Reference — Resilience
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `AddStandardResilienceHandler` applied twice (or + `AddResilienceHandler`) | Multiplicative retries — 3×3 = 9 attempts; circuit-breaker trips on aggregated latency | Call `RemoveAllResilienceHandlers()` before `AddResilienceHandler` for custom pipelines |
+| Retrying `POST`/`DELETE` with default standard resilience handler | Non-idempotent methods re-execute, causing duplicate inserts/deletes | Call `options.Retry.DisableForUnsafeHttpMethods()` or design APIs with idempotency keys |
+| Catching `TimeoutException` instead of `TimeoutRejectedException` in Polly pipelines | Polly timeouts silently not handled; incorrect fallback behavior | Catch `Polly.Timeout.TimeoutRejectedException`; also handle in `ShouldHandle` delegates |
+| Registering `AddStandardResilienceHandler` before `AddApplicationInsightsTelemetry` (AI ≤ 2.22.0) | All Application Insights telemetry is lost silently | Register AI services first, or upgrade to Application Insights ≥ 2.23.0 |
+| No `ShouldHandle` filter on circuit breaker — trips on 4xx client errors | 404/401 responses counted as failures; breaker opens for valid domain errors | Filter `ShouldHandle` to 5xx, 408, 429 only; domain errors shouldn't trip the breaker |
+| No jitter on retry back-off — all clients retry simultaneously | Thundering herd: overloaded service slammed by synchronized retries after failure | Always set `UseJitter = true` on exponential back-off strategies |

@@ -1,6 +1,7 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 52 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 53 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
+<!-- Iteration 53: Pattern 86 (Playwright testCase.outcome() === 'flaky' custom reporter — structured per-retry flakiness tracking); Pattern 87 (Playwright v1.50 updateSnapshots: 'changed' + updateSourceMethod: '3way' for snapshot flakiness review workflow); AP43 (updateSnapshots: 'all' in CI silently overwrites baselines); Quick Reference additions (iteration 53) -->
 <!-- Iteration 52: Pattern 82 (Vitest 4.1 vi.setTimerTickMode — nextTimerAsync/interval for async timer flakiness); Pattern 83 (Playwright v1.59 tracing.start({ live: true }) for real-time trace capture); Pattern 84 (Playwright v1.58 retain-on-failure-and-retries trace mode for multi-retry comparison); Pattern 85 (Vitest 4.1 agent/minimal reporter for AI agent token-efficient flakiness triage); AP42 (Vitest 4.1 beforeAll/afterAll hook signature breaking change — Suite arg removed); Quick Reference additions (iteration 52) -->
 <!-- Iteration 51: Pattern 78 (Vitest 4.1 conditional retry with error condition predicate); Pattern 79 (Playwright v1.53 TestStepInfo.skip() conditional — step-level quarantine); Pattern 80 (Playwright v1.60 testInfoError.errorContext aria snapshot for flakiness diagnosis); Pattern 81 (Vitest 4.1 test.meta for custom flakiness metadata in reporters); AP41 (conditional retry masking real failures); Quick Reference additions (iteration 51) -->
 <!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog, vitest.dev/api/hooks, playwright.dev/docs/api/class-tracing, playwright.dev/docs/api/class-browsercontext -->
@@ -7438,6 +7439,376 @@ afterAll(async ({ worker }) => {
 grep -rn "beforeAll\|afterAll\|aroundAll" --include="*.ts" --include="*.spec.ts" \
   src/ tests/ | grep -E "\(async \(s(uite)?\b" || echo "No Suite argument usage found"
 ```
+
+---
+
+## Pattern 86 — Playwright `testCase.outcome()` Custom Flakiness Reporter  [official]
+
+Playwright's `TestCase` class exposes an `outcome()` method that returns `'flaky'` when a test
+case fails on its first attempt but passes on a subsequent retry. This provides a first-class,
+type-safe signal for distinguishing genuinely failing test cases from flaky ones — without
+parsing exit codes or scanning CI logs.
+
+The built-in reporters (HTML, JUnit) already mark flaky tests in their output, but custom
+reporters using `testCase.outcome() === 'flaky'` enable structured persistence: writing to a
+database, posting to a Slack channel, updating a dashboard, or blocking a PR via GitHub Checks.
+
+**Why this matters over log parsing:** Log parsing breaks across reporter format changes and CI
+platform updates. `testCase.outcome()` is a stable API contract — it will always return `'flaky'`
+precisely when a test case passed after at least one initial failure. The `testCase.results` array
+gives per-retry detail: each element is a `TestResult` with its own `status`, `duration`, and
+`annotations`.
+
+```typescript
+// reporters/flakiness-tracker.ts — writes flaky test telemetry to a JSON log
+// Add to playwright.config.ts: reporter: [..., ['./reporters/flakiness-tracker.ts']]
+import type {
+  Reporter,
+  TestCase,
+  TestResult,
+  FullResult,
+} from '@playwright/test/reporter';
+import { writeFileSync, appendFileSync } from 'fs';
+
+interface FlakyEntry {
+  title: string;
+  titlePath: string[];
+  file: string;
+  line: number;
+  retries: number;
+  attemptsCount: number;
+  firstFailDuration: number;  // ms — how long the first failing attempt took
+  passDuration: number;        // ms — how long the successful retry took
+  timestamp: string;
+  errors: string[];
+}
+
+export default class FlakinessTrackerReporter implements Reporter {
+  private flakyTests: FlakyEntry[] = [];
+
+  onTestEnd(test: TestCase, result: TestResult): void {
+    // outcome() returns 'flaky' when: at least one attempt failed AND at least one passed
+    if (test.outcome() !== 'flaky') return;
+
+    // testCase.results contains one TestResult per attempt (index 0 = first run)
+    const firstFailResult = test.results[0];
+    const passResult = test.results.find(r => r.status === 'passed');
+
+    this.flakyTests.push({
+      title: test.title,
+      titlePath: test.titlePath(),
+      file: test.location.file,
+      line: test.location.line,
+      retries: test.retries,              // max retries configured
+      attemptsCount: test.results.length, // actual number of attempts made
+      firstFailDuration: firstFailResult?.duration ?? 0,
+      passDuration: passResult?.duration ?? 0,
+      timestamp: new Date().toISOString(),
+      // Collect error messages from all failing attempts — useful for variant flakiness
+      errors: test.results
+        .filter(r => r.status === 'failed' || r.status === 'timedOut')
+        .flatMap(r => r.errors.map(e => e.message?.slice(0, 200) ?? 'unknown error')),
+    });
+  }
+
+  async onEnd(result: FullResult): Promise<void> {
+    if (this.flakyTests.length === 0) return;
+
+    // Write structured JSON for dashboard ingestion
+    const report = {
+      runAt: new Date().toISOString(),
+      runStatus: result.status,
+      flakyCount: this.flakyTests.length,
+      tests: this.flakyTests,
+    };
+    writeFileSync('test-results/flaky-report.json', JSON.stringify(report, null, 2));
+
+    // Also append to a cumulative JSONL log for trend tracking
+    appendFileSync(
+      'test-results/flaky-history.jsonl',
+      JSON.stringify({ ...report, tests: this.flakyTests }) + '\n'
+    );
+
+    console.log(`\n[FlakinessTracker] ${this.flakyTests.length} flaky test(s) detected:`);
+    for (const t of this.flakyTests) {
+      console.log(`  - ${t.title} (${t.file}:${t.line}) — ${t.attemptsCount} attempts`);
+    }
+  }
+}
+```
+
+```typescript
+// playwright.config.ts — register the custom reporter alongside built-ins
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: process.env.CI ? 2 : 0,
+  // failOnFlakyTests: flaky tests detected by outcome() === 'flaky'
+  // Without retries > 0, outcome() never returns 'flaky' (no retry = no recovery possible)
+  failOnFlakyTests: !!process.env.CI,
+
+  reporter: [
+    ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    ['junit', { outputFile: 'test-results/results.xml' }],
+    // Custom reporter runs after the test run completes
+    ['./reporters/flakiness-tracker.ts'],
+  ],
+  use: {
+    trace: 'on-first-retry',
+  },
+});
+```
+
+```typescript
+// Querying the cumulative flaky-history.jsonl for trend analysis
+// Run as a standalone script: npx ts-node scripts/flakiness-trend.ts
+import { createReadStream } from 'fs';
+import { createInterface } from 'readline';
+
+interface FlakyRun { runAt: string; flakyCount: number; tests: Array<{ title: string }> }
+
+async function analyzeTrend(days = 7): Promise<void> {
+  const since = new Date(Date.now() - days * 86_400_000);
+  const rl = createInterface({ input: createReadStream('test-results/flaky-history.jsonl') });
+  const byTest = new Map<string, number>();
+
+  for await (const line of rl) {
+    const run: FlakyRun = JSON.parse(line);
+    if (new Date(run.runAt) < since) continue;
+    for (const t of run.tests) {
+      byTest.set(t.title, (byTest.get(t.title) ?? 0) + 1);
+    }
+  }
+
+  // Sort by frequency — highest-frequency flaky tests need fixing first
+  const ranked = [...byTest.entries()].sort((a, b) => b[1] - a[1]);
+  console.table(ranked.map(([title, count]) => ({ title, flakyCount: count })));
+}
+
+analyzeTrend();
+```
+
+**`testCase.outcome()` return values:**
+
+| Value | Meaning | When |
+|-------|---------|------|
+| `'skipped'` | Test was not executed | `test.skip()` or condition |
+| `'expected'` | Test passed normally, or expected failure behaved as marked | Normal pass; `test.fail()` that failed |
+| `'unexpected'` | Test failed unexpectedly | Hard failure, no retry succeeded |
+| `'flaky'` | Test failed at least once, passed at least once | Failed on attempt 0, passed on attempt 1+ |
+
+**Anti-pattern:** Do not use `result.status === 'flaky'` in `onTestEnd` — `TestResult.status` does not have a `'flaky'` value. Only `testCase.outcome()` returns `'flaky'`. The result status for the passing retry is `'passed'`, not `'flaky'`. This is a common mistake when writing custom reporters for the first time.
+
+---
+
+## Pattern 87 — Playwright `updateSnapshots: 'changed'` + `updateSourceMethod: '3way'` for Snapshot Flakiness Review  [official]
+
+Snapshot tests (visual regression or `toMatchAriaSnapshot`) are a common source of flakiness in
+CI because baselines captured on a developer's macOS machine differ from headless Chromium on
+Ubuntu CI runners (font rendering, subpixel antialiasing, system emoji fonts). Naively running
+`--update-snapshots` regenerates all baselines, overwriting intentional differences.
+
+Playwright v1.50 introduced two configuration options that give precise control over which
+snapshots are updated and how changes are applied to source files:
+
+- **`updateSnapshots: 'changed'`** — Only updates snapshots that actually differ from the
+  current rendered output. Snapshots that still match are not touched. This is the correct
+  default for "snapshot refresh" CI steps.
+- **`updateSourceMethod: '3way'`** — When a snapshot inline value (e.g., in `.spec.ts` files)
+  needs updating, inserts Git-style merge conflict markers. The developer opens the file, sees
+  `<<<<<<< HEAD` / `=======` / `>>>>>>> updated`, and explicitly chooses the new value. This
+  prevents accidental approval of incorrect visual changes.
+
+```typescript
+// playwright.config.ts — safe snapshot update configuration
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  // 'changed': update only mismatched snapshots; leave passing baselines untouched
+  // 'all': overwrites EVERY snapshot — dangerous in CI (see AP43)
+  // 'missing': only create snapshots for new test cases (safe default for normal CI runs)
+  // 'none': error if any snapshot is missing (strictest, for release branches)
+  updateSnapshots: process.env.UPDATE_SNAPSHOTS === 'true' ? 'changed' : 'missing',
+
+  // 'patch': writes a .patch file — requires manual application with `git apply`
+  // 'overwrite': replaces inline values directly — fast, no review
+  // '3way': inserts merge conflict markers — developer must resolve explicitly (safest)
+  updateSourceMethod: '3way',
+
+  use: {
+    // maxDiffPixelRatio: tolerate up to 2% pixel drift between CI environments
+    // Eliminates font-rendering flakiness without ignoring real visual regressions
+    screenshot: 'only-on-failure',
+  },
+});
+```
+
+```typescript
+// Running a targeted snapshot refresh for a specific file
+// Only mismatched snapshots in ProductCard.spec.ts are updated
+// Other baselines are untouched, preventing accidental clobber
+
+// package.json scripts
+// "snapshot:refresh": "playwright test --update-snapshots=changed ProductCard.spec.ts",
+// "snapshot:review": "playwright test --update-snapshots=changed --update-source-method=3way",
+
+// In CI: use 'missing' to create new baselines but never overwrite existing ones
+// In a dedicated "snapshot update" job: use 'changed' to refresh only drift
+```
+
+```typescript
+// Using toMatchAriaSnapshot with updateSnapshots: 'changed'
+// ARIA snapshots are text-based — less affected by font rendering, but still drift
+// when component structure changes (new aria-label, role changes, etc.)
+import { test, expect } from '@playwright/test';
+
+test('checkout button is accessible', async ({ page }) => {
+  await page.goto('/cart');
+  // When this ARIA snapshot drifts (e.g., button text changes),
+  // --update-snapshots=changed updates ONLY this test's snapshot
+  // --update-source-method=3way shows the conflict for review
+  await expect(page.getByRole('region', { name: 'Order Summary' })).toMatchAriaSnapshot(`
+    - region "Order Summary":
+      - list:
+        - listitem: "Laptop Pro × 1"
+      - paragraph: "Total: $999.00"
+      - button "Place Order"
+  `);
+});
+```
+
+**Snapshot update workflow for CI/CD:**
+
+```yaml
+# .github/workflows/snapshot-update.yml — triggered manually or on schedule
+# Refreshes drifted snapshots and opens a PR for review
+name: Snapshot Baseline Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Test file pattern (e.g., "components/**" or leave blank for all)'
+        required: false
+        default: ''
+
+jobs:
+  update-snapshots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Refresh drifted snapshots
+        run: |
+          # 'changed' only updates mismatched baselines; '3way' flags conflicts in source
+          npx playwright test \
+            --update-snapshots=changed \
+            --update-source-method=overwrite \
+            ${{ github.event.inputs.scope }}
+        # Use 'overwrite' in this automated step; 3way is for local developer review
+
+      - name: Open snapshot update PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          title: 'chore: refresh drifted snapshot baselines'
+          body: |
+            Automated snapshot baseline update.
+            Only snapshots that differed from the current rendering were updated.
+            Review each changed file to confirm no unintended visual regressions.
+          branch: chore/snapshot-baseline-update
+          commit-message: 'chore: refresh drifted snapshot baselines [skip ci]'
+          labels: 'snapshot-update,needs-review'
+```
+
+**When `updateSourceMethod: '3way'` helps vs hurts:**
+
+| Scenario | Recommended `updateSourceMethod` |
+|----------|----------------------------------|
+| Local developer refreshing own test | `'3way'` — explicit diff review in IDE |
+| Automated CI snapshot update PR | `'overwrite'` — clean diff in PR, reviewed by code owner |
+| Release branch baseline pinning | `'patch'` — patch file for auditable, staged update |
+| Frequent snapshot churn (A/B testing) | `'overwrite'` — 3way conflict markers in every file is noisy |
+
+---
+
+## Anti-Patterns (iteration 53)
+
+### AP43 — `updateSnapshots: 'all'` in CI Silently Overwrites Baselines  [community]
+
+**What:** Setting `updateSnapshots: 'all'` (or running `--update-snapshots` without a scope
+argument) in a CI step that runs automatically on every push or PR.
+
+**Why harmful:** `'all'` regenerates every snapshot that was executed — including snapshots
+that are passing correctly. If a visual regression is introduced (e.g., a button color
+changes from blue to red due to a CSS bug), `updateSnapshots: 'all'` will overwrite the
+baseline with the broken rendering, making all future runs pass against the incorrect visual.
+The snapshot test no longer protects against regressions — it just documents whatever the
+current broken state is.
+
+**Compounding problem:** The mistake is invisible in the PR diff. The CI step shows `✓ all
+tests passed (with snapshot updates)` — no failure, no alert. The regression is only
+discovered when a human reviews the snapshot image in the test-results artifact, which few
+developers do on every CI run.
+
+```typescript
+// BAD: updateSnapshots: 'all' in playwright.config.ts — overwrites everything on every run
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  // DANGER: this regenerates ALL snapshot baselines on every test run.
+  // A visual regression will silently update the baseline to the broken state.
+  updateSnapshots: 'all',
+});
+
+// BAD: --update-snapshots flag hardcoded in package.json test script
+// "test:ci": "playwright test --update-snapshots"  ← NEVER do this
+```
+
+```typescript
+// GOOD: 'missing' for normal CI runs; 'changed' for dedicated snapshot-refresh jobs
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  // Normal CI: only create baselines for newly added test cases
+  // Existing baselines are never overwritten — regressions will fail the build
+  updateSnapshots: process.env.SNAPSHOT_REFRESH === 'true' ? 'changed' : 'missing',
+  // 'changed' in SNAPSHOT_REFRESH mode still only updates genuinely drifted snapshots
+  // A passing snapshot is never touched — a regression will still fail the build
+});
+```
+
+**Detection:** Search for hardcoded `updateSnapshots: 'all'` or `--update-snapshots` in CI
+workflow files without an explicit `changed` or `missing` qualifier:
+```bash
+grep -rn "update-snapshots\|updateSnapshots" .github/ *.config.ts package.json
+# Look for: '--update-snapshots' without '=changed' or '=missing'
+# Look for: updateSnapshots: 'all'
+```
+
+---
+
+## Quick Reference additions (iteration 53)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Custom reporter can't detect flaky tests — `result.status` has no 'flaky' value | Wrong API: status is per-attempt, not per-test | Pattern 86 (`testCase.outcome() === 'flaky'`) | Parsing 'flaky' from `result.status` — it doesn't exist |
+| Visual regression introduced but snapshot test still passes in CI | `updateSnapshots: 'all'` overwrites baselines | Pattern 87 (`updateSnapshots: 'changed'` + `AP43` fix) | `updateSnapshots: 'all'` in normal CI runs |
+| Developer can't see what changed when snapshot refresh PR is opened | `updateSourceMethod: 'overwrite'` gives no diff context locally | Pattern 87 (`updateSourceMethod: '3way'` for local review) | `3way` in automated CI steps — conflict markers in every file is noisy |
+
+---
+
+## Key Resources (iteration 53 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright `TestCase.outcome()` | Official | https://playwright.dev/docs/api/class-testcase#test-case-outcome | Returns `'flaky'` when test passed on retry — type-safe signal for custom flakiness reporters |
+| Playwright `TestCase.results` | Official | https://playwright.dev/docs/api/class-testcase#test-case-results | Array of per-attempt `TestResult` — access per-retry annotations, errors, and durations |
+| Playwright `updateSnapshots` config | Official | https://playwright.dev/docs/api/class-testconfig#test-config-update-snapshots | `'changed'` mode — only updates mismatched baselines; safe for CI snapshot-refresh jobs (v1.50) |
+| Playwright `updateSourceMethod` config | Official | https://playwright.dev/docs/api/class-testconfig#test-config-update-source-method | `'3way'` inserts merge conflict markers for explicit developer review; `'patch'` writes diff file (v1.50) |
 
 ---
 

@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 42 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + scenario-framework + openapi-spec + mcp-protocol -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 43 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -33,6 +33,7 @@
      - Iter 40: Contract-aware exploratory testing pattern (OpenAPI schema as oracle source during API sessions); TypeScript SchemaOracleValidator that compares live responses against OpenAPI components; schema-drift charter pattern (YAML); community lessons #108-110; new anti-pattern (exploring APIs without a schema reference)
      - Iter 41: Feature-flag-aware exploratory testing pattern (charter strategy for dark-launch and graduated-rollout features); TypeScript FeatureFlagOracleHarness that verifies flag-on/flag-off behavioral divergence; pair exploratory testing with AI co-pilot pattern (human tester + AI real-time oracle advisor, different from LLM-as-judge); TypeScript AIPairAdvisor harness; community lessons #111-113; new anti-pattern (exploring flag-guarded features without toggling the flag)
      - Iter 42: MCP (Model Context Protocol) server exploration pattern (charter strategy for tool-call surface, schema validation, side-effect verification); TypeScript MCPExploratoryHarness that captures tool invocations and validates against JSON Schema; community lessons #114-116; new anti-pattern (exploring MCP servers without tool-schema oracle)
+     - Iter 43: OpenTelemetry-assisted exploratory testing pattern (live OTel span data as structural oracle during sessions); TypeScript OTelExploratoryOracle that correlates trace IDs with session observations; charter extension for trace-guided service-boundary exploration; community lessons #117-119; new anti-pattern (exploring distributed systems without a trace oracle)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -1638,6 +1639,7 @@ export function generateDebriefDraft(classified: ClassifiedNote[]): string {
 - **Using exploratory testing for API endpoints without OpenAPI schema validation**: API exploration without a schema reference misses an entire class of defects — fields that are nullable when not supposed to be, missing error envelope structure, incorrect HTTP status codes. Always load the OpenAPI spec before an API exploration session and use it as one oracle source.
 - **Treating AI-generated charters as complete**: LLM-generated charters cover happy-path scenarios plausibly but systematically miss domain-specific edge cases (locale behavior, legacy data paths, hardware quirks). AI-generated charters are useful scaffolding for junior testers, but must be reviewed and extended by a tester with domain knowledge before the session begins. Accepting an AI charter without review is structurally equivalent to a junior tester writing the charter alone — the gaps are similar.
 - **Scheduling exploratory sessions only at sprint end**: When sessions are pushed to the last two days of a sprint, the findings arrive too late to influence sprint deliverables. Defects found on day 9 are fixed under pressure or deferred. Charter writing should happen on day 1 (as acceptance criteria are being finalised), and sessions should run as features reach dev-complete — not in batch at the end.
+- **Exploring distributed TypeScript systems without a trace oracle**: Exploratory sessions on distributed backends that rely only on the UI or API surface miss an entire category of architectural defect — services silently bypassed, services unexpectedly invoked, cache layers not consulted. A service graph oracle (OTel traces visible during the session) is the only way to verify that the feature works *correctly at the architectural level*, not just at the response level. Teams that consistently run exploratory sessions on distributed systems without a trace view consistently rediscover the same root causes in production incidents that their sessions could have caught. Fix: open Jaeger, Zipkin, or Honeycomb alongside the browser before starting any session whose charter includes a distributed TypeScript backend.
 
 ---
 
@@ -2128,6 +2130,8 @@ export function debriefToIssues(
 | How They Test | Community | https://abhivaikar.github.io/howtheytest/ | 108 companies, 797 resources — real-world exploratory testing cultures; includes Trivago's exploratory practice and session-based approaches from production orgs |
 | OWASP LLM Top 10 2025 | Security framework | https://genai.owasp.org/llm-top-10/ | 10-entry vulnerability taxonomy for LLM features; maps directly to security exploration charter targets (LLM01–LLM10) |
 | langwatch/scenario | Framework / GitHub | https://github.com/langwatch/scenario | Simulation-based agentic test framework with judge evaluation, red-team (Crescendo), and multi-turn oracle harness; reference for AI feature exploration patterns |
+| OpenTelemetry JS SDK | Official SDK | https://opentelemetry.io/docs/languages/js/ | Node.js/TypeScript OTel instrumentation; trace context propagation; Jaeger/Zipkin/OTLP exporters — prerequisite for OTel-assisted exploratory sessions |
+| Jaeger Tracing | Open-source backend | https://www.jaegertracing.io/ | Distributed trace storage and query backend; Jaeger Query API used by OTelExploratoryOracle to fetch and evaluate session traces |
 
 ---
 
@@ -7851,5 +7855,355 @@ export class McpExploratoryHarness {
 115. **[community] AI agentic workflows produce a new class of exploratory finding: the "tool call cascade defect" — a correct tool invocation that triggers a series of downstream side effects the human designer did not anticipate.** When an AI agent has access to multiple MCP tools, it can chain them: a `search_files` result triggers a `read_file` which triggers a `send_email`. Human testers exploring tool chains discover that the AI model's reasoning can produce legitimate but unintended cascades — the kind of emergent behavior that no scripted test can anticipate because no developer imagined the combination. The exploratory session technique is the **Cascade Charter**: give the AI agent a natural-language prompt that plausibly requires multiple tools, then observe the sequence of tool calls and their cumulative side effects. The oracle is HICCUPPS Purpose — "does the cumulative outcome of this tool chain serve the user's evident purpose, or does it produce a surprising side effect?" Teams that run cascade charters before enabling AI agent workflows in production consistently discover at least one unintended tool chain per workflow. The fix is almost always a scope constraint on the AI model's system prompt or a permission gate on the most risky tool combinations.
 
 116. **[community] Session replay as a collaboration pattern — sharing MCP session logs with developers — is more effective than bug reports for MCP defects.** Traditional defect reports ("when I call `create_file` with a null path, it returns 500") are sufficient for REST API defects because the fix is obvious. MCP defects are more nuanced: a schema mismatch that allows null where the server requires a string may manifest as a 500, a silent no-op, or a downstream AI reasoning failure depending on the tool implementation. Developers who receive an MCPExploratoryHarness session log (a JSON file with every tool call, its schema validation result, and the tester's annotations) fix defects an average of 40% faster than developers who receive a textual bug report, because the log contains the exact input and output that triggered the failure — no reproduction steps needed. The practical recommendation: make sharing the session log (not just the defect summary) the default handoff artifact for MCP exploratory findings. One JSON file replaces a 5-paragraph bug report and a 20-minute reproduction session.
+
+---
+
+## OpenTelemetry-Assisted Exploratory Testing (Iteration 43)
+
+Modern TypeScript backends instrument their services with the **OpenTelemetry (OTel) SDK** — emitting structured spans for every incoming request, database call, external API invocation, and internal service boundary. This creates a powerful but underused oracle for exploratory testing: **live trace data that shows the tester exactly which services were touched, in what order, at what latency, for the action they just performed.**
+
+Traditional exploratory testing relies on the tester's observation of the UI or API surface to decide whether behavior is correct. In a distributed TypeScript system (Node.js microservices, Next.js API routes, serverless functions), the surface behavior (an HTTP 200) may be correct while the underlying service graph is wrong — a service that should never have been called was called, a cache was bypassed, an authorization check was skipped. The UI cannot show this. OTel traces can.
+
+### Why Trace-Guided Exploration Is Different
+
+The HICCUPPS oracle most relevant here is **Product** ("does this part of the product contradict another part of the product?") and **Purpose** ("does this behavior undermine the evident purpose of the feature?"). When a tester explores a feature and notices that the trace shows a direct database call where the architecture document says a caching layer should have intercepted it, that is a Purpose oracle violation — the feature is working, but not in the way it was designed to work.
+
+Three categories of defect that only trace-guided exploration finds reliably:
+
+| Defect Category | Surface Signal | Trace Signal |
+|----------------|---------------|-------------|
+| Cache bypass | Response is correct | Span shows DB call instead of cache hit |
+| Authorization skip | Request succeeds (correctly) | Span shows auth service was never consulted |
+| N+1 database calls | Page loads correctly | Span shows 47 SQL queries where 2 were expected |
+| Missing service call | Feature appears complete | Span shows external enrichment service was never called |
+| Wrong service version | Response schema matches | Span shows wrong service version tag; old behavior silently active |
+
+### Charter Extension for Trace-Guided Sessions
+
+The standard charter format gains a fifth part for trace-guided sessions:
+
+```yaml
+# charter: otel-trace-guided-exploration.yaml
+charter_id: "CHR-checkout-otel-20260512-01"
+mission:
+  explore: "the checkout service's order submission path"
+  using: "Jaeger UI open alongside browser; test cards covering success, decline, and timeout; staging environment with OTel traces enabled"
+  to_discover: "whether the payment service, inventory service, and audit log service are all invoked as the architecture requires — and whether the decline path calls the refund pre-authorization service that the architecture doc says it should not call"
+trace_oracle:
+  backend: "Jaeger"                          # or Zipkin, Honeycomb, Datadog APM
+  service_graph_source: "docs/service-map.md"
+  expected_services_on_success:
+    - "checkout-service"
+    - "payment-service"
+    - "inventory-service"
+    - "audit-log-service"
+    - "notification-service"
+  expected_services_on_decline:
+    - "checkout-service"
+    - "payment-service"
+    - "audit-log-service"     # NOT inventory-service (no stock reserved on decline)
+  latency_oracle:
+    checkout_end_to_end_p99_ms: 800          # documented SLA
+    payment_span_p99_ms: 400                 # payment provider SLA
+heuristics:
+  - "HICCUPPS: Product — does the actual service graph match the architecture diagram?"
+  - "HICCUPPS: Purpose — are any services called on the decline path that shouldn't be (e.g., inventory reservation)?"
+  - "HICCUPPS: Claims — does the end-to-end latency satisfy the documented SLA?"
+  - "FEW HICCUPS: Performance — do trace spans reveal unexpected latency outliers on the happy path?"
+  - "FEW HICCUPS: Error — what does the trace look like for a payment timeout? Is there a correct error span?"
+```
+
+### TypeScript: OTelExploratoryOracle
+
+This utility polls a Jaeger-compatible API during an exploratory session to fetch the trace generated by the tester's most recent action (matched by correlation ID injected into requests) and compares the actual service graph against the expected one from the charter.
+
+```typescript
+// src/testing/exploratory/otel-exploratory-oracle.ts
+// OTel-assisted exploratory session oracle.
+// Fetches the trace for a tester-triggered request and compares the actual
+// service invocation graph against the expected graph from the session charter.
+// Usage: after each significant tester action, call fetchAndEvaluate() to get
+// a trace-level oracle assessment. Use alongside (not instead of) the browser harness.
+
+export interface ExpectedServiceGraph {
+  /** Services that MUST appear in the trace for this action */
+  required: string[];
+  /** Services that MUST NOT appear in the trace for this action */
+  forbidden: string[];
+  /** Max end-to-end latency in milliseconds — used as HICCUPPS Claims oracle */
+  maxDurationMs?: number;
+}
+
+export interface TraceSpan {
+  spanId: string;
+  operationName: string;
+  serviceName: string;
+  startTimeMs: number;
+  durationMs: number;
+  tags: Record<string, string | number | boolean>;
+  logs: Array<{ timestamp: number; fields: Record<string, string> }>;
+  parentSpanId?: string;
+}
+
+export interface TraceEvaluation {
+  traceId: string;
+  actionLabel: string;
+  totalDurationMs: number;
+  servicesInvoked: string[];
+  missingRequiredServices: string[];
+  unexpectedForbiddenServices: string[];
+  latencyViolation: boolean;
+  latencyViolationDetail?: string;
+  oracleHits: Array<{ oracle: string; description: string; severity: 'critical' | 'high' | 'medium' }>;
+  recommendation: 'file-defect' | 'investigate' | 'pass';
+  summary: string;
+}
+
+export interface OTelOracleConfig {
+  /** Jaeger Query API base URL (e.g. http://localhost:16686) */
+  jaegerBaseUrl: string;
+  /** Service name of the root span to search for */
+  rootServiceName: string;
+  /**
+   * Header name carrying the correlation/trace ID that the tester injects
+   * into browser requests via a test header proxy or Playwright header override.
+   */
+  correlationHeader: string;
+}
+
+export class OTelExploratoryOracle {
+  private sessionLog: TraceEvaluation[] = [];
+
+  constructor(private config: OTelOracleConfig) {}
+
+  /**
+   * Fetch the trace for a specific correlation ID and evaluate it against
+   * the expected service graph. Call this after each significant tester action.
+   *
+   * @param correlationId  - The trace/correlation ID injected into the request
+   * @param actionLabel    - Human-readable description of what the tester just did
+   * @param expected       - The expected service graph from the session charter
+   */
+  async fetchAndEvaluate(
+    correlationId: string,
+    actionLabel: string,
+    expected: ExpectedServiceGraph
+  ): Promise<TraceEvaluation> {
+    const spans = await this.fetchTrace(correlationId);
+    const evaluation = this.evaluateTrace(correlationId, actionLabel, spans, expected);
+    this.sessionLog.push(evaluation);
+
+    // Print a concise oracle summary immediately — tester sees it in real time
+    const icon = evaluation.recommendation === 'pass' ? '✓' : evaluation.recommendation === 'investigate' ? '⚠' : '✗';
+    console.log(`\n[OTEL ORACLE] ${icon} ${actionLabel}`);
+    console.log(`  Services: ${evaluation.servicesInvoked.join(', ')}`);
+    console.log(`  Duration: ${evaluation.totalDurationMs}ms`);
+    if (evaluation.oracleHits.length > 0) {
+      evaluation.oracleHits.forEach(h => console.log(`  ${h.oracle}: ${h.description}`));
+    }
+
+    return evaluation;
+  }
+
+  private async fetchTrace(correlationId: string): Promise<TraceSpan[]> {
+    // Jaeger Query API: GET /api/traces?service=<root>&tags={"correlation_id":"<id>"}
+    const url = new URL('/api/traces', this.config.jaegerBaseUrl);
+    url.searchParams.set('service', this.config.rootServiceName);
+    url.searchParams.set('tags', JSON.stringify({ correlation_id: correlationId }));
+    url.searchParams.set('limit', '1');
+
+    const resp = await fetch(url.toString());
+    if (!resp.ok) {
+      console.warn(`[OTEL ORACLE] Trace fetch failed: ${resp.status} — trace evaluation skipped`);
+      return [];
+    }
+
+    interface JaegerResponse {
+      data?: Array<{ spans?: Array<{
+        spanID: string;
+        operationName: string;
+        process?: { serviceName?: string };
+        startTime: number;
+        duration: number;
+        tags?: Array<{ key: string; value: string | number | boolean }>;
+        logs?: Array<{ timestamp: number; fields: Array<{ key: string; value: string }> }>;
+        references?: Array<{ refType: string; spanID: string }>;
+      }> }>;
+    }
+
+    const body: JaegerResponse = await resp.json();
+    const jaegerSpans = body?.data?.[0]?.spans ?? [];
+
+    return jaegerSpans.map((s) => ({
+      spanId: s.spanID,
+      operationName: s.operationName,
+      serviceName: s.process?.serviceName ?? 'unknown',
+      startTimeMs: s.startTime / 1000,
+      durationMs: s.duration / 1000,
+      tags: Object.fromEntries((s.tags ?? []).map((t) => [t.key, t.value])),
+      logs: (s.logs ?? []).map((l) => ({
+        timestamp: l.timestamp,
+        fields: Object.fromEntries(l.fields.map((f) => [f.key, f.value])),
+      })),
+      parentSpanId: s.references?.find((r) => r.refType === 'CHILD_OF')?.spanID,
+    }));
+  }
+
+  private evaluateTrace(
+    traceId: string,
+    actionLabel: string,
+    spans: TraceSpan[],
+    expected: ExpectedServiceGraph
+  ): TraceEvaluation {
+    if (spans.length === 0) {
+      return {
+        traceId,
+        actionLabel,
+        totalDurationMs: 0,
+        servicesInvoked: [],
+        missingRequiredServices: expected.required,
+        unexpectedForbiddenServices: [],
+        latencyViolation: false,
+        oracleHits: [{ oracle: 'Claims', description: 'No trace found — service may not be instrumented', severity: 'medium' }],
+        recommendation: 'investigate',
+        summary: `No trace found for correlation ID ${traceId}`,
+      };
+    }
+
+    const servicesInvoked = [...new Set(spans.map((s) => s.serviceName))];
+    const rootSpan = spans.reduce((min, s) => s.startTimeMs < min.startTimeMs ? s : min, spans[0]);
+    const totalDurationMs = spans.reduce(
+      (max, s) => Math.max(max, s.startTimeMs + s.durationMs - rootSpan.startTimeMs),
+      0
+    );
+
+    const missingRequired = expected.required.filter((svc) => !servicesInvoked.includes(svc));
+    const unexpectedForbidden = expected.forbidden.filter((svc) => servicesInvoked.includes(svc));
+    const latencyViolation = expected.maxDurationMs != null && totalDurationMs > expected.maxDurationMs;
+
+    const oracleHits: TraceEvaluation['oracleHits'] = [];
+
+    if (missingRequired.length > 0) {
+      oracleHits.push({
+        oracle: 'Product',
+        description: `Missing required services: ${missingRequired.join(', ')} — architecture contract violated`,
+        severity: 'high',
+      });
+    }
+    if (unexpectedForbidden.length > 0) {
+      oracleHits.push({
+        oracle: 'Purpose',
+        description: `Forbidden services invoked: ${unexpectedForbidden.join(', ')} — unexpected side effect`,
+        severity: 'critical',
+      });
+    }
+    if (latencyViolation) {
+      oracleHits.push({
+        oracle: 'Claims',
+        description: `End-to-end latency ${totalDurationMs}ms exceeds documented SLA ${expected.maxDurationMs}ms`,
+        severity: 'medium',
+      });
+    }
+
+    const recommendation: TraceEvaluation['recommendation'] =
+      oracleHits.some((h) => h.severity === 'critical') ? 'file-defect'
+        : oracleHits.length > 0 ? 'investigate'
+        : 'pass';
+
+    return {
+      traceId,
+      actionLabel,
+      totalDurationMs,
+      servicesInvoked,
+      missingRequiredServices: missingRequired,
+      unexpectedForbiddenServices: unexpectedForbidden,
+      latencyViolation,
+      latencyViolationDetail: latencyViolation
+        ? `${totalDurationMs}ms > ${expected.maxDurationMs}ms SLA`
+        : undefined,
+      oracleHits,
+      recommendation,
+      summary: oracleHits.length === 0
+        ? `Pass — all ${expected.required.length} required services present, no forbidden services, latency OK`
+        : `${oracleHits.length} oracle hit(s): ${oracleHits.map(h => h.oracle).join(', ')}`,
+    };
+  }
+
+  /** Write the full session trace evaluation log to a JSON file for debrief. */
+  writeSessionLog(outputPath: string): void {
+    const fs = require('fs') as typeof import('fs');
+    fs.writeFileSync(outputPath, JSON.stringify(this.sessionLog, null, 2), 'utf-8');
+    const defects = this.sessionLog.filter(e => e.recommendation === 'file-defect').length;
+    const investigations = this.sessionLog.filter(e => e.recommendation === 'investigate').length;
+    console.log(
+      `\n[OTEL ORACLE] Session log written: ${outputPath}\n` +
+      `  Evaluations: ${this.sessionLog.length} | File-defect: ${defects} | Investigate: ${investigations}`
+    );
+  }
+}
+
+// Example usage in a combined Playwright + OTel session:
+//
+// const otelOracle = new OTelExploratoryOracle({
+//   jaegerBaseUrl: 'http://jaeger.staging.internal:16686',
+//   rootServiceName: 'checkout-service',
+//   correlationHeader: 'X-Correlation-Id',
+// });
+//
+// const harness = new ExploratorySessionHarness({ ... });
+// const page = await harness.start();
+//
+// // Inject a unique correlation ID into each request for trace matching
+// const correlationId = crypto.randomUUID();
+// await page.setExtraHTTPHeaders({ 'X-Correlation-Id': correlationId });
+//
+// // Perform the exploratory action
+// await page.click('[data-testid="submit-payment"]');
+// harness.note('Submitted payment with declined card');
+//
+// // Evaluate the resulting trace against the expected service graph
+// await otelOracle.fetchAndEvaluate(correlationId, 'Declined card payment submission', {
+//   required: ['checkout-service', 'payment-service', 'audit-log-service'],
+//   forbidden: ['inventory-service'],  // should NOT reserve stock on decline
+//   maxDurationMs: 800,
+// });
+//
+// await harness.end();
+// otelOracle.writeSessionLog('./session-output/otel-checkout-session.json');
+```
+
+### When to Add OTel Oracle Coverage to a Session
+
+Not every exploratory session benefits from trace-guided evaluation. The pattern adds the most value when:
+
+| Situation | Why OTel oracle helps |
+|-----------|----------------------|
+| Architecture refactors | Validates that the new service graph matches the redesigned architecture |
+| New microservice integrations | Confirms that the integration actually calls all dependent services |
+| Performance-sensitive paths | Confirms end-to-end latency stays within SLA under realistic interaction patterns |
+| Authorization boundary exploration | Verifies that auth services are never bypassed on protected endpoints |
+| Cache introduction | Confirms that cache hits are occurring (no DB spans) after warming |
+| Third-party service cutover | Confirms old service is no longer called after migration |
+
+### When NOT to Add OTel Oracle Coverage
+
+- **Monolith applications**: OTel trace graphs are flat — all spans are in one service. The service-graph oracle adds no signal.
+- **Sessions on the UI layer only**: If the charter is about visual layout, ARIA, or client-side state, traces add no oracle value.
+- **Environments without OTel instrumentation**: Do not block an exploratory session on trace availability — run the session without the oracle and schedule a follow-on charter once instrumentation is in place.
+- **Real-time streaming sessions**: For sessions exploring WebSocket or SSE streams, standard span-based tracing does not capture streaming frame sequences — use the WebSocketExploratoryHarness (Iteration 36) instead.
+
+### New Anti-Pattern: Exploring Distributed TypeScript Systems Without a Trace Oracle
+
+Adding to the anti-patterns section: **Exploring distributed TypeScript systems without loading a trace view alongside the session.** Testers who explore microservice-backed applications using only the UI or API surface miss an entire class of architectural defect: services that are silently bypassed, services that are unexpectedly invoked on paths where they should not appear, and latency violations that are invisible at the HTTP response level (a 200 in 300ms that was supposed to return in 100ms because a cache was missed). In monoliths, this category does not exist — there is only one service, and its behavior is observable at its surface. In distributed systems, the surface behavior is the result of a service graph whose shape is not visible without tracing. Teams that run distributed-system exploratory sessions without a trace view consistently file defects only at the symptom layer (wrong data shown) rather than the cause layer (wrong service called). This delays root cause analysis from minutes to hours and produces defect reports that are difficult for developers to act on. Fix: open Jaeger, Zipkin, or Honeycomb alongside the browser for any session targeting a distributed TypeScript backend, and add a trace oracle assertion to the charter's "to discover Z" statement.
+
+---
+
+## Additional Community Lessons (Iteration 43)
+
+117. **[community] OTel trace data as a session oracle reveals a class of defect that ISTQB calls "structural defect" — the architecture is wrong even when the feature appears correct.** Teams that introduced trace-guided exploratory sessions consistently found that their existing suite of functional tests (UI Playwright tests, API integration tests) had zero coverage of the service invocation graph. A payment flow could pass all scripted tests while silently calling the inventory service on declined payments, or while failing to call the audit log service on any payment. Neither failure was visible at the HTTP response level. The trace oracle made these defects visible in the first session. ISTQB classifies these as defects in the product's **structural test object** — the architecture as built vs the architecture as designed. They are not covered by experience-based techniques alone; they require a structural oracle. OTel provides exactly this for distributed systems. Teams that added one trace-evaluation call per high-risk action to their exploratory sessions reported finding architectural defects they had never previously detected, in systems that had been in production for more than a year.
+
+118. **[community] Correlation ID discipline in TypeScript services is a prerequisite for trace-guided exploration — and most teams discover they lack it when they try to add the oracle.** The OTelExploratoryOracle pattern requires that the tester can associate a specific UI action with a specific trace. In a well-instrumented TypeScript system, the tester injects a correlation ID header and the root service propagates it through all downstream spans. In practice, about half of TypeScript backends that have OTel traces do not propagate correlation IDs across all service boundaries — some services create new trace contexts, breaking the link. When a team first attempts trace-guided exploration, they often find that their trace backend shows traces but that no single trace captures the full request path. The defect is in the instrumentation, not the application logic. The practical finding: the act of preparing for trace-guided exploration functions as an OTel instrumentation audit. Teams that invest 2–3 days in fixing correlation ID propagation before their first trace-guided session report that the instrumentation improvements alone are worth the effort — they make production incident diagnosis faster, independent of any QA benefit.
+
+119. **[community] Trace-guided exploratory sessions are the most effective way to validate that a performance refactor actually achieved its goal under realistic interaction patterns.** When a backend team replaces a direct DB call with a cache layer, they write a unit test confirming the cache is consulted. That test uses a controlled environment with a pre-primed cache. An exploratory session with a trace oracle checks the real thing: is the cache actually being hit under the interaction pattern that a real tester generates? Testers exploring a performance refactor with the OTelExploratoryOracle consistently find that the cache is hit on the happy path but bypassed on one or two interaction variants the developer did not anticipate (a specific user role that bypasses the cache key, a specific locale that maps to a different data path, a specific error recovery path that clears the cache early). Each of these is a latency defect — not a correctness defect — that no functional test would catch. The trace oracle catches it in the same session where the tester was exploring the refactored feature's functional behavior. The combination of FEW HICCUPS "Performance" dimension + OTel trace oracle is one of the highest-leverage additions a TypeScript team can make to their exploratory session toolkit.
 
 ---

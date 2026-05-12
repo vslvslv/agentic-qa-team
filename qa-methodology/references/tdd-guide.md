@@ -1,11 +1,12 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 20 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: tdd | iteration: 21 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) | ISTQB CTFL 4.0 terminology applied -->
 <!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
 <!-- extension 2026-05-12: iter 17 — added TDD for Feature Flags (safe defaults pattern); One Map Key One Lookup for test doubles; TCR TypeScript script; gotchas #24–#26 -->
 <!-- extension 2026-05-12: iter 18 — added Zod v4 TDD patterns (schemaMatching with v4 APIs, z.input/z.output for test data, migration pitfall); `using`/`await using` for TDD resource teardown; Neon DB branching for database-level TDD isolation; `Promise.try` for sync-to-async TDD wrappers; gotchas #27–#29 -->
 <!-- extension 2026-05-12: iter 19 — added Vitest 4.1 TDD-relevant features: --detect-async-leaks, vi.defineHelper(), mockThrow()/mockThrowOnce(), aroundEach/aroundAll hooks, test.extend() builder, coverage.changed, test tags, GitHub Actions reporter, agent reporter; gotchas #30–#32 -->
 <!-- extension 2026-05-12: iter 20 — added "The Way of TDD" (Google TotT, March 2026) pattern synthesis; Vitest 4.1 experimental native Node.js execution for ultra-fast TDD loops; Browser Mode aroundEach tracing with page.mark(); TDD discipline checklist from The Way of TDD; gotchas #33–#35 -->
+<!-- extension 2026-05-12: iter 21 — added Vitest 4.1 viteModuleRunner:false (production-closer execution mode vs runner:node); Vitest 4.1 onCleanup() fixture teardown callback; Vitest 4.1 Chai-style mock assertions; TypeScript 6.0 this-less function context-sensitivity improvement; TypeScript 5.9 --module node20 vs nodenext distinction; TypeScript 7.0 preparation with --stableTypeOrdering; gotchas #36–#37 -->
 
 ## Core Principles
 
@@ -4036,6 +4037,405 @@ describe('Button component — TDD trace-annotated', () => {
 
 ---
 
+---
+
+### Vitest 4.1 — `viteModuleRunner: false` and Production-Closer Test Execution [community]
+
+Vitest 4.1 introduces an experimental `viteModuleRunner: false` option (distinct from the `runner: 'node'` approach documented above) that disables Vite's module runner sandbox entirely, running tests with native Node.js module imports. Where `runner: 'node'` uses Vitest's own lightweight runner, `viteModuleRunner: false` uses the full Node.js Module Loader API for `vi.mock` and `vi.hoisted` support — meaning mocking still works without needing to rebuild mock infrastructure.
+
+**Key distinction from `runner: 'node'`:**
+
+| Aspect | `runner: 'node'` (Experimental) | `viteModuleRunner: false` (Experimental) |
+|--------|----------------------------------|------------------------------------------|
+| Vite module transforms | Bypassed | Bypassed |
+| `vi.mock()` support | Limited | Yes (Node 22.15+ Module Loader API) |
+| `vi.hoisted()` support | Limited | Yes |
+| Path aliases (`@domain/*`) | Not supported | Not supported |
+| `import.meta.env` | Not supported | Not supported |
+| Istanbul coverage | Not supported | Not supported |
+| Minimum Node.js version | 23.6+ | 22.15+ |
+| TypeScript syntax | Erasable only | Erasable only |
+| Recommended for | Pure domain modules | Domain + mocked-dependency modules |
+
+```typescript
+// vitest.config.ts — viteModuleRunner: false for production-closer test execution
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Disables Vite module runner sandbox — tests run with native Node.js imports.
+    // Requires Node.js 22.15+ for vi.mock/vi.hoisted via Module Loader API.
+    // TypeScript files must use erasable syntax (no enum, no parameter properties).
+    viteModuleRunner: false,
+
+    // viteModuleRunner: false is best scoped to domain modules via projects config:
+    projects: [
+      {
+        name: 'domain-native',
+        viteModuleRunner: false,
+        include: ['src/domain/**/*.test.ts'],
+        reporter: ['verbose'],
+        bail: 1,
+      },
+      {
+        name: 'standard',
+        include: [
+          'src/ui/**/*.test.ts',
+          'src/infrastructure/**/*.test.ts',
+        ],
+        // Standard Vite module runner for Vite-dependent code
+      },
+    ],
+  },
+});
+```
+
+```typescript
+// With viteModuleRunner: false, vi.mock() works via Node's Module Loader API:
+// order-service.test.ts
+import { describe, it, expect, vi } from 'vitest';
+import { OrderService } from './OrderService.js';
+
+// vi.mock still works under viteModuleRunner: false (Node 22.15+)
+vi.mock('./mailer.js', () => ({
+  send: vi.fn<[{ to: string; subject: string }], Promise<void>>(),
+}));
+
+import * as mailer from './mailer.js';
+
+describe('OrderService', () => {
+  it('sends a confirmation email on order creation', async () => {
+    const service = new OrderService();
+    await service.createOrder({ userId: 'u1', items: [] });
+
+    expect(vi.mocked(mailer.send)).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: expect.stringContaining('confirmed') })
+    );
+  });
+});
+```
+
+**TDD impact of `viteModuleRunner: false`:** Tests run in an environment that more closely matches the production Node.js runtime, surfacing environment-specific defects (module evaluation order, side effects on import, `require()` vs ESM behaviour differences) during the TDD cycle rather than after deployment. The tradeoff is losing Vite plugins, path aliases, and `import.meta.env` — making it most suitable for pure domain modules without build-time transforms.
+
+**[community] `viteModuleRunner: false` catches a production class of defect that standard Vitest cannot.** Teams that migrated to this mode found test cases that passed under Vite's module runner but failed at runtime because Vite was silently resolving circular module dependencies in a different order than Node.js. These circular dependency defects were invisible until the first production deployment.
+
+---
+
+### Vitest 4.1 — `onCleanup()` Fixture Teardown Callback [community]
+
+Vitest 4.1 extends `test.extend()` with an `onCleanup()` callback inside fixture definitions. Unlike the generator-based teardown (code after `await use(value)`) or `afterEach` hooks, `onCleanup()` allows registering teardown logic at any point during fixture setup — including conditionally, based on what resources were actually created.
+
+This is particularly valuable for typed TDD fixtures that conditionally establish connections or start services: with `onCleanup()`, cleanup is co-located with the allocation decision, not separated into a yield-continuation.
+
+```typescript
+// typed-fixtures.ts — Vitest 4.1 onCleanup() for conditional resource management
+import { test, expect } from 'vitest';
+import { InMemoryDatabase } from './test-doubles/InMemoryDatabase.js';
+import { NotificationService } from './NotificationService.js';
+import { SpyNotificationService } from './test-doubles/SpyNotificationService.js';
+
+interface TestContext {
+  db: InMemoryDatabase;
+  notifier: SpyNotificationService;
+}
+
+// Vitest 4.1: onCleanup() registers teardown at allocation time, not at yield
+const domainTest = test.extend<TestContext>({
+  db: async ({}, use, onCleanup) => {
+    const db = new InMemoryDatabase();
+    await db.connect();
+
+    // Register cleanup immediately after allocation — guaranteed to run even if
+    // subsequent setup steps throw (unlike yield-based teardown which only runs
+    // if the yield point is reached)
+    onCleanup(async () => {
+      await db.dispose();
+    });
+
+    await use(db);
+    // No teardown code needed here — onCleanup handles it
+  },
+
+  notifier: async ({}, use, onCleanup) => {
+    const spy = new SpyNotificationService();
+
+    // Conditional cleanup: only restore if spy was configured
+    if (process.env.NOTIFY_SPY_MODE === 'strict') {
+      onCleanup(() => {
+        // Verify no unexpected notifications were sent during the test case
+        spy.assertNoUnexpectedCalls();
+        spy.reset();
+      });
+    } else {
+      onCleanup(() => spy.reset());
+    }
+
+    await use(spy);
+  },
+});
+
+// Test cases receive fully managed fixtures — cleanup is guaranteed
+domainTest('creates an order and notifies the user', async ({ db, notifier }) => {
+  const service = new OrderService(db, notifier);
+
+  await service.createOrder({ userId: 'u1', items: [{ sku: 'A', qty: 1 }] });
+
+  expect(notifier.sent).toHaveLength(1);
+  expect(notifier.sent[0].userId).toBe('u1');
+  // db.dispose() and notifier.reset() called automatically via onCleanup
+});
+
+domainTest('returns null for an order that does not exist', async ({ db }) => {
+  const service = new OrderService(db);
+  const result = await service.findOrder('nonexistent');
+  expect(result).toBeNull();
+  // db.dispose() called — even though this test case never wrote to db
+});
+```
+
+**Why `onCleanup()` improves TDD fixture reliability:**
+
+1. **Allocation-site co-location:** Cleanup is registered where the resource is created, not in a separate `afterEach` or yield continuation. Code reviewers see the cleanup when they review the allocation.
+
+2. **Multi-step fixture safety:** In generator-based fixtures (`async function*`), if an intermediate setup step throws before the `yield`, teardown code after the `yield` never runs. With `onCleanup()`, each allocation registers its own cleanup independently — even if the fixture partially fails, already-registered cleanups still run.
+
+3. **Conditional cleanup:** Resources conditionally created (based on test configuration or test mode) can register cleanup only when they are actually created — preventing "cleanup ran but resource was never created" errors.
+
+**[community] `onCleanup()` is the recommended teardown pattern when a fixture creates multiple resources in sequence.** If `resource B` depends on `resource A` and creation of `B` fails, generator-based teardown skips the code after `yield` — meaning `A` is leaked. With `onCleanup()`, `A` registers its cleanup immediately after creation, so even if `B` throws, `A` is properly disposed.
+
+---
+
+### Vitest 4.1 — Chai-Style Mock Assertions [community]
+
+Vitest 4.1 adds Chai-style fluent assertions for mock functions, complementing the existing `expect(mock).toHaveBeenCalled()` style. In TDD test cases, the Chai-style reads more naturally in assertion chains and is familiar to developers who have used Sinon.js or older Chai/Sinon setups.
+
+```typescript
+// Vitest 4.1: Chai-style mock assertions in TDD test cases
+import { describe, it, expect, vi } from 'vitest';
+import { OrderService } from './OrderService.js';
+
+interface PaymentGateway {
+  charge(amount: number, currency: string): Promise<{ transactionId: string }>;
+  refund(transactionId: string): Promise<void>;
+}
+
+describe('OrderService.checkout', () => {
+  it('charges the payment gateway for the order total', async () => {
+    const gateway: PaymentGateway = {
+      charge: vi.fn<[number, string], Promise<{ transactionId: string }>>()
+        .mockResolvedValue({ transactionId: 'txn-001' }),
+      refund: vi.fn<[string], Promise<void>>().mockResolvedValue(undefined),
+    };
+    const service = new OrderService(gateway);
+
+    await service.checkout({ orderId: 'ORD-1', total: 75.00, currency: 'USD' });
+
+    // Vitest 4.1 Chai-style — reads fluently in a TDD assertion chain
+    expect(gateway.charge).to.have.been.calledOnce();
+    expect(gateway.charge).to.have.been.calledWith(75.00, 'USD');
+    expect(gateway.refund).to.not.have.been.called();
+  });
+
+  it('refunds when order is cancelled after charge', async () => {
+    const gateway: PaymentGateway = {
+      charge: vi.fn<[number, string], Promise<{ transactionId: string }>>()
+        .mockResolvedValue({ transactionId: 'txn-002' }),
+      refund: vi.fn<[string], Promise<void>>().mockResolvedValue(undefined),
+    };
+    const service = new OrderService(gateway);
+
+    await service.checkout({ orderId: 'ORD-2', total: 50.00, currency: 'EUR' });
+    await service.cancelOrder('ORD-2');
+
+    // Chai-style callCount assertion
+    expect(gateway.charge).to.have.callCount(1);
+    expect(gateway.refund).to.have.been.calledWith('txn-002');
+
+    // Equivalent Vitest-style assertions — both syntaxes are valid in Vitest 4.1:
+    // expect(gateway.charge).toHaveBeenCalledOnce();
+    // expect(gateway.refund).toHaveBeenCalledWith('txn-002');
+  });
+});
+```
+
+**Available Chai-style mock assertions (Vitest 4.1):**
+
+| Chai style | Vitest equivalent | Notes |
+|-----------|-------------------|-------|
+| `.to.have.been.called()` | `.toHaveBeenCalled()` | Any call, any args |
+| `.to.have.been.calledOnce()` | `.toHaveBeenCalledOnce()` | Exactly once |
+| `.to.have.been.calledWith(...)` | `.toHaveBeenCalledWith(...)` | With specific args |
+| `.to.have.callCount(n)` | `.toHaveBeenCalledTimes(n)` | Exactly n times |
+| `.to.have.returned` | `.toHaveReturned()` | Returned without throwing |
+| `.not.to.have.been.called()` | `.not.toHaveBeenCalled()` | Was never called |
+
+**[community] Chai-style assertions are most useful when onboarding test-after developers into TDD.** Teams migrating from Mocha/Chai setups often resist Vitest specifically because of unfamiliar assertion syntax. Vitest 4.1's Chai-style assertions remove this friction — developers familiar with `.to.have.been.calledOnce()` from Sinon+Chai can read and write TDD test cases without relearning the assertion vocabulary. Long-term, standardising on one style per codebase (either Chai or Vitest-style, not both) prevents readability confusion.
+
+---
+
+### TypeScript 6.0 — Improved `this`-less Function Context-Sensitivity [community]
+
+TypeScript 6.0 reduces context-sensitivity on functions that do not use `this`. Previously, a method-syntax function in an object literal was context-sensitive — TypeScript deferred its type inference based on the surrounding object type, even if `this` was never used. In TypeScript 6.0, method-syntax functions without `this` are treated like arrow functions for inference purposes.
+
+**TDD impact:** Object literals used as test doubles (typed stubs, inline fakes) now infer parameter types more reliably from the surrounding interface, reducing the need for explicit type annotations in test code.
+
+```typescript
+// TypeScript 5.x: context-sensitivity required explicit type annotation
+interface Processor {
+  process(items: string[]): Promise<number[]>;
+  validate(item: string, index: number): boolean;
+}
+
+// BEFORE TypeScript 6.0: parameter types not inferred from interface
+const stubProcessor = {
+  process: async (items) => items.map(Number),   // ❌ items: any — not inferred
+  validate: (item, index) => item.length > 0,    // ❌ item: any — not inferred
+} satisfies Processor;
+
+// AFTER TypeScript 6.0: context-sensitivity reduced — types inferred from satisfies
+const stubProcessor = {
+  process: async (items) => items.map(Number),   // ✅ items: string[] — inferred
+  validate: (item, index) => item.length > 0,    // ✅ item: string, index: number — inferred
+} satisfies Processor;
+```
+
+```typescript
+// TDD test case — TypeScript 6.0 reduces annotation noise in inline test doubles
+import { describe, it, expect } from 'vitest';
+import { ReportBuilder } from './ReportBuilder.js';
+
+interface DataSource {
+  fetchRows(query: string): Promise<Record<string, unknown>[]>;
+  close(): Promise<void>;
+}
+
+describe('ReportBuilder', () => {
+  it('builds a report from fetched rows', async () => {
+    // TypeScript 6.0: parameter types inferred from DataSource interface
+    // No explicit `: string` or `: Promise<...>` needed on the method params
+    const stubSource = {
+      fetchRows: async (query) => [          // query: string — inferred
+        { id: '1', value: 'alpha' },
+        { id: '2', value: 'beta' },
+      ],
+      close: async () => {},                 // return type Promise<void> — inferred
+    } satisfies DataSource;
+
+    const builder = new ReportBuilder(stubSource);
+    const report = await builder.build('SELECT * FROM items');
+
+    expect(report.rowCount).toBe(2);
+    expect(report.rows[0].value).toBe('alpha');
+  });
+});
+```
+
+**Why this matters for TDD:** In TypeScript 5.x, creating inline test stubs often required explicitly annotating callback parameters to avoid `any` inference. With TypeScript 6.0, using `satisfies Interface` on an inline object now infers all method parameter types from the interface. This reduces annotation boilerplate in test Arrange phases, keeping the test case body focused on the behaviour specification rather than type scaffolding.
+
+**[community] TypeScript 6.0 `this`-less inference improvement most benefits teams that use `satisfies` for typed inline fakes.** If your test doubles are written as `const fake = { ... } satisfies MyInterface`, upgrading to TypeScript 6.0 will silently fix inferred `any` parameters in those fakes — which previously required explicit annotations. After upgrading, run `tsc --noEmit` and look for newly surfaced errors: they represent places where the previously-`any`-typed parameter was receiving wrong-shaped data that TypeScript now catches correctly.
+
+---
+
+### TypeScript 5.9 `--module node20` — Stable Node.js 20 Module Semantics [community]
+
+TypeScript 5.9 introduced `--module node20` as a stable alternative to `--module nodenext`. The key distinction for TDD projects:
+
+- `--module nodenext` tracks the latest Node.js module semantics and may receive new behaviors as Node.js evolves. It implies `--target esnext`.
+- `--module node20` is frozen to Node.js 20 module semantics and will not receive new behaviors. It implies `--target es2023`.
+
+For TDD projects with Node.js 20.x LTS targets, `--module node20` provides a stable compilation target that will not silently change behavior when new Node.js module features are added to `nodenext`.
+
+```jsonc
+// tsconfig.json — using node20 for a Node.js 20 LTS project
+{
+  "compilerOptions": {
+    "module": "node20",        // ← frozen to Node.js 20 semantics; implies target es2023
+    "moduleResolution": "node20",
+    "strict": true,
+    "types": ["node", "vitest/globals"],  // Required in TS 6.0+
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "isolatedModules": true
+  }
+}
+```
+
+**TDD benefit:** Teams running Node.js 20 LTS in production can use `--module node20` and be confident that the TypeScript module semantics match the production runtime exactly — eliminating a category of "works in tests, fails in production" module resolution discrepancy. Vitest uses esbuild by default, which respects the `module` option for type-checking; using `node20` prevents accidental use of module features only available in Node.js 22+.
+
+**When to use `nodenext` vs `node20`:**
+
+| Use `node20` | Use `nodenext` |
+|---|---|
+| Production target is Node.js 20.x LTS | Always targeting the latest Node.js |
+| Stable semantics required; no surprise changes | OK accepting new Node.js module features automatically |
+| Team wants explicit LTS version contract | Using Node.js canary/nightly |
+| `--target es2023` is acceptable | Need `--target esnext` |
+
+**[community] Many TypeScript projects use `nodenext` by default without realising it tracks the moving target of the latest Node.js module features.** For production systems that pin to Node.js 20 LTS, `--module node20` is the semantically correct choice. A TDD test suite compiled with `nodenext` may exercise module patterns that resolve differently on the Node.js 20 LTS runtime in production — `--module node20` closes this gap.
+
+---
+
+### TypeScript 7.0 Preparation — `--stableTypeOrdering` as a TDD Migration Tool [community]
+
+TypeScript 6.0 introduced `--stableTypeOrdering`, a migration diagnostic flag that makes union type ordering deterministic, matching the behavior planned for TypeScript 7.0. Teams can enable it today to surface type ordering regressions that will become permanent errors in 7.0.
+
+**Why it matters for TDD:** TDD test cases that use `toMatchObject` or `toEqual` with complex union types may have been relying on non-deterministic type ordering — producing test failures that appear intermittently in CI, not in local runs. `--stableTypeOrdering` makes these ordering issues visible at compile time, before they become runtime test instability.
+
+```typescript
+// Example of type ordering issue caught by --stableTypeOrdering
+// Before TS 7.0: union ordering is non-deterministic
+type ApiResponse = 
+  | { status: 'success'; data: User[] }
+  | { status: 'error'; code: number }
+  | { status: 'pending' };
+
+// TDD test case that may produce non-deterministic CI failures:
+it('returns success response with users', async () => {
+  const response = await getUsersApi();
+  // toMatchObject with a union type — union ordering affected TypeScript's
+  // error messages and, in some edge cases, type narrowing for discriminated unions
+  expect(response).toMatchObject({ status: 'success' });
+  if (response.status === 'success') {
+    expect(response.data).toHaveLength(2);
+  }
+});
+```
+
+```jsonc
+// tsconfig.json — enable stableTypeOrdering to detect TS 7.0 regressions now
+{
+  "compilerOptions": {
+    "stableTypeOrdering": true,
+    // WARNING: may add up to 25% compiler overhead — use as diagnostic tool,
+    // not in CI on every build. Enable locally before TS 7.0 upgrade.
+    
+    // All other TDD-recommended options:
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "types": ["node", "vitest/globals"]
+  }
+}
+```
+
+**TDD preparation checklist for TypeScript 7.0:**
+
+1. Enable `--stableTypeOrdering` locally and run `tsc --noEmit` — fix any new errors.
+2. Run the full test suite with `--stableTypeOrdering` enabled — non-deterministic test failures will now be consistent, making them diagnosable.
+3. Review any test cases that assert on TypeScript error messages or type shapes from `tsd` or `expect-type` — they may have relied on union ordering.
+4. Migrate away from deprecated TypeScript 6.0 options (`baseUrl`, `moduleResolution: "node"`) — TypeScript 7.0 removes them entirely.
+5. Use `"ignoreDeprecations": "6.0"` as a temporary escape hatch during migration to TypeScript 7.0, not as a permanent solution.
+
+**[community] Teams that run type-level tests (`tsd`, `expect-type`, or `dtslint`) are most exposed to `--stableTypeOrdering` breakage.** Union type ordering changes can alter the selected overload in overloaded functions and the displayed type in type-level assertions. Running `--stableTypeOrdering` before the TypeScript 7.0 release gives teams months to find and fix these before they become mandatory breaking changes.
+
+---
+
+### Real-World Gotchas [community] — Additions (iter 21)
+
+36. **[community] Vitest 4.1 broke `beforeAll`/`afterAll`/`aroundAll` hooks that relied on the first argument being `Suite`.** In previous Vitest versions, the `beforeAll` and `afterAll` hooks received an undocumented `Suite` object as their first argument. In Vitest 4.1, these hooks now receive the fixture context instead. Any hook that destructured the first argument expecting `Suite` properties (e.g., `.tasks`, `.name`) will silently receive an empty fixture context object instead — not throwing an error, but silently ignoring the hook's logic. This is a breaking change with no TypeScript compile-time signal: the first argument is typed as an empty generic context, and the `Suite` properties were never in the type definition. The fix: remove any `Suite`-dependent logic from `beforeAll`/`afterAll` hooks. Use `describe.each` or `test.extend()` fixture contexts for suite-level shared state instead.
+
+37. **[community] `viteModuleRunner: false` with `vi.mock()` requires Node.js 22.15+, not just 22.x.** Teams upgrading to use `viteModuleRunner: false` in Vitest 4.1 and running `vi.mock()` calls may encounter `vi.mock is not supported in this context` errors when running on Node.js 22.0–22.14. The Module Loader API required for `vi.mock()` interception under `viteModuleRunner: false` was backported to Node.js 22.15.0 LTS. Projects pinned to Node.js 22.x without a patch-level minimum will silently fail in some CI environments that run on earlier 22.x patch versions. The fix: pin `"node": ">=22.15"` in `package.json`'s `engines` field and update CI `setup-node@v4` to `node-version: '22.15'` or newer. A TDD test case that runs `vi.mock()` under `viteModuleRunner: false` on Node 22.0 will throw at setup time, not at the assertion — making the failure message look like a Vitest configuration error rather than a Node.js version issue.
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -4070,6 +4470,9 @@ describe('Button component — TDD trace-annotated', () => {
 | TypeScript 5.2 — `using` and `await using` | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html | Explicit Resource Management for TDD teardown; scope-bound spy cleanup and test database disposal |
 | Neon DB — Test Branching | Docs | https://neon.com/docs/guides/branching-test-queries | Copy-on-write Postgres branch per test run; schema-only branching for sensitive data; instant teardown |
 | ECMAScript `Promise.try` Proposal | Docs | https://github.com/tc39/proposal-promise-try | Wraps sync throws as rejected promises — unifies sync/async TDD error assertions; available in Node 22+ and TypeScript 6.0 |
-| Vitest 4.1 Release Notes | Docs | https://vitest.dev/blog/vitest-4-1 | --detect-async-leaks for timer leak detection; vi.defineHelper() for correct stack trace attribution; mockThrow/mockThrowOnce; aroundEach/aroundAll; test tags; coverage.changed; GitHub Actions reporter; agent reporter for AI-assisted TDD |
+| Vitest 4.1 Release Notes | Docs | https://vitest.dev/blog/vitest-4-1 | --detect-async-leaks for timer leak detection; vi.defineHelper() for correct stack trace attribution; mockThrow/mockThrowOnce; aroundEach/aroundAll; test tags; coverage.changed; GitHub Actions reporter; agent reporter for AI-assisted TDD; viteModuleRunner:false; onCleanup() fixture callback; Chai-style mock assertions |
 | Vitest 4.1 Native Node Execution | Docs | https://vitest.dev/guide/projects.html | Experimental `runner: 'node'` for sub-50ms TDD feedback on pure domain modules; requires erasable TypeScript syntax and Node.js 23.6+ |
+| Vitest 4.1 `viteModuleRunner: false` | Docs | https://vitest.dev/config/#viteModuleRunner | Disables Vite sandbox for production-closer test execution; supports vi.mock via Node 22.15+ Module Loader API; complements runner:node for different test isolation strategies |
+| TypeScript 5.9 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html | TDD-friendly `tsc --init` defaults; `import defer` for lazy module evaluation; `noUncheckedSideEffectImports`; `--module node20` for stable Node.js 20 semantics |
+| TypeScript 6.0 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | Major breaking changes: `types:[]` default breaks Vitest/Jest globals without explicit config; removed deprecated module options; ES2025 support; `Map.getOrInsert` in typed fakes; `this`-less function inference improvement; `--stableTypeOrdering` for TS 7.0 migration prep |
 | Google Testing Blog — "The Way of TDD" | Blog post | https://testing.googleblog.com/2026/03/the-way-of-tdd.html | 2026 Google TotT post; six TDD discipline commitments; emphasises Refactor phase as mandatory, Red as information, and baby steps as precise thinking — not timid |

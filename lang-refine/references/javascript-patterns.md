@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 48 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 49 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -3478,6 +3478,61 @@ import assert from 'node:assert/strict';
 
 **41. Calling `getOrInsert` with a Mutable Default Without `getOrInsertComputed`** [community] — Calling `map.getOrInsert(key, [])` creates a new empty array every time, even on cache hits. The unnecessary allocation is trivial for sparse maps, but in hot loops over millions of keys it adds GC pressure. WHY it causes problems: while `getOrInsert` doesn't use the default value on a hit, the `[]` literal is still allocated before being passed in — unlike `getOrInsertComputed` which passes a factory that is only called on a miss. Fix: use `map.getOrInsertComputed(key, () => [])` for any default value whose construction is non-trivial (large objects, arrays, result of expensive computation).
 
+**56. Closure Retains the Entire Lexical Scope, Not Just Used Variables** [community] — A closure keeps every variable in its enclosing scope alive — not just the ones it explicitly references. WHY it causes problems: a factory that allocates a large buffer, builds an expensive cache, or receives a huge config object and then returns a small function will keep ALL of those objects in memory for the lifetime of the returned function, even if the function only uses one small value from the scope. In long-lived processes (servers, SPAs) with many such closures, this causes sustained memory pressure and GC pauses. Fix: extract only the values you need into local constants before returning the function so the rest of the scope can be collected.
+
+```javascript
+// BAD — returned function keeps hugeBuffer alive even though it only needs bufSize
+function createProcessor(bufSize) {
+  const hugeBuffer = new Uint8Array(bufSize * 1024); // 1 MB per call
+  const meta = buildExpensiveMetadata();             // another large object
+  return function process(data) {
+    // Only uses bufSize — but hugeBuffer AND meta are still alive
+    return data.slice(0, bufSize);
+  };
+}
+// 100 instances of createProcessor() → 100 MB retained, none collectable
+
+// GOOD — capture only what is needed; large allocations are eligible for GC
+function createProcessor(bufSize) {
+  const hugeBuffer = new Uint8Array(bufSize * 1024);
+  const meta = buildExpensiveMetadata();
+  const limit = bufSize; // Only this primitive is captured
+  // Explicitly clear large references before returning
+  hugeBuffer.fill(0); // process hugeBuffer here if needed
+  // hugeBuffer and meta are not closed over — GC can collect them
+  return function process(data) {
+    return data.slice(0, limit);
+  };
+}
+```
+
+**57. Confusing Module Live Bindings with Captured Values in Closures** [community] — In ESM, named exports are live bindings — if the exporting module updates an exported variable, all importers see the new value via the binding. However, a function that closes over an imported name at definition time captures the value, not the binding itself. WHY it causes problems: a closure created at module load time reads the initial export value and never updates, while direct reads of the imported name always get the current value. This creates subtle bugs where different access patterns within the same module return different values for what looks like the same variable.
+
+```javascript
+// counter.js — exporting a mutable binding
+export let count = 0;
+export function increment() { count++; }
+
+// consumer.js — two access patterns for the same export
+import { count, increment } from './counter.js';
+
+// Direct import reference — always reflects current value (live binding)
+function readDirect() { return count; }
+
+// Closure over imported name — captures VALUE at definition time, not the binding
+const snapshot = count; // snapshot = 0, never updates
+const readSnapshot = () => snapshot; // always 0
+
+increment(); // count is now 1 in counter.js
+
+console.log(readDirect());    // 1 — live binding updated ✓
+console.log(readSnapshot());  // 0 — captured the initial value ✗
+
+// Fix: always read the imported name directly; do not re-assign it to a local variable
+// that is then closed over by other functions.
+// If you need a snapshot, document it explicitly: const initialCount = count;
+```
+
 ## Anti-Patterns Quick Reference
 
 | Anti-Pattern | Why It's Harmful | What to Do Instead |
@@ -3517,6 +3572,8 @@ import assert from 'node:assert/strict';
 | Inconsistent sync/async callbacks ("Zalgo") | Non-deterministic execution order; calling code cannot reason about when side effects happen | Always be consistently async; use `async`/Promises which guarantee microtask delivery |
 | `async` handlers on `EventEmitter` without `captureRejections` | Async handler rejections bypass the emitter's `'error'` event; become unhandled rejections that crash the process | Use `new EventEmitter({ captureRejections: true })` or set `EventEmitter.captureRejections = true` |
 | Fixed port in tests (`app.listen(3000)`) | Port collisions under parallel CI workers or watch mode cause `EADDRINUSE` flakiness | Bind to port `0` in tests; read actual port from `server.address().port` after start |
+| Closing over entire parent scope instead of needed values | Whole scope (large buffers, config objects) retained for lifetime of the returned function | Capture only required primitives/references into named `const`s before returning |
+| Re-assigning imported ESM binding to local variable | Captured value is a snapshot; misses live-binding updates from the exporting module | Always read the imported name directly; never alias a mutable import as a closed-over local |
 | `btoa(String.fromCharCode(...bytes))` for large buffers | Stack overflow on buffers > ~65 k bytes; silent failure on non-ASCII input | Use `Uint8Array.toBase64()` / `Uint8Array.fromBase64()` (Baseline 2025) |
 | Legacy `experimentalDecorators` mixed with Stage 3 decorators | Two incompatible decorator semantics in one project; Angular/NestJS migrations break | Decide on one: Stage 3 (TS 5.0+ with `"experimentalDecorators": false`) or legacy; never mix |
 | `import defer` named/default imports | Syntax error — only namespace import (`* as`) is supported | Use `import defer * as name from '...'`; for named access use `name.export` |
