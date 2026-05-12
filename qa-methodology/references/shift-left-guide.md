@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -1454,6 +1454,10 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 - [ ] **AI/LLM apps:** LLM output schema validated with Zod; prompt injection tests in unit test suite
 - [ ] **IAST (teams with integration test suite):** Node.js IAST agent (Contrast CE or equivalent) enabled during integration test runs to detect runtime taint flows invisible to SAST
 - [ ] **Local CI parity:** `nektos/act` configured for key jobs (typecheck, lint) so developers can reproduce CI failures locally before pushing
+- [ ] **Vitest 4.1+ test isolation:** `aroundEach` for DB transaction rollback per test (replaces fragile `beforeEach`/`afterEach` cleanup patterns)
+- [ ] **Vitest 4.1+ async leaks:** `detectAsyncLeaks: true` in CI vitest config (converts flaky-test root causes into deterministic failures)
+- [ ] **Vitest 4.1+ tag filtering:** `critical` and `security` tags on high-priority tests for tiered CI gate execution
+- [ ] **Vitest v8 coverage comments:** `/* v8 ignore next N -- @preserve */` (not `/* v8 ignore next N */`) to survive esbuild TypeScript transpilation
 
 **Pipeline / Nightly Layer**
 - [ ] Snyk dependency scan (nightly, on `package-lock.json` changes)
@@ -5249,3 +5253,465 @@ describe('CustomerSupportAgent — scenario tests', () => {
 > [community] **Gotcha (mocking Anthropic SDK for scenarios in TypeScript)**: The Anthropic `@anthropic-ai/sdk` default export is a class, not a function. `vi.mock('@anthropic-ai/sdk')` must be paired with `vi.mocked(Anthropic).mockImplementation(...)` — not `vi.mocked(Anthropic.prototype.messages.create)`. The `as unknown as Anthropic` cast in the mock implementation is required because the mock only implements the subset of the API used by the agent.
 
 > [community] **Lesson (scenario test coverage, production)**: AI agent scenario tests should be stored in `tests/ai/` (separate from unit tests in `src/`) and run as a distinct CI job. This allows the scenario suite to grow without slowing down the pre-commit unit test hook. Use `vitest workspace` to run unit tests and scenario tests as separate projects with different timeout configurations — scenarios may need 30s timeouts for integration-mode tests against real LLMs, while unit tests should complete in < 100ms each.
+
+---
+
+## Vitest 4.1+ — New Shift-Left Patterns (2026)
+
+Vitest 4.1.0 (released 2026) introduced three capabilities directly relevant to shift-left: `aroundEach`/`aroundAll` hooks for context-wrapping test isolation, `--detect-async-leaks` for async resource leak detection, and tag-based test filtering for selective CI gate execution.
+
+### `aroundEach` and `aroundAll` — Context-Wrapping Test Isolation
+
+Unlike `beforeEach`/`afterEach` (which run sequentially before/after the test), `aroundEach` wraps the test inside a context — enabling database transaction rollbacks, `AsyncLocalStorage` propagation, and tracing spans that encompass the entire test body including all its before/after hooks.
+
+```typescript
+// tests/db/user-service.spec.ts — transaction-scoped test isolation with aroundEach
+// Each test runs inside a DB transaction that is rolled back — no cleanup needed
+import { describe, test, expect, aroundEach } from 'vitest';
+import { db } from '../../src/db/client.js';
+import { UserService } from '../../src/services/user.service.js';
+
+// aroundEach: wraps every test in this file in a DB transaction
+// runTest() executes beforeEach hooks, the test body, and afterEach hooks
+aroundEach(async (runTest) => {
+  await db.transaction(async (tx) => {
+    // All DB operations inside runTest() use this transaction
+    await runTest();
+    // Rollback is implicit: transaction is never committed
+    // Each test starts with a clean DB state
+    tx.rollback();
+  });
+});
+
+const service = new UserService(db);
+
+describe('UserService', () => {
+  test('creates a user with a unique email', async () => {
+    const user = await service.create({ email: 'alice@example.com', name: 'Alice' });
+    expect(user.id).toBeDefined();
+    // This INSERT is rolled back after the test — no cleanup needed
+  });
+
+  test('rejects duplicate emails', async () => {
+    await service.create({ email: 'bob@example.com', name: 'Bob' });
+    // Second create in the same transaction — rolled back after test
+    await expect(
+      service.create({ email: 'bob@example.com', name: 'Robert' }),
+    ).rejects.toThrow(/duplicate/i);
+  });
+
+  test('finds a user by email', async () => {
+    await service.create({ email: 'carol@example.com', name: 'Carol' });
+    const found = await service.findByEmail('carol@example.com');
+    expect(found?.name).toBe('Carol');
+  });
+});
+```
+
+```typescript
+// aroundEach with AsyncLocalStorage — propagate request context through all test hooks
+// Useful for: tenant isolation, per-request logging, tracing in integration tests
+import { describe, test, expect, aroundEach } from 'vitest';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+interface RequestContext {
+  readonly requestId: string;
+  readonly tenantId: string;
+}
+
+const requestContext = new AsyncLocalStorage<RequestContext>();
+
+// Wrap every test in a request context — simulates per-request isolation
+aroundEach(async (runTest, testContext) => {
+  const ctx: RequestContext = {
+    requestId: `req_${testContext.task.id}`,  // Unique per test
+    tenantId: 'tenant_test',
+  };
+  // AsyncLocalStorage.run() propagates ctx through all async calls inside runTest()
+  await requestContext.run(ctx, runTest);
+});
+
+describe('tenanted service', () => {
+  test('reads correct tenant context', () => {
+    const ctx = requestContext.getStore();
+    expect(ctx?.tenantId).toBe('tenant_test');
+    // Without aroundEach + AsyncLocalStorage, ctx would be undefined in async tests
+  });
+});
+```
+
+```typescript
+// aroundAll — wrap the entire describe block in one DB setup/teardown
+// Use when ALL tests in a suite share a setup that is expensive to create per-test
+import { describe, test, expect, aroundAll } from 'vitest';
+import { PostgresContainer } from '@testcontainers/postgresql';
+import { drizzle } from 'drizzle-orm/postgres-js';
+
+describe('UserRepository — integration tests', () => {
+  // aroundAll: start a real Postgres container ONCE for this suite
+  aroundAll(async (runSuite) => {
+    const container = await new PostgresContainer('postgres:16-alpine').start();
+    const db = drizzle(container.getConnectionUri());
+    await runMigrations(db);
+
+    // runSuite executes all tests in this describe block
+    await runSuite();
+
+    // Teardown after all tests complete
+    await container.stop();
+  });
+
+  test('inserts and retrieves a record', async () => {
+    // db is available via fixture or module-level variable set in aroundAll
+    // ...
+  });
+});
+
+// Stub for illustration
+async function runMigrations(_db: unknown): Promise<void> {}
+```
+
+**WHY `aroundEach` is superior to `beforeEach`/`afterEach` for DB test isolation:**
+
+| Pattern | Isolation Mechanism | Rollback Guarantee | Context Propagation |
+|---|---|---|---|
+| `beforeEach` insert + `afterEach` DELETE | Manual cleanup | None — afterEach skipped if test throws | Not maintained |
+| `beforeEach` transaction begin + `afterEach` rollback | Explicit rollback | Fragile — state leaks if afterEach is skipped | Not maintained |
+| `aroundEach` + `db.transaction(runTest)` | Automatic rollback | Guaranteed — `db.transaction` always commits or rolls back | Maintained through AsyncLocalStorage |
+
+The critical difference: `afterEach` is a separate execution phase that runs after the test's `finally` blocks. If the test throws, Jest/Vitest still runs `afterEach`, but if `afterEach` itself throws, the next test starts with a dirty database. `aroundEach` wraps the whole thing in a single `try/finally` inside the transaction — the transaction boundary provides the cleanup guarantee, not the test framework's cleanup ordering.
+
+> [community] **Lesson (Vitest 4.1 aroundEach docs)**: The `aroundEach` hook is the correct solution for the "how do I roll back a DB transaction after each test" pattern that teams previously implemented using `beforeEach` + `afterEach` with transaction management. The previous approach had a subtle race condition in parallel test runs: two tests in different workers sharing the same transaction variable would corrupt each other's state. `aroundEach` scopes the transaction to the individual test's execution context.
+
+> [community] **Gotcha (aroundEach + Vitest parallel workers)**: `aroundEach` is scoped to the test file. Each Vitest worker runs a separate file — the `aroundEach` hook is not shared across files. This means each worker independently wraps its tests in transactions, which is the correct behavior for parallel isolation. Do NOT use module-level singletons inside `aroundEach` that are shared across workers — use fixtures (`test.extend()`) to scope resources to individual test execution.
+
+> [community] **Gotcha (aroundEach + Vitest browser mode)**: In Vitest Browser Mode, `aroundEach` is supported but `db.transaction()` patterns are not applicable — browser tests do not have direct database access. Use `aroundEach` for browser tests to wrap component mounts in context providers or tracing spans, not for DB transactions.
+
+---
+
+### `--detect-async-leaks` — Async Resource Leak Detection (Vitest 4.1+)
+
+Async resource leaks occur when a test starts an async operation (timer, network request, file watcher, event listener) that outlives the test's execution. These leaks cause test pollution: a leaked timer from test A fires during test B, producing non-deterministic failures.
+
+`--detect-async-leaks` uses Node.js's `AsyncLocalStorage` and `AsyncHooks` to track unresolved async operations and report them at test end — before they can contaminate subsequent tests.
+
+```typescript
+// vitest.config.ts — enable async leak detection for CI (not pre-commit — adds ~5-10% overhead)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Enable async leak detection in CI; disable locally for speed
+    detectAsyncLeaks: process.env.CI === 'true',
+
+    // Required: forks pool gives each test file an isolated Node.js worker
+    // Threads pool shares the event loop, making leak detection less reliable
+    pool: 'forks',
+
+    environment: 'node',
+    globals: true,
+  },
+});
+```
+
+```typescript
+// src/services/event-emitter.service.spec.ts — example: test that leaks a timer
+import { describe, test, expect } from 'vitest';
+import { EventEmitterService } from './event-emitter.service.js';
+
+// WITHOUT --detect-async-leaks:
+// This test passes, but the leaked setTimeout fires during the NEXT test,
+// potentially causing a non-deterministic failure 500ms later
+describe('EventEmitterService', () => {
+  test('emits events — but leaks a timer', () => {
+    const service = new EventEmitterService();
+    service.startHealthCheck(); // Internally: setInterval(..., 500) — never cleared!
+
+    // Test verifies the emission works, but does NOT stop the health check timer
+    expect(service.isRunning()).toBe(true);
+
+    // WITH --detect-async-leaks: Vitest reports "1 async resource leaked: Timeout"
+    // and fails the test — forcing the developer to add service.stop() in afterEach
+  });
+});
+
+// FIXED: use beforeEach/afterEach to manage the service lifecycle
+describe('EventEmitterService — fixed', () => {
+  let service: EventEmitterService;
+
+  beforeEach(() => {
+    service = new EventEmitterService();
+  });
+
+  afterEach(() => {
+    service.stop(); // Clears the interval — no async leak
+  });
+
+  test('emits events', () => {
+    service.startHealthCheck();
+    expect(service.isRunning()).toBe(true);
+  });
+});
+```
+
+```yaml
+# .github/workflows/vitest-leak-detection.yml — run with async leak detection in CI
+name: Tests with Async Leak Detection
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  unit-tests:
+    name: Unit Tests (async leak detection enabled)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      # CI=true triggers detectAsyncLeaks: true in vitest.config.ts
+      - run: npx vitest run --reporter=verbose
+        env:
+          CI: 'true'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results.xml
+```
+
+**WHY `--detect-async-leaks` is shift-left**: Async leaks are a root cause of flaky tests — they produce intermittent failures that are hard to reproduce locally but appear regularly in CI. Finding them is traditionally done by bisecting the test suite, adding `--bail`, or using `--verbose` to observe which test sequence causes the failure. `--detect-async-leaks` converts the root cause (leaked resource) into an immediate, actionable test failure at the test that created the leak — not at the unrelated test that later fails because of it. This is a shift-left from "flakiness investigation" to "deterministic leak detection."
+
+> [community] **Lesson (Vitest 4.1 release, @AriPerkkio)**: The most common source of async leaks found by `--detect-async-leaks` in practice is uncleared `setInterval` in service classes (health checks, polling, reconnect loops) that are instantiated in tests without lifecycle management. The second most common: `EventEmitter` listeners added in tests that are never removed, causing memory leaks and eventual event listener limit warnings.
+
+> [community] **Gotcha (`--detect-async-leaks` + Vitest threads pool)**: Async leak detection is most reliable in `pool: 'forks'` mode, where each test file runs in an isolated Node.js process. In `pool: 'threads'` mode, the shared V8 event loop context makes it harder for the leak detector to attribute leaked resources to specific tests. If you use `pool: 'threads'` for speed, run with `pool: 'forks'` in a nightly leak-detection job rather than on every PR.
+
+> [community] **Gotcha (performance overhead)**: `--detect-async-leaks` uses Node.js `AsyncHooks` internally, which adds ~5–10% test execution overhead. For a test suite running in 30 seconds, the overhead is acceptable. For a 5-minute suite, consider enabling it only in a nightly job or on PRs targeting `main` (not feature branches). The tradeoff: leak detection overhead vs. the cost of investigating a flaky test in production CI.
+
+---
+
+### Vitest 4.1+ Tag-Based Test Filtering — Tiered Shift-Left Gates
+
+Vitest 4.1.0 introduced native tag support (`--reporter=verbose --project=tag:critical`), enabling teams to assign semantic tags to test cases and filter CI runs to execute only the tests relevant to a change type. This reduces CI gate time for routine changes while keeping full test coverage on risky changes.
+
+```typescript
+// src/services/payment.service.spec.ts — tag-based test organization
+import { describe, test, expect } from 'vitest';
+import { PaymentService } from './payment.service.js';
+
+describe('PaymentService', () => {
+  // Critical path: runs on every PR, every commit
+  test('processes payment with valid card', { tags: ['critical', 'payment'] }, async () => {
+    // ...
+  });
+
+  test('rejects expired cards', { tags: ['critical', 'payment', 'security'] }, async () => {
+    // ...
+  });
+
+  // Regression suite: runs on merges to main and release branches only
+  test('handles concurrent payment requests', { tags: ['regression', 'payment'] }, async () => {
+    // ...
+  });
+
+  // Integration: runs only when payment service files change
+  test('integrates with Stripe webhook', { tags: ['integration', 'payment', 'external'] }, async () => {
+    // ...
+  });
+});
+```
+
+```typescript
+// src/lib/authorization.spec.ts — security tags for prioritized gate execution
+import { describe, test, expect } from 'vitest';
+import { canEditDocument } from './authorization.js';
+
+// All authorization tests tagged 'security' — Stryker and SAST focus on these files
+describe('canEditDocument', { tags: ['critical', 'security', 'authorization'] }, () => {
+  test('admin can edit any document', () => {
+    expect(canEditDocument({ id: 'u1', role: 'admin', isActive: true }, 'other')).toBe(true);
+  });
+
+  test('editor cannot edit others documents', () => {
+    expect(canEditDocument({ id: 'u1', role: 'editor', isActive: true }, 'other')).toBe(false);
+  });
+
+  test('inactive user cannot edit', () => {
+    expect(canEditDocument({ id: 'u1', role: 'admin', isActive: false }, 'any')).toBe(false);
+  });
+});
+```
+
+```yaml
+# .github/workflows/tiered-tests.yml — shift-left tiered gate strategy using tags
+name: Tiered Test Gates
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  # Tier 1: Critical tests only — runs in < 30 seconds, must pass before other gates start
+  critical-tests:
+    name: Critical tests (fast gate — tagged 'critical')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      # --reporter=dot for speed; only run tests tagged 'critical'
+      - run: npx vitest run --reporter=dot --filter="[critical]"
+
+  # Tier 2: Full unit test suite — starts in parallel with Tier 1
+  full-unit-tests:
+    name: Full unit tests + coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      # All tests except integration (tagged 'external')
+      - run: npx vitest run --coverage --exclude-filter="[external]" --reporter=junit --outputFile=test-results.xml
+        env: { CI: 'true' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: test-results, path: test-results.xml }
+
+  # Tier 3: Integration tests — runs only on PRs touching relevant files
+  integration-tests:
+    name: Integration tests (tagged 'integration')
+    runs-on: ubuntu-latest
+    if: >
+      contains(github.event.pull_request.changed_files, 'src/services/') ||
+      contains(github.event.pull_request.changed_files, 'src/clients/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx vitest run --filter="[integration]" --reporter=verbose
+        env: { CI: 'true' }
+```
+
+**WHY tag-based filtering is shift-left**: Without tags, teams run all tests on every PR — which is correct for full coverage but costs minutes of CI time for routine changes (documentation updates, type refactors, config changes). Tag-based filtering allows the PR gate to run only "critical" and "security" tests in < 30 seconds, providing fast feedback for the majority of PRs, while the full suite catches regressions in parallel. Teams that previously disabled their full test suite for speed can now keep both: fast feedback AND full coverage.
+
+> [community] **Lesson (Vitest 4.1 release notes, 2026)**: Tag-based filtering is most valuable for monorepos where running all tests across all packages takes 20+ minutes. Tagging tests as `critical` (fast, most important) and `regression` (slow, comprehensive) enables a CI strategy where feature PRs run `critical` in < 2 minutes, and merges to `main` run `regression` as a nightly or merge-triggered job. This is the tag-based equivalent of the Nx/Turborepo affected test strategy — run what matters, when it matters.
+
+> [community] **Gotcha (tag inheritance)**: Tags defined at the `describe` block level are inherited by all nested `test` calls within that block. A `describe({ tags: ['security'] }, ...)` tags all its tests as `'security'` — you do not need to repeat the tag on each test. However, test-level tags DO NOT propagate up to the describe block — a `test({ tags: ['critical'] }, ...)` inside an untagged describe does not make the describe block "critical." Tag structure flows downward, not upward.
+
+---
+
+### Vitest v8 Coverage — `@preserve` Comment Pattern (TypeScript)
+
+Vitest's V8 coverage provider (default) uses esbuild to transpile TypeScript before instrumentation. esbuild strips all comments by default, including Vitest's coverage ignore hints (`/* v8 ignore next */`, `/* v8 ignore if */`). Without the `@preserve` keyword, coverage ignore comments in TypeScript source are silently removed and coverage is calculated for code you intended to exclude.
+
+```typescript
+// src/lib/config.ts — WRONG: coverage ignore comment stripped by esbuild
+/* v8 ignore next 3 */          // esbuild removes this comment before V8 instruments
+if (process.env.NODE_ENV === 'test') {
+  console.log('Running in test mode');  // V8 instruments this — but you intended to exclude it
+}
+
+// CORRECT: @preserve prevents esbuild from stripping the comment
+/* v8 ignore next 3 -- @preserve */
+if (process.env.NODE_ENV === 'test') {
+  console.log('Running in test mode');  // Now V8 correctly ignores this block for coverage
+}
+```
+
+```typescript
+// src/lib/feature-flags.ts — correct patterns for all Vitest v8 coverage ignore annotations
+// Install: @vitest/coverage-v8
+
+// Pattern 1: ignore the NEXT N lines
+/* v8 ignore next 4 -- @preserve */
+if (typeof window === 'undefined') {
+  // SSR-only code path — not exercised in Node.js unit tests
+  global.window = {} as Window & typeof globalThis;
+}
+
+// Pattern 2: conditional branch ignore — ignore the IF branch only
+/* v8 ignore if -- @preserve */
+if (process.env.ENABLE_EXPERIMENTAL_FEATURE === 'true') {
+  enableExperimentalFeature();
+}
+
+// Pattern 3: ignore ELSE branch
+/* v8 ignore else -- @preserve */
+if (isProduction()) {
+  useProductionConfig();
+} else {
+  useDevelopmentConfig();  // This branch is excluded from coverage calculation
+}
+
+// Pattern 4: ignore a single function (e.g., debug helper not exercised in tests)
+/* v8 ignore start -- @preserve */
+function debugDumpState(state: unknown): void {
+  console.dir(state, { depth: 5 });
+}
+/* v8 ignore stop -- @preserve */
+```
+
+```typescript
+// vitest.config.ts — V8 coverage configuration with esbuild comment preservation
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'html'],
+      include: ['src/**/*.ts'],
+      exclude: [
+        'src/**/*.spec.ts',
+        'src/**/*.test.ts',
+        'src/index.ts',
+        'src/types/**/*.ts',          // Type-only files — no runtime code
+        'src/config/defaults.ts',     // Configuration constants — not worth testing
+      ],
+      thresholds: {
+        lines: 80,
+        functions: 75,
+        branches: 70,
+        statements: 80,
+      },
+    },
+  },
+
+  // Note: esbuild strips comments without @preserve
+  // Alternative: switch to istanbul provider to avoid this issue entirely
+  // (istanbul instruments source before TypeScript transpilation)
+  // tradeoff: istanbul is ~20% slower than v8 for large codebases
+});
+```
+
+**WHY this matters for shift-left**: The `@preserve` pattern is not well-documented — teams discover it only when coverage drops unexpectedly after adding a valid ignore comment. The root cause: esbuild (Vitest's default transpiler) strips all comments before V8 instruments the code. Without `@preserve`, coverage ignore comments are silently discarded, causing V8 to instrument code you intended to exclude — leading to false low-coverage failures in CI that block PRs unnecessarily.
+
+**When to use v8 vs istanbul:**
+
+| Factor | V8 Provider | Istanbul Provider |
+|---|---|---|
+| Speed | Faster (no pre-instrumentation) | ~20% slower (instruments TypeScript source) |
+| `@preserve` required? | Yes — esbuild strips comments | No — Istanbul instruments before transpile |
+| AST accuracy (4.x+) | AST-aware remapping (parity with Istanbul since Vitest 3.2.0) | Battle-tested, accurate |
+| TypeScript ignore hints | Requires `/* v8 ignore next N -- @preserve */` | Standard `/* istanbul ignore next */` works |
+| Recommendation | Default; use `@preserve` pattern | Choose for simpler ignore-comment syntax |
+
+> [community] **Gotcha (Vitest coverage docs, 2026)**: The `@preserve` requirement was documented in the Vitest 4.x release cycle after multiple teams reported that their coverage ignore comments "stopped working" after migrating from Jest (Istanbul) to Vitest (V8). The issue was not a Vitest defect — it is esbuild's standard behavior. Teams migrating from Jest/Istanbul to Vitest V8 must audit all `/* istanbul ignore */` comments and convert them to `/* v8 ignore next N -- @preserve */`.
+
+> [community] **Lesson (production TypeScript teams)**: Coverage ignore comments should be used sparingly and must be justified. Each `/* v8 ignore */` is technical debt — it means a code path exists that tests do not cover. Use them for: platform-specific code paths not exercisable in CI (`typeof window === 'undefined'`), defensive error handlers for theoretically impossible states (`default: throw new Error('unreachable')`), and debug utilities excluded from the test suite by design. Never use them to inflate coverage numbers for code that should be tested.
+
+---
+
+### Key Resources — 2026 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest aroundEach hooks | Official | https://vitest.dev/api/hooks#aroundeach | Transaction-safe test isolation for TypeScript — wraps tests in DB transactions, AsyncLocalStorage contexts, or tracing spans |
+| Vitest --detect-async-leaks | Official | https://vitest.dev/config/#detectasyncleaks | Async resource leak detection — converts flaky test root causes into deterministic failures |
+| Vitest tag-based filtering | Official | https://vitest.dev/guide/filtering#filtering-by-tags | Tiered CI gate strategy: critical tests fast, full suite on merge |
+| Vitest v8 coverage @preserve | Official | https://vitest.dev/guide/coverage#ignoring-code | Required TypeScript pattern for V8 coverage ignore hints — esbuild strips unpreserved comments |

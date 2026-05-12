@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -41,6 +41,21 @@
        Cookie redirect-to-login API surprise — sourced from
        learn.microsoft.com/aspnet/core/release-notes/aspnetcore-10.0 and
        learn.microsoft.com/dotnet/core/whats-new/dotnet-10/libraries
+     Iter 31 (2026-05-12): added C# 14 deep-dives — `extension` blocks (instance/static extension
+       properties, extension operators, generic extension blocks), `field`-backed properties (lazy
+       init, INotifyPropertyChanged pattern, struct readonly rules, breaking change disambiguation),
+       null-conditional assignment (?. on LHS, compound assignment, right-side short-circuit),
+       first-class Span implicit conversions (new conversion matrix, ReadOnlySpan betterness,
+       `Reverse()` returns void breaking change, xUnit Assert.Equal ambiguity, covariant array
+       ArrayTypeMismatchException, expression-tree Span incompatibility); added community gotchas:
+       Span implicit conversion breaks Reverse(), xUnit ambiguity, covariant array crash, expression
+       tree LINQ-to-SQL provider surprise; added ASP.NET Core 10 additional breaking changes —
+       Blazor NavigateTo no longer throws, HttpClient response streaming, exception handler logging
+       suppressed — sourced from learn.microsoft.com/dotnet/csharp/whats-new/csharp-14,
+       learn.microsoft.com/dotnet/csharp/language-reference/keywords/extension,
+       learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/field-keyword,
+       learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/first-class-span-types,
+       learn.microsoft.com/dotnet/csharp/language-reference/operators/member-access-operators
 -->
 
 ## Core Philosophy
@@ -3924,3 +3939,462 @@ builder.Services.AddAuthentication()
 | Using `MemoryPool<T>.Shared` in long-lived background services | Competes with framework internals for shared buffer pool; hard to profile per-service allocations | Use `IMemoryPoolFactory<T>` from DI to get an isolated, disposable pool per service |
 | Finding X.509 certificates by SHA-1 thumbprint in new apps | SHA-1 is weak; SHA-256/SHA-3 certs needed for compliance; old `Find` API only supports SHA-1 | Use `FindByThumbprint(HashAlgorithmName.SHA256, bytes)` for algorithm-specific thumbprint lookup |
 | Writing JS helper shim functions for Blazor property read/write | Boilerplate JS required for every property; round-trips through the JS interop boundary | Use `JS.GetValueAsync<T>` / `JS.SetValueAsync` / `JS.InvokeConstructorAsync` directly from C# (.NET 10+) |
+
+---
+
+## C# 14 — Extension Members (`extension` blocks)
+
+C# 14 introduces `extension` blocks as a new way to declare extension members. Unlike the classic `this`-parameter pattern (which only supports instance methods), `extension` blocks support **instance properties**, **static methods**, **static properties**, and **user-defined operators** — all as first-class extension members on any type. Old-style extension methods continue to work and produce identical IL; the new syntax does not break existing callers.
+
+**Instance extension property and method in one block:**
+
+```csharp
+public static class SequenceExtensions
+{
+    // extension block: 'source' is the receiver — in scope for all instance members
+    extension<TSource>(IEnumerable<TSource> source)
+    {
+        // Extension property — callable as sequence.IsEmpty
+        public bool IsEmpty => !source.Any();
+
+        // Extension method — callable as sequence.SafeFirst()
+        public TSource? SafeFirst()
+        {
+            foreach (var item in source) return item;
+            return default;
+        }
+    }
+
+    // Static extension block — no receiver name needed
+    extension<TSource>(IEnumerable<TSource>)
+    {
+        // Static extension property — callable as IEnumerable<int>.Empty
+        public static IEnumerable<TSource> Empty => Enumerable.Empty<TSource>();
+
+        // Extension operator — callable as seq1 + seq2
+        public static IEnumerable<TSource> operator +(
+            IEnumerable<TSource> left, IEnumerable<TSource> right)
+            => left.Concat(right);
+    }
+}
+```
+
+Usage:
+
+```csharp
+IEnumerable<int> numbers = Enumerable.Range(1, 5);
+
+bool empty = numbers.IsEmpty;        // instance extension property
+int? first = numbers.SafeFirst();    // instance extension method
+var combined = numbers + [6, 7, 8]; // extension operator
+
+var identity = IEnumerable<int>.Empty; // static extension property
+```
+
+**Generic extension blocks with extra type parameters:**
+
+When a member in the block needs an additional type parameter beyond the receiver's, declare it on the member itself:
+
+```csharp
+extension<TReceiver>(IEnumerable<TReceiver> source)
+{
+    // TArg is only needed for this member — declared on the method, not the block
+    public IEnumerable<TReceiver> AppendConverted<TArg>(
+        IEnumerable<TArg> second, Func<TArg, TReceiver> convert)
+    {
+        foreach (var item in source) yield return item;
+        foreach (var item in second) yield return convert(item);
+    }
+}
+```
+
+**Coexistence with old-style extension methods:**
+
+Old `this`-parameter extension methods still compile and behave identically. Migration is binary and source compatible — you can convert an old extension method to the new block syntax without a breaking change. The IL output is the same.
+
+```csharp
+// Old style — still valid, not deprecated
+public static IEnumerable<int> AddValue(this IEnumerable<int> sequence, int operand)
+{
+    foreach (var item in sequence) yield return item + operand;
+}
+
+// New style — equivalent IL, preferred for new code with properties/operators
+extension(IEnumerable<int> sequence)
+{
+    public IEnumerable<int> AddValue(int operand)
+    {
+        foreach (var item in sequence) yield return item + operand;
+    }
+}
+```
+
+---
+
+## C# 14 — `field`-Backed Properties
+
+The `field` contextual keyword lets you reference the compiler-generated backing field from inside a property accessor — without declaring a separate private field. This eliminates the boilerplate "declare backing field, keep name in sync" pattern for custom setters and lazy initialization.
+
+**INotifyPropertyChanged pattern (the motivating use case):**
+
+```csharp
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+
+public class OrderViewModel : INotifyPropertyChanged
+{
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    // Before C# 14: needed a private backing field _status
+    // Now: `field` IS the backing field — scoped to accessors only
+    public string Status
+    {
+        get;
+        set
+        {
+            if (field == value) return;
+            field = value;
+            OnPropertyChanged();
+        }
+    } = "Pending";  // property initializer sets field directly (does NOT call setter)
+
+    private void OnPropertyChanged([CallerMemberName] string? name = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+```
+
+**Lazy initialization:**
+
+```csharp
+public class ReportService
+{
+    // 'field' is null-resilient: compiler infers backing field as string? (nullable)
+    // and does NOT warn about uninitialized in constructor
+    public string Title => field ??= ComputeTitle();
+
+    private static string ComputeTitle() => "Generated Report";
+}
+```
+
+**Mixed accessors — auto get + custom set:**
+
+```csharp
+public class Temperature
+{
+    public double Celsius
+    {
+        get;  // auto-get: reads backing field directly
+        set
+        {
+            if (value < -273.15)
+                throw new ArgumentOutOfRangeException(nameof(value),
+                    "Temperature cannot go below absolute zero.");
+            field = value;
+        }
+    }
+
+    public double Fahrenheit => Celsius * 9 / 5 + 32;
+}
+```
+
+**Breaking change — `field` as an identifier:**
+
+```csharp
+// If your class has a member named 'field', it now silently shadows it in accessors
+public class MyClass
+{
+    private int field;   // <-- this was fine in C# 13
+
+    public int Value
+    {
+        // In C# 14, 'field' inside accessors refers to the synthesized backing field,
+        // NOT this.field — a CS8652 warning fires to alert you
+        get => field;    // WARNING CS8652 in LangVersion 14
+    }
+}
+
+// Fix: qualify the class member explicitly
+public int Value { get => this.field; }
+
+// Or: rename the class member to avoid the conflict
+private int _field;
+```
+
+**Struct `readonly` interaction:**
+
+```csharp
+public struct Measurement
+{
+    // readonly struct or readonly property: backing field is readonly
+    // Mutation in set is a compile error
+    public readonly double Value
+    {
+        get;
+        set  // ERROR: CS191 — field is readonly in a readonly context
+        {
+            field = value;  // cannot mutate readonly field
+        }
+    }
+}
+```
+
+**Field-targeted attributes:**
+
+```csharp
+// [field: ...] targets the synthesized backing field when field is used
+[field: NonSerialized]
+public string CachedValue
+{
+    get => field ??= Compute();
+}
+```
+
+---
+
+## C# 14 — Null-Conditional Assignment
+
+C# 14 allows the null-conditional member access operators (`?.` and `?[]`) on the **left-hand side** of an assignment or compound assignment. The right-hand side is evaluated only when the left-hand side is non-null — enabling safe, concise null-guard assignment without an `if` statement.
+
+```csharp
+public class Order
+{
+    public string? Status { get; set; }
+    public List<string>? Notes { get; set; }
+}
+
+// Before C# 14:
+if (order is not null)
+    order.Status = GetNextStatus();
+
+// C# 14 — null-conditional assignment: equivalent, concise
+order?.Status = GetNextStatus();  // GetNextStatus() called only if order != null
+
+// Indexer assignment with null-conditional:
+messages?[0] = "first message";  // safe even if messages is null
+
+// Compound assignment — += / -= / *= etc. are all allowed:
+order?.Status += " (modified)";  // string concatenation only if order != null
+
+// NOT allowed: ++ and -- are not supported with null-conditional
+// order?.Count++;  // CS0023 — compile error
+```
+
+**Short-circuit evaluation of the right-hand side:**
+
+The right-hand side is only evaluated when the null check passes. This is significant for methods with side effects:
+
+```csharp
+int index = 0;
+int GenerateNextIndex() => ++index;
+
+int[]? values = null;
+values?[2] = GenerateNextIndex();  // GenerateNextIndex() is NOT called — values is null
+Console.WriteLine(index);  // 0
+
+values = new int[5];
+values?[2] = GenerateNextIndex();  // GenerateNextIndex() IS called — values is non-null
+Console.WriteLine(index);  // 1
+Console.WriteLine(values[2]);  // 1
+```
+
+**Thread-safe event raise (classic pattern, still valid):**
+
+```csharp
+// Existing pattern remains canonical — not replaced by null-conditional assignment
+PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Status)));
+```
+
+**Limitations and non-obvious behavior:**
+
+```csharp
+// NOT a variable: cannot be ref-assigned, passed as ref/out, or used as a ref local
+string? firstName = customer?.FirstName;  // this is fine — reading
+// ref string f = ref customer?.FirstName;  // CS8156 — not allowed
+
+// Coexists with existing null-conditional chain:
+// If order is null, none of the chain fires — including the assignment
+order?.Customer?.Address?.City = "Seattle";  // safe — no NullReferenceException
+```
+
+---
+
+## C# 14 — First-Class Span Implicit Conversions
+
+C# 14 promotes `Span<T>` and `ReadOnlySpan<T>` to first-class status by adding **implicit span conversions** as standard conversions recognized by overload resolution, extension method lookup, and generic type inference.
+
+**Conversion matrix (all now implicit):**
+
+| From | To | Notes |
+|------|----|-------|
+| `T[]` | `Span<T>` | New in C# 14 |
+| `T[]` | `ReadOnlySpan<T>` | New in C# 14 (covariant-compatible element types) |
+| `Span<T>` | `ReadOnlySpan<T>` | New in C# 14 |
+| `string` | `ReadOnlySpan<char>` | New in C# 14 |
+| `ReadOnlySpan<TDerived>` | `ReadOnlySpan<TBase>` | Covariance via CastUp |
+
+**Practical benefit — single overload covers array, Span, and ReadOnlySpan:**
+
+```csharp
+// Before C# 14: needed three overloads for full coverage
+public static bool StartsWith<T>(this T[] array, T value) where T : IEquatable<T>
+    => array.AsSpan().StartsWith(value);
+public static bool StartsWith<T>(this Span<T> span, T value) where T : IEquatable<T>
+    => span.Length != 0 && span[0].Equals(value);
+public static bool StartsWith<T>(this ReadOnlySpan<T> span, T value) where T : IEquatable<T>
+    => span.Length != 0 && span[0].Equals(value);
+
+// C# 14: one overload — array and Span both implicitly convert to ReadOnlySpan<T>
+public static bool StartsWith<T>(this ReadOnlySpan<T> span, T value) where T : IEquatable<T>
+    => span.Length != 0 && EqualityComparer<T>.Default.Equals(span[0], value);
+
+// All three now work:
+int[] array = [1, 2, 3];
+Span<int> span = array;
+ReadOnlySpan<int> ros = array;
+bool r1 = array.StartsWith(1);  // C# 14: valid (array → ReadOnlySpan<int>)
+bool r2 = span.StartsWith(1);   // C# 14: valid (Span → ReadOnlySpan<int>)
+bool r3 = ros.StartsWith(1);    // always valid
+```
+
+**Betterness rule — ReadOnlySpan is preferred over Span:**
+
+When both `Span<T>` and `ReadOnlySpan<T>` overloads exist, `ReadOnlySpan<T>` wins. This avoids `ArrayTypeMismatchException` for covariant arrays.
+
+```csharp
+static class C
+{
+    public static void Process<T>(IEnumerable<T> e) => Console.Write("IEnumerable");
+    public static void Process<T>(ReadOnlySpan<T> s) => Console.Write("ReadOnlySpan"); // preferred
+    public static void Process<T>(Span<T> s) => Console.Write("Span");
+}
+
+int[] arr = [1, 2, 3];
+C.Process(arr);  // C# 14: "ReadOnlySpan" (not "IEnumerable")
+```
+
+---
+
+## Real-World Gotchas — C# 14 Span Conversions [community]
+
+### **`Reverse()` on Arrays Returns `void` After Upgrading to C# 14**  [community]
+
+In C# 13, `array.Reverse()` resolved to `Enumerable.Reverse<T>(IEnumerable<T>)`, which returns `IEnumerable<T>`. In C# 14, the new implicit span conversion causes it to resolve to `MemoryExtensions.Reverse<T>(Span<T>)` — which reverses **in place** and returns `void`. WHY it causes problems: code that iterates the result of `.Reverse()` in a `foreach` loop or LINQ chain silently breaks with a compile-time error (`void` is not enumerable). This is a real-world migration break reported widely by the .NET community when updating to .NET 10 / C# 14. Fix: call `Enumerable.Reverse(array)` explicitly, or use `array.AsEnumerable().Reverse()` to force the LINQ overload. .NET 10 adds a `T[].Reverse()` overload returning `IEnumerable<T>` to mitigate new code, but existing code compiled under C# 14 may still need changes.
+
+```csharp
+int[] numbers = [1, 2, 3, 4, 5];
+
+// BAD in C# 14: resolves to MemoryExtensions.Reverse — returns void, not IEnumerable
+// foreach (var n in numbers.Reverse()) { }  // CS0030 compile error
+
+// GOOD: force LINQ overload explicitly
+foreach (var n in Enumerable.Reverse(numbers)) { }
+
+// ALSO GOOD: use AsEnumerable() to prevent span conversion on the receiver
+foreach (var n in numbers.AsEnumerable().Reverse()) { }
+```
+
+### **xUnit `Assert.Equal` Ambiguity with Array Arguments**  [community]
+
+C# 14's new span conversions cause xUnit's `Assert.Equal(T[], T[])` and `Assert.Equal(ReadOnlySpan<T>, Span<T>)` overloads to become ambiguous for array arguments. WHY it causes problems: test code that called `Assert.Equal(expected, actual)` with two arrays now fails to compile in C# 14 because the compiler cannot choose between the array overload and the span overload. Fix: call `.AsSpan()` on one argument to force the span overload, or use `Assert.Equal(expected.AsEnumerable(), actual)`. xUnit v2 adds more specific overloads to resolve this.
+
+```csharp
+int[] expected = [1, 2, 3];
+int[] actual = GetResult();
+
+// BAD in C# 14: CS0121 ambiguous — Assert.Equal<T>(T[], T[]) vs Assert.Equal<T>(ReadOnlySpan<T>, Span<T>)
+// Assert.Equal(expected, actual);
+
+// GOOD: explicit span conversion resolves ambiguity
+Assert.Equal(expected.AsSpan(), actual.AsSpan());
+
+// ALSO GOOD: force IEnumerable overload
+Assert.Equal((IEnumerable<int>)expected, actual);
+```
+
+### **Covariant Array Crash — `Span<T>` Constructor Throws `ArrayTypeMismatchException`**  [community]
+
+C# 14 now prefers `Span<T>` overloads over `IEnumerable<T>` overloads for arrays. This is unsafe for covariant arrays (arrays where the element type was assigned from a more derived type). WHY it causes problems: `new Span<object>(stringArray)` throws `ArrayTypeMismatchException` at runtime because `Span<object>` cannot alias a `string[]`. In C# 13 the `IEnumerable<object>` overload was chosen safely; in C# 14 the `Span<object>` overload is chosen and crashes. Fix: use `ReadOnlySpan<T>` overloads (which are preferred over `Span<T>` by the betterness rule and do not have this covariance issue), or use `.AsEnumerable()` to force the IEnumerable path.
+
+```csharp
+string[] strings = ["a", "b", "c"];
+object[] objects = strings;  // covariant array assignment
+
+static class Processor
+{
+    public static void Run<T>(IEnumerable<T> e) => Console.Write("safe");
+    public static void Run<T>(Span<T> s) => Console.Write("unsafe"); // C# 14 prefers this
+    public static void Run<T>(ReadOnlySpan<T> s) => Console.Write("safe span"); // even more preferred
+}
+
+// DANGEROUS in C# 14 if only Span<T> overload exists:
+// Processor.Run(objects);  // resolves to Span<object>, crashes at runtime
+
+// SAFE: explicitly use IEnumerable path
+Processor.Run(objects.AsEnumerable());
+
+// SAFE: add ReadOnlySpan<T> overload — preferred over Span<T> by betterness rule
+// Processor.Run(objects);  // resolves to ReadOnlySpan<object> — no ArrayTypeMismatchException
+```
+
+### **Expression Tree LINQ Provider Surprise — `MemoryExtensions.Contains` Instead of `Enumerable.Contains`**  [community]
+
+In C# 14, `array.Contains(value)` inside an expression tree now resolves to `MemoryExtensions.Contains` (the Span overload, preferred by new betterness rules), not `Enumerable.Contains`. WHY it causes problems: LINQ-to-SQL, EF Core, and other expression tree interpreters pattern-match on `Enumerable.Contains` to generate SQL `IN` clauses. If they receive `MemoryExtensions.Contains` instead, they either throw `NotSupportedException` or silently fall back to client-side evaluation — loading the full table into memory. Fix: use `Enumerable.Contains(array, value)` explicitly in expression tree lambdas until your ORM updates its visitor.
+
+```csharp
+// BAD in C# 14 inside an expression tree — resolves to MemoryExtensions.Contains
+Expression<Func<int[], int, bool>> expr = (array, num) => array.Contains(num);
+// LINQ-to-SQL / EF Core visitor may not recognize MemoryExtensions.Contains → runtime error
+
+// GOOD: force Enumerable.Contains explicitly
+Expression<Func<int[], int, bool>> safe = (array, num) => Enumerable.Contains(array, num);
+
+// For EF Core queries with IEnumerable (not arrays):
+int[] ids = [1, 2, 3];
+var orders = await db.Orders.Where(o => ids.Contains(o.Id)).ToListAsync(ct);  // safe — ids is array, EF translates
+// Risk only appears when inside Expression<Func<...>> using span-preferred APIs
+```
+
+---
+
+## Real-World Gotchas — C# 14 Language Features [community]
+
+### **`field` Keyword Silently Shadows a Class Member Named `field`**  [community]
+
+If a class has an instance field or property named `field` and you use it inside a property accessor in C# 14, the compiler now resolves `field` to the synthesized backing field — not the class member. WHY it causes problems: in C# 13 the identifier `field` referred to the class member; in C# 14 it silently refers to something different, potentially causing incorrect reads/writes with no runtime error. The compiler emits a warning (CS8652) alerting you to the ambiguity, but it is easy to miss in large codebases during an LangVersion upgrade. Fix: qualify the class member as `this.field`, or rename it to `_field` / `@field`.
+
+### **`field` in Lambda Inside Property Accessor Captures the Backing Field**  [community]
+
+A lambda or local function declared inside a property accessor can capture `field`, and this capture keeps the backing field reachable from outside the property's immediate execution. WHY it causes problems: if you store the lambda (e.g., assign it to a field or pass it to a callback), the captured `field` reference can be mutated or read long after the property's setter/getter completes. In most cases this is intentional (e.g., `field ??= Compute()`), but in cases where the lambda is stored and later invoked, it can lead to unexpected mutation of the property's backing state.
+
+### **`extension` Member Scope — All Members in One Static Class Must Have Unique Signatures**  [community]
+
+`extension` blocks do not introduce a new scope. All members declared across all `extension` blocks in the same `static class` must have globally unique signatures within that class. WHY it causes problems: if two `extension` blocks declare a method with the same name and parameter types (even for different receiver types), a compile error occurs. This differs from overloading behavior developers expect from regular method overloads on a class. Fix: use different static classes for extension members on different receiver types if their method signatures would conflict.
+
+```csharp
+public static class Extensions
+{
+    extension(IEnumerable<int> source)
+    {
+        public bool IsEmpty => !source.Any();
+    }
+
+    extension(IList<int> source)
+    {
+        // ERROR if IsEmpty already declared above — unique signature rule
+        // public bool IsEmpty => source.Count == 0;  // CS0111 duplicate
+    }
+}
+```
+
+---
+
+## Anti-Patterns Quick Reference — C# 14 Additions
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| Calling `.Reverse()` on an array and iterating the result in C# 14 | Resolves to `MemoryExtensions.Reverse` which returns `void` (in-place), not `IEnumerable<T>` | Use `Enumerable.Reverse(array)` or `array.AsEnumerable().Reverse()` explicitly |
+| Passing covariant arrays to a `Span<T>` overload | `new Span<object>(stringArray)` throws `ArrayTypeMismatchException` at runtime | Add a `ReadOnlySpan<T>` overload (preferred by betterness rule) or use `.AsEnumerable()` |
+| Using `array.Contains()` inside LINQ expression trees in C# 14 | Resolves to `MemoryExtensions.Contains` — unsupported by most LINQ-to-SQL/EF visitors | Use `Enumerable.Contains(array, value)` explicitly inside expression-tree lambdas |
+| Having a member named `field` in a class with C# 14 property accessors | Silently shadowed by synthesized backing field; reads/writes wrong thing | Rename to `_field` or use `this.field` qualifier |
+| Declaring extension members with conflicting signatures across `extension` blocks in the same class | All members across all extension blocks in one class share a flat namespace — CS0111 error | Separate extension blocks for conflicting signatures into different static classes |
+| Using null-conditional assignment `?.=` with `++`/`--` | Increment/decrement are not supported with null-conditional assignment (CS0023) | Write an explicit null-check `if (x is not null) x.Count++` |

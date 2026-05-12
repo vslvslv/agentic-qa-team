@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 45 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 46 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -3951,3 +3951,310 @@ url.searchParams.get('q');       // '1' (proper typed access)
 | `queryObjects(BaseClass)` expecting only base instances | Counts subclasses too due to prototype chain; baseline counts are inflated | Query the specific leaf constructor; compare before/after deltas instead of absolutes |
 | `glob(pattern, { exclude: ['**/*.test.js'] })` (array) | `exclude` takes a function, not an array — likely a no-op or TypeError | Use `exclude: (entry) => entry.name.endsWith('.test.js')` |
 | Catching `SuppressedError` as a plain `Error` | Only checks `instanceof Error` — misses the cleanup error in `e.error`; original error in `e.suppressed` | Check `e instanceof SuppressedError`; traverse the chain with `getRootCause()` to find the original trigger |
+
+---
+
+## URLPattern — URL Routing Without a Framework (Baseline 2025 / Node.js 24 Global)
+
+`URLPattern` provides express-style URL pattern matching natively in the browser and in Node.js 24+ (where it is a global). No external routing library needed for route matching, middleware guards, or URL extraction. The syntax is based on `path-to-regexp` — the same library Express uses.
+
+```javascript
+// ── Basic route matching ──────────────────────────────────────────────
+const route = new URLPattern({ pathname: '/users/:id' });
+
+route.test('https://api.example.com/users/42');   // true
+route.test('https://api.example.com/users');       // false
+route.test('https://api.example.com/users/42/posts'); // false
+
+// exec() returns null or a match object with captured groups
+const match = route.exec('https://api.example.com/users/42');
+match?.pathname.groups.id; // '42'
+
+// ── Constrain with regex ──────────────────────────────────────────────
+// Only numeric IDs
+const numericId = new URLPattern({ pathname: '/products/:id(\\d+)' });
+numericId.test('https://api.example.com/products/123'); // true
+numericId.test('https://api.example.com/products/abc'); // false
+
+// ── Multi-component matching ──────────────────────────────────────────
+const fullPattern = new URLPattern({
+  protocol: 'https{+}?',                  // http or https
+  hostname: '{:subdomain.}?example.com',  // optional subdomain
+  pathname: '/api/:version/:resource',
+  search: '*',                             // any query string
+});
+
+const result = fullPattern.exec('https://v2.example.com/api/v2/users?page=1');
+result?.hostname.groups.subdomain;  // 'v2'
+result?.pathname.groups.version;    // 'v2'
+result?.pathname.groups.resource;   // 'users'
+
+// ── Optional trailing slash ──────────────────────────────────────────
+const withSlash = new URLPattern({ pathname: '/docs{/}?' });
+withSlash.test('https://example.com/docs');   // true
+withSlash.test('https://example.com/docs/');  // true
+
+// ── Case-insensitive matching ─────────────────────────────────────────
+const ci = new URLPattern('https://example.com/files/*', { ignoreCase: true });
+ci.test('https://example.com/files/README.md'); // true
+ci.test('https://example.com/files/readme.md'); // true
+
+// ── Wildcard path capture ─────────────────────────────────────────────
+const catchAll = new URLPattern({ pathname: '/docs/:path*' });
+catchAll.exec('https://example.com/docs/api/getting-started')
+  ?.pathname.groups.path;  // 'api/getting-started'
+
+// ── Service Worker use case — match CDN assets ──────────────────────
+// In a service worker, test against request.url to decide caching strategy
+const imagePattern = new URLPattern({ hostname: 'cdn-*.example.com', pathname: '/*.{png,jpg,webp}' });
+self.addEventListener('fetch', event => {
+  if (imagePattern.test(event.request.url)) {
+    // Apply cache-first strategy for CDN images
+    event.respondWith(cacheFirst(event.request));
+  }
+});
+```
+
+**Key differences from `new URL()` + manual checks:**
+- `URLPattern` handles named groups, optional segments, wildcards, and regex constraints declaratively.
+- `test()` is O(1) per pattern — no manual string splitting or regex construction.
+- Works in Web Workers and Service Workers.
+
+**Node.js 24 note:** `URLPattern` became a global in Node.js 24, so `import { URLPattern } from 'node:url'` is no longer needed — it behaves like `URL` and `URLSearchParams`.
+
+---
+
+## AsyncLocalStorage — Request-Scoped Context Without Prop Drilling
+
+`AsyncLocalStorage` provides thread-local-style storage that flows automatically through `async/await` chains, Promises, `setTimeout`, and `setImmediate`. The canonical use case is request-scoped data (request IDs, user identity, trace spans) that would otherwise require passing a context object through every function call.
+
+```javascript
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+// ── Basic setup: one store per concern ───────────────────────────────
+const requestContext = new AsyncLocalStorage();
+
+// Middleware: attach a request ID to the context for this request
+function requestIdMiddleware(req, res, next) {
+  const ctx = { requestId: req.headers['x-request-id'] ?? crypto.randomUUID() };
+  requestContext.run(ctx, next);  // 'next' and everything it calls inherits ctx
+}
+
+// Deep in a service — no req/ctx parameter needed
+function logQuery(sql) {
+  const ctx = requestContext.getStore();
+  console.log({ requestId: ctx?.requestId, sql });
+}
+
+// ── HTTP server example with Express ─────────────────────────────────
+import express from 'express';
+
+const app = express();
+app.use(requestIdMiddleware);
+
+app.get('/users/:id', async (req, res) => {
+  const user = await UserService.findById(req.params.id);
+  // logQuery inside findById logs with the request ID automatically
+  res.json(user);
+});
+
+// ── Multiple stores for different cross-cutting concerns ─────────────
+const authStore  = new AsyncLocalStorage(); // who is making the request
+const traceStore = new AsyncLocalStorage(); // OpenTelemetry span
+
+// Compose: nest run() calls to layer contexts
+authStore.run({ userId: '123', roles: ['admin'] }, () => {
+  traceStore.run({ spanId: 'abc', traceId: 'xyz' }, async () => {
+    await doWork(); // doWork and its callees see both stores
+  });
+});
+
+// ── withScope() — disposable store (Node.js v25.9.0+) ────────────────
+// Works with 'using' for lexically-scoped context — synchronous sections only
+{
+  using _ = requestContext.withScope({ requestId: 'test-123' });
+  syncProcess();  // sees { requestId: 'test-123' }
+  // context automatically reset at end of block
+}
+// Do NOT use withScope() with await inside the block — scope leaks across awaits
+// Use run() for async functions
+
+// ── Nesting: inner run() overrides outer store for that call tree ─────
+const outer = { level: 'outer', requestId: 'req-1' };
+requestContext.run(outer, async () => {
+  // Override just one property for a sub-operation
+  const inner = { ...outer, level: 'inner' };
+  await requestContext.run(inner, async () => {
+    requestContext.getStore().level;  // 'inner'
+  });
+  requestContext.getStore().level;    // back to 'outer'
+});
+```
+
+**Production patterns:**
+- One `AsyncLocalStorage` per cross-cutting concern (request context, trace, auth) — do not put everything in one store.
+- Always use `run()` for async code; reserve `withScope()` for short synchronous blocks.
+- In Node.js 24, `AsyncLocalStorage` defaults to `AsyncContextFrame` — measurably more efficient for high-concurrency servers.
+
+**Community gotcha [community]:** `enterWith()` sets the store for the current execution context **and all sibling event handlers registered after it**. Unlike `run()`, which is scoped to a callback, `enterWith()` contaminates unrelated handlers sharing the same event loop tick. Always prefer `run()` unless you explicitly need to transition the ambient context.
+
+---
+
+## Import Attributes — Typed Non-JS Module Imports (Baseline 2025)
+
+Import attributes (`with { type: "json" }`) tell the runtime how a non-JavaScript module should be loaded and parsed. The `type` attribute validates the server-sent MIME type before executing, preventing MIME-confusion attacks where a CDN accidentally serves a different content type.
+
+**Note:** An earlier `assert` keyword was non-standard and removed. Only `with` is standard.
+
+```javascript
+// ── JSON modules — typed static import ──────────────────────────────
+import config from './config.json' with { type: 'json' };
+// config is parsed as JSON — no eval, no side effects
+// Fails if server sends Content-Type != application/json
+
+console.log(config.version); // "1.2.0"
+
+// JSON modules have ONLY a default export (no named exports)
+// This is a SyntaxError:
+// import { version } from './config.json' with { type: 'json' }; // ❌
+
+// ── Dynamic import with attribute ────────────────────────────────────
+const data = await import('./data.json', {
+  with: { type: 'json' },
+});
+console.log(data.default); // the JSON content
+
+// ── CSS modules (browser only, Chrome/Safari/Edge) ───────────────────
+import styles from './button.css' with { type: 'css' };
+// styles is a CSSStyleSheet — can be adopted into shadow DOM or document
+document.adoptedStyleSheets.push(styles);
+
+// Component shadow DOM adoption:
+class MyButton extends HTMLElement {
+  constructor() {
+    super();
+    const shadow = this.attachShadow({ mode: 'open' });
+    shadow.adoptedStyleSheets = [styles];
+    shadow.innerHTML = `<button><slot></slot></button>`;
+  }
+}
+
+// ── Re-export a JSON module ───────────────────────────────────────────
+export { default as config } from './config.json' with { type: 'json' };
+
+// ── import.meta.resolve() — resolve without importing ────────────────
+// Useful for passing paths to Worker without evaluating the module
+const workerURL = import.meta.resolve('./worker.js');
+const worker = new Worker(workerURL, { type: 'module' });
+```
+
+**Security model:** when the `type` attribute is present and the server returns a mismatched MIME type, the import is rejected with a `TypeError` before any code runs — this blocks an attacker from tricking the browser into parsing a JSON file as a script (or vice versa). Without the `type` attribute, only the file extension guides the runtime.
+
+**Comparison: `type: "json"` vs. `fetch().json()` vs. `createRequire()`:**
+
+| | `import with { type: "json" }` | `fetch().json()` | `require('./file.json')` |
+|---|---|---|---|
+| Static analysis | ✅ bundler-visible | ❌ | ✅ CJS only |
+| Cached per module graph | ✅ | ❌ | ✅ |
+| Works in ESM | ✅ | ✅ | ❌ |
+| MIME validation | ✅ | ❌ | ❌ |
+| Dynamic path | ❌ (static only) | ✅ | ✅ |
+
+---
+
+## Node.js 24 — Platform Changes Summary
+
+Node.js 24 (released April 2026, LTS October 2026) brings several runtime-level changes that affect everyday JavaScript.
+
+```javascript
+// ── URLPattern is now a global (no import needed) ─────────────────────
+// Before Node.js 24:
+// import { URLPattern } from 'node:url';
+// After:
+const pattern = new URLPattern({ pathname: '/api/:version/:resource' });
+
+// ── Permission Model stable (was --experimental-permission) ──────────
+// Process-level capability flags — limit what a Node.js process can access
+// package.json script or CLI:
+// node --permission --allow-fs-read=./src --allow-net=api.example.com server.js
+
+// At runtime: check granted permissions
+process.permission.has('fs.read', './config.json');  // true/false
+process.permission.has('net');                        // depends on flags
+
+// ── dirent.path REMOVED — use dirent.parentPath ───────────────────────
+// Node.js 22 deprecated dirent.path; Node.js 24 removes it
+for await (const dirent of fs.opendir('./src', { recursive: true })) {
+  // BEFORE (deprecated/removed):
+  // const fullPath = path.join(dirent.path, dirent.name);
+  // AFTER (correct):
+  const fullPath = path.join(dirent.parentPath, dirent.name);
+}
+
+// ── Error.isError() — cross-realm error detection ─────────────────────
+// Part of V8 13.6; available natively in Node.js 24+
+// (polyfill available via core-js / es-shims for older environments)
+Error.isError(new Error());         // true
+Error.isError(new TypeError());     // true
+Error.isError(new DOMException());  // true (cross-realm!)
+Error.isError({ message: 'fake' }); // false
+Error.isError({ __proto__: Error.prototype }); // false — spoofing rejected
+
+// Unlike instanceof, works across iframe/realm boundaries:
+const xError = new iframeWindow.Error('from iframe');
+Error.isError(xError);             // true
+xError instanceof Error;           // false — different realm!
+
+// Idiomatic: normalize anything thrown to an Error
+function toError(val) {
+  return Error.isError(val) ? val : new Error(String(val));
+}
+```
+
+**Summary of Node.js 24 breaking changes / removals:**
+
+| What changed | Impact | Migration |
+|---|---|---|
+| `url.parse()` removed | Throws at runtime on Node.js 24 | Replace with `new URL()` |
+| `dirent.path` removed | Throws on directory iteration | Use `dirent.parentPath` |
+| `tls.createSecurePair()` removed | TLS code using it fails | Use `tls.createSecureContext()` + streams |
+| `SlowBuffer` removed | Binary code fails | Use `Buffer.alloc()` or `Buffer.from()` |
+| `--experimental-permission` renamed | Scripts using the old flag fail | Use `--permission` |
+| `URLPattern` is a global | Positive — one fewer import | Delete `import { URLPattern } from 'node:url'` |
+| `AsyncLocalStorage` uses `AsyncContextFrame` | Performance improvement | No code changes needed |
+
+---
+
+## Additional Community Pitfalls (2026 — Platform & Standards)
+
+**46. Using `import assert` Instead of `import with`** [community] — The `assert` keyword for import attributes was a Chrome-only non-standard draft that was replaced by `with` before standardization. WHY it causes problems: `import data from './data.json' assert { type: 'json' }` is a SyntaxError in Firefox, Safari, and Node.js 22+ (which only supports `with`), causing import failures in cross-browser code. Fix: replace all `assert` with `with`; run a codemod or ESLint rule to catch stragglers.
+
+```javascript
+// REMOVED — non-standard; SyntaxError in Firefox, Safari, Node.js 22+
+import data from './data.json' assert { type: 'json' };
+
+// CORRECT — standard 'with' keyword (Baseline 2025)
+import data from './data.json' with { type: 'json' };
+```
+
+**47. `AsyncLocalStorage.enterWith()` Contaminating Sibling Handlers** [community] — Calling `asyncLocalStorage.enterWith(store)` inside an event handler sets the store for that handler AND every subsequent synchronous listener registered on the same emitter tick. WHY it causes problems: unrelated event handlers registered after the one calling `enterWith()` see a context they did not set up — unexpected user IDs, request IDs, or trace spans appear in code that should have no context. Fix: always use `run(store, callback)` for isolated, scoped context; reserve `enterWith()` only when you intentionally want the context to persist for the rest of the current synchronous execution.
+
+**48. Named JSON Imports from JSON Modules** [community] — Attempting to use named imports from a JSON module (`import { version } from './package.json' with { type: 'json' }`) is a `SyntaxError`. WHY it causes problems: TypeScript and bundlers like Webpack have historically supported named JSON imports as a non-standard extension — developers accustomed to this pattern are surprised when native ESM rejects it. Fix: use the default import and destructure: `import pkg from './package.json' with { type: 'json' }; const { version } = pkg;`.
+
+**49. `URLPattern` Constructor Accepts String OR Object — Not Both** [community] — `new URLPattern('https://example.com/users/:id', { ignoreCase: true })` works as expected, but `new URLPattern({ pathname: '/users/:id' }, 'https://example.com', { ignoreCase: true })` does not exist — the third parameter is not a valid overload. WHY it causes problems: developers mix the two constructor signatures and get unexpected behavior or a `TypeError`. Fix: use string form for full URL patterns with options (`new URLPattern(str, options)`); use object form for component-by-component patterns where `ignoreCase` is set on the object itself.
+
+**50. `process.permission.has()` Only Reflects Startup Flags** [community] — `process.permission.has('fs.read', '/etc/passwd')` does NOT perform a runtime access check — it only checks whether the flag `--allow-fs-read=/etc/passwd` (or a pattern covering it) was passed at startup. WHY it causes problems: developers use it as a dynamic guard expecting it to reflect OS-level permissions, but it is purely a Node.js permission model check. An `--allow-fs-read=*` flag would make `has('fs.read', anything)` return `true` even for files the OS would deny. Fix: treat `process.permission.has()` as "was this capability granted at launch?" — not as a substitute for OS file permission checks.
+
+---
+
+## Additional Anti-Patterns (Platform & Standards 2026)
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `import ... assert { type: 'json' }` | Non-standard; SyntaxError in Firefox, Safari, Node.js 22+ | Replace `assert` with `with`: `import ... with { type: 'json' }` |
+| Named imports from JSON modules | SyntaxError in native ESM — JSON has only a default export | Use `import pkg from '...' with { type: 'json' }` then destructure |
+| `asyncLocalStorage.enterWith()` in shared event handlers | Contaminates sibling handlers registered in the same tick | Use `run(store, fn)` for isolated, scoped context |
+| `process.permission.has()` as a runtime access guard | Only reflects startup flags — not OS-level permissions | Use it to check Node.js permission model grants; rely on OS/RBAC for security |
+| `dirent.path` in Node.js 24+ | Removed — throws `TypeError` on directory iteration | Use `dirent.parentPath` (available since Node.js 21.4) |
+| `new URLPattern({ pathname })` with positional `ignoreCase` | Wrong overload — `ignoreCase` in object form needs different syntax | String form: `new URLPattern(str, { ignoreCase: true })`; object form: set `ignoreCase` per component |
+| `Error.isError` polyfill conflicts with native | Polyfill and native use different brand-check mechanisms — result may differ across realms | Remove the polyfill once your minimum Node.js version is 24+; use feature detection `typeof Error.isError === 'function'` |

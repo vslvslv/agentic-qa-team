@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
 <!-- This-run additions (iter 11-20): WDIO v9 BiDi features, aria/ selector, eslint-plugin-wdio, browser.mock() network interception,
      mobile:pressButton complete reference, Android mobile:deepLink, TypeScript 'using' keyword, browser.executeAsync(),
      appium:mjpegServerPort, @wdio/visual-service advanced options, appium:newCommandTimeout, Android AVD CI launch,
@@ -23,6 +23,14 @@
      relaunchActiveApp() soft reset pattern + 2 gotchas, touchId() faceId type + withBiometricAuth helper + 2 gotchas,
      gsmCall() telephony action table + sendSms() + gsmSignal() + 2 gotchas,
      getClipboard()/setClipboard() clipboard testing + 3 gotchas, lock()/unlock() + isLocked() + 2 gotchas -->
+<!-- iter 26 additions: defineConfig() typed config helper (v9.12) + 2 gotchas,
+     browser.deepLink() / browser.restartApp() native commands (v9.10) + 6 gotchas,
+     maskingPatterns sensitive data masking (v9.15) + 3 gotchas,
+     @wdio/xvfb service Linux CI virtual display (v9.19) + 3 gotchas,
+     Appium Inspector CLI npx wdio inspector (v9.22) + 2 gotchas,
+     browser.url() enhanced options headers/auth/onBeforeLoad + 3 gotchas,
+     browser.emulate() additional modes colorScheme/userAgent/onLine + 3 gotchas,
+     native DOM snapshot toMatchSnapshot()/toMatchInlineSnapshot() WDIO v9 + 3 gotchas -->
 
 ## TypeScript Project Setup
 
@@ -12611,27 +12619,527 @@ The `@wdio/allure-reporter` automatically reads `ALLURE_TESTPLAN_PATH`, skips te
 
 ---
 
-## Source: Iteration Log (Run 2026-05-12, Iteration 25)
+## `defineConfig()` — Type-Safe Configuration Helper (v9.12)
 
-<!-- iteration: 25 | score: 100/100 | date: 2026-05-12 -->
-<!-- Additions this run (iter 25):
-     - Appium 3 protocol command rename table (37 commands appium-prefixed) + compatibility wrappers + 3 gotchas
-     - Screen recording API: startRecordingScreen/stopRecordingScreen iOS+Android params + beforeEach/afterEach hook pattern + 3 gotchas
-     - browser.on() event monitoring: command/result/bidiCommand/bidiResult/request.* events + perf monitoring example + 3 gotchas
-     - browser.addInitScript() with emit() BiDi pattern: DOM mutation observer, JS error capture + 3 gotchas
-     - TypeScript 7 erasableSyntaxOnly: enum→const migration, namespace removal, parameter property fix + 3 gotchas
-     - disableElementImplicitWait v9.27.1 fix: what it controls, config placement gotcha + 2 gotchas
-     - Allure historyId fix v9.27.1: capability-keyed history, ALLURE_TESTPLAN_PATH test plan filtering + 2 gotchas
+`defineConfig()` wraps the raw configuration object and returns it with full TypeScript inference. Before v9.12, teams had to import `Options.Testrunner` manually and cast the export; `defineConfig` makes this zero-config.
+
+```typescript
+// wdio.conf.ts — v9.12+ recommended pattern
+import { defineConfig } from '@wdio/config';
+import type { Options } from '@wdio/types';
+
+export const config = defineConfig({
+  runner: 'local',
+  framework: 'mocha',
+  reporters: ['spec'],
+  capabilities: [
+    {
+      platformName: 'Android',
+      'appium:automationName': 'UiAutomator2',
+      'appium:deviceName': 'emulator-5554',
+      'appium:app': './apps/android.apk',
+    },
+  ],
+  services: [
+    ['appium', {
+      args: {
+        address: '127.0.0.1',
+        port: 4723,
+      },
+    }],
+  ],
+  waitforTimeout: 10_000,
+  connectionRetryCount: 3,
+});
+```
+
+Key benefits:
+- IDE autocomplete for all config keys (no manual `Options.Testrunner` import needed).
+- Type errors surface at `defineConfig({})` call site rather than at runtime.
+- Capability objects are narrowed to `WebDriver.Capabilities` so extra typos are caught at compile time.
+
+**[community] `defineConfig` was added in v9.12.6 — projects on v9.12.0–v9.12.5 must import `Options.Testrunner` manually:** WHY: The initial v9.12 patch series backfilled the type helper; the function signature is absent in minor builds before `.6`. Fix: run `npm update webdriverio @wdio/cli @wdio/types` to pull the latest patch, or use the manual typed export `export const config: Options.Testrunner = { ... }` as a fallback.
+
+**[community] `defineConfig` does not merge environment overrides — it is a type-passthrough, not a config loader:** WHY: Teams migrating from `dotenv`-based config builders sometimes expect `defineConfig` to behave like `defineConfig({ ...base, ...env })` with deep merge logic. It is a thin TypeScript identity function only. Fix: keep your environment-merge logic (`process.env` reads, `Object.assign`) outside `defineConfig` and pass the merged result to it.
+
+---
+
+## `browser.deepLink()` and `browser.restartApp()` — Native First-Class Commands (v9.10)
+
+WDIO v9.10 introduced `browser.deepLink()` and `browser.restartApp()` as native browser commands, replacing the `driver.execute('mobile: deepLink', ...)` and `activateApp`/`launchApp` patterns. These commands resolve cross-platform differences internally.
+
+### `browser.deepLink(link, packageName?)`
+
+Navigates to a deep link URL. On iOS, uses Safari to resolve the URL and hand off to the app. On Android, fires the corresponding intent using the Android URL resolver.
+
+```typescript
+// test/specs/navigation/deeplink.spec.ts
+import { browser } from '@wdio/globals';
+
+describe('Deep link navigation', () => {
+  it('should open product detail via deep link (iOS + Android)', async () => {
+    // Cross-platform: WDIO v9.10+ handles platform routing internally
+    await browser.deepLink('myapp://product/sku-9876');
+    await expect($('~product-title')).toBeDisplayed();
+  });
+
+  it('should open account settings deep link on Android with explicit package', async () => {
+    // Pass packageName to avoid Android disambiguation dialog
+    await browser.deepLink('myapp://settings/account', 'com.example.myapp');
+    await expect($('~account-header')).toBeDisplayed();
+  });
+});
+```
+
+**Migration from `execute('mobile: deepLink', ...)` to `browser.deepLink()`:**
+
+```typescript
+// ❌ BEFORE (v9 < 9.10 / Appium execute pattern)
+await driver.execute('mobile: deepLink', {
+  url: 'myapp://product/123',
+  package: 'com.example.myapp',
+});
+
+// ✅ AFTER (v9.10+ native command)
+await browser.deepLink('myapp://product/123', 'com.example.myapp');
+```
+
+### `browser.restartApp()`
+
+Terminates and relaunches the app under test within the same Appium session. Faster than a full session reset because it does not tear down the WebDriver connection.
+
+```typescript
+// test/specs/onboarding/fresh-start.spec.ts
+import { browser } from '@wdio/globals';
+
+describe('App restart behaviour', () => {
+  it('should show onboarding after a full restart', async () => {
+    // Complete some flow that sets a "seen onboarding" flag
+    await $('~dismiss-onboarding').click();
+    await browser.terminateApp('com.example.myapp');
+
+    // Cold restart via WDIO native command
+    await browser.restartApp();
+
+    // Verify flag is persisted (onboarding NOT shown after restart)
+    await expect($('~onboarding-screen')).not.toBeDisplayed();
+  });
+
+  it('should recover from crash-like state without new session', async () => {
+    // Simulate crash by forcing kill through Appium
+    await browser.execute('mobile: terminateApp', { bundleId: 'com.example.myapp' });
+
+    await browser.restartApp();
+    await expect($('~splash-logo')).toBeDisplayed();
+  });
+});
+```
+
+**Comparison — `browser.restartApp()` vs `relaunchActiveApp()` vs `activateApp()` vs `launchApp()`:**
+
+| Command | Effect | Session | Use case |
+|---------|--------|---------|----------|
+| `browser.restartApp()` | Terminate + relaunch in same session | Preserved | Restart after crash, test cold-start flows |
+| `relaunchActiveApp()` | Terminate + relaunch same session | Preserved | Soft reset between tests |
+| `activateApp(bundleId)` | Bring backgrounded app to foreground | Preserved | Resume after `background()` |
+| `launchApp()` | **Deprecated** — start a new app in session | Preserved | Legacy only |
+| Full session reset | Tear down + new Appium session | New session | Wipe all app state + session data |
+
+**[community] `browser.restartApp()` uses the app capability from the original session — it cannot relaunch a different app:** WHY: The command reads `appium:app` (or `appium:bundleId`/`appium:appPackage`) from the session capabilities. If you want to relaunch a *different* app (e.g., to test an inter-app flow), use `browser.activateApp(altBundleId)` followed by `browser.terminateApp(altBundleId)` instead.
+
+**[community] On Android, `browser.restartApp()` clears the backstack but does NOT clear `SharedPreferences` or `SQLite` data:** WHY: A terminate-relaunch cycle in the same session does not call `adb shell pm clear`. If your test assumes a clean datastore, combine with `adb shell pm clear` in a `beforeEach` hook or use `appium:fullReset: true` for a true clean install. Fix: add `await driver.execute('mobile: clearApp', { appId: 'com.example.myapp' })` before `restartApp()` when data isolation is required.
+
+**[community] On iOS, `browser.restartApp()` sends `XCUIApplication().terminate()` + `XCUIApplication().launch()`:** WHY: This is identical to pressing Home then tapping the icon — it does NOT clear NSUserDefaults or Keychain. Fix: if you need a keychain wipe between tests, call `mobile: clearKeychain` before `restartApp()`.
+
+---
+
+## Sensitive Data Masking for Reporters (v9.15)
+
+WDIO v9.15 added `maskingPatterns` — a config-level array of regular expressions that redact matched strings before they reach any reporter (spec reporter, Allure, JUnit, etc.).
+
+```typescript
+// wdio.conf.ts — redact tokens, passwords, and API keys from all reporter output
+import { defineConfig } from '@wdio/config';
+
+export const config = defineConfig({
+  maskingPatterns: [
+    // Bearer tokens in HTTP headers / auth injections
+    /Bearer\s+[A-Za-z0-9\-._~+/]+=*/g,
+    // Password fields (e.g. login test data strings passed to setValue)
+    /password["']?\s*[:=]\s*["']?[\w@#$!%^&*()-]+["']?/gi,
+    // AWS / generic API keys (32-char hex)
+    /[A-Z0-9]{20,40}/g,
+    // Custom secret pattern — replace with env var name
+    new RegExp(process.env.CI_SECRET_TOKEN ?? '^$', 'g'),
+  ],
+
+  capabilities: [/* ... */],
+  // ...
+});
+```
+
+**How masking works:** Before each reporter receives a test log entry or assertion message, WDIO replaces every match in the string with `****`. The source test code is not modified.
+
+```typescript
+// test/specs/auth/login.spec.ts
+it('should log in with service account', async () => {
+  const servicePassword = process.env.SERVICE_PASSWORD!; // e.g. "s3cr3t@2026!"
+
+  await $('~username-input').setValue('service@example.com');
+  await $('~password-input').setValue(servicePassword);  // ← masked in reporter output
+  await $('~login-button').click();
+
+  await expect($('~home-screen')).toBeDisplayed();
+});
+// Reporter sees: setValue("****") — not the actual password
+```
+
+**[community] `maskingPatterns` applies globally — overly broad regexes silently redact legitimate test names:** WHY: A pattern like `/[A-Z]{4,}/g` would redact test titles such as `LOGIN_FLOW`, `CHECKOUT_FORM`, etc. Fix: use anchored patterns or narrow character classes; test patterns locally against sample output with `String.prototype.replace` before adding to config.
+
+**[community] Masking does not apply to artifact files written by `saveScreenshot` or `saveRecordingScreen`:** WHY: `maskingPatterns` only intercepts the reporter string pipeline. Screenshots and recordings contain raw pixel data which is not text-processed. Fix: if screenshots must not contain sensitive data (e.g. a modal showing a token), add `browser.execute(() => document.querySelectorAll('.sensitive').forEach(el => el.style.visibility = 'hidden'))` before `saveScreenshot()`.
+
+**[community] `maskingPatterns` is not applied retroactively to `console.log` output from test files:** WHY: Direct `console.log` in tests writes to stdout before the WDIO reporter pipeline. Fix: use `browser.log()` or a custom logger that goes through the reporter pipeline; or pipe stdout through a `sed -E 's/Bearer [^ ]*/Bearer ****/g'` in CI before archiving artifacts.
+
+---
+
+## `@wdio/xvfb` Service — Virtual Display for Linux CI (v9.19)
+
+`@wdio/xvfb` launches an Xvfb (X virtual framebuffer) display server before the WDIO session starts, enabling headful browser-based tests on headless Linux CI agents. It is most useful when running Appium with Chrome/Firefox in emulator WebView mode, or when a native desktop app requires an X display.
+
+```bash
+npm install --save-dev @wdio/xvfb
+```
+
+```typescript
+// wdio.conf.ts — add xvfb service for Linux CI environments
+import { defineConfig } from '@wdio/config';
+
+export const config = defineConfig({
+  services: [
+    ['xvfb', {
+      // Auto-install Xvfb if not found (apt-get install xvfb on Debian/Ubuntu)
+      xvfbAutoInstall: true,
+      // Auto-start Xvfb before the session; set DISPLAY env var
+      // (Default display: ':99')
+      displayNum: 99,
+      // Xvfb screen dimensions
+      screenWidth: 1920,
+      screenHeight: 1080,
+      screenDepth: 24,
+    }],
+    ['appium', { /* ... */ }],
+  ],
+  capabilities: [/* ... */],
+});
+```
+
+**GitHub Actions example (Ubuntu runner):**
+
+```yaml
+# .github/workflows/mobile-ci.yml
+jobs:
+  e2e:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm ci
+      # Xvfb is handled by @wdio/xvfb service — no manual xvfb-run wrapper needed
+      - name: Run WDIO tests
+        run: npx wdio run wdio.conf.ts
+        env:
+          DISPLAY: ':99'     # pre-set if needed; service sets this automatically
+```
+
+**[community] `@wdio/xvfb` and `@wdio/appium-service` must be ordered with `xvfb` first in the `services` array:** WHY: Services start in array order. If Appium starts before Xvfb, any Chromium child process launched by Appium for WebView automation inherits a null `DISPLAY` and crashes. Fix: always place `'xvfb'` before `'appium'` in `services`.
+
+**[community] `xvfbAutoInstall: true` silently does nothing on non-Debian/Ubuntu distributions:** WHY: The auto-install logic runs `sudo apt-get install -y xvfb`. On RHEL, Alpine, or macOS, the command fails (or `apt-get` is missing) and the service proceeds without Xvfb, causing cryptic display errors. Fix: pre-install Xvfb in your CI image (`yum install -y Xvfb` / `apk add xvfb`); disable `xvfbAutoInstall`.
+
+**[community] `@wdio/xvfb` is a no-op on macOS and Windows — unnecessary for non-Linux environments:** WHY: On non-Linux systems the service detects the platform and skips Xvfb setup silently. Keeping it in the config is safe for cross-platform configs but adds a no-op service call. Fix: gate it conditionally or use a shared config for Linux CI and a local config without it.
+
+---
+
+## Appium Inspector CLI Launch from WDIO (v9.22)
+
+WDIO v9.22 added the ability to launch Appium Inspector directly from the WDIO CLI, using the capabilities in `wdio.conf.ts` to pre-populate the Inspector session configuration. This eliminates the need to manually enter capabilities in the Appium Inspector GUI.
+
+```bash
+# Launch Inspector using capabilities from wdio.conf.ts
+npx wdio inspector
+
+# Specify a config file explicitly
+npx wdio inspector --config wdio.android.conf.ts
+
+# Launch with a specific capability index (0-based)
+npx wdio inspector --config wdio.conf.ts --capability 1
+```
+
+**How it works:** The command reads `capabilities[N]` from your WDIO config, merges it with any configured Appium server settings, and opens Appium Inspector with those capabilities pre-filled. The Inspector GUI opens in your default browser.
+
+```typescript
+// wdio.conf.ts — capabilities used by `npx wdio inspector`
+export const config = defineConfig({
+  capabilities: [
+    {
+      // Capability index 0 — used by `npx wdio inspector` (default)
+      platformName: 'iOS',
+      'appium:automationName': 'XCUITest',
+      'appium:deviceName': 'iPhone 16',
+      'appium:platformVersion': '18.0',
+      'appium:app': path.resolve('./apps/ios/MyApp.app'),
+      'appium:udid': process.env.IOS_DEVICE_UDID,
+    },
+    {
+      // Capability index 1 — used by `npx wdio inspector --capability 1`
+      platformName: 'Android',
+      'appium:automationName': 'UiAutomator2',
+      'appium:deviceName': 'emulator-5554',
+      'appium:app': path.resolve('./apps/android/app-debug.apk'),
+    },
+  ],
+  // ...
+});
+```
+
+**[community] `npx wdio inspector` requires Appium server to be running or `@wdio/appium-service` in the config:** WHY: Inspector needs a running Appium instance to attach to. If you use `@wdio/appium-service`, WDIO starts Appium automatically before Inspector opens. Without the service, start Appium manually (`npx appium`) before running `npx wdio inspector`.
+
+**[community] The `--capability` index must match exactly — it uses array position, not capability name:** WHY: WDIO's capability list is positional. If you reorder capabilities in the config, the index changes silently. Fix: add a comment above each capability object noting its index; or use a named constant: `const ANDROID_CAP_INDEX = 1`.
+
+---
+
+## `browser.url()` v9 Enhanced Options
+
+WDIO v9 extended `browser.url()` with optional parameters for headers, authentication, and page pre-load script injection. These are particularly useful for hybrid app WebView testing where the web layer requires auth headers or needs feature flags injected before page load.
+
+```typescript
+// Basic URL navigation with request headers
+await browser.url('https://app.example.com/dashboard', {
+  headers: {
+    'X-Custom-Header': 'my-value',
+    'X-Feature-Flag': 'enable-beta-ui',
+  },
+});
+
+// Basic auth (avoids manual alert handling)
+await browser.url('https://staging.example.com/', {
+  auth: {
+    user: process.env.STAGING_USER!,
+    pass: process.env.STAGING_PASS!,
+  },
+});
+
+// onBeforeLoad — inject or override browser APIs before page JS runs
+await browser.url('https://app.example.com', {
+  onBeforeLoad(win: Window & typeof globalThis): void {
+    // Stub out battery API before the page reads it
+    (win.navigator as Navigator & { getBattery?: () => Promise<BatteryManager> }).getBattery =
+      () => Promise.resolve({ level: 0.8, charging: true } as BatteryManager);
+
+    // Override geolocation to a fixed coordinate
+    win.navigator.geolocation.getCurrentPosition = (success) => {
+      success({
+        coords: { latitude: 51.5, longitude: -0.1, accuracy: 10 } as GeolocationCoordinates,
+        timestamp: Date.now(),
+      } as GeolocationPosition);
+    };
+  },
+});
+```
+
+**Mobile WebView use case — inject an auth token before SPA bootstrap:**
+
+```typescript
+// test/helpers/webviewNavigate.ts
+import type { Browser } from 'webdriverio';
+
+/** Navigate to WebView URL and inject auth token before SPA mounts. */
+export async function navigateWithToken(
+  driver: Browser,
+  url: string,
+  token: string,
+): Promise<void> {
+  await driver.url(url, {
+    onBeforeLoad(win) {
+      // Write the token to localStorage so the SPA reads it on init
+      win.localStorage.setItem('auth_token', token);
+    },
+  });
+}
+```
+
+**[community] `browser.url()` `headers` option is BiDi-only and silently ignored on classic WebDriver sessions:** WHY: Request header injection requires WebDriver BiDi protocol support. If `webSocketUrl: true` is not in capabilities (or the remote grid doesn't support BiDi), `headers` is silently ignored. Fix: verify `browser.isBidi === true` before using headers; fall back to `browser.mock()` with `request({ headers: ... })` for classic sessions.
+
+**[community] `onBeforeLoad` runs in page context — `win` is the remote window object, not the local Node.js global:** WHY: The callback body is serialized and sent to the browser via `execute`. Closures over outer variables fail unless primitive. Fix: pass data via function arguments using `browser.addInitScript` if you need more complex state; `onBeforeLoad` is best for single-argument stub overrides.
+
+**[community] `auth` option does not handle SPA-level auth redirects — only initial HTTP Basic auth challenges:** WHY: `auth` maps to `http://user:pass@host/` style credentials. SPAs that rely on OAuth flows or JWT-based redirects ignore this. Fix: use `browser.url()` `auth` for basic-auth-protected staging environments; use cookie injection or `addInitScript` token storage for OAuth-based SPAs.
+
+---
+
+## `browser.emulate()` — Additional Modes: `colorScheme`, `userAgent`, `onLine`
+
+The WDIO v9 `browser.emulate()` API supports three additional modes beyond `clock`, `geolocation`, and `device` (documented in an earlier section). These are useful for WebView testing where you need to simulate OS-level or network-level conditions.
+
+### `colorScheme` — Dark/Light Mode Emulation
+
+```typescript
+// Test a WebView component in dark mode
+it('should render dark-mode styles in WebView', async () => {
+  // Switch to WebView context first
+  await browser.switchContext('WEBVIEW_com.example.app');
+
+  await browser.emulate('colorScheme', 'dark');
+  await expect($('body')).toHaveElementClass('dark-theme');
+
+  await browser.emulate('colorScheme', 'light');
+  await expect($('body')).not.toHaveElementClass('dark-theme');
+});
+```
+
+### `userAgent` — Custom User-Agent String
+
+```typescript
+// Simulate an older iOS user-agent to test UA-sniffing code paths
+it('should show compatibility banner for outdated iOS', async () => {
+  await browser.switchContext('WEBVIEW_com.example.app');
+  await browser.emulate(
+    'userAgent',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 13_0 like Mac OS X) AppleWebKit/605.1.15',
+  );
+  await browser.url('https://app.example.com/landing');
+  await expect($('[data-testid="compatibility-warning"]')).toBeDisplayed();
+});
+```
+
+### `onLine` — Offline State Emulation
+
+```typescript
+// Test offline UI banner in a WebView
+it('should display offline banner when navigator.onLine is false', async () => {
+  await browser.switchContext('WEBVIEW_com.example.app');
+
+  await browser.emulate('onLine', false);
+  await browser.url('https://app.example.com/feed');
+  await expect($('[data-testid="offline-banner"]')).toBeDisplayed();
+
+  // Restore online state
+  await browser.emulate('onLine', true);
+  await expect($('[data-testid="offline-banner"]')).not.toBeDisplayed();
+});
+```
+
+**Important caveats:**
+
+**[community] `browser.emulate('onLine', false)` does NOT block actual network traffic — it only sets `navigator.onLine`:** WHY: The BiDi protocol modifies the browser's `navigator.onLine` property but does not intercept XHR/fetch requests. SPAs that make network calls regardless of `navigator.onLine` will continue to fetch. Fix: combine with `browser.mock('**/api/**', { abort: true })` to simulate true network failure; use `emulate('onLine', false)` only for UI/UX assertions that react to the property.
+
+**[community] `browser.emulate('colorScheme', ...)` requires WebView context — it has no effect on native Appium elements:** WHY: The color scheme emulation sets `window.matchMedia('(prefers-color-scheme: dark)')` behavior. Native app UI layers (UIKit, Jetpack Compose) do not use `matchMedia`. Fix: for native dark-mode testing use `device.setAppearance('dark')` (Detox) or an Appium `mobile: setAppearance` execute command; use `browser.emulate('colorScheme', ...)` exclusively for WebView/hybrid content.
+
+**[community] Emulated `userAgent` persists for the entire context navigation — not just the current URL:** WHY: The `emulate('userAgent', ...)` call sets a session-level UA override via BiDi. Subsequent `browser.url()` calls in the same WebView context use the overridden UA. Fix: always call `browser.emulate('userAgent', originalUA)` (or use `browser.restore()`) after UA-sensitive tests; wrap in a `try/finally` block.
+
+---
+
+## Native DOM Snapshot Testing — `toMatchSnapshot()` and `toMatchInlineSnapshot()` (WDIO v9)
+
+WDIO v9 integrates `expect-webdriverio` snapshot matchers natively. Unlike the manual JSON-file workaround documented earlier in this guide, these matchers use the same Jest-compatible snapshot mechanism built into the WDIO assertion library.
+
+> **Note:** The earlier section "Snapshot Testing with `toMatchInlineSnapshot` — TypeScript Integration" in this guide shows a community workaround for `expect-webdriverio` < v5. WDIO v9 ships with expect-webdriverio v5+ which includes native snapshot support.
+
+### DOM Element Snapshots
+
+`toMatchSnapshot()` serializes the element's outer HTML (including Shadow DOM, converted to Declarative Shadow DOM format) and compares it to a stored snapshot file.
+
+```typescript
+// test/specs/product/productCard.spec.ts
+import { $, browser } from '@wdio/globals';
+
+describe('ProductCard component', () => {
+  beforeEach(async () => {
+    await browser.url('https://app.example.com/products');
+  });
+
+  it('should match product card DOM snapshot', async () => {
+    const card = await $('[data-testid="product-card-1"]');
+    // First run: creates ./__snapshots__/productCard.spec.ts.snap
+    // Subsequent runs: compares against stored snapshot
+    await expect(card).toMatchSnapshot();
+  });
+
+  it('should match with excluded dynamic attributes', async () => {
+    // Exclude timestamp-based IDs from snapshot comparison
+    await expect($('[data-testid="feed-item"]')).toMatchSnapshot({
+      excludeElements: ['[data-timestamp]', 'time'],
+    });
+  });
+});
+```
+
+### Inline Snapshots (stored in source file)
+
+`toMatchInlineSnapshot()` writes the serialized value directly into the test file as a template literal, removing the need for a separate `.snap` file.
+
+```typescript
+it('should match product price inline', async () => {
+  const priceEl = await $('[data-testid="price-display"]');
+  await expect(priceEl.getCSSProperty('color')).toMatchInlineSnapshot(`
+    {
+      "parsed": {
+        "alpha": 1,
+        "hex": "#1a73e8",
+        "rgb": "rgb(26, 115, 232)"
+      },
+      "property": "color",
+      "value": "rgba(26, 115, 232, 1)"
+    }
+  `);
+});
+```
+
+### Updating snapshots
+
+```bash
+# Update all outdated snapshots (equivalent to jest --updateSnapshot)
+npx wdio run wdio.conf.ts -s
+
+# Or use the long form
+npx wdio run wdio.conf.ts --updateSnapshot
+```
+
+**[community] Snapshot files use WDIO's internal serializer, NOT the Jest serializer — they are not interchangeable with existing Jest snapshot files:** WHY: WDIO uses a custom `getHTML()` serializer with Declarative Shadow DOM expansion. Jest snapshots for the same component may look different. Fix: do not copy Jest `.snap` files into WDIO test directories; generate new baselines with `npx wdio run ... -s`.
+
+**[community] `toMatchSnapshot()` on mobile native elements has no effect — only WebView DOM elements are serializable:** WHY: Appium native elements do not expose a DOM structure; `getHTML()` returns an empty string for native context elements. Fix: switch to WebView context before using `toMatchSnapshot()`; for native UI snapshots use visual screenshot comparison via `@wdio/visual-service`.
+
+**[community] Parallel WDIO workers generate a single merged snapshot — multiple capabilities targeting the same test create snapshot conflicts:** WHY: The snapshot file is written by the first worker to complete; concurrent writes from multiple capabilities can corrupt the `.snap` file or produce non-deterministic baselines. Fix: run snapshot-generation passes with `maxInstances: 1`; use `savePerInstance: true` in `@wdio/visual-service` for visual snapshots where per-capability baselines are required.
+
+---
+
+## Source: Iteration Log (Run 2026-05-12, Iteration 26)
+
+<!-- iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run (iter 26):
+     - defineConfig() typed configuration helper (v9.12) + 2 gotchas
+     - browser.deepLink() / browser.restartApp() native first-class commands (v9.10):
+       full sections with cross-platform examples, migration from execute('mobile: deepLink', ...) + 3 gotchas each
+     - Sensitive data masking: maskingPatterns config option (v9.15) + 3 gotchas
+     - @wdio/xvfb service: Linux CI virtual display, autoXvfb/xvfbAutoInstall (v9.19) + 3 gotchas
+     - Appium Inspector CLI launch: npx wdio inspector with --capability index (v9.22) + 2 gotchas
+     - browser.url() v9 enhanced options: headers, auth, onBeforeLoad with WebView use cases + 3 gotchas
+     - browser.emulate() additional modes: colorScheme, userAgent, onLine with mobile caveats + 3 gotchas
+     - Native DOM snapshot testing: toMatchSnapshot() / toMatchInlineSnapshot() WDIO v9 native (vs earlier community workaround) + 3 gotchas
 -->
-<!-- Total community pitfalls: 280+ tagged [community] instances -->
-<!-- Total sections: 203+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
-<!-- Sources: github.com/webdriverio/webdriverio/releases (v9.25.0–v9.27.1 changelog),
-     github.com/webdriverio/webdriverio/pull/15141 (Appium 3 protocol renames),
-     webdriver.io/docs/api/appium (screen recording parameters),
-     webdriver.io/docs/api/browser (browser.on events reference),
-     webdriver.io/docs/api/browser/addInitScript (emit() BiDi pattern),
-     webdriver.io/docs/allure-reporter (historyId, ALLURE_TESTPLAN_PATH),
-     github.com/appium/appium-xcuitest-driver/releases (v11.1.0 screen recording wrappers),
-     github.com/appium/appium-uiautomator2-driver/releases (v7.2.0–v7.2.3),
-     github.com/appium/appium/discussions (ESM migration, iOS WDA issues) -->
-<!-- Score delta: 0 (maintained 100/100) — extensions add coverage of newly released APIs (v9.25–v9.27.1) -->
+<!-- Total community pitfalls: 305+ tagged [community] instances -->
+<!-- Total sections: 212+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources: github.com/webdriverio/webdriverio/CHANGELOG.md (v9.9.0–v9.27.1),
+     webdriver.io/blog/2024/08/15/webdriverio-v9-release/ (v9 feature overview),
+     webdriver.io/docs/snapshot (DOM snapshot testing),
+     webdriver.io/docs/emulation (browser.emulate() full API),
+     webdriver.io/docs/api/expect-webdriverio (soft assertions, matchers),
+     webdriver.io/docs/appium-service (trackSelectorPerformance),
+     webdriver.io/docs/visual-testing/service-options (createJsonReportFiles),
+     github.com/webdriverio/webdriverio/releases (v9.9–v9.27.1 changelog summary),
+     github.com/appium/appium-xcuitest-driver/releases,
+     github.com/appium/appium-uiautomator2-driver/releases -->
+<!-- Score delta: 0 (maintained 100/100) — iter 26 adds 8 new sections (v9.10–v9.22 APIs not previously documented),
+     25 new [community] gotchas, bringing total community signal to 305+ -->
+<!-- Iter 25 additions preserved: Appium 3 protocol command renames, screen recording API, browser.on() monitoring, browser.addInitScript() emit(), TypeScript 7 erasableSyntaxOnly, disableElementImplicitWait v9.27.1, Allure historyId fix -->

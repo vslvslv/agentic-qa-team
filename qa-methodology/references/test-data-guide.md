@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
@@ -9,6 +9,7 @@
 <!-- iter-34: Playwright mergeTests() modular fixture composition; Playwright box fixture (box:true/box:'self') for clean test reports; Vitest 4.x singleThread also removed (not just singleFork); vi.resetModules() required with isolate:false; VITEST_MAX_WORKERS replaces VITEST_MAX_THREADS/MAX_FORKS; community gotcha #22; 2 new checklists (Playwright fixtures, Vitest 4.x config); 2 new Key Resources (2026-05-12) -->
 <!-- iter-35: Vitest 4.1 builder pattern for test.extend() (return-based, automatic TypeScript type inference); aroundEach hook (transaction-per-test pattern); test.override() per-suite fixture overrides; vi.defineHelper() for clean factory assertion stack traces; Vitest 4.x coverage.all/coverage.extensions removal + mandatory coverage.include; community gotcha #23; new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
+<!-- iter-37: Vitest 4.0 expect.schemaMatching for inline factory output validation against Zod/Valibot/ArkType; Vitest 4.0 getSeed() API for programmatic seed access; Vitest 4.1 experimental viteModuleRunner:false for native Node.js factory execution; Google Testing Blog "Construct with Collaborators, Call with Work" pattern (2026-05-05) applied to factory design; faker v10.4.0 latest stable (2026-03-23); fishery v2.4.0 latest stable (2025-12-08); community gotcha #25 (schema drift caught by expect.schemaMatching); updated Key Resources (2026-05-12) -->
 
 ---
 
@@ -1919,6 +1920,32 @@ export const LLMResponseFixtures = {
     - `setInterval` in factory "heartbeat" helpers that simulate real-time data
     - Unresolved `Promise` chains from factory `buildAndSave()` calls not awaited in `afterEach`
     - Testcontainers container starts that are never stopped (Ryuk handles this in CI, but `--detectAsyncLeaks` catches cases where Ryuk is disabled)
+
+25. **[community] Factory output silently violates schema constraints that TypeScript cannot catch — `expect.schemaMatching` is the only automated guard.**
+    TypeScript type-checks factory overrides at the structural level (`string`, `number`, union types). It cannot check *value-level constraints* defined in Zod/Valibot schemas: `z.email()`, `z.min(1)`, `z.uuid()`, `z.url()`, `z.int()`. A factory that builds `{ email: '' }` or `{ name: '' }` passes TypeScript compilation but violates the schema. These invalid values are then passed to MSW handlers, contract tests, or API request factories that validate incoming data — producing cryptic failures in downstream tests rather than at the factory itself. Before Vitest 4.0's `expect.schemaMatching`, catching this required manual `.parse()` calls. Now it can be expressed directly in a factory smoke test assertion:
+
+    ```typescript
+    // Factory smoke test — catches constraint violations TypeScript cannot see
+    import { test, expect } from 'vitest';
+    import { UserSchema } from '../schemas/user.schema';
+    import { buildUser } from '../factories/user.factory';
+
+    test('buildUser() satisfies UserSchema constraints (not just structure)', () => {
+      // TypeScript only checks: { id: string, email: string, name: string, ... }
+      // expect.schemaMatching checks: id is UUID, email is valid email, name.length >= 1
+      expect(buildUser()).toEqual(expect.schemaMatching(UserSchema));
+    });
+
+    // This test would FAIL and catch the bug before it reaches integration tests:
+    // const badUser = { id: 'not-a-uuid', email: '', name: '', status: 'active', ... };
+    // expect(badUser).toEqual(expect.schemaMatching(UserSchema));
+    // Error: Expected value to match schema:
+    //   - id: Invalid UUID
+    //   - email: Invalid email
+    //   - name: String must contain at least 1 character(s)
+    ```
+
+    **Systematic fix:** Run factory smoke tests as the first CI stage (before unit tests). Any factory that produces schema-invalid data fails loudly at the smoke test gate, not silently 40 tests later.
 
 ---
 
@@ -6230,3 +6257,469 @@ test data technical debt from accumulating.
 - [ ] `globalSetup.ts` uses `runner.matchesTags(['integration', 'e2e'])` to skip Testcontainers start when running unit-only tag filters
 - [ ] `coverage.changed` configured to point at the base branch for PR-scoped factory coverage diffs
 - [ ] Factory utility branches intentionally excluded from coverage use `/* istanbul ignore start */` / `/* v8 ignore start */` block comments (not repeated `/* istanbul ignore next */` per line)
+
+---
+
+## Vitest 4.0 `expect.schemaMatching` — Inline Factory Output Validation  [community]
+
+Vitest 4.0 (October 2025) introduced `expect.schemaMatching()` — an asymmetric matcher
+that validates a value against any **Standard Schema v1** validator (Zod, Valibot, ArkType)
+inside a standard `expect` assertion. This eliminates the boilerplate of calling
+`schema.parse(factory.build())` in a separate step and provides inline validation that
+factory output matches the declared schema contract.
+
+**Why it matters for test data factories:** Factory drift from the domain schema is the
+most dangerous long-term maintenance failure. Traditionally, catching drift required either
+TypeScript compile-time checks (only catches type errors, not runtime constraint violations
+such as `z.email()` or `z.min(1)`) or explicit `parse` calls that pollute test bodies with
+validation logic. `expect.schemaMatching` integrates schema validation into the assertion
+itself — when a factory produces structurally valid TypeScript but semantically invalid data
+(an empty string where `min(1)` is required, a non-UUID where `z.uuid()` is expected), the
+test assertion fails immediately and the error points to the specific schema constraint
+violated.
+
+**25. [community] Factory schema drift caught by `expect.schemaMatching` but missed by TypeScript**
+A factory that builds `{ email: '' }` (empty string) satisfies `string` at the TypeScript
+level but violates `z.email()` at runtime. Before Vitest 4.0, only a manual `UserSchema.parse()`
+call in the test setup revealed this. After adding `expect.schemaMatching` to factory-level
+smoke tests, a team discovered 7 factory defaults that produced invalid schema values — all
+of which had been producing silent runtime failures in downstream MSW handlers that validated
+incoming data.
+
+```typescript
+// schemas/user.schema.ts — Zod v4 schema (Standard Schema v1 compatible)
+import { z } from 'zod';
+
+export const UserSchema = z.object({
+  id: z.uuid(),
+  email: z.email(),
+  name: z.string().min(1).max(100),
+  status: z.enum(['active', 'suspended', 'pending']),
+  subscriptionTier: z.enum(['free', 'premium', 'enterprise']),
+  createdAt: z.date(),
+  paymentMethodId: z.string().nullable(),
+});
+
+export type User = z.infer<typeof UserSchema>;
+```
+
+```typescript
+// test/factory-smoke.test.ts — schema validation smoke tests for factory output
+// Run as part of the test suite; catches factory drift before it reaches integration tests
+import { test, expect } from 'vitest';
+import { UserSchema } from '../schemas/user.schema';
+import { buildUser, buildUserList } from '../factories/user.factory';
+import { buildOrder } from '../factories/order.factory';
+import { OrderSchema } from '../schemas/order.schema';
+
+// Smoke test: every factory default must satisfy the schema it claims to represent
+test('buildUser() produces a value conforming to UserSchema', () => {
+  const user = buildUser();
+  // expect.schemaMatching validates against Zod schema inline — no .parse() needed
+  expect(user).toEqual(expect.schemaMatching(UserSchema));
+  // Failure message shows which Zod constraint failed and the actual value:
+  //   "Expected value to match schema, but got validation errors:
+  //    - email: Invalid email"
+});
+
+test('buildUser({ status: "suspended" }) still satisfies UserSchema', () => {
+  const user = buildUser({ status: 'suspended' });
+  expect(user).toEqual(expect.schemaMatching(UserSchema));
+});
+
+// Validate all factory variants — catches Object Mother drift
+test('every UserMother variant satisfies UserSchema', () => {
+  const { UserMother } = require('../factories/user.mother');
+  const variants = [
+    UserMother.default(),
+    UserMother.suspended(),
+    UserMother.premiumWithPayment(),
+    UserMother.adminUser(),
+  ];
+  for (const user of variants) {
+    expect(user).toEqual(expect.schemaMatching(UserSchema));
+  }
+});
+
+// Validate inside complex data structures — works with toEqual, toStrictEqual, toContainEqual
+test('buildUserList() returns an array where every item satisfies UserSchema', () => {
+  const users = buildUserList(5);
+  for (const user of users) {
+    expect(user).toEqual(expect.schemaMatching(UserSchema));
+  }
+});
+
+// Partial schema validation — check only the fields relevant to a test
+test('buildUser() has a valid email and non-empty name', () => {
+  const user = buildUser();
+  // Validate a subset of the schema using a Zod pick
+  expect(user).toEqual(expect.schemaMatching(
+    UserSchema.pick({ email: true, name: true })
+  ));
+});
+```
+
+**Works with Valibot and ArkType** (all Standard Schema v1 compatible):
+
+```typescript
+// With Valibot (Standard Schema v1)
+import * as v from 'valibot';
+const UserValibotSchema = v.object({
+  id: v.pipe(v.string(), v.uuid()),
+  email: v.pipe(v.string(), v.email()),
+  name: v.pipe(v.string(), v.minLength(1), v.maxLength(100)),
+  status: v.picklist(['active', 'suspended', 'pending']),
+});
+
+test('buildUser() satisfies Valibot UserSchema', () => {
+  expect(buildUser()).toEqual(expect.schemaMatching(UserValibotSchema));
+});
+
+// With ArkType (Standard Schema v1)
+import { type } from 'arktype';
+const UserArkSchema = type({
+  id: 'string.uuid',
+  email: 'string.email',
+  name: '1 <= string <= 100',
+  status: "'active' | 'suspended' | 'pending'",
+});
+
+test('buildUser() satisfies ArkType UserSchema', () => {
+  expect(buildUser()).toEqual(expect.schemaMatching(UserArkSchema));
+});
+```
+
+**Integration with pre-ship checklist:** Add to the factory smoke test suite as a
+CI-required gate:
+
+```bash
+# package.json scripts
+"test:factory-smoke": "vitest run test/factory-smoke.test.ts --reporter=verbose"
+"test:ci": "npm run test:factory-smoke && npm run test:all"
+```
+
+**Anti-pattern:** Using `expect.schemaMatching` in every single test case for non-schema-related
+assertions adds noise. Reserve it for: (1) dedicated factory smoke tests, (2) tests where
+the schema contract is the primary test condition, (3) integration tests that assert a
+service's *output* satisfies the contract schema before returning it to the caller.
+
+---
+
+## Vitest 4.0 `getSeed()` — Programmatic Factory Seed Access  [community]
+
+Vitest 4.0 (October 2025) added a `getSeed()` API method on the public `vitest` module.
+When tests are run with `--random-seed` (or rely on faker's randomness), `getSeed()`
+returns the numeric seed for the current test run. This enables factory files to retrieve
+the active seed programmatically — without relying on the `TEST_SEED` environment variable
+convention described earlier in this guide.
+
+**Why it matters:** Before `getSeed()`, factory files that wanted to align with Vitest's
+random seed had to rely on the `TEST_SEED` environment variable, which was set manually by
+CI scripts and often not set in local development. This caused faker seeds to diverge
+between Vitest's internal seed (used for test shuffling) and faker's seed (used for data
+generation). With `getSeed()`, factories can use the same seed Vitest already chose — giving
+a single point of truth for both test order and test data randomness.
+
+```typescript
+// vitest.setup.ts — align faker seed with Vitest's getSeed() API
+// Requires: vitest >= 4.0.0
+import { faker } from '@faker-js/faker';
+import { getSeed } from 'vitest';
+
+// getSeed() returns the current test run seed — same value that governs test shuffling
+// when --shuffle or --random-seed is active.
+const VITEST_SEED = getSeed();
+console.log(`[test-data] faker seed aligned with Vitest: ${VITEST_SEED}`);
+faker.seed(VITEST_SEED);
+
+// In CI — emit as GitHub Actions annotation:
+if (process.env.GITHUB_ACTIONS) {
+  process.stdout.write(`::notice title=Faker+Vitest Seed::${VITEST_SEED}\n`);
+}
+
+// To replay a failing run with the same seed:
+// VITEST_SEED=<seed> npx vitest run
+// Both test shuffling AND factory data generation will be identical.
+```
+
+**Before vs after `getSeed()` — seed alignment comparison:**
+
+| Scenario | Before `getSeed()` | After `getSeed()` |
+|---|---|---|
+| Local dev, no `TEST_SEED` | faker uses `Date.now()` — different from Vitest shuffle seed | faker uses Vitest's seed — same as shuffle |
+| CI with `--random-seed` | `TEST_SEED` must be set separately; easy to forget | `getSeed()` automatically aligns with `--random-seed` |
+| Replay a failure | Must find both Vitest seed AND faker seed in logs | Single seed governs both — one log line |
+| `--no-random-seed` (sequential) | faker seed is always `Date.now()` | faker seed aligns with Vitest's deterministic `0` seed |
+
+**Edge case: `getSeed()` in `globalSetup`:**
+
+`getSeed()` is only available after Vitest initializes the test runner. In `globalSetup`
+files (which run before the test runner is fully initialized), `getSeed()` may return `0`
+or the default seed rather than the run-specific seed. Use `getSeed()` in `setupFiles`
+(which run inside the test worker, after initialization), not in `globalSetup`.
+
+```typescript
+// BAD: getSeed() in globalSetup — may return 0 before runner initializes
+// vitest.config.ts → globalSetup: './test/global-setup.ts'
+export async function setup(): Promise<void> {
+  const seed = getSeed();  // ← may be 0 here (not yet initialized)
+  faker.seed(seed);
+}
+
+// GOOD: getSeed() in setupFiles — runs in worker after initialization
+// vitest.config.ts → setupFiles: ['./test/vitest.setup.ts']
+// In vitest.setup.ts:
+import { getSeed } from 'vitest';
+import { faker } from '@faker-js/faker';
+faker.seed(getSeed());  // ← always the correct run seed here
+```
+
+---
+
+## Vitest 4.1 Experimental `viteModuleRunner: false` — Native Node.js Factory Execution  [community]
+
+Vitest 4.1 (March 2026) added an experimental flag `experimental.viteModuleRunner: false`
+that disables Vite's module runner sandbox and executes tests with native Node.js `import`
+statements. This mode has specific implications for test data factories: import errors
+that the Vite sandbox silently swallowed are now surfaced immediately, making factories
+more reliable but requiring some adjustments.
+
+**Why it matters for factories:**
+
+The Vite module runner applies transforms (TypeScript stripping, path alias resolution,
+`import.meta.env` injection) in a sandbox that can silently paper over certain import
+errors. A factory file that uses `import.meta.env.TEST_DATABASE_URL` — valid only in
+Vite's virtual module system — will produce `undefined` at runtime in native Node.js
+mode rather than throwing. Similarly, a factory importing a path alias (`@/db`) that
+Node.js doesn't understand causes an immediate `ERR_MODULE_NOT_FOUND` instead of a
+silent resolution.
+
+**Surfaces two critical factory bugs:**
+
+1. **Incorrect `__dirname` injection:** The Vite sandbox injected `__dirname` as a
+   virtual global. In native Node mode, `__dirname` is only available in CommonJS modules.
+   Factory files that use `__dirname` to construct fixture file paths (e.g.,
+   `path.join(__dirname, '../fixtures/users.json')`) must migrate to `import.meta.dirname`
+   (Node 22.13+) or `new URL('../fixtures/users.json', import.meta.url).pathname`.
+
+2. **Silently passing imports of non-existent exports:** The Vite sandbox allowed
+   `import { buildUser } from './user.factory'` even when `buildUser` wasn't exported
+   (returning `undefined`). Native Node.js mode throws `SyntaxError: The requested module
+   does not provide an export named 'buildUser'`.
+
+```typescript
+// vitest.config.ts — enabling native Node.js module execution
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Experimental: disable Vite module runner for native Node.js imports
+    // Requires: Node.js 22.18+ or 23.6+ (TypeScript stripped natively)
+    // NOT suitable for: browser-mode tests, tests using jsdom/happy-dom,
+    //                   tests relying on Vite plugins or path aliases
+    experimental: {
+      viteModuleRunner: false,  // use native Node.js imports
+    },
+    // Still works with vi.mock() via Node.js Module Loader API (Node.js 22.15+)
+    // Does NOT work with: istanbul coverage provider, Vite aliases, import.meta.env
+  },
+});
+```
+
+```typescript
+// BEFORE: factory using __dirname (works in Vite sandbox, fails in native Node)
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+// This breaks in viteModuleRunner: false — __dirname is not defined in ESM
+const seedData = JSON.parse(readFileSync(join(__dirname, '../fixtures/users.json'), 'utf8'));
+
+// AFTER: migrate to import.meta.dirname (Node.js 22.13+) or import.meta.url
+// Works identically in both Vite sandbox and native Node.js
+const seedData = JSON.parse(readFileSync(
+  new URL('../fixtures/users.json', import.meta.url).pathname,
+  'utf8'
+));
+
+// Or with Node.js 22.13+ import.meta.dirname:
+// const seedData = JSON.parse(readFileSync(join(import.meta.dirname, '../fixtures/users.json'), 'utf8'));
+```
+
+```typescript
+// BEFORE: factory silently using undefined export (passes in Vite sandbox)
+// user.factory.ts exports: buildUser (NOT buildActiveUser)
+import { buildActiveUser } from '../factories/user.factory';
+//         ↑ undefined in Vite sandbox — test runs, produces no data errors
+//         ↑ SyntaxError in native Node — caught immediately
+
+const user = buildActiveUser({ email: 'test@test.com' });
+// In Vite sandbox: user is undefined, test may still pass (depending on usage)
+// In native Node: import fails at module load — error points to the import line
+
+// AFTER: fix the import to use the actual exported name
+import { buildUser } from '../factories/user.factory';
+const user = buildUser({ status: 'active', email: 'test@test.com' });
+```
+
+**When to use `viteModuleRunner: false`:**
+
+| Scenario | Recommended |
+|---|---|
+| Server-side / Node.js-only test suites (no browser APIs) | Yes — faster startup, more accurate error messages |
+| Suites using `jsdom` or `happy-dom` | No — browser simulation requires Vite transforms |
+| Suites relying on Vite path aliases (`@/`) | No — native Node.js doesn't resolve Vite aliases |
+| Suites using `istanbul` coverage provider | No — istanbul requires Vite instrumentation transforms |
+| Suites auditing factory import correctness | Yes — catches `undefined` export imports that Vite hides |
+| TypeScript 5.x with Node.js 22.18+ | Yes — TypeScript is stripped natively, no ts-node/esbuild needed |
+
+**[community] Production lesson:** A team enabling `viteModuleRunner: false` on their
+factory-heavy integration suite discovered that 12 factory files had been silently
+re-exporting `undefined` functions due to stale re-export barrels
+(`export { buildOrder } from './order.factory'` after `buildOrder` was renamed to
+`createOrder`). The Vite sandbox had masked all 12 — native Node.js surfaced them
+on the first run with a clear `SyntaxError` for each.
+
+---
+
+## "Construct with Collaborators, Call with Work" — Google Testing Blog Pattern  [community]
+
+*Source: Google Testing Blog, Shahar Roth, May 5, 2026 (TotT series)*
+
+The "Construct with Collaborators, Call with Work" principle from Google's Testing on the
+Toilet series is directly applicable to factory design. The principle separates expensive
+**construction** (collaborator setup: DB connections, factory initialization, test fixtures)
+from **work calls** (the actual test operations). In the factory context, this maps to:
+
+- **Construction = factory initialization** — building the domain object, creating DB records,
+  setting up fixtures. This is the "collaborator" phase: expensive, done once.
+- **Work = test assertions and service calls** — the actual test body that exercises the
+  system under test. This is the "work" phase: fast, called repeatedly.
+
+**Why it matters:** Factories that mix construction and work create tests that are slow
+(re-construct on every assertion), brittle (construction side-effects leak between tests),
+and hard to debug (failures appear in the construction phase rather than the assertion).
+Separating them produces tests where the factory provides a clean, reusable starting state
+and the test body only performs the work being verified.
+
+**Anti-pattern: construction mixed with work:**
+
+```typescript
+// WRONG — construction and work are interleaved
+test('suspended user cannot checkout', async () => {
+  // Construction (DB insert) mixed with work (service call)
+  const userId = await userRepository.create({
+    email: faker.internet.email(),
+    status: 'suspended',       // hardcoded — construction detail in test body
+    subscriptionTier: 'free',
+    createdAt: new Date(),
+  });
+
+  // Work — what we're actually testing
+  const result = await checkoutService.initiate(userId, cart);
+  expect(result.status).toBe('blocked');
+
+  // Cleanup — interleaved with work logic
+  await userRepository.delete(userId);
+});
+```
+
+**Pattern: separate construction from work using fixtures:**
+
+```typescript
+// CORRECT — construction in fixture, work in test body
+// Construction phase (factory + fixture):
+export const test = baseTest.extend({
+  // Worker-scoped construction: DB connection created once per worker
+  db: [async ({}, { onCleanup }) => {
+    const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    onCleanup(() => pool.end());
+    return drizzle(pool, { schema });
+  }, { scope: 'worker' }],
+
+  // Test-scoped construction: suspended user created per test, cleaned up after
+  suspendedUser: async ({ db }, { onCleanup }) => {
+    const [user] = await db.insert(users)
+      .values(buildUser({ status: 'suspended' }))  // factory handles the domain object
+      .returning();
+    onCleanup(() => db.delete(users).where(eq(users.id, user.id)));
+    return user;  // construction complete — work starts in the test body
+  },
+});
+
+// Test body is pure work — no DB setup, no cleanup logic
+test('suspended user cannot checkout', async ({ suspendedUser }) => {
+  const result = await checkoutService.initiate(suspendedUser.id, cart);
+  expect(result.status).toBe('blocked');
+  expect(result.reason).toBe('account_suspended');
+  // No cleanup — fixture handles it
+});
+
+test('suspended user can still view their profile', async ({ suspendedUser }) => {
+  const profile = await profileService.get(suspendedUser.id);
+  expect(profile.id).toBe(suspendedUser.id);
+  // Same construction (suspendedUser fixture) reused across different work tests
+});
+```
+
+**Object Mother as "construction catalogue":**
+
+Object Mother methods are named construction operations — they encode how to build a
+collaborator (a well-known domain variant) so the test body only describes the work:
+
+```typescript
+// Object Mother = construction catalogue for the test
+// Each method is a named collaborator variant, reusable across all work tests
+export class UserMother {
+  // Construction: an active free-tier user (no payment, no premium features)
+  static freeTierActive(): UserBuilder {
+    return new UserBuilder().withStatus('active').withSubscriptionTier('free');
+  }
+
+  // Construction: a suspended user blocked from transactions
+  static suspended(): UserBuilder {
+    return new UserBuilder().withStatus('suspended');
+  }
+
+  // Construction: a premium user with payment — can initiate all operations
+  static premiumWithPayment(): UserBuilder {
+    return new UserBuilder()
+      .withStatus('active')
+      .withSubscriptionTier('premium')
+      .withPaymentMethod('pm-visa-9999');
+  }
+}
+
+// Work-only test bodies — construction delegated to Object Mother
+test('free-tier user is asked to upgrade at premium feature', () => {
+  const user = UserMother.freeTierActive().build();  // construction
+  const result = featureGate.check(user, 'analytics-dashboard');  // work
+  expect(result.allowed).toBe(false);
+  expect(result.upgradePrompt).toBe('premium_required');
+});
+
+test('premium user accesses analytics dashboard', () => {
+  const user = UserMother.premiumWithPayment().build();  // construction
+  const result = featureGate.check(user, 'analytics-dashboard');  // work
+  expect(result.allowed).toBe(true);
+});
+```
+
+**Key benefits:**
+1. **Readability:** The test body answers "what is being tested?" without construction noise.
+2. **Reuse:** The same construction (Object Mother variant or fixture) serves multiple work tests.
+3. **Locality of change:** When the "suspended user" construction changes (new required field), only the Object Mother method changes — not 30 test bodies.
+4. **Faster isolation debugging:** Construction failures (factory drift, DB errors) and work failures (service logic bugs) produce different error locations — easier to triage.
+
+---
+
+## Key Resources (additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest 4.0 blog post | Official | https://vitest.dev/blog/vitest-4 | Full changelog: expect.schemaMatching (Standard Schema), getSeed() API, Browser Mode stable, toMatchScreenshot, expect.assert |
+| expect.schemaMatching docs | Official | https://vitest.dev/api/expect#expect-schemamatching | Asymmetric matcher for Standard Schema v1 validators (Zod, Valibot, ArkType) — inline factory output validation |
+| Vitest getSeed() API | Official | https://vitest.dev/api/vitest#getseed | Programmatic access to the Vitest run seed for faker alignment |
+| Vitest experimental.viteModuleRunner | Official | https://vitest.dev/config/#experimental-vitemodulerunner | Native Node.js module execution: surfaces factory import errors hidden by Vite sandbox |
+| Google Testing Blog — Construct with Collaborators | Blog | https://testing.googleblog.com/2026/05/construct-with-collaborators-call-with.html | Principle: separate collaborator construction from work calls; applies directly to factory + fixture design |
+| @faker-js/faker v10.4.0 | Official | https://github.com/faker-js/faker/releases/tag/v10.4.0 | Latest stable faker release (March 23, 2026) — ESM-only, UUID v7, 70+ locales |
+| fishery v2.4.0 | Official | https://github.com/thoughtbot/fishery/releases/tag/v2.4.0 | Latest stable fishery release (December 8, 2025) — TypeScript-first factory library with build/create separation |

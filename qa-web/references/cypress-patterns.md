@@ -1,7 +1,8 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide -->
-<!-- new in this iteration: cy.url()/cy.location() automation-client change in v15 (cross-origin gotcha), cy.fixture() cache invalidation stale-data gotcha after cy.writeFile(), cy.wrap() circular reference protection, synchronous XHR route handler browser freeze (v15.8 fix), defaultBrowser config option for local developer DX, 4 new community gotchas (90-93), pattern 114 (defaultBrowser + browser override patterns) -->
+<!-- new in this iteration (37): cy.prompt() BDD Gherkin + placeholder loop caching (pattern 115), Cypress Module API expose + posixExitCodes deep example (pattern 116), cy.env() multi-key single-call + log:false (pattern 117), 7 new community gotchas (94-100): .invoke() throws on Promise (Cy15), cy.wait([]) routeId crash (15.14.2), Chrome 137 --load-extension removal, transitive CVE monitoring, cy.prompt() rate-limit exhaustion in parallel CI, experimentalStudio flag removal causes parse error (Cy 15.4+), injectDocumentDomain removal in Cy 15 -->
+<!-- previous iteration: cy.url()/cy.location() automation-client change in v15 (cross-origin gotcha), cy.fixture() cache invalidation stale-data gotcha after cy.writeFile(), cy.wrap() circular reference protection, synchronous XHR route handler browser freeze (v15.8 fix), defaultBrowser config option for local developer DX, 4 new community gotchas (90-93), pattern 114 (defaultBrowser + browser override patterns) -->
 
 ## Core Principles
 
@@ -6921,6 +6922,354 @@ npx cypress open
 #   }
 # }
 ```
+
+---
+
+### 115. cy.prompt() BDD Gherkin Pattern with Placeholder Loop Caching  [community]
+
+`cy.prompt()` introduced in Cypress 15.13+ supports a placeholder system that prevents sensitive values from being transmitted to the AI model while enabling the generated code to be cached across multiple test parametrizations. Combining this with Gherkin-style step wording lowers the barrier for non-developers and enables reuse via parameterized loops.
+
+```typescript
+// Pattern 1: BDD Gherkin-style steps — no step definition files required
+// AI interprets Given/When/Then/And/But syntax natively
+describe('Feature: Shopping cart checkout', () => {
+  it('Scenario: Complete checkout with standard shipping', () => {
+    cy.prompt([
+      'Given the user is authenticated as "shopper@example.com"',
+      'When the user navigates to "/cart"',
+      'And the user selects "Standard Shipping"',
+      'And the user enters {{cardNumber}} in the card number field',
+      'And the user enters {{cardExpiry}} in the expiry field',
+      'And the user clicks the "Place Order" button',
+      'Then the order confirmation number should be visible',
+      'And the user should be redirected to "/order-confirmation"',
+    ], {
+      // Placeholders: values injected at runtime; never sent to the AI model
+      // The cache key uses the step text with placeholder tokens — same for all card numbers
+      placeholders: {
+        cardNumber: Cypress.env('TEST_CARD_NUMBER'),
+        cardExpiry: Cypress.env('TEST_CARD_EXPIRY'),
+      },
+    });
+  });
+});
+```
+
+```typescript
+// Pattern 2: Parameterized loop with placeholder caching
+// The AI generates the Cypress code once; subsequent iterations reuse the cache
+// with different placeholder values — no additional AI calls
+
+interface Product {
+  name: string;
+  expectedPrice: string;
+}
+
+const products: Product[] = [
+  { name: 'Wireless Headphones',  expectedPrice: '$49.99' },
+  { name: 'Mechanical Keyboard',  expectedPrice: '$89.99' },
+  { name: 'USB-C Hub',            expectedPrice: '$29.99' },
+];
+
+products.forEach(({ name, expectedPrice }) => {
+  it(`verifies product price: ${name}`, () => {
+    cy.prompt(
+      [
+        'navigate to /catalog',
+        'search for {{productName}}',
+        'click the first search result',
+        'verify the displayed price is {{price}}',
+      ],
+      {
+        placeholders: {
+          productName: name,      // different per iteration
+          price: expectedPrice,   // different per iteration
+        },
+      }
+    );
+    // Concrete Cypress assertions after AI-generated steps
+    cy.url().should('include', '/product/');
+  });
+});
+```
+
+```typescript
+// Pattern 3: Secure credential handling — combine cy.env() + cy.prompt() placeholders
+// cy.env() prevents the value from reaching the browser DevTools;
+// placeholders prevent it from being transmitted to the AI model.
+// Use BOTH layers for maximum security on secrets like API tokens.
+
+it('admin can delete any user account', () => {
+  cy.env(['ADMIN_EMAIL', 'ADMIN_PASSWORD']).then(({ ADMIN_EMAIL, ADMIN_PASSWORD }) => {
+    cy.prompt(
+      [
+        'visit /admin/login',
+        'type {{email}} in the email field',
+        'type {{password}} in the password field',
+        'click the Sign In button',
+        'navigate to /admin/users',
+        'click Delete next to the user named "test-user@example.com"',
+        'click Confirm in the confirmation dialog',
+        'verify "User deleted successfully" message is visible',
+      ],
+      {
+        placeholders: {
+          email:    ADMIN_EMAIL,     // from cy.env() — never in browser DevTools
+          password: ADMIN_PASSWORD,  // from cy.env() — never sent to AI model
+        },
+      }
+    );
+  });
+});
+```
+
+**cy.prompt() caching rules:**
+- Cache key = step text array + placeholder KEYS (not values). Changing a placeholder value reuses the cache; changing step text or key names invalidates it.
+- First-run AI generation takes 2-5 s per `cy.prompt()` call. All subsequent runs with the same step text (regardless of placeholder values) are instant.
+- Max 50 steps per `cy.prompt()` call. Split large flows into multiple calls.
+- Supported: E2E tests, Chromium browsers only. Not supported: Component tests, iframe/canvas elements, `cy.request()` API steps.
+
+**[community]** WHY: The placeholder loop pattern is the correct way to use `cy.prompt()` for data-driven scenarios. A naive approach would call `cy.prompt()` with interpolated strings (e.g., `` `search for ${name}` ``), which invalidates the cache on every iteration because the step text changes. Using placeholders keeps the step text constant, allows the cache to be shared across all loop iterations, and reduces AI calls from N (one per product) to 1 (first run only). On a 20-product test loop, this cuts AI quota consumption by 95%.
+
+---
+
+### 116. Cypress Module API — `expose`, `posixExitCodes`, and CI Orchestration
+
+The Cypress Module API (`cypress.run()` / `cypress.open()`) lets you invoke Cypress programmatically from Node.js scripts. Cypress 15.10 added `expose` and `posixExitCodes` options, and `cypress.run()` now also accepts `parallel` for coordinating multi-machine runs from a custom orchestrator.
+
+```typescript
+// scripts/run-cypress.ts — production-grade custom CI orchestrator
+import cypress from 'cypress';
+
+async function runCypress(): Promise<void> {
+  let result: CypressCommandLine.CypressRunResult | CypressCommandLine.CypressFailedRunResult;
+
+  try {
+    result = await cypress.run({
+      browser:           'chrome',
+      headless:          true,
+      record:            true,
+      parallel:          true,
+      group:             'e2e-checkout',
+      tag:               ['ci', 'checkout'],
+      ciBuildId:         process.env.GITHUB_RUN_ID ?? 'local',
+      spec:              'cypress/e2e/checkout/**/*.cy.ts',
+      posixExitCodes:    true,           // exit 0 = pass, exit 1 = any failure (POSIX)
+      // expose: non-sensitive public config injected into cy.config().env.expose
+      // (Cypress.expose() reads these from test code synchronously)
+      expose: {
+        apiVersion:    'v2',
+        environment:   process.env.TARGET_ENV ?? 'staging',
+        releaseTag:    process.env.GITHUB_REF_NAME ?? 'local',
+        featureFlags: {
+          newCheckout: process.env.FEATURE_NEW_CHECKOUT === 'true',
+        },
+      },
+      // env: sensitive values — not automatically serialized into browser DevTools
+      env: {
+        API_TOKEN:      process.env.API_TOKEN,
+        ADMIN_PASSWORD: process.env.ADMIN_PASSWORD,
+      },
+      config: {
+        baseUrl:          `https://${process.env.TARGET_ENV ?? 'staging'}.example.com`,
+        retries:          { runMode: 2, openMode: 0 },
+        video:            true,
+        screenshotOnRunFailure: true,
+      },
+    });
+  } catch (err) {
+    // Cypress could not start (binary missing, network error, etc.)
+    // This is NOT a test failure — it is an infrastructure error
+    console.error('[cypress runner] Fatal launch error:', (err as Error).message);
+    process.exit(1);
+  }
+
+  // result.failures > 0 means Cypress itself failed (not tests); tests are result.totalFailed
+  if ('failures' in result && result.failures) {
+    console.error('[cypress runner] Cypress execution failed:', result.message);
+    process.exit(1);
+  }
+
+  const { totalFailed, totalTests, totalPassed, totalSkipped } = result as CypressCommandLine.CypressRunResult;
+  console.log(`[cypress runner] Run complete: ${totalPassed}/${totalTests} passed, ${totalFailed} failed, ${totalSkipped} skipped`);
+
+  // With posixExitCodes: true, result.totalFailed > 0 → Cypress already sets exit code 1
+  // Without posixExitCodes, Cypress exits with the failure count (e.g., 3 failures → exit 3)
+  // which breaks CI systems expecting only exit 0/1
+  process.exit(totalFailed > 0 ? 1 : 0);
+}
+
+runCypress();
+```
+
+```typescript
+// How test code reads expose values (non-sensitive, synchronous):
+// cypress/support/e2e.ts
+before(() => {
+  // Expose values are accessible via Cypress.config() after cypress.run() sets them
+  // In tests, read via Cypress.expose('key') — same as Cypress.env() but public
+  const apiVersion  = Cypress.expose('apiVersion');          // 'v2'
+  const environment = Cypress.expose('environment');         // 'staging'
+  const newCheckout = Cypress.expose('featureFlags').newCheckout; // true/false
+
+  // Conditionally skip component-only tests if feature flag is off
+  if (!newCheckout) {
+    cy.log(`[setup] New checkout feature disabled — skipping CT specs`);
+  }
+});
+```
+
+```bash
+# CI usage — run the orchestrator script
+npx ts-node scripts/run-cypress.ts
+
+# Or compile first for production CI (faster startup):
+npx tsc -p tsconfig.scripts.json
+node dist/scripts/run-cypress.js
+```
+
+**Module API options cheatsheet (Cypress 15.10+):**
+
+| Option | Type | Purpose |
+|--------|------|---------|
+| `posixExitCodes` | `boolean` | Exit 0/1 only (POSIX standard); prevents exit code = failure count |
+| `expose` | `Record<string, unknown>` | Non-sensitive public config; read via `Cypress.expose()` in tests |
+| `env` | `Record<string, string>` | Sensitive config; read via `cy.env()` (not hydrated into browser DevTools automatically) |
+| `ciBuildId` | `string` | Unique run ID for Smart Orchestration grouping in Cypress Cloud |
+| `parallel` | `boolean` | Enable Cypress Cloud parallel distribution across CI workers |
+| `group` | `string` | Label for this batch of specs in Cypress Cloud; enables separate dashboards |
+
+**[community]** WHY: Most teams use `cypress.run()` for its result object to drive custom reporting (e.g., posting pass/fail to Slack or updating a deployment status badge). The critical mistake is missing the `try/catch` around `cypress.run()` — when Cypress itself fails to launch (binary not found, bad config, Node version mismatch), the returned Promise **rejects** rather than resolving with a failure result. Without `try/catch`, the orchestrator script exits with an unhandled rejection and the CI pipeline reports a network/infra error instead of a helpful diagnostic message.
+
+---
+
+### 117. cy.env() — Multi-Key Single-Call Pattern and `log: false` for Sensitive Values
+
+`cy.env()` (Cypress 15.10+) must be called with all required keys in a **single call** to avoid pyramid nesting. Additionally, the `log: false` option suppresses the retrieved values from the Cypress Command Log, which is critical for secrets that would otherwise appear in screenshots, Test Replay recordings, and CI log artifacts.
+
+```typescript
+// ❌ ANTI-PATTERN: nested cy.env() calls create callback pyramids
+it('authenticates and seeds test data', () => {
+  cy.env(['API_TOKEN']).then(({ API_TOKEN }) => {
+    cy.env(['DB_SEED_KEY']).then(({ DB_SEED_KEY }) => {
+      cy.env(['BASE_URL']).then(({ BASE_URL }) => {
+        // Three levels deep just to get three values
+        cy.request({ url: `${BASE_URL}/seed`, headers: { Authorization: `Bearer ${API_TOKEN}`, 'x-seed-key': DB_SEED_KEY } });
+      });
+    });
+  });
+});
+
+// ✅ PREFERRED: single cy.env() call retrieves all keys at once
+it('authenticates and seeds test data', () => {
+  cy.env(['API_TOKEN', 'DB_SEED_KEY', 'BASE_URL']).then(({ API_TOKEN, DB_SEED_KEY, BASE_URL }) => {
+    cy.request({
+      url:     `${BASE_URL}/seed`,
+      headers: {
+        Authorization: `Bearer ${API_TOKEN}`,
+        'x-seed-key':  DB_SEED_KEY,
+      },
+      failOnStatusCode: true,
+    });
+  });
+});
+```
+
+```typescript
+// log: false — prevents secret values from appearing in Command Log
+// Use for API tokens, passwords, private keys — any value that would be
+// sensitive if captured in a screenshot or Cypress Cloud Test Replay recording.
+it('creates a signed API request', () => {
+  cy.env(['HMAC_SECRET', 'API_KEY'], { log: false }).then(({ HMAC_SECRET, API_KEY }) => {
+    // HMAC_SECRET and API_KEY are NOT shown in the Command Log
+    // The cy.env() command itself still appears as a "cy.env()" entry,
+    // but the retrieved values are masked
+
+    // Build the signed request using the secrets
+    const timestamp = Date.now().toString();
+    cy.task('hmac:sign', { key: HMAC_SECRET, message: timestamp }).then((signature: string) => {
+      cy.request({
+        method:  'GET',
+        url:     '/api/protected',
+        headers: {
+          'x-api-key':   API_KEY,
+          'x-timestamp': timestamp,
+          'x-signature': signature,
+        },
+      }).its('status').should('eq', 200);
+    });
+  });
+});
+```
+
+```typescript
+// Pattern: Reusable custom command that encapsulates cy.env() nesting
+// Callers never deal with .then() — the complexity is hidden in the command definition
+
+// cypress/support/commands.ts
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      apiRequest(
+        method: string,
+        endpoint: string,
+        body?: Record<string, unknown>
+      ): Chainable<Cypress.Response<unknown>>;
+    }
+  }
+}
+
+Cypress.Commands.add('apiRequest', (method, endpoint, body) => {
+  cy.env(['API_TOKEN', 'API_BASE_URL'], { log: false }).then(({ API_TOKEN, API_BASE_URL }) => {
+    cy.request({
+      method,
+      url:     `${API_BASE_URL}${endpoint}`,
+      headers: { Authorization: `Bearer ${API_TOKEN}` },
+      body,
+      failOnStatusCode: false,
+    });
+  });
+});
+
+// Usage in specs — clean, no .then() nesting at the call site:
+it('creates a product', () => {
+  cy.apiRequest('POST', '/products', { name: 'Widget', price: 9.99 })
+    .its('status').should('eq', 201);
+});
+
+it('lists products', () => {
+  cy.apiRequest('GET', '/products')
+    .its('body').should('be.an', 'array').and('have.length.greaterThan', 0);
+});
+```
+
+**cy.env() key considerations:**
+- Pass all required keys in one array: `cy.env(['A', 'B', 'C'])`.
+- Use `{ log: false }` for any value that should not appear in Test Replay recordings, screenshots, or CI log output.
+- `cy.env()` is the async alternative to deprecated `Cypress.env()`. Use `Cypress.expose()` for public, non-sensitive values that need synchronous access (e.g., feature flags, API versions).
+- Keys are case-sensitive: `cy.env(['apiToken'])` ≠ `cy.env(['API_TOKEN'])`. Match exactly how they are set in `cypress.config.ts`, `cypress.env.json`, or `CYPRESS_*` env vars.
+
+**[community]** WHY: Teams that migrate from `Cypress.env()` to `cy.env()` often create a new pyramid problem by calling `cy.env()` once per variable, matching the old synchronous pattern mechanically translated to async. This is worse than the deprecated API because each nested `.then()` adds cognitive complexity. The correct migration is to batch all variables for a given test into a single `cy.env([...])` call at the start of the test or in a helper command. If you find yourself nesting `cy.env()` calls, that is a code smell indicating you need a helper command that encapsulates the multi-key retrieval.
+
+---
+
+## Additional Real-World Gotchas (Iteration 37) [community]
+
+94. **`.invoke()` throws an error if the function returns a Promise (Cypress 15)** [community] — Prior to Cypress 15, calling `.invoke('methodName')` on an object where `methodName` returned a Promise would silently resolve with the Promise object itself rather than the resolved value — causing confusing downstream assertion failures. Cypress 15 changed this: `.invoke()` now throws `Error: .invoke() only works with synchronous functions. If the function returns a Promise, use .then() instead.` This is a **breaking change** for any test that calls `.invoke()` on async class methods, async store actions (Vuex `dispatch`, Redux `dispatch`), or any method that returns a Promise. Migration: replace `cy.wrap(obj).invoke('asyncMethod', args)` with `cy.wrap(obj).then(o => o.asyncMethod(args))`. The `.then()` form correctly waits for the Promise to settle before yielding the resolved value to the next command.
+
+95. **`cy.wait([aliases])` crashes with `Cannot read properties of undefined (reading 'routeId')` on retry** [community] — Cypress 15.14.2 introduced a regression in `cy.wait([])` (multi-alias wait form) that manifested when any intercepted request matching an alias was retried by the browser (e.g., a `503` response triggered a client retry). The retry fired a second request for the same alias before the first was consumed, causing Cypress's internal alias state to reference a stale route entry. The result was an unhandled rejection: `Cannot read properties of undefined (reading 'routeId')` in the Cypress runner. The fix (released in 15.14.3) resolves the stale reference. If you are on 15.14.2, the workaround is to split `cy.wait(['@alias1', '@alias2'])` into sequential individual `cy.wait('@alias1'); cy.wait('@alias2');` calls — the multi-alias form is what triggers the bug, while the single-alias form does not.
+
+96. **Chrome 137 removed `--load-extension` support, breaking extension-based auth test patterns** [community] — Some teams inject browser extensions (e.g., a corporate SSO extension or a cookie-injection extension) during Cypress tests by passing `--load-extension=/path/to/extension` via the `before:browser:launch` hook. Chrome 137 (released early 2026) dropped support for `--load-extension` and `--disable-extensions-except` in non-developer mode binary builds. Tests that previously worked on Chrome 136 and below silently fail to load the extension on Chrome 137+, with no error logged — the extension just isn't installed. The fix is to use the `Chrome for Testing` (CfT) binary instead of the stable Chrome channel, since CfT retains `--load-extension` support in developer/testing builds. Update your `CYPRESS_CHROME_BIN` environment variable to point to the CfT binary, or pin to `cypress/browsers:22.15.0` Docker image which bundles a compatible CfT version. Alternatively, migrate extension-based auth to `cy.session()` with direct API login to eliminate the extension dependency entirely.
+
+97. **Cypress transitive dependencies carry exploitable CVEs — pin a minimum Cypress version in your security policy** [community] — Cypress bundles many dependencies internally (axios, node-forge, simple-git, etc.). When upstream CVEs are disclosed for these packages, they are only patched in new Cypress minor/patch releases — you cannot independently update the bundled dependency. In 2025-2026, several high-severity CVEs were found in Cypress transitive dependencies: axios (CVE-2025-62718, CVE-2026-40175 — request forgery), node-forge (CVE-2026-33896 — certificate validation bypass), and simple-git (CVE-2026-28292 — RCE via malicious `.gitconfig`). None of these are exploitable by test code in normal usage, but they trigger automated security scanners (Snyk, Dependabot, GitHub Advanced Security) that block CI pipelines with false-positive vulnerability alerts. Set a minimum Cypress version in your `package.json` `engines` field and enable Dependabot `groupBy: "dependencies"` to get grouped Cypress update PRs rather than individual transitive dependency alerts that look scarier than they are. Track security patches at: `docs.cypress.io/app/references/changelog`.
+
+98. **`cy.prompt()` self-healing mode exhausts Cypress Cloud rate limits in large parallel CI suites** [community] — `cy.prompt()` makes an AI call on every test run when a cached selector fails to find an element (self-healing). In a large suite (e.g., 50+ specs, 5 workers) where 15 specs use `cy.prompt()` in self-healing mode, a single UI redesign that invalidates selectors triggers 15 × 5 = 75 AI calls in one CI run — which can hit the hourly limit (100 prompts/500 steps on the free tier; 600 prompts/3,000 steps on the paid tier) within a single parallel run. When the limit is exceeded, all remaining `cy.prompt()` calls fail with a rate-limit error, causing a cascade of test failures that appear as test logic failures rather than quota failures. To detect this: check for `cy:prompt:rate-limit-exceeded` events in the Cypress Cloud run logs. To prevent it: use the **Generate & Export** workflow for all committed tests (so AI is never called in CI), and reserve self-healing mode exclusively for feature branches during active UI development where the export workflow is premature.
+
+99. **`experimentalStudio: true` in cypress.config.ts causes a parse error in Cypress 15.4+** [community] — Cypress Studio was promoted from experimental to default in Cypress 15.4.0. The `experimentalStudio` config flag was simultaneously removed from the valid config schema. If your `cypress.config.ts` still contains `experimentalStudio: true` after upgrading to Cypress 15.4+, Cypress throws a configuration validation error at startup: `Unknown configuration option: experimentalStudio`. This happens before any tests run, causing the entire CI job to fail with an opaque config error rather than a test failure. The fix is to remove the `experimentalStudio: true` line from your config entirely — Studio is now always enabled without any flag. The same applies to `experimentalPromptCommand: true` (removed in Cypress 15.13.0 when `cy.prompt()` moved to beta) and `experimentalModifyObstructiveThirdPartyCode` (which remains valid but is now enabled by default for `cy.origin()` flows in Cypress 15).
+
+100. **`injectDocumentDomain: true` config was silently removed in Cypress 15, breaking multi-subdomain tests on older workarounds** [community] — Prior to Cypress 14, teams testing applications that communicated across subdomains (e.g., `app.example.com` reading `window.localStorage` from `api.example.com`) used `injectDocumentDomain: true` to force `document.domain = 'example.com'` on each page load, enabling cross-subdomain DOM access. Cypress 13 deprecated this flag with a deprecation warning. Cypress 14 kept the flag but issued a stronger warning. Cypress 15 **silently removed** the flag from the valid config schema — setting `injectDocumentDomain: true` in Cypress 15 generates the same `Unknown configuration option` error as gotcha #99. Teams that upgraded from Cypress 13 directly to 15 without addressing the deprecation find that their multi-subdomain tests now throw a launch error rather than a test failure, making the root cause non-obvious. The fix: remove `injectDocumentDomain: true` and replace cross-subdomain DOM access with `cy.origin()` callbacks — each subdomain gets its own `cy.origin()` block where Cypress instruments the page independently.
+
+---
 
 **[community]** WHY: Without `defaultBrowser`, Cypress 13+ defaults to Electron when opening the test runner locally. Electron is convenient for CI (no browser installation required) but differs from production Chrome in several ways: Electron uses an older Chromium base than the latest stable Chrome, does not support extensions, and its CDP implementation diverges for a few automation APIs. Teams that develop tests locally in Electron but run CI in Chrome regularly hit false-local-passes: the test works in Electron's Chromium but fails in Chrome due to subtle CSS rendering differences (particularly for animations and `contain: strict` layout), Web Crypto API availability, or `navigator.userAgent` checks in the application. Setting `defaultBrowser: 'chrome'` ensures every developer opens the same browser as CI, catching these discrepancies immediately. The trade-off: Chrome must be installed on developer machines, whereas Electron ships bundled with Cypress.
 

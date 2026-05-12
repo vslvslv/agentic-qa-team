@@ -1,6 +1,12 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 31 (2026-05-12): added TypeScript 6.0 Removed vs Deprecated precision table — clarifies
+       which options are fully removed vs only deprecated (es5 target removed, moduleResolution classic
+       removed, esModuleInterop false/allowSyntheticDefaultImports false removed, no-default-lib removed,
+       downlevelIteration deprecated, alwaysStrict false deprecated); added --downlevelIteration
+       deprecation note; added community pitfall on import assert removal vs import with; sourced from
+       typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html (re-verified 2026-05-12)
      Iter 30 (2026-05-12): added Zod v4 Migration Patterns section — new APIs (z.toJSONSchema,
        z.registry, z.file, z.prefault, z.interface), breaking changes from v3 (tuple defaults,
        z.undefined() behavior, stricter string validation), and community pitfall about upgrading
@@ -1721,7 +1727,7 @@ TypeScript 6.0 is a **breaking transition release**. All deprecated options work
 |--------|------------|-------------|--------|
 | `strict` | `false` | `true` | All code gets full strict checking |
 | `module` | `commonjs` | `esnext` | ESM output by default |
-| `target` | `es5` | `es2025` | Modern JavaScript assumed; no downleveling |
+| `target` | `es5` | `es2025` | Modern JavaScript assumed; no downleveling. **Note: `"target": "es5"` is fully removed (hard error), not just deprecated.** |
 | `types` | `["*"]` (all @types) | `[]` (none) | Must add `"types": ["node"]` etc. explicitly |
 | `rootDir` | inferred | `.` (tsconfig dir) | May shift output directory structure |
 
@@ -1781,13 +1787,13 @@ async function loadConfig(path: string): Promise<Config> {
   }
 }
 
-// ❌ Deprecated — always enabled now; remove:
-//   "esModuleInterop": false
-//   "allowSyntheticDefaultImports": false
+// ❌ Deprecated — now **removed** (hard error in TS 6.0, not just deprecated):
+//   "esModuleInterop": false    → always-on; remove the flag entirely
+//   "allowSyntheticDefaultImports": false → always-on; remove the flag entirely
 
-// ❌ Deprecated module resolution — use nodenext or bundler:
-//   "moduleResolution": "node"     (was "node10")
-//   "moduleResolution": "classic"
+// ❌ Deprecated module resolution — removed or deprecated:
+//   "moduleResolution": "classic"   → REMOVED in TS 6.0 (hard error)
+//   "moduleResolution": "node"      → Deprecated (was "node10"); use "bundler" or "nodenext"
 ```
 
 **DOM library consolidation:** `lib.dom` now includes `dom.iterable` and `dom.asynciterable` by default — remove explicit entries if present:
@@ -2119,7 +2125,7 @@ Without `exactOptionalPropertyTypes`, TypeScript treats `{ name?: string }` as e
 | `DisposableStack` declared with `const` | Resource cleanup callbacks never fire — `const` prevents disposal | Always use `using stack = new DisposableStack()` |
 | Committing `.tsbuildinfo` to git | File is large, changes every build, and pollutes diffs | Add `*.tsbuildinfo` to `.gitignore`; cache by branch on CI |
 | Missing `incremental: true` on any project | Full type-check on every `tsc` run even for unchanged files | Add `"incremental": true` to `tsconfig.json` immediately |
-| `import` assertions (`assert {}`) instead of attributes (`with {}`) | Disallowed in `--module nodenext` (TS 5.8+); deprecated in Node 22 | Use `import data from "./f.json" with { type: "json" }` |
+| `import` assertions (`assert {}`) instead of attributes (`with {}`) | **Removed** (not just deprecated) in TS 6.0 — hard error under `--module nodenext`; also deprecated in Node 22 | Use `import data from "./f.json" with { type: "json" }` |
 | `import defer` for code splitting | `import defer` defers evaluation, not loading; bundle size unchanged | Use dynamic `import()` for true code splitting |
 | Missing `verbatimModuleSyntax` | Implicit type-import elision causes hard-to-diagnose circular import issues | Enable `verbatimModuleSyntax: true`; use `import type` for all type-only imports |
 | `moduleDetection: "auto"` (default) | Files without `import`/`export` are treated as scripts, polluting global scope | Set `"moduleDetection": "force"` to treat all files as modules |
@@ -3993,4 +3999,153 @@ export default {
   ],
 };
 // Result: webpack compilation is fast (transpileOnly); type errors still caught (fork-ts-checker)
+```
+
+---
+
+## TypeScript 6.0 — Removed vs Deprecated: Precision Reference
+
+TypeScript 6.0 draws a hard line between **deprecated** (still works with `"ignoreDeprecations": "6.0"`, removed in TS 7.0) and **removed** (errors immediately regardless of `ignoreDeprecations`). Teams upgrading need to distinguish between the two to avoid unexpected build failures.
+
+### Fully Removed in TypeScript 6.0 (no escape hatch)
+
+| Option / Syntax | Removed Reason | Migration |
+|---|---|---|
+| `"target": "es5"` | IE is gone; no modern runtime needs ES5 output | Use `"target": "es2015"` or higher; pipe through Babel/SWC if ES5 output is truly required |
+| `"moduleResolution": "classic"` | Never matched real Node or bundler resolution; caused phantom module finds | Use `"bundler"` or `"nodenext"` |
+| `"esModuleInterop": false` | Caused `import * as X` vs `import X` inconsistencies across tools | Remove the flag; interop is always enabled; update `import * as X` to `import X` |
+| `"allowSyntheticDefaultImports": false` | Logically superseded by `esModuleInterop` | Remove the flag |
+| `"outFile"` | Never worked with ESM; bundlers are the correct tool | Use an external bundler (esbuild, Rollup, Webpack) |
+| `module Foo {}` (inline runtime namespace) | Pre-ES-module-era syntax that compiles to IIFEs | Change to `namespace Foo {}`; `declare module "..."` in `.d.ts` files is unaffected |
+| `import X from "f.json" assert { type: "json" }` | TC39 replaced `assert` with `with` | Use `import X from "f.json" with { type: "json" }` |
+| `/// <reference no-default-lib="true"/>` directive | Superseded by `--noLib` / `--libReplacement` flags | Use `"noLib": true` in tsconfig, or the `--libReplacement` flag introduced in TS 5.8 |
+
+```typescript
+// ❌ All of these are hard errors in TypeScript 6.0 — ignoreDeprecations does NOT help
+
+// 1. target: es5 removed
+// { "target": "es5" }  →  error TS5023: Unknown compiler option 'target: es5'
+
+// 2. import assert removed (TC39 replaced it with 'with')
+import data from "./config.json" assert { type: "json" };
+// Error: Import assertions have been removed; use 'with' keyword instead
+// ✅ Fix:
+import data from "./config.json" with { type: "json" };
+
+// 3. module Foo {} removed for runtime namespaces
+module Utils {                   // ❌ Error in TS 6.0
+  export const VERSION = "1.0";
+}
+// ✅ Fix:
+namespace Utils {
+  export const VERSION = "1.0";
+}
+// Note: `declare module "express" {}` in .d.ts files is UNAFFECTED — only the
+// inline runtime form `module Foo {}` without `declare` is removed.
+
+// 4. esModuleInterop: false removed — always-on interop
+// Old code requiring the false setting:
+import * as express from "express";  // Only way under esModuleInterop: false
+// ✅ Modern code (always works now):
+import express from "express";
+```
+
+### Deprecated in TypeScript 6.0 (work now, removed in TS 7.0)
+
+These options still compile with `"ignoreDeprecations": "6.0"` in tsconfig but will become hard errors in TypeScript 7.0:
+
+| Option | Deprecated Reason | Migration |
+|---|---|---|
+| `"baseUrl"` | Replaced by explicit `paths` entries | Move each alias into `paths` with a concrete prefix |
+| `"downlevelIteration"` | Only useful for ES5 targets, which are now removed | Remove; modern targets (`es2015+`) iterate correctly without it |
+| `"alwaysStrict": false` | Strict mode is universally adopted; turning it off encourages unsafe code | Remove; all code is treated as strict mode |
+| `"module": "amd"` / `"umd"` / `"system"` / `"none"` | Module formats for pre-bundler era | Use ESM (`esnext`/`nodenext`) with an external bundler |
+
+```json
+// Temporary escape hatch (TS 6.x only):
+{
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0",
+    "baseUrl": "./src",         // still works, but deprecated
+    "downlevelIteration": true  // still works, but deprecated
+  }
+}
+
+// ✅ Migration target for TS 7.0 compatibility:
+{
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+    // downlevelIteration: removed (not needed for es2015+ targets)
+    // alwaysStrict: removed (always true now)
+  }
+}
+```
+
+[community] **Pitfall: relying on `ignoreDeprecations: "6.0"` as a long-term strategy.** The flag was designed for a 6-month migration window, not permanent suppression. Teams that set it and move on will hit a wall when TypeScript 7.0 ships and removes every deprecated option simultaneously — a much larger migration than addressing one option at a time. Best practice: set `"ignoreDeprecations": "6.0"` as a temporary measure, then create a migration ticket for each deprecated option, and remove the flag before upgrading to TypeScript 7.0.
+
+---
+
+## Community Pitfall: `import assert` Was Removed, Not Deprecated
+
+[community] **Pitfall:** Teams that read "import assertions are deprecated" in earlier TypeScript docs sometimes assume `assert { type: "json" }` still works with a deprecation warning. It does **not** — `import assert` (the `assert` keyword in import attributes) was completely removed in TypeScript 6.0 as a hard error. There is no `"ignoreDeprecations"` escape hatch.
+
+```typescript
+// ❌ Hard error in TypeScript 6.0 — no warning, no workaround flag
+import data from "./data.json" assert { type: "json" };
+// error TS1552: Import assertions have been replaced by import attributes.
+//              Use 'with' instead of 'assert'.
+
+// ✅ Correct syntax — import attributes with 'with' keyword
+import data from "./data.json" with { type: "json" };
+
+// ❌ Also removed: the asserts keyword in module-level position
+//    (NOT to be confused with the 'asserts' keyword in assertion functions, which is unchanged)
+//    This refers only to the import syntax 'assert { type: ... }', not function assertions.
+
+// ✅ Function-level 'asserts' keyword is completely unaffected:
+function assert(condition: unknown): asserts condition {
+  if (!condition) throw new Error('Assertion failed');
+}
+```
+
+**Disambiguation:** TypeScript has two unrelated uses of `asserts`/`assert`:
+1. **`import X from "f" assert { ... }`** — the import assertion syntax (REMOVED in TS 6.0)
+2. **`function foo(x: T): asserts x is S`** — the assertion function return type keyword (UNCHANGED)
+
+These are visually similar but completely different language features. Only #1 was removed.
+
+---
+
+## `--downlevelIteration` Deprecation — Understanding Why
+
+The `--downlevelIteration` flag (TypeScript 2.3+) enabled correct ES5-compatible iteration of generators, spread on iterables, and `for...of` on non-array iterables by emitting helper functions. It was deprecated in TypeScript 6.0 alongside the removal of ES5 as a `target`.
+
+```typescript
+// Code that required --downlevelIteration under ES5 target:
+function* range(start: number, end: number): Generator<number> {
+  for (let i = start; i < end; i++) yield i;
+}
+
+// With target: es5 + downlevelIteration: produced helper-based spread
+const values = [...range(0, 5)]; // emitted complex __spreadIterable helper
+
+// With target: es2015+ (current baseline) — native generators, no helpers needed
+// The spread compiles to Array.from() or native spread — no downlevelIteration required
+```
+
+**When you still need ES5 output in 2026:** Use an external transpiler (Babel `@babel/plugin-transform-regenerator`, SWC `jsc.target: "es5"`) as a post-TypeScript step. TypeScript's job is now type checking and modern-JS emit; downleveling to ES5 is the bundler/transpiler's responsibility.
+
+```json
+// ✅ Modern split-responsibility pipeline:
+// tsconfig.json — TypeScript type checks and emits modern JS
+{
+  "compilerOptions": {
+    "target": "es2022",    // modern output for TS
+    "module": "esnext"
+  }
+}
+// babel.config.json — Babel handles ES5 downleveling if needed
+// { "presets": [["@babel/preset-env", { "targets": "defaults" }]] }
 ```

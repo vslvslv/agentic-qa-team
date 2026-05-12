@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 39 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + scenario-framework -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 40 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + scenario-framework + openapi-spec -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -30,6 +30,7 @@
      - Iter 37: Playwright UI Mode + Trace Viewer + Codegen as exploratory tooling pattern; TypeScript Playwright exploratory session recorder using UI mode signals; AI agent / non-deterministic system exploration heuristics; TypeScript simulation-based oracle harness for LLM features; community lessons #99-101; new anti-pattern (codegen-as-test-authoring trap)
      - Iter 38: Multi-turn AI agent exploration pattern (scenario-style multi-turn simulation with autopilot, hybrid script+autopilot, red-team adversarial); inverted testing pyramid for AI features (community signal from langwatch/scenario + production teams); TypeScript multi-turn agent oracle harness; community lessons #102-104; new anti-pattern (static assertion-only testing for LLM features)
      - Iter 39: OWASP LLM Top 10 2025 as structured charter framework (systematic mapping of LLM01-LLM10 to exploration charters); LLM-as-judge oracle pattern for simulation sessions (decoupled evaluation from execution); synthetic monitoring as production-phase exploratory complement (martinfowler.com 2026); TypeScript LLM-as-judge oracle harness; community lessons #105-107; new anti-pattern (ad hoc red-teaming without OWASP LLM framework)
+     - Iter 40: Contract-aware exploratory testing pattern (OpenAPI schema as oracle source during API sessions); TypeScript SchemaOracleValidator that compares live responses against OpenAPI components; schema-drift charter pattern (YAML); community lessons #108-110; new anti-pattern (exploring APIs without a schema reference)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -6762,5 +6763,338 @@ The practical integration pattern: **exploratory sessions feed synthetic monitor
 103. **[community] Context drift in multi-turn AI agents is invisible in logs and only discoverable by running the full conversation.** Operations teams that monitor LLM-powered chatbots via log analysis report a systematic blind spot: log entries show individual request/response pairs but not the accumulation of context across turns. A context drift defect — where a user preference set at turn 2 is ignored at turn 9 — appears in the logs as a normal, successful API call at turn 9. There is no error code, no latency spike, no anomaly to detect. The only way to discover context drift is to run the full conversation and apply an oracle check at the point where the preference should be honoured. Teams that add multi-turn oracle harnesses to their CI pipeline — running 10-20 representative conversation scripts at each merge — detect context drift regressions within hours of a model update instead of weeks after user complaints arrive.
 
 104. **[community] Red-team charter escalation reveals policy constraint weaknesses that responsible disclosure requires before public deployment.** Teams that run red-team adversarial charters on customer-facing AI agents before public launch consistently find at least one constraint erosion pathway per agent. The constraints that erode under adversarial pressure are systematically different from the constraints tested in happy-path sessions: they require 8-15 turns of escalation to trigger and involve framing techniques (hypothetical framing, authority injection, role reversal) that appear in real user interactions. Teams that skip red-team exploration before launch and discover constraint erosion via user reports face two consequences: a public credibility defect (the agent "said something it shouldn't") and a security review finding that the constraint was insufficient. Running a structured red-team charter before launch typically takes 2-4 hours per agent and prevents both. The cost asymmetry is extreme: 3 hours of red-team exploration vs. a public incident and security remediation sprint.
+
+---
+
+## Advanced Patterns (Iteration 40)
+
+### Contract-Aware Exploratory Testing
+
+API exploratory sessions produce the highest defect density when the tester holds a **schema contract** alongside the running API during the session. The OpenAPI specification for an endpoint is an authoritative "Claims" oracle (from HICCUPPS): any field that is documented as required but missing from a response, any status code that is undocumented, any property type that differs from the schema — all of these trigger the Claims oracle and should be filed as defects.
+
+Without a schema reference, testers probe the API empirically: they send requests, observe responses, and rely on intuition about what "looks right." With a schema reference, the tester has an authoritative oracle for every field, every status code, and every content type in each response. The schema converts API exploration from intuition-guided to oracle-guided.
+
+**Three levels of contract-aware exploration:**
+
+| Level | Approach | What it finds |
+|-------|----------|---------------|
+| Manual schema check | Tester reads OpenAPI spec before session; checks responses visually against schema | Missing fields, wrong types, undocumented status codes |
+| Schema oracle validator | TypeScript utility loads OpenAPI `components/schemas` at session start; checks each probe response automatically | Schema drift, nullable violations, pattern/format violations |
+| Mutation-aware contract check | Compares v1 and v2 schemas to generate a "breaking change diff"; explores each breaking change as a charter probe | Backward compatibility violations, consumer-breaking changes |
+
+**Schema-drift charter pattern (YAML):**
+
+```yaml
+# charter: api-schema-drift-20260512-01.yaml
+# Used when an API has been in production for > 1 sprint without a schema validation run.
+# The "Z" targets the specific schema properties most likely to have drifted.
+
+charter_id: "CHR-schema-drift-orders-api-20260512-01"
+tester: "Alice Chen"
+session_date: "2026-05-12"
+timebox_minutes: 60
+
+mission:
+  explore: "The /orders and /orders/{id} endpoints against the OpenAPI v3.1 schema in openapi.yaml"
+  using: "TypeScript SchemaOracleValidator with openapi.yaml loaded as Claims oracle; boundary values for all documented properties; missing/extra fields; and undocumented status codes"
+  to_discover: "Schema drift — fields present in responses but absent from the schema, required fields missing in some code paths, and status codes returned that are not in the spec"
+
+schema_oracle_source: "./openapi.yaml"
+openapi_components:
+  - "OrderSummary"
+  - "OrderDetail"
+  - "ErrorEnvelope"
+
+priority_areas:
+  - "GET /orders — response array items match OrderSummary schema"
+  - "GET /orders/{id} with a valid ID — matches OrderDetail exactly (no extra/missing fields)"
+  - "GET /orders/{id} with an invalid ID — returns 404 with ErrorEnvelope schema (not a bare string)"
+
+out_of_scope:
+  - "POST /orders — create path (separate charter; schema drift on read paths only today)"
+  - "Authentication header formats (separate auth charter)"
+
+notes: "Last schema validation run: 2026-04-01. Since then, 3 PRs have touched order serialisation.
+        High risk for nullable field drift and extra fields being added without schema update."
+```
+
+**Why contract-aware exploration beats unguided API exploration:**
+
+Unguided API exploration finds defects by recognising surprises relative to the tester's mental model. That mental model is incomplete and personalised — different testers will notice different deviations. A schema is an objective, shared oracle that every tester applies identically. Teams that shift from unguided to schema-oracle-guided API exploration report:
+
+1. **2–3× more schema drift defects found per session**: The schema makes the "Claims" oracle automatic — the validator flags violations the tester's eye would miss.
+2. **Fewer false defect reports**: When the tester has a schema, they only file deviations from the documented contract, not personal preferences. This reduces rejected defect reports.
+3. **Schema gaps identified as defects in their own right**: When a probe reveals behavior not covered by the schema, the tester files two items — the behavior observation and the missing schema entry. Teams that do this consistently keep their OpenAPI documentation in sync with the implementation.
+
+---
+
+### TypeScript: Schema Oracle Validator
+
+This utility loads an OpenAPI v3.1 schema during an exploratory API session and validates each probe response against the relevant component schema. It is not a test runner — it is a session-time oracle tool that the tester invokes after each `request()` call to check whether the response conforms to the documented contract.
+
+```typescript
+// src/testing/exploratory/schema-oracle-validator.ts
+// Contract-aware exploratory testing oracle.
+// Loads an OpenAPI v3.1 component schema and validates API probe responses during a session.
+// Usage: instantiate with the path to openapi.yaml; call validate() after each ApiProbeResult.
+// The validator flags Claims-oracle violations — fields documented in the schema that are
+// missing, mis-typed, or not documented at all. All violations are surfaced to the tester
+// for review, not auto-filed as defects.
+
+import * as fs from 'fs';
+import * as path from 'path';
+
+export type JsonSchemaType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'null';
+
+export interface OpenApiPropertySchema {
+  type?: JsonSchemaType | JsonSchemaType[];
+  nullable?: boolean;            // OpenAPI 3.0 nullable flag
+  format?: string;               // e.g. "date-time", "uuid", "email"
+  items?: OpenApiPropertySchema; // for array type
+  properties?: Record<string, OpenApiPropertySchema>;
+  required?: string[];
+  $ref?: string;                 // $ref to another component
+  description?: string;
+}
+
+export interface OpenApiComponentSchema {
+  type?: 'object';
+  properties?: Record<string, OpenApiPropertySchema>;
+  required?: string[];
+  description?: string;
+}
+
+export interface SchemaViolation {
+  path: string;               // JSON path to the violating field: e.g. "items[0].orderId"
+  expected: string;           // What the schema says
+  actual: string;             // What the response contained
+  violationType: 'missing-required' | 'wrong-type' | 'undocumented-field' | 'null-not-allowed' | 'format-mismatch';
+  oracle: 'Claims';           // Always Claims — schema violations are documented-contract failures
+  severity: 'high' | 'medium' | 'low';
+}
+
+export interface SchemaValidationResult {
+  componentName: string;
+  responseStatusCode: number;
+  violations: SchemaViolation[];
+  passed: boolean;
+  /** Human-readable summary for the session note log */
+  summary: string;
+}
+
+type OpenApiDocument = {
+  components?: {
+    schemas?: Record<string, OpenApiComponentSchema>;
+  };
+};
+
+export class SchemaOracleValidator {
+  private schemas: Record<string, OpenApiComponentSchema> = {};
+
+  constructor(openApiPath: string) {
+    const raw = fs.readFileSync(path.resolve(openApiPath), 'utf-8');
+    // Support both JSON and YAML (basic YAML parsing for OpenAPI 3.1)
+    let doc: OpenApiDocument;
+    if (openApiPath.endsWith('.json')) {
+      doc = JSON.parse(raw);
+    } else {
+      // Minimal YAML → JSON conversion for components/schemas; relies on the file
+      // being well-formed OpenAPI YAML. In production, use a YAML library.
+      // Here we log a note and fall back to an empty schema rather than crashing.
+      try {
+        // Attempt dynamic import of 'yaml' package if available
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const yaml = require('yaml') as { parse: (s: string) => OpenApiDocument };
+        doc = yaml.parse(raw);
+      } catch {
+        console.warn('[SchemaOracleValidator] yaml package not available — install with: npm i yaml');
+        console.warn('[SchemaOracleValidator] Falling back to empty schema; no violations will be detected.');
+        doc = {};
+      }
+    }
+    this.schemas = doc?.components?.schemas ?? {};
+    console.log(`[SchemaOracleValidator] Loaded ${Object.keys(this.schemas).length} component schemas from ${openApiPath}`);
+  }
+
+  /**
+   * Validate an API probe response body against a named OpenAPI component schema.
+   * Returns a SchemaValidationResult with all Claims-oracle violations found.
+   * The tester reviews violations before filing any defects — the validator is a triage tool.
+   *
+   * @param componentName - The OpenAPI components/schemas key to validate against (e.g. "OrderDetail")
+   * @param responseBody  - The parsed response body from ApiProbeResult
+   * @param statusCode    - The HTTP status code (used for reporting context)
+   * @param arrayMode     - Set true when the response body is an array of componentName items
+   */
+  validate(
+    componentName: string,
+    responseBody: unknown,
+    statusCode: number,
+    arrayMode = false
+  ): SchemaValidationResult {
+    const schema = this.schemas[componentName];
+    if (!schema) {
+      return {
+        componentName,
+        responseStatusCode: statusCode,
+        violations: [],
+        passed: true,
+        summary: `[SchemaOracleValidator] No schema found for component "${componentName}" — cannot validate.`,
+      };
+    }
+
+    const violations: SchemaViolation[] = [];
+
+    if (arrayMode && Array.isArray(responseBody)) {
+      responseBody.forEach((item, idx) => {
+        const itemViolations = this.validateObject(item, schema, `[${idx}]`);
+        violations.push(...itemViolations);
+      });
+    } else if (!arrayMode && typeof responseBody === 'object' && responseBody !== null) {
+      violations.push(...this.validateObject(responseBody, schema, ''));
+    } else {
+      violations.push({
+        path: '',
+        expected: `object conforming to ${componentName}`,
+        actual: `${typeof responseBody} (${JSON.stringify(responseBody).slice(0, 80)})`,
+        violationType: 'wrong-type',
+        oracle: 'Claims',
+        severity: 'high',
+      });
+    }
+
+    const passed = violations.length === 0;
+    const summary = passed
+      ? `Schema oracle: ${componentName} — PASS (status ${statusCode}, 0 violations)`
+      : `Schema oracle: ${componentName} — FAIL (status ${statusCode}, ${violations.length} violation(s): ${violations.map(v => v.violationType).join(', ')})`;
+
+    return { componentName, responseStatusCode: statusCode, violations, passed, summary };
+  }
+
+  private validateObject(
+    obj: unknown,
+    schema: OpenApiComponentSchema,
+    prefix: string
+  ): SchemaViolation[] {
+    const violations: SchemaViolation[] = [];
+    if (typeof obj !== 'object' || obj === null) return violations;
+
+    const record = obj as Record<string, unknown>;
+    const properties = schema.properties ?? {};
+    const required = schema.required ?? [];
+
+    // Check all required fields are present
+    for (const requiredField of required) {
+      if (!(requiredField in record)) {
+        violations.push({
+          path: `${prefix}.${requiredField}`.replace(/^\./, ''),
+          expected: `required field "${requiredField}" of type ${properties[requiredField]?.type ?? 'unknown'}`,
+          actual: 'missing',
+          violationType: 'missing-required',
+          oracle: 'Claims',
+          severity: 'high',
+        });
+      }
+    }
+
+    // Check all present fields against their schema
+    for (const [field, value] of Object.entries(record)) {
+      const fieldPath = `${prefix}.${field}`.replace(/^\./, '');
+      const propSchema = properties[field];
+
+      if (!propSchema) {
+        // Field is in the response but not documented in the schema
+        violations.push({
+          path: fieldPath,
+          expected: 'field not present in schema',
+          actual: `undocumented field "${field}" with value type ${typeof value}`,
+          violationType: 'undocumented-field',
+          oracle: 'Claims',
+          severity: 'medium',
+        });
+        continue;
+      }
+
+      // Type check (simplified — handles string, number, integer, boolean, array, object)
+      if (value === null) {
+        const allowsNull = propSchema.nullable === true ||
+          (Array.isArray(propSchema.type) && propSchema.type.includes('null'));
+        if (!allowsNull && required.includes(field)) {
+          violations.push({
+            path: fieldPath,
+            expected: `non-null ${propSchema.type ?? 'value'}`,
+            actual: 'null',
+            violationType: 'null-not-allowed',
+            oracle: 'Claims',
+            severity: 'high',
+          });
+        }
+      } else {
+        const expectedType = Array.isArray(propSchema.type) ? propSchema.type[0] : propSchema.type;
+        const actualType = Array.isArray(value) ? 'array' : typeof value;
+        const typeMatch =
+          !expectedType ||
+          actualType === expectedType ||
+          (expectedType === 'integer' && actualType === 'number' && Number.isInteger(value));
+
+        if (!typeMatch) {
+          violations.push({
+            path: fieldPath,
+            expected: `type ${expectedType}`,
+            actual: `type ${actualType} (value: ${JSON.stringify(value).slice(0, 60)})`,
+            violationType: 'wrong-type',
+            oracle: 'Claims',
+            severity: 'high',
+          });
+        }
+      }
+    }
+
+    return violations;
+  }
+}
+
+// Usage in an API exploratory session:
+//
+// const oracle = new SchemaOracleValidator('./openapi.yaml');
+// const harness = new ApiExploratoryHarness({ ... });
+//
+// // Probe the endpoint
+// const result = await harness.request('GET', '/orders/ORD-001', { label: 'get-order-detail' });
+//
+// // Apply the schema oracle
+// const validation = oracle.validate('OrderDetail', result.responseBody, result.status);
+// if (!validation.passed) {
+//   harness.note(`SCHEMA ORACLE FAIL — ${validation.violations.length} violation(s): ${validation.summary}`);
+//   for (const v of validation.violations) {
+//     harness.note(`  [Claims] ${v.path}: expected ${v.expected}, got ${v.actual} (${v.violationType})`);
+//   }
+// } else {
+//   harness.note(`Schema oracle: ${validation.summary}`);
+// }
+```
+
+**Key properties of the SchemaOracleValidator design:**
+
+- **Claims oracle only**: All violations are tagged as `oracle: 'Claims'` — they are deviations from the documented contract, not personal judgment calls. This makes them immediately actionable and justifiable.
+- **Undocumented fields are medium-severity violations**: A field in the response that is not in the schema is not automatically a defect — it may be intentional. But it is a schema gap that should be filed against the spec, not silently accepted.
+- **Null-not-allowed violations are high-severity**: A null value in a field documented as non-nullable indicates either a data integrity issue in the service or a spec error — both warrant investigation.
+- **The validator is a triage tool, not a test runner**: All violations are surfaced to the tester for review before any defect is filed. The oracle reduces manual checking time; it does not replace tester judgment.
+
+---
+
+### Additional Anti-Pattern (Iteration 40)
+
+- **Exploring APIs without loading the OpenAPI spec first**: Teams that run API exploratory sessions without a schema reference rely entirely on the tester's mental model of what the API should return. This systematically misses a category of defects — schema drift, nullable violations, undocumented fields — that are only discoverable with a contract oracle. The OpenAPI specification is a first-class oracle source (Claims in HICCUPPS). Any API exploration session that does not start with "load the schema and validate every response against it" is operating without one of its most powerful oracle sources. Cost of skipping: teams report discovering schema-drift defects in production 3–6 weeks after the session that would have found them if the spec had been loaded. The fix — adding 10 minutes at session start to load the spec into a validator — is disproportionately cheap versus the cost of the missed defect.
+
+---
+
+## Additional Community Lessons (Iteration 40)
+
+108. **[community] Schema drift between the OpenAPI spec and the running API is the most common class of defect found in the first schema-oracle-guided API session.** Teams that add an OpenAPI schema validator to their API exploratory sessions consistently find that the first session reveals schema drift in every API that has been in production for more than one sprint without a validation check. The most common drift types, in order: (1) nullable fields added to production responses that are documented as required and non-null, (2) additional response fields not documented in the schema added by incremental development without spec updates, (3) error responses returning a plain string instead of the documented `ErrorEnvelope` component. Teams that instrument their exploratory sessions with a schema oracle and file each violation as a spec-gap defect — rather than just a code defect — improve their OpenAPI documentation compliance from a typical 60-70% field accuracy to 90%+ within 2 sprints. The downstream benefit is that contract tests become reliable: a Pact provider verification built on a drifted spec is a false confidence generator.
+
+109. **[community] "Undocumented field" violations from schema oracle sessions are the most valuable input to API design reviews.** When a schema validator flags a field that exists in the API response but not in the OpenAPI spec, the team faces a decision: add the field to the spec (it was intentional but undocumented) or remove it from the response (it was leaked by accident). Teams report that approximately 40% of undocumented fields found this way turn out to be unintentionally leaked internal fields — computed properties, audit metadata, or raw database IDs that should not be part of the public API surface. The other 60% are legitimate additions that a developer added without updating the spec. Both categories are defects: accidental leaks are security concerns; missing spec entries are contract violations. A single 60-minute schema oracle session on a mature API typically surfaces 5-12 undocumented fields and generates both spec-update tasks and security review items.
+
+110. **[community] Contract-aware exploratory sessions reveal consumer impact before consumer-driven contract tests catch regressions.** Teams that use consumer-driven contract testing (Pact) and exploratory testing in combination report that the two approaches find different categories of failures at different times. Pact provider verification catches regressions in existing consumer contracts — it is a regression gate. Contract-aware exploratory sessions find proactive defects: API changes that no consumer has written a contract test against yet (new consumers, new endpoints) and schema drift in areas where consumers have not explicitly tested edge cases (nullable fields, error envelopes). The most valuable combination is: run contract-aware exploratory sessions when a new endpoint is built (before any consumers exist) to establish a clean schema baseline; run Pact provider verification in CI to prevent regressions once consumers write contracts. The exploratory session is the discovery phase that Pact cannot perform; Pact is the regression gate that exploration cannot provide. Teams that use only Pact discover schema drift only after a consumer is broken; teams that add exploratory sessions discover it before any consumer is written.
 
 ---

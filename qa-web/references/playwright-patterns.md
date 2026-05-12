@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.60 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.60 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50) -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.60 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.60 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.60 full audit -->
 
 ---
 
@@ -7268,3 +7268,344 @@ Alternatively, place all GC tests in a dedicated project scoped to Chromium:
 |---------|--------|-----------|
 | v1.49 | Chrome and Edge channels switch to **new headless mode** | Some screenshot/PDF tests may produce different pixels; regenerate baselines after upgrade |
 | v1.49 | `updateSnapshots` default changed from `'all'` to `'missing'` | Set `updateSnapshots: 'changed'` explicitly if previous behavior needed |
+
+---
+
+## v1.61+ New Patterns (Iteration 28)
+
+<!-- verified: Playwright v1.60 is current stable as of 2026-05-12; v1.61 not yet released -->
+
+### `updateSourceMethod` — Three-Way Merge for Inline Snapshot Updates (v1.50+)
+
+When updating inline snapshot tests (`toMatchAriaSnapshot`, `toHaveText`, `expect.soft` with inline matchers),
+Playwright can rewrite the source file in three modes configured via `testConfig.updateSourceMethod`:
+
+```typescript
+// playwright.config.ts
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  updateSourceMethod: 'patch',  // 'patch' | 'overwrite' | '3-way'
+  updateSnapshots: 'changed',
+});
+```
+
+| Mode | Behavior | When to use |
+|------|----------|------------|
+| `'overwrite'` | Replaces the whole snapshot string with new value | Safe when there are no outstanding git conflicts |
+| `'patch'` | Generates a `git apply`-compatible patch file alongside test output | CI where you want to review inline diff before applying |
+| `'3-way'` | Writes both old and new markers (`<<<`, `===`, `>>>`) into the source | When merging a feature branch that touched the same snapshots |
+
+**Production pattern — patch mode in CI for review-first updates:**
+
+```typescript
+// In CI, collect patch files rather than mutating source
+// playwright.config.ts
+export default defineConfig({
+  updateSourceMethod: process.env.CI ? 'patch' : 'overwrite',
+  updateSnapshots: 'changed',
+});
+```
+
+```bash
+# Apply approved snapshot patches after review
+git apply test-results/*.patch
+git diff --stat  # see which test files changed
+```
+
+> **[community]** WHY: `overwrite` mode on CI commits broken inline snapshots directly into the PR if someone runs `npx playwright test --update-snapshots` locally and pushes. The `patch` mode generates diff files to `test-results/` which are reviewed before applying — preventing unintentional snapshot acceptance. Teams using `3-way` reserve it for cross-branch merges where both the old snapshot (in `main`) and new snapshot (feature branch) need to be visible to a human reviewer. [community]
+
+---
+
+### Dialog Handling — The "Listener Must Accept or Hang" Contract
+
+Playwright auto-dismisses all browser dialogs (`alert`, `confirm`, `prompt`) when no listener is registered. Once **any** listener is registered via `page.on('dialog', ...)`, Playwright stops auto-dismissing and the dialog will hang indefinitely unless the listener calls `dialog.accept()` or `dialog.dismiss()`.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+// ✅ One-shot dialog: use page.once()
+test('delete confirmation dialog', async ({ page }) => {
+  await page.goto('/items');
+
+  // Register handler BEFORE the action that triggers the dialog
+  page.once('dialog', async dialog => {
+    expect(dialog.type()).toBe('confirm');
+    expect(dialog.message()).toContain('Are you sure');
+    await dialog.accept();
+  });
+
+  await page.getByRole('button', { name: 'Delete' }).click();
+  await expect(page.getByText('Item deleted')).toBeVisible();
+});
+
+// ✅ Recurring dialog: use page.on() with cleanup
+test('recurring prompt dialogs', async ({ page }) => {
+  let callCount = 0;
+  const handler = async (dialog: import('@playwright/test').Dialog) => {
+    callCount++;
+    await dialog.accept(`response-${callCount}`);
+  };
+  page.on('dialog', handler);
+
+  await page.goto('/multi-prompt');
+  await page.getByRole('button', { name: 'Ask twice' }).click();
+
+  await expect(page.getByText('Got: response-2')).toBeVisible();
+  page.off('dialog', handler);  // Clean up to restore auto-dismiss
+});
+
+// ✅ Prompt: read the default value and provide a custom response
+test('prompt with default value', async ({ page }) => {
+  page.once('dialog', async dialog => {
+    expect(dialog.defaultValue()).toBe('John');
+    await dialog.accept('Jane');
+  });
+  await page.goto('/greet');
+  await page.getByRole('button', { name: 'Greet' }).click();
+  await expect(page.getByText('Hello, Jane')).toBeVisible();
+});
+
+// ✅ beforeunload: must pass runBeforeUnload: true to page.close()
+test('unsaved changes warning', async ({ page }) => {
+  await page.goto('/editor');
+  await page.getByLabel('Content').fill('unsaved work');
+
+  page.once('dialog', async dialog => {
+    expect(dialog.type()).toBe('beforeunload');
+    await dialog.dismiss();  // Dismiss = stay on page
+  });
+
+  await page.close({ runBeforeUnload: true });
+});
+```
+
+**Key APIs:**
+
+| Method | What it returns | Notes |
+|--------|----------------|-------|
+| `dialog.type()` | `'alert'`, `'confirm'`, `'prompt'`, `'beforeunload'` | Check before routing to different handlers |
+| `dialog.message()` | Text displayed to the user | Assert expected message |
+| `dialog.defaultValue()` | Pre-filled value in `prompt` inputs | Inspect before deciding what to accept |
+| `dialog.accept(promptText?)` | Confirm / OK (with optional text for prompts) | Pass custom string for prompt dialogs |
+| `dialog.dismiss()` | Cancel / dismiss | Use for `beforeunload` to keep page open |
+
+> **[community] Gotcha #34:** Registering a `page.on('dialog', ...)` listener that does **not** call `accept()` or `dismiss()` — for example, only logging the message — causes the test to hang at the action that triggered the dialog. The dialog is modal: the page is frozen until it is resolved. If you need to assert the message AND resolve the dialog, do both inside the same listener. Pattern: `page.once('dialog', async d => { expect(d.message()).toContain('X'); await d.accept(); })`. [community]
+
+---
+
+### `page.evaluate()` with Multiple Handles — Destructuring Pattern
+
+When passing multiple JSHandles to `page.evaluate()`, use object or array destructuring to avoid serialisation errors. Only primitives, plain objects, and `JSHandle`/`ElementHandle` instances can be passed as arguments — closures and functions cannot cross the JS execution boundary.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test('read text from multiple DOM handles', async ({ page }) => {
+  await page.goto('/comparison');
+
+  // Acquire handles to non-serialisable DOM nodes
+  const headerHandle = await page.evaluateHandle(() => document.querySelector('h1'));
+  const priceHandle  = await page.evaluateHandle(() => document.querySelector('[data-price]'));
+
+  // ✅ Destructuring object pattern — handles passed as second argument
+  const { header, price } = await page.evaluate(
+    ({ h, p }) => ({
+      header: h?.textContent?.trim() ?? '',
+      price:  p?.getAttribute('data-price') ?? '',
+    }),
+    { h: headerHandle, p: priceHandle }
+  );
+
+  expect(header).toBe('Product A');
+  expect(price).toBe('29.99');
+
+  // Always dispose handles to avoid memory leaks in long tests
+  await headerHandle.dispose();
+  await priceHandle.dispose();
+});
+
+// ✅ Array destructuring pattern
+test('compare two input values', async ({ page }) => {
+  await page.goto('/form');
+  const [firstInput, secondInput] = await Promise.all([
+    page.evaluateHandle(() => document.querySelector('#qty-a')),
+    page.evaluateHandle(() => document.querySelector('#qty-b')),
+  ]);
+
+  const [qtyA, qtyB] = await page.evaluate(
+    ([a, b]) => [
+      (a as HTMLInputElement).value,
+      (b as HTMLInputElement).value,
+    ],
+    [firstInput, secondInput]
+  );
+
+  expect(Number(qtyA)).toBeLessThan(Number(qtyB));
+  await firstInput.dispose();
+  await secondInput.dispose();
+});
+
+// ✅ addInitScript with argument — inject mock BEFORE page load
+test('mock Math.random before load', async ({ page }) => {
+  const fixedSeed = 0.42;
+  await page.addInitScript(
+    (seed) => { Math.random = () => seed; },
+    fixedSeed   // Argument passed explicitly; NOT captured from closure
+  );
+  await page.goto('/random-demo');
+  await expect(page.getByTestId('lucky-number')).toHaveText('42');
+});
+```
+
+> **[community] Gotcha #35:** Variables from the outer test scope are **not** available inside `page.evaluate()` callbacks. The callback runs in the browser process, not the Node.js process. If you reference a test variable inside `evaluate(() => someVar)`, `someVar` will be `undefined` at runtime. Always pass external data as the second argument: `page.evaluate((data) => use(data), someVar)`. This is especially surprising when destructuring test fixtures — fixture values must also be passed explicitly. [community]
+
+---
+
+### HiDPI / Retina Emulation — `deviceScaleFactor` with Custom Viewports
+
+`deviceScaleFactor` sets the device pixel ratio, causing the browser to render at double (or more) physical pixels while the viewport logical size stays the same. Essential for screenshot tests on high-resolution designs.
+
+```typescript
+import { test, expect, defineConfig, devices } from '@playwright/test';
+
+// playwright.config.ts — project-level HiDPI config
+export default defineConfig({
+  projects: [
+    {
+      name: 'desktop-retina',
+      use: {
+        viewport:          { width: 1280, height: 720 },
+        deviceScaleFactor: 2,  // Retina (2x DPR)
+      },
+    },
+    {
+      name: 'desktop-standard',
+      use: {
+        viewport:          { width: 1280, height: 720 },
+        deviceScaleFactor: 1,
+      },
+    },
+    {
+      name: 'iphone-15-pro',
+      use: {
+        ...devices['iPhone 15 Pro'],  // DPR 3 built-in
+      },
+    },
+  ],
+});
+
+// Test-level viewport override (does not affect deviceScaleFactor)
+test.describe('wide layout', () => {
+  test.use({ viewport: { width: 1920, height: 1080 } });
+
+  test('full-bleed hero image visible', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.getByRole('img', { name: 'Hero' })).toBeVisible();
+  });
+});
+
+// Programmatic override per test
+test('side panel visible at 1440px', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/dashboard');
+  await expect(page.getByTestId('side-panel')).toBeVisible();
+});
+```
+
+**Screenshot assertions with HiDPI — match at same scale:**
+
+```typescript
+test('retina logo crisp', async ({ page }) => {
+  await page.goto('/');
+  // Screenshot pixel dimensions = viewport × deviceScaleFactor
+  // Playwright handles this automatically; baselines captured at DPR 2
+  // will fail at DPR 1 — use per-project snapshot directories
+  await expect(page.getByRole('img', { name: 'Logo' })).toHaveScreenshot(
+    'logo-retina.png',
+    { maxDiffPixels: 5 }
+  );
+});
+```
+
+> **[community]** WHY: Screenshot tests run on DPR 2 (macOS Retina CI) produce PNG files twice the pixel count of DPR 1 runs (Linux CI). If you don't isolate snapshot directories by `deviceScaleFactor`, screenshot tests flip between pass and fail depending on the runner. Use `snapshotPathTemplate: '{snapshotDir}/{projectName}/{arg}{ext}'` (project name encodes DPR) or set `use: { deviceScaleFactor: 1 }` globally in CI config. [community]
+
+---
+
+### `testResult.annotations` — Per-Retry Annotation Access (v1.52+)
+
+Each test result object (available in reporters) carries all annotations added during that specific retry. This enables reporters to correlate JIRA issues, build tags, or environment markers with individual retry outcomes.
+
+```typescript
+// custom-reporter.ts
+import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
+
+class AnnotationReporter implements Reporter {
+  onTestEnd(test: TestCase, result: TestResult) {
+    // result.annotations contains annotations for THIS retry, not the full test
+    const issues = result.annotations
+      .filter(a => a.type === 'issue')
+      .map(a => a.description);
+
+    if (result.status === 'failed' && issues.length > 0) {
+      console.log(`[FAIL] ${test.title} — linked issues: ${issues.join(', ')}`);
+    }
+
+    // result.annotations also includes runtime annotations pushed during the test
+    const envAnnotations = result.annotations
+      .filter(a => a.type === 'environment');
+
+    if (envAnnotations.length > 0) {
+      console.log(`  Environments: ${envAnnotations.map(a => a.description).join(', ')}`);
+    }
+  }
+}
+
+export default AnnotationReporter;
+
+// In test — push runtime annotation for reporter to pick up
+test('create order', {
+  annotation: {
+    type: 'issue',
+    description: 'https://jira.example.com/browse/ORD-123',
+  },
+}, async ({ page, browserName }) => {
+  // Runtime annotation: add environment context
+  test.info().annotations.push({
+    type: 'environment',
+    description: `${browserName}-${process.env.TEST_ENV ?? 'local'}`,
+  });
+
+  await page.goto('/orders/new');
+  // ...
+});
+```
+
+> **[community]** WHY: `test.info().annotations` (available inside a test) collects annotations across all retries into a single array. `testResult.annotations` (available in reporters) gives annotations for **one specific retry attempt** — enabling reporters to distinguish "this failure had a linked issue" from "this retry had a linked issue". Teams building custom Slack/PagerDuty reporters use `testResult.annotations` to suppress noise for known issues. [community]
+
+---
+
+## Additional Key APIs (Iteration 28)
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `testConfig.updateSourceMethod` | `'patch'` / `'overwrite'` / `'3-way'` — controls how inline snapshot source files are rewritten (v1.50+) | Use `'patch'` in CI for review-first snapshot updates; `'3-way'` for cross-branch merges |
+| `page.on('dialog', handler)` | Register persistent dialog handler — must call `accept()` or `dismiss()` | Multi-dialog flows; always clean up with `page.off()` after use |
+| `page.once('dialog', handler)` | Register one-shot dialog handler — auto-removed after first invocation | Single-use confirm / alert dialogs |
+| `dialog.defaultValue()` | Read pre-filled text in `prompt` dialogs | Validate default before substituting with `accept(text)` |
+| `page.addInitScript(fn, arg)` | Inject JS before page load with explicit argument | Mock `Math.random`, `Date`, `WebSocket`; never use closure scope |
+| `page.evaluateHandle(fn)` | Return non-serialisable `JSHandle` from browser context | Required when passing DOM nodes to subsequent `evaluate()` calls |
+| `jsHandle.dispose()` | Release `JSHandle` reference in browser memory | Call after use to avoid memory leaks in long tests |
+| `deviceScaleFactor` context option | Sets device pixel ratio for HiDPI / Retina rendering | Screenshot baseline tests, responsive design testing at 2x/3x DPR |
+| `testResult.annotations` | Per-retry annotation array in custom reporters (v1.52+) | Correlate JIRA issues / environment tags with specific retry attempts |
+
+---
+
+### Additional Breaking Changes (v1.50–v1.60)
+
+| Version | Change | Migration |
+|---------|--------|-----------|
+| v1.50 | `updateSnapshots` option renamed/extended — new `updateSourceMethod` controls rewrite strategy | Default remains `'overwrite'`; set explicitly in CI config |
+| v1.60 | `Locator.ariaRef()` removed | Use `locator.ariaSnapshot({ mode: 'ai' })` instead |
+| v1.60 | Context options `videosPath` / `videoSize` removed | Use `recordVideo: { dir, size }` option on context creation |
+| v1.60 | `handle` option removed from binding/exposure methods | Pass handles directly as arguments to `evaluate()` |

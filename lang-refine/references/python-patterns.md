@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -42,6 +42,7 @@
      Iter 36 (2026-05-12): 100/100 (+0) — added compression.zstd module (Python 3.14) with zstd.compress/decompress/ZstdCompressor/train_dict; heapq max-heap functions heapify_max/heappop_max/heappush_max (Python 3.14) with running_median example; sys.remote_exec() + pdb -p PID zero-overhead debugging deep-dive; multiprocessing fork-safety patterns; community gotcha #32 (fork() + threads = deadlock); sourced from docs.python.org/3/library/heapq.html + docs.python.org/3/library/compression.zstd.html + docs.python.org/3/whatsnew/3.14.html
      Iter 37 (2026-05-12): 100/100 (+0) — added asyncio.timeout()/timeout_at() structured timeout contexts (Python 3.11+); asyncio eager task execution with eager_start + create_eager_task_factory (Python 3.12+); community gotcha #33 (asyncio task GC — fire-and-forget reference loss); os.reload_environ() for syncing external env mutations (Python 3.14); sourced from docs.python.org/3/library/asyncio-task.html + docs.python.org/3/library/os.html + docs.python.org/3/whatsnew/3.14.html
      Iter 38 (2026-05-12): 100/100 (+0) — added annotationlib deep-dive (Format enum, ForwardRef evaluation, migration from get_type_hints, metaclass integration); concurrent.interpreters/InterpreterPoolExecutor deep-dive (comparison table vs processes/threads, data-sharing rules, gotchas); t-string custom processor patterns (HTML, SQL, shell); community gotchas #34 (t-string naive concatenation) and #35 (InterpreterPoolExecutor pickle limitations); sourced from docs.python.org/3/library/annotationlib.html + docs.python.org/3/library/concurrent.futures.html + docs.python.org/3/library/string.templatelib.html
+     Iter 39 (2026-05-12): 100/100 (+0) — added pathlib.copy/copy_into/move/move_into (Python 3.14); http.server HTTPSServer (Python 3.14); os.readinto() zero-copy reads; date.strptime()/time.strptime() (Python 3.14); python -c auto-dedent and -X importtime=2; contextvars.Token as context manager (Python 3.14); community gotchas #36 (multiprocessing forkserver default breaks fork-dependent code), #37 (int() __trunc__ removal), #38 (NotImplemented TypeError); sourced from docs.python.org/3/whatsnew/3.14.html
 -->
 
 ## Core Philosophy
@@ -6064,6 +6065,372 @@ def process_with_transform(task: TransformTask, data: list[int]) -> list[int]:
 ```
 
 **Rule:** If your worker callable isn't importable by `pickle.loads(pickle.dumps(fn))`, it will fail in `InterpreterPoolExecutor`. Test with `import pickle; pickle.dumps(fn)` before deploying parallel code.
+
+---
+
+## `pathlib` Copy and Move Operations (Python 3.14)
+
+Python 3.14 adds `copy()`, `copy_into()`, `move()`, and `move_into()` directly on `Path` objects, replacing the `shutil` equivalents for most everyday use. These methods work on both files and directory trees.
+
+```python
+from pathlib import Path
+
+# ── Copy ─────────────────────────────────────────────────────────────────────
+src = Path("reports/2025-q4")
+dst = Path("archive/2025-q4")
+
+src.copy(dst)                    # Copy file or tree to exact destination path
+src.copy_into(Path("archive"))   # Copy *into* a directory → archive/2025-q4
+
+# copy() raises FileExistsError if dst exists; use shutil.copytree(dirs_exist_ok=True) for merging
+
+
+# ── Move ─────────────────────────────────────────────────────────────────────
+src = Path("staging/release-candidate")
+
+src.move(Path("releases/v2.0"))  # Rename/move to exact path
+src.move_into(Path("releases"))  # Move into directory → releases/release-candidate
+
+
+# ── Practical pattern: archive logs with a timestamp ─────────────────────────
+from datetime import date
+
+def archive_logs(log_dir: Path, archive_root: Path) -> Path:
+    """Move today's logs into archive/<date>/ and return destination."""
+    dest = archive_root / str(date.today())
+    dest.mkdir(parents=True, exist_ok=True)
+    log_dir.move_into(dest)
+    return dest / log_dir.name
+```
+
+**When to prefer `pathlib` over `shutil`:** Use `path.copy()` / `path.move()` for single-path operations. Reach for `shutil.copytree(dirs_exist_ok=True)` when you need merge-into-existing-directory semantics, or `shutil.copy2()` when preserving metadata matters and you're on an older Python version.
+
+---
+
+## `http.server` HTTPS Support (Python 3.14)
+
+Python 3.14 adds `HTTPSServer` and command-line TLS flags to the built-in `http.server` module, making it practical for local HTTPS testing without third-party tools.
+
+```python
+from http.server import HTTPSServer, SimpleHTTPRequestHandler
+
+# ── Programmatic HTTPS server ─────────────────────────────────────────────────
+server = HTTPSServer(
+    ("localhost", 8443),
+    SimpleHTTPRequestHandler,
+    certfile="certs/localhost.pem",   # Combined cert+key PEM, or just cert
+    keyfile="certs/localhost-key.pem",
+)
+print("Serving HTTPS on https://localhost:8443")
+server.serve_forever()
+```
+
+```bash
+# ── Command-line HTTPS (no code required) ─────────────────────────────────────
+python -m http.server --tls-cert certs/localhost.pem \
+                      --tls-key certs/localhost-key.pem \
+                      8443
+
+# With password-protected key file
+python -m http.server --tls-cert certs/server.pem \
+                      --tls-key certs/server-key.pem \
+                      --tls-password-file certs/key-password.txt \
+                      8443
+```
+
+**Use case:** Local development, CI HTTPS smoke tests, quick file sharing over TLS. Not suitable for production (no rate limiting, no virtual hosting, no HTTP/2).
+
+**Generating a local cert** with `mkcert` (recommended for dev):
+```bash
+mkcert localhost 127.0.0.1         # Installs a trusted CA; issues cert
+python -m http.server --tls-cert localhost.pem --tls-key localhost-key.pem 8443
+```
+
+---
+
+## `os.readinto()` — Zero-Copy File Descriptor Reads (Python 3.14)
+
+`os.readinto(fd, buffer)` reads from a file descriptor directly into a pre-allocated buffer without creating an intermediate bytes object. This eliminates one memory allocation and copy on every read, which matters in tight I/O loops.
+
+```python
+import os
+
+# ── Basic usage ───────────────────────────────────────────────────────────────
+fd = os.open("large_data.bin", os.O_RDONLY)
+try:
+    buf = bytearray(65536)          # Reuse across reads → no per-call allocation
+    total = 0
+    while (n := os.readinto(fd, buf)) > 0:
+        process_chunk(buf[:n])      # Only slice what was actually read
+        total += n
+finally:
+    os.close(fd)
+
+
+# ── Comparison: os.read() allocates a new bytes on every call ─────────────────
+# BAD for tight loops:
+chunk = os.read(fd, 65536)   # New bytes object each call — heap pressure
+
+# GOOD — reuse the buffer:
+buf = bytearray(65536)
+n = os.readinto(fd, buf)     # In-place write; buf[:n] holds the data
+```
+
+**When to use:** High-throughput binary I/O at the fd level (e.g., device files, pipes, sockets via `socket.fileno()`). For most application code, `file.readinto()` on a buffered file object or `io.BytesIO` is already efficient.
+
+---
+
+## `date.strptime()` and `time.strptime()` (Python 3.14)
+
+Before Python 3.14, `datetime.strptime()` was the only entry point for parsing formatted date-time strings into a `datetime` object. Extracting just a `date` or `time` required `.date()` or `.time()` afterward, silently discarding the other component. Python 3.14 adds `date.strptime()` and `time.strptime()` as first-class methods.
+
+```python
+from datetime import date, time, datetime
+
+# ── Pre-3.14: wasteful datetime roundtrip ─────────────────────────────────────
+d_old = datetime.strptime("2026-05-12", "%Y-%m-%d").date()  # Creates datetime, discards time
+t_old = datetime.strptime("14:30:00", "%H:%M:%S").time()    # Creates datetime, discards date
+
+
+# ── Python 3.14: direct parsing ───────────────────────────────────────────────
+d = date.strptime("2026-05-12", "%Y-%m-%d")    # Returns date — no datetime overhead
+t = time.strptime("14:30:00", "%H:%M:%S")      # Returns time — no datetime overhead
+
+# Full datetime still uses datetime.strptime
+dt = datetime.strptime("2026-05-12 14:30:00", "%Y-%m-%d %H:%M:%S")
+
+
+# ── Practical: parse a CSV column that contains only dates ────────────────────
+import csv
+
+def load_events(path: str) -> list[date]:
+    with open(path, newline="") as fh:
+        reader = csv.DictReader(fh)
+        return [date.strptime(row["date"], "%Y-%m-%d") for row in reader]
+```
+
+---
+
+## `contextvars.Token` as Context Manager (Python 3.14)
+
+`ContextVar.set()` returns a `Token` that can reset the variable to its previous value. In Python 3.14, `Token` gained the context manager protocol, replacing the manual `var.reset(token)` pattern with a `with` block.
+
+```python
+from contextvars import ContextVar
+
+request_id: ContextVar[str] = ContextVar("request_id", default="none")
+
+
+# ── Pre-3.14: manual reset ────────────────────────────────────────────────────
+token = request_id.set("req-abc-123")
+try:
+    process()   # request_id.get() == "req-abc-123"
+finally:
+    request_id.reset(token)   # Manual — easy to forget in complex code
+
+
+# ── Python 3.14: Token as context manager ─────────────────────────────────────
+with request_id.set("req-abc-123"):
+    process()   # request_id.get() == "req-abc-123"
+# Automatically reset on exit, even if process() raises
+
+
+# ── Composable: nested scopes, each with their own value ─────────────────────
+async def handle_request(req_id: str) -> None:
+    with request_id.set(req_id):
+        await do_work()   # Nested async tasks inherit req_id via Context copying
+```
+
+**Why it matters for async code:** Each `asyncio` task copies the current `Context` at creation time. Using `Token` as a context manager guarantees the correct reset even when the enclosing coroutine is cancelled or raises, without requiring a `try/finally`.
+
+---
+
+## Python 3.14 Command-Line Quality-of-Life
+
+### Auto-Dedent for `python -c`
+
+Before Python 3.14, the `-c` flag required all code on a single logical line or with explicit indentation that fought shell quoting. Python 3.14 auto-dedents multi-line strings passed to `-c`.
+
+```bash
+# ── Pre-3.14: one-liner or awkward quoting ────────────────────────────────────
+python -c "import sys; print(sys.version)"
+
+# Multi-line required careful shell tricks:
+python -c "
+if True:
+    print('hello')   # SyntaxError in 3.13 — unexpected indent
+"
+
+# ── Python 3.14: auto-dedent ─────────────────────────────────────────────────
+python -c "
+    import sys
+    if sys.version_info >= (3, 14):
+        print('auto-dedent works!')
+    else:
+        print('upgrade needed')
+"
+# Output: auto-dedent works!
+```
+
+### `-X importtime=2` — Cached Import Visibility
+
+```bash
+# Level 1 (existing): shows import timing for all imports
+python -X importtime=1 -c "import json"
+
+# Level 2 (new in 3.14): marks modules loaded from __pycache__ as 'cached'
+# so you can distinguish cold vs warm import performance
+python -X importtime=2 my_app.py
+# cumulative   self  module
+#     0.000   0.000  cached:_frozen_importlib
+#     0.123   0.123  json
+```
+
+**Use case:** Profiling import chains in large applications. Level 2 helps identify which imports benefit from caching vs which always execute fresh code.
+
+---
+
+## Real-World Gotchas (continued) [community]
+
+### 36. `multiprocessing` Default Start Method Changed to `forkserver` on Linux (Python 3.14)  [community]
+
+**Problem:** Code that relied on `fork` being the default `multiprocessing` start method on Linux will silently fail or deadlock in Python 3.14. `forkserver` spawns a clean process for every worker, unlike `fork` which copies the parent's entire memory space including open file descriptors, thread state, and library handles.
+
+**Why:** `fork` with threads is fundamentally unsafe (see gotcha #32). The Python core team changed the default to `forkserver` on Linux to eliminate the fork-after-threads hazard. `forkserver` is safer but has restrictions: all worker arguments and return values must be picklable, and global state is not inherited.
+
+**How it breaks:**
+```python
+# PRE-3.14 Linux: worked because fork copies parent state
+import multiprocessing
+import sqlite3
+
+# BAD: db connection is not picklable — forkserver can't send it to workers
+conn = sqlite3.connect("app.db")
+
+def worker(query: str) -> list:
+    return conn.execute(query).fetchall()   # conn not available in forkserver worker
+
+if __name__ == "__main__":
+    with multiprocessing.Pool(4) as pool:
+        pool.map(worker, ["SELECT 1", "SELECT 2"])   # Fails under forkserver
+```
+
+**Fix:** Initialise per-worker resources inside the worker function or use a pool initializer:
+
+```python
+import multiprocessing
+import sqlite3
+from typing import Optional
+
+_conn: Optional[sqlite3.Connection] = None
+
+def init_worker(db_path: str) -> None:
+    global _conn
+    _conn = sqlite3.connect(db_path)   # Each worker gets its own connection
+
+def worker(query: str) -> list:
+    assert _conn is not None
+    return _conn.execute(query).fetchall()
+
+if __name__ == "__main__":
+    with multiprocessing.Pool(
+        processes=4,
+        initializer=init_worker,
+        initargs=("app.db",),
+    ) as pool:
+        results = pool.map(worker, ["SELECT 1", "SELECT 2"])
+```
+
+**If you need `fork` temporarily:** `multiprocessing.get_context("fork").Pool()` — but fix the root cause.
+
+---
+
+### 37. `int()` No Longer Delegates to `__trunc__()` (Python 3.14)  [community]
+
+**Problem:** Custom numeric types that only implemented `__trunc__` to support `int()` conversion silently work in Python ≤3.13 but raise `TypeError` in Python 3.14.
+
+**Why:** `__trunc__` was originally designed for `math.trunc()`, not `int()`. Delegating `int()` to it was a historical accident that allowed types to accidentally support integer coercion without explicitly opting in. Python 3.14 closes this gap: `int()` now only uses `__int__()` or `__index__()`.
+
+```python
+# PRE-3.14: accidentally worked
+class Score:
+    def __init__(self, value: float):
+        self.value = value
+
+    def __trunc__(self) -> int:
+        return int(self.value)   # Intended for math.trunc()
+
+s = Score(9.7)
+math.trunc(s)   # 9 — still works in 3.14
+int(s)          # TypeError in 3.14!
+
+
+# FIX: implement __int__() (lossless conversion) or __index__() (for indexing)
+class Score:
+    def __init__(self, value: float):
+        self.value = value
+
+    def __trunc__(self) -> int:
+        return int(self.value)   # math.trunc() support
+
+    def __int__(self) -> int:
+        return int(self.value)   # int() support — explicit, intentional
+
+    def __index__(self) -> int:
+        # Only add __index__ if the type is an exact integer representation
+        # (e.g., a bit-flag class, not a float approximation)
+        raise TypeError(f"Cannot use {type(self).__name__} as an index")
+```
+
+**Audit command:** `grep -rn "__trunc__" src/` — any class that only defines `__trunc__` needs `__int__` added if `int()` calls are expected.
+
+---
+
+### 38. `NotImplemented` in Boolean Context Now Raises `TypeError` (Python 3.14)  [community]
+
+**Problem:** `NotImplemented` is a singleton used as a return value from binary dunder methods (`__add__`, `__eq__`, etc.) to signal "I don't know how to handle this operand type, try the other side." It is **not** `None` and **not** `False`. In Python ≤3.13, using it in a boolean context (`if NotImplemented:`) raised a `DeprecationWarning`; in Python 3.14 it raises `TypeError`.
+
+**Why:** `bool(NotImplemented)` returned `True` (it's a truthy singleton), which masked a class of bugs where implementors accidentally returned `NotImplemented` from a method that should return `bool`. The `TypeError` turns a silent bug into a loud one.
+
+```python
+# BROKEN PATTERN: returning NotImplemented from __bool__ or __eq__ by mistake
+class Vector:
+    def __init__(self, x: float, y: float):
+        self.x = x
+        self.y = y
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Vector):
+            return NotImplemented    # Correct for __eq__ — Python handles the dispatch
+        return self.x == other.x and self.y == other.y
+
+    def is_zero(self) -> bool:
+        # BUG: developer accidentally returns NotImplemented instead of False
+        return NotImplemented    # type: ignore  ← mypy would catch this
+        # Python 3.14: TypeError when caller does `if v.is_zero():`
+
+
+# WHAT BREAKS in 3.14 ─────────────────────────────────────────────────────────
+v = Vector(0.0, 0.0)
+if v.is_zero():           # TypeError: 'NotImplemented' should not be used in a boolean context
+    print("zero vector")
+
+
+# CORRECT USAGE: NotImplemented as return value from dunder dispatch methods ──
+class Money:
+    def __init__(self, amount: float, currency: str):
+        self.amount = amount
+        self.currency = currency
+
+    def __add__(self, other: object) -> "Money":
+        if not isinstance(other, Money):
+            return NotImplemented   # ← correct: signals Python to try other.__radd__
+        if self.currency != other.currency:
+            raise ValueError(f"Cannot add {self.currency} and {other.currency}")
+        return Money(self.amount + other.amount, self.currency)
+```
+
+**Rule:** `NotImplemented` is only correct as a *return value* from `__add__`, `__sub__`, `__mul__`, `__eq__`, `__lt__` and their reflected variants. Never assign it to a variable, never check `if result == NotImplemented:` (use `result is NotImplemented`), never return it from non-dunder methods.
 
 ---
 

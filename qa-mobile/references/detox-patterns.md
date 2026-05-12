@@ -1,8 +1,9 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 44 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 45 | score: 100/100 | date: 2026-05-12 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 <!-- iteration 44 (2026-05-12) adds: WebView testing (by.web() matchers, web element interactions, hybrid app patterns), visual regression with device.takeScreenshot() + external tools, JUnit XML CI reporting (jest-junit), React Native 0.78+ New Architecture strict mode notes, device.resetContentAndSettings() for deep iOS simulator reset, network activity tracking (NetworkSynchronizationEnabled per-configuration), 7 new community gotchas (44–50: by.web() IPC latency vs native sync, visual diff false positives from dynamic content, jest-junit path collision in sharded CI, device.resetContentAndSettings() permission re-grant pattern, Android API 35 predictive back gesture breaking by.system() back button, Hermes debugger port conflict on parallel CI jobs, and WebView URL not yet updated when Detox selector fires) -->
+<!-- iteration 45 (2026-05-12) adds: by.system() full dialog workflow (permissions/alerts/sheets), device.openURL() deep link testing pattern, parallel worker configuration for large suites, by.traits() iOS accessibility traits testing, element.getAttributes() extended inspection, device.shake() shake gesture testing, 6 new community gotchas (51–56: by.system() label locale mismatch, deep link cold-start race condition, parallel workers sharing global launchArgs, by.traits() not available on Android, getAttributes() returning null for off-screen elements, device.shake() no-op on physical devices without shake hardware) -->
 
 ## Core Principles
 
@@ -5844,6 +5845,926 @@ module.exports = { TIMEOUT, IS_CI, IS_DEBUG_BUILD };
 | Debug builds on RN 0.78+ with `strictMode: true` causing double-render timing issues | Use Release builds for CI; or disable `React.StrictMode` via `DETOX_BUILD=1` env (Gotcha 50) |
 | `device.resetContentAndSettings()` called without re-granting permissions afterward | After factory reset, all app permissions are revoked; call `launchApp({ permissions })` on next launch |
 | Visual regression test not normalizing status bar before screenshot | Call `device.setStatusBar({ time: '9:41', batteryLevel: 100, ... })` in `beforeAll` (Gotcha 19) |
+
+---
+
+---
+
+## Additional Patterns (iteration 45 additions)
+
+### Pattern 41 — `by.system()` full dialog workflow: permissions, alerts, and action sheets
+
+Detox's `by.system()` matcher targets OS-level UI that is rendered by the host OS rather
+than your app — permission dialogs, system alerts, action sheets (iOS), and the back
+navigation confirmation on Android 15+. Because these are system-layer views, Detox's
+normal synchronization does not apply; you must use `waitFor` with a generous timeout.
+
+**Key difference from app elements**: System dialogs appear asynchronously in a
+separate process (iOS `SpringBoard`, Android `PackageInstaller`). The dialog may not
+appear for 500–1000 ms after the app triggers it. Always use `waitFor` before interacting.
+
+```js
+// e2e/permissions.test.js
+// Pattern: Handling iOS system permission dialogs deterministically
+
+describe('Camera permission flow', () => {
+  beforeAll(async () => {
+    // Launch WITHOUT pre-granting camera — we want to exercise the dialog
+    await device.launchApp({
+      newInstance: true,
+      permissions: { camera: 'unset' }, // force the dialog to appear
+    });
+  });
+
+  it('grants camera permission via system dialog', async () => {
+    await element(by.id('open-camera-button')).tap();
+
+    // System permission dialog appears in SpringBoard process — wait for it
+    await waitFor(element(by.system().label('Camera')))
+      .toExist()
+      .withTimeout(5000);
+
+    // Tap "Allow" — label text is platform and locale dependent (see Gotcha 51)
+    await element(by.system().label('Allow')).tap();
+
+    // App should now show the camera view
+    await waitFor(element(by.id('camera-preview')))
+      .toBeVisible()
+      .withTimeout(5000);
+  });
+});
+```
+
+```js
+// e2e/alerts.test.js
+// Pattern: Handling app-triggered UIAlertController (iOS) / AlertDialog (Android)
+// App code: Alert.alert('Confirm delete', 'Are you sure?', [{text: 'Cancel'}, {text: 'Delete'}])
+
+it('confirms a deletion via native alert', async () => {
+  await element(by.id('delete-item-button')).tap();
+
+  // Native Alert — rendered by the OS but tied to the app process.
+  // On iOS it appears immediately (within the same JS idle window).
+  // Use by.system() only for true SpringBoard dialogs; for Alert.alert() use by.text().
+  await waitFor(element(by.text('Are you sure?')))
+    .toBeVisible()
+    .withTimeout(3000);
+
+  await element(by.text('Delete')).tap();
+
+  await waitFor(element(by.id('empty-state-view')))
+    .toBeVisible()
+    .withTimeout(3000);
+});
+```
+
+```js
+// e2e/actionSheet.test.js
+// Pattern: iOS UIActivityViewController / share sheet (system overlay)
+// Note: UIActivityViewController is a SpringBoard overlay — use by.system()
+
+it('interacts with the native share sheet', async () => {
+  await element(by.id('share-button')).tap();
+
+  // Share sheet takes 300-800ms to animate in
+  await waitFor(element(by.system().type('XCUIElementTypeActivityListView')))
+    .toExist()
+    .withTimeout(4000);
+
+  // Dismiss the share sheet by tapping Cancel
+  await element(by.system().label('Cancel')).tap();
+
+  await waitFor(element(by.system().type('XCUIElementTypeActivityListView')))
+    .not.toExist()
+    .withTimeout(3000);
+});
+```
+
+**`by.system()` matcher options:**
+
+| Matcher | Example | Notes |
+|---------|---------|-------|
+| `.label(text)` | `by.system().label('Allow')` | Matches accessibility label — locale-sensitive |
+| `.type(type)` | `by.system().type('XCUIElementTypeButton')` | Matches XCUIElementType (iOS) or Android class |
+| `.id(id)` | `by.system().id('com.apple.permission')` | Matches accessibility ID on system views |
+
+**Pre-granting to skip dialogs in non-dialog tests:**
+```js
+// .detoxrc.js — global permission pre-grant for tests that don't test dialogs
+apps: {
+  'ios.sim.release': {
+    launchArgs: {
+      // Pre-grant all permissions so tests that don't care about dialogs are unaffected
+    },
+  },
+}
+
+// OR per-test:
+await device.launchApp({
+  permissions: {
+    camera: 'YES',
+    microphone: 'YES',
+    photos: 'YES',
+    location: 'always',
+    notifications: 'YES',
+    contacts: 'YES',
+    calendar: 'YES',
+  },
+});
+```
+
+---
+
+### Pattern 42 — `device.openURL()` deep link testing
+
+React Native apps commonly support deep links and universal links. Detox provides
+`device.openURL()` to trigger the app's `Linking` API handler as if the OS opened a URL.
+This is the recommended approach over `adb shell am start -d` (Android) or
+`xcrun simctl openurl` (iOS) in shell commands — `device.openURL()` works cross-platform
+and correctly handles cold-start vs warm-start scenarios.
+
+```js
+// e2e/deepLinks.test.js
+// Testing cold-start deep link navigation
+
+const APP_URL_SCHEME = 'myapp'; // matches your RN Linking config
+
+describe('Deep link navigation', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  it('navigates to a product detail screen via deep link (warm start)', async () => {
+    // App is already running — openURL simulates the OS opening a link while app is open
+    await device.openURL({ url: `${APP_URL_SCHEME}://products/42` });
+
+    await waitFor(element(by.id('product-detail-screen')))
+      .toBeVisible()
+      .withTimeout(5000);
+
+    await waitFor(element(by.id('product-title')))
+      .toHaveText('Product 42')
+      .withTimeout(3000);
+  });
+
+  it('navigates to the profile screen via deep link', async () => {
+    await device.openURL({ url: `${APP_URL_SCHEME}://profile/me` });
+
+    await waitFor(element(by.id('profile-screen')))
+      .toBeVisible()
+      .withTimeout(5000);
+  });
+});
+```
+
+```js
+// e2e/deepLinks.test.js (continued)
+// Testing cold-start deep link — app is NOT running when the URL fires
+
+describe('Deep link cold start', () => {
+  it('launches to the correct screen when opened via deep link from terminated state', async () => {
+    // Terminate the app first so it is not running
+    await device.terminateApp();
+
+    // Launch with a URL — Detox passes it to the app on cold start
+    await device.launchApp({
+      newInstance: true,
+      url: `${APP_URL_SCHEME}://products/99`,
+    });
+
+    // App boots, processes the initial URL, and navigates to the product screen
+    await waitFor(element(by.id('product-detail-screen')))
+      .toBeVisible()
+      .withTimeout(8000); // cold start is slower — allow more time
+  });
+});
+```
+
+```js
+// e2e/universalLinks.test.js
+// iOS Universal Links (HTTPS scheme) — requires Associated Domains entitlement
+// The simulated URL must match the app's associated domain configuration
+
+describe('Universal link navigation', () => {
+  it('handles a universal link for an order confirmation page', async () => {
+    // Universal links use HTTPS scheme matching the associated domain
+    await device.openURL({
+      url: 'https://www.myapp.com/orders/abc123',
+      sourceApp: 'com.example.safari', // optional: simulate opening from a specific app
+    });
+
+    await waitFor(element(by.id('order-detail-screen')))
+      .toBeVisible()
+      .withTimeout(5000);
+
+    await waitFor(element(by.id('order-id-label')))
+      .toHaveText('#abc123')
+      .withTimeout(3000);
+  });
+});
+```
+
+**Cross-platform deep link differences:**
+
+| Platform | Cold-start URL | Warm URL | Universal/App Links |
+|----------|---------------|----------|---------------------|
+| iOS | `launchApp({ url })` | `device.openURL({ url })` | HTTPS scheme + Associated Domains |
+| Android | `launchApp({ url })` | `device.openURL({ url })` | HTTPS scheme + App Links / Intent filters |
+
+**Note on Android Intent extras**: On Android, some deep links carry Intent extras beyond the URL
+(e.g., push notification payloads). Use `launchApp({ userActivity })` for these cases or pass
+extras via `launchArgs` and read them in `getInitialURL()`.
+
+---
+
+### Pattern 43 — Parallel worker configuration for large test suites
+
+Detox supports parallel test execution via Jest's `--maxWorkers` flag. Each worker
+gets a dedicated simulator/emulator instance. For large suites (50+ tests), parallelism
+is the single biggest lever for CI time reduction — 8 workers can reduce a 40-minute suite
+to under 6 minutes.
+
+```js
+// jest.config.js — Detox + Jest parallel configuration
+/** @type {import('@jest/types').Config.InitialOptions} */
+module.exports = {
+  testEnvironment: 'detox/runners/jest/testEnvironment',
+  testRunner: 'jest-circus/runner',
+  testTimeout: 120000,
+  maxWorkers: process.env.CI ? 4 : 2, // 4 workers on CI, 2 locally (less resource pressure)
+  verbose: true,
+  reporters: [
+    'detox/runners/jest/reporter',
+    ['jest-junit', {
+      outputDirectory: 'artifacts',
+      outputName: `junit-${process.env.WORKER_ID || 'single'}.xml`,
+    }],
+  ],
+  testSequencer: './e2e/sequencer.js', // optional: custom ordering
+};
+```
+
+```js
+// .detoxrc.js — worker-aware device pool
+/** @type {import('detox').DetoxConfig} */
+module.exports = {
+  testRunner: {
+    args: {
+      $0: 'jest',
+      config: 'e2e/jest.config.js',
+    },
+    jest: {
+      setupTimeout: 120000,
+      bail: process.env.CI ? 1 : 0, // fail-fast on CI
+    },
+  },
+  devices: {
+    simulator: {
+      type: 'ios.simulator',
+      device: { type: 'iPhone 16' },
+    },
+  },
+  apps: {
+    ios: {
+      type: 'ios.app',
+      binaryPath: 'ios/build/Build/Products/Release-iphonesimulator/MyApp.app',
+    },
+  },
+  configurations: {
+    'ios.sim.release': {
+      device: 'simulator',
+      app: 'ios',
+      artifacts: {
+        rootDir: '.artifacts',
+        plugins: {
+          instruments: 'none', // disable per-worker instruments to avoid port conflicts
+          log: { enabled: true, keepOnlyFailedTestsArtifacts: true },
+          screenshot: { mode: 'failure', keepOnlyFailedTestsArtifacts: true },
+        },
+      },
+    },
+  },
+};
+```
+
+```yaml
+# GitHub Actions — parallel Detox iOS with matrix sharding
+name: Detox iOS
+on: [push, pull_request]
+jobs:
+  detox-ios:
+    runs-on: macos-15
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]  # 4 shards = 4 parallel jobs
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Detox app
+        run: npx detox build -c ios.sim.release
+
+      - name: Run Detox tests (shard ${{ matrix.shard }} of 4)
+        run: |
+          npx detox test \
+            -c ios.sim.release \
+            --testNamePattern='.*' \
+            --shard-index=${{ matrix.shard }} \
+            --shard-count=4 \
+            --forceExit
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detox-results-shard-${{ matrix.shard }}
+          path: |
+            artifacts/
+            .artifacts/
+```
+
+**Worker isolation rules:**
+- Each worker gets its own simulator instance — no state sharing.
+- Do NOT use `device.setURLBlacklist()` globally in `beforeAll` across workers without re-applying it in each worker's `beforeAll`. Detox workers each boot a fresh app instance.
+- Avoid writing to shared file paths in test helpers (e.g., `fs.writeFileSync('baseline.png', ...)`) — use worker-unique paths based on `process.env.JEST_WORKER_ID`.
+
+---
+
+### Pattern 44 — `by.traits()` iOS accessibility traits testing
+
+iOS accessibility traits are flags set on UI elements to convey their role and state to
+assistive technologies (VoiceOver, Switch Control). Detox's `by.traits()` matcher filters
+elements by one or more traits, allowing you to verify that your app correctly exposes
+semantic metadata — critical for accessibility compliance (WCAG, ADA, Section 508).
+
+This API is **iOS Simulator only** — Android has no direct equivalent; use `by.label()`
+or Espresso's AccessibilityChecks for Android accessibility assertions.
+
+```js
+// e2e/accessibility.test.js
+// Testing that key elements carry correct iOS accessibility traits
+
+describe('Accessibility traits', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  it('verifies that the primary action button is marked as a button trait', async () => {
+    if (device.getPlatform() !== 'ios') return; // by.traits() is iOS only
+
+    // 'button' trait confirms VoiceOver will announce this as "Button"
+    await expect(
+      element(by.id('submit-button').and(by.traits(['button'])))
+    ).toBeVisible();
+  });
+
+  it('verifies that the loading spinner is marked as adjustable', async () => {
+    if (device.getPlatform() !== 'ios') return;
+
+    await element(by.id('refresh-button')).tap();
+
+    // 'adjustable' trait: VoiceOver announces swipe up/down to adjust (e.g. sliders, activity indicators)
+    await waitFor(
+      element(by.id('loading-indicator').and(by.traits(['adjustable'])))
+    )
+      .toExist()
+      .withTimeout(5000);
+  });
+
+  it('verifies that selected state is correct for a tab bar item', async () => {
+    if (device.getPlatform() !== 'ios') return;
+
+    await element(by.id('home-tab')).tap();
+
+    // 'selected' trait confirms the tab is currently active
+    await expect(
+      element(by.id('home-tab').and(by.traits(['selected'])))
+    ).toBeVisible();
+
+    // The non-selected tab must NOT have the 'selected' trait
+    await expect(
+      element(by.id('settings-tab').and(by.traits(['selected'])))
+    ).not.toBeVisible();
+  });
+
+  it('verifies that disabled controls carry the "disabled" trait', async () => {
+    if (device.getPlatform() !== 'ios') return;
+
+    // Navigate to a screen where the submit button is disabled
+    await element(by.id('form-screen-link')).tap();
+
+    await expect(
+      element(by.id('submit-button').and(by.traits(['notEnabled'])))
+    ).toBeVisible();
+  });
+});
+```
+
+**Supported trait values (iOS):**
+
+| Trait constant | Description |
+|----------------|-------------|
+| `'button'` | Element behaves like a button (tappable to trigger an action) |
+| `'link'` | Element opens a URL or navigates on tap |
+| `'header'` | Element is a navigation or section header |
+| `'searchField'` | Element is a search input |
+| `'image'` | Element is a graphic (not interactive by default) |
+| `'selected'` | Element is currently selected (checkboxes, tabs) |
+| `'playsSound'` | Element triggers audio playback when activated |
+| `'keyboardKey'` | Element is a custom keyboard key |
+| `'staticText'` | Element only displays text (non-interactive) |
+| `'summaryElement'` | Element provides summary info when device is locked |
+| `'notEnabled'` | Element is disabled (greyed out, non-interactive) |
+| `'adjustable'` | Element responds to swipe up/down to change value (sliders) |
+| `'allowsDirectInteraction'` | Element allows multi-finger interactions (e.g. piano keys) |
+| `'causesPageTurn'` | Element triggers page turn in a paged scroll view |
+| `'frequentUpdates'` | Element updates frequently (live region, e.g. timers) |
+
+---
+
+### Pattern 45 — `element.getAttributes()` extended inspection
+
+`element.getAttributes()` returns a snapshot of an element's current state — visibility,
+text value, placeholder, enabled state, focus state, and more. It is the primary escape
+hatch when `waitFor` assertions are too coarse: when you need to read a value (not just
+assert it), or inspect multiple properties at once without chaining several `expect` calls.
+
+```js
+// e2e/formValidation.test.js
+// Using getAttributes() to inspect element state before asserting
+
+it('shows inline error messages after invalid form submission', async () => {
+  await element(by.id('email-input')).replaceText('not-an-email');
+  await element(by.id('submit-button')).tap();
+
+  // Wait for the error state to appear
+  await waitFor(element(by.id('email-error-label')))
+    .toBeVisible()
+    .withTimeout(3000);
+
+  // Read the full attributes snapshot
+  const attrs = await element(by.id('email-error-label')).getAttributes();
+
+  // attrs.text: the label's displayed text
+  jestExpect(attrs.text).toContain('valid email');
+
+  // attrs.visible: boolean — confirms element is actually in the viewport
+  jestExpect(attrs.visible).toBe(true);
+
+  // attrs.enabled: false for disabled inputs
+  const inputAttrs = await element(by.id('email-input')).getAttributes();
+  jestExpect(inputAttrs.enabled).toBe(true); // input remains editable after error
+});
+```
+
+```js
+// e2e/toggle.test.js
+// Using getAttributes() to read toggle/switch state without asserting a specific value
+
+it('toggles dark mode and verifies the preference is persisted', async () => {
+  // Tap the dark mode toggle
+  await element(by.id('dark-mode-toggle')).tap();
+
+  const toggleAttrs = await element(by.id('dark-mode-toggle')).getAttributes();
+
+  // attrs.value: for Switch components, returns 'true' or 'false' as a string
+  // (not a boolean — this is a common gotcha, see Gotcha 54)
+  jestExpect(toggleAttrs.value).toBe('true'); // switch is now ON
+
+  // Reload the app to verify persistence
+  await device.reloadReactNative();
+
+  const reloadedAttrs = await element(by.id('dark-mode-toggle')).getAttributes();
+  jestExpect(reloadedAttrs.value).toBe('true'); // preference survived reload
+});
+```
+
+```js
+// e2e/list.test.js
+// Using getAttributes() on a FlatList item for index and frame position
+
+it('confirms a product card is in the visible frame', async () => {
+  const cardAttrs = await element(by.id('product-card-0')).getAttributes();
+
+  // attrs.frame: { x, y, width, height } in screen coordinates
+  // Useful for asserting layout constraints or comparing positions
+  jestExpect(cardAttrs.frame.width).toBeGreaterThan(200);
+  jestExpect(cardAttrs.frame.y).toBeGreaterThanOrEqual(0);
+
+  // attrs.label: the accessibility label (what VoiceOver reads)
+  jestExpect(cardAttrs.label).toContain('Product');
+});
+```
+
+**`getAttributes()` return shape (key properties):**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `text` | `string \| undefined` | Displayed text content |
+| `label` | `string \| undefined` | Accessibility label (VoiceOver/TalkBack text) |
+| `placeholder` | `string \| undefined` | Input placeholder text |
+| `value` | `string \| undefined` | Current value — switches return `'true'`/`'false'` (string) |
+| `enabled` | `boolean` | Whether the element is interactive |
+| `visible` | `boolean` | Whether the element is visible in the viewport |
+| `focused` | `boolean` | Whether the element has keyboard focus |
+| `frame` | `{ x, y, width, height }` | Bounding box in screen coordinates |
+| `identifier` | `string \| undefined` | The `testID` value |
+| `activationPoint` | `{ x, y }` | Point where taps are registered |
+| `elementType` | `string` | Native element type name (XCUIElement or Android class) |
+| `hasKeyboardFocus` | `boolean` | iOS: true if the element holds the keyboard |
+
+---
+
+### Pattern 46 — `device.shake()` shake gesture testing
+
+Some React Native apps respond to the device shake gesture (e.g., to open a debug menu,
+undo an action, or trigger a "feedback" flow). Detox provides `device.shake()` to
+simulate this gesture on iOS Simulator. Android Emulator shake simulation requires a
+different approach (see note below).
+
+```js
+// e2e/shake.test.js
+// Testing shake-triggered features
+
+describe('Shake gesture', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  it('opens the developer feedback modal on shake (iOS)', async () => {
+    if (device.getPlatform() !== 'ios') {
+      // Android shake via emulator menu or ADB — not directly supported in Detox
+      return;
+    }
+
+    await device.shake();
+
+    // Shake feedback modal should appear
+    await waitFor(element(by.id('feedback-modal')))
+      .toBeVisible()
+      .withTimeout(3000);
+
+    // Dismiss
+    await element(by.id('feedback-modal-close')).tap();
+
+    await waitFor(element(by.id('feedback-modal')))
+      .not.toBeVisible()
+      .withTimeout(2000);
+  });
+
+  it('shows undo action after text is deleted (shake to undo iOS native)', async () => {
+    if (device.getPlatform() !== 'ios') return;
+
+    await element(by.id('notes-input')).replaceText('Draft text content');
+    await element(by.id('delete-note-button')).tap();
+
+    // iOS native text fields support shake-to-undo
+    await device.shake();
+
+    // System-level undo alert appears (not from the app — by.text() or by.system())
+    await waitFor(element(by.text('Undo Typing')))
+      .toExist()
+      .withTimeout(2000);
+
+    await element(by.text('Undo')).tap();
+
+    await expect(element(by.id('notes-input'))).toHaveText('Draft text content');
+  });
+});
+```
+
+**Android shake alternative**: The Android Emulator does not expose a programmatic shake API
+that Detox can call. For Android, trigger shake-based features via:
+1. `launchArgs` — inject a flag at startup to bypass the shake requirement in development builds.
+2. Expose a `testID`-bearing button in development builds that triggers the same code path as shake.
+3. Use `adb shell input keyevent 82` (menu key) if your app listens for that instead.
+
+---
+
+## Community Gotchas (iteration 45 additions)
+
+### 51. `by.system()` dialog labels are locale-sensitive and change between iOS versions [community]
+
+**Root cause**: iOS system permission dialog button labels are localized. On an English device,
+the camera permission dialog has "OK" and "Don't Allow". On a French device, they are "OK" and
+"Ne pas autoriser". If your Detox tests hard-code English labels using `by.system().label('OK')`
+and your CI simulator uses a non-English locale (or Apple changes the English label text between
+iOS major versions), the tests fail with `element not found`.
+
+**WHY teams hit this in production**: macOS/iOS simulator locale is set by the CI machine's
+default locale, which may differ from developer machines. A CI provider upgrade (e.g. Xcode 16
+runners using "en_US_POSIX" instead of "en_US") can silently change button text.
+
+**Fix**: Pre-grant all permissions in `.detoxrc.js` using the `permissions` key and avoid
+`by.system()` for routine permission dialogs. Reserve `by.system()` only for tests explicitly
+testing the permission dialog UX:
+
+```js
+// .detoxrc.js — pre-grant all permissions to avoid locale-sensitive dialog interactions
+configurations: {
+  'ios.sim.release': {
+    launchArgs: {
+      // Pre-grant permissions at app launch — bypasses the dialog entirely
+    },
+    // This is the correct way: use the Detox permissions API
+  },
+}
+
+// In tests that do NOT test permission dialogs:
+await device.launchApp({
+  permissions: {
+    camera: 'YES',
+    microphone: 'YES',
+    photos: 'YES',
+    location: 'always',
+    notifications: 'YES',
+  },
+});
+// device.launchApp with permissions sets the permission directly in the Simulator database
+// without showing any dialog — completely locale-independent.
+```
+
+If you must use `by.system()` labels, read the current device locale at test runtime and map to
+the expected label string:
+
+```js
+// e2e/helpers/systemLabels.js
+const PERMISSION_ALLOW_LABELS = {
+  'en': 'Allow',
+  'fr': 'Autoriser',
+  'de': 'Erlauben',
+  'es': 'Permitir',
+  'ja': '許可',
+};
+
+function getAllowLabel() {
+  const locale = device.getPlatform() === 'ios'
+    ? (process.env.DETOX_LOCALE || 'en')
+    : 'allow'; // Android uses 'Allow' consistently in AOSP
+  return PERMISSION_ALLOW_LABELS[locale] || 'Allow';
+}
+
+module.exports = { getAllowLabel };
+```
+
+---
+
+### 52. Deep link cold-start race condition: URL fires before JS bundle is ready [community]
+
+**Root cause**: `device.launchApp({ url: 'myapp://products/42' })` passes the URL via the
+native launch mechanism. The app process starts, boots the React Native JS bundle, and then
+`Linking.getInitialURL()` is called from JS. However, on slow CI machines (Debug builds,
+large bundles), the JS bundle may not have executed `Linking.getInitialURL()` by the time
+Detox's first action fires. The result: the deep link URL is processed before the navigation
+stack is initialized, causing a silent no-op — the app boots on the home screen instead of
+the deep-linked screen.
+
+**WHY this is invisible in development**: Fast dev machines have the JS bundle warm in Metro
+cache. On CI with a fresh build, cold start time is 3–8x slower.
+
+**Fix**: Either increase the `waitFor` timeout on the target screen, or add a small synchronization
+mechanism in the app that signals bundle-ready state:
+
+```js
+// Fix 1: Increase timeout for deep-link cold-start tests
+it('navigates to product screen via cold-start deep link', async () => {
+  await device.terminateApp();
+  await device.launchApp({
+    newInstance: true,
+    url: 'myapp://products/42',
+  });
+
+  // Use a generous timeout for cold-start deep link — bundle may take 6-10s on CI
+  await waitFor(element(by.id('product-detail-screen')))
+    .toBeVisible()
+    .withTimeout(15000); // much longer than the default 6000ms (Detox 20 default)
+});
+```
+
+```js
+// Fix 2: Use launchArgs to signal deep link target + handle it synchronously in JS
+// (avoids async getInitialURL() race)
+it('navigates via launchArgs instead of deep link URL (more reliable)', async () => {
+  await device.terminateApp();
+  await device.launchApp({
+    newInstance: true,
+    launchArgs: {
+      INITIAL_ROUTE: 'products',
+      INITIAL_PARAMS: JSON.stringify({ productId: '42' }),
+    },
+  });
+
+  // App reads INITIAL_ROUTE from launchArgs synchronously before rendering — no race
+  await waitFor(element(by.id('product-detail-screen')))
+    .toBeVisible()
+    .withTimeout(8000);
+});
+```
+
+---
+
+### 53. Parallel workers share the same `device.launchApp()` args from `beforeAll` — last writer wins [community]
+
+**Root cause**: When Detox runs with `--maxWorkers 4`, four Jest workers execute `beforeAll`
+blocks concurrently. Each worker gets its own simulator instance, BUT if you store test
+configuration in shared module-level state (e.g., a singleton config file that all workers
+import and mutate), the last worker to write wins. This causes some workers to launch the app
+with incorrect flags.
+
+**WHY this is surprising**: Jest workers run in separate Node processes. Module-level `let` variables
+are NOT shared. The problem occurs when workers write to shared on-disk fixtures or shared
+environment variables that feed into `device.launchApp()`.
+
+**Most common manifestation**: Test helpers that write a `launchArgs.json` to a shared path,
+then read it in `beforeAll`. Worker 1 writes `{ featureFlag: 'A' }`, Worker 3 immediately writes
+`{ featureFlag: 'B' }`, and Worker 1 reads `'B'` by the time its `beforeAll` runs.
+
+**Fix**: Write fixtures to worker-unique paths using `process.env.JEST_WORKER_ID`:
+
+```js
+// e2e/helpers/workerConfig.js
+const path = require('path');
+const fs = require('fs');
+
+// Each worker writes to its own isolated config file
+const workerDir = path.join(__dirname, '..', '.artifacts', `worker-${process.env.JEST_WORKER_ID}`);
+
+function writeLaunchConfig(config) {
+  fs.mkdirSync(workerDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(workerDir, 'launch-config.json'),
+    JSON.stringify(config, null, 2)
+  );
+}
+
+function readLaunchConfig() {
+  const file = path.join(workerDir, 'launch-config.json');
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+}
+
+module.exports = { writeLaunchConfig, readLaunchConfig };
+```
+
+```js
+// e2e/featureA.test.js — uses worker-scoped config, no cross-worker pollution
+const { writeLaunchConfig } = require('./helpers/workerConfig');
+
+beforeAll(async () => {
+  writeLaunchConfig({ featureFlag: 'A' });
+  await device.launchApp({ newInstance: true, launchArgs: { featureFlag: 'A' } });
+});
+```
+
+---
+
+### 54. `getAttributes().value` returns a string, not a boolean, for Switch components [community]
+
+**Root cause**: React Native's `<Switch>` component sets its `accessibilityValue` to the string
+`'true'` or `'false'` — not the boolean `true`/`false`. `element.getAttributes()` returns this
+raw accessibility value, so `attrs.value === true` always evaluates to `false` (strict equality
+between a string and a boolean).
+
+**WHY this bites teams**: The React Native docs show `value` as a boolean prop. Developers
+assume `getAttributes()` would reflect the boolean type. The mismatch is invisible in `waitFor`
+assertions (`toHaveToggleValue(true)` uses the correct API), but surfaces the moment you switch
+to `getAttributes()` for a more detailed inspection.
+
+**Fix**: Always use string comparison for `getAttributes().value`, or prefer `toHaveToggleValue()`:
+
+```js
+// BAD — fails even when switch IS on
+const attrs = await element(by.id('notifications-toggle')).getAttributes();
+jestExpect(attrs.value).toBe(true);   // FAILS: 'true' !== true
+
+// GOOD — use string comparison
+jestExpect(attrs.value).toBe('true'); // PASSES: 'true' === 'true'
+
+// BETTER — use the typed Detox assertion when you only need to check the boolean value
+await expect(element(by.id('notifications-toggle'))).toHaveToggleValue(true);
+// toHaveToggleValue(true) correctly handles the string-to-boolean conversion internally
+
+// BEST for complex assertions that also need other properties:
+const attrs2 = await element(by.id('notifications-toggle')).getAttributes();
+jestExpect(attrs2.value).toBe('true');   // switch ON
+jestExpect(attrs2.enabled).toBe(true);  // switch is not disabled
+jestExpect(attrs2.visible).toBe(true);  // switch is visible
+```
+
+---
+
+### 55. `element.getAttributes()` returns `null` for off-screen elements — throws if treated as object [community]
+
+**Root cause**: If an element exists in the React tree but is scrolled off screen (outside the
+visible viewport), `element.getAttributes()` may return `null` on some Detox versions and
+simulator configurations. Code that immediately accesses `attrs.text` without a null check
+throws `TypeError: Cannot read property 'text' of null` — a cryptic error that hides the
+real problem (element out of viewport).
+
+**WHY this surprises developers**: `by.id()` finds the element in the view hierarchy regardless
+of scroll position — the element "exists" but is not visible. `getAttributes()` with some native
+accessibility implementations only returns attributes for elements currently rendered in the
+active viewport, not off-screen backing views.
+
+**Fix**: Always scroll the element into view before calling `getAttributes()`, or add a null guard:
+
+```js
+// BAD — throws if product-card-5 is below the fold
+const attrs = await element(by.id('product-card-5')).getAttributes();
+jestExpect(attrs.text).toBe('Expected text'); // TypeError if attrs is null
+
+// GOOD — scroll into view first, then inspect attributes
+await waitFor(element(by.id('product-card-5')))
+  .toBeVisible()
+  .whileElement(by.id('product-list'))
+  .scroll(200, 'down');
+
+const attrs = await element(by.id('product-card-5')).getAttributes();
+jestExpect(attrs.text).toBe('Expected text');
+
+// ALSO GOOD — null guard for defensive code in helpers
+async function safeGetAttributes(matcher) {
+  try {
+    await waitFor(element(matcher)).toBeVisible().withTimeout(3000);
+  } catch (_) {
+    return null; // element not visible — caller handles
+  }
+  return element(matcher).getAttributes();
+}
+```
+
+---
+
+### 56. `device.shake()` is a no-op on physical iOS devices and Android Emulator [community]
+
+**Root cause**: `device.shake()` is implemented only for **iOS Simulator**. On a physical iPhone,
+the command sends a shake signal to the Simulator process — which does nothing because the app
+is running on device, not in the simulator. On Android Emulator, no corresponding API exists
+in Detox's Android driver. The method either throws or silently does nothing depending on the
+Detox version.
+
+**WHY teams are surprised**: The Detox docs list `device.shake()` without a platform/environment
+caveat on older pages. Teams add shake tests, they pass in local iOS Simulator CI, then fail on
+physical-device test farms (AWS Device Farm, BrowserStack App Automate).
+
+**Fix**: Guard all `device.shake()` calls with a platform AND environment check:
+
+```js
+// e2e/helpers/shake.js
+/**
+ * Simulates a shake gesture — iOS Simulator only.
+ * On physical devices or Android, triggers the debug-mode launchArg fallback instead.
+ */
+async function shakeOrFallback() {
+  if (device.getPlatform() === 'ios' && !process.env.PHYSICAL_DEVICE) {
+    // iOS Simulator — shake works
+    await device.shake();
+  } else {
+    // Physical device or Android — use a debug-mode button exposed via testID
+    // (The app should expose a "shake-trigger" button in DETOX_BUILD=1 builds)
+    const hasShakeButton = await element(by.id('debug-shake-trigger')).exists?.() ?? false;
+    if (hasShakeButton) {
+      await element(by.id('debug-shake-trigger')).tap();
+    } else {
+      // No shake trigger available — skip this test gracefully
+      console.warn('[shake] device.shake() not available and no debug trigger found — skipping');
+    }
+  }
+}
+
+module.exports = { shakeOrFallback };
+```
+
+```js
+// e2e/shake.test.js
+const { shakeOrFallback } = require('./helpers/shake');
+
+it('opens the debug menu via shake (iOS Simulator only)', async () => {
+  await shakeOrFallback();
+  // ... rest of test
+});
+```
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 45 additions)
+
+| Anti-Pattern | Fix |
+|---|---|
+| Hard-coded English labels in `by.system()` selectors | Use `launchApp({ permissions })` to pre-grant and skip dialogs, or build a locale-aware label map (Gotcha 51) |
+| Short `waitFor` timeout on deep-link cold-start tests | Use 12–15s timeout for cold-start deep links on CI; bundle boot is 3–8x slower than local (Gotcha 52) |
+| Shared on-disk fixtures written by multiple Detox workers | Use `process.env.JEST_WORKER_ID` to write to worker-unique paths (Gotcha 53) |
+| `jestExpect(attrs.value).toBe(true)` for Switch state | Switch `accessibilityValue` is a string `'true'`/`'false'` — use `.toBe('true')` or `toHaveToggleValue(true)` (Gotcha 54) |
+| `element.getAttributes()` without prior `toBeVisible()` | Scroll element into view first; `getAttributes()` may return `null` for off-screen elements (Gotcha 55) |
+| `device.shake()` in tests intended for physical devices | Guard with platform + environment check; provide a debug-mode fallback tap target (Gotcha 56) |
+| `by.traits()` assertions in Android test paths | Guard with `if (device.getPlatform() !== 'ios') return;` — `by.traits()` throws on Android |
+| `device.openURL()` without `waitFor` on the target screen | Always follow `openURL()` with `waitFor(...).toBeVisible().withTimeout(5000+)` — URL processing is async |
 
 ---
 

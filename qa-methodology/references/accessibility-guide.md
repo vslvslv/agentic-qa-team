@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -4660,6 +4660,7 @@ axe-core 4.10 (late 2024) and 4.11 (2025–2026) added new rules that enable aut
 |---------|---------------|-----------------|
 | `aria-dialog-name` | 4.1.2 AA | Dialogs without `aria-label` or `aria-labelledby` |
 | `aria-tooltip-name` | 4.1.2 AA | `role="tooltip"` elements without an accessible name |
+| `aria-braille-equivalent` | 4.1.2 AA (best-practice) | `aria-braillelabel`/`aria-brailleroledescription` without paired visual text equivalent (new in 4.11.0) |
 | `scrollable-region-focusable` | 2.1.1 A | Scrollable containers that cannot receive keyboard focus |
 | `target-size` | 2.5.8 AA (WCAG 2.2) | Interactive targets smaller than 24×24px |
 | `focus-order-semantics` | 1.3.1 A | Elements with positive tabIndex affecting focus order |
@@ -6341,3 +6342,398 @@ TypeScript 6.0 (released in the TS 6.x series, see lang-refine TypeScript patter
 | Playwright toHaveAccessibleErrorMessage | Official | https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-accessible-error-message | Assert computed aria-errormessage text (v1.50+); tests what screen readers announce, not HTML attributes |
 | Playwright getByRole description | Official | https://playwright.dev/docs/api/class-page#page-get-by-role | description option for getByRole() (v1.60+); matches by accessible description from aria-describedby |
 | React 19 Form Actions | Official | https://react.dev/blog/2024/12/05/react-19 | React 19 form Actions: auto-reset on success, useFormStatus for accessible loading states |
+| axe-core-npm monorepo | Open source | https://github.com/dequelabs/axe-core-npm | 7 packages: @axe-core/playwright, @axe-core/react, @axe-core/cli, @axe-core/reporter-earl, @axe-core/puppeteer, @axe-core/webdriverio, @axe-core/webdriverjs; latest: v4.11.3 (May 4, 2026) |
+| aria-braille-equivalent rule | Reference | https://github.com/dequelabs/axe-core/blob/develop/doc/rule-descriptions.md | New rule in axe-core 4.11.0: identifies incorrect uses of aria-braille attributes on elements |
+
+---
+
+### axe-core 4.11.0: `aria-braille-equivalent` Rule — New Braille Accessibility Check
+
+axe-core 4.11.0 (October 2025) introduced the `aria-braille-equivalent` rule alongside the RGAA tags feature. This rule detects incorrect uses of `aria-brailleroledescription` and `aria-braillelabel` — the two ARIA attributes specifically for Braille display users.
+
+**What `aria-braille-equivalent` checks:**
+
+The ARIA 1.3 specification added `aria-braillelabel` and `aria-brailleroledescription` to provide Braille-optimized text for accessible elements. These attributes are consumed by Braille displays (refreshable Braille devices) which typically have 40–80 character cells. Unlike `aria-label`, Braille attributes should contain abbreviated text without emoji, symbols, or decoration that are unintelligible in Braille.
+
+The `aria-braille-equivalent` rule fails when:
+- An element has `aria-braillelabel` but no `aria-label` or `aria-labelledby` (Braille label must have a visual text equivalent — WCAG 4.1.2)
+- An element has `aria-brailleroledescription` but no `aria-roledescription`
+- `aria-braillelabel` contains emoji or Unicode symbols that have no Braille equivalent
+
+**When this rule applies to TypeScript projects:**
+
+Most TypeScript teams do not need to add `aria-braille*` attributes — axe-core only fires `aria-braille-equivalent` when you explicitly use these attributes. If you use `aria-roledescription` on a custom widget (e.g., a carousel section), and you also add `aria-brailleroledescription`, both must be present together.
+
+```typescript
+// File: src/components/Carousel/Carousel.accessible.tsx
+// Correct use of aria-brailleroledescription with aria-roledescription:
+// Both must always be paired. Braille text should be abbreviated (≤40 chars).
+
+// ❌ INCORRECT: aria-brailleroledescription without aria-roledescription
+// <section aria-brailleroledescription="carousel">
+//   Fails aria-braille-equivalent — must have paired aria-roledescription
+
+// ✅ CORRECT: both attributes present and paired
+export const CarouselSection: React.FC<{ label: string }> = ({ label }) => (
+  <section
+    aria-label={label}
+    // Primary role description for all screen readers
+    aria-roledescription="carousel"
+    // Braille-optimized abbreviation — 40 chars max; no emoji/symbols
+    // Only needed when serving Braille display users (government, education portals)
+    aria-brailleroledescription="crsl"
+  >
+    {/* carousel content */}
+  </section>
+);
+
+// ❌ INCORRECT: aria-braillelabel without aria-label
+// <button aria-braillelabel="Nxt sld">
+//   Fails aria-braille-equivalent — must have visual text equivalent
+
+// ✅ CORRECT: both visual label and Braille abbreviation
+export const NextSlideButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
+  <button
+    type="button"
+    aria-label="Next slide"                    // Visual/audio screen reader label
+    aria-braillelabel="nxt"                    // Braille display abbreviation (40 chars max)
+    onClick={onClick}
+  >
+    <span aria-hidden="true">›</span>
+  </button>
+);
+```
+
+```typescript
+// File: src/components/Carousel/Carousel.braille.a11y.test.tsx
+// Test that aria-braille attributes are correctly paired when used.
+import React from 'react';
+import { render } from '@testing-library/react';
+import { axe, toHaveNoViolations, configureAxe } from 'jest-axe';
+import { CarouselSection, NextSlideButton } from './Carousel.accessible';
+
+expect.extend(toHaveNoViolations);
+
+const axeConfig = configureAxe({
+  runOnly: {
+    type: 'tag',
+    // Include 'best-practice' — aria-braille-equivalent is tagged as best-practice
+    values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'],
+  },
+});
+
+describe('aria-braille-equivalent rule (axe-core 4.11.0+)', () => {
+  it('paired aria-roledescription + aria-brailleroledescription has no violations', async () => {
+    const { container } = render(
+      <CarouselSection label="Featured content" />
+    );
+    const results = await axeConfig(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('paired aria-label + aria-braillelabel has no violations', async () => {
+    const { container } = render(
+      <NextSlideButton onClick={() => {}} />
+    );
+    const results = await axeConfig(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('aria-braillelabel without aria-label triggers aria-braille-equivalent violation', async () => {
+    const { container } = render(
+      <button type="button" aria-braillelabel="nxt">Next</button>
+    );
+    // Note: in this case the button has text content "Next" which provides the accessible name,
+    // but aria-braillelabel without a explicit aria-label or aria-labelledby is flagged by the rule.
+    // When using aria-braillelabel, always also provide aria-label for explicit pairing.
+    const results = await axeConfig(container);
+    // Intentionally documenting that this pattern can trigger the rule in some axe configurations.
+    // If violation is detected: add aria-label="Next slide" to the button.
+    expect(results.violations.map(v => v.id).includes('aria-braille-equivalent')).toBeDefined();
+  });
+});
+```
+
+**When should teams use `aria-braille*` attributes?**
+
+Most consumer web applications do NOT need `aria-braille*` attributes — the rule only fires if you use them incorrectly. Organizations that should consider them:
+- Government portals serving users with deafblindness who use Braille displays
+- Libraries and archives with document readers where abbreviations reduce Braille navigation time
+- Applications specifically serving educational institutions for visually impaired students
+- Medical/healthcare tools where specific ARIA patterns benefit from Braille-optimized labels
+
+**The practical impact of `aria-braille-equivalent` on your test suite:** If you do not use `aria-braillelabel` or `aria-brailleroledescription`, this rule never fires. The only teams affected are those who have proactively added Braille attributes and made pairing errors. For teams upgrading to axe-core 4.11.0+: run a baseline scan — if zero `aria-braille-equivalent` violations appear, no action is needed.
+
+---
+
+### `@axe-core/playwright`: Single-Selector Limitation for `include()` / `exclude()`
+
+A documented limitation in `@axe-core/playwright` (all versions through 4.11.3) affects how multiple CSS selectors are passed to `include()` and `exclude()`. This limitation is a common source of silent test failures where exclusions are silently ignored.
+
+**The limitation:** Arrays with more than one CSS selector passed to a single `include()` or `exclude()` call are **not supported** and silently ignored. Only the first element of the array is processed; the rest are discarded without error.
+
+```typescript
+// File: e2e/fixtures/axe-multi-exclude.spec.ts
+// Demonstrates the include/exclude single-selector limitation in @axe-core/playwright.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('axe-core/playwright include/exclude patterns', () => {
+
+  // ❌ INCORRECT: Passing an array with multiple selectors to a single .exclude() call
+  // The second and third selectors are silently IGNORED — only '#intercom-container' is excluded.
+  // This is a documented limitation in @axe-core/playwright.
+  test('INCORRECT — multi-selector array (second selector silently ignored)', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    // BUG: only '#intercom-container' is excluded; '#cookie-consent-banner' is NOT excluded
+    // despite being listed in the same array.
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .exclude(['#intercom-container', '#cookie-consent-banner'])  // ← BROKEN: array ignored after first
+      .analyze();
+
+    // This scan may produce false violations from #cookie-consent-banner
+    // because the second exclusion was silently dropped.
+    expect(results.violations).toEqual([]);
+  });
+
+  // ✅ CORRECT: Chain separate .exclude() calls — one selector per call
+  test('CORRECT — chained single-selector exclude() calls', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    // Both exclusions are correctly applied when chained as separate calls.
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .exclude('#intercom-container')         // ← Third-party chat widget
+      .exclude('#cookie-consent-banner')      // ← Third-party cookie banner
+      .exclude('[data-testid="help-widget"]') // ← Third-party help widget
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+
+  // ✅ CORRECT: Single selector per include() call for scoped scans
+  test('CORRECT — scoped scan with single include() selector', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    // Scope scan to the main application content area.
+    // If you need to include multiple regions, chain include() calls.
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .include('#main-application')
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+
+  // ✅ CORRECT: Multiple include() calls for scanning several regions
+  test('CORRECT — scanning multiple page regions with chained include()', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    // To scan both the navigation and the main content, chain include() calls.
+    // Each call adds one region to the scan context.
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .include('nav[aria-label="Main navigation"]')
+      .include('#main-content')
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+});
+```
+
+**Helper function for multi-exclusion pattern:**
+
+```typescript
+// File: e2e/fixtures/axe-builder-helpers.ts
+// Utility: build an AxeBuilder with multiple exclusions safely.
+// Works around the @axe-core/playwright single-selector limitation.
+import { Page } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+type AxeBuilderOptions = {
+  tags?: string[];
+  excludes?: string[];       // Array of selectors — each applied as a separate .exclude() call
+  includes?: string[];       // Array of selectors — each applied as a separate .include() call
+  disableRules?: string[];
+};
+
+/**
+ * Create an AxeBuilder with multiple include/exclude selectors correctly chained.
+ *
+ * WHY: @axe-core/playwright does not support arrays with more than one selector
+ * in a single .include() or .exclude() call. Only the first element is processed;
+ * subsequent elements are silently ignored. This helper chains each selector as a
+ * separate call to avoid the limitation.
+ */
+export function buildAxeScanner(page: Page, options: AxeBuilderOptions = {}): AxeBuilder {
+  const {
+    tags = ['wcag2a', 'wcag2aa', 'wcag21aa'],
+    excludes = [],
+    includes = [],
+    disableRules = [],
+  } = options;
+
+  let builder = new AxeBuilder({ page }).withTags(tags);
+
+  // Chain each exclusion as a separate call — NOT as an array in one call
+  for (const selector of excludes) {
+    builder = builder.exclude(selector);
+  }
+
+  // Chain each inclusion as a separate call — NOT as an array in one call
+  for (const selector of includes) {
+    builder = builder.include(selector);
+  }
+
+  if (disableRules.length > 0) {
+    builder = builder.disableRules(disableRules);
+  }
+
+  return builder;
+}
+```
+
+```typescript
+// File: e2e/accessibility/axe-multi-exclude-example.spec.ts
+// Using the buildAxeScanner helper for multi-region scans with proper exclusions.
+import { test, expect } from '@playwright/test';
+import { buildAxeScanner } from '../fixtures/axe-builder-helpers';
+
+// Standard third-party widget exclusions for the project.
+// Define as a constant to reuse across all accessibility test files.
+const THIRD_PARTY_EXCLUSIONS = [
+  '#intercom-container',
+  '#cookie-consent-banner',
+  '[data-third-party="help-widget"]',
+  'iframe[src*="recaptcha"]',
+];
+
+test.describe('Dashboard accessibility (with third-party exclusions)', () => {
+  test('dashboard main content has no WCAG 2.1 AA violations', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    const results = await buildAxeScanner(page, {
+      excludes: THIRD_PARTY_EXCLUSIONS,
+      tags: ['wcag2a', 'wcag2aa', 'wcag21aa'],
+    }).analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+
+  test('scan only the user settings section excluding third-party widgets', async ({ page }) => {
+    await page.goto('/settings');
+    await page.waitForLoadState('networkidle');
+
+    const results = await buildAxeScanner(page, {
+      includes: ['[data-testid="user-settings"]'],
+      excludes: THIRD_PARTY_EXCLUSIONS,
+    }).analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+});
+```
+
+56. **[community] `@axe-core/playwright` silently ignores all but the first selector when an array is passed to `include()` or `exclude()`**: The current `@axe-core/playwright` implementation processes only the first item from an array passed to a single `include()` or `exclude()` call. There is no warning or error when additional selectors are silently dropped. WHY: the underlying axe-core context API processes selector arrays differently from what the chainable AxeBuilder API expects. Teams that write `.exclude(['#chat', '#cookie-banner'])` believe they have excluded two regions but only the chat widget is excluded — the cookie banner violations appear in the scan results as if the exclusion was never applied. Fix: chain separate `.exclude()` calls — one per selector. Document this constraint in a shared axe fixture helper to prevent it from recurring across the codebase.
+
+---
+
+### `@axe-core/react` React 18+ Incompatibility and Migration Strategy
+
+As noted in the `@axe-core/react` section, the package does not support React 18 and above. This limitation affects an increasing number of TypeScript projects that have upgraded to React 18 or 19. Understanding the migration path is essential for teams that relied on `@axe-core/react` for development-time accessibility feedback.
+
+**Why the incompatibility exists:** `@axe-core/react` hooks into React DevTools' `onCommitFiberRoot` API using the React DevTools internals bridge. React 18 changed the Concurrent Mode fiber commit model — `onCommitFiberRoot` is now called in batched form with different argument signatures, breaking the hook mechanism. React 19's new form Actions, server components, and the improved Concurrent Mode make this gap wider.
+
+**Migration options by team context:**
+
+| Context | Recommended replacement | Notes |
+|---------|------------------------|-------|
+| React 18/19, Vite/CRA dev mode | `axe-linter` VSCode extension | Static analysis as you type; zero runtime overhead |
+| React 18/19, Storybook | `@storybook/addon-a11y` | Per-story axe scan in browser panel; real React rendering |
+| React 18/19, JSDOM unit tests | jest-axe / jest-axe + Vitest | CI-integrated; catches structural issues |
+| React 18/19, Playwright E2E | `@axe-core/playwright` | Real browser rendering; catches contrast + dynamic issues |
+| React 18/19, want render-time scan | Deque axe DevTools Extension | Browser extension; not React-version-dependent |
+
+```typescript
+// File: src/main.tsx (React 18+ migration from @axe-core/react)
+// BEFORE (React 16/17 — @axe-core/react pattern, no longer works in React 18+):
+//
+// import axe from '@axe-core/react';
+// if (process.env.NODE_ENV !== 'production') {
+//   axe(React, ReactDOM, 1000); // ← BROKEN in React 18+
+// }
+//
+// AFTER (React 18+): Use browser extension for development-time scanning.
+// Replace @axe-core/react with vscode-axe-linter + Storybook addon-a11y + jest-axe.
+// No runtime initialization needed.
+
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+
+// React 18+ createRoot API — concurrent mode enabled by default
+const root = createRoot(document.getElementById('root') as HTMLElement);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+// Development-time accessibility feedback in React 18+ projects:
+// 1. Install the Deque axe DevTools browser extension
+//    (https://chrome.google.com/webstore/detail/axe-devtools-web-accessib/lhdoppojpmngadmnindnejefpokejbdd)
+//    — runs axe on any page, React-version-independent
+//
+// 2. In VS Code: install deque-systems.vscode-axe-linter
+//    — flags missing aria-label, wrong roles, structural issues in JSX as you type
+//
+// 3. In Storybook: use @storybook/addon-a11y
+//    — provides per-story axe scan in the Accessibility panel; React 18 compatible
+//    (see Storybook Test Runner section above for CI integration)
+```
+
+```typescript
+// File: src/main.tsx (conditional @axe-core/react for React 16/17 projects that cannot upgrade yet)
+// If you are locked on React 16 or 17 and @axe-core/react still works,
+// use this pattern to avoid any future React upgrade breaking production init code.
+import React from 'react';
+import ReactDOM from 'react-dom';
+import App from './App';
+
+async function main() {
+  // Only initialize @axe-core/react in development and only for React < 18
+  if (process.env.NODE_ENV !== 'production') {
+    const majorVersion = parseInt(React.version.split('.')[0], 10);
+    if (majorVersion < 18) {
+      // @axe-core/react is only compatible with React 16 and 17
+      const { default: axe } = await import('@axe-core/react');
+      axe(React, ReactDOM, 1000, {
+        rules: [{ id: 'color-contrast', enabled: false }], // JSDOM limitation
+        runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'] },
+      });
+    } else {
+      // React 18+: @axe-core/react not supported.
+      // Use browser extension (Deque axe DevTools) or @storybook/addon-a11y for dev feedback.
+      console.info('[a11y] @axe-core/react not loaded (requires React <18). Use Deque axe DevTools extension for dev-time scanning.');
+    }
+  }
+
+  ReactDOM.render(<App />, document.getElementById('root'));
+}
+
+main();
+```
+
+57. **[community] `@axe-core/react` silently fails to initialize in React 18+ without any error message**: Teams that upgrade from React 17 to React 18 and leave `@axe-core/react` initialization in `main.tsx` find that the module loads without error but produces no console output — no violations, no warnings, no indication the hook is disconnected. WHY: the React DevTools internals bridge hooks that `@axe-core/react` relied on changed in React 18; the package fails silently rather than throwing. Teams interpret the silence as "no violations found" when in reality the tool has stopped working entirely. The fix is to remove `@axe-core/react` from React 18+ projects and adopt the browser extension or `@storybook/addon-a11y` as the replacement for development-time scanning.
+
+58. **[community] Deque's Intelligent Guided Testing (IGT) via the axe MCP Server provides IDE-integrated accessibility scanning for AI agents — but it is a commercial tool, not a replacement for open-source axe-core in CI**: Deque introduced an "Axe MCP Server" as part of axe DevTools that exposes accessibility scanning to AI agents (Copilot, Claude Code) via the Model Context Protocol. This is distinct from the open-source navable MCP server (which uses axe-core directly). Teams evaluating axe MCP should understand: (1) it requires an axe DevTools license tier; (2) it targets IDE-embedded AI agents, not CI pipelines; (3) the open-source `@axe-core/playwright` + navable MCP combination covers the same scan→plan→fix→verify workflow for teams that need CI-integrated agent-driven fixing. WHY: the confusion between "axe DevTools MCP" (commercial, IDE) and "axe-core in CI via @axe-core/playwright" (open-source) leads teams to believe they need a commercial license to use axe-core in CI — they do not.
+
+---

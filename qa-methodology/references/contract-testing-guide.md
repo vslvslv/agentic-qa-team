@@ -1,11 +1,12 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 21 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12) | community: production lessons -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
 <!-- new in iteration 18: contract_requiring_verification_published webhook (supersedes contract_content_changed, Pact Broker 2.82.0+), pact-js v16.2 withMatchingRules for async/sync interactions, pact-js v16.4 addInteractionReference, PactFlow Drift (spec-driven provider compliance CI), updated Pact Specification Version Reference table with v16.1–v16.4, community lesson 29 (deprecated webhook event), community lesson 30 (Drift for BDCT gap) -->
 <!-- new in iteration 19: addGraphQLInteraction() native V4 GraphQL DSL (pact-js v16.0.0+) replaces body-matching regex approach, PactFlow MCP Server (August 2025) section, community lessons 31 and 32 (GraphQL native DSL migration, MCP-assisted contract test generation) -->
 <!-- new in iteration 20: pact-js v16.3.1 patch (content type extraction from matchers), POST/PUT/PATCH GIGO anti-pattern, UI layer testing limitations, over-specifying validation rules anti-pattern, community lessons 33–35 -->
 <!-- new in iteration 21: pact-js v16.3.0 race condition bug (issue #1713, parallel Vitest load), provider verification filtering enhancement request (issue #1748), community lessons 36–37 -->
+<!-- new in iteration 22: Request Precision vs Response Flexibility pattern (TypeScript) + Golden Rule, two new anti-patterns (duplicate descriptions, sensitive data in pacts), community lessons 38–41 (Content-Length hang issue #1602, stateHandlers+requestFilter bug #1434, duplicate uponReceiving descriptions, credentials in pact files) -->
 
 ## Terminology (ISTQB CTFL 4.0 alignment)
 
@@ -1175,6 +1176,103 @@ jobs:
 
 ---
 
+### Request Precision vs Response Flexibility (TypeScript)
+
+The consumer controls the request it sends, so exact values are safe on the request side. The provider controls the response, so loose type-based matchers prevent brittle contracts that break on irrelevant provider changes.
+
+```typescript
+// request-response-matching-strategy.consumer.pact.spec.ts
+// Demonstrates the precision vs flexibility matching strategy:
+//   - Requests: exact values where the consumer fully controls the input
+//   - Responses: type matchers (like, string, integer) for fields the consumer reads
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { UserAPI } from '../src/user-api';
+
+const { like, string, integer, regex } = MatchersV3;
+
+interface CreateUserResponse {
+  id: string;
+  name: string;
+  email: string;
+  createdAt: string;
+}
+
+const provider = new PactV3({
+  consumer: 'FrontendApp',
+  provider: 'UserService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8095,
+  logLevel: 'warn',
+});
+
+describe('FrontendApp → UserService contract (precision vs flexibility)', () => {
+  it('creates a new user and returns the created resource', async () => {
+    await provider
+      .given('no user with email alice@example.com exists')
+      .uponReceiving('a POST /users request to create Alice (precision-request, flexible-response)')
+      .withRequest({
+        method: 'POST',
+        path: '/users',
+        headers: {
+          // Exact Content-Type: consumer always sends exactly this
+          'Content-Type': 'application/json',
+        },
+        body: {
+          // Exact request body: the consumer constructs this — use exact values
+          name: 'Alice',
+          email: 'alice@example.com',
+          role: 'member',
+        },
+      })
+      .willRespondWith({
+        status: 201,
+        headers: {
+          // Exact status code; Content-Type with type matcher (charset variation OK)
+          'Content-Type': like('application/json'),
+        },
+        body: {
+          // Server-assigned: use type matchers — consumer only needs the type, not the exact value
+          id: regex(/^[0-9a-f-]{36}$/, '550e8400-e29b-41d4-a716-446655440000'),
+          // Echo of request fields: use like() — confirms the field round-trips
+          name: like('Alice'),
+          email: like('alice@example.com'),
+          role: like('member'),
+          // Server-generated timestamp: type-match only
+          createdAt: like('2025-01-15T10:00:00Z'),
+        },
+      })
+      .executeTest(async (mockServer) => {
+        const api = new UserAPI(mockServer.url);
+        const result: CreateUserResponse = await api.createUser({
+          name: 'Alice',
+          email: 'alice@example.com',
+          role: 'member',
+        });
+        // Only assert fields the consumer code actually uses
+        expect(result.id).toBeDefined();
+        expect(result.name).toBe('Alice');
+        expect(result.email).toBe('alice@example.com');
+      });
+  });
+});
+```
+
+**Decision rules for matcher selection:**
+
+| Field origin | Matcher strategy | Rationale |
+|---|---|---|
+| Consumer-constructed (request body) | Exact value | Consumer controls it — exact matching is safe and documents intent |
+| Server-assigned ID / UUID | `regex()` or `like()` | Value is dynamic; consumer only needs the type |
+| Echo of request field in response | `like(requestValue)` | Confirms round-trip without locking to a specific value |
+| Server-generated timestamp | `like()` or `timestamp()` | Format matters; exact value does not |
+| Enum field consumer renders | `string('ACTIVE')` or `like()` | `like()` if new enum values should not break the consumer; exact only if the consumer has a switch statement |
+| Count / total in paginated response | `integer()` | Type matters; exact count depends on server state |
+
+**The Golden Rule (official Pact guidance):** Write unit tests for your API client first; the pact file is the side effect. This keeps contract tests focused on what the consumer actually parses — not on exhaustively documenting the provider's API surface.
+
+---
+
 ## Anti-Patterns
 
 | Anti-Pattern | Why It Hurts | Fix |
@@ -1195,6 +1293,8 @@ jobs:
 | Testing provider validation rules in consumer pacts | Creates unnecessarily tight coupling — when the provider relaxes a validation rule (e.g., increases a character limit), the consumer contract breaks for no valid reason | Test that the provider returns an error status for invalid input; leave specific rule testing to the provider's own functional test suite |
 | Using Pact for UI-layer integration tests | UI tests involve multiple simultaneous provider calls with slight variations, creating a cartesian explosion of interactions and tests that are very hard to debug | Scope Pact to isolated API client units; use generated pact files as HTTP stubs for UI integration tests |
 | POST/PUT/PATCH without echoing updated values in the response | Since interactions are tested in isolation, a misnamed field (e.g., `lastname` instead of `surname`) is silently ignored by the provider and the contract passes — GIGO (Garbage In, Garbage Out) | Always assert the response body echoes back the key updated values; pair request body field names with response body validation to surface silent field mismatches |
+| Duplicate `uponReceiving` descriptions in the same consumer pact file | The Pact Broker de-duplicates interactions by `(description, providerState)` tuple — the second overwrites the first with no warning; the first interaction disappears from the pact file silently | Use unique, scenario-specific descriptions: `uponReceiving('GET /orders/ORD-123 — happy path')` not `uponReceiving('a request for order details')` |
+| Real credentials, tokens, or PII as matcher example values | Pact files are published to the Pact Broker and may be committed to VCS; literal credentials become permanently accessible to anyone with Broker access | Use fictional example values: `like('Bearer test-token-placeholder')`; omit `Authorization` headers from the pact body entirely and inject them via `requestFilter` |
 | Running Pact consumer tests with full file parallelism in pact-js v16.3.x | A race condition in the native FFI layer causes `mockServerMatchedSuccessfully()` to return false intermittently under CPU pressure, producing "request not received" failures despite the mock server successfully handling the request | Set `singleThread: true` (Vitest) or `maxWorkers: 1` (Jest) for pact consumer test projects, or upgrade to a patched version; pin pact-js version and verify fix in changelog before re-enabling parallelism |
 
 ---
@@ -3497,3 +3597,106 @@ Once configured, ask your AI assistant:
 36. **[community] pact-js v16.3.0 has a race condition under parallel Vitest load that causes `mockServerMatchedSuccessfully()` to intermittently return false.** When running Pact consumer tests in parallel (default in Vitest ≥ 4.x with multiple test files), the native FFI layer's request tracking can be called before asynchronous match recording completes — causing valid interactions to fail with "Mock server failed: expected request not received" even though the mock server correctly handled the request and returned a 200. The failure rate is low (< 10% of interactions) but correlates with CPU pressure from parallel file execution, making it particularly hard to diagnose. **Workaround:** add `--fileParallelism=false` to Vitest CLI flags for pact test projects, or run pact tests as a dedicated project with `singleThread: true` in `vitest.config.ts`. Downgrading to v16.2.0 eliminates the issue. The root cause (race in `@pact-foundation/pact-core` v19.x native FFI) was tracked in [issue #1713](https://github.com/pact-foundation/pact-js/issues/1713) and remained unresolved in v16.4.0; check the changelog before upgrading past v16.4.0.
 
 37. **[community] Provider verification has no built-in interaction filter — running against one failing interaction requires running all interactions.** Teams that adopt Pact find that debugging a single failing provider interaction (e.g., one specific state handler out of 30) requires running the full verification suite each time — there is no `--filter-by-description` or `--filter-by-state` CLI flag in pact-js (tracked in [issue #1748](https://github.com/pact-foundation/pact-js/issues/1748)). This slows local debugging significantly when the provider test server is slow to start or has many interactions. **Practical workaround until a filter is available:** use the `pactUrls` option in `VerifierV3` to point at a local pact file, and temporarily remove all but the failing interaction from a copy of that file. This gives targeted, fast feedback during active development. Alternatively, use `filterConsumerNames` to narrow to a single consumer if the failing interaction belongs to a specific consumer. Neither workaround is ergonomic — this is a known friction point for large provider verification suites.
+
+38. **[community] Empty JSON body `{}` hangs Express provider verification due to `Content-Length` mismatch (open in v16, pact-js issue #1602).** When a Pact interaction sends a POST/PUT/PATCH request with an empty JSON body `{}`, the verifier sometimes sets an incorrect `Content-Length` header. Express's `express.json()` middleware reads fewer bytes than the header indicates and waits indefinitely for more data — the test hangs with no timeout error. **Workaround:** add a `requestFilter` to delete the `Content-Length` header before it reaches the middleware:
+
+```typescript
+const verifier = new VerifierV3({
+  // ... other options ...
+  requestFilter: (req, _res, next) => {
+    // Workaround for pact-js issue #1602: Content-Length mismatch
+    // causes Express json() middleware to hang on empty body {}.
+    // Remove it and let Express recalculate from the body.
+    delete req.headers['content-length'];
+    next();
+  },
+});
+```
+
+This does not affect body matching — Pact matches the body content independently of the `Content-Length` header. Apply the workaround selectively if your provider uses `content-length` for security (e.g., request size limits); in that case, re-calculate the correct value rather than deleting the header entirely.
+
+39. **[community] `stateHandlers` are silently ignored when `requestFilter` is also configured (open in pact-js ≥v13, issue #1434).** A subtle interaction between `requestFilter` and `stateHandlers` in `VerifierV3` causes state setup to be routed as an HTTP POST to `http://127.0.0.1:/_pactSetup` instead of invoking the handler function directly — the state handler never runs, the request times out after 30 seconds, and the interaction fails with a misleading "provider state setup failed" error rather than exposing the real cause. **Diagnosis:** if state handlers appear to not be running in a test that also uses `requestFilter`, enable `logLevel: 'debug'` and look for a line like `POST http://127.0.0.1:/_pactSetup` — this confirms the handler is being bypassed. **Workaround:** expose the state setup endpoint explicitly on the provider test server rather than relying on pact-js's internal handler invocation:
+
+```typescript
+// inventory-service.provider.pact.spec.ts
+// Workaround for pact-js issue #1434:
+// Expose /_pactSetup as an HTTP endpoint when requestFilter is present.
+import express from 'express';
+import { VerifierV3, VerifierOptions } from '@pact-foundation/pact';
+import { app as providerApp } from '../src/app';
+import { db } from '../src/db';
+
+// State map — same logic as stateHandlers, but served via HTTP endpoint
+const states: Record<string, () => Promise<void>> = {
+  'SKU ABC-123 exists with 10 units in stock': async () => {
+    await db.seed({ sku: 'ABC-123', available: 10, warehouseId: 'WH-001' });
+  },
+  'SKU UNKNOWN-999 does not exist': async () => {
+    await db.clear('UNKNOWN-999');
+  },
+};
+
+// Wrap the provider app, adding the /_pactSetup endpoint
+const testApp = express();
+testApp.use(express.json());
+
+// Pact state setup route — receives { state: 'provider state name', action: 'setup'|'teardown' }
+testApp.post('/_pactSetup', async (req, res) => {
+  const { state, action } = req.body as { state: string; action: 'setup' | 'teardown' };
+  if (action === 'setup' && states[state]) {
+    await states[state]();
+    res.status(200).json({ result: state });
+  } else {
+    res.status(200).json({ result: 'no-op' });
+  }
+});
+
+// Mount the real provider app
+testApp.use(providerApp);
+
+describe('InventoryService provider verification (requestFilter + state workaround)', () => {
+  let server: ReturnType<typeof testApp.listen>;
+  let serverUrl: string;
+
+  beforeAll(async () => {
+    await new Promise<void>((resolve) => {
+      server = testApp.listen(0, '127.0.0.1', () => {
+        const addr = server.address() as { port: number };
+        serverUrl = `http://127.0.0.1:${addr.port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((res) => server.close(() => res()));
+  });
+
+  it('satisfies all consumer pacts', async () => {
+    const verifier = new VerifierV3({
+      provider: 'InventoryService',
+      providerBaseUrl: serverUrl,
+      // stateHandlers intentionally omitted — handled via /_pactSetup endpoint above
+      // because requestFilter + stateHandlers interact incorrectly (issue #1434)
+      pactBrokerUrl: process.env.PACT_BROKER_URL,
+      pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+      consumerVersionSelectors: [{ mainBranch: true }, { deployedOrReleased: true }],
+      publishVerificationResult: process.env.PUBLISH_VERIFICATION_RESULTS === 'true',
+      providerVersion: process.env.GIT_COMMIT,
+      providerVersionBranch: process.env.GIT_BRANCH,
+      requestFilter: (req, _res, next) => {
+        req.headers['Authorization'] = `Bearer ${process.env.PROVIDER_TEST_TOKEN}`;
+        next();
+      },
+    });
+
+    await verifier.verifyProvider();
+  });
+});
+```
+
+The `/_pactSetup` endpoint receives `{ state: '<provider state name>', action: 'setup' | 'teardown' }` from the pact-js verifier internals. Once exposed as an HTTP route, the state setup works correctly regardless of whether `requestFilter` is also configured.
+
+40. **[community] Duplicate `uponReceiving` descriptions within the same consumer-provider pair silently overwrite each other in the pact file.** The Pact Broker de-duplicates interactions by `(description, providerState)` tuple. When two tests in the same consumer file use `.uponReceiving('a request for order details')` with the same provider state, the second interaction overwrites the first in the generated pact JSON — the first interaction disappears entirely without any warning from pact-js. This is particularly dangerous in test suites that copy-paste interaction scaffolding: the provider verification passes (fewer interactions to verify) and the consumer's real intent is simply not tested. **Prevention:** adopt a naming convention that encodes the scenario uniquely — e.g., `uponReceiving('a GET request for order ORD-123 (happy path)')` rather than generic descriptions. The `withTestName()` metadata (pact-js v16.3+) records the Jest/Vitest test name in the Broker UI but does not prevent de-duplication — unique `uponReceiving` strings are the only guard.
+
+41. **[community] Sensitive data in pact files published to the Broker is a security risk.** Consumer tests that use real authorization tokens, customer IDs, or PII as literal matcher examples embed that data in the generated pact JSON. Since pact files are published to the Pact Broker (and possibly committed to version control), real credentials or personal data become permanently accessible to anyone with Broker access. Always use `like()` with a fictional example value for credentials, UUIDs, and customer identifiers: `like('Bearer test-token-placeholder')` rather than `like(process.env.REAL_TOKEN)`. For authorization headers specifically, Pact ignores `Authorization` header matching by design — omit `Authorization` from the pact body entirely and inject it via `requestFilter` in the provider verifier.

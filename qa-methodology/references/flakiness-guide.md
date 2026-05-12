@@ -1,8 +1,9 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 49 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 50 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
 <!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog, vitest.dev/api/hooks, playwright.dev/docs/api/class-tracing, playwright.dev/docs/api/class-browsercontext -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
+<!-- Iteration 50: Pattern 74 (Vitest 4.1 page.mark() for trace annotation in browser mode); Pattern 75 (Vitest 4.1 mockThrow/mockThrowOnce + chai-style assertions); Pattern 76 (Playwright MCP server @playwright/mcp for agentic flaky test investigation); Pattern 77 (Vitest 4.1 experimental.viteModuleRunner: false for production-fidelity isolation); AP39 (unawaited page.mark()); AP40 (mockThrow on async function); Gotcha 45 (Trunk AI failure fingerprinting vs string matching for variant flakiness) -->
 <!-- Iteration 49: Pattern 70 (Playwright v1.59 CLI trace analysis subcommands); Pattern 71 (Playwright --last-failed targeted rerun); Pattern 72 (Vitest 3.2 using keyword auto-restore for vi.spyOn); Pattern 73 (Vitest 3.2 Test Signal API / context.signal); AP38 (manual spy restore when using keyword available); Gotcha 44 (CLI trace grep reduces analysis time on flaky traces) -->
 <!-- Iteration 48: Pattern 67 (Vitest 4.1 aroundEach/aroundAll for DB tx rollback); Pattern 68 (Playwright HAR recording for network flakiness); Pattern 69 (Vitest --detect-async-leaks); Gotcha 43 (Playwright browserContext.setStorageState() for auth isolation); AP37 (aroundEach without calling runTest) -->
 <!-- Iteration 47: Pattern 64 (Vitest 4.1 tags with per-tag retry); Pattern 65 (Playwright per-project workers for flaky isolation); Pattern 66 (Playwright test step timeout); AP36 (retry-all via global tag); Gotcha 41 (Vitest 3.2 fixture scope 'file' for shared setups); Gotcha 42 (Playwright v1.57 webserver wait regex) -->
@@ -5963,3 +5964,494 @@ step to their CI failure annotation workflow.
 | Playwright `--last-failed` | Official | https://playwright.dev/docs/running-tests#run-last-failed-tests | Targeted rerun of failed tests — speeds up flakiness iteration loop (v1.44) |
 | Vitest Explicit Resource Management | Official | https://vitest.dev/blog/vitest-3-2 | `using` keyword with `vi.spyOn()` for auto-restore — v3.2+ |
 | Vitest Test Signal API | Official | https://vitest.dev/guide/test-context#context-signal | `context.signal` AbortSignal for guaranteed resource cleanup on timeout — v3.2+ |
+
+---
+
+## Pattern 74 — Vitest 4.1 `page.mark()` for Trace Annotation in Browser Mode  [official]
+
+Vitest 4.1 added `page.mark(label, fn)` — a browser-mode API that groups Playwright interactions
+under a named annotation in the trace viewer. The trace timeline shows each `page.mark()` region
+as a labelled span, making it straightforward to identify which group of interactions was executing
+when a flaky assertion fired.
+
+**Why this matters for flakiness diagnosis:** In Vitest browser mode, tests are run by the Vitest
+runner but the browser interactions go through Playwright under the hood. Without `page.mark()`,
+a 40-action trace shows a flat list of clicks and fills — the failing assertion is buried.
+With `page.mark()`, the timeline is divided into semantic regions ("login flow", "submit form",
+"assert confirmation") so the region containing the flaky assertion is immediately visible.
+
+```typescript
+// vitest.config.ts — ensure browser mode and trace are enabled for mark() usage
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    browser: {
+      enabled: true,
+      provider: 'playwright',
+      name: 'chromium',
+      headless: true,
+    },
+    // Retry in CI — trace captures both attempts when retain-on-failure-and-retries is used
+    retry: process.env.CI ? 2 : 0,
+  },
+});
+```
+
+```typescript
+// checkout.browser.test.tsx — structured trace regions via page.mark()
+import { page } from '@vitest/browser/context'; // Vitest browser context
+import { render } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { expect, it, describe } from 'vitest';
+import { CheckoutFlow } from './CheckoutFlow';
+
+describe('CheckoutFlow — browser mode', () => {
+  it('completes checkout with payment confirmation', async () => {
+    const user = userEvent.setup();
+
+    // page.mark() groups the contained interactions as a named span in the trace viewer.
+    // Each group shows as a color-coded region — the failing interaction is immediately
+    // locatable without scanning 40+ individual action entries.
+    await page.mark('render checkout', async () => {
+      render(<CheckoutFlow orderId="ORD-001" />);
+      // Wait for the form to be ready before interacting
+      await expect.element(page.getByRole('form', { name: /checkout/i })).toBeVisible();
+    });
+
+    await page.mark('fill payment details', async () => {
+      await user.type(page.getByLabelText(/card number/i), '4111111111111111');
+      await user.type(page.getByLabelText(/expiry/i), '12/28');
+      await user.type(page.getByLabelText(/cvv/i), '123');
+    });
+
+    await page.mark('submit and assert confirmation', async () => {
+      await user.click(page.getByRole('button', { name: /place order/i }));
+      // Flakiness here is immediately visible as "submit and assert confirmation" in the trace
+      // — without mark(), it appears as "click" #27 in a flat list
+      await expect.element(page.getByTestId('confirmation-number')).toBeVisible({ timeout: 5_000 });
+      await expect.element(page.getByTestId('order-total')).toHaveText('$49.99');
+    });
+  });
+});
+```
+
+**Comparison with Playwright's `test.step()`:**
+- `test.step()` (Playwright) — available in Playwright E2E tests; creates named steps in the Playwright HTML report and trace viewer
+- `page.mark()` (Vitest 4.1) — available in Vitest browser mode; creates named spans in the Vitest browser trace; the underlying mechanism is Playwright's `page.mark()` exposed through the `@vitest/browser/context` module
+
+When migrating from Playwright CT to Vitest browser mode, replace `test.step()` with `page.mark()` for trace annotation. The visual output in the trace viewer is equivalent, but the API surface differs.
+
+---
+
+## Pattern 75 — Vitest 4.1 `mockThrow` / `mockThrowOnce` for Error Path Isolation  [official]
+
+Vitest 4.1 introduced `mockThrow(error)` and `mockThrowOnce(error)` as first-class mock methods,
+replacing the verbose `mockImplementation(() => { throw error })` pattern. The ergonomic improvement
+reduces boilerplate in error-path tests — which are a common source of flakiness because the
+verbose implementation pattern is easy to get wrong (e.g., forgetting to throw vs. returning a
+rejected Promise for async functions).
+
+**Why this matters for flakiness:** Error path tests are disproportionately flaky for two reasons:
+1. The verbose `mockImplementation(() => { throw ... })` is often confused with `mockRejectedValue()`,
+   causing a thrown synchronous error when an async rejection is needed (or vice versa) — producing
+   a test that passes sometimes (when the error propagation path happens to catch both) and fails
+   in edge cases.
+2. The assertion on the thrown value is often imprecise (`expect(fn).toThrow()` passes for any
+   throw including a `TypeError` from a different bug), masking real defects.
+
+```typescript
+// BAD — verbose implementation with a common mistake: sync throw in an async mock
+import { vi, describe, it, expect } from 'vitest';
+import { UserService } from './UserService';
+import * as db from './db';
+
+vi.mock('./db');
+
+it('handles DB connection error', async () => {
+  // MISTAKE: mockImplementation throws synchronously, but db.findUser is async.
+  // UserService likely catches async rejections, not sync throws — test may pass
+  // when it shouldn't (error is silently swallowed by the async boundary).
+  (db.findUser as ReturnType<typeof vi.fn>).mockImplementation(() => {
+    throw new Error('Connection refused');
+  });
+
+  await expect(UserService.getUser(1)).rejects.toThrow('Connection refused');
+});
+
+// BAD — correct async rejection but still verbose
+it('handles DB timeout', async () => {
+  (db.findUser as ReturnType<typeof vi.fn>).mockImplementation(() =>
+    Promise.reject(new Error('Query timeout'))
+  );
+  await expect(UserService.getUser(1)).rejects.toThrow('Query timeout');
+});
+
+// GOOD — Vitest 4.1 mockThrow: synchronous throw, explicit and concise
+it('handles DB connection error (sync throw)', async () => {
+  const findUserMock = vi.fn().mockThrow(new Error('Connection refused'));
+  // mockThrow() is unambiguous: this mock throws synchronously when called.
+  // If UserService is expected to catch this, the test verifies that behavior precisely.
+  expect(() => findUserMock()).toThrow('Connection refused');
+});
+
+// GOOD — Vitest 4.1 mockThrowOnce: synchronous throw on the first call only
+// then falls through to the default (undefined) on subsequent calls
+it('retries once on connection error', async () => {
+  const findUserMock = vi.fn()
+    .mockThrowOnce(new Error('Connection refused')) // first call throws
+    .mockResolvedValue({ id: 1, name: 'Alice' });   // second call succeeds
+
+  const service = new UserService({ db: { findUser: findUserMock } });
+  const user = await service.getUser(1); // service should retry once
+  expect(user.name).toBe('Alice');
+  expect(findUserMock).toHaveBeenCalledTimes(2); // called twice: throw then success
+});
+```
+
+```typescript
+// Chai-style mock assertions (Vitest 4.1) — alternative to expect().toHaveBeenCalled()
+// For teams already using chai or prefer the fluent style
+import { vi, describe, it, expect } from 'vitest';
+
+describe('OrderService — chai-style mock verification', () => {
+  it('sends exactly one notification per order', async () => {
+    const notifyMock = vi.fn().mockResolvedValue({ sent: true });
+    const service = new OrderService({ notify: notifyMock });
+
+    await service.create({ items: ['sku-A'], userId: 'user-1' });
+
+    // Chai-style: more readable for teams coming from Mocha/Chai
+    expect(notifyMock).to.have.been.called;
+    expect(notifyMock).to.have.callCount(1);
+    expect(notifyMock).to.have.been.calledWith(
+      expect.objectContaining({ type: 'order.created' })
+    );
+    // NOT called twice — common flakiness pattern: notification fired in both
+    // the main flow AND an event listener that was registered globally
+    expect(notifyMock).not.to.have.callCount(2);
+  });
+});
+```
+
+**`mockThrow` vs `mockRejectedValue` — when to use each:**
+
+| Scenario | Use |
+|----------|-----|
+| Mock a synchronous function that throws (e.g., a validator, a parser) | `mockThrow(new Error(...))` |
+| Mock an async function that rejects (e.g., a DB query, an HTTP call) | `mockRejectedValue(new Error(...))` |
+| Mock a sync function that throws only on the first call | `mockThrowOnce(new Error(...))` |
+| Mock an async function that rejects only on the first call | `mockRejectedValueOnce(new Error(...))` |
+
+Using `mockThrow` for async functions (or `mockRejectedValue` for sync functions) is a classic
+source of subtle test flakiness — the test passes in one call order and fails in another because
+the error propagation path differs between sync and async throws.
+
+---
+
+## Pattern 76 — Playwright MCP Server for Agentic Flaky Test Investigation  [official]
+
+Playwright v1.59 introduced `@playwright/mcp` — a Model Context Protocol server that exposes
+Playwright's browser automation as MCP tools. In the context of flaky test investigation, this
+enables AI coding assistants (Claude Code, Cursor, GitHub Copilot Workspace) to autonomously
+reproduce a flaky test in a live browser, capture a trace, inspect network requests, and report
+the root cause — without a human manually running `npx playwright test --debug`.
+
+**Why this matters for flakiness:** Flaky tests are difficult to investigate because they require
+reproducing a non-deterministic failure. An AI agent with access to `@playwright/mcp` can run the
+test 5× in a fresh browser, capture the trace on each failure, compare action timelines, and
+surface the divergence point — all without a developer context-switching from their editor.
+
+```bash
+# Install the Playwright MCP server
+npm install -D @playwright/mcp
+
+# Add to your MCP server config (claude_desktop_config.json or .cursor/mcp.json):
+# {
+#   "mcpServers": {
+#     "playwright": {
+#       "command": "npx",
+#       "args": ["@playwright/mcp", "--caps=devtools"]
+#     }
+#   }
+# }
+
+# The --caps=devtools flag enables tracing, video recording, and DevTools access
+# — required for full flakiness investigation workflow
+```
+
+```typescript
+// Example: AI agent workflow using Playwright MCP for flaky test investigation
+// The AI agent (via MCP) executes the following steps autonomously:
+
+// Step 1: Navigate to the page under test
+// mcp_playwright_navigate({ url: 'http://localhost:3000/checkout' })
+
+// Step 2: Reproduce the user flow from the failing test
+// mcp_playwright_click({ element: 'button[name="Add to Cart"]' })
+// mcp_playwright_type({ element: 'input[name="card-number"]', text: '4111111111111111' })
+
+// Step 3: Capture the page state when the failure occurs
+// mcp_playwright_snapshot({}) — returns the accessibility tree for AI analysis
+
+// Step 4: Check console for silent errors (often the flakiness root cause)
+// mcp_playwright_console_messages({ severity: 'error' })
+
+// Step 5: Inspect network requests for API failures
+// mcp_playwright_network_requests({ filter: 'api/' })
+```
+
+```typescript
+// playwright.config.ts — enable browser.bind() for MCP-accessible browser instance
+// browser.bind() makes the launched browser accessible to @playwright/mcp and other
+// clients, enabling live debugging without stopping the test run
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: process.env.CI ? 2 : 0,
+  use: {
+    trace: 'on-first-retry',
+  },
+
+  // Flakiness investigation project: bind the browser for live MCP access
+  // Run: npx playwright test --project=mcp-debug --headed
+  projects: [
+    {
+      name: 'mcp-debug',
+      testMatch: '**/*.flaky.spec.ts',
+      use: {
+        // Launch browser in headed mode and bind for external MCP client access
+        // The MCP client can then navigate, inspect, and capture traces in real time
+        headless: false,
+        // When browser.bind() is configured, @playwright/mcp can connect to it
+        // This enables live AI-assisted investigation during test execution
+      },
+      retries: 0, // No retries in debug mode — we want to see the raw failure
+    },
+  ],
+});
+```
+
+**When to use Playwright MCP for flakiness:**
+- Flaky test is difficult to reproduce locally (fails 1-in-10 times)
+- Root cause is in browser rendering, network timing, or DOM mutation ordering
+- Team uses Claude Code, Cursor, or another MCP-capable AI assistant
+- The flaky test involves complex multi-step flows where manual debugging is slow
+
+**When NOT to use it:**
+- Flaky test is in unit or integration code (Node.js, not browser) — use Vitest directly
+- The root cause is clearly shared state or mocking (code-level diagnosis is faster)
+- CI environment doesn't support headed browser mode
+
+---
+
+## Pattern 77 — Vitest 4.1 `experimental.viteModuleRunner: false` for Production-Fidelity Isolation  [official]
+
+By default, Vitest uses its own Vite-based module runner that executes test code in a sandbox
+with custom module resolution. Setting `experimental.viteModuleRunner: false` runs tests with
+**native Node.js `import()`** instead — bypassing the Vite module runner entirely. This produces
+closer-to-production behavior and surfaces a category of flakiness that the Vite runner masks:
+module singleton lifecycle differences.
+
+**Why this matters for flakiness:** The Vite module runner can reset module-level state between
+tests when configured with `resetModules: true`. Native imports respect Node.js module caching —
+once a module is imported, the same instance is returned on every subsequent import unless the
+cache is manually cleared. Tests that rely on the Vite runner's module reset to achieve isolation
+will be flaky under native imports. Conversely, tests that pass with native imports are more
+likely to also pass in production environments (e.g., AWS Lambda, Docker containers) where
+Node.js module caching behaves identically.
+
+```typescript
+// vitest.config.ts — native module runner for production-fidelity testing
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    experimental: {
+      // Run tests with native Node.js imports instead of Vite's module runner.
+      // BENEFITS:
+      //   - Surfaces module singleton flakiness that Vite runner masks
+      //   - Closer to production behavior (no Vite transform pipeline)
+      //   - Faster startup for projects that don't need Vite transforms in tests
+      // COSTS:
+      //   - CSS/asset imports in test files will fail (no Vite transform)
+      //   - Path alias resolution (e.g., @/components) requires manual Node.js loader
+      //   - resetModules: true has no effect — native cache is not reset between tests
+      viteModuleRunner: false,
+    },
+    // With viteModuleRunner: false, explicit module isolation requires separate workers
+    // Use 'forks' pool to get OS-level process isolation between test files
+    pool: 'forks',
+    // resetModules has no effect under native imports — remove to avoid confusion
+    // resetModules: false,
+  },
+});
+```
+
+```typescript
+// Pattern: detecting singleton flakiness that viteModuleRunner: false surfaces
+// This test passes with Vite module runner (resetModules resets the singleton)
+// but fails with viteModuleRunner: false (native Node.js cache keeps the singleton)
+
+// src/cache.ts — singleton module with module-level state
+let cache: Map<string, string> | null = null;
+
+export function getCache(): Map<string, string> {
+  if (!cache) {
+    cache = new Map();
+  }
+  return cache;
+}
+
+export function clearCache(): void {
+  cache = null;
+}
+```
+
+```typescript
+// cache.test.ts — this test is FLAKY under viteModuleRunner: false
+// The Vite runner resets module-level 'cache' to null between test files.
+// Native Node.js imports keep the cached module instance — 'cache' persists.
+import { describe, it, expect, beforeEach } from 'vitest';
+import { getCache, clearCache } from '../src/cache';
+
+describe('Cache module', () => {
+  beforeEach(() => {
+    // CORRECT FIX: always call clearCache() explicitly — don't rely on module reset
+    clearCache();
+  });
+
+  it('starts empty', () => {
+    expect(getCache().size).toBe(0); // reliable only after explicit clearCache()
+  });
+
+  it('persists entries across calls', () => {
+    getCache().set('key', 'value');
+    expect(getCache().get('key')).toBe('value');
+  });
+});
+
+// NOTE: The beforeEach fix above makes this test deterministic under BOTH
+// Vite module runner AND native imports. Tests that only pass with the Vite
+// runner's module reset are revealing a real isolation defect — fix them,
+// don't rely on the runner's behavior as a workaround.
+```
+
+**Migration guide for `viteModuleRunner: false`:**
+
+1. Enable `viteModuleRunner: false` locally and run the test suite
+2. Any new failures reveal tests that depended on the Vite module runner's reset behavior
+3. Fix by adding explicit `beforeEach` cleanup (as above) — do NOT disable the setting
+4. Once all tests pass, enable in CI to prevent regression
+
+**When to keep the default (Vite module runner):**
+- Tests import CSS, assets, or other files that require Vite transforms
+- Tests use Vite-specific globals (e.g., `import.meta.env`, `import.meta.hot`)
+- The project uses Vite plugins whose side effects are required during testing
+
+---
+
+## Anti-Patterns (iteration 50)
+
+### AP39 — Using `page.mark()` Without Explicit `await`  [official]
+
+**What:** Calling `page.mark(label, fn)` without `await` — the mark annotation is registered but
+the interactions inside `fn` run as a floating Promise.
+
+**Why harmful:** Without `await`, the interactions in `page.mark()` race with subsequent test
+assertions. The trace may capture the mark span as instantaneous (the interactions didn't run
+yet), making the trace misleading. The test appears to pass (the assertion doesn't wait for the
+mark's content) or fails non-deterministically (depending on timing). Fix: always `await page.mark()`.
+
+```typescript
+// BAD: unawaited page.mark() — interactions race with the assertion
+it('submits order', async () => {
+  page.mark('fill form', async () => { // MISSING await
+    await user.type(page.getByLabelText('card'), '4111111111111111');
+  });
+  // This assertion runs BEFORE the card number is typed — flaky result
+  await expect.element(page.getByTestId('submit-btn')).toBeEnabled();
+});
+
+// GOOD: awaited page.mark() — form is filled before assertion runs
+it('submits order', async () => {
+  await page.mark('fill form', async () => { // await here
+    await user.type(page.getByLabelText('card'), '4111111111111111');
+  });
+  await expect.element(page.getByTestId('submit-btn')).toBeEnabled();
+});
+```
+
+### AP40 — `mockThrow` on an Async Function  [official]
+
+**What:** Using `vi.fn().mockThrow(error)` on a mock that will be called in an `async` context,
+expecting the caller to receive a rejected Promise.
+
+**Why harmful:** `mockThrow` causes the mock to throw synchronously. In an `async` function,
+a synchronous throw IS converted to a rejected Promise by JavaScript's async machinery — but only
+if the throw happens inside the `async` function body. If the mock is called in a way where the
+throw propagates outside the async boundary (e.g., passed as a non-async callback), the throw
+becomes an uncaught exception, not a Promise rejection. This produces a test that passes in
+some call contexts and crashes in others — classic non-determinism.
+
+```typescript
+// RISKY: mockThrow on a function passed as a synchronous callback to an async operation
+const fetchUserMock = vi.fn().mockThrow(new Error('DB error'));
+
+// If createOrder calls fetchUser inside an async callback that wasn't awaited:
+// the synchronous throw escapes the async boundary and crashes the process
+await OrderService.create({ userId: 'user-1', fetchUser: fetchUserMock });
+
+// SAFE: use mockRejectedValue for mocks called in async contexts
+const fetchUserMock = vi.fn().mockRejectedValue(new Error('DB error'));
+// This always produces a rejected Promise — safe regardless of call context
+```
+
+---
+
+## Real-World Gotchas (iteration 50)  [community]
+
+**Gotcha 45 — Trunk AI Failure Fingerprinting Catches Variant Flakiness that String Matching Misses**  [community]
+
+Traditional flaky test detectors (BuildPulse, custom JUnit XML parsers) identify flakiness by
+matching test names: if the same test name appears in both pass and fail states across runs
+with no code change, it's flagged as flaky. This approach misses **variant flakiness** — a single
+test that fails with three different error messages across different runs. Each variant looks like
+a new, unique failure to string-matching detectors, so none is flagged as flaky.
+
+Trunk Flaky Tests (2025–2026) uses AI-based failure fingerprinting that groups failures by
+**root cause similarity** rather than exact error string match. A timeout failure, an element-not-found
+failure, and a network-error failure in the same test case are grouped as "this test is flaky" if
+they share enough contextual similarity (the same DOM state, the same network pattern, the same
+assertion site). Teams that migrated from string-matching detectors to Trunk AI fingerprinting
+commonly find 30–50% more flaky test cases than their existing tooling detected.
+
+**Practical implication for TypeScript teams:** Before trusting "no flaky tests detected" from
+a string-matching tracker, run a nightly `--repeats 10` sweep (Vitest) or 5× nightly detection
+(Pattern 2 GitHub Actions) and manually compare failure messages. If the same test consistently
+produces 2–3 different error messages across runs, it's variant-flaky — even if no single
+error message crossed the string-matching threshold.
+
+---
+
+## Quick Reference additions (iteration 50)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Trace timeline is a flat 40-action list — failure site unclear | No trace annotation | Pattern 74 (`page.mark()` for named regions) | AP39 (unawaited page.mark()) |
+| Error-path test passes inconsistently (sync vs async throw mismatch) | Wrong mock error API | Pattern 75 (`mockThrow` vs `mockRejectedValue`) | AP40 (`mockThrow` on async function) |
+| Flaky browser test hard to reproduce manually | Multi-step timing issue | Pattern 76 (Playwright MCP for AI-assisted reproduction) | Manual `--debug` session for every flakiness investigation |
+| Test passes with Vite runner but flaky in production/CI | Module singleton not reset | Pattern 77 (`viteModuleRunner: false` to surface defect) | Relying on Vite runner's module reset as isolation |
+| Same test fails with 3 different error messages — no tracker flags it | Variant flakiness | Gotcha 45 (AI fingerprinting vs string matching) | Trusting string-match-only flakiness trackers |
+
+---
+
+## Key Resources (iteration 50 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest `page.mark()` API | Official | https://vitest.dev/api/browser/context#mark | Named trace annotations for Vitest browser mode tests (v4.1) |
+| Vitest `mockThrow` / `mockThrowOnce` | Official | https://vitest.dev/api/mock#mockthrow | Concise synchronous throw mock — replaces verbose `mockImplementation` (v4.1) |
+| Playwright MCP Server | Official | https://playwright.dev/docs/api/class-browser#browser-bind | `@playwright/mcp` — 60+ browser automation tools via MCP for agentic test debugging (v1.59) |
+| Vitest `experimental.viteModuleRunner` | Official | https://vitest.dev/config/#experimental-vitemodulerunner | Native Node.js import mode — surfaces module singleton flakiness hidden by Vite's runner (v4.1) |
+| Trunk AI Failure Fingerprinting | Community | https://trunk.io/flaky-tests | AI-powered root cause grouping — detects variant flakiness that string-matching tools miss |

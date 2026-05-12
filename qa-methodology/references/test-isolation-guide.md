@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 15 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 16 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -22,6 +22,10 @@
 <!--            vi.spyOn constructor arrow-function error, per-project isolate:false,                -->
 <!--            test.extend() type-aware hooks, vi.fn() default mock name change                     -->
 <!--          Jest 30 stricter CalledWith TypeScript types (jestjs.io/docs/upgrading-to-jest30)      -->
+<!--          Vitest 4.1 mock.mockThrow/mockThrowOnce, mock.withImplementation (vitest.dev/api/mock) -->
+<!--          Jest config: workerIdleMemoryLimit, resetModules, showSeed+randomize (jestjs.io)       -->
+<!--          jest-util protectProperties for globalsCleanup exemption,                              -->
+<!--          Vitest test tags + TestRunner.matchesTags() for conditional setup (2026-05-12)         -->
 
 ---
 
@@ -2693,3 +2697,424 @@ tmpDir: async ({}, { onCleanup }) => {
 | Vitest API — `onCleanup` (fixture builder) | Official | https://vitest.dev/api/#oncleanup | Declarative fixture cleanup without `use()` continuation semantics |
 | Jest 30 — `jest.onGenerateMock` | Official | https://jestjs.io/docs/jest-object#jestonGeneratemock | Global mock shape enforcement hook — file-scoped, applies to all `jest.mock()` calls |
 | Jest 30 — `jest.retryTimes` options | Official | https://jestjs.io/docs/jest-object#jestretrytimesnumretries-options | `waitBeforeRetry`, `retryImmediately`, `logErrorsBeforeRetry` — flakiness mitigation options |
+
+---
+
+## Community Lessons — Iteration 16  [community]
+
+61. **`vi.mockThrow()` / `mockThrowOnce()` (Vitest 4.1) replaces verbose `mockImplementation(() => { throw ... })` for error-path isolation.** [community]
+    Vitest 4.1 adds `mockThrow(value)` and `mockThrowOnce(value)` as first-class mock methods, replacing the common boilerplate `mockImplementation(() => { throw new Error('...') })`. The key isolation benefit: `mockThrowOnce()` can be chained with `mockReturnValue()` to test that a service recovers correctly after a transient failure — without needing a stateful counter inside `mockImplementation`. WHY: the `mockImplementation(() => { throw ... })` pattern requires a closure that must be re-set in `beforeEach`; `mockThrowOnce()` makes error injection declarative and composable within the test body, reducing beforeEach coupling.
+    ```typescript
+    import { describe, it, expect, vi, beforeEach } from 'vitest';
+    import { PaymentGateway } from './paymentGateway';
+    import { OrderService } from './orderService';
+
+    describe('OrderService — error recovery isolation (vi.mockThrow)', () => {
+      let gateway: ReturnType<typeof vi.fn>;
+      let service: OrderService;
+
+      beforeEach(() => {
+        // Fresh mock per test — no shared error state
+        gateway = vi.fn<() => Promise<{ transactionId: string }>>();
+        service = new OrderService(gateway as unknown as PaymentGateway);
+      });
+
+      it('retries once and succeeds when gateway throws transiently', async () => {
+        // First call throws; second call returns success
+        gateway
+          .mockThrowOnce(new Error('GATEWAY_TIMEOUT'))
+          .mockResolvedValue({ transactionId: 'tx-42' });
+
+        const result = await service.placeOrder('sku-1', 1);
+
+        expect(result.transactionId).toBe('tx-42');
+        expect(gateway).toHaveBeenCalledTimes(2); // called once, threw, retried
+      });
+
+      it('throws when gateway fails on every attempt', async () => {
+        // mockThrow (not Once) — throws on every subsequent call
+        gateway.mockThrow(new Error('GATEWAY_DOWN'));
+
+        await expect(service.placeOrder('sku-1', 1)).rejects.toThrow('GATEWAY_DOWN');
+      });
+
+      it('handles mixed throw/success sequence correctly', async () => {
+        gateway
+          .mockThrowOnce(new Error('first-fail'))
+          .mockThrowOnce(new Error('second-fail'))
+          .mockResolvedValue({ transactionId: 'tx-ok' }); // 3rd call succeeds
+
+        const result = await service.placeOrder('sku-1', 1);
+
+        expect(result.transactionId).toBe('tx-ok');
+        expect(gateway).toHaveBeenCalledTimes(3);
+      });
+    });
+    ```
+
+62. **`mock.withImplementation()` provides scoped mock override without polluting `beforeEach` setup.** [community]
+    Vitest's `mock.withImplementation(impl, callback)` temporarily overrides a mock's implementation for the duration of a synchronous or asynchronous callback, then automatically restores the previous implementation. This is the right tool when a single test needs a different stub behavior than the rest of the suite — without requiring a `beforeEach` restructure or a manual save/restore around the assertion. WHY: teams that override mock behavior inside a single test with `mockReturnValueOnce()` can accidentally leave residual mock state if the test asserts before consuming the override. `withImplementation` scopes the override to a function boundary, making it impossible to leak.
+    ```typescript
+    import { describe, it, expect, vi, beforeEach } from 'vitest';
+    import { NotificationService } from './notificationService';
+    import { AlertService } from './alertService';
+
+    describe('AlertService — scoped mock override', () => {
+      let notifications: ReturnType<typeof vi.fn>;
+      let alerts: AlertService;
+
+      beforeEach(() => {
+        notifications = vi.fn<(msg: string) => void>();
+        alerts = new AlertService(notifications as unknown as NotificationService);
+      });
+
+      it('sends the default notification text', () => {
+        // Most tests use the default no-op mock from beforeEach
+        alerts.sendAlert('system-down');
+        expect(notifications).toHaveBeenCalledWith(expect.stringContaining('ALERT: system-down'));
+      });
+
+      it('uses a scoped implementation to simulate slow notification channel', async () => {
+        let notifTime = 0;
+
+        // withImplementation replaces the mock only for the duration of the callback
+        await notifications.withImplementation(
+          async (msg: string) => {
+            notifTime = Date.now();
+            return Promise.resolve();
+          },
+          async () => {
+            await alerts.sendAlertAsync('system-slow');
+          },
+        );
+
+        // Outside the callback, the original no-op implementation is restored
+        expect(notifTime).toBeGreaterThan(0);
+        // If we call the mock again here, it uses the original beforeEach stub
+        alerts.sendAlert('check');
+        expect(notifications).toHaveBeenLastCalledWith(expect.stringContaining('ALERT: check'));
+      });
+    });
+    ```
+
+63. **Jest `workerIdleMemoryLimit` prevents test-suite-level memory contamination from worker heap accumulation.** [community]
+    Jest workers are long-lived Node.js processes that accumulate garbage from all test files they execute. In large suites with heavy mocking (e.g., jest.mock on large dependency trees) or snapshot serialization, worker heap usage grows monotonically within a session. When a worker exceeds `workerIdleMemoryLimit`, Jest recycles it — guaranteeing a fresh process for the next file assignment. This is a form of isolation: it prevents heap state from an earlier test file from influencing a later file that runs on the same worker. WHY: memory-related non-determinism is difficult to diagnose — it manifests as random failures or slowdowns that disappear when `--runInBand` is used (which uses a single process with GC between files). `workerIdleMemoryLimit` applies the same GC boundary in parallel mode.
+    ```typescript
+    // jest.config.ts
+    import type { Config } from 'jest';
+
+    const config: Config = {
+      // Recycle workers when they exceed 512 MB heap usage.
+      // Prevents heap accumulation from large mock registries or snapshot
+      // serialization caches contaminating subsequent test files in the same worker.
+      workerIdleMemoryLimit: '512MB',
+
+      // Use with maxWorkers to bound total memory across all workers
+      maxWorkers: '25%',
+
+      preset: 'ts-jest',
+      testEnvironment: 'node',
+      clearMocks: true,
+      restoreMocks: true,
+    };
+
+    export default config;
+    ```
+    **When to use:** Suites with > 200 test files, heavy use of `jest.mock()` on large modules, or any suite where you observe increasing test runtimes across the session. `workerIdleMemoryLimit: '512MB'` is a practical starting point; monitor with `--verbose` and reduce if workers are recycled too often (recycling has ~1-2s overhead per file).
+
+64. **Jest `resetModules: true` config flag resets the entire module registry before *every* test — not just before every file.** [community]
+    `jest.resetModules()` in `beforeEach` (Pattern 6) resets the registry before each test within a single file. The global config flag `resetModules: true` extends this behavior to the entire suite without requiring per-file `beforeEach` boilerplate. The critical distinction: the config flag resets modules before *every* test, not just between files. This is the strongest isolation level for module singletons — and also the most expensive. WHY: teams that need singleton re-initialization for every test (e.g., testing configuration modules that read `process.env` at import time) currently scatter `jest.resetModules()` calls across files. Centralizing this in config eliminates the per-file boilerplate, but teams must be aware of the performance cost: module re-evaluation on every test adds significant overhead in large suites. Benchmark with `--verbose` before committing to this config flag globally; consider scoping it to a specific project via a `projects` config entry instead.
+    ```typescript
+    // jest.config.ts — global module reset before every test (use with caution in large suites)
+    import type { Config } from 'jest';
+
+    const config: Config = {
+      // Equivalent to calling jest.resetModules() before every single test.
+      // Strong isolation for singletons computed at import time;
+      // significant performance cost for suites with > 100 test files.
+      resetModules: true,
+
+      preset: 'ts-jest',
+      testEnvironment: 'node',
+    };
+
+    export default config;
+    // For selective use, prefer jest.resetModules() in beforeEach only where needed (Pattern 6),
+    // or scope to a specific project entry in a Jest projects config.
+    ```
+
+65. **`jest.showSeed` + `jest.randomize` enables *reproducible* random order for diagnosing order-dependent failures.** [community]
+    Gotcha 10 recommends `--randomize` to surface order-dependent failures. The missing piece: without `showSeed: true`, you cannot reproduce the exact execution order that triggered the failure. When `showSeed: true` is set in `jest.config.ts`, Jest prints the seed used for randomization in the test report. Re-running with `--seed=<printed-value>` replays the exact same order — allowing you to reproduce and bisect order-dependent failures deterministically. WHY: most teams only add `--randomize` without `showSeed`, so when a random order exposes a failure in CI, the failure cannot be reproduced locally because the seed is unknown. The CI logs do not contain the seed unless `showSeed` is explicitly configured.
+    ```typescript
+    // jest.config.ts
+    import type { Config } from 'jest';
+
+    const config: Config = {
+      // Randomize test execution order within each file to surface order-dependencies
+      randomize: true,
+
+      // Print the random seed to stdout so CI failures can be reproduced with
+      // `jest --seed=<PRINTED_SEED>` — essential for diagnosing order-dependent failures
+      showSeed: true,
+
+      preset: 'ts-jest',
+      testEnvironment: 'node',
+    };
+
+    export default config;
+
+    // To reproduce a specific CI failure:
+    // jest --seed=1234567890 --testPathPattern="path/to/failing.test.ts"
+    ```
+
+66. **Vitest test tags + `TestRunner.matchesTags()` enable conditional expensive setup — avoiding isolation overhead for unrelated tests.** [community]
+    Vitest 4.1 test tags solve an isolation anti-pattern: expensive setup (database seeding, spinning up an HTTP server) in `beforeAll` that runs for *all* tests in the suite, even tests that don't need it. With `TestRunner.matchesTags()`, setup logic can be gated behind a tag check — the expensive setup only runs when tests tagged `'db'` or `'integration'` are included in the current run. WHY: teams that add `beforeAll(seedDatabase)` to a `vitest.unit.setup.ts` file cause every unit test run to incur database seeding overhead — defeating the purpose of running unit tests quickly. Tag-gated setup keeps the fast-feedback loop intact.
+    ```typescript
+    // vitest.config.ts
+    import { defineConfig } from 'vitest/config';
+
+    export default defineConfig({
+      test: {
+        tags: {
+          db: { timeout: 30000, retry: 1 },       // DB tests get longer timeout + 1 retry
+          integration: { timeout: 15000 },
+          unit: { timeout: 5000 },
+        },
+        setupFiles: ['./vitest.setup.ts'],
+      },
+    });
+
+    // vitest.setup.ts
+    import { TestRunner } from 'vitest';
+    import { seedDatabase, teardownDatabase } from './testHelpers/db';
+
+    // Only seed the database when DB-tagged tests are actually in the current run.
+    // `vitest --tags-filter="unit"` skips this setup entirely — unit tests stay fast.
+    if (TestRunner.matchesTags(['db', 'integration'])) {
+      beforeAll(async () => {
+        await seedDatabase();
+      });
+
+      afterAll(async () => {
+        await teardownDatabase();
+      });
+    }
+
+    // user.integration.test.ts — annotated with tag to opt in to DB setup
+    import { describe, test, expect } from 'vitest';
+    import { userRepository } from './repositories/userRepository';
+
+    describe('UserRepository', { tags: ['db', 'integration'] }, () => {
+      test('finds a seeded user by email', async () => {
+        const user = await userRepository.findByEmail('alice@example.com');
+        expect(user?.name).toBe('Alice');
+      });
+    });
+
+    // unit.test.ts — no tags → matchesTags returns false → no DB setup → fast
+    import { describe, test, expect } from 'vitest';
+    import { formatUserName } from './utils/formatUserName';
+
+    describe('formatUserName', { tags: ['unit'] }, () => {
+      test('capitalizes first letter', () => {
+        expect(formatUserName('alice')).toBe('Alice');
+      });
+    });
+    ```
+
+67. **`jest.protectProperties(key)` from `jest-util` prevents specific globals from being wiped by `globalsCleanup: 'on'`.** [community]
+    Jest 30's `globalsCleanup: 'on'` (Gotcha 34) wipes all globals added to `globalThis` by a test file. The escape hatch: `protectProperties(globalThis['key'])` from `jest-util` marks a specific global as exempt from the cleanup sweep. This is the right tool for test helpers that legitimately set a global once (e.g., polyfills, shared test matchers) and must persist across test files in the same worker. Without this escape hatch, teams must either: (a) switch to `globalsCleanup: 'soft'` (which ignores the cleanup for all globals) or (b) re-register the global in every test file — both worse options. WHY: the `protectProperties` API is not widely documented and is often missed by teams that enable `globalsCleanup: 'on'` and then find their shared test infrastructure breaking.
+    ```typescript
+    // jest.setup.ts — called from setupFilesAfterFramework in jest.config.ts
+    import { protectProperties } from 'jest-util';
+
+    // Register a custom matcher for all tests — must survive globalsCleanup: 'on'
+    expect.extend({
+      toBeValidUUID(received: unknown) {
+        const pass = typeof received === 'string' &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(received);
+        return {
+          pass,
+          message: () => `expected ${received} ${pass ? 'not ' : ''}to be a valid UUID`,
+        };
+      },
+    });
+
+    // Protect this custom matcher from being wiped between files by globalsCleanup: 'on'
+    // Without this, every test file that uses toBeValidUUID would need to re-register it
+    protectProperties(globalThis['expect']);
+
+    // jest.config.ts companion
+    // testEnvironmentOptions: { globalsCleanup: 'on' }  — enabled for maximum cleanliness
+    // setupFilesAfterFramework: ['./jest.setup.ts']
+    ```
+
+---
+
+## Extended Patterns — Iteration 16
+
+### Pattern 26: `vi.mockThrow()` chaining for resilience test isolation (TypeScript, Vitest 4.1+)  [community]
+
+The `mockThrow()` / `mockThrowOnce()` API enables declarative error injection without stateful mock implementation closures. This pattern tests that a service is resilient to transient failures — the most common error-path isolation scenario — using pure declarative mock composition in the test body.
+
+```typescript
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { StorageService } from './storageService';
+import { UploadService } from './uploadService';
+
+describe('UploadService — transient error resilience', () => {
+  let storage: vi.Mocked<StorageService>;
+  let uploader: UploadService;
+
+  beforeEach(() => {
+    // Fresh typed mock per test — no accumulated throw state
+    storage = {
+      upload: vi.fn<(key: string, data: Uint8Array) => Promise<string>>(),
+      delete: vi.fn<(key: string) => Promise<void>>(),
+    };
+    uploader = new UploadService(storage);
+  });
+
+  it('succeeds on first attempt when storage is healthy', async () => {
+    storage.upload.mockResolvedValue('https://cdn.example.com/file-1');
+
+    const url = await uploader.upload('file-1', new Uint8Array([1, 2, 3]));
+
+    expect(url).toBe('https://cdn.example.com/file-1');
+    expect(storage.upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries once and succeeds on transient 503', async () => {
+    // First call throws; second returns success — declarative, no closure state
+    storage.upload
+      .mockThrowOnce(Object.assign(new Error('Service Unavailable'), { status: 503 }))
+      .mockResolvedValue('https://cdn.example.com/file-2');
+
+    const url = await uploader.upload('file-2', new Uint8Array([4, 5, 6]));
+
+    expect(url).toBe('https://cdn.example.com/file-2');
+    expect(storage.upload).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after max retries and propagates the error', async () => {
+    // mockThrow (not Once) — throws on every call indefinitely
+    storage.upload.mockThrow(new Error('DISK_FULL'));
+
+    await expect(
+      uploader.upload('file-3', new Uint8Array([7, 8, 9])),
+    ).rejects.toThrow('DISK_FULL');
+
+    // Verify max retry count by checking call count
+    expect(storage.upload).toHaveBeenCalledTimes(3); // configurable via UploadService constructor
+  });
+
+  it('cleans up the partial upload key when all retries fail', async () => {
+    storage.upload.mockThrow(new Error('NETWORK_ERROR'));
+    storage.delete.mockResolvedValue(undefined);
+
+    await expect(uploader.upload('file-4', new Uint8Array())).rejects.toThrow();
+
+    // Error-path cleanup — delete must be called with the attempted key
+    expect(storage.delete).toHaveBeenCalledWith('file-4');
+  });
+});
+```
+
+**Key rule:** Use `mockThrowOnce()` for transient errors (Nth call succeeds). Use `mockThrow()` for permanent errors (all calls fail). Avoid `mockImplementation(() => { throw ... })` — it requires a closure and is harder to compose with `mockResolvedValue` / `mockReturnValue` in the same chain.
+
+### Pattern 27: `mock.withImplementation()` for per-assertion mock overrides (TypeScript, Vitest)  [community]
+
+`mock.withImplementation(fn, callback)` is the correct tool when a single assertion within a test requires a different mock behavior than the default — without restructuring the test or touching `beforeEach`. The previous implementation is automatically restored when the callback returns, including when it throws. This is stronger than `mockReturnValueOnce()` because the scope is explicit and enforced by a function boundary.
+
+```typescript
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { AuditLogger } from './auditLogger';
+import { AuditService } from './auditService';
+
+describe('AuditService — scoped implementation overrides', () => {
+  let logger: vi.Mocked<AuditLogger>;
+  let service: AuditService;
+
+  beforeEach(() => {
+    logger = {
+      log: vi.fn<(entry: string) => void>(),
+      flush: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+    };
+    service = new AuditService(logger);
+  });
+
+  it('logs all events in the default (no-op) mode', () => {
+    service.record('login', 'user-1');
+    service.record('logout', 'user-1');
+
+    expect(logger.log).toHaveBeenCalledTimes(2);
+  });
+
+  it('captures the exact log format when formatter is overridden', async () => {
+    const captured: string[] = [];
+
+    // withImplementation overrides logger.log only inside the callback
+    await logger.log.withImplementation(
+      (entry: string) => { captured.push(entry); },
+      async () => {
+        service.record('purchase', 'user-2');
+        service.record('refund', 'user-2');
+      },
+    );
+
+    // Outside the callback, logger.log is back to the no-op mock from beforeEach
+    expect(captured).toHaveLength(2);
+    expect(captured[0]).toMatch(/purchase.*user-2/);
+    expect(captured[1]).toMatch(/refund.*user-2/);
+
+    // Verify the override was genuinely scoped: calling record again uses the original mock
+    service.record('view', 'user-2');
+    expect(captured).toHaveLength(2); // NOT 3 — scoped implementation no longer active
+  });
+
+  it('restores the default implementation even when the callback throws', async () => {
+    const call = logger.log.withImplementation(
+      () => { throw new Error('logger-broken'); },
+      () => {
+        service.record('event', 'user-3'); // this will throw via the implementation
+      },
+    );
+
+    await expect(call).rejects.toThrow('logger-broken');
+
+    // Implementation is restored despite the throw — no leaked broken state
+    service.record('recovery-event', 'user-4');
+    expect(logger.log).toHaveBeenLastCalledWith(expect.stringContaining('recovery-event'));
+  });
+});
+```
+
+**When to prefer over `mockReturnValueOnce()`:** Use `withImplementation` when the override applies to *all* calls within a code block (not just the next one). Use `mockReturnValueOnce()` / `mockThrowOnce()` when you need to control behavior for specific call N in a sequence. `withImplementation` is the better choice for callback-scoped behavior changes; `*Once()` is better for sequence-based isolation.
+
+---
+
+## Quick Reference Additions — Iteration 16
+
+| Problem | Symptom | TypeScript/Jest Solution | Vitest equivalent |
+|---------|---------|--------------------------|-------------------|
+| Error injection boilerplate (`mockImplementation(() => { throw ... })`) | Long closures; difficult to chain with return values | No Jest equivalent for `mockThrow` | `vi.fn().mockThrow(error)` / `mockThrowOnce(error)` (Vitest 4.1+) |
+| Single-assertion mock override without `beforeEach` restructure | Mock behavior needs to differ for one sub-case | `jest.fn().mockReturnValueOnce() + manual restore` | `mock.withImplementation(fn, callback)` — auto-restore |
+| Worker heap accumulation causing non-deterministic slowdowns | Tests slow down as suite runs longer; `--runInBand` "fixes" it | `workerIdleMemoryLimit: '512MB'` in `jest.config.ts` | N/A |
+| Cannot reproduce CI order-dependent failures locally | Randomized order differs between CI and local run | `showSeed: true` in config + re-run with `--seed=<N>` | `sequence.seed` in `vitest.config.ts` |
+| Expensive setup (DB seeding) runs even in unit-only runs | Unit test suites slow because `beforeAll` always seeds DB | N/A | `TestRunner.matchesTags(['db'])` in `vitest.setup.ts` |
+| Custom global (`expect.extend`) wiped by `globalsCleanup: 'on'` | Custom matchers disappear after first test file runs | `protectProperties(globalThis['expect'])` from `jest-util` | N/A (Vitest handles matcher registration differently) |
+| Module-level singleton reset for entire suite without per-file boilerplate | Every test file needs `beforeEach(() => jest.resetModules())` | `resetModules: true` in `jest.config.ts` (global, expensive) | `vi.resetModules()` in `setupFiles` + `isolate: true` |
+
+---
+
+## Key Resources — Iteration 16 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest API — `mock.mockThrow` / `mockThrowOnce` | Official | https://vitest.dev/api/mock#mockthrow | v4.1.0+ error injection without closure-based `mockImplementation` |
+| Vitest API — `mock.withImplementation` | Official | https://vitest.dev/api/mock#mockwithimplementation | Scoped temporary mock override auto-restored after callback |
+| Jest Config — `workerIdleMemoryLimit` | Official | https://jestjs.io/docs/configuration#workeridlememorylimit-numberstring | Worker recycling threshold — isolates heap state accumulation in long suite runs |
+| Jest Config — `resetModules` | Official | https://jestjs.io/docs/configuration#resetmodules-boolean | Global module registry reset before every test — strongest singleton isolation, highest cost |
+| Jest Config — `showSeed` + `randomize` | Official | https://jestjs.io/docs/configuration#showseed-boolean | Prints randomization seed to reproduce order-dependent failures with `--seed=<N>` |
+| Vitest Guide — Test Tags | Official | https://vitest.dev/guide/test-tags.html | Tag-based test categorization; `TestRunner.matchesTags()` for conditional expensive setup |
+| `jest-util` — `protectProperties` | Official | https://jestjs.io/docs/configuration#testEnvironmentOptions | Exempts specific globals from `globalsCleanup: 'on'` sweep |

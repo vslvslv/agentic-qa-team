@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 26 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 27 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 27 additions: Cucumber.js unreleased — formatter architecture redesign (SummaryFormatter/ProgressFormatter class deprecation, new summary/progress/progress-bar/pretty formatter design), printAttachments→includeAttachments migration, FORCE_COLOR env var replaces color format option; playwright-bdd unreleased — enrichReporterData config option removed (breaking), bddgen worker concurrency capped at CPU/2 (OOM fix), tinyglobby replaces fast-glob (internal dep), @cucumber/messages 27→32 + @cucumber/gherkin 32→39 (direct import paths breaking), JSON reporter attachment opt-in (attachments skipped by default), non-ASCII garbling fix in HTML reporter, strict Cucumber-compatible arity checks (breaking), docStringType exposed on $step fixture, AI agent skill for Gherkin generation (playwright-bdd v8.6+), junit-modern alias deprecated→junit canonical; full version migration guide added (v12 → unreleased upgrade path) -->
 <!-- Iter 26 additions: playwright-bdd unreleased — junit-modern alias deprecated (canonical JUnit reporter), tinyglobby replaces fast-glob, bddgen worker concurrency limited to CPU/2 for OOM prevention, @cucumber/messages 27→32 and @cucumber/gherkin 32→39 major bumps (direct import breaking change), JSON reporter skips attachments by default, non-ASCII garbling fix in HTML reporter; Gherkin reference — "Imagine it's 1922" heuristic for technology-agnostic step writing, vivid story-like character names in Background vs generic identifiers; playwright-bdd v8.5.0 — documented verbose mode improvements and VS Code Cucumber reporter fix -->
 <!-- Iter 25 additions: Cucumber.js unreleased — formatter output redesign (summary/progress/progress-bar/pretty), printAttachments deprecated→includeAttachments migration, SummaryFormatter/ProgressFormatter class deprecation, FORCE_COLOR env var replaces color format option; playwright-bdd unreleased — docStringType in $step fixture (now officially exposed), AI agent skill for Gherkin generation, strict arity checks (breaking), Node.js 20+ / Playwright 1.60+ minimum; playwright-bdd v8.4.2 — multiple step decorators on single method TypeScript example added -->
 <!-- Iter 24 additions: Cucumber.js v12.7-v12.8.3 — env var propagation to parallel child processes (v12.7.0), custom externalizing option (v12.8.0), thrown-string error fix (v12.8.3 — latest as of 2026-05-09); playwright-bdd v8.0–v8.5.0 — missingSteps option, matchKeywords, BeforeScenario/AfterScenario aliases, tags-from-path, min Playwright 1.41, single-quote default, step decorators, "Fix with AI" (v8.1+); Gherkin DocString content-type annotation caveats; Additional Resources section completion -->
@@ -1323,7 +1324,7 @@ If fewer than 6 of these boxes are checked, start with **Example Mapping only** 
 |-------|---------------|
 | When to use BDD | Complex business domain + cross-functional team + stakeholder participation |
 | When NOT to use | Solo/small team, prototype, infrastructure code, team without PO buy-in |
-| Primary TypeScript framework | `@cucumber/cucumber` v12 (current: TypeScript config, `--shard`, plugin API) |
+| Primary TypeScript framework | `@cucumber/cucumber` v12 (latest stable: v12.8.3; v13 unreleased — formatter redesign) |
 | Step parameterization | Prefer `{string}`, `{int}`, `{float}`, `{word}` over raw regex |
 | State sharing across steps | Use the World object — never module-level variables |
 | CI strategy | `@smoke` on every PR (< 2 min); `@regression` nightly (sharded) |
@@ -1331,7 +1332,8 @@ If fewer than 6 of these boxes are checked, start with **Example Mapping only** 
 | Suite health indicator | `@wip` count < 10% of total scenarios |
 | Avoiding step bloat | "Search before create" policy; max one step definition file per feature area |
 | Lightest BDD start | Example Mapping workshop first — no tooling needed |
-| Version gotcha | v9 → v10: ESM (`import:` not `require:`); v11 → v12: `includeAttachments`, node ≥ 20 |
+| Version gotcha | v9 → v10: ESM (`import:` not `require:`); v11 → v12: `includeAttachments`, node ≥ 20; v12 → v13 (unreleased): `SummaryFormatter`/`ProgressFormatter` removed, `printAttachments` → `includeAttachments`, `FORCE_COLOR` replaces `color` |
+| playwright-bdd version gotcha | v8.5 → v8.6 (unreleased): `enrichReporterData` removed, `junit-modern` → `junit`, strict arity checks, Node.js 20 min, `$step.docStringType` available |
 | Tag syntax | Boolean expressions: `"@smoke and not @wip"` (commas deprecated in v9+) |
 | Organizing business rules | Use `Rule` keyword to group scenarios per rule; per-rule `Background` for different setups |
 
@@ -7036,3 +7038,314 @@ Scenario: Billing contact can update payment method
   When "Dave" updates the credit card on file
   Then the subscription renewal should use the new card
 ```
+
+---
+
+### Cucumber.js Formatter Architecture Redesign (Unreleased → v13)  [official]
+
+The upcoming Cucumber.js major release (tracked as "unreleased" in the CHANGELOG as of 2026-05-12) introduces a redesigned formatter subsystem that **breaks** several integration patterns commonly used in TypeScript BDD projects. Teams running CI against the `@next` tag should audit their formatter configurations before upgrading.
+
+**What changes:**
+
+| Old API | New API | Migration action |
+|---|---|---|
+| `SummaryFormatter` class (imported directly) | New internal formatter — no public class export | Remove direct imports; configure via `format` string only |
+| `ProgressFormatter` class (imported directly) | Same — internal-only | Remove direct imports |
+| `printAttachments: true` format option | `includeAttachments: true` | Rename the option in `cucumber.js` config |
+| `--format @json` with embedded attachments | Attachments skipped by default in JSON output | Opt in with `includeAttachments` in JSON profile |
+| `FORCE_COLOR=1` env var (Node.js native) | `color: true` format option **deprecated** | Remove `color:` from format strings; rely on `FORCE_COLOR` env var |
+
+**Migration checklist for TypeScript projects upgrading to the new formatter design:**
+
+```typescript
+// BEFORE: Direct class import (breaks in new architecture)
+import { SummaryFormatter } from '@cucumber/cucumber';
+import { ProgressFormatter } from '@cucumber/cucumber';
+
+// AFTER: No class imports needed — configure via string in cucumber.js
+// These classes are removed from the public API
+```
+
+`cucumber.js` config before/after:
+```javascript
+// BEFORE (current v12)
+export default {
+  default: {
+    format: [
+      'progress-bar',
+      'html:reports/cucumber-report.html',
+      '@cucumber/json-formatter:reports/results.json',
+    ],
+    formatOptions: {
+      printAttachments: true,   // DEPRECATED — rename to includeAttachments
+      color: true,              // DEPRECATED — use FORCE_COLOR env var instead
+    },
+    publish: false,
+  },
+};
+
+// AFTER (new architecture)
+export default {
+  default: {
+    format: [
+      'progress-bar',
+      'html:reports/cucumber-report.html',
+      '@cucumber/json-formatter:reports/results.json',
+    ],
+    formatOptions: {
+      includeAttachments: true,   // Renamed from printAttachments
+      // color removed — set FORCE_COLOR=1 in shell instead
+    },
+    publish: false,
+  },
+};
+```
+
+**CI environment update** — replace `color: true` format option with env var:
+
+```yaml
+# .github/workflows/bdd.yml — ensure colored output without deprecated format option
+- name: Run BDD tests
+  run: npx cucumber-js --profile smoke
+  env:
+    CI: true
+    FORCE_COLOR: '1'   # Replaces formatOptions.color in new architecture
+    BASE_URL: ${{ vars.TEST_BASE_URL }}
+```
+
+**[community] The `SummaryFormatter` / `ProgressFormatter` deprecation gotcha**: Teams that built custom reporter wrappers by extending `SummaryFormatter` or `ProgressFormatter` will get a runtime import error after the upgrade. The extension pattern was never officially documented but was common in community CI dashboards. The migration path is to implement the `Formatter` interface directly or use a post-run report script instead of a formatter class.
+
+**[community] `printAttachments` in shared libraries**: Teams using monorepo shared `cucumber.js` config files or published NPM packages with embedded Cucumber config will hit the `printAttachments` → `includeAttachments` rename silently — the old option is ignored without a warning in some versions. Set `includeAttachments: true` proactively before upgrading to avoid missing attachments in HTML reports.
+
+---
+
+### playwright-bdd Upcoming Release Migration Guide  [official]
+
+The next playwright-bdd release (post-v8.5.0, documented as "unreleased" in the CHANGELOG as of 2026-05-12) contains **several breaking changes** alongside quality-of-life improvements. Teams using playwright-bdd in production CI pipelines should prepare before upgrading.
+
+**Breaking changes summary:**
+
+| Change | Impact | Migration |
+|---|---|---|
+| `enrichReporterData` config option removed | `playwright.config.ts` files using this option fail to parse | Remove `enrichReporterData` from config; enhanced reporter data is now always included |
+| `junit-modern` reporter alias removed | `format: ['junit-modern']` or `reporter: 'junit-modern'` fails | Replace with `junit` (canonical since v8.1) |
+| `@cucumber/messages` upgraded `27.x → 32.x` | Direct imports from `@cucumber/messages` have changed export paths | Update import paths; check `ICucumberMessage` type references |
+| `@cucumber/gherkin` upgraded `32.x → 39.x` | Direct imports from `@cucumber/gherkin` have changed export paths | Update import paths; if using `GherkinParser` directly, review API changes |
+| Strict Cucumber-compatible arity checks | Step definitions with wrong argument count now throw at registration time, not execution time | Run `npx bddgen` and check for registration errors before running full suite |
+| Node.js 18 dropped | Minimum Node.js version is now **20** | Upgrade CI runner Node.js version from 18 to 20 |
+
+**New features in upcoming release:**
+
+**1. `docStringType` exposed on `$step` fixture (playwright-bdd)**
+
+```typescript
+// Before: no access to the DocString content type in step definitions
+Given('I have the following payload:', async ({ page }, docString: string) => {
+  // No way to know if content-type was specified in the .feature file
+  const body = JSON.parse(docString);
+});
+
+// After: docStringType is available on the $step fixture
+import { createBdd } from 'playwright-bdd';
+const { Given } = createBdd();
+
+Given(
+  'I have the following payload:',
+  async ({ page, $step }, docString: string) => {
+    // $step.docStringType is the content-type annotation from the feature file
+    // e.g., """json ... """ → $step.docStringType === 'json'
+    if ($step.docStringType === 'json') {
+      const body = JSON.parse(docString);
+      // Handle typed JSON
+    } else if ($step.docStringType === 'yaml') {
+      // Handle YAML
+    } else {
+      // Plain text fallback
+    }
+  }
+);
+```
+
+```gherkin
+# Feature file — DocString with content-type annotation
+Given I have the following payload:
+  """json
+  {
+    "customerId": "cust-001",
+    "items": [{ "productId": "prod-42", "quantity": 2 }]
+  }
+  """
+```
+
+**2. `bddgen` worker concurrency capped at CPU/2**
+
+The `bddgen` code generation step now limits parallel workers to `Math.floor(cpuCount / 2)` to prevent out-of-memory (OOM) crashes on CI runners with limited RAM. Previously, on an 8-core runner with 4GB RAM, `bddgen` could spawn 8 workers simultaneously, each loading large TypeScript compilations — causing OOM kills.
+
+No configuration change is needed: this is an automatic safeguard. However, teams that were relying on high worker counts for faster `bddgen` on large feature suites (500+ scenarios) will see `bddgen` take slightly longer. On CI runners with generous RAM, the cap can be overridden:
+
+```bash
+# Override automatic CPU/2 cap — only on runners with verified RAM headroom
+PLAYWRIGHT_BDD_WORKERS=8 npx bddgen
+```
+
+**3. `tinyglobby` replaces `fast-glob` (internal dependency)**
+
+`fast-glob` is replaced with `tinyglobby` as the glob library for feature file discovery. This is transparent for most users but may affect teams with unusual glob patterns:
+
+```javascript
+// playwright.config.ts — review any non-standard glob patterns
+const testDir = defineBddConfig({
+  features: 'features/**/*.feature',   // Standard — no change needed
+  steps: 'src/steps/**/*.ts',
+  // Patterns that relied on fast-glob-specific behavior should be tested:
+  // - {a,b} brace expansion (still supported in tinyglobby)
+  // - Negative patterns: !**/node_modules/**  (still supported)
+  // - Windows path separators: tinyglobby normalizes these; test on Windows CI
+});
+```
+
+**4. JSON reporter attachment opt-in (behavior change)**
+
+In the upcoming release, the Cucumber JSON reporter output from playwright-bdd **skips attachments by default** (screenshots, traces, binary data). This reduces JSON file size significantly for large suites.
+
+```javascript
+// playwright.config.ts — opt in to attachments in JSON output
+export default defineConfig({
+  reporter: [
+    ['html', { outputFolder: 'reports/playwright-html' }],
+    // JSON reporter: attachments skipped by default in new release
+    // To include attachments (for custom report tools that need them):
+    ['@playwright/test', { reporter: 'json', outputFile: 'reports/results.json' }],
+  ],
+  use: {
+    screenshot: 'only-on-failure',
+    trace: 'on-first-retry',
+  },
+});
+```
+
+For teams using `playwright-bdd`'s Cucumber-format JSON output and feeding it into `multiple-cucumber-html-reporter`, enable the opt-in:
+
+```javascript
+// cucumber-format reporter config (playwright-bdd)
+export default defineBddConfig({
+  features: 'features/**/*.feature',
+  steps: 'src/steps/**/*.ts',
+  cucumberReporter: {
+    json: {
+      outputFile: 'reports/cucumber-results.json',
+      includeAttachments: true,   // NEW opt-in for upcoming release
+    },
+  },
+});
+```
+
+**5. Non-ASCII character rendering fix in HTML reporter**
+
+Prior to the upcoming release, step attachment text containing non-ASCII characters (emoji, accented characters, CJK characters) was garbled in the Cucumber HTML report output. The root cause was a UTF-8 encoding bug in the HTML serializer. This is fixed in the upcoming release — no configuration change required.
+
+If your BDD suite uses localized step text or attaches log messages with non-ASCII content:
+
+```typescript
+// Previously garbled in HTML report — now renders correctly
+After(async function (this: AppWorld, scenario) {
+  if (scenario.result?.status === 'FAILED') {
+    // Non-ASCII characters in attachment text now render correctly in HTML report
+    this.attach(`Fehler in Szenario: ${scenario.pickle.name} — Überprüfung fehlgeschlagen`, 'text/plain');
+    this.attach(`エラー: ${scenario.pickle.name}`, 'text/plain');
+  }
+});
+```
+
+**6. Strict arity checks (breaking)**
+
+Step definitions whose callback function has a different number of arguments than the Gherkin step's parameter count now throw a `CucumberError` at **registration time** (when the test file is loaded), not at execution time. This surfaces broken step definitions before any test runs.
+
+```typescript
+// WRONG: step has 1 Cucumber parameter but callback expects 2 arguments — caught at load time
+When(
+  'I submit the credentials {string} and {string}',
+  async ({ page }, email: string, password: string) => {
+    // This now throws: "Step definition callback expects 2 args but step has 2 params + 1 fixture"
+    // playwright-bdd counts the fixture destructure ({ page }) as arg 0;
+    // Cucumber params are args 1..N — total must match
+  }
+);
+
+// CORRECT: fixture as first arg, then one Cucumber param per {placeholder}
+When(
+  'I submit the credentials {string} and {string}',
+  async ({ page }, email: string, password: string) => {
+    // ✓ fixtures: { page } — 1 fixture arg
+    // ✓ Cucumber params: email, password — 2 param args  
+    // Total callback args = 3; matches fixture(1) + params(2) ✓
+    await page.fill('[data-testid="email"]', email);
+    await page.fill('[data-testid="password"]', password);
+    await page.getByTestId('submit').click();
+  }
+);
+```
+
+**[community] Upgrading from playwright-bdd v8.5 to the next release — recommended sequence:**
+
+```bash
+# Step 1: Run full suite against current version to establish baseline
+npx playwright test && echo "Baseline: PASS"
+
+# Step 2: Update playwright-bdd to next/pre-release
+npm install playwright-bdd@next
+
+# Step 3: Check for config option removals
+grep -r "enrichReporterData" playwright.config.ts   # Should return nothing
+grep -r "junit-modern" playwright.config.ts          # Should return nothing
+
+# Step 4: Regenerate spec files — strict arity checks fire at this step
+npx bddgen 2>&1 | grep -i "error\|warn"
+
+# Step 5: Run full suite to verify no regressions
+npx playwright test
+
+# Step 6: Check JSON report for attachment behavior change
+cat reports/results.json | python3 -c "import json,sys; d=json.load(sys.stdin); print('has_attachments:', any(len(s.get('embeddings',[])) > 0 for f in d for s in f.get('elements',[])))"
+```
+
+**[community] `@cucumber/messages 27→32` direct import paths changed**: Teams with custom Cucumber message processors (custom formatters, report parsers, event stream consumers) that import directly from `@cucumber/messages` will encounter changed export paths. The most common pattern that breaks:
+
+```typescript
+// BEFORE (messages 27.x) — breaks in 32.x
+import { Envelope, TestRunStarted } from '@cucumber/messages';
+
+// AFTER (messages 32.x) — check official @cucumber/messages CHANGELOG for full mapping
+import type { Envelope } from '@cucumber/messages';
+// Type shapes are preserved; check specific message type fields for additions
+```
+
+---
+
+### Cucumber.js Quick-Reference Version Matrix (2024–2026)
+
+A consolidated upgrade reference for TypeScript BDD teams:
+
+| Version | Node.js min | TypeScript config | Key change |
+|---|---|---|---|
+| v9 | 14 | `requireModule: ['ts-node/register']` | Tag syntax changed to boolean expressions (`"@a and @b"`) |
+| v10 | 16 | `import: [...], loader: ['ts-node/esm']` | CommonJS dropped; ESM-only |
+| v11 | 18 | `import: [...], loader: ['ts-node/esm']` | Retry built-in (`retry`, `retryTagFilter`); `World` typed generics; `json` formatter removed from bundle |
+| v12 | 20 | `import: [...], loader: ['ts-node/esm']` | Built-in sharding (`--shard`); TypeScript config files (`cucumber.ts`); plugin architecture |
+| v12.7 | 20 | same | Env var propagation to parallel child processes fixed |
+| v12.8 | 20 | same | Custom externalizing option; `@cucumber/json-formatter` required for JSON output |
+| v12.8.3 | 20 | same | Thrown-string error fix (latest stable as of 2026-05-12) |
+| Unreleased | 20 | same | Formatter redesign; `printAttachments` → `includeAttachments`; `FORCE_COLOR` replaces `color`; `SummaryFormatter`/`ProgressFormatter` classes removed |
+
+**playwright-bdd version matrix:**
+
+| Version | Playwright min | Node.js min | Key change |
+|---|---|---|---|
+| v7.x | 1.38 | 16 | Fixtures replace World; `createBdd()` API |
+| v8.0 | 1.41 | 18 | `missingSteps` option; `matchKeywords`; `BeforeScenario`/`AfterScenario` |
+| v8.1 | 1.41 | 18 | Step decorators; "Fix with AI" integration |
+| v8.4 | 1.44 | 18 | Tags-from-path; multiple decorators per method; single-quote default |
+| v8.5 | 1.44 | 18 | Verbose mode improvements; VS Code Cucumber reporter fix |
+| v8.6+ (unreleased) | 1.60 | 20 | `enrichReporterData` removed; `junit-modern` → `junit`; strict arity; `$step.docStringType`; `tinyglobby`; messages 27→32; gherkin 32→39 |
+
+**[community] Version matrix usage pattern**: Pin this matrix in your team's CLAUDE.md or `docs/bdd-setup.md`. The most expensive BDD upgrades are the ones that surprise teams mid-sprint. A 15-minute upgrade spike using this matrix to identify breaking changes is cheaper than discovering them when CI breaks on a release day.

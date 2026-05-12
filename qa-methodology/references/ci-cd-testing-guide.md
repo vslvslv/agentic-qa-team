@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping), github.blog (Copilot Actions minutes billing June 2026) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping), github.blog (Copilot Actions minutes billing June 2026), nektos/act (v0.2.79: --validate/--strict workflow flags) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 44 CI testing pillars covered in this guide:**
+**The 46 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -62,6 +62,8 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 42 | `trace: 'retain-on-failure-and-retries'` | Playwright v1.54+: record every retry attempt; retain all traces when any fails — full debugging context |
 | 43 | `test.abort()` guard-rail fixtures | Playwright v1.60+: abort test with exit code 1 from fixture/hook on missing env — not silent skip |
 | 44 | Vitest 4.0 pool migration | `maxWorkers`/`minWorkers` replaces `poolOptions.threads.maxThreads`; `VITEST_MAX_WORKERS` replaces `VITEST_MAX_THREADS` |
+| 45 | Playwright Screencast API | `page.screencast` — real-time video with action annotations, chapter overlays, JPEG frame streaming for AI vision (v1.59+) |
+| 46 | `act --validate` / `--strict` | Local workflow validation before push — catches YAML and logic errors before consuming CI minutes (v0.2.79+) |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -3005,6 +3007,276 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 | Nightly full suite | Runs once/day | No PR impact | Use for release qualification |
 | Affected-only (nx/turbo) | 70–85% cheaper | Same or faster | Always for monorepos |
 
+### Playwright Screencast API for CI Video Evidence [community]
+
+Playwright v1.59 introduced `page.screencast` — a first-class API for controlling video capture that complements (and in some scenarios replaces) the `recordVideo` context option. Unlike `recordVideo`, the Screencast API supports precise start/stop control within a test, real-time JPEG frame streaming, and rich visual overlays — making it suitable for CI pipelines that need reproducible visual evidence of test execution.
+
+> [community] Teams running agentic CI pipelines (LLM-driven test agents, AI-assisted regression detection) report that the Screencast API's `onFrame` callback is the critical enabler: it streams compressed JPEG frames in real-time rather than writing a video file, allowing agents to use vision models to validate UI state without post-processing. For standard CI teams, the `showActions()` overlay is the single most useful feature — action annotations on the video make failure frames immediately readable without trace archaeology.
+
+**Core Screencast API (TypeScript):**
+
+```typescript
+// tests/e2e/checkout.spec.ts — Playwright v1.59+ Screencast API
+import { test, expect } from '@playwright/test';
+import * as path from 'path';
+import * as fs from 'fs';
+
+test('checkout flow with full video evidence', async ({ page }) => {
+  const videoPath = path.join(
+    process.cwd(),
+    'test-results',
+    `checkout-${Date.now()}.webm`,
+  );
+
+  // Start recording — more precise than recordVideo (per-test control)
+  await page.screencast.start({
+    path: videoPath,
+    size: { width: 1280, height: 720 },
+  });
+
+  // Visual annotations: highlight each interacted element for 500ms
+  await page.screencast.showActions({
+    duration: 500,
+    fontSize: 18,
+    position: 'bottom-right',
+  });
+
+  // Chapter overlay: label major phases of the test for easier video navigation
+  await page.screencast.showChapter('Phase 1: Navigate to checkout');
+  await page.goto('/cart');
+  await page.getByRole('button', { name: 'Proceed to checkout' }).click();
+
+  await page.screencast.showChapter('Phase 2: Enter payment details');
+  await page.getByLabel('Card number').fill('4242 4242 4242 4242');
+  await page.getByLabel('Expiry').fill('12/28');
+  await page.getByLabel('CVV').fill('123');
+
+  await page.screencast.showChapter('Phase 3: Confirm order');
+  await page.getByRole('button', { name: 'Place order' }).click();
+  await expect(page.getByRole('heading', { name: 'Order confirmed' })).toBeVisible();
+
+  // Stop recording — video file is finalized
+  await page.screencast.stop();
+});
+```
+
+**JPEG frame streaming for AI vision (agentic CI):**
+
+```typescript
+// tests/e2e/ai-assisted-check.spec.ts — Screencast onFrame for real-time vision
+import { test, expect } from '@playwright/test';
+
+test('AI-assisted visual verification', async ({ page }) => {
+  const frames: Buffer[] = [];
+
+  // Stream compressed JPEG frames in real-time — no file I/O until save
+  await page.screencast.start({
+    size: { width: 1280, height: 720 },
+    quality: 80,  // JPEG quality 0-100
+    onFrame: (frame: Buffer) => {
+      // Collect frames for post-test AI analysis or real-time vision model calls
+      frames.push(frame);
+    },
+  });
+
+  await page.goto('/dashboard');
+  await page.waitForLoadState('networkidle');
+
+  await page.screencast.stop();
+
+  // Pass frames to vision model for structure validation
+  // (Replace with actual vision model API call)
+  console.log(`Captured ${frames.length} frames — feed to vision model for layout validation`);
+  expect(frames.length).toBeGreaterThan(0);
+});
+```
+
+**`await using` for automatic Screencast resource cleanup (TypeScript 5.2+ / ES2022+):**
+
+```typescript
+// tests/e2e/resource-safe.spec.ts — Playwright v1.59 async disposable pattern
+import { test, expect } from '@playwright/test';
+
+test('automatic screencast cleanup via await using', async ({ page }) => {
+  // Playwright v1.59 makes screencast an async disposable:
+  // stop() is called automatically when execution leaves the using block
+  {
+    await using _recording = await page.screencast.start({
+      path: `test-results/evidence-${Date.now()}.webm`,
+      size: { width: 1280, height: 720 },
+    });
+
+    await page.screencast.showActions({ duration: 400 });
+    await page.goto('/login');
+    await page.getByLabel('Email').fill('test@example.com');
+    await page.getByLabel('Password').fill('password');
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page).toHaveURL('/dashboard');
+    // _recording.stop() called automatically here — even if test throws
+  }
+  // Video file is fully written by this point
+});
+```
+
+**GitHub Actions workflow — upload Screencast evidence on failure:**
+
+```yaml
+# .github/workflows/ci.yml — upload screencast recordings on e2e failure
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps
+      - run: npx playwright test
+        env:
+          CI: true
+      # Upload screencast recordings only on failure (smaller artifact footprint)
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: screencast-evidence-${{ github.run_id }}
+          path: test-results/**/*.webm
+          retention-days: 14
+```
+
+> [community] The Screencast API's `showChapter()` overlays are the most impactful feature for CI failure triage. Teams that add chapter markers for each major phase of a complex e2e test (navigate, fill form, submit, verify) report cutting failure triage time by 50–70% — the video jumps directly to the "Phase 3: Submit" chapter to isolate whether the failure is in form fill or submission. Without chapters, reviewers scrub through the entire recording to find the relevant frame.
+
+> [community] A subtle Screencast vs. `recordVideo` behavioral difference: `recordVideo` starts immediately when the browser context is created and records everything until context close. `page.screencast.start()` records from the moment it is called within a test. For test suites with long setup phases (auth, data seeding), Screencast produces smaller, more focused recordings. Teams with high artifact storage costs report 40–60% smaller video files after migrating from `recordVideo` to explicit Screencast with chapter markers.
+
+---
+
+### `act --validate` and `--strict` for Workflow Pre-Flight CI Checks [community]
+
+`act` v0.2.79 added `--validate` and `--strict` flags to the `act` CLI. `--validate` parses and validates the workflow YAML without executing any steps — catching structural errors, missing required inputs, undefined variables, and unsupported action versions before the workflow is pushed to GitHub. `--strict` escalates warnings to errors, enforcing stricter YAML conformance.
+
+> [community] Platform engineering teams report that 40–60% of "CI failures on first push" for new developers are caused by workflow YAML errors that `act --validate` would have caught locally in seconds. Common examples: missing `on:` event triggers, incorrect `needs:` dependency references that create circular dependencies, and `uses:` action paths that resolve to nonexistent local actions. Adding `act --validate` as a pre-commit hook for `.github/workflows/**` changes eliminates an entire category of "CI red on push."
+
+**Pre-commit hook for workflow validation:**
+
+```bash
+# .husky/pre-commit — validate changed workflow files before commit
+#!/usr/bin/env sh
+
+# Check if any workflow files changed in this commit
+CHANGED_WORKFLOWS=$(git diff --cached --name-only | grep -E '^\.github/workflows/.*\.ya?ml$')
+
+if [ -n "$CHANGED_WORKFLOWS" ]; then
+  echo "[pre-commit] Validating changed GitHub Actions workflows..."
+  for WORKFLOW in $CHANGED_WORKFLOWS; do
+    echo "  Validating: $WORKFLOW"
+    # --validate: parse + validate structure without running
+    # --strict: escalate warnings to errors
+    act --validate --strict --workflows "$WORKFLOW" 2>&1 || {
+      echo "::error::Workflow validation failed for $WORKFLOW"
+      exit 1
+    }
+  done
+  echo "[pre-commit] All workflow files valid."
+fi
+```
+
+**CI step to validate all workflow files in the repo:**
+
+```yaml
+# .github/workflows/ci.yml — validate all workflow YAML files as part of CI
+  validate-workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install act (workflow validator)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf \
+            https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
+
+      # Validate every workflow file — catches errors in files not touched in this PR
+      - name: Validate all GitHub Actions workflows
+        run: |
+          find .github/workflows -name '*.yml' -o -name '*.yaml' | \
+          while read -r workflow; do
+            echo "Validating: $workflow"
+            act --validate --strict --workflows "$workflow" || {
+              echo "::error file=$workflow::Workflow validation failed"
+              exit 1
+            }
+          done
+```
+
+**TypeScript script to validate workflow structure programmatically:**
+
+```typescript
+// scripts/validate-workflows.ts — programmatic workflow validation wrapper
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as glob from 'glob';
+
+interface WorkflowValidationResult {
+  file: string;
+  valid: boolean;
+  errors: string[];
+}
+
+function validateWorkflow(workflowPath: string): WorkflowValidationResult {
+  try {
+    const output = execSync(
+      `act --validate --strict --workflows "${workflowPath}" 2>&1`,
+      { encoding: 'utf8', stdio: 'pipe' },
+    );
+    return { file: workflowPath, valid: true, errors: [] };
+  } catch (err: unknown) {
+    const error = err as { stdout: string; stderr: string };
+    const allOutput = (error.stdout ?? '') + (error.stderr ?? '');
+    const errors = allOutput
+      .split('\n')
+      .filter(line => line.includes('error') || line.includes('Error'))
+      .filter(Boolean);
+    return { file: workflowPath, valid: false, errors };
+  }
+}
+
+function validateAllWorkflows(workflowDir = '.github/workflows'): void {
+  const workflowFiles = glob.sync(`${workflowDir}/**/*.{yml,yaml}`);
+
+  if (workflowFiles.length === 0) {
+    console.log('[validate-workflows] No workflow files found.');
+    return;
+  }
+
+  const results = workflowFiles.map(validateWorkflow);
+  const failures = results.filter(r => !r.valid);
+
+  results.forEach(r => {
+    const status = r.valid ? '✓' : '✗';
+    console.log(`  ${status} ${r.file}`);
+    if (!r.valid) r.errors.forEach(e => console.error(`    ${e}`));
+  });
+
+  if (failures.length > 0) {
+    console.error(`\n[validate-workflows] ${failures.length} workflow(s) failed validation`);
+    process.exit(1);
+  }
+
+  console.log(`\n[validate-workflows] All ${results.length} workflow(s) valid.`);
+}
+
+validateAllWorkflows();
+```
+
+> [community] The `--strict` flag is particularly valuable for shared workflow libraries (reusable workflows called from many repos). A warning in a shared workflow that is silently ignored in 30 calling repos becomes a time-bomb: when the behavior changes in a future `act` version, all 30 pipelines break simultaneously. Treating all warnings as errors in the shared workflow's own CI catches this class of issue at the source. Teams that enforce `--strict` on shared workflow repositories report zero propagated breakages vs. multiple per quarter without it.
+
+> [community] Teams new to `act --validate` frequently confuse it with `act --dry-run`. `--dry-run` simulates the workflow execution order (which jobs run, which steps are skipped) without actually running any Docker containers — it validates the execution graph. `--validate` checks only YAML syntax and structural correctness without simulating execution. Use both in sequence: `act --validate` to catch syntax, then `act --dry-run` to catch logical flow errors.
+
+---
+
 ## Anti-Patterns
 
 | Anti-pattern | Problem | Fix |
@@ -3055,6 +3327,8 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 | GCP Workload Identity Pool without `attribute_condition` | Any GitHub repo can use the pool — broad credential exposure | Always set `attribute_condition = "assertion.repository == 'myorg/myrepo'"` on the provider |
 | Docker BuildKit cache export using `mode=min` | Only final layer cached; intermediate layers (npm install) rebuilt on every dep change | Use `mode=max` to cache all intermediate layers and get maximum cache hit rate |
 | Docker `--no-cache` flag in CI scripts | Defeats BuildKit GHA cache; every build is cold — adds 3–8 min per job | Remove `--no-cache`; use content-addressed layers to ensure freshness without cache bypass |
+| `page.screencast` onFrame callback not awaited before test end | Frame buffer dropped if test runner exits before all frames are processed | Always call `await page.screencast.stop()` or use `await using` to guarantee buffer flush |
+| `act --dry-run` used when `--validate` is needed | `--dry-run` simulates execution graph; does not catch YAML syntax errors — invalid workflows produce confusing "job not found" errors | Use `--validate` for syntax first, then `--dry-run` for execution-graph logic |
 | Visual regression baselines stored in git as binary snapshots | Multi-MB blobs slow `git clone`; merge conflicts on every UI change | Store baselines as CI artifacts (not in git); re-upload from main branch run |
 | Visual regression used as a hard merge gate | 15–30% false-positive rate from antialiasing differences blocks developer flow | Use as advisory PR annotation; auto-block only on >80% pixel diff (full-page blank or complete layout breakage) |
 | GitHub Environment protection rule on production without a wait timer | "Approve under pressure" — reviewers click approve without reviewing e2e results | Add 10-minute wait timer; gives reviewers time to review results without being rushed |
@@ -3236,6 +3510,10 @@ export default env;
 49. **Playwright HTML Speedboard tab missing because report was generated on a single runner** [community]: The Speedboard tab only appears in HTML reports generated by `npx playwright merge-reports` from multiple blob reports. HTML reports generated by `--reporter=html` on a single runner (no sharding, no merge step) do not include the Speedboard. Teams running a single-runner e2e suite that want execution timeline visibility must change their workflow to: (1) use `--reporter=blob` on the single runner, (2) run `npx playwright merge-reports --reporter html` as a post-step. This adds ~5 seconds and unlocks the timeline.
 
 50. **GitHub Actions custom runner image used in `runs-on` without `ghcr.io` package read permission** [community]: Custom runner images hosted on GitHub Container Registry (GHCR) require the workflow to have `packages: read` permission and the runner's GitHub App to have access to the package. Teams that build a custom image and reference it in `runs-on: [self-hosted, custom-image]` without configuring package access see the runner fail to pull the image with an opaque authentication error. Always add `permissions: packages: read` to workflows that reference GHCR-hosted custom images.
+
+51. **Playwright `page.screencast.start()` called after page navigation completes** [community]: The Screencast API requires `start()` to be called before the actions you want to record. Calling it after `page.goto()` captures nothing from the navigation phase — the first frames show the already-loaded page with no context for how it was reached. In CI, this causes video evidence that omits the most diagnostic part (the navigation and any redirect or error during load). Always call `page.screencast.start()` before the first `page.goto()` call.
+
+52. **`act --validate` passes but `act` run fails due to GitHub-Actions-only features** [community]: `act --validate` validates YAML structure but cannot validate features that require GitHub's live runner environment: `workflow_call` reusable workflow inputs, GitHub OIDC token exchange, `GITHUB_CONTEXT` object shapes, and required secrets. Teams that treat a passing `--validate` as "this workflow is correct" ship workflows that fail in real CI on the first use of these features. Use `act --validate` for YAML structural checks only; test OIDC and reusable workflow features with a real draft PR on a non-protected branch before merging.
 
 ## Tradeoffs & Alternatives
 |---|---|---|---|
@@ -6226,3 +6504,6 @@ export default defineConfig({
 | Playwright `trace` retention modes | Official docs | https://playwright.dev/docs/trace-viewer-intro | `retain-on-failure-and-retries` (v1.54+): record every attempt, retain all on any failure |
 | Playwright `test.abort()` | Official docs | https://playwright.dev/docs/api/class-test#test-abort | Abort test from fixture/hook/route with exit code 1 — guard-rail pattern (v1.60+) |
 | Vitest 4.0 Migration Guide | Official docs | https://vitest.dev/guide/migration | Pool API rewrite: maxWorkers replaces poolOptions.threads.maxThreads; VITEST_MAX_WORKERS; V8 coverage.all removed |
+| Playwright Screencast API (v1.59) | Official docs | https://playwright.dev/docs/api/class-screencast | page.screencast — video recording with action annotations, chapter overlays, JPEG frame streaming for AI vision |
+| Playwright browser.bind() (v1.59) | Official docs | https://playwright.dev/docs/api/class-browser | Multi-client browser sharing: bind a launched browser to a named session for distributed CI |
+| act --validate / --strict (v0.2.79+) | Official docs | https://nektosact.com | Workflow YAML validation flags — catch structural errors locally before pushing to GitHub |

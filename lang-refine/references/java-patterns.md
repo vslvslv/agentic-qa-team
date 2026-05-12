@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas) | mixed | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs, WireMock docs, Awaitility docs, Spring Boot Test docs) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns) | mixed | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -3038,3 +3038,412 @@ class UserControllerTest {
 | `CopyOnWriteArrayList` in write-heavy scenarios | O(n) array copy per write; GC pressure destroys throughput | Use `ConcurrentLinkedDeque` or `Collections.synchronizedList`; reserve COW for listener registries |
 | `WeakHashMap` with interned keys (String/enum) | Interned keys are always strongly reachable; entries never evict — behaves like a regular HashMap | Use `WeakHashMap` only for per-object metadata whose lifetime follows the key; use Caffeine for TTL/size-bounded caches |
 | Missing `@Override` annotation | Silent overloads instead of overrides; bugs evade the compiler | Always annotate intended overrides; catches signature mismatches at compile time |
+
+---
+
+## WireMock — HTTP Stub Server for External API Testing
+
+WireMock is the standard tool for stubbing external HTTP services in Java integration tests. It starts an embedded HTTP server that intercepts calls to external APIs (payment gateways, third-party REST services, internal microservices) and returns programmed responses. Tests run fast, deterministically, and without real network access.
+
+**Maven dependency (WireMock 3.x, JUnit 5):**
+```xml
+<dependency>
+  <groupId>org.wiremock</groupId>
+  <artifactId>wiremock-standalone</artifactId>
+  <version>3.5.4</version>
+  <scope>test</scope>
+</dependency>
+```
+
+### Core Pattern: Stub + Verify
+
+```java
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
+import com.github.tomakehurst.wiremock.client.WireMock;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
+import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMockConfig;
+import static org.assertj.core.api.Assertions.assertThat;
+
+class PaymentGatewayClientTest {
+
+    // WireMock starts on a random port; use getPort() to configure the SUT
+    @RegisterExtension
+    static WireMockExtension wm = WireMockExtension.newInstance()
+        .options(wireMockConfig().dynamicPort())
+        .build();
+
+    @Test
+    void chargeCard_successfulResponse_returnsTransactionId() {
+        // Stub: return a 200 for POST /charges
+        wm.stubFor(post(urlEqualTo("/charges"))
+            .withHeader("Content-Type", equalTo("application/json"))
+            .withRequestBody(matchingJsonPath("$.amount", equalTo("9999")))
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                    {"transactionId": "txn-abc-123", "status": "APPROVED"}
+                    """)));
+
+        // System under test configured to hit WireMock's URL
+        PaymentGatewayClient client =
+            new PaymentGatewayClient("http://localhost:" + wm.getPort());
+
+        ChargeResult result = client.charge(new ChargeRequest("card-tok-1", 9999));
+
+        assertThat(result.transactionId()).isEqualTo("txn-abc-123");
+        assertThat(result.status()).isEqualTo("APPROVED");
+
+        // Verify: assert the SUT sent the expected request
+        wm.verify(postRequestedFor(urlEqualTo("/charges"))
+            .withHeader("Authorization", matching("Bearer .+"))
+            .withRequestBody(matchingJsonPath("$.token", equalTo("card-tok-1"))));
+    }
+
+    @Test
+    void chargeCard_gatewayTimeout_throwsRetryableException() {
+        // Stub a network-level timeout
+        wm.stubFor(post(urlEqualTo("/charges"))
+            .willReturn(aResponse()
+                .withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
+
+        PaymentGatewayClient client =
+            new PaymentGatewayClient("http://localhost:" + wm.getPort());
+
+        assertThatThrownBy(() -> client.charge(new ChargeRequest("card-tok-1", 100)))
+            .isInstanceOf(RetryableGatewayException.class);
+    }
+
+    @Test
+    void chargeCard_rate429_triggersBackoff() {
+        // First call: 429 Too Many Requests; second call: 200 OK
+        wm.stubFor(post(urlEqualTo("/charges"))
+            .inScenario("Rate Limit")
+            .whenScenarioStateIs("Started")
+            .willSetStateTo("Retried")
+            .willReturn(aResponse().withStatus(429)
+                .withHeader("Retry-After", "1")));
+
+        wm.stubFor(post(urlEqualTo("/charges"))
+            .inScenario("Rate Limit")
+            .whenScenarioStateIs("Retried")
+            .willReturn(aResponse().withStatus(200)
+                .withBody("{\"transactionId\":\"txn-retry-1\",\"status\":\"APPROVED\"}")));
+
+        PaymentGatewayClient client =
+            new PaymentGatewayClient("http://localhost:" + wm.getPort());
+        ChargeResult result = client.chargeWithRetry(new ChargeRequest("tok", 100));
+        assertThat(result.transactionId()).isEqualTo("txn-retry-1");
+        wm.verify(2, postRequestedFor(urlEqualTo("/charges")));
+    }
+}
+```
+
+### WireMock Anti-Patterns  [community]
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `stubFor(any(anyUrl()).willReturn(ok()))` catch-all stub | Any request hits the stub, masking routing bugs and missing requests | Stub exact URL + method + key header/body fields |
+| Not calling `verify()` after stubbing | Test proves the SUT handles the response but not that it sent the right request | Always `verify(postRequestedFor(...))` to assert outbound request shape |
+| Hard-coded WireMock port | Tests fail if another service holds the port on CI | Always use `dynamicPort()` and configure the SUT with `getPort()` |
+| Stubbing response bodies as raw strings inline | Long JSON strings are brittle and hard to maintain | Load stub bodies from `__files/` classpath resources; use `aResponse().withBodyFile("response.json")` |
+| Sharing a single WireMock instance across tests without reset | Stubs from test A fire in test B; test ordering matters | Use `@RegisterExtension` per class (resets between tests automatically) or call `wm.resetAll()` in `@BeforeEach` |
+
+---
+
+## Awaitility — Polling Async State in Tests
+
+Awaitility is the standard Java library for asserting on asynchronous outcomes in tests. Instead of sleeping for a fixed duration (which causes either false failures or slow CI), Awaitility polls the assertion on a configurable interval until it passes or times out.
+
+**Maven dependency:**
+```xml
+<dependency>
+  <groupId>org.awaitility</groupId>
+  <artifactId>awaitility</artifactId>
+  <version>4.2.2</version>
+  <scope>test</scope>
+</dependency>
+```
+
+### Core Pattern
+
+```java
+import static org.awaitility.Awaitility.await;
+import static org.awaitility.Durations.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import java.time.Duration;
+import org.junit.jupiter.api.Test;
+
+class EmailServiceTest {
+
+    @Test
+    void publishingAnEvent_eventuallySendsConfirmationEmail() {
+        // Arrange — trigger async email dispatch
+        eventBus.publish(new OrderPlaced("ORD-42", "alice@example.com"));
+
+        // Assert — poll every 100ms for up to 5 seconds
+        await()
+            .atMost(Duration.ofSeconds(5))
+            .pollInterval(Duration.ofMillis(100))
+            .untilAsserted(() ->
+                assertThat(capturedEmails)
+                    .anySatisfy(email -> {
+                        assertThat(email.to()).isEqualTo("alice@example.com");
+                        assertThat(email.subject()).contains("ORD-42");
+                    })
+            );
+    }
+
+    @Test
+    void processingQueue_drainsAllItemsEventually() {
+        queue.addAll(List.of("item-1", "item-2", "item-3"));
+        processor.startAsync();
+
+        // Wait until the predicate becomes true
+        await("queue drained")   // alias helps identify which await failed
+            .atMost(TEN_SECONDS)
+            .until(() -> queue.isEmpty());
+
+        assertThat(processedItems).containsExactlyInAnyOrder("item-1", "item-2", "item-3");
+    }
+
+    @Test
+    void cacheWarmer_populatesCacheWithinSLA() {
+        cacheWarmer.start();
+
+        // Assert with custom poll interval and ignore exceptions during warmup
+        await()
+            .atMost(Duration.ofSeconds(10))
+            .pollInterval(ONE_HUNDRED_MILLISECONDS)
+            .ignoreExceptions()   // don't fail the wait on CacheNotReadyException
+            .untilAsserted(() ->
+                assertThat(cache.get("key-1")).isNotNull()
+            );
+    }
+}
+```
+
+### Awaitility Best Practices  [community]
+
+- **Always use `untilAsserted()`** with AssertJ assertions rather than `until(() -> condition)` when you need to inspect values — `untilAsserted` gives you a rich failure message if the timeout is hit.
+- **Name your awaits** with the string overload `await("what we're waiting for")` — the name appears in the timeout exception, making CI failures self-documenting.
+- **Use `ignoreExceptions()`** when the state under test transitions through exception-throwing intermediate states (e.g., a cache that throws before it's warmed up).
+- **Set a global default** in `@BeforeAll`: `Awaitility.setDefaultTimeout(Duration.ofSeconds(5))` — avoids repeating the same `atMost(...)` in every test.
+- **Never mix Awaitility with `Thread.sleep()`** before the await — the poll starts immediately; a prior sleep adds latency for no benefit.
+
+---
+
+## Spring Boot Test Slices — Focused Integration Tests
+
+Spring Boot's test slice annotations start only the subset of the application context needed for a specific layer — no full `@SpringBootApplication` context. This makes slice tests 3–10× faster than full `@SpringBootTest` while still testing real Spring wiring, validation, and data access.
+
+### @WebMvcTest — Controller Layer Only
+
+`@WebMvcTest` starts the MVC layer (controllers, filters, `HandlerMethodArgumentResolver`, security configuration) but does NOT start the service or repository layers. Use `@MockBean` to inject mock collaborators.
+
+```java
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import static org.mockito.BDDMockito.given;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+@WebMvcTest(UserController.class)  // only UserController's slice is started
+class UserControllerTest {
+
+    @Autowired
+    MockMvc mockMvc;
+
+    @MockBean
+    UserService userService;   // real service layer is NOT started; this is a Mockito mock
+
+    @Test
+    void getUser_existingId_returns200WithBody() throws Exception {
+        given(userService.findById(1L))
+            .willReturn(new UserDto(1L, "Alice", "alice@example.com"));
+
+        mockMvc.perform(get("/users/1").accept(MediaType.APPLICATION_JSON))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.id").value(1))
+            .andExpect(jsonPath("$.name").value("Alice"))
+            .andExpect(jsonPath("$.email").value("alice@example.com"));
+    }
+
+    @Test
+    void createUser_invalidBody_returns400() throws Exception {
+        // @Valid on controller parameter triggers Bean Validation before service is called
+        String invalidBody = """
+            {"name": "", "email": "not-an-email"}
+            """;
+
+        mockMvc.perform(post("/users")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(invalidBody))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.errors").isArray());
+    }
+
+    @Test
+    void getUser_notFound_returns404() throws Exception {
+        given(userService.findById(99L))
+            .willThrow(new UserNotFoundException("No user with id 99"));
+
+        mockMvc.perform(get("/users/99"))
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.message").value("No user with id 99"));
+    }
+}
+```
+
+### @DataJpaTest — Repository Layer Only
+
+`@DataJpaTest` starts only the JPA layer (entities, repositories, Hibernate, embedded DB by default). It wraps each test in a transaction that rolls back after the test — no cleanup code needed. Use `@AutoConfigureTestDatabase(replace = NONE)` with Testcontainers to test against the real database engine.
+
+```java
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
+import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase.Replace;
+import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import static org.assertj.core.api.Assertions.assertThat;
+
+@DataJpaTest
+@Testcontainers
+@AutoConfigureTestDatabase(replace = Replace.NONE)  // don't replace with H2; use real Postgres
+class UserRepositoryTest {
+
+    @Container
+    static PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:16-alpine");
+
+    @DynamicPropertySource
+    static void configure(DynamicPropertyRegistry r) {
+        r.add("spring.datasource.url",      postgres::getJdbcUrl);
+        r.add("spring.datasource.username", postgres::getUsername);
+        r.add("spring.datasource.password", postgres::getPassword);
+    }
+
+    @Autowired
+    UserRepository repo;
+
+    @Test
+    void findByEmail_existingEmail_returnsUser() {
+        // Arrange — @DataJpaTest wraps in a transaction; rolled back after test
+        repo.save(new User("Alice", "alice@example.com"));
+
+        // Act
+        var found = repo.findByEmail("alice@example.com");
+
+        // Assert
+        assertThat(found).isPresent()
+            .hasValueSatisfying(u -> assertThat(u.name()).isEqualTo("Alice"));
+    }
+
+    @Test
+    void findActiveUsersSince_returnsOnlyActiveAfterCutoff() {
+        var cutoff = Instant.now().minus(Duration.ofDays(7));
+        repo.save(new User("Alice", "a@x.com", true,  Instant.now().minus(Duration.ofDays(3))));
+        repo.save(new User("Bob",   "b@x.com", false, Instant.now().minus(Duration.ofDays(1))));
+        repo.save(new User("Carol", "c@x.com", true,  Instant.now().minus(Duration.ofDays(10))));
+
+        List<User> active = repo.findActiveUsersSince(cutoff);
+
+        assertThat(active)
+            .hasSize(1)
+            .extracting(User::name)
+            .containsExactly("Alice");
+    }
+}
+```
+
+### Spring Test Slice Summary  [community]
+
+| Slice Annotation | What it starts | What to mock | When to use |
+|---|---|---|---|
+| `@WebMvcTest` | MVC layer (controllers, filters, security) | `@MockBean` for services/repos | Test request mapping, validation, serialization, error handlers |
+| `@DataJpaTest` | JPA + Hibernate + DataSource | n/a (use embedded DB or Testcontainers) | Test JPQL/native queries, entity mapping, repo methods |
+| `@DataMongoTest` | Spring Data MongoDB | n/a (Testcontainers MongoDB) | Test MongoDB document mapping and repository queries |
+| `@RestClientTest` | Spring `RestTemplate`/`RestClient` + `MockRestServiceServer` | `@MockBean` (rarely needed) | Test HTTP client code + `MessageConverter` config |
+| `@JsonTest` | Jackson `ObjectMapper` only | n/a | Test `@JsonSerialize`/`@JsonDeserialize` custom converters |
+| `@SpringBootTest` | Full context | `@MockBean` sparingly | End-to-end wiring; only when slices can't cover the scenario |
+
+**Best practices for slice tests:**  [community]
+- Prefer `@WebMvcTest` + `@MockBean` over `@SpringBootTest` with `@AutoConfigureMockMvc` — the slice is 5–10× faster.
+- Use `@DataJpaTest` + `Replace.NONE` + Testcontainers for repository tests — H2 dialect differences produce false passes.
+- One test class per controller or repository; if a test class grows beyond 10 methods, it's testing too much.
+- Set `spring.jpa.properties.hibernate.enable_lazy_load_no_trans=false` in `test/resources/application-test.properties` to surface lazy loading bugs during `@DataJpaTest` runs before they hit production.
+
+---
+
+## Stable Values (Java 25 preview — JEP 502)
+
+`StableValue` provides lazily-initialized final fields without the complexity and pitfalls of double-checked locking or `volatile`. A stable value is computed once on first access and then frozen — the JVM can apply the same optimizations (inlining, constant folding) as for `static final` fields.
+
+```java
+import java.lang.invoke.StableValue;
+
+public class ConfigService {
+
+    // Stable value: initialized lazily on first access; effectively final after that
+    private final StableValue<DatabaseConfig> dbConfig =
+        StableValue.of(() -> DatabaseConfig.load());  // supplier called at most once
+
+    private final StableValue<List<String>> allowedOrigins =
+        StableValue.of(() -> fetchAllowedOriginsFromDb());
+
+    public DatabaseConfig getDbConfig() {
+        return dbConfig.get();   // initialized on first call; cached thereafter
+    }
+
+    public boolean isOriginAllowed(String origin) {
+        return allowedOrigins.get().contains(origin);
+    }
+}
+
+// Replaces double-checked locking — the old pattern
+public class OldConfigService {
+    // BAD — complex, error-prone, requires volatile
+    private volatile DatabaseConfig dbConfig;
+
+    public DatabaseConfig getDbConfig() {
+        if (dbConfig == null) {
+            synchronized (this) {
+                if (dbConfig == null) {                // second check inside lock
+                    dbConfig = DatabaseConfig.load();  // initialization under lock
+                }
+            }
+        }
+        return dbConfig;
+    }
+}
+
+// StableValue for Map of lazily-computed entries (JEP 502)
+// The JVM can treat stable values as constants for JIT inlining purposes
+Map<String, StableValue<HeavyResource>> resources = new HashMap<>();
+
+StableValue<HeavyResource> resource = StableValue.of(() -> loadHeavyResource("key1"));
+resources.put("key1", resource);
+
+// Later — loads only once, regardless of concurrent access
+HeavyResource r = resources.get("key1").get();
+```
+
+**Why StableValue over other lazy patterns:**
+- `static final` fields: initialized at class load time — not lazy.
+- `Supplier` + `volatile` + double-checked locking: correct but complex; error-prone to write; not JIT-friendly.
+- `Holder class idiom` (`private static class Holder { static final X = init(); }`): lazy but only works for static fields; no instance-scoped laziness.
+- `StableValue`: lazy, instance-scoped, concurrency-safe, JIT-friendly (JVM can inline after first initialization), no boilerplate.
+
+**Note:** `StableValue` is a preview feature in Java 25. Enable with `--enable-preview` and `--source 25`. The API may change before standardization. Track [JEP 502](https://openjdk.org/jeps/502) for final API details.
+

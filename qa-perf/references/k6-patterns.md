@@ -1,6 +1,6 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/ -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/ -->
 
 > Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Re-run `/qa-refine k6` to refresh.
 
@@ -6605,5 +6605,319 @@ The Grafana k6 Testing Guides hub (`grafana.com/docs/k6/latest/testing-guides/`)
 | Real user monitoring | **Synthetic monitoring** | Grafana Cloud Synthetic Monitoring | [Synthetic monitoring](https://grafana.com/docs/k6/latest/testing-guides/synthetic-monitoring/) |
 
 > **[community]** WHY teams reach for load tests when they need smoke tests: the default `k6 run` docs example uses `vus: 10` and `duration: '30s'` — a load test, not a smoke test. New k6 users copy this and report "load tests pass in CI". In reality they're running no assertions, no thresholds, and 10 VUs against a dev server. A proper smoke test uses 1–3 VUs, explicit `check()` calls, and `thresholds: { checks: ['rate>0.99'] }`. Add a smoke test as a pre-requisite job before load tests in CI.
+
+---
+
+## k6 Studio — GUI Script Generation
+
+k6 Studio is an open-source desktop application (macOS, Windows, Linux) for generating k6 test scripts from recorded browser interactions or HAR files. Use it to bootstrap scripts for complex user journeys before tuning them in code.
+
+**Download:** `https://grafana.com/docs/k6-studio/`
+
+### Workflow: Record → Generate → Validate
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  1. Record                                                           │
+│     Browser proxy captures all HTTP traffic as HAR file.            │
+│     OR: import an existing HAR exported from DevTools (Network tab   │
+│     → right-click → "Save all as HAR with content").                │
+├─────────────────────────────────────────────────────────────────────┤
+│  2. Inspect                                                          │
+│     Review captured requests, filter noise (static assets, analytics│
+│     beacons), and flag sensitive values for parameterization.        │
+├─────────────────────────────────────────────────────────────────────┤
+│  3. Generate                                                         │
+│     Apply customization rules:                                       │
+│     - Correlation rules: extract dynamic values (tokens, IDs) from   │
+│       responses and re-inject into subsequent requests.              │
+│     - Custom code rules: inject arbitrary JS into the generated      │
+│       script for checks, custom metrics, sleep() calls.             │
+│     - Verification rules: add assertion predicates on response body  │
+│       fields.                                                        │
+├─────────────────────────────────────────────────────────────────────┤
+│  4. Validate                                                         │
+│     Run the generated script with 1 VU inside Studio's embedded k6  │
+│     runner. Inspect request/response pairs in the visual debugger.  │
+├─────────────────────────────────────────────────────────────────────┤
+│  5. Deploy                                                           │
+│     Export the .js script and run it with k6 CLI, or upload         │
+│     directly to Grafana Cloud k6 / Synthetic Monitoring.            │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Browser Recording — Script Generation
+
+k6 Studio can record browser automation tests (page navigation, element interaction, text
+assertions) that output browser module scripts rather than HTTP scripts:
+
+```javascript
+// Auto-generated browser script from k6 Studio recording
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    ui: {
+      executor: "constant-vus",
+      vus: 1,
+      duration: "30s",
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto("https://myapp.example.com/login");
+    await page.getByLabel("Username").fill("testuser@example.com");
+    await page.getByLabel("Password").fill(__ENV.TEST_PASSWORD);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.waitForURL("**/dashboard");
+    check(page, {
+      "dashboard loaded": () => page.url().includes("/dashboard"),
+    });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+### HAR Import → HTTP Script
+
+For API load tests, import a HAR file recorded from DevTools or a proxy:
+
+```bash
+# 1. Record HAR in Chrome DevTools:
+#    Open DevTools → Network tab → enable "Preserve log"
+#    Perform the user journey
+#    Right-click any request → "Save all as HAR with content"
+
+# 2. Open in k6 Studio → File → Import HAR → apply correlation rules
+
+# 3. Generated script skeleton (k6 Studio output):
+# import http from 'k6/http';
+# import { check, sleep } from 'k6';
+# export const options = { vus: 10, duration: '30s' };
+# export default function () {
+#   // All captured requests + extracted correlation variables
+# }
+
+# 4. Run validation inside Studio with 1 VU before scaling
+# 5. Export to k6/scripts/load.js and run with full scenario config
+```
+
+### Grafana Cloud Integration
+
+k6 Studio can upload scripts directly to Grafana Cloud k6 for cloud execution or to
+Synthetic Monitoring for recurring scheduled checks:
+
+```bash
+# After generating the script in Studio, deploy via CLI:
+# (Studio generates the k6 cloud run command in its UI)
+
+k6 cloud login --token "$K6_CLOUD_API_TOKEN" --stack "$K6_CLOUD_STACK"
+
+# Run in cloud (results visible in Grafana Cloud k6 dashboard)
+k6 cloud run --stack "$K6_CLOUD_STACK" k6/scripts/generated-load.js
+
+# Upload as Synthetic Monitoring check:
+# (Use Grafana Cloud Synthetic Monitoring UI to import script from file)
+```
+
+> **[community]:** k6 Studio is best used to bootstrap scripts, not as the primary editing
+> environment. Generated scripts often contain unnecessary correlation variables or missing
+> `sleep()` calls. After generating, move the script to your code editor, add proper scenarios,
+> thresholds, and parameterization, and remove any auto-extracted correlation variables that are
+> actually static constants. Track generated scripts in version control like any hand-authored
+> k6 script.
+
+> **[community]:** k6 Studio's browser recorder generates scripts that use `page.getByLabel()`,
+> `page.getByRole()`, and `page.waitForURL()` — the same Playwright-style locator API as k6's
+> browser module. This means generated browser scripts benefit from all the locator filtering
+> and waiting patterns documented in the Browser Module section above. If your app has dynamic
+> labels or ARIA changes, review generated locators before running under load.
+
+---
+
+## Additional Community Gotchas (Iteration 27)
+
+### 39. `--stack` is required for ALL `k6 cloud` commands in v2.0 — no default fallback  [community]
+
+**What:** k6 v2.0.0 makes the `--stack` flag mandatory for every `k6 cloud` subcommand —
+including `k6 cloud run`, `k6 cloud upload`, and `k6 cloud login`. CI pipelines that relied
+on a default stack (or the now-removed `K6_CLOUD_STACK_ID` env var as an implicit default
+for bare `k6 cloud run`) fail with a stack-not-specified error after upgrading.
+
+**WHY:** Grafana Cloud k6 supports multi-stack organizations where users may have access to
+several regional stacks. Requiring explicit stack specification prevents accidentally running
+production load tests against the wrong stack. The `K6_CLOUD_STACK_ID` variable still works
+when set in the environment, but it is no longer a hidden implicit default — it must be set
+deliberately.
+
+**Fix:** Set `K6_CLOUD_STACK_ID` as a CI environment secret (preferred) or pass `--stack`
+explicitly on every `k6 cloud` command. Audit all pipeline steps that call `k6 cloud`:
+
+```bash
+# Audit — find all cloud commands missing explicit --stack
+grep -rn "k6 cloud" .github/ .gitlab-ci.yml Jenkinsfile Makefile \
+  | grep -v "\-\-stack\|K6_CLOUD_STACK"
+
+# Correct pattern — always specify stack via env or flag:
+export K6_CLOUD_STACK_ID="your-stack-id"  # set once in CI secrets
+
+k6 cloud login --token "$K6_CLOUD_API_TOKEN" --stack "$K6_CLOUD_STACK_ID"
+k6 cloud run --stack "$K6_CLOUD_STACK_ID" k6/scripts/load.js
+k6 cloud upload --stack "$K6_CLOUD_STACK_ID" k6/scripts/load.js
+```
+
+### 40. `--upload-only` flag removed in v2.0 — CI pipelines fail silently if not audited  [community]
+
+**What:** k6 v2.0 removes the `--upload-only` flag from `k6 cloud`. Pipelines using
+`k6 cloud script.js --upload-only` fail at the positional argument level (wrong command
+form) AND at the flag level — giving a confusing "unrecognised flag" error that doesn't
+mention that both the flag AND the command form were changed.
+
+**WHY:** The v2.0 cloud command restructuring separated upload and run into distinct
+subcommands (`k6 cloud upload` and `k6 cloud run`), making `--upload-only` redundant and
+ambiguous. The old `k6 cloud script.js` form (positional script argument) was also removed —
+the verb (`run` or `upload`) is now required.
+
+**Fix:** Replace in all CI configurations:
+
+```bash
+# BEFORE (k6 v1.x)
+k6 cloud k6/scripts/load.js --upload-only
+
+# AFTER (k6 v2.0)
+k6 cloud upload --stack "$K6_CLOUD_STACK_ID" k6/scripts/load.js
+
+# BEFORE — cloud run (old positional form)
+k6 cloud k6/scripts/load.js
+
+# AFTER — cloud run (explicit verb required)
+k6 cloud run --stack "$K6_CLOUD_STACK_ID" k6/scripts/load.js
+
+# Migration search — find all affected pipeline steps:
+grep -rn "k6 cloud [^lr]" .github/ .gitlab-ci.yml Jenkinsfile
+#                  ^^^^ matches anything that isn't "login" or "run"
+```
+
+### 41. WebSocket `binaryType` defaults to `"blob"` — binary messages require `"arraybuffer"` to be readable in k6  [community]
+
+**What:** The `k6/websockets` `WebSocket` constructor sets `binaryType` to `"blob"` by
+default, matching the W3C standard. However, k6 does not implement the `Blob` type — binary
+messages received with `binaryType = "blob"` arrive as a `Blob` object that cannot be decoded
+with `TextDecoder` or processed as a `Uint8Array`. Teams testing WebSocket APIs that send
+binary frames (Protocol Buffers, MessagePack, binary game state) see opaque `[object Blob]`
+values in `onmessage` callbacks and cannot inspect or assert on the content.
+
+**WHY:** The W3C WebSocket spec defaults to `"blob"` for binary frames. k6 implements the
+spec interface but its runtime does not include a Blob implementation — the object exists but
+has no `arrayBuffer()` method. Setting `binaryType = "arraybuffer"` before opening the
+connection routes binary frames through k6's ArrayBuffer implementation, which is fully
+supported.
+
+**Fix:** Always set `ws.binaryType = "arraybuffer"` before the connection opens for any
+WebSocket endpoint that sends binary frames:
+
+```javascript
+// k6/scripts/ws-binary.js — WebSocket with binary (protobuf/MessagePack) messages
+import { WebSocket } from "k6/websockets";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    ws_binary: {
+      executor: "constant-vus",
+      vus: 10,
+      duration: "30s",
+    },
+  },
+};
+
+const BASE_WS = (__ENV.API_URL || "ws://localhost:3001");
+
+export default function () {
+  const ws = new WebSocket(`${BASE_WS}/ws/stream`);
+
+  // CRITICAL: set BEFORE onopen fires — controls how binary frames are delivered
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => {
+    // Send a binary message (e.g., a minimal protobuf subscribe frame)
+    const subscribe = new Uint8Array([0x0a, 0x06, 0x70, 0x72, 0x69, 0x63, 0x65, 0x73]);
+    ws.send(subscribe.buffer);  // send() accepts ArrayBuffer
+    setTimeout(() => ws.close(), 5000);
+  };
+
+  ws.onmessage = (e) => {
+    // e.data is ArrayBuffer — wrap in Uint8Array for processing
+    const bytes = new Uint8Array(e.data);
+    check(bytes, {
+      "received binary payload":   (b) => b.byteLength > 0,
+      "payload starts with 0x0a":  (b) => b[0] === 0x0a,  // protobuf field 1 tag
+    });
+
+    // Decode as text if the server actually sends JSON strings over binary WS:
+    // const text = new TextDecoder().decode(bytes);
+    // const msg = JSON.parse(text);
+  };
+
+  ws.onerror = (e) => {
+    if (e.error() !== "websocket: close sent") {
+      console.error(`[VU ${__VU}] WS error:`, e.error());
+    }
+  };
+}
+```
+
+### 42. `K6_WEB_DASHBOARD=true` blocks CI process until all browser tabs are closed  [community]
+
+**What:** When `K6_WEB_DASHBOARD=true` is set, k6 does not exit immediately after the test
+completes — it keeps the HTTP server running until all browser windows viewing
+`http://localhost:5665` are closed. In CI environments (GitHub Actions, GitLab CI, Jenkins)
+where no browser is open, the process hangs indefinitely: the CI runner waits for a process
+exit that never comes, eventually killing the job after the timeout.
+
+**WHY:** The web dashboard server stays alive to allow post-test investigation of results via
+browser. This is useful locally but destructive in CI. The k6 process does not distinguish
+between "browser connected" and "no browser ever connected" — it waits the same way in both
+cases.
+
+**Fix:** In CI, either disable `K6_WEB_DASHBOARD` entirely, or set the port to `-1` to
+prevent the server from starting while still writing the HTML export:
+
+```yaml
+# GitHub Actions — two correct patterns:
+
+# Pattern A: disable dashboard entirely in CI
+- name: Run k6 load test
+  run: k6 run k6/scripts/load.js
+  env:
+    K6_WEB_DASHBOARD: "false"        # explicit false (or just don't set it)
+    K6_WEB_DASHBOARD_EXPORT: ""      # no HTML export needed
+
+# Pattern B: keep HTML report export but disable the live server
+- name: Run k6 load test
+  run: k6 run k6/scripts/load.js
+  env:
+    K6_WEB_DASHBOARD: "true"
+    K6_WEB_DASHBOARD_PORT: "-1"       # disable HTTP server — no hang
+    K6_WEB_DASHBOARD_EXPORT: "results/k6-dashboard-report.html"  # still writes HTML
+
+- name: Upload k6 dashboard report
+  uses: actions/upload-artifact@v4
+  with:
+    name: k6-dashboard-report
+    path: results/k6-dashboard-report.html
+```
+
+> **[community]:** The `K6_WEB_DASHBOARD_OPEN=false` flag (which prevents auto-launching
+> a browser) does NOT prevent the CI hang — the server still stays alive waiting for
+> connections. Only `K6_WEB_DASHBOARD_PORT=-1` or `K6_WEB_DASHBOARD=false` prevents the
+> process from blocking. This is a common source of "job ran for 6 hours and was cancelled"
+> incidents in CI pipelines that copy the web dashboard examples from local documentation.
 
 

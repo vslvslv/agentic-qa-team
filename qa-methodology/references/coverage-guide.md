@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -11,6 +11,9 @@
      github.com/vitest-dev/vitest/releases (fetched 2026-05-12: v4.1.4–v4.1.6 + v5.0.0-beta.2; V8 child_process/worker_threads coverage, Istanbul instrumenter option, agent skipFull, blob dir change) |
      stryker-mutator.io/blog/vscode-plugin (fetched 2026-05-12: VS Code plugin features, MSP protocol, inline mutant visualization) |
      vitest.dev/guide/coverage#coverage-ignore-hints (fetched 2026-05-12: start/stop ignore directives for v8+istanbul; -- @preserve suffix format) |
+     github.com/vitest-dev/vitest/pull/9818 (fetched 2026-05-12: Vitest 5 coverage include/exclude glob pattern breaking change — "too eager" fix) |
+     stryker-mutator.io/blog (fetched 2026-05-12: Stryker.NET 4.13 MTP runner preview — keep-alive across mutations, YAML config) |
+     github.com/Codium-ai/cover-agent (fetched 2026-05-12: Qodo Cover archived June 2025 — no longer maintained) |
      community: production experience patterns synthesized from training knowledge -->
 
 ## Core Principles
@@ -2074,6 +2077,73 @@ valid coverage gate in a sharded pipeline is on the **merged report**. Remove
 that calls `vitest --merge-reports`. The merge job fails if merged coverage is below
 threshold; individual shard jobs never check coverage thresholds.
 
+### AP13 — Relying on abandoned LLM-coverage-gap tools (Qodo Cover / Codium cover-agent)  [community]
+The Codium `cover-agent` repository (later rebranded as Qodo Cover), which was widely
+cited as a turnkey solution for using LLMs to fill TypeScript and Python coverage gaps,
+was **archived and marked as no longer maintained in June 2025**. Teams that integrated
+cover-agent into their CI pipelines to automatically generate tests for uncovered branches
+are now running a deprecated, unsupported tool.
+
+**WHY it matters**: abandoned tooling in CI pipelines poses two risks — (1) the tool
+continues generating tests that target coverage numbers rather than behaviour, providing
+no improvement over manual coverage theatre (AP1); (2) security vulnerabilities in the
+unmaintained dependency chain go unpatched. The LLM-based test generation space evolved
+rapidly: production-grade alternatives as of 2026 include mutation-guided LLM prompting
+(Pattern 13 / G34), GitHub Copilot's "Generate Tests" workspace feature, and Cursor's
+test generation — all of which integrate into the developer workflow rather than running
+as a CI coverage-filling step.
+
+**Recommended replacement strategy**: instead of a standalone coverage-gap-filling tool,
+(1) run Stryker on modules with AI-generated tests to surface surviving mutants, (2) feed
+surviving mutants to an LLM with mutation-specific prompts ("write a test that catches
+this fault: `value <= min` was mutated to `value < min`"), (3) accept only the
+mutation-guided tests that improve mutation score, not just line coverage.
+
+```typescript
+// Example: mutation-guided LLM prompting workflow (replaces cover-agent in CI)
+// Run after: npx stryker run --reporters=json --reportDir=reports/mutation
+
+import { readFileSync } from 'node:fs';
+
+interface MutantResult {
+  id: string;
+  mutatorName: string;
+  status: 'Survived' | 'Killed' | 'Timeout' | 'NoCoverage';
+  location: { start: { line: number; column: number } };
+  replacement: string;
+  sourceFile: string;
+}
+
+interface StrykerReport {
+  files: Record<string, { mutants: MutantResult[] }>;
+}
+
+// Extract surviving mutants and format as LLM prompts
+function extractSurvivorPrompts(reportPath: string): string[] {
+  const report: StrykerReport = JSON.parse(readFileSync(reportPath, 'utf-8'));
+  return Object.entries(report.files).flatMap(([file, { mutants }]) =>
+    mutants
+      .filter((m) => m.status === 'Survived')
+      .map(
+        (m) =>
+          `In ${file} at line ${m.location.start.line}: ` +
+          `${m.mutatorName} mutated code to "${m.replacement}". ` +
+          `Write a TypeScript test case (vitest/jest) that fails when this mutation is applied.`,
+      ),
+  );
+}
+
+const prompts = extractSurvivorPrompts('reports/mutation/mutation.json');
+console.log(`${prompts.length} surviving mutants need test cases:`);
+prompts.slice(0, 5).forEach((p, i) => console.log(`\n[${i + 1}] ${p}`));
+```
+
+**When to use automated test generation**: LLM-assisted test generation is most valuable
+for boundary conditions on pure functions and utility modules (arithmetic, string parsing,
+date handling). Avoid automated generation for complex integration, async, or stateful
+code — the generated test cases are often assertion-thin or require manual review to be
+production-quality.
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -2665,6 +2735,52 @@ receive `InstrumenterOptions` and must implement `instrumentSync()` and `lastSou
 meaning they absorb any interface changes in `istanbul-lib-instrument`. Reserve this
 escape hatch for toolchain integration scenarios, not coverage-noise suppression.
 
+### G45 — Vitest 5 `coverage.include`/`coverage.exclude` glob patterns became more strict: upgrade silently breaks simple directory names  [community]
+Vitest 5.0.0-beta.1 introduced a **breaking change** to how `coverage.include` and `coverage.exclude` glob patterns are evaluated (PR #9818: "fix(coverage)!: include/exclude globs too eager"). In Vitest 4.x, a simple directory name like `include: ["src"]` was treated permissively — Vitest internally expanded it to match all files under `src/`. In Vitest 5.0+, this same pattern does **not** automatically expand; it must be written as an explicit glob: `include: ["src/**/*.ts"]` or `include: ["src/**"]`. **WHY it matters**: projects that migrate to Vitest 5 with coverage configs that use bare directory names in `include` or `exclude` will silently produce an empty or incomplete coverage report — no files are instrumented because the too-permissive path expansion is gone. The failure is silent: Vitest runs successfully and reports 0 % coverage on 0 files (or only the files that happen to match the literal string as a path). Always use explicit glob patterns in coverage configuration:
+
+```typescript
+// vitest.config.ts — Vitest 5 compatible: explicit globs required
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      // Vitest 4 permissive form (breaks in Vitest 5):
+      // include: ['src'],             // ❌ bare directory no longer auto-expands
+      // Vitest 5 required form — explicit glob:
+      include: ['src/**/*.ts', 'src/**/*.tsx'],    // ✅ explicit glob, works in both 4 and 5
+      exclude: [
+        'src/**/*.d.ts',
+        'src/**/*.test.ts',
+        'src/**/*.spec.ts',
+        'src/**/__mocks__/**',
+        // Vitest 4 permissive form (breaks in Vitest 5):
+        // 'src/generated',            // ❌ bare directory: may not match intended files
+        'src/generated/**',            // ✅ explicit glob required
+      ],
+      all: true,
+      thresholds: { lines: 80, branches: 75, functions: 80, statements: 80 },
+    },
+  },
+});
+```
+
+**Upgrade checklist for Vitest 4 → 5 coverage configs**: (1) search `coverage.include` and `coverage.exclude` for bare directory names without `/**`, (2) add `/**` (or `/**/*.ts`) to each, (3) re-run and verify the coverage file count in `coverage/coverage-summary.json` matches pre-upgrade counts. If file count drops significantly after the upgrade, the glob expansion regression is the likely cause.
+
+### G46 — Stryker.NET 4.13+ Microsoft Testing Platform runner keeps test processes alive across mutations  [community]
+Stryker.NET 4.13 (March 2026) introduced a **preview-quality Microsoft Testing Platform (MTP) runner** as an alternative to the legacy VSTest runner. Unlike VSTest, which spawns a new test process for each mutation run, MTP keeps the test runner process alive across multiple mutation test runs. **WHY it matters for TypeScript teams**: this is primarily a .NET Stryker change, but it illustrates an architectural pattern that StrykerJS implements via its worker pool — understanding the design helps TypeScript teams tune Stryker concurrency correctly. In StrykerJS, `concurrency` controls how many Vitest/Jest workers Stryker maintains simultaneously; each worker is reused across mutations within its lifecycle. The analogy to MTP's keep-alive model explains why `concurrency` should match available CPUs (not exceed them) and why `ignoreStatic: true` (G22) is essential: static mutants force all workers to restart the full suite in sequence, defeating the keep-alive benefit.
+
+For .NET teams in polyglot codebases: to enable MTP in Stryker.NET 4.13+:
+```yaml
+# stryker-config.yaml (Stryker.NET 4.13+ YAML config format — new alternative to JSON)
+stryker-config:
+  test-runner: mtp          # MTP runner: keeps process alive across mutations
+  # Alternatively via CLI: dotnet stryker --test-runner mtp
+```
+
+**Current MTP limitations** (as of May 2026): coverage analysis is partial (filters uncovered mutants but cannot attribute per-test coverage), and .NET Framework (non-Core) is not supported. Use VSTest for projects that require per-test coverage analysis (`coverageAnalysis: 'perTest'` equivalent) until MTP coverage support matures.
+
 ### G44 — Stryker VS Code plugin requires StrykerJS v9.3.0+ and replaces the HTML report workflow  [community]
 The official Stryker VS Code plugin (released November 2025, requires StrykerJS v9.3.0+)
 brings inline mutation testing results directly into the editor via the **Mutation Server
@@ -2809,5 +2925,8 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Vitest 4.1 release notes | Official | https://vitest.dev/blog/vitest-4-1 | Vitest 4.1 coverage.changed option, agent reporter for AI environments, coverage.htmlDir |
 | Vitest 4.1.5 release notes | Official | https://github.com/vitest-dev/vitest/releases/tag/v4.1.5 | Istanbul instrumenter option (experimental custom instrumenter factory); descriptive error when reports dir removed |
 | Vitest 5.0.0-beta.2 release notes | Official | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2 | V8 now tracks node:child_process and node:worker_threads contexts; blob/attachments dir defaults changed |
+| Vitest 5.0 coverage glob breaking change | Official | https://github.com/vitest-dev/vitest/pull/9818 | Vitest 5 fix(coverage)!: include/exclude globs too eager — bare directory names no longer auto-expand; explicit globs required |
+| Stryker.NET MTP runner preview | Official | https://stryker-mutator.io/blog/ | Stryker.NET 4.13 MTP runner: keep test process alive across mutations; YAML config support; MTP vs VSTest tradeoffs |
+| Qodo Cover (formerly Codium cover-agent) — ARCHIVED | Community | https://github.com/Codium-ai/cover-agent | ⚠️ No longer maintained (June 2025). LLM-based coverage gap filler; see G34 and AP13 for replacement strategy using mutation-guided prompting |
 | Stryker VS Code Plugin | Official | https://stryker-mutator.io/blog/vscode-plugin/ | Inline mutation results in VS Code gutter (StrykerJS v9.3.0+, Nov 2025); uses MSP; replaces HTML-report-in-browser workflow |
 | Vitest coverage config reference | Official | https://vitest.dev/config/coverage | Full coverage config: autoUpdate, changed, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks, reportOnFailure, processingConcurrency |

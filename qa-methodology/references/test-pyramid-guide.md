@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
@@ -8,10 +8,11 @@
 <!-- new (2026-05-12 iter 34): Vitest 4.0 (Oct 2025) + 4.1 (Mar 2026) — browser mode stable, toMatchScreenshot, expect.schemaMatching (Zod/Valibot), test tags with --tags-filter, aroundEach/aroundAll hooks, --detect-async-leaks, viteModuleRunner:false; Playwright v1.51-v1.60 — test.abort(), await using teardown, --only-changed, ARIA snapshot on page object, toContainClass(), testProject.teardown, locator.normalize(), page.pickLocator() -->
 <!-- new (2026-05-12 iter 35): TypeScript 6.0 breaking default changes (types:[], strict:true, module:esnext, rootDir:.) — silent test pipeline breakage; Vitest 5.0.0-beta.2 (May 5, 2026) — inline expect, sequential removal, directory restructure; Playwright v1.60 HAR tracing API (tracing.startHar) + locator.drop() drag-and-drop; Google "The Way of TDD" (Mar 2026) blog post -->
 <!-- new (2026-05-12 iter 36): Vitest 3.2 (Jun 2025) — Annotation API, Scoped Fixtures (scope:file|worker), explicit resource management (using vi.spyOn), Test Signal API (AbortSignal), multi-project sequence.groupOrder, watchTriggerPatterns, workspace→projects deprecation; TypeScript 5.8 — --module node18 stable, import with {type:"json"}, watch mode perf; Playwright v1.51 storageState({indexedDB:true}) for IndexedDB auth; Vitest 4.1.4+ browser locators exact option + Aria snapshots in browser mode -->
+<!-- new (2026-05-12 iter 37): Playwright v1.56-v1.60 series — Agents (planner/generator/healer AI agents for e2e test creation/maintenance), v1.57 Speedboard HTML reporter tab + testConfig.webServer.wait named capture groups + Chrome for Testing + Service Worker BrowserContext routing, v1.59 page.screencast API + browser.bind(), v1.60 browser.on('context') + getByRole description option + toHaveCSS pseudo option + testInfoError.errorContext + webSocketRoute.protocols(); Vitest 4.1 — vi.defineHelper (custom assertion stack traces), coverage.changed (coverage only for changed files), page.mark()/locator.mark() trace annotations; TypeScript 6.0 — esModuleInterop always true (breaks import * as X patterns in test files), #/ subpath imports shorthand; new community gotchas: AI agent test generation pyramid governance, WebSocket testing at integration level, Service Worker test gaps, Playwright Agents healer loop gotcha -->
 
 ---
 
-> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. New patterns (2026 iter 35): TypeScript 6.0 silently breaks test `tsconfig.json` (`types` defaults to `[]`, `strict` defaults to `true`, `module` defaults to `esnext`, `rootDir` defaults to `.`) — most test configs need explicit opt-ins after upgrading; Vitest 5.0.0-beta.2 (May 5, 2026) in active development — inline expect package, `sequential` removal, `.vitest/` directory restructure; Playwright v1.60 adds `tracing.startHar()` first-class HAR API + `locator.drop()` for drag-and-drop e2e tests. New patterns (2026 iter 36): Vitest 3.2 — Annotation API (structured test metadata for JUnit/HTML reporters), Scoped Fixtures (`scope:'file'|'worker'` in `test.extend`), `using vi.spyOn()` automatic spy restore, Test Signal API (AbortSignal for timeout cleanup), `sequence.groupOrder` replaces `&&`-chained CI commands for fail-fast ordering; TypeScript 5.8 — `--module node18` stable, `import with {type:'json'}` replaces deprecated `assert`, faster watch mode; Vitest 3.2 `workspace` config key deprecated in favour of inline `test.projects`. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
+> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. New patterns (2026 iter 35): TypeScript 6.0 silently breaks test `tsconfig.json` (`types` defaults to `[]`, `strict` defaults to `true`, `module` defaults to `esnext`, `rootDir` defaults to `.`) — most test configs need explicit opt-ins after upgrading; Vitest 5.0.0-beta.2 (May 5, 2026) in active development — inline expect package, `sequential` removal, `.vitest/` directory restructure; Playwright v1.60 adds `tracing.startHar()` first-class HAR API + `locator.drop()` for drag-and-drop e2e tests. New patterns (2026 iter 36): Vitest 3.2 — Annotation API (structured test metadata for JUnit/HTML reporters), Scoped Fixtures (`scope:'file'|'worker'` in `test.extend`), `using vi.spyOn()` automatic spy restore, Test Signal API (AbortSignal for timeout cleanup), `sequence.groupOrder` replaces `&&`-chained CI commands for fail-fast ordering; TypeScript 5.8 — `--module node18` stable, `import with {type:'json'}` replaces deprecated `assert`, faster watch mode; Vitest 3.2 `workspace` config key deprecated in favour of inline `test.projects`. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI. New patterns (2026 iter 37): Playwright Agents (v1.56 — planner/generator/healer AI agents for e2e test creation and maintenance; pyramid governance required), Playwright v1.57 Speedboard reporter tab for identifying slow e2e tests + testConfig.webServer.wait named capture groups + Chrome for Testing + Service Worker BrowserContext routing, Playwright v1.59 page.screencast API, Playwright v1.60 browser.on('context') + getByRole description option + toHaveCSS pseudo-element option + webSocketRoute.protocols() for WebSocket integration tests + testInfoError.errorContext improved failure diagnostics; Vitest 4.1 vi.defineHelper (clean stack traces in custom assertions) + coverage.changed (per-PR coverage delta without slowing CI) + page.mark()/locator.mark() trace annotations in browser mode; TypeScript 6.0 esModuleInterop always true breaks legacy `import * as X` in test files + #/ subpath import shorthand.
 
 ---
 
@@ -1252,6 +1253,12 @@ The `strict: true` default is usually harmless if the codebase already uses `"st
 
 32. **TypeScript 5.8 `--module node18` and `import with` break legacy test setup files** [community] — TypeScript 5.8 stabilised `--module node18` (previously `--module node18` was a preview alias). For TypeScript test pipelines targeting Node.js 18+, `"module": "node18"` is now the recommended setting — it disallows `require()` of native ESM modules and enforces `with { type: "json" }` for JSON imports instead of the now-deprecated `assert { type: "json" }` form. Teams upgrading to `"module": "node18"` find two common breakages in test code: (1) test setup files that use `import config from './vitest.setup.json' assert { type: 'json' }` produce a TypeScript error — update to `with { type: 'json' }`; (2) `testcontainers` and other packages with dual CJS/ESM builds may emit `ERR_REQUIRE_ESM` under `node18` module resolution if the entry point is ESM-only. Fix for (2): use `"module": "nodenext"` instead of `"module": "node18"` in `tsconfig.integration.json` — `nodenext` allows `require()` of ESM under Node.js 22+ (which supports it via `require(esm)` stabilised in Node 22.12). Always have a separate `tsconfig.integration.json` with the integration-level module resolution rather than overriding the root `tsconfig.json`. [official: typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html]
 
+33. **TypeScript 6.0 `esModuleInterop` always true silently breaks `import * as X` patterns in test helpers** [community] — TypeScript 6.0 makes `esModuleInterop: true` the permanent, non-configurable default. Test helper files written during the `esModuleInterop: false` era (legacy Node.js boilerplate) that use `import * as path from 'path'` or `import * as supertest from 'supertest'` produce `TS2540` or `TS1202` errors after upgrading. The issue is silent in many IDEs because they apply project-level tsconfig settings correctly — the failure appears only when `tsc --noEmit` runs in CI against the root tsconfig. Teams that skip running `tsc --noEmit` before tests (relying on Vitest's esbuild transpile-only mode instead) may ship a TS-6.0-incompatible codebase without realising it. Fix: add `tsc --noEmit` as a pre-test CI step; update `import * as X from` patterns to `import X from` for CJS default exports. [official: typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html]
+
+34. **Playwright Agents healer loop produces `sleep()`-based patches that re-introduce the `sleep()` anti-pattern** [community] — Playwright's healer agent (v1.56+) repairs failing test cases by replaying steps and suggesting patches. When a locator times out, the most common healer patch is adding a `waitForTimeout()` call — which is semantically identical to `sleep()`. Teams that auto-accept healer patches without review accumulate timing-based workarounds that mask real flakiness root causes. The anti-pattern is hard to detect after the fact because the test passes reliably on the healer's machine (which is the same machine where the timing issue occurred) but fails intermittently in CI. Fix: set a code review rule that rejects any healer patch containing `waitForTimeout()` without a comment explaining why a `waitFor*` condition-based assertion is insufficient. Prefer `waitForSelector`, `waitForURL`, `waitForResponse`, or `expect(...).toBeVisible()` with an explicit timeout over raw delay. [community: playwright.dev/docs/test-agents, Playwright Agents docs — healer section]
+
+35. **Vitest `coverage.changed` hides integration-level coverage gaps on renamed files** [community] — The `coverage.changed` option compares changed files against the git baseline to restrict coverage reporting. When a TypeScript file is *renamed* (e.g., `order.repository.ts` → `orders.repository.ts`), git detects it as a deletion and addition rather than a modification. `coverage.changed` treats the new file as a changed file and reports its coverage, but the old file (now deleted) has its coverage history discarded. If the new file has lower coverage than the old one, the threshold check may still pass because the threshold applies only to the changed-file subset — not the total codebase. The net effect: coverage regressions introduced alongside renames are invisible to per-PR coverage checks. Fix: add a full-codebase coverage run as a nightly CI job even when per-PR `coverage.changed` is enabled; treat the nightly run as the definitive coverage gate. [community: vitest.dev/blog/vitest-4-1.html — coverage.changed note]
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -1994,6 +2001,337 @@ The most critical audit is for teams using `--reporter=blob` in sharded CI pipel
 
 ---
 
+### Playwright Agents: AI-Driven E2E Test Creation  [community]
+
+Playwright v1.56 (October 2024) introduced three first-party AI agents that work as a pipeline for creating and maintaining e2e test cases. Initialised via `npx playwright init-agents --loop=claude` (or `--loop=vscode`, `--loop=opencode`), the three agents produce a `specs/` directory of Markdown test plans and a `tests/` directory of generated Playwright test files.
+
+**The three agents:**
+
+| Agent | Job | Output |
+|-------|-----|--------|
+| **Planner** | Explores the app and produces a Markdown test plan for one or many scenarios. Accepts a user request, a `seed.spec.ts` bootstrapping file, and an optional PRD for context. | `specs/<scenario>.md` |
+| **Generator** | Consumes a Markdown spec and produces an executable Playwright test file, verifying locators and assertions live against the running app during generation. | `tests/<scenario>.spec.ts` |
+| **Healer** | Executes tests, replays failing steps, inspects the current UI to locate equivalent elements, and suggests patches (locator updates, wait adjustments, data fixes). Re-runs until tests pass or the underlying feature is confirmed broken. | Patched `tests/*.spec.ts` |
+
+**Pyramid governance risk:** Playwright Agents generate *e2e-level* test cases by default — the agent explores the app from the outside. This creates the same AI pyramid drift problem as LLM code assistants (Gotcha #AI, gotcha #33 equivalent): if engineers use the full planner→generator→healer loop for every new feature, the e2e count grows while integration and unit counts stagnate. The healer loop is particularly prone to adding wait-based workarounds that are a form of the `sleep()` anti-pattern.
+
+```typescript
+// seed.spec.ts — required bootstrapping file for Playwright Agents
+// Provides the agent with setup context (auth, base URL, fixture state)
+import { test } from '@playwright/test';
+
+// The seed test runs before the planner/generator to establish environment state
+// Keep this minimal — agents extend it, not replace it
+test.beforeAll(async ({ request }) => {
+  // Seed test database with deterministic data for agent exploration
+  await request.post('/api/admin/seed', {
+    data: { scenario: 'standard-checkout', cleanup: true },
+  });
+});
+
+// Provide a smoke test the agent can use as reference for the app's baseline state
+test('app is reachable and home page loads', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+});
+```
+
+**Integration with pyramid CI governance:** Add a post-agent PR check that counts generated tests vs. existing integration and unit coverage. Any PR that adds 3+ agent-generated e2e test cases without a corresponding integration test should trigger a review annotation:
+
+```yaml
+# .github/workflows/pyramid-agent-check.yml
+- name: Check agent-generated e2e vs integration ratio
+  run: |
+    AGENT_E2E=$(git diff --name-only HEAD~1 | grep 'tests/.*spec\.ts' | wc -l)
+    NEW_INTEGRATION=$(git diff --name-only HEAD~1 | grep '\.integration\.test\.ts' | wc -l)
+    if [ "$AGENT_E2E" -gt 2 ] && [ "$NEW_INTEGRATION" -eq 0 ]; then
+      echo "::warning::$AGENT_E2E agent-generated e2e tests added with 0 new integration tests. Consider pushing coverage down."
+    fi
+```
+
+The `--loop=claude` flag integrates directly with Claude Code's agentic loop — the agents run inside an active Claude Code session, reading the test plan from `specs/` and writing to `tests/`. This is the recommended workflow for TypeScript projects already using Claude Code: use the healer only when the generator produces a failing test, and never run the healer in a loop without human review of the suggested patch. [official: playwright.dev/docs/test-agents]
+
+---
+
+### Playwright v1.57–v1.59: Diagnostic and Recording Utilities  [community]
+
+Four additions in Playwright's v1.57–v1.59 series affect how TypeScript e2e test suites are diagnosed and configured:
+
+**Speedboard HTML reporter tab (v1.57):** The HTML report now includes a "Speedboard" tab that displays all executed test cases sorted by execution duration. At the e2e test level, slowness is the primary cost driver — identifying the 10 slowest test cases per run allows targeted parallelisation or pyramid push-down (if a slow e2e test case can be replaced by a faster integration test case). The Speedboard is available with `--reporter=html` (the default); no additional configuration is required.
+
+**`testConfig.webServer.wait` with named capture groups (v1.57):** The `webServer` configuration now accepts a `wait` object with a `stdout` regex. Named capture groups in the regex are exported as environment variables. This eliminates the pattern of hard-coding a port number in `playwright.config.ts`:
+
+```typescript
+// playwright.config.ts — dynamic port from webServer stdout
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  webServer: {
+    command: 'npm run dev',
+    // Named capture group 'port' → process.env.PORT
+    wait: { stdout: /listening on port (?<port>\d+)/i },
+    timeout: 30_000,
+  },
+  use: {
+    // Playwright sets process.env.PORT from the named capture group
+    baseURL: `http://localhost:${process.env['PORT'] ?? 3000}`,
+  },
+});
+```
+
+Previously, teams hard-coded `url: 'http://localhost:3000'` or used `reuseExistingServer: true` with a fixed port, causing failures when the dev server chose a different port. The named capture group pattern eliminates this flakiness category entirely for TypeScript Next.js and Vite projects that use random port allocation. [official: playwright.dev/docs/release-notes — v1.57]
+
+**Service Worker network routing via `BrowserContext` (v1.57, Chromium only):** Network requests initiated by Service Workers are now routed through `BrowserContext`, making them available for `page.route()` and `browserContext.route()` interception. This closes a long-standing e2e test gap for TypeScript PWA projects: previously, Service Worker requests (background sync, push notifications, cache-first fetches) could not be intercepted in Playwright test cases — teams had to disable the Service Worker in test mode. With v1.57, full network control is available at the e2e level, including asserting on SW-initiated requests:
+
+```typescript
+// e2e/pwa-offline.e2e.test.ts — Service Worker request interception (v1.57, Chromium)
+import { test, expect } from '@playwright/test';
+
+test('Service Worker falls back to cache when API is offline', async ({ context, page }) => {
+  // Allow initial load, then intercept SW network requests
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+
+  // Intercept ALL network requests via context — now includes Service Worker requests
+  await context.route('**/api/**', (route) => route.abort('connectionrefused'));
+
+  // Trigger offline scenario — SW should serve from cache
+  await page.reload();
+  await expect(page.getByText('You are offline')).not.toBeVisible();
+  await expect(page.getByRole('main')).toBeVisible(); // cached content served
+});
+```
+
+Note: Service Worker routing works only in Chromium (Chrome/Edge). Firefox and WebKit do not expose SW requests through `BrowserContext`. When writing SW-related test cases, use `test.use({ browserName: 'chromium' })` to restrict execution.
+
+**`page.screencast` API (v1.59):** Playwright v1.59 added a programmatic screencast API for capturing video with action annotations, visual overlays, and real-time JPEG frame streaming. While primarily intended for agentic workflows and demo recordings, it has a practical e2e testing application: teams can capture a screencast of a specific e2e test scenario as part of a `beforeAll` hook, producing annotated video evidence for compliance-required test documentation (particularly in regulated industries).
+
+```typescript
+// e2e/compliance/order-flow.e2e.test.ts — annotated screencast for audit trail
+import { test, expect } from '@playwright/test';
+
+test('order placement — captured with audit trail (regulated industries)', async ({ page }) => {
+  await page.screencast.start({ path: `reports/order-flow-${Date.now()}.webm` });
+  await page.screencast.showChapter('Order placement', {
+    description: 'TC-ORDER-01: Guest user places an order',
+    duration: 2_000,
+  });
+
+  await page.goto('/shop');
+  await page.getByRole('button', { name: 'Add to cart' }).first().click();
+  await page.screencast.showChapter('Checkout', { description: 'TC-ORDER-01: Checkout flow' });
+  await page.getByRole('link', { name: 'Checkout' }).click();
+  await page.getByRole('button', { name: 'Place order' }).click();
+
+  await expect(page.getByRole('heading', { name: /order confirmed/i })).toBeVisible();
+  await page.screencast.stop();
+});
+```
+
+The screencast API is only available in browser contexts started with headed mode or explicit recording enabled. In headless CI, pair with Playwright's built-in `video: 'on-first-retry'` configuration rather than the screencast API. [official: playwright.dev/docs/release-notes — v1.59]
+
+---
+
+### Playwright v1.60: Context Events and Advanced Assertions  [community]
+
+Three v1.60 additions that complement the test pyramid at the integration and e2e levels:
+
+**`browser.on('context')` lifecycle events:** The browser instance now emits a `'context'` event when a new `BrowserContext` is created. Combined with the new `BrowserContext` lifecycle event mirroring (`download`, `frameattached`, `framenavigated`, `pageclose`, `pageload`), this enables cross-context monitoring patterns useful for multi-tab or multi-page e2e test scenarios. The practical use case: centrally logging context-level events in a `globalSetup` fixture without modifying individual test cases.
+
+**`getByRole()` description option:** The `getByRole()` locator now accepts a `description` string to match the accessible description (aria-describedby or aria-description) in addition to the existing `name` option. This is important for test cases where multiple elements share the same role and name but differ in their descriptive text — common in data table rows, product cards, and form field groups:
+
+```typescript
+// Previously unreliable — two "Add to cart" buttons with different product descriptions
+// await page.getByRole('button', { name: 'Add to cart' }).first().click(); // brittle
+
+// v1.60: match by accessible description — deterministic without positional index
+await page.getByRole('button', {
+  name: 'Add to cart',
+  description: 'TypeScript Handbook',
+}).click();
+```
+
+**`toHaveCSS()` with pseudo-element option:** Assertions can now check computed styles on CSS pseudo-elements (`::before`, `::after`). This closes a gap in visual regression testing for TypeScript component libraries that use pseudo-elements for decorative indicators, badges, or state markers:
+
+```typescript
+// Check that the "required" indicator (::before pseudo-element) is present on a form field
+await expect(page.getByLabel('Email')).toHaveCSS('content', '"*"', {
+  pseudo: '::before',
+});
+```
+
+**`testInfoError.errorContext`:** When a Playwright assertion fails, the `testInfoError` now includes an `errorContext` property with structured diagnostic data — for example, an ARIA snapshot of the failing assertion's target element. This surfaces automatically in the HTML report, making it significantly faster to diagnose failures without replaying the trace. [official: playwright.dev/docs/release-notes — v1.60]
+
+---
+
+### Playwright v1.60: WebSocket Testing at the Integration Test Level  [community]
+
+`webSocketRoute.protocols()` (v1.60) returns the WebSocket subprotocols requested by the page during a `context.routeWebSocket()` handler. This enables integration-level WebSocket testing patterns where the protocol negotiation itself is part of the test contract:
+
+```typescript
+// tests/integration/ws-chat.integration.test.ts — WebSocket protocol verification
+// Uses Playwright's route API at the HTTP/WS boundary (integration-level, no browser needed for logic)
+import { test, expect } from '@playwright/test';
+
+test('chat service negotiates the correct WebSocket subprotocol', async ({ page, context }) => {
+  let negotiatedProtocols: string[] = [];
+
+  // Intercept WebSocket connections before they reach the server
+  await context.routeWebSocket('wss://chat.example.com/ws', (wsRoute) => {
+    // v1.60: capture protocols requested by the client
+    negotiatedProtocols = wsRoute.protocols();
+    // Continue to real server — this is an assertion test, not a stub
+    wsRoute.connectToServer();
+  });
+
+  await page.goto('/chat');
+  await page.getByRole('button', { name: 'Connect' }).click();
+  await expect(page.getByRole('status')).toContainText('Connected');
+
+  // Assert that the client correctly negotiated the v2 chat protocol
+  expect(negotiatedProtocols).toContain('chat-v2');
+  expect(negotiatedProtocols).not.toContain('chat-v1'); // deprecated protocol
+});
+```
+
+WebSocket tests sit at the integration test level when the WebSocket server is a real (or stubbed) service and the assertion is on the protocol or message structure — not at the e2e level. Use `context.routeWebSocket()` for this; reserve e2e test cases for user-visible WebSocket-driven UI behaviour (messages appearing, connection state badges). [official: playwright.dev/docs/release-notes — v1.60]
+
+---
+
+### Vitest 4.1: `vi.defineHelper` for Clean Custom Assertion Stack Traces  [community]
+
+Custom assertion helpers at the integration and unit test levels produce confusing stack traces when they fail — the error points to the implementation line of the helper rather than the test case that called it. `vi.defineHelper` (Vitest 4.1) wraps a function to strip its internal frames from the stack, redirecting the error pointer to the call site:
+
+```typescript
+// tests/helpers/assertions.ts — typed custom assertions using vi.defineHelper (Vitest 4.1)
+import { expect, vi } from 'vitest';
+import type { OrderResponse } from '../../src/orders/types.js';
+
+// Without vi.defineHelper: stack trace points to "expect(response.status).toBe(201)" line below
+// With vi.defineHelper: stack trace points to the test case that called assertOrderCreated()
+export const assertOrderCreated = vi.defineHelper((response: OrderResponse) => {
+  expect(response.status).toBe('pending');
+  expect(response.id).toMatch(/^ord_/);
+  expect(response.createdAt).toBeInstanceOf(Date);
+});
+
+// Usage in integration test:
+// it('creates an order', async () => {
+//   const result = await service.create(input);
+//   assertOrderCreated(result);  // ← stack trace points HERE on failure, not inside assertOrderCreated
+// });
+```
+
+The ergonomic improvement is most noticeable in large integration test suites where many test cases share domain-specific assertion helpers. The `vi.defineHelper` wrapper also works with async helper functions. [official: vitest.dev/blog/vitest-4-1.html]
+
+---
+
+### Vitest 4.1: `coverage.changed` for Per-PR Coverage Delta  [community]
+
+The `coverage.changed` option (Vitest 4.1) runs all test cases but restricts coverage reporting to only the files changed relative to the git baseline. This allows CI to enforce a "no new uncovered code" policy without re-running coverage on the entire codebase on every PR — useful in large TypeScript monorepos where full coverage collection takes minutes.
+
+```typescript
+// vitest.config.ts — coverage.changed for incremental coverage enforcement
+import { defineConfig } from 'vitest/config';
+import tsconfigPaths from 'vite-tsconfig-paths';
+
+export default defineConfig({
+  plugins: [tsconfigPaths()],
+  test: {
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'lcov'],
+      // coverage.changed: only report coverage for files modified in the current git diff
+      // All tests still run; this limits the coverage summary to changed files only
+      changed: process.env['CI_PR'] === 'true',
+      // Thresholds apply only to the changed files subset when coverage.changed is true
+      thresholds: {
+        branches: 80,
+        functions: 80,
+        lines: 80,
+        statements: 80,
+      },
+    },
+  },
+});
+```
+
+```yaml
+# .github/workflows/test.yml — per-PR coverage check
+- name: Run unit + integration tests with changed-file coverage
+  run: vitest run --coverage
+  env:
+    CI_PR: "true"
+  # Coverage report only covers files changed in this PR — not the entire codebase
+  # Fails if branch/line coverage on changed files drops below 80%
+```
+
+**Pyramid application:** Use `coverage.changed` at the unit and integration levels (where coverage is meaningful) and disable it at the e2e level (where coverage collection adds significant overhead without useful signal). In a Vitest workspace with three projects, enable `changed: true` only in the `unit` and `integration` project configurations. [official: vitest.dev/blog/vitest-4-1.html]
+
+---
+
+### Vitest 4.1 Browser Mode: Trace Annotations with `page.mark()`  [community]
+
+Vitest 4.1 introduced `page.mark()` and `locator.mark()` APIs for the browser-mode integration test level. These insert named markers into the Playwright trace timeline, grouping related interactions under a single label. The trace annotations are linked back to the test file line, making it faster to navigate complex component test failures in the Playwright Trace Viewer.
+
+```typescript
+// src/checkout/CheckoutFlow.ct.test.tsx — Vitest 4.1 browser mode with trace marks
+import { test, expect, page } from 'vitest/browser';
+import { render } from 'vitest-browser-react';
+import { CheckoutFlow } from './CheckoutFlow.js';
+
+test('completes checkout flow — marked trace sections', async () => {
+  const component = await render(<CheckoutFlow />);
+
+  // Mark the trace at key steps — shows as named sections in Playwright Trace Viewer
+  await page.mark('step: fill shipping details');
+  await component.getByLabel('Email').fill('user@example.com');
+  await component.getByLabel('Address').fill('123 Main St');
+
+  await page.mark('step: payment');
+  await component.getByLabel('Card number').fill('4242424242424242');
+  await component.getByLabel('Expiry').fill('12/30');
+
+  await page.mark('step: submit + assert');
+  await component.getByRole('button', { name: 'Place order' }).click();
+  await expect.element(component.getByRole('heading', { name: /confirmed/i })).toBeVisible();
+});
+```
+
+`locator.mark()` applies a temporary visual highlight to a specific element in the trace, useful when multiple elements match a locator and you need to confirm which one was interacted with. Both `page.mark()` and `locator.mark()` are no-ops in non-browser environments — safe to leave in test files shared across browser and node projects in a Vitest workspace. [official: vitest.dev/blog/vitest-4-1.html]
+
+---
+
+### TypeScript 6.0: `esModuleInterop` Always True  [community]
+
+TypeScript 6.0 makes `esModuleInterop: true` the permanent default — it can no longer be set to `false`. This affects TypeScript test files that use the legacy `import * as X from 'module'` pattern for CommonJS default exports. The pattern was widely used in test setup files before ESM adoption:
+
+```typescript
+// BEFORE TypeScript 6.0 (pattern used in legacy Jest/Mocha setups)
+// import * as path from 'path';   // OK with esModuleInterop: false
+// import * as fs from 'fs';        // OK with esModuleInterop: false
+
+// AFTER TypeScript 6.0 (esModuleInterop always true)
+import path from 'node:path';    // default import — correct with esModuleInterop
+import { readFileSync } from 'node:fs';  // named import still works
+
+// Common failure pattern in test helpers after upgrading to TS 6.0:
+// import * as supertest from 'supertest';  // TS error: module has default export
+import request from 'supertest';            // correct form
+
+// Jest-specific: jest.mock() factory used with import * as
+// OLD (breaks in TS 6.0): import * as myModule from './module';
+//                          jest.mock('./module', () => ({ ... }));
+// NEW: import myModule from './module';
+//      vi.mock('./module', () => ({ default: { ... } }));
+```
+
+The change is compile-time only — `esModuleInterop: true` was already the runtime default in most bundler configurations. The failure mode is subtle: test files that compiled correctly under TS 5.x produce `TS2540` (Cannot assign to X because it is not a variable) or `TS1202` (Import assignment cannot be used when targeting ECMAScript modules) errors after upgrading. Run `tsc --noEmit` across all test configs immediately after upgrading to TS 6.0 to surface all affected files. [official: typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html]
+
+**Community gotcha #33:** Teams using `@types/node` with `import * as path from 'path'` patterns in test setup files (`vitest.setup.ts`, `jest.setup.ts`) are the most common victims. The fix is a one-line change per import, but in large codebases with hundreds of test files, an automated codemod (`npx ts-morph-codemod` or a custom `jscodeshift` transform) is faster than manual updates.
+
+---
+
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
 | TestPyramid (Fowler) | Official | https://martinfowler.com/bliki/TestPyramid.html | Canonical definition and original rationale |
@@ -2034,3 +2372,5 @@ The most critical audit is for teams using `--reporter=blob` in sharded CI pipel
 | TypeScript 5.8 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html | `--module node18` stable, `import with {type:'json'}` replaces assert form, granular return-expression branch checking, `--erasableSyntaxOnly` + Node.js type-stripping |
 | TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `--stableTypeOrdering`, deprecated option removal path, TS 7.0 migration preparation; `--erasableSyntaxOnly` for Node.js type-stripping; BREAKING: `types:[]`, `strict:true`, `module:esnext`, `rootDir:.` new defaults |
 | Vitest 5.0 Beta | Tool | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2 | Next major version (beta May 2026): inline expect, sequential removal, .vitest/ directory restructure, V8 worker coverage — audit before upgrading |
+| Playwright Agents | Tool | https://playwright.dev/docs/test-agents | v1.56+: planner/generator/healer AI agents for e2e test creation; pyramid governance required to prevent e2e over-generation |
+| Playwright HTML Speedboard | Tool | https://playwright.dev/docs/test-reporters#html-reporter | v1.57+: Speedboard tab in HTML report — sorts test cases by execution duration; identifies pyramid push-down candidates |
