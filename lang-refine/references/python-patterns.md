@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 52 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 53 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -56,6 +56,7 @@
      Iter 50 (2026-05-12): 100/100 (+~330 lines) — added snapshot testing (syrupy + inline-snapshot); pytest-benchmark micro-benchmark testing; mutation testing with mutmut; pytest-timeout + pytest-randomly CI plugins; pytest-asyncio asyncio_default_fixture_loop_scope deprecation; community gotchas #53 (syrupy auto-update wipes human-reviewed baselines), #54 (pytest-benchmark warm-up vs measurement confusion), #55 (mutmut false positives from equivalent mutations), #56 (pytest-asyncio event_loop fixture deprecation); sourced from practitioner synthesis + official docs
      Iter 51 (2026-05-12): 100/100 (+~340 lines) — added Python 3.15 section: TypeForm (PEP 747), TypedDict closed/extra_items (PEP 728), re.prefixmatch() (soft-dep re.match()), profiling package (sampling + tracing profilers), UTF-8 default encoding (PEP 686), profile module deprecation; pytest 9.0 additions: faulthandler_exit_on_timeout, consider_namespace_packages, monkeypatch.syspath_prepend() deprecation; community gotchas #57 (assertWarns no longer swallows non-matching warnings, Python 3.15) and #58 (cProfile/profile module deprecated, migrate to profiling.tracing); sourced from docs.python.org/3.15/whatsnew + peps.python.org + docs.pytest.org/en/stable/changelog.html
      Iter 52 (2026-05-12): 100/100 (+0) — added Python 3.15 lazy import keyword (PEP 810) with testing impact section; frozendict (PEP 814) + sentinel (PEP 661) for immutable test fixtures; threading.synchronized_iterator()/concurrent_tee() for lock-free concurrent iteration; asyncio.TaskGroup.cancel() for structured async cleanup; community gotchas #59 (TaskGroup.cancel() does not suppress already-completed task results) and #60 (lazy import + import-time side-effect ordering pitfall); sourced from docs.python.org/3.15/whatsnew + peps.python.org/pep-0810/ + peps.python.org/pep-0814/ + peps.python.org/pep-0661/
+     Iter 53 (2026-05-12): 100/100 (+~300 lines) — added conftest.py hierarchical organisation, fixture factories, parametrize indirect patterns, mock.patch context manager vs decorator comparison, FastAPI TestClient + ASGITransport + dependency_overrides + lifespan patterns, pytest-bdd Gherkin integration; community gotchas #61 (TestClient lifespan without context manager), #62 (asyncio_mode="auto" auto-collects helpers), #63 (stacked @patch arg order reversal); sourced from docs.pytest.org + fastapi.tiangolo.com + pytest-bdd docs + practitioner synthesis
 -->
 
 
@@ -10827,5 +10828,723 @@ sys.set_lazy_imports_filter(_force_eager)
 # Or: do NOT use lazy import/set_lazy_imports in conftest.py at all — keep test
 # startup predictable. Reserve lazy imports for application code only.
 ```
+
+---
+
+## Testing Patterns: Advanced pytest, FastAPI, and BDD
+<!-- Iter 53 (2026-05-12): added conftest.py hierarchy, parametrize indirect, mock.patch context managers vs decorators, FastAPI TestClient, pytest-asyncio advanced, pytest-bdd -->
+
+---
+
+### `conftest.py` Hierarchical Organisation — File-Tree Strategy
+
+`conftest.py` files are auto-discovered by pytest along the directory tree from the rootdir down to the test file. Placing fixtures at the right level controls their scope and avoids leaking test helpers into unrelated packages.
+
+**Canonical layout:**
+
+```
+project/
+├── conftest.py                 ← session-level: DB, external services, global settings
+├── pyproject.toml
+├── src/
+│   └── myapp/
+│       └── ...
+└── tests/
+    ├── conftest.py             ← suite-level: app factory, auth helpers, shared factories
+    ├── unit/
+    │   ├── conftest.py         ← unit-test helpers: in-memory mocks, tiny fakes
+    │   └── test_user_service.py
+    ├── integration/
+    │   ├── conftest.py         ← integration helpers: real DB transaction rollback
+    │   └── test_user_api.py
+    └── e2e/
+        ├── conftest.py         ← e2e helpers: browser driver, live server
+        └── test_user_flow.py
+```
+
+```python
+# tests/conftest.py — suite-wide fixtures visible to unit/, integration/, and e2e/
+import pytest
+from collections.abc import Generator
+from myapp import create_app
+from myapp.db import engine, Base
+
+
+@pytest.fixture(scope="session")
+def app():
+    """One app instance per pytest run — expensive to create."""
+    application = create_app(testing=True)
+    return application
+
+
+@pytest.fixture(scope="session", autouse=True)
+def create_tables() -> Generator[None, None, None]:
+    """Create all tables once for the session; drop after."""
+    Base.metadata.create_all(engine)
+    yield
+    Base.metadata.drop_all(engine)
+
+
+# tests/integration/conftest.py — adds transaction rollback to every integration test
+import pytest
+from sqlalchemy.orm import Session
+from myapp.db import engine
+
+
+@pytest.fixture
+def db_session() -> Generator[Session, None, None]:
+    """Function-scoped: each test gets a fresh transaction, rolled back after."""
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection)
+    yield session
+    session.close()
+    transaction.rollback()
+    connection.close()
+
+
+# tests/unit/conftest.py — lightweight in-memory replacements; no DB needed
+@pytest.fixture
+def fake_email_sender() -> list[dict]:
+    """Records sent emails; injected into unit tests to avoid real SMTP."""
+    sent: list[dict] = []
+
+    class FakeSender:
+        def send(self, to: str, subject: str, body: str) -> None:
+            sent.append({"to": to, "subject": subject, "body": body})
+
+    return sent  # type: ignore[return-value]
+```
+
+**Rules:**
+- Keep session-scoped fixtures in the top-level `conftest.py` or `tests/conftest.py`.
+- Never import application code in the root `conftest.py` — it runs before `sys.path` is set up by `pyproject.toml` src layout.
+- Use `autouse=True` sparingly; name it descriptively so its side effects are obvious in failure output.
+
+---
+
+### Fixture Factories — Dynamic Fixtures with Closures
+
+When tests need multiple independent instances of the same resource, return a *factory callable* from the fixture instead of a single value. The test creates as many instances as it needs; teardown is handled centrally.
+
+```python
+import pytest
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Widget:
+    name: str
+    tags: list[str] = field(default_factory=list)
+
+
+@pytest.fixture
+def make_widget():
+    """Factory fixture: returns a callable that creates Widget instances."""
+    created: list[Widget] = []
+
+    def _factory(name: str, tags: list[str] | None = None) -> Widget:
+        w = Widget(name=name, tags=tags or [])
+        created.append(w)
+        return w
+
+    yield _factory
+
+    # Teardown: cleanup all created instances
+    for widget in created:
+        print(f"[teardown] releasing widget {widget.name!r}")
+
+
+def test_two_widgets(make_widget):
+    a = make_widget("alpha", tags=["small"])
+    b = make_widget("beta")
+    assert a.name != b.name
+    assert a is not b          # independent instances
+    assert a.tags == ["small"]
+    assert b.tags == []
+
+
+# ── Database-backed factory (SQLAlchemy) ─────────────────────────────────────
+@pytest.fixture
+def create_user(db_session):
+    """Factory that inserts users and tracks them for rollback."""
+    from myapp.models import User
+
+    inserted: list[User] = []
+
+    def _create(username: str, email: str | None = None) -> User:
+        user = User(username=username, email=email or f"{username}@test.example")
+        db_session.add(user)
+        db_session.flush()    # assign PK without committing
+        inserted.append(user)
+        return user
+
+    return _create
+    # No teardown needed — db_session fixture rolls back the whole transaction
+```
+
+**When to use factory fixtures:** Any time a test might need 2+ instances, or when instance parameters vary by test. Prefer over `@pytest.mark.parametrize` when construction is stateful (involves DB writes).
+
+---
+
+### `@pytest.mark.parametrize` with `indirect` — Fixture-Driven Test Matrix
+
+`indirect` passes the parametrize value *through a fixture* instead of directly to the test. This enables fixture-level setup/teardown per parameter set and is the canonical pattern for testing against multiple database backends, API clients, or environment configurations.
+
+```python
+import pytest
+
+
+# ── Backend fixture: parametrized indirectly ─────────────────────────────────
+@pytest.fixture
+def storage_backend(request):
+    """
+    When used via indirect=, request.param carries the backend name.
+    Creates and tears down the appropriate backend.
+    """
+    backend_name: str = request.param
+
+    if backend_name == "memory":
+        from myapp.storage import MemoryBackend
+        backend = MemoryBackend()
+    elif backend_name == "sqlite":
+        import sqlite3, tempfile, pathlib
+        tmp = tempfile.mktemp(suffix=".db")
+        backend = sqlite3.connect(tmp)
+        yield backend
+        backend.close()
+        pathlib.Path(tmp).unlink(missing_ok=True)
+        return
+    elif backend_name == "redis":
+        import fakeredis
+        backend = fakeredis.FakeRedis()
+    else:
+        pytest.skip(f"unknown backend: {backend_name}")
+
+    yield backend
+
+
+# ── Test runs once per backend ────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "storage_backend",
+    ["memory", "sqlite", "redis"],
+    indirect=True,   # pass values to storage_backend fixture, not to test directly
+)
+def test_set_and_get(storage_backend):
+    """Test-agnostic of backend type — driven by indirect fixture."""
+    storage_backend.set("key", "value")
+    assert storage_backend.get("key") == "value"
+
+
+# ── Partial indirect: mix direct params and indirect fixtures ─────────────────
+@pytest.fixture
+def authenticated_client(request):
+    """Fixture receives the role name via indirect."""
+    from myapp.testing import make_client
+    client = make_client(role=request.param)
+    yield client
+
+
+@pytest.mark.parametrize(
+    ("authenticated_client", "expected_status"),
+    [
+        ("admin",  200),
+        ("editor", 200),
+        ("viewer", 403),
+    ],
+    indirect=["authenticated_client"],   # only the first param goes through fixture
+)
+def test_admin_endpoint(authenticated_client, expected_status):
+    response = authenticated_client.get("/api/admin/users")
+    assert response.status_code == expected_status
+
+
+# ── pytest.param with marks inside parametrize ───────────────────────────────
+@pytest.mark.parametrize(
+    "x, expected",
+    [
+        (2, 4),
+        (3, 9),
+        pytest.param(0, 0, id="zero"),
+        pytest.param(-1, 1, marks=pytest.mark.xfail(reason="negative not yet supported")),
+    ],
+)
+def test_square(x, expected):
+    assert x ** 2 == expected
+```
+
+**Key rules:**
+- `indirect=True` passes all parameters through fixtures by name.
+- `indirect=["fixture_name"]` passes only named parameters through their fixture; others are used directly.
+- Fixture setup/teardown runs per-parameter, so resources are properly isolated.
+
+---
+
+### `mock.patch`: Context Manager vs Decorator — When to Use Each
+
+`unittest.mock.patch` can be used as a context manager (`with patch(...)`) or a decorator (`@patch(...)`). The two forms are equivalent in effect but differ in readability, composability, and error visibility.
+
+```python
+from unittest.mock import patch, MagicMock
+import pytest
+
+
+# ── Subject under test ────────────────────────────────────────────────────────
+# myapp/notifications.py
+# import smtplib
+# def send_alert(address: str, message: str) -> None:
+#     with smtplib.SMTP("smtp.example.com") as smtp:
+#         smtp.sendmail("no-reply@example.com", address, message)
+
+
+# ── Decorator form — clean for single-mock tests ──────────────────────────────
+@patch("myapp.notifications.smtplib.SMTP")
+def test_send_alert_decorator(mock_smtp_cls):
+    """mock_smtp_cls injected as last positional argument before any fixtures."""
+    from myapp.notifications import send_alert
+    mock_instance = mock_smtp_cls.return_value.__enter__.return_value
+
+    send_alert("user@example.com", "disk almost full")
+
+    mock_smtp_cls.assert_called_once_with("smtp.example.com")
+    mock_instance.sendmail.assert_called_once()
+
+
+# ── Context manager form — preferred when multiple patches are needed ─────────
+def test_send_alert_context_manager():
+    """Context managers stack cleanly; each mock is named explicitly."""
+    from myapp.notifications import send_alert
+
+    with patch("myapp.notifications.smtplib.SMTP") as mock_smtp_cls, \
+         patch("myapp.notifications.logging") as mock_log:
+        mock_instance = mock_smtp_cls.return_value.__enter__.return_value
+
+        send_alert("user@example.com", "disk almost full")
+
+        mock_smtp_cls.assert_called_once_with("smtp.example.com")
+        mock_instance.sendmail.assert_called_once()
+        # mock_log.info.assert_called()  # also check logging if desired
+
+
+# ── Decorator stacking — arg order is BOTTOM-UP (outermost decorator → last arg)
+@patch("myapp.notifications.logging")
+@patch("myapp.notifications.smtplib.SMTP")   # innermost → first extra arg
+def test_send_alert_stacked(mock_smtp_cls, mock_log):  # SMTP first, then logging
+    from myapp.notifications import send_alert
+    send_alert("user@example.com", "disk almost full")
+    mock_smtp_cls.assert_called_once()
+
+
+# ── patch as pytest fixture (via pytest-mock's mocker, or manually) ───────────
+@pytest.fixture
+def patched_smtp():
+    with patch("myapp.notifications.smtplib.SMTP") as mock_smtp:
+        yield mock_smtp
+
+
+def test_send_alert_fixture(patched_smtp):
+    """Most readable option when the patch is reused across multiple tests."""
+    from myapp.notifications import send_alert
+    send_alert("user@example.com", "disk almost full")
+    patched_smtp.assert_called_once_with("smtp.example.com")
+
+
+# ── patch.object — patch a method on a specific instance or class ─────────────
+class EmailService:
+    def deliver(self, to: str, subject: str) -> bool:
+        return True   # real implementation calls SMTP
+
+
+def test_patch_object():
+    service = EmailService()
+    with patch.object(service, "deliver", return_value=False) as mock_deliver:
+        result = service.deliver("a@b.com", "hello")
+    assert result is False
+    mock_deliver.assert_called_once_with("a@b.com", "hello")
+```
+
+**Comparison table:**
+
+| Form | Best for | Pitfall |
+|------|----------|---------|
+| `@patch(...)` decorator | Single mock, simple test | Argument order is confusing with stacked decorators (bottom-up) |
+| `with patch(...)` | Multiple patches, long setup | `as` clause required or mock is unnamed |
+| `@pytest.fixture + patch` | Shared mock across test class/module | Slightly more boilerplate; recommended for reuse |
+| `patch.object(instance, ...)` | Patching a specific instance's method | Cannot patch C-extension methods |
+
+**Always patch in the namespace where the name is used, not where it is defined.** If `myapp.notifications` does `import smtplib`, patch `myapp.notifications.smtplib`, not `smtplib.SMTP`.
+
+---
+
+### FastAPI Testing with `TestClient` and `httpx.AsyncClient`
+
+FastAPI applications are ASGI apps; the recommended test approach is `httpx.TestClient` (synchronous) for most tests and `httpx.AsyncClient` with `ASGITransport` for async tests. Both avoid real network I/O.
+
+```python
+# src/myapp/main.py — minimal FastAPI app
+from fastapi import FastAPI, Depends, HTTPException, status
+from pydantic import BaseModel
+
+app = FastAPI()
+
+
+class Item(BaseModel):
+    name: str
+    price: float
+
+
+_items: dict[int, Item] = {}
+_counter = 0
+
+
+@app.post("/items/", status_code=status.HTTP_201_CREATED)
+def create_item(item: Item) -> dict:
+    global _counter
+    _counter += 1
+    _items[_counter] = item
+    return {"id": _counter, **item.model_dump()}
+
+
+@app.get("/items/{item_id}")
+def read_item(item_id: int) -> Item:
+    if item_id not in _items:
+        raise HTTPException(status_code=404, detail="Not found")
+    return _items[item_id]
+```
+
+```python
+# tests/test_items.py
+import pytest
+from fastapi.testclient import TestClient
+from myapp.main import app, _items
+
+
+@pytest.fixture(autouse=True)
+def clear_items():
+    """Reset in-memory store before each test — important for isolation."""
+    _items.clear()
+    yield
+    _items.clear()
+
+
+@pytest.fixture
+def client() -> TestClient:
+    return TestClient(app)
+
+
+def test_create_item(client: TestClient) -> None:
+    response = client.post("/items/", json={"name": "Widget", "price": 9.99})
+    assert response.status_code == 201
+    data = response.json()
+    assert data["name"] == "Widget"
+    assert data["price"] == pytest.approx(9.99)
+    assert "id" in data
+
+
+def test_read_missing_item(client: TestClient) -> None:
+    response = client.get("/items/9999")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Not found"
+
+
+def test_create_then_read(client: TestClient) -> None:
+    create_r = client.post("/items/", json={"name": "Gadget", "price": 14.99})
+    item_id = create_r.json()["id"]
+
+    read_r = client.get(f"/items/{item_id}")
+    assert read_r.status_code == 200
+    assert read_r.json()["name"] == "Gadget"
+
+
+# ── Overriding dependencies with app.dependency_overrides ─────────────────────
+from myapp.main import app as fastapi_app
+
+
+def get_current_user():
+    """Real auth dependency — queries DB / JWT."""
+    ...
+
+
+def override_get_current_user():
+    """Fake: always returns a test user without auth checks."""
+    return {"id": 1, "username": "testuser", "role": "admin"}
+
+
+@pytest.fixture
+def authenticated_client():
+    fastapi_app.dependency_overrides[get_current_user] = override_get_current_user
+    yield TestClient(fastapi_app)
+    fastapi_app.dependency_overrides.clear()   # restore after test
+
+
+def test_protected_endpoint(authenticated_client: TestClient) -> None:
+    response = authenticated_client.get("/api/me")
+    assert response.status_code == 200
+    assert response.json()["username"] == "testuser"
+```
+
+```python
+# ── Async FastAPI testing with httpx.AsyncClient ─────────────────────────────
+import pytest
+import httpx
+from myapp.main import app as fastapi_app
+
+
+@pytest.mark.asyncio
+async def test_create_item_async() -> None:
+    """Use ASGITransport to call the ASGI app directly without a real server."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=fastapi_app),
+        base_url="http://test",
+    ) as ac:
+        response = await ac.post("/items/", json={"name": "Async Widget", "price": 5.0})
+    assert response.status_code == 201
+    assert response.json()["name"] == "Async Widget"
+
+
+# ── Lifespan (startup/shutdown) testing ──────────────────────────────────────
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """Startup: connect to DB. Shutdown: disconnect."""
+    application.state.db = {"connected": True}   # replace with real DB
+    yield
+    application.state.db = None
+
+
+app_with_lifespan = FastAPI(lifespan=lifespan)
+
+
+def test_lifespan_runs():
+    """TestClient triggers lifespan events when used as context manager."""
+    with TestClient(app_with_lifespan) as client:
+        # lifespan startup has run by here
+        assert client.app.state.db == {"connected": True}
+    # lifespan shutdown has run after the block
+```
+
+**Rules:**
+- Use `TestClient` as a context manager (`with TestClient(app) as client`) to trigger lifespan events.
+- Use `app.dependency_overrides` to replace expensive or external dependencies (DB, auth, email) — always clear in teardown.
+- Use `httpx.AsyncClient(transport=httpx.ASGITransport(app=app))` for async test code; `TestClient` internally wraps the ASGI app in a sync interface and is usually sufficient.
+
+---
+
+### pytest-bdd — Behaviour-Driven Development with Gherkin
+
+`pytest-bdd` maps Gherkin `Feature`/`Scenario`/`Given`/`When`/`Then` steps to Python pytest fixtures and functions. It keeps executable specifications in `.feature` files and test code in Python, bridging the QA/dev gap without abandoning pytest's fixture ecosystem.
+
+```bash
+pip install pytest-bdd
+```
+
+```gherkin
+# tests/features/shopping_cart.feature
+Feature: Shopping cart
+  As a customer I want to add items to my cart so I can purchase them.
+
+  Scenario: Adding a single item
+    Given an empty shopping cart
+    When I add "Widget" with price 9.99 to the cart
+    Then the cart should contain 1 item
+    And the cart total should be 9.99
+
+  Scenario Outline: Applying discounts
+    Given an empty shopping cart
+    When I add "Widget" with price <price> to the cart
+    And I apply a <discount>% discount
+    Then the cart total should be <expected>
+
+    Examples:
+      | price | discount | expected |
+      | 100.0 |       10 |     90.0 |
+      | 50.0  |       20 |     40.0 |
+      | 200.0 |        0 |    200.0 |
+```
+
+```python
+# tests/test_shopping_cart.py
+import pytest
+from pytest_bdd import given, when, then, scenario, parsers
+
+
+# ── Link scenarios to feature file ───────────────────────────────────────────
+@scenario("features/shopping_cart.feature", "Adding a single item")
+def test_add_single_item():
+    pass   # empty — pytest-bdd wires it up via steps below
+
+
+# ── Step definitions — share fixtures with regular pytest fixtures ─────────
+@pytest.fixture
+def cart():
+    """Shared state for a scenario — acts like a pytest fixture."""
+    return {"items": [], "discount_pct": 0.0}
+
+
+@given("an empty shopping cart")
+def empty_cart(cart):
+    cart["items"].clear()
+    cart["discount_pct"] = 0.0
+
+
+@when(parsers.parse('I add "{name}" with price {price:f} to the cart'))
+def add_item(cart, name: str, price: float):
+    cart["items"].append({"name": name, "price": price})
+
+
+@then(parsers.parse("the cart should contain {count:d} item"))
+@then(parsers.parse("the cart should contain {count:d} items"))
+def assert_item_count(cart, count: int):
+    assert len(cart["items"]) == count
+
+
+@then(parsers.parse("the cart total should be {expected:f}"))
+def assert_total(cart, expected: float):
+    subtotal = sum(i["price"] for i in cart["items"])
+    total = subtotal * (1 - cart["discount_pct"] / 100)
+    assert total == pytest.approx(expected)
+
+
+@when(parsers.parse("I apply a {discount:d}% discount"))
+def apply_discount(cart, discount: int):
+    cart["discount_pct"] = float(discount)
+
+
+# ── Scenario Outline — use @scenario with parametrize or scenarios() ─────────
+from pytest_bdd import scenarios
+
+# Loads ALL scenarios from the feature file — convenient for outline-only files
+scenarios("features/shopping_cart.feature")
+```
+
+**`pyproject.toml` configuration:**
+
+```toml
+[tool.pytest.ini_options]
+# Tell pytest-bdd where to look for .feature files relative to rootdir
+bdd_features_base_dir = "tests/features/"
+```
+
+**Comparison: `pytest-bdd` vs plain `@pytest.mark.parametrize`:**
+
+| Aspect | pytest-bdd | parametrize |
+|--------|-----------|-------------|
+| Readable by non-developers | Yes — Gherkin English | No — Python only |
+| Reuse steps across files | Yes — step registry | No — fixtures only |
+| Scenario Outlines | Yes — Examples table | `@pytest.mark.parametrize` |
+| Debug output | Step name in failure | Parameter values |
+| Overhead | Higher (parser, registry) | Zero |
+
+**Use pytest-bdd when:** acceptance tests are co-authored with QA/product owners who write Gherkin. **Use plain pytest otherwise** — the Gherkin layer adds friction without value when only developers write and read the tests.
+
+---
+
+### Community Gotcha #61: `TestClient` Does Not Run `lifespan` Without Context Manager  [community]
+
+**Problem:** Calling `TestClient(app).get(...)` as a one-liner (without `with`) does not trigger FastAPI's `lifespan` startup events. If the app initialises a DB pool, cache, or background worker in `lifespan`, those resources are `None` during the test — causing `AttributeError` or silent incorrect behaviour.
+
+**Why:** `TestClient` launches the ASGI lifespan in `__enter__` and shuts it down in `__exit__`. Using `TestClient(app)` without `with` bypasses `__enter__`, so `startup` never runs. Requests still succeed (the routing works) but `app.state.*` populated by `lifespan` is uninitialised.
+
+```python
+# BAD — lifespan never runs
+def test_without_lifespan():
+    client = TestClient(app_with_lifespan)
+    # app.state.db is None here — lifespan startup did not run
+    response = client.get("/items/")   # may crash if handler uses app.state.db
+
+
+# GOOD — use as context manager
+def test_with_lifespan():
+    with TestClient(app_with_lifespan) as client:
+        # Startup has run — app.state.db is populated
+        response = client.get("/items/")
+        assert response.status_code == 200
+    # Shutdown has run
+
+
+# GOOD — fixture-level context manager
+@pytest.fixture(scope="session")
+def live_client():
+    with TestClient(app_with_lifespan) as client:
+        yield client   # lifespan active for all tests using this fixture
+```
+
+**Rule:** Always use `TestClient` as a context manager. Create it in a `pytest.fixture` and `yield` inside the `with` block. Use `scope="session"` if the lifespan setup is expensive.
+
+---
+
+### Community Gotcha #62: `pytest-asyncio` `asyncio_mode="auto"` Silently Skips Non-Async Tests in Some Configurations  [community]
+
+**Problem:** Setting `asyncio_mode = "auto"` in `pyproject.toml` marks every `async def` in a test module as an asyncio test — but it also affects `async def` helper functions that are not tests. If a non-test async function is auto-collected (e.g., it starts with `test_` by coincidence, or is decorated incorrectly), it runs as an asyncio test without awaiting properly and fails with a confusing error.
+
+**Why:** `asyncio_mode = "auto"` uses a pytest plugin hook to wrap every `async def` in the test namespace. It does not distinguish between test functions and helper coroutines beyond the `test_` prefix rule. If your helper is named `test_<something>` or is in a class named `Test<Something>`, it is collected as a test.
+
+```python
+# BAD — helper named with test_ prefix, accidentally collected
+async def test_connection_helper() -> bool:
+    """Returns True if the DB is reachable — meant to be called by tests."""
+    ...  # never awaited properly when auto-collected
+    return True
+
+
+# GOOD — rename helpers to not start with test_
+async def is_db_reachable() -> bool:
+    ...
+    return True
+
+
+# GOOD — pytest.ini_options: restrict collection to explicit test_ patterns
+# [tool.pytest.ini_options]
+# python_files = ["test_*.py", "*_test.py"]
+# python_functions = ["test_*"]  # only functions explicitly named test_*
+```
+
+**Rule:** In `asyncio_mode = "auto"` mode, audit your test modules for `async def` functions not named `test_*`. Keep helper coroutines in a non-collected module (e.g., `tests/helpers/`) or name them clearly (no `test_` prefix).
+
+---
+
+### Community Gotcha #63: `mock.patch` Decorator Argument Order Reversal with Multiple Patches  [community]
+
+**Problem:** When stacking `@patch` decorators, the mock arguments are passed to the test function in **bottom-up** order (innermost decorator first). Developers frequently write the mocks in top-down reading order, mapping arguments in the wrong order and causing subtle assertion errors.
+
+**Why:** Python applies decorators inside-out: the closest decorator to the function runs first and injects its mock as the first extra argument. The outermost decorator's mock is the last argument. This is the reverse of the natural reading order.
+
+```python
+from unittest.mock import patch, MagicMock
+
+
+# BAD — argument names reversed; mock_smtp is actually the logger mock
+@patch("myapp.send.logging")       # outermost → LAST arg
+@patch("myapp.send.smtplib.SMTP")  # innermost → FIRST arg
+def test_send_email_wrong(mock_smtp, mock_log):
+    # WRONG! mock_smtp is the logging mock; mock_log is the SMTP mock
+    mock_smtp.return_value.__enter__.return_value.sendmail.assert_called()
+    # This assertion silently passes or gives misleading errors
+
+
+# GOOD — argument names match bottom-up order
+@patch("myapp.send.logging")       # outermost → last arg = mock_log
+@patch("myapp.send.smtplib.SMTP")  # innermost → first arg = mock_smtp_cls
+def test_send_email_correct(mock_smtp_cls, mock_log):
+    from myapp.send import send_email
+    send_email("a@b.com", "hello")
+    mock_smtp_cls.assert_called_once_with("smtp.example.com")
+    mock_log.info.assert_called()
+
+
+# PREFERRED — use context manager to avoid argument-order confusion entirely
+def test_send_email_context():
+    with patch("myapp.send.smtplib.SMTP") as mock_smtp_cls, \
+         patch("myapp.send.logging") as mock_log:
+        from myapp.send import send_email
+        send_email("a@b.com", "hello")
+        mock_smtp_cls.assert_called_once_with("smtp.example.com")
+        mock_log.info.assert_called()
+```
+
+**Rule:** Prefer context managers when patching more than one target. If using stacked decorators, add a comment listing the bottom-up order explicitly, and write argument names that match the decorator order, not the reading order.
 
 **Rule:** Never apply `sys.set_lazy_imports("all")` or `lazy import` to modules that perform side effects at import time (signal handlers, plugin registries, atexit hooks, logging configuration). Use `sys.set_lazy_imports_filter()` to create an allowlist. In test code, prefer explicit eager imports in `conftest.py` to preserve deterministic collection and fixture setup order.

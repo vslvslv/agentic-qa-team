@@ -1,5 +1,5 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases/tag/v16.4.0 (WebFetch 2026-05-12 iteration 27), github.com/pact-foundation/pact-js/issues/1762 (WebFetch 2026-05-12 iteration 27), docs.pact.io/pact_broker/advanced_topics/consumer_version_selectors (WebFetch 2026-05-12 iteration 28), pactflow.io/blog (WebFetch 2026-05-12 iteration 28), github.com/pactflow/pact-protobuf-plugin/releases (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1585 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1634 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/issues/1696 (WebFetch 2026-05-12 iteration 30), github.com/pact-foundation/pact-js/pull/1767 (WebFetch 2026-05-12 iteration 30), pactflow.io/blog (WebFetch 2026-05-12 iteration 30), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 31), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 31), pactflow.io/blog (WebFetch 2026-05-12 iteration 31), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12 iteration 31) | community: production lessons -->
 <!-- new in iteration 24: extended MatchersV3 quick reference (atMostLike, constrainedArrayLike, includes, nullValue, equal, eachKeyMatches, eachValueMatches), InterfaceToTemplate<T> TypeScript utility, constrainedArrayLike bounded-array pattern, community lessons 47-49 (executeTest single-interaction-per-call constraint, constrainedArrayLike for bounded APIs, InterfaceToTemplate drift) -->
 <!-- new in iteration 26: Multipart form data / file upload contract testing pattern (multipartBody/binaryFile V4 DSL, official docs May 2026), SpecificationVersion enum for explicit spec version control, community lessons 54-57 (EADDRINUSE with provider.setup() missing finalize, Jest --watch tracing subscriber warning, multipart form data over-specification anti-pattern, SpecificationVersion enum usage) -->
@@ -5724,3 +5724,491 @@ describe('InventorySubgraph provider verification (federation entity contract)',
 66. **[community] `filterConsumerNames` in `VerifierV3` silently returns zero interactions when the consumer name has a case mismatch — and if `failIfNoPactsFound` is not set, the build passes.** Teams that use `filterConsumerNames: ['checkoutService']` (camelCase) when the pact file records `consumer.name: 'CheckoutService'` (PascalCase) receive zero interactions and a green build. The consumer name in `filterConsumerNames` must exactly match the `consumer` field in the Pact constructor of the consumer test — including casing. **Prevention:** add `failIfNoPactsFound: true` alongside any use of `filterConsumerNames`; the Broker returns pact files normally, but the local filter reduces interactions to zero — `failIfNoPactsFound` catches this. As a secondary check, log the number of interactions after `verifyProvider()` resolves: a green build with fewer interactions than expected is a signal that filtering is over-narrowing. This is a subtly different failure mode from the `matchingBranch` gotcha (lesson #58) — that one is about zero pact files fetched from the Broker; `filterConsumerNames` is about pact files fetched successfully but all interactions filtered out locally.
 
 67. **[community] Server-Sent Events (SSE) and WebSocket streams cannot be contract-tested with Pact — the correct boundary is to test the initial HTTP handshake and the message payload shape separately.** Teams that add SSE endpoints to a previously-pacted REST API assume CDC extends automatically. It does not: Pact models discrete request/response pairs; SSE is a persistent streaming connection where the server pushes multiple events after a single GET request. The `EventSource` client in the browser holds an open connection — Pact's mock server closes after the first response, causing the consumer test to fail or time out. **The correct strategy:** (1) contract-test the *initial connection handshake* as a standard HTTP GET interaction — assert the `Content-Type: text/event-stream` response header and an empty or initial-event body shape; (2) contract-test the *message payload shape* using `MessageConsumerPact` (treat each SSE event type as an async message), with a handler that parses the `data:` field; (3) test the *stream behaviour* (reconnection, event ordering, keepalive) in integration tests with a real SSE endpoint. This three-layer approach captures the contract concerns without trying to force a streaming protocol into a request/response model. GraphQL subscriptions face the same boundary (community lesson #21) — the pattern is identical: HTTP handshake via Pact HTTP interaction, payload shape via message pact, stream behaviour via integration test.
+
+---
+
+### Multi-Interaction `executeTest` — Workflow Contract Testing (TypeScript)
+
+The official Pact guidance is "one interaction per test" — but a common legitimate exception is when the consumer has a **multi-step workflow** where several API calls must be recorded together to exercise a single consumer code path. pact-js V4's `addInteraction()` supports chaining multiple interactions before a single `executeTest()` call.
+
+**When to use multi-interaction `executeTest`:**
+- A consumer function makes two sequential HTTP calls internally (e.g., `POST /cart/items` then `GET /cart` to refresh state)
+- Testing a retry/fallback path where the consumer calls a primary endpoint and a fallback in a single operation
+- A consumer test helper that encapsulates a "setup + verify" pattern across two endpoints
+
+```typescript
+// cart-workflow.consumer.pact.spec.ts
+// Multi-interaction executeTest: add item to cart, then fetch updated cart.
+// Both interactions are registered before executeTest so the mock server
+// handles both requests in a single test session.
+import path from 'path';
+import { Pact, Matchers } from '@pact-foundation/pact';
+import { CartClient } from '../src/cart-client';
+
+const { like, string, integer, eachLike } = Matchers;
+
+interface CartItem {
+  itemId: string;
+  quantity: number;
+  price: number;
+}
+
+interface Cart {
+  cartId: string;
+  items: CartItem[];
+  total: number;
+}
+
+const provider = new Pact({
+  consumer: 'CheckoutApp',
+  provider: 'CartService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  logLevel: 'warn',
+  // V4: no port — auto-assigned; safe for multi-interaction sessions
+});
+
+describe('CheckoutApp → CartService (multi-step add-then-fetch workflow)', () => {
+  it('adds an item to the cart and immediately fetches the updated cart', async () => {
+    await provider
+      // Interaction 1: POST to add item — registered first
+      .addInteraction()
+      .given('cart CART-001 exists and is empty')
+      .uponReceiving('a POST /carts/CART-001/items request to add ITEM-42 (qty=2)')
+      .withRequest('POST', '/carts/CART-001/items', (builder) => {
+        builder
+          .headers({ 'Content-Type': 'application/json' })
+          .jsonBody({ itemId: string('ITEM-42'), quantity: integer(2) });
+      })
+      .willRespondWith(201, (builder) => {
+        builder.jsonBody({
+          cartId: like('CART-001'),
+          itemId: like('ITEM-42'),
+          quantity: integer(2),
+        });
+      })
+      // Interaction 2: GET to fetch cart state — chained on the same provider instance
+      .addInteraction()
+      .given('cart CART-001 contains item ITEM-42 with quantity 2')
+      .uponReceiving('a GET /carts/CART-001 request after adding ITEM-42')
+      .withRequest('GET', '/carts/CART-001')
+      .willRespondWith(200, (builder) => {
+        builder.jsonBody({
+          cartId: string('CART-001'),
+          items: eachLike({
+            itemId: string('ITEM-42'),
+            quantity: integer(2),
+            price: like(29.99),
+          }),
+          total: like(59.98),
+        });
+      })
+      // Single executeTest: mock server handles BOTH interactions in this session.
+      // The consumer's addItemAndRefresh() method makes both calls.
+      .executeTest(async (mockServer) => {
+        const client = new CartClient(mockServer.url);
+        const cart: Cart = await client.addItemAndRefresh('CART-001', {
+          itemId: 'ITEM-42',
+          quantity: 2,
+        });
+        // Assert only what the consumer code uses after the workflow completes
+        expect(cart.cartId).toBe('CART-001');
+        expect(cart.items.length).toBeGreaterThanOrEqual(1);
+        expect(cart.total).toBeGreaterThan(0);
+      });
+  });
+});
+```
+
+**When NOT to use multi-interaction `executeTest`:**
+
+```typescript
+// ❌ ANTI-PATTERN: chained executeTest calls for independent scenarios
+// Each executeTest starts and stops the mock server. The second call
+// runs against a FRESH mock server with no interactions registered.
+await provider
+  .addInteraction()
+  .given('...')
+  .uponReceiving('add item scenario')
+  .withRequest('POST', '/items', ...)
+  .willRespondWith(201, ...)
+  .executeTest(async (mockServer) => {
+    // First session — this works
+    await client.addItem(mockServer.url, ...);
+  });
+
+// ❌ WRONG: second executeTest is a separate mock server session —
+// it has no knowledge of the first interaction.
+await provider
+  .addInteraction()
+  .given('...')
+  .uponReceiving('fetch cart scenario')
+  .withRequest('GET', '/cart', ...)
+  .willRespondWith(200, ...)
+  .executeTest(async (mockServer) => {
+    // Second session — independent; simulates a different test entirely.
+    // Do NOT use this pattern to simulate a workflow that requires both calls.
+    await client.getCart(mockServer.url);
+  });
+
+// ✅ CORRECT for independent scenarios: use separate it() blocks
+// Each it() block = one interaction = one executeTest
+describe('CartService interactions', () => {
+  it('adds an item (standalone POST)', async () => {
+    await provider.addInteraction()...executeTest(...);
+  });
+  it('fetches a cart (standalone GET)', async () => {
+    await provider.addInteraction()...executeTest(...);
+  });
+});
+```
+
+**Decision guide:**
+
+| Scenario | Pattern |
+|---|---|
+| Two calls inside one consumer method | Multi-interaction: one `executeTest`, multiple `addInteraction()` calls |
+| Two independently testable consumer behaviours | Separate `it()` blocks, each with their own `addInteraction().executeTest()` |
+| Consumer calls provider then calls a different provider | Two separate pact provider instances, each with their own `executeTest` |
+| Retry logic: call endpoint A, fall back to endpoint B | Multi-interaction: both registered in one session |
+
+**Key points:**
+- In V4, `addInteraction()` returns the same `Pact` instance — chaining is supported, and all registered interactions are available to the mock server for the duration of the subsequent `executeTest` call
+- This pattern generates a single pact file entry with both interactions — the provider team must implement state handlers for both provider states
+- Each `addInteraction().willRespondWith()` call in a multi-interaction session must have a unique `uponReceiving` description (same de-duplication rule applies as always)
+- Do NOT use multi-interaction `executeTest` as a workaround for tests that are actually independent scenarios — this inflates pact files and obscures intent
+
+---
+
+### `dateTime` and Date Matchers — Deterministic Temporal Contracts (TypeScript)
+
+Date and time matchers are the second most common source of non-deterministic pact files (after UUIDs). The full `dateTime` / `date` / `time` matcher API from `MatchersV3` (or `Matchers` in v16+) provides format-specific matching with fixed examples.
+
+```typescript
+// temporal-matchers.consumer.pact.spec.ts
+// Demonstrates all date/time matchers with fixed examples.
+// Use fixed example strings throughout — never call Date.now() or new Date() in pact bodies.
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { EventClient } from '../src/event-client';
+
+const {
+  like,
+  string,
+  timestamp,  // full datetime with timezone — the most common
+  date,       // date only (no time component)
+  time,       // time only (no date component)
+} = MatchersV3;
+
+interface EventRecord {
+  eventId: string;
+  occurredAt: string;         // ISO 8601 datetime with timezone
+  scheduledDate: string;      // date only (YYYY-MM-DD)
+  windowStart: string;        // time only (HH:mm:ss)
+  lastModified: string;       // ISO 8601 datetime (no timezone — legacy field)
+}
+
+const provider = new PactV3({
+  consumer: 'SchedulerService',
+  provider: 'EventService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8099,
+  logLevel: 'warn',
+});
+
+describe('SchedulerService → EventService contract (temporal matchers)', () => {
+  it('returns an event record with correctly matched temporal fields', async () => {
+    await provider
+      .given('event EVT-001 is scheduled')
+      .uponReceiving('a GET /events/EVT-001 request to retrieve event details')
+      .withRequest({
+        method: 'GET',
+        path: '/events/EVT-001',
+        headers: { Accept: 'application/json' },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          eventId: string('EVT-001'),
+
+          // timestamp(format, example): ISO 8601 with timezone offset
+          // Format uses Java's DateTimeFormatter pattern (Pact's internal format engine):
+          //   yyyy = 4-digit year, MM = 2-digit month, dd = 2-digit day
+          //   HH = 24-hour hours, mm = minutes, ss = seconds
+          //   XXX = timezone offset (+00:00 format)
+          //   'T' = literal T separator (must be quoted)
+          occurredAt: timestamp("yyyy-MM-dd'T'HH:mm:ssXXX", '2025-06-15T10:30:00+00:00'),
+
+          // date(format, example): date only — no time component
+          scheduledDate: date('yyyy-MM-dd', '2025-06-20'),
+
+          // time(format, example): time only — no date component
+          windowStart: time('HH:mm:ss', '09:00:00'),
+
+          // For legacy datetime fields without timezone, use a timestamp pattern without XXX
+          // NOTE: like() is also valid if format doesn't matter to the consumer
+          lastModified: timestamp("yyyy-MM-dd'T'HH:mm:ss", '2025-06-10T08:00:00'),
+        },
+      })
+      .executeTest(async (mockServer) => {
+        const client = new EventClient(mockServer.url);
+        const event: EventRecord = await client.getEvent('EVT-001');
+        // Only assert what the consumer code branches on
+        expect(event.eventId).toBe('EVT-001');
+        // The mock server returns the fixed example values above — check type, not value
+        expect(typeof event.occurredAt).toBe('string');
+        expect(typeof event.scheduledDate).toBe('string');
+      });
+  });
+});
+```
+
+**Format string reference for `timestamp()`, `date()`, `time()`:**
+
+| Symbol | Meaning | Example |
+|---|---|---|
+| `yyyy` | 4-digit year | `2025` |
+| `MM` | 2-digit month (01–12) | `06` |
+| `dd` | 2-digit day (01–31) | `15` |
+| `HH` | 24-hour hours (00–23) | `10` |
+| `mm` | Minutes (00–59) | `30` |
+| `ss` | Seconds (00–59) | `00` |
+| `SSS` | Milliseconds (000–999) | `000` |
+| `XXX` | Timezone offset (`+00:00`, `-05:00`) | `+00:00` |
+| `Z` | Timezone offset (`+0000`, `Z`) | `Z` |
+| `'T'` | Literal character T | `T` |
+| `'Z'` | Literal character Z | `Z` |
+
+**Common format patterns:**
+
+| Format string | Example value | Use case |
+|---|---|---|
+| `yyyy-MM-dd'T'HH:mm:ssXXX` | `2025-06-15T10:30:00+00:00` | ISO 8601 with offset (most APIs) |
+| `yyyy-MM-dd'T'HH:mm:ss.SSSXXX` | `2025-06-15T10:30:00.000+00:00` | ISO 8601 with milliseconds |
+| `yyyy-MM-dd'T'HH:mm:ss'Z'` | `2025-06-15T10:30:00Z` | ISO 8601 with literal Z (UTC) |
+| `yyyy-MM-dd` | `2025-06-15` | Date only |
+| `HH:mm:ss` | `10:30:00` | Time only |
+| `dd/MM/yyyy` | `15/06/2025` | European date format |
+| `MM/dd/yyyy` | `06/15/2025` | US date format |
+
+**Key points:**
+- Always provide a **fixed example string** as the second argument — never `new Date().toISOString()` or `Date.now()`. Dynamic values make pact files non-deterministic (community lesson #45)
+- `timestamp('format', 'example')` validates that the actual value matches the given format pattern; `like('2025-06-15T10:30:00Z')` only validates the type (string). Use `timestamp` when the format must be consistent, `like` when any string is acceptable
+- Pact uses Java's `DateTimeFormatter` pattern syntax internally — this is the same syntax regardless of whether you're writing TypeScript, Python, or Java consumer tests
+- A missing timezone in the example string will cause `timestamp("yyyy-MM-dd'T'HH:mm:ssXXX", ...)` to fail at verification if the provider omits the timezone offset. Test both the format pattern and a realistic example value together
+- `dateTime` is not a valid export from `MatchersV3` in pact-js v13+; use `timestamp` instead. The official Pact consumer docs use `dateTime` for documentation purposes only
+
+---
+
+### Lean Contract Test Checklist (TypeScript — official Pact guidance synthesized)
+
+The official Pact consumer guide synthesizes the "lean contract" principle into a set of concrete practices. This section formalizes the checklist for consumer test review and pull request sign-off.
+
+```typescript
+// lean-contract-checklist.consumer.pact.spec.ts
+// A single interaction demonstrating ALL lean contract practices in one place.
+// Use as a reference template for new consumer tests.
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { ProductClient } from '../src/product-client';
+
+const { like, string, integer, eachLike, regex } = MatchersV3;
+
+interface Product {
+  id: string;
+  name: string;
+  price: number;
+  category: string;
+}
+
+const provider = new PactV3({
+  consumer: 'CatalogUI',
+  provider: 'ProductService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  port: 8100,
+  logLevel: 'warn',
+});
+
+describe('CatalogUI → ProductService contract (lean contract practices)', () => {
+  // ✅ PRACTICE 1: Invoke the REAL consumer code inside executeTest —
+  //    not raw axios.get() or fetch().
+  //    The Pact test proves the REAL client constructs the request and
+  //    parses the response correctly, not that the mock server works.
+  it('returns product list for a category (CatalogUI.loadCategory() consumer code path)', async () => {
+    await provider
+      // ✅ PRACTICE 2: Provider state describes real domain state, not
+      //    implementation details. "category electronics has 3 products"
+      //    not "database has rows in products table".
+      .given('category electronics has at least 3 products')
+
+      // ✅ PRACTICE 3: uponReceiving description forms a natural-language sentence
+      //    that answers: "What consumer code path does this test cover?"
+      //    Includes the HTTP method + path to prevent duplicate descriptions.
+      .uponReceiving('a GET /products?category=electronics request to load the electronics category page')
+
+      .withRequest({
+        method: 'GET',
+        path: '/products',
+        // ✅ PRACTICE 4: Include only headers the consumer ACTUALLY sends.
+        //    Don't add Authorization here — inject via requestFilter on provider side.
+        headers: { Accept: 'application/json' },
+        query: { category: 'electronics' },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: {
+          // ✅ PRACTICE 5: Content-Type with like() — allows charset variations without breaking.
+          'Content-Type': like('application/json'),
+        },
+        body: {
+          // ✅ PRACTICE 6: Only assert fields the consumer code READS.
+          //    CatalogUI renders id, name, price, category — nothing else.
+          //    Any field not asserted here can change freely on the provider.
+          products: eachLike({
+            id: regex(/^PROD-\d+$/, 'PROD-001'),  // consumer validates format: use regex
+            name: like('Widget A'),                // consumer renders: loose match
+            price: like(19.99),                   // consumer renders: loose match
+            category: like('electronics'),        // consumer reads for breadcrumb: loose match
+          }),
+          // ✅ PRACTICE 7: Include pagination fields only if the consumer uses them.
+          //    CatalogUI shows "Page X of Y" — it reads `page` and `totalPages`.
+          page: integer(1),
+          totalPages: integer(3),
+          // total: NOT included — CatalogUI doesn't render total item count
+        },
+      })
+      .executeTest(async (mockServer) => {
+        // ✅ PRACTICE 8: Call the REAL consumer client, not raw HTTP.
+        const client = new ProductClient(mockServer.url);
+        const result = await client.loadCategory('electronics');
+
+        // ✅ PRACTICE 9: Assert only what the consumer code ACTS ON after parsing.
+        //    Don't assert every field in the response — that's integration testing.
+        //    The fact that executeTest runs without error proves the response parsed.
+        expect(result.products.length).toBeGreaterThanOrEqual(1);
+        expect(result.products[0].id).toMatch(/^PROD-\d+$/);
+        expect(typeof result.products[0].price).toBe('number');
+        expect(result.totalPages).toBeGreaterThan(0);
+        // ✅ PRACTICE 10: Do NOT assert `result.products[0].createdAt` here
+        //    because ProductClient.loadCategory() doesn't parse or use createdAt.
+        //    Adding it just because the provider returns it adds brittleness.
+      });
+  });
+});
+```
+
+**The 10-point lean contract review checklist:**
+
+| # | Check | Why |
+|---|---|---|
+| 1 | Consumer's real client code is called inside `executeTest` | Proves the client, not just the mock, works correctly |
+| 2 | Provider state describes domain state, not implementation | Provider team can implement any way they choose |
+| 3 | `uponReceiving` description is unique and scenario-specific | Prevents silent Broker de-duplication overwrite |
+| 4 | Only headers the consumer actually sends are in `withRequest` | Avoids over-constraining the provider's allowed request shape |
+| 5 | `Content-Type` header uses `like()`, not exact string | Allows charset variations without contract break |
+| 6 | Response body only asserts fields the consumer reads | Lets provider add/rename other fields freely |
+| 7 | Pagination/metadata fields included only if rendered | Same rule as #6 — assert only what's used |
+| 8 | `executeTest` callback uses the consumer's real parse path | Catches deserialization bugs alongside contract bugs |
+| 9 | Assertions match what the consumer code branches on | Avoids asserting values that don't drive consumer behaviour |
+| 10 | No dynamic values (`new Date()`, `uuidv4()`) in the pact body | Prevents non-deterministic pact files (community lesson #45) |
+
+---
+
+### Additional Community Production Lessons [community]
+
+68. **[community] Testing the HTTP library instead of consumer code is the most common beginner mistake in Pact consumer tests — and it generates a pact file that provides zero protection against real breaking changes.** A consumer test that calls `axios.get(mockServer.url + '/products')` directly (without going through the application's actual `ProductClient` class) generates a valid pact file but only proves that `axios` can make a GET request — not that `ProductClient` correctly constructs the URL, parses the response, or handles errors. When the provider changes the `name` field to `productName`, the pact correctly fails at verification — but the consumer's `ProductClient` would have also failed anyway because it references `response.data.name`. The pact adds no net protection. The correct pattern: always call the real consumer client class inside `executeTest`, never raw `axios`/`fetch`. The consumer test's purpose is to prove "my real code works with this response shape" — the contract is the beneficial side effect.
+
+69. **[community] `multiple interactions per `executeTest`` vs `one interaction per `it()`` — the correct mental model is: use the same number of `addInteraction()` calls as there are sequential HTTP calls in a single consumer method.** Teams that adopt multi-interaction `executeTest` for performance (fewer mock server startups) end up grouping unrelated interactions into one session. When one interaction fails, the entire `executeTest` is marked as failed — all interactions in the session fail together, making it impossible to determine which one caused the problem without reading the Pact verifier output carefully. The correct mental model: one `it()` block = one consumer function = one or more sequential HTTP calls that function makes internally. If two `it()` blocks test the same consumer function via different code paths, each gets its own `executeTest`, not a shared one. Reserve multi-interaction sessions strictly for functions that make multiple sequential calls that cannot be split.
+
+70. **[community] `dateTime` format string errors are silent — the pact file is generated with the wrong pattern, and only provider verification reveals the mismatch.** Teams that use `timestamp("YYYY-MM-DD'T'hh:mm:ss", ...)` (uppercase YYYY, lowercase hh — Python strftime syntax rather than Java DateTimeFormatter) generate a pact file that appears valid but matches incorrectly at verification. Pact uses Java's `DateTimeFormatter` syntax: `yyyy` (lowercase y = year), `HH` (uppercase H = 24-hour), `mm` (lowercase m = minutes). Common mistakes: `YYYY` (week-based year, not calendar year), `hh` (12-hour clock, not 24-hour), `m` instead of `mm`. Verification failures from format mismatches report as "value does not match the format" — check the format string first before debugging the provider's date serialization. The safest approach: copy the format string from the MatchersV3 quick reference in this guide or from the official Pact matcher docs, never from a strftime reference.
+
+---
+
+### Bun Runtime Compatibility (TypeScript — pact-js and Bun)
+
+[Bun](https://bun.sh/) is an alternative JavaScript runtime that aims to be a drop-in Node.js replacement. As of pact-js v16, **Bun is not officially supported** for running Pact consumer or provider tests. The core issue is that pact-js relies on `@pact-foundation/pact-core`, which uses native FFI bindings (Rust-based, compiled per platform). Bun's Node.js compatibility layer does not fully implement `node-gyp`-style native addon loading.
+
+**Current state (pact-js v16.4, May 2026):**
+
+```
+- bun test with pact-js v16: native FFI fails to load, throws ERR_MODULE_NOT_FOUND
+  or Bus error (core dump) depending on platform
+- bun:test API (describe/it/expect): compatible — the test runner API works
+- Node.js FFI bindings: NOT compatible with Bun's current napi implementation
+- Workaround: run pact tests with Node.js, all other tests with Bun
+```
+
+**Recommended pattern for projects using Bun:**
+
+```jsonc
+// package.json — hybrid test runner strategy
+// Use Bun for unit/integration tests; Node.js (Jest/Vitest) for Pact tests.
+{
+  "scripts": {
+    // Unit and integration tests run with Bun (fast, native TypeScript)
+    "test:unit": "bun test src/**/*.spec.ts",
+
+    // Pact tests run with Node.js + Jest (required for native FFI)
+    "test:pact:consumer": "node --experimental-vm-modules node_modules/.bin/jest --config jest.pact.config.ts",
+    "test:pact:provider": "node --experimental-vm-modules node_modules/.bin/jest --config jest.provider.pact.config.ts",
+
+    // Full test suite: Bun tests + Pact tests
+    "test": "bun run test:unit && bun run test:pact:consumer"
+  },
+  "devDependencies": {
+    "@pact-foundation/pact": "^16.0.0",
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    // Bun is installed globally, not as a devDependency
+    "typescript": "^5.0.0"
+  }
+}
+```
+
+```typescript
+// jest.pact.config.ts — Node.js Jest config for Pact tests in a Bun project
+// This is a standard Jest config — Bun is not involved in Pact test execution.
+import type { Config } from 'jest';
+
+const config: Config = {
+  displayName: 'pact:consumer',
+  testMatch: ['**/*.pact.spec.ts'],
+  testPathIgnorePatterns: ['\\.provider\\.pact\\.spec\\.ts$'],
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', {
+      tsconfig: 'tsconfig.test.json',
+      // Use CommonJS to avoid ESM/Bun module resolution conflicts
+      useESM: false,
+    }],
+  },
+  testTimeout: 30_000,
+  maxWorkers: 1,
+  // Node.js (not Bun) handles the test environment
+  testEnvironment: 'node',
+};
+
+export default config;
+```
+
+**Why this limitation exists:**
+
+pact-js's native binary (`pact-core`) is compiled as a Node.js native addon (`.node` file) using the Node-API (NAPI). Bun's NAPI compatibility layer supports a subset of the NAPI surface — as of Bun 1.x, native addons that use `libuv` callbacks or thread-pool workers (which `pact-core` does for the mock server) do not work reliably. This is a Bun limitation, not a pact-js limitation.
+
+**Track progress:** Follow [bun-community/pact-js-bun-compat](https://github.com/oven-sh/bun/issues) for updates on NAPI compatibility improvements in Bun. Once Bun's NAPI layer reaches full compatibility, pact-js should work without changes.
+
+**Key points:**
+- Do not attempt `bun test *.pact.spec.ts` — it will fail with a native addon error
+- The hybrid pattern (Bun for unit/integration, Node.js for Pact) adds minimal friction: Pact tests run in milliseconds to seconds anyway
+- TypeScript configuration is shared: `tsconfig.json` works for both `bun test` and `ts-jest`
+- Deno has the same NAPI limitation — pact-js is Node.js only until NAPI compatibility improves in alternative runtimes
+
+---
+
+### Additional Community Production Lessons [community]
+
+71. **[community] Bun and Deno users who attempt to run pact-js consumer tests in those runtimes lose hours to debugging native addon loading errors before discovering official support is absent.** The error messages vary — `ERR_MODULE_NOT_FOUND` for the `.node` binary, `Bus error (core dumped)` on Linux ARM, or a silent hang before timeout on macOS — none of which clearly indicate "this runtime is not supported." The official pact-js README does not prominently note this limitation. **Diagnosis shortcut:** if you see `Cannot find native module @pact-foundation/pact-core/build/...` or a NAPI crash during `bun test`, you are hitting the Bun NAPI incompatibility. Switch to `node` + `jest` or `vitest` for Pact tests immediately; do not try to polyfill or stub the native module. Track Bun issue tracker for NAPI compatibility updates.
+
+72. **[community] The "only assert fields the consumer code reads" principle prevents a class of false positives that are worse than false negatives.** A false negative (test misses a real breaking change) is visible — the provider breaks, the consumer fails in production, and the failure is traceable. A false positive (test flags a safe provider change as breaking) is invisible damage: the provider team loses confidence in CDC, starts treating pact failures as noise, and eventually disables or ignores the gate. Every over-specified assertion is a potential false positive that erodes the provider team's trust. The first time a pact fails because the provider added an `auditTrail` field the consumer never reads, the provider team mentally writes off CDC. Over-specification is not just a test quality issue — it is a CDC adoption risk. Apply the Bug Catcher Rule (see above) before each assertion: "if I remove this assertion, what consumer bug goes undetected?" If the answer is "none," remove the assertion.
+
+---
+<!-- new in iteration 32: Multi-interaction executeTest workflow pattern (TypeScript, V4), dateTime/date/time matcher format reference table, lean contract test checklist (10 practices), Bun runtime incompatibility (pact-js v16.4), community lessons 68-72 (testing HTTP library anti-pattern, multi-interaction mental model, dateTime format string errors, Bun NAPI incompatibility, false positives vs false negatives) | sources: docs.pact.io/consumer (WebFetch 2026-05-12 iteration 32), pactflow.io/blog (WebFetch 2026-05-12 iteration 32), github.com/pact-foundation/pact-js README (WebFetch 2026-05-12 iteration 32) -->

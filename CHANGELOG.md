@@ -5,6 +5,40 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.19 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 16/100)
+
+### qa-refine (5 guides, +3,252 lines)
+- playwright-patterns.md: +312 lines — click({steps}), connectOverCDP({isLocal}), locator.describe() patterns, 3 new gotchas
+- k6-patterns.md: +727 lines — ramping-arrival-rate, SLO thresholds, TypeScript native, Grafana dashboards, regression detection
+- cypress-patterns.md: +783 lines — @cypress/grep filtering, addQuery typed retry, CT providers, OAuth/MFA auth patterns
+- detox-patterns.md: +877 lines — TypeScript-first scaffold, native module mocking strategies, performance optimization, screenshot-on-failure
+- appium-wdio-patterns.md: +553 lines — .appiumrc.json reference, Sauce Labs CI integration, cross-platform selector table, multi-gesture
+
+### qa-methodology-refine (12 guides, +5,518 lines)
+- test-pyramid-guide.md: +685 lines — Vitest 5.0 migration, property-based integration testing, AI agent governance, module augmentation
+- tdd-guide.md: +622 lines — streaming APIs (ReadableStream/SSE), edge/serverless TDD, OpenTelemetry instrumented code
+- bdd-guide.md: +550 lines — MSW step-level mocking, vitest-cucumber, Rule keyword + Example Mapping walkthrough
+- test-isolation-guide.md: +486 lines — Testcontainers PostgreSQL, MSW v2 isolation, Jest projects monorepo, EventEmitter leak detection
+- test-data-guide.md: +467 lines — data-driven test.each/test.for, MSW WebSocketHandler.test(), community gotchas
+- contract-testing-guide.md: +487 lines — multi-interaction executeTest, dateTime matchers, lean checklist, Bun runtime compat
+- flakiness-guide.md: +503 lines — EventEmitter leak detection, jest.doMock() vs jest.mock(), unhandledRejection guard
+- coverage-guide.md: +606 lines — ts-jest advanced config, nyc→Istanbul 2.x migration, Turborepo/Nx coverage merging
+- ci-cd-testing-guide.md: +421 lines — timing-based test splitting, deployment gate patterns, GitHub Actions cache strategies
+- accessibility-guide.md: +280 lines — Playwright a11y assertions, ARIA tabs/combobox patterns, testInfo.attach() CI
+- shift-left-guide.md: +391 lines — local test speed optimization, IDE integration, ROI quantification template
+- exploratory-guide.md: +476 lines — page.clock() oracles, Stagehand/browser-use, SBTM debrief anti-patterns
+
+### lang-refine (5 guides, +2,990 lines)
+- typescript-patterns.md: +650 lines — jest-mock-extended, branded types, satisfies operator, strict mode impact
+- javascript-patterns.md: +599 lines — ESM module mocking, Vitest vs Jest decision guide, spy patterns, prototype mocking
+- java-patterns.md: +550 lines — ArchUnit architecture testing, Mockito thenAnswer/Answer, JUnit 5 Extensions SPI
+- python-patterns.md: +719 lines — conftest.py hierarchy, fixture factories, FastAPI TestClient, pytest-bdd
+- csharp-patterns.md: +472 lines — xUnit ClassData/MemberData, Moq Protected/MockRepository, FluentAssertions extensions, Bogus/NSubstitute
+
+**Total: ~12,216 lines added across 22 guides**
+
+---
+
 ## v1.16.0.18 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 15/100)
 
 ### qa-refine (5 guides, 97-100/100)

@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -8302,3 +8302,395 @@ jobs:
 > [community] **Gotcha (Biome v2 GraphQL and TypeScript codegen workflows, 2026)**: When using GraphQL codegen (e.g., `@graphql-codegen/cli`) to generate TypeScript types from `.graphql` files, Biome's GraphQL formatter may reformat the `.graphql` files in a way that changes the AST representation expected by the codegen tool. Run `biome format` before running codegen in CI — not after — to ensure the codegen tool reads Biome-formatted GraphQL. Alternatively, add the generated TypeScript output directory to `biome.json`'s `files.ignore` to prevent Biome from attempting to lint auto-generated TypeScript files.
 
 > [community] **Gotcha (Biome v2 CSS rules and CSS-in-JS libraries, 2026)**: Biome v2's CSS linter applies to `.css` and `.module.css` files only — it does NOT process template literal CSS in TypeScript files (styled-components, Emotion, Vanilla Extract). For TypeScript projects using CSS-in-JS, Biome's CSS linting provides zero coverage for the majority of styling code. Use `@typescript-eslint/no-invalid-template-literal-type` and the `@emotion/eslint-plugin` or `stylelint-a11y` for CSS-in-JS validation until Biome adds tagged template literal CSS support.
+
+---
+
+## Local Test Execution Speed Optimisation
+
+**Why speed is a shift-left prerequisite**: A developer who waits 3+ minutes for a local test run loses flow state and starts skipping runs before committing. Shift-left only works when the local feedback loop is fast enough to use on every save. The target is < 10 seconds for unit tests, < 60 seconds for integration tests in watch mode.
+
+### Pattern: Profile Slow Tests with Vitest Verbose Reporter
+
+Identify which test files are responsible for the majority of wall-clock time before optimising blindly.
+
+```typescript
+// vitest.config.ts — add a profiling configuration
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // --reporter=verbose shows per-test duration in the terminal
+    reporters: process.env.CI ? ['github-actions'] : ['verbose'],
+    // pool: 'vmThreads' is the default; use 'forks' for tests that
+    // load native modules or use process.env mutation
+    pool: 'vmThreads',
+    poolOptions: {
+      vmThreads: {
+        // Reduce worker count for profiling to isolate per-thread cost
+        maxThreads: process.env.VITEST_PROFILE ? 1 : undefined,
+        minThreads: process.env.VITEST_PROFILE ? 1 : undefined,
+      },
+    },
+    // Bail after first failure in local watch mode — skip the rest
+    bail: process.env.CI ? 0 : 1,
+  },
+});
+```
+
+Run with `VITEST_PROFILE=1 npx vitest run --reporter=verbose 2>&1 | sort -t' ' -k4 -rn | head -20` to surface the 20 slowest test files by wall time.
+
+> [community] **Lesson (mid-size TypeScript SaaS teams, 2025–2026)**: The single biggest source of slow unit tests is `prisma.$connect()` or `mongoose.connect()` calls inside test setup that are never explicitly mocked. The ORM silently falls back to an in-memory SQLite or throws, but the connection timeout (30 s default) dominates test duration. Add `vi.mock('@prisma/client')` or `vi.mock('mongoose')` as a global `setupFiles` entry to eliminate this class of slowness with one line.
+
+### Pattern: `vitest run --changed` for Local Pre-Commit Speed
+
+Vitest 1.4+ supports `--changed` and `--related` flags that use git to run only tests affected by uncommitted changes. This is the single most impactful optimisation for developer commit velocity.
+
+```jsonc
+// package.json — scripts for tiered local execution
+{
+  "scripts": {
+    // Full suite: used in CI and before pushing
+    "test": "vitest run",
+    // Changed-only: run before every commit (used by lint-staged)
+    "test:changed": "vitest run --changed HEAD",
+    // Related: run tests that import the given file (used by IDE extensions)
+    "test:related": "vitest related",
+    // Watch mode for active development
+    "test:watch": "vitest --ui",
+    // Benchmark suite (vitest bench)
+    "test:bench": "vitest bench --reporter=verbose"
+  }
+}
+```
+
+Configure lint-staged to use `test:related` (not the full suite) so the pre-commit hook only runs test files that import the staged source files:
+
+```jsonc
+// .lintstagedrc.json
+{
+  "src/**/*.{ts,tsx}": [
+    "eslint --fix --max-warnings=0",
+    "vitest related --run --bail=1"
+  ]
+}
+```
+
+> [community] **Gotcha (lint-staged + vitest related, 2026)**: `vitest related` requires the file paths to be absolute or relative to the project root. lint-staged passes absolute paths by default since v13 — this works correctly. If using an older lint-staged config that uses `[path.relative(process.cwd(), file)]`, update to the default absolute path format before enabling `vitest related` in the pre-commit hook.
+
+### Pattern: V8 Coverage Fast Path
+
+TypeScript projects using Istanbul (the default Vitest coverage provider) add ~30–40% overhead per test run due to instrumentation. Switch to the V8 native provider for projects on Node 18+ — it is 2–3× faster with equivalent branch coverage accuracy.
+
+```typescript
+// vitest.config.ts — V8 coverage configuration
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      // 'v8' uses Node's built-in coverage — no source instrumentation overhead
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'html'],
+      // Exclude generated files, config files, and type-only modules
+      exclude: [
+        'src/**/*.d.ts',
+        'src/**/*.config.ts',
+        'src/**/index.ts',          // re-export barrels rarely need direct coverage
+        'src/generated/**',
+      ],
+      // Thresholds: enforced at CI level, not locally to keep watch mode fast
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+      },
+    },
+  },
+});
+```
+
+> [community] **Lesson (TypeScript monorepo teams, 2025)**: Switching from Istanbul to V8 in a 600-test suite reduced CI coverage collection from 4 m 20 s to 1 m 45 s. The threshold configuration remained identical. V8 coverage does occasionally report slightly lower branch coverage than Istanbul for ternary expressions nested inside arrow functions — account for this by setting V8 thresholds 2–3 percentage points below the Istanbul baselines when migrating.
+
+---
+
+## Developer Workflow — IDE Integration for Shift-Left
+
+**Why IDE config is a delivery mechanism for shift-left**: Tools that run in CI but not locally catch defects after the developer's mental context has shifted. Every shift-left practice should have an IDE-native equivalent that surfaces the same signal within seconds of writing the code.
+
+### Pattern: VS Code Workspace Settings for TypeScript Shift-Left
+
+Commit a `.vscode/settings.json` alongside the codebase to enforce consistent IDE behaviour across the team. This is the zero-friction way to propagate shift-left defaults.
+
+```jsonc
+// .vscode/settings.json — committed to version control
+{
+  // TypeScript: use the workspace TypeScript version, not VS Code's bundled version
+  "typescript.tsdk": "node_modules/typescript/lib",
+  // Enable all TypeScript strict checks in the editor — same as tsconfig.json strict: true
+  "typescript.preferences.strictFunctionTypes": true,
+  "typescript.suggest.completeFunctionCalls": true,
+  // ESLint: auto-fix on every save (matching the pre-commit hook behaviour)
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit",
+    "source.organizeImports": "never"       // let ESLint handle imports via perfectionist
+  },
+  // Format with Biome on save (if using Biome instead of Prettier)
+  "editor.defaultFormatter": "biomejs.biome",
+  "editor.formatOnSave": true,
+  // Vitest: run tests in watch mode inside the editor
+  "vitest.enable": true,
+  "vitest.commandLine": "npx vitest",
+  // Show inline test results (pass/fail) next to each test function
+  "vitest.showFailMessages": true,
+  // Disable VS Code's built-in test runner in favour of the Vitest extension
+  "testing.automaticallyOpenTestResults": "neverOpen",
+  // TypeScript: display inlay hints for parameter names and return types
+  "typescript.inlayHints.parameterNames.enabled": "literals",
+  "typescript.inlayHints.variableTypes.enabled": true,
+  "typescript.inlayHints.functionLikeReturnTypes.enabled": true
+}
+```
+
+### Pattern: VS Code Recommended Extensions (`.vscode/extensions.json`)
+
+```jsonc
+// .vscode/extensions.json — committed to version control
+{
+  "recommendations": [
+    // TypeScript & linting
+    "dbaeumer.vscode-eslint",          // ESLint integration
+    "biomejs.biome",                   // Biome formatter + linter
+    // Testing
+    "vitest.explorer",                 // Vitest inline test runner
+    "ms-playwright.playwright",        // Playwright test runner + trace viewer
+    // Security & quality
+    "snyk-security.snyk-vulnerability-scanner",  // Snyk inline vuln warnings
+    "trunk.io",                        // Trunk Check: unified pre-commit + CI linting
+    // Observability
+    "humao.rest-client",               // HTTP file runner (replaces Postman for shift-left API testing)
+    // Git
+    "eamodio.gitlens",                 // Inline blame: shows who introduced a defect
+    "mhutchie.git-graph"               // Visual branch history
+  ]
+}
+```
+
+### Pattern: VS Code Launch Configuration for Test Debugging
+
+Developers who cannot debug a failing test locally resort to adding `console.log` statements or skipping the test. A committed `launch.json` removes this barrier.
+
+```jsonc
+// .vscode/launch.json — debug Vitest tests without leaving the editor
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug current test file",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "node_modules/**"],
+      "program": "${workspaceRoot}/node_modules/vitest/vitest.mjs",
+      "args": ["run", "${relativeFile}", "--reporter=verbose"],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "env": {
+        "NODE_ENV": "test",
+        "VITEST_SEGFAULT_RETRY": "3"
+      }
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug specific test by name",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "node_modules/**"],
+      "program": "${workspaceRoot}/node_modules/vitest/vitest.mjs",
+      // Edit the -t value to match the test name you want to isolate
+      "args": ["run", "--reporter=verbose", "-t", "${input:testName}"],
+      "smartStep": true,
+      "console": "integratedTerminal"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "testName",
+      "type": "promptString",
+      "description": "Test name (substring match)",
+      "default": ""
+    }
+  ]
+}
+```
+
+> [community] **Lesson (TypeScript teams adopting Vitest from Jest, 2025)**: The Vitest VS Code extension (`vitest.explorer`) replaces the Jest Runner extension and works with the same keyboard shortcuts (`Ctrl+Shift+P → Testing: Run Test at Cursor`). However, the extension requires `vitest.enable: true` AND a `vitest.config.ts` (or `vite.config.ts`) in the workspace root — it silently falls back to no-op if the config file is named `vitest.workspace.ts` without a root config. Add a minimal root `vitest.config.ts` that references the workspace file to fix this.
+
+> [community] **Lesson (remote development and Codespaces, 2026)**: The `.vscode/settings.json` pattern works in GitHub Codespaces and VS Code Remote (SSH/Containers) — the workspace settings are mounted alongside the code. This means shift-left IDE defaults propagate automatically to every developer who opens the repo in Codespaces, removing the "works on my machine" onboarding friction for ESLint and Vitest integration.
+
+---
+
+## Shift-Left ROI Quantification — Calculation Template
+
+**Why quantify ROI**: Shift-left practices require upfront investment (tooling setup, slower initial development, training). Engineering leadership allocates budget to practices that can demonstrate measurable return. Teams that cannot quantify shift-left ROI lose budget to visible features rather than invisible quality improvements.
+
+### Pattern: TypeScript ROI Calculator
+
+The following TypeScript module implements the industry-standard "cost avoidance" model for shift-left ROI, based on the IBM/NIST cost-of-defects multiplier (1× unit → 10× integration → 100× production).
+
+```typescript
+// src/lib/shift-left-roi.ts
+// Shift-Left ROI Calculator — based on NIST cost-of-defect multipliers
+// Reference: NIST Planning Report 02-3 "The Economic Impacts of Inadequate
+// Infrastructure for Software Testing" (Tassey, 2002)
+
+export interface TeamMetrics {
+  /** Average fully-loaded hourly cost per engineer (salary + overhead) */
+  engineerHourlyCostUsd: number;
+  /** Number of engineers on the team */
+  teamSize: number;
+  /** Production incidents per quarter BEFORE shift-left investment */
+  productionIncidentsPerQuarter: number;
+  /** Average hours to resolve a production incident (MTTR) */
+  meanTimeToResolvHours: number;
+  /** Hours spent on manual QA activities per sprint (regression, smoke tests) */
+  manualQaHoursPerSprint: number;
+  /** Number of sprints per quarter */
+  sprintsPerQuarter: number;
+}
+
+export interface ShiftLeftInvestment {
+  /** One-time tooling setup and migration hours */
+  setupHours: number;
+  /** Ongoing overhead per sprint: pre-commit hooks, reviewing test failures */
+  ongoingOverheadHoursPerSprint: number;
+}
+
+export interface RoiResult {
+  /** Annual cost of production defects BEFORE shift-left */
+  annualDefectCostBeforeUsd: number;
+  /** Projected annual cost AFTER shift-left (assumes 60% defect reduction) */
+  annualDefectCostAfterUsd: number;
+  /** Annual cost of manual QA before automation */
+  annualManualQaCostUsd: number;
+  /** Projected manual QA cost after shift-left (assumes 70% automation) */
+  annualManualQaCostAfterUsd: number;
+  /** Total annual investment cost (tooling + ongoing overhead) */
+  annualInvestmentCostUsd: number;
+  /** Net annual savings */
+  annualNetSavingsUsd: number;
+  /** Payback period in months */
+  paybackMonths: number;
+  /** Return on investment percentage */
+  roiPercent: number;
+}
+
+/**
+ * Calculate shift-left ROI using cost-avoidance model.
+ * Assumptions:
+ *  - Shift-left reduces production incidents by 60% (Google Engineering Productivity research)
+ *  - Shift-left reduces manual QA hours by 70% (Capgemini World Quality Report 2023)
+ *  - Production defect cost = NIST multiplier ×10 vs integration, ×100 vs unit test catch
+ */
+export function calculateShiftLeftRoi(
+  metrics: TeamMetrics,
+  investment: ShiftLeftInvestment,
+): RoiResult {
+  const quartersPerYear = 4;
+  const shiftLeftDefectReduction = 0.6;   // 60% fewer prod incidents
+  const manualQaAutomationRate = 0.7;      // 70% manual QA eliminated
+
+  // Annual cost of production incidents (before)
+  const incidentCostPerQuarter =
+    metrics.productionIncidentsPerQuarter *
+    metrics.meanTimeToResolvHours *
+    metrics.engineerHourlyCostUsd *
+    // Assume 3 engineers involved per incident (on-call, secondary, PM)
+    3;
+  const annualDefectCostBeforeUsd = incidentCostPerQuarter * quartersPerYear;
+  const annualDefectCostAfterUsd =
+    annualDefectCostBeforeUsd * (1 - shiftLeftDefectReduction);
+
+  // Annual cost of manual QA (before and after)
+  const annualManualQaCostUsd =
+    metrics.manualQaHoursPerSprint *
+    metrics.sprintsPerQuarter *
+    quartersPerYear *
+    metrics.engineerHourlyCostUsd;
+  const annualManualQaCostAfterUsd =
+    annualManualQaCostUsd * (1 - manualQaAutomationRate);
+
+  // Annual investment cost
+  const setupCostUsd = investment.setupHours * metrics.engineerHourlyCostUsd;
+  const annualOngoingCostUsd =
+    investment.ongoingOverheadHoursPerSprint *
+    metrics.sprintsPerQuarter *
+    quartersPerYear *
+    metrics.engineerHourlyCostUsd;
+  const annualInvestmentCostUsd = setupCostUsd + annualOngoingCostUsd;
+
+  // Net savings and ROI
+  const annualSavings =
+    (annualDefectCostBeforeUsd - annualDefectCostAfterUsd) +
+    (annualManualQaCostUsd - annualManualQaCostAfterUsd);
+  const annualNetSavingsUsd = annualSavings - annualInvestmentCostUsd;
+  const paybackMonths =
+    annualNetSavingsUsd > 0 ? (setupCostUsd / (annualSavings / 12)) : Infinity;
+  const roiPercent =
+    ((annualNetSavingsUsd / annualInvestmentCostUsd) * 100);
+
+  return {
+    annualDefectCostBeforeUsd,
+    annualDefectCostAfterUsd,
+    annualManualQaCostUsd,
+    annualManualQaCostAfterUsd,
+    annualInvestmentCostUsd,
+    annualNetSavingsUsd,
+    paybackMonths,
+    roiPercent,
+  };
+}
+```
+
+**Example with real numbers — 8-person TypeScript team:**
+
+```typescript
+// Usage: src/lib/shift-left-roi.example.ts
+import { calculateShiftLeftRoi } from './shift-left-roi';
+
+const result = calculateShiftLeftRoi(
+  {
+    engineerHourlyCostUsd: 120,       // $120/hr fully loaded (~$250k/yr total)
+    teamSize: 8,
+    productionIncidentsPerQuarter: 6, // 2 incidents/month
+    meanTimeToResolvHours: 4,         // 4h average MTTR
+    manualQaHoursPerSprint: 12,       // 12h manual regression per 2-week sprint
+    sprintsPerQuarter: 6,
+  },
+  {
+    setupHours: 40,                   // 1 week to set up tooling + CI pipelines
+    ongoingOverheadHoursPerSprint: 2, // 2h/sprint reviewing new lint failures
+  },
+);
+
+// Output:
+// annualDefectCostBeforeUsd:  $34,560  (6 incidents × 4h × $120 × 3 engineers × 4Q)
+// annualDefectCostAfterUsd:   $13,824  (60% reduction)
+// annualManualQaCostUsd:      $69,120  (12h × 6 sprints × 4Q × $120)
+// annualManualQaCostAfterUsd: $20,736  (70% automation)
+// annualInvestmentCostUsd:     $6,720  ($4,800 setup + $1,920 ongoing)
+// annualNetSavingsUsd:        $62,400
+// paybackMonths:                0.9    (< 1 month to break even)
+// roiPercent:                   929%
+console.log(`Annual net savings: $${result.annualNetSavingsUsd.toLocaleString()}`);
+console.log(`ROI: ${result.roiPercent.toFixed(0)}%`);
+console.log(`Payback: ${result.paybackMonths.toFixed(1)} months`);
+```
+
+> [community] **Lesson (engineering directors presenting to CTO/CFO, 2025)**: The NIST cost-of-defects multiplier (1×/10×/100×) is the most credible single data point for shift-left ROI conversations with finance. Pair it with the team's actual incident history from PagerDuty or OpsGenie exports (mean incident count and MTTR per quarter) to replace the textbook example with team-specific numbers. Finance trusts the model more when the input data comes from their own systems rather than industry averages.
+
+> [community] **Lesson (shift-left programme retrospectives, 2025–2026)**: The biggest undercount in shift-left ROI models is context-switch cost. IBM's classic model counts only MTTR (hours to fix the bug). It does not count: (1) the interruption to the on-call engineer's sprint work, (2) the customer success time managing the incident, (3) the post-mortem and follow-up action items. Multiply the MTTR-based estimate by 2.5–3× to include these hidden costs before presenting to leadership.
+
+> [community] **Gotcha (ROI models and survivorship bias, 2026)**: ROI calculations for shift-left assume that the defects caught by pre-commit hooks and SAST would have reached production without the shift-left investment. This is not always true — some would have been caught in code review or QA. When auditing the ROI model, subtract an estimated "code review catch rate" (typically 20–30% for TypeScript teams with strong PR review culture) from the defect cost savings to avoid inflating the headline number.
+
+---

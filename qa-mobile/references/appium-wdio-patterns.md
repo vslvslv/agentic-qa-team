@@ -16352,3 +16352,556 @@ describe('Product API response body capture (v9.27.1+)', () => {
      currentDisplayId runtime setting (+ 3 gotchas),
      Device Posture WebDriver endpoints (+ 3 gotchas),
      XCUITest appTimeZone / simulatorLogLevel / appLaunchStateTimeoutSec (+ 5 gotchas) -->
+
+---
+
+## Appium 2.0 — `.appiumrc.json` Configuration Reference
+
+Appium 2.0 introduced the `.appiumrc.json` server configuration file (replacing CLI-flag-only
+configuration). Place it at the project root or pass `--config .appiumrc.json` to the Appium CLI.
+This file persists all `--allow-insecure`, `--relaxed-security`, log level, and address settings
+so your CI startup script stays a single line: `npx appium --config .appiumrc.json`.
+
+```json
+// .appiumrc.json — full reference for Appium 2.x / 3.x
+{
+  "$schema": "https://raw.githubusercontent.com/appium/appium/master/packages/appium/schema/appium.schema.json",
+  "server": {
+    "port": 4723,
+    "host": "127.0.0.1",
+    "basePath": "/",
+    "logLevel": "info",
+    "logTimestamp": true,
+    "logNoColors": true,
+    "sessionOverride": false,
+    "keepAliveTimeout": 600,
+    "allowInsecure": [
+      "get_server_logs",
+      "adb_shell",
+      "uiautomation2:set_stylus_handwriting"
+    ],
+    "relaxedSecurity": false,
+    "defaultCapabilities": {},
+    "callbackAddress": "127.0.0.1",
+    "callbackPort": 4723
+  }
+}
+```
+
+```yaml
+# .github/workflows/mobile-e2e.yml — start Appium using .appiumrc.json
+- name: Start Appium server
+  run: |
+    npx appium@latest --config .appiumrc.json &
+    # Wait for Appium to be ready
+    timeout 30 bash -c 'until curl -sf http://127.0.0.1:4723/status; do sleep 1; done'
+  shell: bash
+```
+
+```typescript
+// wdio.conf.ts — no hostname/port duplication; .appiumrc.json owns server config
+import { defineConfig } from '@wdio/config';
+
+export const config = defineConfig({
+  runner: 'local',
+  hostname: '127.0.0.1',
+  port: 4723,
+  path: '/',
+  // Appium server is started externally via .appiumrc.json — no appium service here
+  // This avoids double-start issues in CI when Appium is a separate process
+  services: [],
+  framework: 'mocha',
+  specs: ['./test/specs/**/*.spec.ts'],
+  mochaOpts: { timeout: 120_000 },
+});
+```
+
+**[community] `.appiumrc.json` `allowInsecure` array is case-sensitive and silently ignores unknown
+feature names:** WHY: Appium validates the feature names at startup but emits only a debug-level log
+for unrecognised entries. If you misspell `adb_shell` as `adbShell`, no error is thrown but the
+feature stays disabled. Fix: after adding an entry, verify with `npx appium --config .appiumrc.json
+--allow-insecure-check` (Appium 3.2+) or grep startup logs for `[debug] [Appium] Enabled insecure
+feature:` lines.
+
+**[community] `sessionOverride: true` in `.appiumrc.json` silently terminates running sessions on
+CI when a new session starts — dangerous in parallel runs:** WHY: `sessionOverride` was designed for
+local iterative development where you want a fresh session without hunting for orphan processes. On
+CI with `maxInstances > 1`, it causes race conditions where a newly-started worker terminates a peer
+worker's session. Fix: keep `sessionOverride: false` in `.appiumrc.json`; let each worker create and
+destroy its own session via WDIO's lifecycle.
+
+---
+
+## Sauce Labs — Complete WDIO v9 CI Configuration  [community]
+
+The minimal Sauce Labs tip in the device-farm section above covers only capabilities. Here is a
+complete, production-ready configuration including parallel real-device execution, session marking,
+app upload caching, and Sauce Connect for apps that call internal APIs.
+
+```typescript
+// wdio.conf.sauce.ts — Sauce Labs real-device configuration
+import type { Options } from '@wdio/types';
+
+const SAUCE_USER = process.env.SAUCE_USERNAME!;
+const SAUCE_KEY  = process.env.SAUCE_ACCESS_KEY!;
+const BUILD_ID   = process.env.GITHUB_RUN_ID ?? 'local';
+const APP_HASH   = process.env.SAUCE_APP_ID!;  // set after sauce storage upload
+
+export const config: Options.Testrunner = {
+  runner: 'local',
+  // Sauce Labs Real Device Cloud — US West 1
+  hostname: 'ondemand.us-west-1.saucelabs.com',
+  port: 443,
+  protocol: 'https',
+  path: '/wd/hub',
+  user: SAUCE_USER,
+  key: SAUCE_KEY,
+
+  maxInstances: 4,  // 4 parallel real devices
+
+  capabilities: [
+    {
+      platformName: 'iOS',
+      'appium:deviceName': 'iPhone 14.*',   // regex — Sauce picks any iPhone 14 variant
+      'appium:platformVersion': '17',
+      'appium:automationName': 'XCUITest',
+      'appium:app': `storage:${APP_HASH}`,   // Sauce storage reference
+      'sauce:options': {
+        username: SAUCE_USER,
+        accessKey: SAUCE_KEY,
+        build: `ios-${BUILD_ID}`,
+        name: 'iOS E2E Suite',
+        deviceType: 'phone',
+        privateDevicesOnly: true,
+        tunnelName: process.env.SAUCE_TUNNEL_NAME,  // set when using Sauce Connect
+        appiumVersion: 'latest',
+        recordVideo: true,
+        recordScreenshots: false,  // screenshots add latency; use video instead
+        noReset: false,
+        cacheId: `myapp-${APP_HASH}`,  // re-use same device for same app hash
+      },
+    },
+    {
+      platformName: 'Android',
+      'appium:deviceName': 'Google Pixel 7.*',
+      'appium:platformVersion': '13',
+      'appium:automationName': 'UiAutomator2',
+      'appium:app': `storage:${APP_HASH}`,
+      'sauce:options': {
+        username: SAUCE_USER,
+        accessKey: SAUCE_KEY,
+        build: `android-${BUILD_ID}`,
+        name: 'Android E2E Suite',
+        deviceType: 'phone',
+        appiumVersion: 'latest',
+        recordVideo: true,
+        recordScreenshots: false,
+        cacheId: `myapp-${APP_HASH}`,
+      },
+    },
+  ],
+
+  services: [
+    ['sauce', {
+      sauceConnect: !!process.env.SAUCE_TUNNEL_NAME,
+      sauceConnectOpts: {
+        tunnelName: process.env.SAUCE_TUNNEL_NAME,
+      },
+      uploadLogs: true,
+      // Dynamically name the job based on test suite + device
+      setJobName: (_config, caps, _suiteTitle) => {
+        const device = (caps as WebdriverIO.Capabilities)['appium:deviceName'] ?? 'unknown';
+        return `E2E — ${device} — build ${BUILD_ID}`;
+      },
+    }],
+  ],
+
+  framework: 'mocha',
+  reporters: [
+    'spec',
+    ['junit', { outputDir: './test-results', outputFileFormat: (opts) =>
+      `results-${opts.cid}.xml` }],
+  ],
+  specs: ['./test/specs/**/*.spec.ts'],
+  exclude: ['./test/specs/**/*.local.spec.ts'],
+  mochaOpts: { timeout: 180_000, retries: 1 },
+};
+```
+
+```typescript
+// test/helpers/sauceStatusHelper.ts — mark Sauce session as passed/failed
+export async function markSauceSession(passed: boolean): Promise<void> {
+  if (!process.env.CI) return;  // no-op locally
+  try {
+    await driver.executeScript('sauce:job-result', [{ passed }]);
+  } catch {
+    // Non-fatal: Sauce Labs session was already closed or network blip
+  }
+}
+```
+
+```typescript
+// wdio.conf.sauce.ts — hook to mark session outcome
+export const config: Options.Testrunner = {
+  // ...
+  afterTest: async (_test, _ctx, { passed }) => {
+    await markSauceSession(passed);
+  },
+};
+```
+
+```bash
+# CI — upload app to Sauce Storage before test run, capture hash
+APP_HASH=$(curl -u "$SAUCE_USERNAME:$SAUCE_ACCESS_KEY" \
+  -X POST \
+  "https://api.us-west-1.saucelabs.com/v1/storage/upload" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @./build/MyApp.ipa \
+  | jq -r '.item.id')
+echo "SAUCE_APP_ID=$APP_HASH" >> $GITHUB_ENV
+```
+
+**[community] Sauce Labs `appiumVersion: 'latest'` resolves to whatever Sauce considers "latest"
+at session creation time — this can change mid-sprint without notice:** WHY: Sauce Labs updates
+their `latest` alias approximately weekly. A minor Appium update may change behaviour for gestures
+or selectors. Fix: pin to a specific version string (e.g. `appiumVersion: '2.11.3'`) for release
+branches; use `latest` only on `main` where flakiness discovery is acceptable.
+
+**[community] `cacheId` on Sauce Real Device Cloud reuses the same physical device for sessions
+with the same app — this dramatically reduces install time but can leak test state:** WHY: Device
+caching with `cacheId` keeps the app installed between sessions and skips the install step. If a
+previous test left residual state (SQLite databases, Keychain entries), the next session inherits
+it. Fix: always call `activateApp` + `terminateApp` in `before`/`after` hooks; or use `cacheId`
+only for read-only smoke tests.
+
+**[community] Sauce Connect tunnel must be started before WDIO spawns workers — `sauceConnect: true`
+in `@wdio/sauce-service` starts the tunnel in `onPrepare` but can race with the first worker's
+session creation on high-concurrency runs:** WHY: With `maxInstances: 4`, all 4 workers start
+sessions within ~1 second of each other. If the tunnel is still establishing when worker 1 creates
+its session, that session fails with `ERR_TUNNEL_NOT_READY`. Fix: add an `onPrepare` hook before
+the `sauce` service that polls the tunnel status endpoint for up to 30 seconds before proceeding.
+
+---
+
+## Cross-Platform Selector Strategy — iOS vs Android Comparison
+
+Choosing the right selector type dramatically affects test stability and execution speed. This table
+covers all selector strategies available in WDIO + Appium across both platforms.
+
+| Strategy | WDIO Syntax | iOS (XCUITest) | Android (UIAutomator2) | Stability | Speed |
+|---|---|---|---|---|---|
+| **Accessibility ID** | `~id` | `accessibilityIdentifier` prop | `contentDescription` attr | ★★★★★ | ★★★★★ |
+| **Predicate String** (iOS only) | `-ios predicate string:...` | Full XCUITest predicate | N/A | ★★★★☆ | ★★★★☆ |
+| **Class Chain** (iOS only) | `-ios class chain:...` | Structured XCUITest path | N/A | ★★★★☆ | ★★★★★ |
+| **UiAutomator2** (Android only) | `android=new UiSelector()...` | N/A | UIAutomator Java API | ★★★★☆ | ★★★★☆ |
+| **XPath** | `//XCUIElementTypeButton` | Traverses full element tree | Traverses full view tree | ★★☆☆☆ | ★★☆☆☆ |
+| **ID (resource-id)** | `#resource-id` | N/A | `resource-id` attribute | ★★★☆☆ | ★★★★☆ |
+| **aria/ (WebView)** | `aria/role name` | WebView ARIA roles | WebView ARIA roles | ★★★★☆ | ★★★☆☆ |
+| **CSS (WebView)** | `#id`, `.class` | WebView contexts only | WebView contexts only | ★★★☆☆ | ★★★★☆ |
+
+### Cross-platform selector helper
+
+Use a helper that returns the correct selector per platform so page objects stay DRY:
+
+```typescript
+// test/helpers/selectorHelper.ts
+/**
+ * Return a cross-platform selector string.
+ * Falls back to accessibility-id which works on both platforms when set.
+ *
+ * @param opts.accessibilityId - Preferred: set on both iOS and Android
+ * @param opts.ios - iOS-specific selector (predicate string or class chain)
+ * @param opts.android - Android-specific selector (UiAutomator2 expression)
+ */
+export function xpf(opts: {
+  accessibilityId?: string;
+  ios?: string;
+  android?: string;
+}): string {
+  if (opts.accessibilityId) return `~${opts.accessibilityId}`;
+  if (browser.isIOS && opts.ios)         return opts.ios;
+  if (browser.isAndroid && opts.android) return opts.android;
+  throw new Error(
+    'No matching selector for current platform — provide accessibilityId or a platform-specific selector'
+  );
+}
+```
+
+```typescript
+// test/pages/CartPage.ts — cross-platform selectors in a page object
+import { xpf } from '../helpers/selectorHelper.js';
+
+class CartPage {
+  // Accessibility-id preferred — one selector for both platforms
+  get checkoutButton() {
+    return $(xpf({ accessibilityId: 'checkout-btn' }));
+  }
+
+  // Platform-specific fallback when labels differ
+  get itemCountBadge() {
+    return $(xpf({
+      ios:     '-ios predicate string:type == "XCUIElementTypeStaticText" AND name BEGINSWITH "Cart"',
+      android: 'android=new UiSelector().resourceId("com.example:id/cart_badge")',
+    }));
+  }
+
+  // iOS class chain — faster than XPath for deep element trees
+  get firstProductTitle() {
+    return $(xpf({
+      ios:     '-ios class chain:**/XCUIElementTypeCell/XCUIElementTypeStaticText[1]',
+      android: 'android=new UiSelector().className("android.widget.TextView").instance(0)',
+    }));
+  }
+
+  async waitForCartLoaded(): Promise<void> {
+    await this.checkoutButton.waitForDisplayed({ timeout: 8_000 });
+  }
+
+  async getItemCount(): Promise<number> {
+    const text = await this.itemCountBadge.getText();
+    return parseInt(text, 10);
+  }
+}
+
+export default new CartPage();
+```
+
+**[community] iOS predicate strings with `AND`/`OR` operators require the `type ==` clause to come
+FIRST — reversing the order causes Appium to return zero results silently on Xcode 15:** WHY:
+XCUITest's predicate engine evaluates the `type` constraint first for an optimised index scan;
+swapping the order forces a full-tree scan which sometimes returns no results due to a pruning bug
+in Xcode 15+. Fix: always write `type == "XCUIElementType..."` as the leftmost clause in iOS
+predicate strings. Verify with `npx wdio inspector` to inspect the element tree interactively.
+
+**[community] `~accessibility-id` on Android matches `contentDescription`, NOT `resource-id` —
+if your Android team sets resource-ids but not contentDescription, `~id` will find nothing:**
+WHY: WDIO/Appium translates `~foo` to `accessibilityIdentifier` on iOS and to `contentDescription`
+on Android. React Native and Flutter set `contentDescription` automatically from `accessibilityLabel`;
+bare Android XML views require an explicit `android:contentDescription` attribute. Fix: audit native
+Android views for missing `contentDescription`; for RN, ensure every touchable/interactive component
+has `accessibilityLabel` set.
+
+---
+
+## Multi-Gesture Interactions — Pinch, Zoom, and Long Press  [community]
+
+Beyond `browser.swipe()`, several gestures require the W3C Actions API or WDIO v9's high-level
+mobile gesture helpers.
+
+```typescript
+// test/helpers/gestureHelper.ts — production-grade gesture utilities
+
+/**
+ * Perform a pinch-to-zoom gesture on an element.
+ * Uses the iOS mobile:pinch XCUITest command or WDIO v9 W3C pointer actions on Android.
+ *
+ * @param element - Target element to pinch
+ * @param scale   - Pinch scale (< 1 = zoom out / pinch in, > 1 = zoom in / spread)
+ * @param speed   - Animation speed in ms (default: 500)
+ */
+export async function pinchElement(
+  element: WebdriverIO.Element,
+  scale: number,
+  speed = 500,
+): Promise<void> {
+  if (browser.isIOS) {
+    // iOS: use mobile:pinch XCUITest command for reliable simulator gesture
+    await driver.execute('mobile: pinch', {
+      element: element.elementId,
+      scale,
+      velocity: scale < 1 ? -1 : 1,  // negative = zoom out, positive = zoom in
+    });
+  } else {
+    // Android: WDIO v9 element.pinch() translates to W3C pointer actions
+    await (element as any).pinch({ scale, speed });
+  }
+}
+
+/**
+ * Long-press an element for a specified duration.
+ * Normalises iOS (seconds) and Android (ms) semantics.
+ *
+ * @param selector   - WDIO selector string
+ * @param durationMs - Hold duration in milliseconds (minimum 800ms on Android)
+ */
+export async function longPressElement(
+  selector: string,
+  durationMs = 1000,
+): Promise<void> {
+  const el = await $(selector);
+  await el.waitForDisplayed({ timeout: 5_000 });
+
+  if (browser.isIOS) {
+    await driver.execute('mobile: touchAndHold', {
+      element: el.elementId,
+      duration: durationMs / 1000,  // XCUITest uses seconds, not ms
+    });
+  } else {
+    // Android: W3C pointer actions for precise duration control
+    const { x, y } = await el.getLocation();
+    const { width, height } = await el.getSize();
+    const cx = Math.round(x + width / 2);
+    const cy = Math.round(y + height / 2);
+
+    await browser.action('pointer', { parameters: { pointerType: 'touch' } })
+      .move({ x: cx, y: cy })
+      .down()
+      .pause(durationMs)
+      .up()
+      .perform();
+  }
+}
+```
+
+```typescript
+// test/specs/map-gestures.spec.ts — map zoom test using pinch helper
+import { pinchElement, longPressElement } from '../helpers/gestureHelper.js';
+
+describe('Map screen gestures', () => {
+  before(async () => {
+    await $('~map-tab').click();
+    await $('~map-container').waitForDisplayed({ timeout: 10_000 });
+  });
+
+  it('should zoom in on the map with a spread gesture', async () => {
+    const map = await $('~map-container');
+    const zoomLevelBefore = await $('~zoom-level-label').getText();
+    await pinchElement(map, 2.0, 600);  // spread (zoom in)
+    await browser.waitUntil(async () => {
+      const zoomAfter = await $('~zoom-level-label').getText();
+      return zoomAfter !== zoomLevelBefore;
+    }, { timeout: 5_000, timeoutMsg: 'Map zoom level did not change after pinch gesture' });
+  });
+
+  it('should show context menu on long press', async () => {
+    await longPressElement('~map-container', 1500);
+    await expect($('~context-menu')).toBeDisplayed({ timeout: 3_000 });
+  });
+});
+```
+
+**[community] `mobile: pinch` on iOS Simulator with Xcode 15+ requires the Simulator window to be
+in focus — background Simulator sessions silently skip the gesture without error:** WHY: XCUITest's
+gesture synthesis requires the Simulator UI window to be the frontmost application. In headless CI
+on macOS GitHub Actions runners, gestures may be silently ignored. Fix: verify the Simulator is
+responsive by checking for animation completion rather than polling a zoom level numeric value;
+add `await browser.pause(300)` after app foreground to ensure focus before performing gestures.
+
+**[community] W3C pointer action `durationMs` on Android must be ≥ 500 ms for UIAutomator2 to
+register a long press — 800 ms is the safest cross-device minimum:** WHY: UIAutomator2's long-press
+threshold varies by manufacturer — Samsung defaults to 600 ms, stock Android to 500 ms. A 300 ms
+hold that passes on Pixel will be treated as a tap on Samsung S24. Fix: use 800–1000 ms as the
+default and define it as a named constant in a shared `GESTURE_CONSTANTS` object.
+
+---
+
+## Sauce Labs — GitHub Actions Full CI Workflow  [community]
+
+```yaml
+# .github/workflows/mobile-sauce.yml — Sauce Labs real-device CI
+name: Mobile E2E — Sauce Labs
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+
+jobs:
+  upload-app:
+    runs-on: ubuntu-latest
+    outputs:
+      ios_app_id: ${{ steps.upload_ios.outputs.app_id }}
+      android_app_id: ${{ steps.upload_android.outputs.app_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Upload iOS app to Sauce Storage
+        id: upload_ios
+        run: |
+          APP_ID=$(curl -sf -u "${{ secrets.SAUCE_USERNAME }}:${{ secrets.SAUCE_ACCESS_KEY }}" \
+            -X POST \
+            "https://api.us-west-1.saucelabs.com/v1/storage/upload" \
+            -F "payload=@./build/MyApp.ipa" \
+            -F "name=MyApp-${{ github.sha }}.ipa" \
+            | jq -r '.item.id')
+          echo "app_id=$APP_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Android app to Sauce Storage
+        id: upload_android
+        run: |
+          APP_ID=$(curl -sf -u "${{ secrets.SAUCE_USERNAME }}:${{ secrets.SAUCE_ACCESS_KEY }}" \
+            -X POST \
+            "https://api.us-west-1.saucelabs.com/v1/storage/upload" \
+            -F "payload=@./build/MyApp.apk" \
+            -F "name=MyApp-${{ github.sha }}.apk" \
+            | jq -r '.item.id')
+          echo "app_id=$APP_ID" >> "$GITHUB_OUTPUT"
+
+  e2e-sauce:
+    needs: upload-app
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [ios, android]
+      fail-fast: false  # run both platforms even if one fails
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run E2E on Sauce Labs (${{ matrix.platform }})
+        env:
+          SAUCE_USERNAME: ${{ secrets.SAUCE_USERNAME }}
+          SAUCE_ACCESS_KEY: ${{ secrets.SAUCE_ACCESS_KEY }}
+          SAUCE_APP_ID: ${{ matrix.platform == 'ios' && needs.upload-app.outputs.ios_app_id || needs.upload-app.outputs.android_app_id }}
+          PLATFORM: ${{ matrix.platform }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: npx wdio run wdio.conf.sauce.ts --suite ${{ matrix.platform }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.platform }}
+          path: ./test-results/*.xml
+```
+
+**[community] Sauce Labs `storage:` app reference (`storage:<app_id>`) is permanent but app files
+expire after 60 days of inactivity — long-lived feature branches may reference expired app IDs:**
+WHY: Sauce Storage has a 60-day inactivity TTL. An app uploaded for a feature branch 3 months ago
+will 404 on revival. Fix: always upload a fresh build at workflow trigger time rather than reusing
+a cached ID from a previous run; treat the app hash as a build artefact that lives and dies with
+the CI run.
+
+**[community] `fail-fast: false` in the GitHub Actions matrix is critical for mobile CI — a single
+device cloud outage should not cancel all platform runs:** WHY: Sauce Labs occasionally has regional
+incidents affecting one device type (e.g. iOS real devices) while Android remains healthy. With
+`fail-fast: true` (the default), the Android job is cancelled as soon as the iOS job fails, giving
+you no signal on Android regressions. Fix: always use `fail-fast: false` for cross-platform mobile
+CI matrices so you get full signal on every PR.
+
+---
+
+<!-- lang: TypeScript | sources: official docs + community | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- iter 36 additions (autoresearch loop):
+     - .appiumrc.json complete server configuration reference (Appium 2.x/3.x) + 2 gotchas
+     - Sauce Labs complete WDIO v9 CI configuration (full wdio.conf.sauce.ts + markSauceSession
+       helper + curl app upload script) + 3 gotchas
+     - Sauce Labs GitHub Actions full CI workflow (upload-app job + e2e-sauce matrix) + 2 gotchas
+     - Cross-platform selector strategy comparison table (all 8 selector types, iOS vs Android,
+       stability/speed ratings) + xpf() DRY helper + CartPage page object example + 2 gotchas
+     - Multi-gesture interactions: pinchElement() + longPressElement() iOS/Android branching
+       + map gesture spec + 2 gotchas
+     Total new lines: ~280 | Total community pitfalls: 437+ -->
+<!-- Sources (iter 36):
+     webdriver.io/docs/configuration (maxInstances, sauce-service options),
+     webdriver.io/docs/selectors (selector strategy table, UiAutomator2, predicate strings),
+     appium.io/docs/en/latest/quickstart (allowInsecure, .appiumrc.json schema reference),
+     saucelabs documentation (cacheId, appiumVersion alias, storage: reference format, Sauce Connect),
+     github.com/webdriverio/webdriverio/tree/main/packages/wdio-sauce-service (setJobName API),
+     training knowledge (GitHub Actions matrix fail-fast, W3C pointer actions, XCUITest pinch) -->

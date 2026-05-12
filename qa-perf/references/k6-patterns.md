@@ -1,8 +1,8 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.3.0, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/, /javascript-api/k6-experimental/fs/, /javascript-api/k6-experimental/streams/, /javascript-api/k6-websockets/, /using-k6/scenarios/concepts/open-vs-closed/, release-notes/v1.7.0, release-notes/v1.7.1, /using-k6/secret-source/file/, /using-k6/secret-source/url/, github.com/mostafa/xk6-kafka, github.com/grafana/xk6-mqtt -->
 
-> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Iteration 32 adds: page.waitForResponse() pattern (v1.3+), locator.contentFrame() for iframe navigation chains, locator.boundingBox() for layout testing, getBy* locators on frameLocator scope, community gotchas 57–59 (waitForResponse race condition, boundingBox null on hidden elements, locator.contentFrame() vs frameLocator() disambiguation). Iteration 33 adds: locator.locator() hierarchical scoping pattern (v1.3+), k6chaijs version updated to 4.5.0.1, K6_CLOUD_STACK env var corrected to K6_CLOUD_STACK_ID throughout cloud stack section, community gotcha #60 (k6 cloud login --stack persists default stack in credentials file — subsequent commands pick it up but K6_CLOUD_STACK_ID or --stack flag overrides it). Iteration 34 adds: `file` secret source with key=value file format and Docker volume-mount pattern, `url` secret source advanced options table (urlTemplate, responsePath, headers.*, timeout, requestsPerMinuteLimit, requestsBurst, maxRetries, retryBackoff), multi-source file+url combination pattern, community gotcha #61 (url source URL-encodes {key} — Vault path slashes become %2F and return 404; fix by flattening key names or using a proxy). Iteration 35 adds: xk6-kafka v2 full load-test pattern (JSON messages, SASL-PLAIN auth, ~383k msgs/s throughput baseline, teardown consumer pattern), xk6-mqtt full load-test pattern (IoT broker testing, pub/sub with QoS levels, event-driven VU loop), community gotcha #62 (k6/experimental/fs file handle opened at init context is shared across all VU iterations — the file cursor advances per iteration; call `file.seek(0, SeekMode.Start)` at the top of default() to reset it, or open inside default() for per-iteration independence). Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Iteration 32 adds: page.waitForResponse() pattern (v1.3+), locator.contentFrame() for iframe navigation chains, locator.boundingBox() for layout testing, getBy* locators on frameLocator scope, community gotchas 57–59 (waitForResponse race condition, boundingBox null on hidden elements, locator.contentFrame() vs frameLocator() disambiguation). Iteration 33 adds: locator.locator() hierarchical scoping pattern (v1.3+), k6chaijs version updated to 4.5.0.1, K6_CLOUD_STACK env var corrected to K6_CLOUD_STACK_ID throughout cloud stack section, community gotcha #60 (k6 cloud login --stack persists default stack in credentials file — subsequent commands pick it up but K6_CLOUD_STACK_ID or --stack flag overrides it). Iteration 34 adds: `file` secret source with key=value file format and Docker volume-mount pattern, `url` secret source advanced options table (urlTemplate, responsePath, headers.*, timeout, requestsPerMinuteLimit, requestsBurst, maxRetries, retryBackoff), multi-source file+url combination pattern, community gotcha #61 (url source URL-encodes {key} — Vault path slashes become %2F and return 404; fix by flattening key names or using a proxy). Iteration 35 adds: xk6-kafka v2 full load-test pattern (JSON messages, SASL-PLAIN auth, ~383k msgs/s throughput baseline, teardown consumer pattern), xk6-mqtt full load-test pattern (IoT broker testing, pub/sub with QoS levels, event-driven VU loop), community gotcha #62 (k6/experimental/fs file handle opened at init context is shared across all VU iterations — the file cursor advances per iteration; call `file.seek(0, SeekMode.Start)` at the top of default() to reset it, or open inside default() for per-iteration independence). Iteration 36 adds: Ramping Arrival Rate comprehensive multi-phase traffic example (startRate, preAllocatedVUs sizing via Little's Law, no-sleep rule), Threshold Configuration for SLOs full reference (abortOnFail, delayAbortEval, scenario-scoped thresholds, tag selector gotcha), Performance Regression Detection patterns (threshold-based CI gate, handleSummary JSON diff strategy, Grafana Cloud trend analysis), TypeScript Native Support section (k6 v0.57+ esbuild, @types/k6, tsconfig.k6.json, type-check-before-run CI pattern, esbuild bundler for Node.js deps), Grafana Dashboard Integration (web dashboard CI artifact, Prometheus Remote Write PromQL queries, InfluxDB 2.x + Grafana dashboard IDs), community gotchas 63–65 (ramping-arrival-rate startRate cold-start burst, abortOnFail delayAbortEval VU-exhaustion inaccuracy, handleSummary p(95) JSON key parentheses). Re-run `/qa-refine k6` to refresh.
 
 > **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `--summary-mode=legacy`, `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section. **New in v2.0.0 final:** HTTP API server disabled by default, cloud secrets auto-injected in `--local-execution`, `k6 cloud project list` command, extension tab-completion.
 
@@ -10251,4 +10251,731 @@ export default async function () {
 > partial-file reads (e.g., splitting a large file across VUs by seeking to a calculated offset).
 > Import `SeekMode` from `"k6/experimental/fs"` — it is a named export, not a default export.
 
+---
+
+## Ramping Arrival Rate — Comprehensive Multi-Phase Traffic Example
+
+The `ramping-arrival-rate` executor is the right choice when you need to model gradually increasing
+RPS with distinct phases (warm-up → ramp → sustain → spike → ramp-down). Unlike `ramping-vus`,
+it maintains a *fixed iteration rate* in each phase regardless of how long individual iterations
+take — making it accurate for open-model load profiling.
+
+**Key options:**
+| Option | Required | Default | Purpose |
+|--------|----------|---------|---------|
+| `startRate` | No | `0` | Initial iterations per `timeUnit` at test start |
+| `timeUnit` | No | `"1s"` | Period for the rate (e.g. `"1s"` = iterations per second, `"1m"` = per minute) |
+| `preAllocatedVUs` | **Yes** | — | VUs allocated before the test starts (avoids cold-start ramp lag) |
+| `maxVUs` | No | `preAllocatedVUs` | Upper ceiling — k6 allocates extra VUs if iteration time grows |
+| `stages` | **Yes** | — | Array of `{ target, duration }` — each target is iterations per `timeUnit` |
+
+**Critical rule:** Do NOT call `sleep()` inside iterations for arrival-rate executors. The executor
+controls pacing through `rate` and `timeUnit`. Adding `sleep()` increases iteration duration, causing
+k6 to allocate more VUs to maintain the target rate — potentially exceeding `maxVUs` and dropping iterations.
+
+```javascript
+// k6/scripts/ramping-arrival-complete.js
+// Full lifecycle: warm-up → ramp → sustain → spike → ramp-down
+// Uses ramping-arrival-rate + per-scenario thresholds + SLO-aware handleSummary
+import http from "k6/http";
+import { check, group } from "k6";
+import { Trend, Counter } from "k6/metrics";
+import { textSummary } from "https://jslib.k6.io/k6-summary/0.0.2/index.js";
+
+// Custom metrics for fine-grained SLO tracking
+const checkoutDuration = new Trend("checkout_duration_ms", true);
+const cartErrors       = new Counter("cart_errors_total");
+
+export const options = {
+  discardResponseBodies: false,  // keep bodies for response validation
+  scenarios: {
+    api_traffic: {
+      executor: "ramping-arrival-rate",
+      startRate: 5,              // start at 5 RPS (avoids cold-start 0→100 shock)
+      timeUnit: "1s",
+      preAllocatedVUs: 20,       // pre-allocate VUs for initial load
+      maxVUs: 200,               // k6 can scale up to 200 VUs if iterations slow down
+      stages: [
+        { target: 10,  duration: "1m"  },  // warm-up: ramp to 10 RPS
+        { target: 50,  duration: "3m"  },  // ramp: steady climb to 50 RPS
+        { target: 50,  duration: "5m"  },  // sustain: hold at 50 RPS
+        { target: 100, duration: "2m"  },  // spike: sudden doubling of load
+        { target: 50,  duration: "2m"  },  // recovery: return to baseline
+        { target: 0,   duration: "1m"  },  // ramp-down: graceful cool-off
+      ],
+    },
+  },
+  thresholds: {
+    // SLO-level thresholds — test fails with non-zero exit code if violated
+    http_req_duration:      ["p(95)<500", "p(99)<1000"],  // 95th pct < 500ms, 99th < 1s
+    http_req_failed:        ["rate<0.01"],                 // error rate < 1%
+    checkout_duration_ms:   ["p(95)<800"],                 // checkout SLO
+    cart_errors_total:      ["count<50"],                  // absolute error cap
+    // Per-scenario threshold (tagged automatically by k6 with scenario name)
+    "http_req_duration{scenario:api_traffic}": ["p(90)<400"],
+  },
+};
+
+const BASE = __ENV.API_URL || "http://localhost:3001";
+
+export default function () {
+  // No sleep() here — ramping-arrival-rate controls pacing
+  group("browse and cart", function () {
+    const listRes = http.get(`${BASE}/api/products`, {
+      tags: { name: "product_list" },
+    });
+    check(listRes, {
+      "product list 200": (r) => r.status === 200,
+      "products returned": (r) => {
+        try { return Array.isArray(r.json()); } catch { return false; }
+      },
+    });
+
+    const cartStart = Date.now();
+    const cartRes = http.post(
+      `${BASE}/api/cart`,
+      JSON.stringify({ productId: "prod-001", qty: 1 }),
+      { headers: { "Content-Type": "application/json" }, tags: { name: "add_to_cart" } }
+    );
+    const ok = check(cartRes, { "cart 201": (r) => r.status === 201 });
+    if (!ok) cartErrors.add(1);
+
+    const checkoutRes = http.post(
+      `${BASE}/api/checkout`,
+      JSON.stringify({ cartId: cartRes.json("id") }),
+      { headers: { "Content-Type": "application/json" }, tags: { name: "checkout" } }
+    );
+    checkoutDuration.add(Date.now() - cartStart);
+    check(checkoutRes, { "checkout 200": (r) => r.status === 200 });
+  });
+}
+
+// handleSummary — output JSON artifact for CI + human-readable text to stdout
+export function handleSummary(data) {
+  return {
+    "results/summary.json": JSON.stringify(data, null, 2),  // machine-readable for CI diff
+    stdout: textSummary(data, { indent: "  ", enableColors: true }),
+  };
+}
+```
+
+**Sizing `preAllocatedVUs` correctly:**
+- Use Little's Law: `preAllocatedVUs ≥ max_target_rate × avg_iteration_duration_seconds`
+- Example: 100 RPS peak, avg iteration = 300 ms → `preAllocatedVUs = 100 × 0.3 = 30 VUs`
+- Set `maxVUs` to 2–3× `preAllocatedVUs` to absorb latency spikes without dropping iterations
+- k6 emits a warning `"insufficient VUs"` when `maxVUs` is exhausted — monitor this in CI logs
+
+> **[community]:** The `stages` array in `ramping-arrival-rate` behaves differently from `ramping-vus`
+> stages: targets are *iteration rates*, not *VU counts*. A `target: 0` final stage explicitly ramps
+> down to 0 RPS, allowing in-flight iterations to drain gracefully. Without a ramp-down stage, k6
+> cuts off iterations abruptly at test end, which can cause misleading "dropped request" counts in
+> dashboards.
+
+---
+
+## Threshold Configuration for SLOs — Production Patterns
+
+Thresholds are the mechanism for codifying Service Level Objectives (SLOs) into load test pass/fail
+criteria. When a threshold is violated, k6 returns exit code `99` — distinguishing an SLO breach
+from a script error (exit code `1`) or successful run (exit code `0`).
+
+### SLO Threshold Reference
+
+```javascript
+// k6/scripts/slo-thresholds.js — comprehensive SLO gate configuration
+export const options = {
+  scenarios: {
+    steady_state: {
+      executor: "constant-arrival-rate",
+      rate: 50, timeUnit: "1s",
+      duration: "5m",
+      preAllocatedVUs: 30, maxVUs: 100,
+    },
+  },
+
+  thresholds: {
+    // ── Latency SLOs ─────────────────────────────────────────────────────
+    // p(95) = 95th percentile; p(50) = median (P50 catches mean-skew early)
+    "http_req_duration":              ["p(50)<150", "p(95)<500", "p(99)<1000"],
+    // Per-endpoint latency via URL normalization tags
+    "http_req_duration{name:login}":  ["p(95)<300"],
+    "http_req_duration{name:search}": ["p(95)<600"],
+
+    // ── Error Rate SLOs ───────────────────────────────────────────────────
+    "http_req_failed":                ["rate<0.005"],  // < 0.5% error rate (four-nines target)
+    // Custom error metric (granular HTTP 5xx vs total)
+    "http_req_failed{status:5..}":    ["rate<0.001"],  // 5xx only < 0.1%
+
+    // ── Throughput SLOs ───────────────────────────────────────────────────
+    // checks pass-rate: all checks should pass ≥ 99% of the time
+    "checks":                         ["rate>0.99"],
+
+    // ── Custom Metric SLOs ────────────────────────────────────────────────
+    // Business-level SLOs on custom Trend/Counter metrics
+    "checkout_duration_ms":           ["p(95)<800"],
+    "payment_errors_total":           ["count<10"],
+
+    // ── abortOnFail — stop the test immediately on catastrophic failure ───
+    "http_req_failed": [{
+      threshold:      "rate<0.10",   // abort if error rate exceeds 10%
+      abortOnFail:    true,
+      delayAbortEval: "30s",         // wait 30s of data before evaluating
+    }],
+  },
+};
+```
+
+### Scenario-Scoped Thresholds
+
+k6 automatically tags each metric with `scenario:<name>`. Use tag selectors to apply different
+SLOs to different scenarios in multi-scenario tests:
+
+```javascript
+export const options = {
+  scenarios: {
+    read_traffic:  { executor: "constant-arrival-rate", rate: 100, duration: "5m", preAllocatedVUs: 20, maxVUs: 50  },
+    write_traffic: { executor: "constant-arrival-rate", rate: 20,  duration: "5m", preAllocatedVUs: 10, maxVUs: 30  },
+  },
+  thresholds: {
+    // Different SLOs per scenario — reads are faster than writes
+    "http_req_duration{scenario:read_traffic}":  ["p(95)<200"],
+    "http_req_duration{scenario:write_traffic}": ["p(95)<800"],
+    "http_req_failed{scenario:write_traffic}":   ["rate<0.02"],
+  },
+};
+```
+
+> **[community]:** Tag selector threshold keys must be an **exact string match** of the metric name
+> plus the tag expression in `{key:value}` format. Wildcards and regex are NOT supported in threshold
+> tag selectors. A typo in the tag selector (e.g., `{scenarion:read_traffic}`) will silently create
+> a new empty threshold that always passes — k6 will not warn you. Verify selectors by cross-checking
+> the JSON summary output's `metrics` keys against your threshold config.
+
+---
+
+## Performance Regression Detection — CI Gate Patterns
+
+Detecting performance regressions before they reach production requires a CI pipeline that
+(a) stores baselines, (b) compares new runs against baselines, and (c) fails the build when
+regressions exceed a tolerance band.
+
+### Strategy 1 — Threshold-Based Gate (simplest, no baseline storage)
+
+Define absolute thresholds as your SLA and let k6's exit code drive CI success/failure:
+
+```yaml
+# .github/workflows/perf-gate.yml
+name: Performance Gate
+
+on:
+  push:
+    branches: [main, "release/**"]
+
+jobs:
+  k6-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run k6 smoke test
+        uses: grafana/k6-action@v0.3.1
+        with:
+          filename: k6/scripts/smoke.js
+        env:
+          K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+          API_URL:        ${{ vars.STAGING_URL }}
+
+      # k6-action fails the step if k6 exits with code 99 (threshold breach)
+      # or code 1 (script error). Exit code 0 = all thresholds passed.
+```
+
+```javascript
+// k6/scripts/smoke.js — minimal CI smoke: < 2 min, 1 VU, SLO-gated
+import http from "k6/http";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    smoke: {
+      executor: "constant-vus",
+      vus: 1,
+      duration: "1m",
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(99)<500"],  // fail build if 99th pct > 500ms
+    http_req_failed:   ["rate<0.01"],  // fail build if error rate > 1%
+  },
+};
+
+export default function () {
+  const r = http.get(`${__ENV.API_URL}/health`);
+  check(r, { "health 200": (r) => r.status === 200 });
+}
+```
+
+### Strategy 2 — Baseline Comparison with `handleSummary` + JSON Diff
+
+Store the `summary.json` artifact from the reference run and compare subsequent runs against it:
+
+```javascript
+// k6/scripts/baseline-compare.js — save JSON summary for baseline comparison
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { textSummary } from "https://jslib.k6.io/k6-summary/0.0.2/index.js";
+
+export const options = {
+  scenarios: {
+    load: {
+      executor: "constant-arrival-rate",
+      rate: 30, timeUnit: "1s",
+      duration: "3m",
+      preAllocatedVUs: 20, maxVUs: 80,
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<500"],
+    http_req_failed:   ["rate<0.01"],
+  },
+};
+
+export default function () {
+  const r = http.get(`${__ENV.API_URL}/api/products`);
+  check(r, { "200 OK": (r) => r.status === 200 });
+}
+
+export function handleSummary(data) {
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  return {
+    // Write versioned artifact — commit SHA in filename for traceability
+    [`results/summary-${__ENV.GIT_SHA || ts}.json`]: JSON.stringify(data, null, 2),
+    "results/summary-latest.json":                   JSON.stringify(data, null, 2),
+    stdout: textSummary(data, { indent: "  ", enableColors: true }),
+  };
+}
+```
+
+```bash
+# .github/workflows/perf-regression.yml snippet
+# Compares p(95) latency against stored baseline — fails if > 20% regression
+
+- name: Run k6 load test
+  run: |
+    GIT_SHA=${{ github.sha }} \
+    API_URL=${{ vars.STAGING_URL }} \
+    k6 run k6/scripts/baseline-compare.js
+
+- name: Check regression (p95 latency ≤ baseline × 1.20)
+  run: |
+    BASELINE=$(cat results/baseline.json | jq '.metrics.http_req_duration.values["p(95)"]')
+    CURRENT=$(cat results/summary-latest.json | jq '.metrics.http_req_duration.values["p(95)"]')
+    LIMIT=$(echo "$BASELINE * 1.20" | bc)
+    echo "Baseline p(95): ${BASELINE}ms | Current: ${CURRENT}ms | Limit: ${LIMIT}ms"
+    python3 -c "
+    import sys
+    baseline, current, limit = $BASELINE, $CURRENT, $LIMIT
+    if current > limit:
+        print(f'REGRESSION: p(95) {current:.1f}ms > limit {limit:.1f}ms ({((current/baseline)-1)*100:.1f}% above baseline)')
+        sys.exit(1)
+    else:
+        print(f'PASS: p(95) {current:.1f}ms within 20% of baseline ({baseline:.1f}ms)')
+    "
+
+- name: Store baseline (main branch only)
+  if: github.ref == 'refs/heads/main' && success()
+  run: cp results/summary-latest.json results/baseline.json
+
+- uses: actions/upload-artifact@v4
+  with:
+    name: k6-results-${{ github.sha }}
+    path: results/
+    retention-days: 90
+```
+
+> **[community]:** k6's `summary.json` stores metric values under `metrics.<name>.values["p(95)"]`
+> as floating-point milliseconds. The key name for percentiles includes the parentheses and is
+> double-quoted: `"p(95)"`. In `jq`, use single-quoted path: `jq '.metrics.http_req_duration.values["p(95)"]'`.
+> The `rate` for `http_req_failed` is stored under `metrics.http_req_failed.values.rate` (0.0–1.0, not %).
+
+### Strategy 3 — Grafana k6 Cloud Trend Analysis (recommended for teams)
+
+For teams using Grafana Cloud k6, the platform stores all test runs and provides trend dashboards
+without manual baseline management:
+
+```javascript
+// k6/scripts/cloud-trend.js — run on k6 cloud for automatic trend tracking
+export const options = {
+  cloud: {
+    projectID: parseInt(__ENV.K6_CLOUD_PROJECT_ID),
+    name:      `Load Test — ${__ENV.CI_COMMIT_REF_NAME || "local"}`,
+    note:      `Commit: ${__ENV.GIT_SHA || "unknown"} | Branch: ${__ENV.BRANCH || "local"}`,
+  },
+  // Thresholds still gate the run — cloud stores the result regardless of pass/fail
+  thresholds: {
+    http_req_duration: ["p(95)<500"],
+    http_req_failed:   ["rate<0.01"],
+  },
+  scenarios: {
+    load: {
+      executor: "ramping-vus",
+      stages: [
+        { duration: "1m", target: 20 },
+        { duration: "3m", target: 50 },
+        { duration: "1m", target: 0  },
+      ],
+    },
+  },
+};
+```
+
+```bash
+# Run on Grafana Cloud k6 — results are stored and trended automatically
+k6 cloud run \
+  --project-id $K6_CLOUD_PROJECT_ID \
+  --stack $K6_CLOUD_STACK_ID \
+  k6/scripts/cloud-trend.js
+```
+
+---
+
+## TypeScript Native Support in k6
+
+k6 v0.57+ runs `.ts` files directly using built-in esbuild transpilation — no webpack bundler
+required for most use cases. This section covers the full TypeScript setup spectrum.
+
+### Native TypeScript (k6 v0.57+, recommended)
+
+```bash
+# Run a TypeScript k6 script directly — esbuild transpiles on-the-fly
+k6 run script.ts
+
+# Type-check separately (k6 does NOT type-check — it only strips types)
+npx tsc --noEmit --project tsconfig.k6.json
+```
+
+**Install type definitions:**
+```bash
+npm install --save-dev @types/k6
+# For browser module types:
+npm install --save-dev @types/k6__browser
+```
+
+**`tsconfig.k6.json`** — separate tsconfig avoids mixing k6 types with your app's DOM/node types:
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "types": ["k6"],
+    "paths": {
+      "k6":         ["./node_modules/@types/k6/index.d.ts"],
+      "k6/*":       ["./node_modules/@types/k6/*.d.ts"],
+      "k6/browser": ["./node_modules/@types/k6__browser/index.d.ts"]
+    }
+  },
+  "include": ["k6/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+```
+
+**Typed k6 script example:**
+```typescript
+// k6/scripts/typed-api.ts — full TypeScript with @types/k6
+import http, { RefinedResponse, ResponseType } from "k6/http";
+import { check, sleep }                        from "k6";
+import { Options }                             from "k6/options";
+import { Counter, Trend }                      from "k6/metrics";
+
+// Typed custom metrics
+const apiErrors:   Counter = new Counter("api_errors_total");
+const apiDuration: Trend   = new Trend("api_duration_ms", true);
+
+// Typed options — compile-time validation of option names
+export const options: Options = {
+  scenarios: {
+    load: {
+      executor:          "constant-arrival-rate",
+      rate:              30,
+      timeUnit:          "1s",
+      duration:          "3m",
+      preAllocatedVUs:   20,
+      maxVUs:            80,
+    },
+  },
+  thresholds: {
+    api_duration_ms: ["p(95)<500"],
+    api_errors_total: ["count<100"],
+  },
+};
+
+// Typed response body
+interface Product {
+  id:    string;
+  name:  string;
+  price: number;
+}
+
+export default function (): void {
+  const res: RefinedResponse<"text"> = http.get<"text">(
+    `${__ENV.API_URL}/api/products`
+  );
+
+  const ok = check(res, {
+    "200 OK":         (r) => r.status === 200,
+    "has products":   (r) => {
+      try {
+        const body = JSON.parse(r.body as string) as Product[];
+        return body.length > 0;
+      } catch {
+        return false;
+      }
+    },
+  });
+
+  if (!ok) apiErrors.add(1);
+  apiDuration.add(res.timings.duration);
+}
+```
+
+> **[community]:** k6's native TypeScript support is **transpilation-only** — type errors do NOT
+> fail the `k6 run` command. The `tsc --noEmit` step must be added to CI explicitly. Teams that
+> skip the type-check step lose type safety silently: k6 runs the transpiled-but-type-incorrect
+> script without complaint. Add `tsc --noEmit` as a pre-flight step before `k6 run` in CI:
+>
+> ```yaml
+> - name: Type-check k6 scripts
+>   run: npx tsc --noEmit --project tsconfig.k6.json
+> - name: Run k6
+>   run: k6 run k6/scripts/typed-api.ts
+> ```
+
+### Bundled TypeScript (for complex modules / Node.js imports)
+
+When your k6 scripts need to import Node.js-only packages (e.g., `lodash`, `faker`, custom
+shared utilities), you need a bundler since k6's native module resolution cannot resolve `node_modules`
+at runtime. Use `esbuild` for the fastest build:
+
+```bash
+npm install --save-dev esbuild @types/k6
+```
+
+```javascript
+// esbuild.config.mjs
+import { build } from "esbuild";
+
+await build({
+  entryPoints: ["k6/scripts/complex-script.ts"],
+  bundle:      true,
+  outfile:     "dist/complex-script.js",
+  format:      "esm",
+  target:      "es2022",
+  // Exclude k6 built-in modules from bundling — they are provided by the k6 runtime
+  external:    [
+    "k6",
+    "k6/*",
+    "https://*",   // jslib.k6.io URLs are fetched at runtime, not bundled
+  ],
+  platform:    "browser",  // avoids node built-in shims
+});
+```
+
+```bash
+# Build and run:
+node esbuild.config.mjs && k6 run dist/complex-script.js
+```
+
+> **[community]:** The `external: ["k6", "k6/*"]` esbuild option is **mandatory**. Without it,
+> esbuild tries to bundle k6's built-in modules (like `k6/http`) as if they were npm packages,
+> fails to resolve them, and either errors out or produces a broken bundle. k6 built-in modules
+> are resolved by the k6 runtime at execution time — they must remain as bare imports in the
+> output bundle.
+
+---
+
+## Grafana Dashboard Integration — k6 Metrics Visualization
+
+k6 supports multiple real-time output backends. This section covers the three most common
+Grafana-centric setups and their trade-offs.
+
+### Option 1 — k6 Web Dashboard (built-in, no setup)
+
+The fastest way to get a live dashboard — no external dependencies:
+
+```bash
+# Start k6 with built-in web dashboard (opens at http://localhost:5665)
+K6_WEB_DASHBOARD=true k6 run script.js
+
+# CI: generate static HTML artifact instead of opening a server
+K6_WEB_DASHBOARD=true \
+K6_WEB_DASHBOARD_PORT=-1 \
+K6_WEB_DASHBOARD_EXPORT=reports/dashboard-$(date +%Y%m%d-%H%M%S).html \
+k6 run script.js
+```
+
+The HTML export is a fully self-contained single-file report with interactive charts — no server
+required to view it. Attach it as a GitHub Actions artifact for test run traceability.
+
+### Option 2 — Prometheus Remote Write + Grafana Cloud (production recommended)
+
+```bash
+# k6 → Prometheus Remote Write → Grafana Cloud / on-prem Grafana
+K6_PROMETHEUS_RW_SERVER_URL="https://prometheus-prod.example.com/api/v1/write" \
+K6_PROMETHEUS_RW_USERNAME="$PROM_USERNAME" \
+K6_PROMETHEUS_RW_PASSWORD="$PROM_PASSWORD" \
+K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true \   # requires Prometheus 2.40+
+k6 run -o experimental-prometheus-rw script.js
+```
+
+**Useful PromQL queries for k6 metrics:**
+```promql
+# Request rate (RPS) over 1-minute windows
+rate(k6_http_reqs_total[1m])
+
+# P95 latency from native histograms (requires Prometheus 2.40+ + native histogram flag)
+histogram_quantile(0.95, rate(k6_http_req_duration_bucket[1m]))
+
+# Error rate — requests that returned non-2xx or network error
+rate(k6_http_req_failed_total{value="true"}[1m]) /
+rate(k6_http_reqs_total[1m])
+
+# VU count over time
+k6_vus
+
+# Custom Trend metric P95 (e.g., checkout_duration_ms)
+histogram_quantile(0.95, rate(k6_checkout_duration_ms_bucket[1m]))
+```
+
+### Option 3 — InfluxDB 2.x + Grafana (self-hosted team setup)
+
+```bash
+# k6 → InfluxDB 2 → Grafana (local dev / staging)
+k6 run -o influxdb=http://localhost:8086/k6 script.js
+
+# With authentication (InfluxDB 2.x token auth):
+K6_INFLUXDB_TOKEN="my-influxdb-token" \
+K6_INFLUXDB_ORG="myorg" \
+K6_INFLUXDB_BUCKET="k6" \
+k6 run -o influxdb=http://localhost:8086 script.js
+```
+
+**Grafana dashboard IDs for k6:**
+- `2587` — official k6 + InfluxDB dashboard (classic, widely used)
+- `18030` — k6 Prometheus native histogram dashboard (requires Prom 2.40+ + native histograms)
+- `18793` — k6 browser metrics dashboard (Web Vitals — LCP, FID/INP, CLS)
+
+> **[community]:** The official k6 Grafana dashboard (ID `2587`) expects metric names in the
+> `k6.*` InfluxDB measurement format. If you rename k6 metrics using custom tags or the
+> `--tag` flag with a `name` dimension, those metrics appear under a different measurement name
+> and the pre-built panels show no data. Duplicate the dashboard and update the measurement
+> variable in the top-level template variable, or use Explore to verify metric names before
+> building custom panels.
+
+---
+
+## Additional Community Gotchas (Iteration 36)
+
+### 63. `ramping-arrival-rate` `startRate` must be > 0 to avoid a cold-start burst  [community]
+
+**What:** When `startRate` is omitted or set to `0`, k6 begins the first stage with 0 iterations
+per second and ramps up from there. If your first stage target is high (e.g., `{ target: 100, duration: "30s" }`),
+k6 linearly increases from 0 to 100 RPS over 30 seconds. This is correct behavior — but many teams
+expect a "start at zero, jump to target immediately" effect and are surprised when the actual RPS
+graph shows a gradual curve from 0 rather than a stair-step.
+
+**The real risk:** If you set `startRate` to the same value as your first stage `target`, k6 holds
+that rate constant until the stage `duration` elapses. This is the pattern for a **no warm-up,
+full-rate-from-start** scenario — often desirable for breakpoint tests but surprising for teams
+expecting a ramp.
+
+```javascript
+// PATTERN A — warm-up ramp (startRate = 0, implicit):
+stages: [
+  { target: 100, duration: "2m" },  // 0 → 100 RPS over 2 minutes
+  { target: 100, duration: "5m" },  // hold 100 RPS
+]
+
+// PATTERN B — immediate full load (startRate = target):
+startRate: 100,
+stages: [
+  { target: 100, duration: "5m" },  // holds exactly 100 RPS from second 0
+]
+
+// PATTERN C — soft start with explicit warm-up:
+startRate: 5,
+stages: [
+  { target: 10,  duration: "30s" },  // gentle ramp 5 → 10 RPS
+  { target: 100, duration: "2m"  },  // accelerate to full load
+  { target: 100, duration: "5m"  },  // sustain
+]
+```
+
+> **[community]:** For capacity planning tests, Pattern C (soft start) is the most realistic
+> because it gives the system under test time to fill its connection pools and warm up caches —
+> the same behavior real users produce when traffic grows organically. Cold-starting at full RPS
+> (Pattern B) is appropriate for resilience/disaster-recovery tests where you want to simulate
+> a sudden traffic surge without warm-up.
+
+---
+
+### 64. `abortOnFail` with `delayAbortEval` does NOT guarantee the delay is accurate under VU exhaustion  [community]
+
+**What:** `abortOnFail: true` combined with `delayAbortEval: "30s"` is intended to let k6
+collect 30 seconds of data before evaluating the threshold and aborting. However, if the test
+is simultaneously exhausting `maxVUs` (because the system is responding slowly and k6 needs more
+VUs to keep up with the arrival rate), the evaluation is delayed not by wall-clock time but by
+iteration completion cycles. Under severe VU exhaustion, you may wait significantly longer than
+`delayAbortEval` before the abort fires.
+
+**WHY:** `delayAbortEval` tracks elapsed test time using k6's internal scheduler, but the
+scheduler prioritizes dispatching new iterations over running threshold evaluations when VUs
+are exhausted. Real-world observation: a `delayAbortEval: "30s"` test under 90% VU exhaustion
+can take 45–90 seconds before the abort fires.
+
+**Fix:** Set `delayAbortEval` conservatively (2–3× expected delay), add a `maxVUs` safety
+ceiling well above `preAllocatedVUs`, and monitor the `vus_max` metric alongside `vus`:
+
+```javascript
+thresholds: {
+  http_req_failed: [{
+    threshold:      "rate<0.10",
+    abortOnFail:    true,
+    delayAbortEval: "60s",   // 2× the intended 30s — absorbs scheduler delay
+  }],
+},
+```
+
+---
+
+### 65. `handleSummary` JSON — `http_req_duration.values["p(95)"]` key has parentheses and is case-sensitive  [community]
+
+**What:** The k6 summary JSON stores percentile values with the exact key format `"p(95)"` —
+including parentheses. Scripts that parse the summary with naive property access like
+`data.metrics.http_req_duration.values.p95` or `.values.p_95` find `undefined` and silently
+skip the regression check.
+
+**WHY:** k6 uses the threshold expression string as the key to make the summary output directly
+correspond to threshold definitions. This is convenient for humans reading the JSON but tricky
+for automation that expects valid JavaScript identifier-style keys.
+
+```bash
+# Correct jq path:
+jq '.metrics.http_req_duration.values["p(95)"]' summary.json    # ✓
+
+# Wrong — returns null silently:
+jq '.metrics.http_req_duration.values.p95'    summary.json      # ✗ returns null
+jq '.metrics.http_req_duration.values["p95"]' summary.json      # ✗ returns null
+
+# Full metric key list (useful for discovering available percentiles):
+jq '.metrics.http_req_duration.values | keys' summary.json
+# Output: ["avg","max","med","min","p(90)","p(95)","p(99)"]
+```
+
+> **[community]:** k6 only stores percentiles that were referenced in a threshold or in the
+> `summaryTrendStats` option. If you need `p(99)` in the summary JSON for a regression check
+> but have no threshold using it, add `options.summaryTrendStats = ["avg","p(90)","p(95)","p(99)","max"]`
+> to ensure it appears in the output. Without this, the key is absent from the JSON entirely —
+> not null, not 0, but absent — causing `jq` to return `null` and Python to raise a `KeyError`.
 

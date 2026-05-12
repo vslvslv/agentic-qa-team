@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.14 release notes, JUnit 6.0-6.1 release notes, Mockito 5.x-5.23 release notes, AssertJ 3.27.7 release notes, AssertJ 4.0.0-M1 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Boot 4.0 release notes and migration guide, Spring Boot 4.1-RC1 release notes, Spring Framework 6.2-7.0 docs, MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass @SentenceFragment @ClassTemplate AutoCloseable-in-Store Kotlin-Sequence, JUnit 5.14 ResourceSupport OutputDirectoryCreator MediaType-relocation EnabledOnJre-JRE-OTHER ResourceLock-ClassTemplate, JUnit 6.1 @DefaultLocale @DefaultTimeZone @EmptySource-Iterable @CsvSource-commentCharacter @EnabledOnJre-int @TempDir-CleanupMode system-properties-extension Constants-class assertInstanceOf-cause trimStacktrace WorkerThreadPool org.junit.start dynamic-test-ExecutionMode memory-cleanup-mode, JUnit 6.0.3 NamespacedHierarchicalStore-deadlock, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, AssertJ 3.27.7 XXE CVE-2026-24400 XmlStringPrettyFormatter-deprecated, AssertJ 4.0.0-M1 Java17-min native-isSealed-isRecord, Spring Boot 3.5 SSL Testcontainers print-condition-evaluation-report, Spring Boot 4.0 @MockBean-removal @MockitoBean RestTestClient @AutoConfigureMockMvc-HtmlUnit MockitoTestExecutionListener-removal @PropertyMapping-relocation @WithMockUser-security-test spring-boot-resttestclient-module-4.0.6, Spring Boot 4.1-RC1 @GrpcAdvice @ServiceConnection-Ssl-fix OpenTelemetry-SDK-env-vars, Mockito 5.19 SequencedCollection-ReturnsEmptyValues, Mockito 5.20 generic-type-construction, Mockito 5.21 ReturnsEmptyValues-Future, Mockito 5.22 Kotlin singleton mocking, Mockito 5.23 @Nullable-when Android-mock-maker) | mixed | iteration: 36 | score: 99/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.14 release notes, JUnit 6.0-6.1 release notes, Mockito 5.x-5.23 release notes, AssertJ 3.27.7 release notes, AssertJ 4.0.0-M1 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Boot 4.0 release notes and migration guide, Spring Boot 4.1-RC1 release notes, Spring Framework 6.2-7.0 docs, MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official, ArchUnit 1.3.0 user guide, JUnit 5 extension SPI docs) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass @SentenceFragment @ClassTemplate AutoCloseable-in-Store Kotlin-Sequence, JUnit 5.14 ResourceSupport OutputDirectoryCreator MediaType-relocation EnabledOnJre-JRE-OTHER ResourceLock-ClassTemplate, JUnit 6.1 @DefaultLocale @DefaultTimeZone @EmptySource-Iterable @CsvSource-commentCharacter @EnabledOnJre-int @TempDir-CleanupMode system-properties-extension Constants-class assertInstanceOf-cause trimStacktrace WorkerThreadPool org.junit.start dynamic-test-ExecutionMode memory-cleanup-mode, JUnit 6.0.3 NamespacedHierarchicalStore-deadlock, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, AssertJ 3.27.7 XXE CVE-2026-24400 XmlStringPrettyFormatter-deprecated, AssertJ 4.0.0-M1 Java17-min native-isSealed-isRecord, Spring Boot 3.5 SSL Testcontainers print-condition-evaluation-report, Spring Boot 4.0 @MockBean-removal @MockitoBean RestTestClient @AutoConfigureMockMvc-HtmlUnit MockitoTestExecutionListener-removal @PropertyMapping-relocation @WithMockUser-security-test spring-boot-resttestclient-module-4.0.6, Spring Boot 4.1-RC1 @GrpcAdvice @ServiceConnection-Ssl-fix OpenTelemetry-SDK-env-vars, Mockito 5.19 SequencedCollection-ReturnsEmptyValues, Mockito 5.20 generic-type-construction, Mockito 5.21 ReturnsEmptyValues-Future, Mockito 5.22 Kotlin singleton mocking, Mockito 5.23 @Nullable-when Android-mock-maker, ArchUnit layered-architecture cycle-detection naming-conventions, Mockito thenAnswer Answer-patterns CALLS_REAL_METHODS RETURNS_DEEP_STUBS, JUnit 5 extension SPI ParameterResolver BeforeEachCallback AfterEachCallback TestExecutionExceptionHandler ExecutionCondition InvocationInterceptor ExtensionContext-Store) | mixed | iteration: 37 | score: 99/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -6334,4 +6334,554 @@ class TracingIntegrationTest {
 
 **Note:** `@GrpcTest` and the `OtlpGrpcContainer` `@ServiceConnection` support are new in Spring Boot 4.1 and require `spring-boot-starter-grpc` and `spring-boot-starter-opentelemetry` respectively. [community]
 
+---
+
+## ArchUnit — Architecture Rules as Tests
+
+ArchUnit (https://www.archunit.org) lets you express and enforce architecture rules as regular JUnit tests. Rules cover package dependencies, class naming conventions, layer isolation, cycle detection, and annotation requirements. Violations appear as test failures with precise descriptions of which class broke which rule.
+
+### Core Setup
+
+```xml
+<!-- Maven — add to test scope -->
+<dependency>
+    <groupId>com.tngtech.archunit</groupId>
+    <artifactId>archunit-junit5</artifactId>
+    <version>1.3.0</version>
+    <scope>test</scope>
+</dependency>
+```
+
+```java
+import com.tngtech.archunit.core.domain.JavaClasses;
+import com.tngtech.archunit.core.importer.ClassFileImporter;
+import com.tngtech.archunit.core.importer.ImportOption;
+import com.tngtech.archunit.junit.AnalyzeClasses;
+import com.tngtech.archunit.junit.ArchTest;
+import com.tngtech.archunit.lang.ArchRule;
+
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.*;
+import static com.tngtech.archunit.library.Architectures.layeredArchitecture;
+import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.slices;
+```
+
+### Layered Architecture Rule
+
+Enforce that controllers only depend on services, services only on repositories, and repositories only on the domain layer — no cross-layer shortcuts allowed.
+
+```java
+@AnalyzeClasses(packages = "com.example", importOptions = ImportOption.DoNotIncludeTests.class)
+class ArchitectureTest {
+
+    @ArchTest
+    static final ArchRule layering_is_respected = layeredArchitecture()
+        .consideringAllDependencies()
+        .layer("Controllers").definedBy("..controller..")
+        .layer("Services").definedBy("..service..")
+        .layer("Repositories").definedBy("..repository..")
+        .layer("Domain").definedBy("..domain..")
+        .whereLayer("Controllers").mayNotBeAccessedByAnyLayer()
+        .whereLayer("Services").mayOnlyBeAccessedByLayers("Controllers")
+        .whereLayer("Repositories").mayOnlyBeAccessedByLayers("Services")
+        .whereLayer("Domain").mayOnlyBeAccessedByLayers("Services", "Repositories", "Controllers");
+}
+```
+
+### Class Naming Convention Rules
+
+```java
+@AnalyzeClasses(packages = "com.example")
+class NamingConventionTest {
+
+    // All classes in the service package must end with "Service"
+    @ArchTest
+    static final ArchRule services_are_named_correctly =
+        classes()
+            .that().resideInAPackage("..service..")
+            .should().haveSimpleNameEndingWith("Service");
+
+    // All repository interfaces must reside in the repository package
+    @ArchTest
+    static final ArchRule repositories_reside_in_correct_package =
+        classes()
+            .that().haveSimpleNameEndingWith("Repository")
+            .should().resideInAPackage("..repository..");
+
+    // No class outside the domain package should implement DomainEntity
+    @ArchTest
+    static final ArchRule domain_entities_stay_in_domain =
+        classes()
+            .that().implement("com.example.domain.DomainEntity")
+            .should().resideInAPackage("..domain..");
+}
+```
+
+### Dependency Direction Rules
+
+```java
+@AnalyzeClasses(packages = "com.example")
+class DependencyDirectionTest {
+
+    // Infrastructure layer must NOT be imported by the domain layer
+    @ArchTest
+    static final ArchRule domain_does_not_depend_on_infrastructure =
+        noClasses()
+            .that().resideInAPackage("..domain..")
+            .should().dependOnClassesThat().resideInAPackage("..infrastructure..");
+
+    // Spring annotations must not leak into the domain model
+    @ArchTest
+    static final ArchRule domain_is_framework_free =
+        noClasses()
+            .that().resideInAPackage("..domain..")
+            .should().dependOnClassesThat().resideInAPackage("org.springframework..");
+
+    // Controllers must not access the repository layer directly
+    @ArchTest
+    static final ArchRule controllers_do_not_bypass_service_layer =
+        noClasses()
+            .that().resideInAPackage("..controller..")
+            .should().dependOnClassesThat().resideInAPackage("..repository..");
+}
+```
+
+### Cycle Detection
+
+```java
+@AnalyzeClasses(packages = "com.example")
+class CycleDetectionTest {
+
+    // No package-level cycles anywhere in the codebase
+    @ArchTest
+    static final ArchRule no_package_cycles =
+        slices().matching("com.example.(*)..").should().beFreeOfCycles();
+
+    // No cycles among service-layer packages specifically
+    @ArchTest
+    static final ArchRule no_service_cycles =
+        slices().matching("com.example.service.(*)..").should().beFreeOfCycles();
+}
+```
+
+### Method and Field Rules
+
+```java
+@AnalyzeClasses(packages = "com.example")
+class AnnotationEnforcementTest {
+
+    // All public methods in controllers must be annotated with a request mapping
+    @ArchTest
+    static final ArchRule controller_methods_are_mapped =
+        methods()
+            .that().areDeclaredInClassesThat().resideInAPackage("..controller..")
+            .and().arePublic()
+            .should().beAnnotatedWith("org.springframework.web.bind.annotation.RequestMapping")
+            .orShould().beAnnotatedWith("org.springframework.web.bind.annotation.GetMapping")
+            .orShould().beAnnotatedWith("org.springframework.web.bind.annotation.PostMapping")
+            .orShould().beAnnotatedWith("org.springframework.web.bind.annotation.PutMapping")
+            .orShould().beAnnotatedWith("org.springframework.web.bind.annotation.DeleteMapping");
+
+    // Fields in services must not be public (enforce encapsulation)
+    @ArchTest
+    static final ArchRule service_fields_are_not_public =
+        fields()
+            .that().areDeclaredInClassesThat().resideInAPackage("..service..")
+            .should().notBePublic();
+}
+```
+
+### Programmatic (Imperative) Usage
+
+```java
+class ProgrammaticArchTest {
+
+    @Test
+    void hexagonal_ports_are_interfaces() {
+        JavaClasses classes = new ClassFileImporter()
+            .withImportOption(ImportOption.DoNotIncludeTests.INSTANCE)
+            .importPackages("com.example");
+
+        ArchRule portsMustBeInterfaces = classes()
+            .that().resideInAPackage("..port..")
+            .should().beInterfaces();
+
+        portsMustBeInterfaces.check(classes);
+    }
+}
+```
+
+**ArchUnit Anti-Patterns [community]:**
+- **Checking the test classpath:** Without `ImportOption.DoNotIncludeTests`, test classes themselves trigger false positives for layer rules. Always add `DoNotIncludeTests`.
+- **Over-broad `..` wildcards:** `..service..` matches any package containing "service" anywhere in the path, including `com.example.oldservice.legacy`. Use precise package roots like `com.example.service..` when possible.
+- **Not running in CI:** Architecture tests that only run locally drift silently. Add ArchUnit tests to the same test phase as unit tests — they're fast (class scanning, not runtime) and provide zero-friction enforcement.
+- **Ignoring violations instead of fixing them:** ArchUnit provides a `store` mechanism to freeze known violations, but the store should be a temporary escape hatch, not a permanent workaround. Review the store file at every sprint and reduce it toward zero. [community]
+
+---
+
+## Mockito `thenAnswer` and `Answer` Patterns
+
+`thenReturn` only handles static values. Use `thenAnswer` (backed by the `Answer<T>` functional interface) when the stub's return value must depend on the arguments passed to the mock, on call sequence, or on side effects that must happen during the stub invocation.
+
+### Dynamic Return Based on Argument
+
+```java
+import org.mockito.stubbing.Answer;
+import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.*;
+
+@Test
+void thenAnswer_returns_argument_as_saved_entity() {
+    UserRepository repo = mock(UserRepository.class);
+
+    // Echo back the argument — simulates save() returning the persisted entity
+    when(repo.save(any(User.class)))
+        .thenAnswer(invocation -> {
+            User user = invocation.getArgument(0);
+            // Simulate the DB assigning an ID
+            return new User(user.name(), user.email(), 42L);
+        });
+
+    User saved = repo.save(new User("Alice", "alice@example.com", null));
+    assertThat(saved.id()).isEqualTo(42L);
+}
+```
+
+### Throwing Based on Argument Value
+
+```java
+@Test
+void thenAnswer_throws_for_invalid_input() {
+    PaymentGateway gateway = mock(PaymentGateway.class);
+
+    when(gateway.charge(anyDouble()))
+        .thenAnswer(invocation -> {
+            double amount = invocation.getArgument(0);
+            if (amount <= 0) {
+                throw new IllegalArgumentException("Amount must be positive: " + amount);
+            }
+            return new ChargeResult("TXN-" + System.nanoTime(), amount, "SUCCESS");
+        });
+
+    assertThatThrownBy(() -> gateway.charge(-1.0))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Amount must be positive");
+
+    ChargeResult result = gateway.charge(50.0);
+    assertThat(result.status()).isEqualTo("SUCCESS");
+}
+```
+
+### Stateful Answer — Call Counter
+
+```java
+@Test
+void thenAnswer_simulates_eventual_consistency() {
+    // First call returns PENDING, subsequent calls return COMPLETED
+    OrderStatusService statusService = mock(OrderStatusService.class);
+    int[] callCount = {0};
+
+    when(statusService.getStatus("ORD-1"))
+        .thenAnswer(invocation -> {
+            callCount[0]++;
+            return callCount[0] < 3 ? OrderStatus.PENDING : OrderStatus.COMPLETED;
+        });
+
+    assertThat(statusService.getStatus("ORD-1")).isEqualTo(OrderStatus.PENDING);   // call 1
+    assertThat(statusService.getStatus("ORD-1")).isEqualTo(OrderStatus.PENDING);   // call 2
+    assertThat(statusService.getStatus("ORD-1")).isEqualTo(OrderStatus.COMPLETED); // call 3
+}
+```
+
+### Named Reusable `Answer` Constants
+
+Extract complex answers into named constants for reuse across tests:
+
+```java
+public final class TestAnswers {
+
+    /** Simulates save(): returns the first argument with an auto-assigned ID. */
+    public static <T extends Identifiable> Answer<T> saveWithId(long id) {
+        return invocation -> {
+            @SuppressWarnings("unchecked")
+            T entity = invocation.getArgument(0);
+            entity.setId(id);
+            return entity;
+        };
+    }
+
+    /** Simulates a slow external service with configurable delay. */
+    public static <T> Answer<T> withLatency(T returnValue, Duration delay) {
+        return invocation -> {
+            Thread.sleep(delay.toMillis());
+            return returnValue;
+        };
+    }
+
+    private TestAnswers() {}
+}
+
+// Usage in test
+when(userRepo.save(any())).thenAnswer(TestAnswers.saveWithId(99L));
+when(emailService.send(any())).thenAnswer(TestAnswers.withLatency(true, Duration.ofMillis(50)));
+```
+
+### `CALLS_REAL_METHODS` and `RETURNS_DEEP_STUBS` Built-In Answers
+
+```java
+// CALLS_REAL_METHODS — partial mock: only override what you stub
+UserService partialMock = mock(UserService.class, CALLS_REAL_METHODS);
+when(partialMock.validateEmail(anyString())).thenReturn(true); // this one is stubbed
+// all other methods call the real implementation
+
+// RETURNS_DEEP_STUBS — for fluent builder chains (avoids NullPointerException)
+// WARNING: overuse hides design problems (Law of Demeter violations)
+QueryBuilder builder = mock(QueryBuilder.class, RETURNS_DEEP_STUBS);
+when(builder.select("*").from("users").where("active = true").build())
+    .thenReturn("SELECT * FROM users WHERE active = true");
+```
+
+**`thenAnswer` Anti-Patterns [community]:**
+- **Complex logic in anonymous answers:** If the answer lambda is more than 10 lines, it's testing the answer rather than the system under test. Extract the complex logic into a production helper or test the real object.
+- **Using `thenAnswer` instead of a real test double:** If you need rich stateful behaviour, a hand-written fake (implementing the interface) is more readable than a mock with a complex answer. Reserve `thenAnswer` for simple conditional responses.
+- **`RETURNS_DEEP_STUBS` in production-flavoured tests:** Deep stubs (`mock.getA().getB().getC()`) chain three Law of Demeter violations into one mock setup. Refactor the production code to expose a direct method instead.
+
+---
+
+## JUnit 5 Extensions SPI — Writing Custom Extensions
+
+JUnit 5's extension model replaces JUnit 4's `@Rule`/`@ClassRule` with a single, composable SPI. An extension is a class that implements one or more extension interfaces; it is registered via `@ExtendWith(MyExtension.class)` on a test class or method.
+
+### `ParameterResolver` — Inject Custom Parameters into Test Methods
+
+```java
+import org.junit.jupiter.api.extension.*;
+
+/**
+ * Injects a pre-configured Faker instance into any test parameter typed as Faker.
+ * Registration: @ExtendWith(FakerParameterResolver.class) on the test class.
+ */
+public class FakerParameterResolver implements ParameterResolver {
+
+    @Override
+    public boolean supportsParameter(ParameterContext parameterContext,
+                                     ExtensionContext extensionContext) {
+        // This resolver handles only parameters of type Faker
+        return parameterContext.getParameter().getType() == Faker.class;
+    }
+
+    @Override
+    public Object resolveParameter(ParameterContext parameterContext,
+                                   ExtensionContext extensionContext) {
+        // A new Faker per test; use Store for a shared instance
+        return new Faker(Locale.ENGLISH);
+    }
+}
+
+// Usage — Faker is injected automatically
+@ExtendWith(FakerParameterResolver.class)
+class UserRegistrationTest {
+
+    @Test
+    void register_withRandomData_succeeds(Faker faker) {
+        String name  = faker.name().fullName();
+        String email = faker.internet().emailAddress();
+        // ... use name and email in the test
+    }
+}
+```
+
+### `BeforeEachCallback` and `AfterEachCallback` — Lifecycle Hooks
+
+```java
+import org.junit.jupiter.api.extension.*;
+
+/**
+ * Measures test execution time and logs tests exceeding a threshold.
+ * Combines two callback interfaces in one extension class.
+ */
+public class SlowTestWatcherExtension implements BeforeEachCallback, AfterEachCallback {
+
+    private static final long SLOW_THRESHOLD_MS = 500;
+    private static final String START_KEY = "startTime";
+
+    @Override
+    public void beforeEach(ExtensionContext context) {
+        // Store start time in the extension's namespace — avoids key collisions
+        getStore(context).put(START_KEY, System.currentTimeMillis());
+    }
+
+    @Override
+    public void afterEach(ExtensionContext context) {
+        long start   = (long) getStore(context).get(START_KEY);
+        long elapsed = System.currentTimeMillis() - start;
+        if (elapsed > SLOW_THRESHOLD_MS) {
+            System.err.printf("[SLOW TEST] %s took %d ms%n",
+                context.getDisplayName(), elapsed);
+        }
+    }
+
+    private ExtensionContext.Store getStore(ExtensionContext context) {
+        // Namespace is (extension class + test method) — guaranteed unique
+        return context.getStore(
+            ExtensionContext.Namespace.create(getClass(), context.getRequiredTestMethod()));
+    }
+}
+```
+
+### `TestExecutionExceptionHandler` — Intercept and Transform Exceptions
+
+```java
+import org.junit.jupiter.api.extension.*;
+
+/**
+ * Converts connection-refused exceptions into a clear skip message,
+ * so that tests requiring an external service fail gracefully in offline CI.
+ */
+public class NetworkUnavailableHandler implements TestExecutionExceptionHandler {
+
+    @Override
+    public void handleTestExecutionException(ExtensionContext context, Throwable throwable)
+            throws Throwable {
+
+        if (throwable instanceof java.net.ConnectException) {
+            // Re-throw as assumption failure — marks the test as skipped, not failed
+            throw new org.opentest4j.TestAbortedException(
+                "Network unavailable — skipping: " + throwable.getMessage());
+        }
+        // All other exceptions propagate normally
+        throw throwable;
+    }
+}
+```
+
+### `ExecutionCondition` — Conditional Test Execution
+
+```java
+import org.junit.jupiter.api.extension.*;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+
+/**
+ * Disables tests in an "offline" profile — useful for skipping integration
+ * tests in environments without external services (e.g., offline developer laptops).
+ */
+public class RequiresNetworkCondition implements ExecutionCondition {
+
+    @Override
+    public ConditionEvaluationResult evaluateExecutionCondition(ExtensionContext context) {
+        String profile = System.getenv("TEST_PROFILE");
+        if ("offline".equalsIgnoreCase(profile)) {
+            return ConditionEvaluationResult.disabled(
+                "TEST_PROFILE=offline — skipping network-dependent tests");
+        }
+        return ConditionEvaluationResult.enabled("Network available");
+    }
+}
+
+// Usage
+@ExtendWith(RequiresNetworkCondition.class)
+class ExternalApiTest {
+    @Test
+    void fetchRemoteData_returnsNonEmpty() { /* ... */ }
+}
+```
+
+### `InvocationInterceptor` — Wrap Test Method Invocations
+
+```java
+import org.junit.jupiter.api.extension.*;
+import java.lang.reflect.Method;
+
+/**
+ * Retries flaky tests up to N times before reporting failure.
+ * Annotate test methods with @Retryable(times=3) to opt in.
+ */
+@Target(ElementType.METHOD)
+@Retention(RetentionPolicy.RUNTIME)
+@interface Retryable {
+    int times() default 3;
+}
+
+public class RetryExtension implements InvocationInterceptor {
+
+    @Override
+    public void interceptTestMethod(Invocation<Void> invocation,
+                                    ReflectiveInvocationContext<Method> invocationContext,
+                                    ExtensionContext extensionContext) throws Throwable {
+
+        Retryable retryable = invocationContext.getExecutable()
+            .getAnnotation(Retryable.class);
+
+        if (retryable == null) {
+            invocation.proceed();
+            return;
+        }
+
+        int maxAttempts = retryable.times();
+        Throwable lastFailure = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                invocation.proceed();
+                return; // success
+            } catch (Throwable t) {
+                lastFailure = t;
+                if (attempt < maxAttempts) {
+                    System.err.printf("[RETRY] Attempt %d/%d failed for %s: %s%n",
+                        attempt, maxAttempts,
+                        extensionContext.getDisplayName(),
+                        t.getMessage());
+                    // Skip-clone the invocation for the next attempt is handled
+                    // by JUnit — re-enter the loop
+                }
+            }
+        }
+        throw lastFailure;
+    }
+}
+
+// Usage
+@ExtendWith(RetryExtension.class)
+class FlakyIntegrationTest {
+
+    @Test
+    @Retryable(times = 3)
+    void externalService_returnsOk() { /* ... */ }
+}
+```
+
+### `ExtensionContext.Store` — Sharing State Between Callbacks
+
+The `Store` is the idiomatic way to pass state between `beforeEach` and `afterEach` (or between different extensions) within the same test lifecycle. Always use a typed namespace to avoid key collisions with other extensions.
+
+```java
+public class DatabaseCleanupExtension
+        implements BeforeEachCallback, AfterEachCallback {
+
+    private static final ExtensionContext.Namespace NS =
+        ExtensionContext.Namespace.create(DatabaseCleanupExtension.class);
+
+    @Override
+    public void beforeEach(ExtensionContext ctx) {
+        // Begin a transaction and store the connection in the Store
+        Connection conn = DataSources.openTestConnection();
+        conn.setAutoCommit(false);  // wrap test in a transaction
+        ctx.getStore(NS).put("connection", conn);
+    }
+
+    @Override
+    public void afterEach(ExtensionContext ctx) throws Exception {
+        // Roll back after the test — database is left clean for the next test
+        Connection conn = ctx.getStore(NS).remove("connection", Connection.class);
+        if (conn != null) {
+            conn.rollback();
+            conn.close();
+        }
+    }
+}
+```
+
+**JUnit 5 Extension Anti-Patterns [community]:**
+- **Using `@Rule`-style static state:** Extensions that store state in static fields share it across parallel test runs. Always use `ExtensionContext.Store` for per-test or per-class state — it's scoped to the test lifecycle automatically.
+- **`@ExtendWith` on every test class:** Compose multiple extensions into a single meta-annotation (`@Target(TYPE) @ExtendWith({A.class, B.class})`) to avoid repetition and keep test class headers clean.
+- **`ParameterResolver` with mutable shared objects:** If a resolver returns the same mutable object to multiple tests, concurrent execution causes data races. Either return a fresh instance per call or make the shared object deeply immutable.
+- **`InvocationInterceptor` for retry on assertion failure:** Retrying tests that fail due to assertion errors (not flakiness) masks production bugs. Only use `@Retryable` patterns for tests that interact with non-deterministic systems (external APIs, timing-sensitive async code). [community]
 

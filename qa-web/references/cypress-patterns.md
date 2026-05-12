@@ -1,6 +1,7 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 44 | score: 97/100 | date: 2026-05-12 -->
-<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide, /app/tooling/typescript-support, /app/references/experiments, /guides/references/cypress-studio, /api/cypress-api/require, /app/references/experiments#experimentalCspAllowList, /app/references/changelog#15-11-0 -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 45 | score: 98/100 | date: 2026-05-12 -->
+<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide, /app/tooling/typescript-support, /app/references/experiments, /guides/references/cypress-studio, /api/cypress-api/require, /app/references/experiments#experimentalCspAllowList, /app/references/changelog#15-11-0, /api/cypress-api/custom-commands, /guides/core-concepts/retry-ability -->
+<!-- new in this iteration (45): 5 new patterns (137-141): @cypress/grep tag-based CI tier filtering, Cypress.Commands.addQuery() typed retry-able query commands, Component Testing with React Context and Redux providers, cy.intercept() TypeScript generic types, Real-world auth patterns (API login/JWT injection/OAuth cy.origin()/MFA bypass); 4 new community gotchas (125-128): grepFilterSpecs static-scan limitation, addQuery() sync requirement, React Query singleton stale cache in CT, cy.origin() closure serialization error -->
 <!-- new in this iteration (44): 2 new patterns (135-136): --pass-with-no-tests CLI flag, React SSR hydration mismatch fix with data-cy-bootstrap; 2 new community gotchas (123-124): cy.prompt() requires Cypress Cloud in all environments (no offline mode), TypeScript 6 const enum breakage in Cypress config files -->
 <!-- new in this iteration (43): 3 new patterns (132-134): Cypress.require() in cy.origin() callbacks with experimentalOriginDependencies, experimentalCspAllowList for preserving real CSP headers, detect-flake-but-always-fail retry strategy; 3 new community gotchas (120-122): Cypress.require() static-string limitation, experimentalCspAllowList + hash nonce breakage, detect-flake-but-always-fail openMode/runMode boolean requirement -->
 <!-- new in this iteration (42): fix stale result.code → result.exitCode in pattern 29 (Cypress 15 breaking change); 3 new community gotchas (117-119): Chrome autofill popup suppression (15.6.0), cy.intercept() multi-alias hang during navigation (fixed 15.12.0), cy.intercept() delay ≥ 2^31 now throws (15.13.1); pattern 131: multi-intercept + navigation safe patterns with 15.12.0 context -->
@@ -8924,5 +8925,788 @@ Cypress.on('window:before:load', (win) => {
 123. **`cy.prompt()` requires Cypress Cloud authentication in every environment — there is no offline fallback mode** [community] — As of Cypress 15.13.0 (beta, no experimental flag required), `cy.prompt()` still makes AI calls to Cypress Cloud for any cache miss. If the CI machine cannot reach `api.cypress.io` — due to network firewalls, corporate proxies, or a Cypress Cloud service outage — all `cy.prompt()` calls that encounter a cache miss fail with a network error, not a graceful degradation. Critically, even a locally cached prompt result requires a Cloud token to verify the cache entry's integrity on first run per machine; machines with no `CYPRESS_RECORD_KEY` env var will always fail `cy.prompt()` calls regardless of whether the DOM matches the cache. The only complete workaround is to export generated `cy.prompt()` commands to static Cypress code (via the "Code" button in the Command Log) and replace `cy.prompt()` in CI specs with the exported deterministic commands. Never add `cy.prompt()` to a spec that must pass in air-gapped environments or offline CI agents.
 
 124. **TypeScript 6 `const enum` declarations in shared type packages break `cypress.config.ts` under Cypress 15.14+'s `tsx` parser** [community] — TypeScript 6 introduced `erasableSyntaxOnly` mode and tightened the `const enum` isolation rules: `const enum` is no longer erasable in certain emit configurations and causes a compile error when consumed by bundler tools (like `tsx`) that do not perform full TypeScript compilation. `cypress.config.ts` is processed by `tsx` (not `tsc`) in Cypress 15, which means any `const enum` imported into the config file — even transitively through a shared utilities package — will fail with `"error TS2748: Cannot access ambient const enums when 'isolatedModules' is enabled"`. This manifests as Cypress failing to start with a cryptic parse error that references a line deep inside `node_modules` rather than the config file. The fix: in the shared package, convert all `const enum` declarations to `enum` (a runtime object) or `as const` object literals. If you cannot modify the upstream package, add `"skipLibCheck": true` to the Cypress-specific `tsconfig.json` and set `tsx` to use that tsconfig via the `ESBUILD_OVERRIDE_TSCONFIG` environment variable when starting Cypress.
+
+---
+
+## Patterns Added in Iteration 45
+
+### 137. `@cypress/grep` — Tag-Based Test Filtering for CI Tiers
+
+`@cypress/grep` enables tag-based test selection, making it easy to run smoke, regression, or nightly tiers from the same spec files without maintaining separate spec directories. Install once, tag tests declaratively, and pass a tag filter at CI invocation time.
+
+```bash
+npm install --save-dev @cypress/grep
+```
+
+```typescript
+// cypress/support/e2e.ts — register once
+import { register as registerCypressGrep } from '@cypress/grep';
+registerCypressGrep();
+
+// cypress.config.ts — optional plugin for config-level grep (enables CYPRESS_GREP env var)
+import { defineConfig } from 'cypress';
+import { plugin as cypressGrepPlugin } from '@cypress/grep/plugin';
+
+export default defineConfig({
+  e2e: {
+    setupNodeEvents(on, config) {
+      cypressGrepPlugin(config);
+      return config;
+    },
+  },
+});
+```
+
+```typescript
+// Tagging tests — use the third argument (options object) on it/describe
+// Single tag
+it('loads the homepage', { tags: '@smoke' }, () => {
+  cy.visit('/');
+  cy.get('[data-cy="hero-heading"]').should('be.visible');
+});
+
+// Multiple tags — array form
+it('processes a checkout', { tags: ['@smoke', '@critical', '@checkout'] }, () => {
+  cy.visit('/checkout');
+  cy.get('[data-cy="proceed-btn"]').click();
+  cy.url().should('include', '/payment');
+});
+
+// Tag the whole describe block — applies to all contained tests
+describe('User profile', { tags: '@regression' }, () => {
+  it('updates display name', () => {
+    cy.get('[data-cy="display-name-input"]').clear().type('Alice');
+    cy.get('[data-cy="save-btn"]').click();
+    cy.get('[data-cy="display-name"]').should('have.text', 'Alice');
+  });
+
+  it('uploads avatar', () => {
+    cy.get('[data-cy="avatar-upload"]').selectFile('cypress/fixtures/avatar.png');
+    cy.get('[data-cy="avatar-preview"]').should('be.visible');
+  });
+});
+
+// @nightly-only tests — excluded from smoke and regression runs
+it('runs full data export', { tags: '@nightly' }, () => {
+  cy.request('POST', '/api/export/all').its('status').should('eq', 202);
+  cy.get('[data-cy="export-progress"]').should('eventually.have.text', '100%');
+});
+```
+
+```bash
+# CI tier commands — same spec files, different tag filters
+
+# Smoke suite (PR gate — fast, critical paths only)
+npx cypress run --env grepTags="@smoke"
+
+# Regression suite (merge to main — broader coverage)
+npx cypress run --env grepTags="@regression"
+
+# Critical only (emergency hotfix gate)
+npx cypress run --env grepTags="@critical"
+
+# AND logic — must have both tags
+npx cypress run --env grepTags="@smoke+@critical"
+
+# OR logic — either tag matches
+npx cypress run --env grepTags="@smoke @regression"
+
+# Exclude slow tests from a run
+npx cypress run --env grepTags="-@slow"
+
+# Nightly full suite (no filter = all tests run)
+npx cypress run
+
+# Burn mode — run each matching test N times (flake detection)
+npx cypress run --env grep="login",burn=5
+```
+
+```typescript
+// GitHub Actions — multi-tier CI matrix using @cypress/grep
+// .github/workflows/e2e.yml
+//
+// jobs:
+//   smoke:
+//     runs-on: ubuntu-latest
+//     steps:
+//       - uses: actions/checkout@v4
+//       - uses: actions/setup-node@v4
+//         with: { node-version: 22 }
+//       - run: npm ci
+//       - uses: cypress-io/github-action@v6
+//         with:
+//           build: npm run build
+//           start: npm start
+//           wait-on: http://localhost:3000
+//         env:
+//           CYPRESS_grepTags: "@smoke"   # ← set via CYPRESS_ prefix env var
+//
+//   regression:
+//     needs: smoke                        # only run if smoke passes
+//     runs-on: ubuntu-latest
+//     steps:
+//       - uses: actions/checkout@v4
+//       - uses: actions/setup-node@v4
+//         with: { node-version: 22 }
+//       - run: npm ci
+//       - uses: cypress-io/github-action@v6
+//         with:
+//           start: npm start
+//           wait-on: http://localhost:3000
+//           record: true
+//           parallel: true
+//         env:
+//           CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+//           CYPRESS_grepTags: "@regression"
+
+// Programmatic omitFiltered: true — skips unmatched tests entirely (no pending entries)
+// Set in cypress.config.ts under env:
+export default defineConfig({
+  e2e: {
+    env: {
+      grepOmitFiltered: true,   // skips instead of pending-marks unmatched tests
+      grepFilterSpecs: true,    // skips entire spec files when no tags match — faster CI
+    },
+    setupNodeEvents(on, config) {
+      cypressGrepPlugin(config);
+      return config;
+    },
+  },
+});
+```
+
+**Tag taxonomy recommendation:**
+
+| Tag | When to apply | CI tier |
+|-----|---------------|---------|
+| `@smoke` | Critical happy-path tests (< 5 min total) | PR gate |
+| `@regression` | All business logic tests (10-30 min total) | Post-merge |
+| `@critical` | P0 flows — must never break | Emergency gate |
+| `@nightly` | Long/expensive tests (data export, perf) | Nightly schedule |
+| `@slow` | Tests taking > 30s individually | Excluded from smoke |
+| `@flaky` | Tests under investigation | Excluded from CI, run in burn mode |
+
+**[community]** WHY: Without `grepFilterSpecs: true`, `@cypress/grep` still loads every spec file and marks non-matching tests as "pending" — Cypress pays the startup cost for every spec even when no tests in it match the filter. On a large suite with 80+ spec files, this adds 40-60 seconds of pure overhead for a smoke run. Setting `grepFilterSpecs: true` causes the plugin to read spec file contents at the Node.js level before Cypress starts, skipping spec files entirely when none of their tests match the filter. The CI smoke run goes from 8 minutes to 3 minutes with this single option. The trade-off: the plugin scans spec files as text, so tag metadata must be on the `it()`/`describe()` call directly — tags injected via fixtures or computed at runtime are not found by the static scan.
+
+---
+
+### 138. `Cypress.Commands.addQuery()` — Typed Retry-able Query Commands
+
+`Cypress.Commands.addQuery()` (introduced alongside the Cypress Query API) creates custom commands that participate in Cypress's retry-able query chain. Unlike `Cypress.Commands.add()` which executes once, `addQuery` commands are re-evaluated on every retry cycle — making them suitable for DOM lookups and state checks that need to tolerate asynchronous updates.
+
+```typescript
+// cypress/support/commands.ts
+
+// Type declarations for custom query commands
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      /**
+       * Get a form field by its label text.
+       * Retried on every assertion failure — participates in the query chain.
+       */
+      getByLabel(labelText: string): Chainable<JQuery<HTMLElement>>;
+
+      /**
+       * Get a table row matching a specific column value.
+       * Returns the full <tr> element for further traversal.
+       */
+      getTableRowByCell(cellText: string): Chainable<JQuery<HTMLElement>>;
+
+      /**
+       * Get all items in a virtual list that match a predicate.
+       * Useful for testing paginated/lazy-loaded lists.
+       */
+      getListItems(filter?: string): Chainable<JQuery<HTMLElement>>;
+    }
+  }
+}
+
+// addQuery: the inner function is called on every retry — must be synchronous
+// The function receives the current subject and returns a jQuery element.
+Cypress.Commands.addQuery('getByLabel', function getByLabel(labelText: string) {
+  return (subject) => {
+    // `subject` is the previous chain subject (cy.getByLabel chains off document by default)
+    const root = subject ? Cypress.$(subject) : Cypress.$(cy.state('document').documentElement);
+    const label = root.find(`label:contains("${labelText}")`);
+    if (label.length === 0) {
+      // Returning null triggers a retry — Cypress will re-run getByLabel on next cycle
+      return null as unknown as JQuery<HTMLElement>;
+    }
+    const forId = label.attr('for');
+    const input = forId
+      ? root.find(`#${CSS.escape(forId)}`)
+      : label.find('input, textarea, select');
+    return input;
+  };
+});
+
+Cypress.Commands.addQuery('getTableRowByCell', function getTableRowByCell(cellText: string) {
+  return (_subject) => {
+    const cell = Cypress.$(`td:contains("${cellText}"), th:contains("${cellText}")`);
+    return cell.closest('tr');
+  };
+});
+
+Cypress.Commands.addQuery('getListItems', function getListItems(filter?: string) {
+  return (_subject) => {
+    const items = Cypress.$('[data-cy="list-item"]');
+    if (!filter) return items;
+    return items.filter((_i, el) => Cypress.$(el).text().includes(filter));
+  };
+});
+```
+
+```typescript
+// Usage — addQuery commands integrate naturally into assertion chains
+it('fills the email field found by label', () => {
+  cy.visit('/signup');
+  // getByLabel retries until the label+input are found (tolerates late render)
+  cy.getByLabel('Email address').type('user@example.com');
+  cy.getByLabel('Email address').should('have.value', 'user@example.com');
+});
+
+it('finds a table row by cell content', () => {
+  cy.visit('/users');
+  cy.getTableRowByCell('alice@example.com')
+    .find('[data-cy="edit-btn"]')
+    .click();
+  cy.get('[data-cy="edit-modal"]').should('be.visible');
+});
+
+it('filters a virtual list', () => {
+  cy.visit('/products');
+  cy.get('[data-cy="search-input"]').type('Widget');
+  // getListItems retries on each assertion failure — waits for filter to apply
+  cy.getListItems('Widget').should('have.length', 3);
+  cy.getListItems('Widget').first().should('contain.text', 'Blue Widget');
+});
+```
+
+```typescript
+// Compare: addQuery vs add — when to use each
+//
+// Cypress.Commands.addQuery() → USE WHEN:
+//   - Command reads from the DOM or app state
+//   - Command should retry when the assertion after it fails
+//   - The inner function must be synchronous (no cy. commands inside)
+//   - You want to chain .should() directly without .then() wrappers
+//
+// Cypress.Commands.add() → USE WHEN:
+//   - Command performs actions (clicks, types, navigates)
+//   - Command uses cy. commands internally (cy.get(), cy.click(), etc.)
+//   - Command needs async branching (multiple cy chains)
+//   - Command sets up state rather than querying it
+
+// ANTI-PATTERN: using add() for a DOM query — misses retry-ability
+Cypress.Commands.add('getByLabelWrong', (labelText: string) => {
+  // This executes ONCE — if the label hasn't rendered yet, it returns empty
+  // The assertion failure does NOT cause getByLabelWrong to re-run
+  return cy.get(`label:contains("${labelText}")`).then((label) => {
+    const forId = label.attr('for');
+    return forId ? cy.get(`#${forId}`) : label.find('input');
+  });
+});
+// Fix: use Cypress.Commands.addQuery() as shown above
+```
+
+**[community]** WHY: The most common custom command mistake is wrapping DOM queries in `Cypress.Commands.add()`. The `add()` API executes the command body once and resolves. If the DOM hasn't updated yet when the command runs, the query returns an empty set — and when the subsequent `.should()` assertion fails, Cypress retries only the assertion, not the `add()` command that produced the empty set. This causes tests to fail with "Expected to find element, but no elements were found" even though the element eventually appears. `addQuery()` was introduced precisely to fix this: the inner function is called repeatedly on each retry cycle, so the DOM lookup happens fresh on every attempt. Migrating DOM-query custom commands from `add()` to `addQuery()` is one of the highest-yield flakiness fixes available in modern Cypress.
+
+---
+
+### 139. Component Testing with React Context and Redux Providers
+
+When testing components that consume React Context or Redux state, the `cy.mount()` command must wrap the component in the required providers. The recommended pattern is a custom `mount` command that accepts an optional providers wrapper, keeping individual test files clean.
+
+```typescript
+// cypress/support/component.ts — custom mount with provider support
+
+import { mount } from 'cypress/react';
+import React from 'react';
+import { Provider } from 'react-redux';
+import { MemoryRouter } from 'react-router-dom';
+import { ThemeProvider } from '@mui/material/styles';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { configureStore } from '@reduxjs/toolkit';
+import { rootReducer, type RootState } from '../../src/store';
+import { lightTheme } from '../../src/theme';
+
+// Augment Cypress types with the overloaded mount signature
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      mount(
+        component: React.ReactNode,
+        options?: MountOptions
+      ): Chainable<MountReturn>;
+    }
+  }
+}
+
+interface MountOptions {
+  /** Pre-populated Redux store state — merged with defaults */
+  reduxState?: Partial<RootState>;
+  /** React Router initial entries for route-aware components */
+  routerEntries?: string[];
+  /** Disable React Query retries for deterministic test behavior */
+  reactQueryRetries?: boolean;
+}
+
+Cypress.Commands.add('mount', (component: React.ReactNode, options: MountOptions = {}) => {
+  const {
+    reduxState = {},
+    routerEntries = ['/'],
+    reactQueryRetries = false,
+  } = options;
+
+  // Create a fresh store for every test (prevents state bleed between tests)
+  const store = configureStore({
+    reducer: rootReducer,
+    preloadedState: reduxState as RootState,
+  });
+
+  // Create a fresh QueryClient per test (no shared cache between tests)
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: reactQueryRetries ? 3 : false,  // disable retries in tests by default
+        staleTime: Infinity,                    // prevent background refetches during tests
+      },
+    },
+  });
+
+  const wrapped = (
+    <Provider store={store}>
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={routerEntries}>
+          <ThemeProvider theme={lightTheme}>
+            {component}
+          </ThemeProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>
+  );
+
+  return mount(wrapped);
+});
+```
+
+```typescript
+// src/components/CartBadge.cy.tsx — testing a Redux-connected component
+import React from 'react';
+import { CartBadge } from './CartBadge';
+
+describe('CartBadge', () => {
+  it('shows item count from Redux store', () => {
+    cy.mount(<CartBadge />, {
+      reduxState: {
+        cart: { items: [{ id: '1', qty: 2 }, { id: '2', qty: 1 }] },
+      },
+    });
+    cy.get('[data-cy="cart-count"]').should('have.text', '3');
+  });
+
+  it('shows empty state when cart is empty', () => {
+    cy.mount(<CartBadge />, {
+      reduxState: { cart: { items: [] } },
+    });
+    cy.get('[data-cy="cart-count"]').should('not.exist');
+    cy.get('[data-cy="cart-empty-icon"]').should('be.visible');
+  });
+});
+
+// src/components/UserMenu.cy.tsx — testing a React Context consumer
+import React from 'react';
+import { UserMenu } from './UserMenu';
+import { UserContext, type UserContextValue } from '../../src/contexts/UserContext';
+
+describe('UserMenu', () => {
+  function mountWithUser(userValue: Partial<UserContextValue>) {
+    const defaultUser: UserContextValue = {
+      user: null,
+      isAuthenticated: false,
+      logout: cy.stub().as('logout'),
+      ...userValue,
+    };
+    return cy.mount(
+      <UserContext.Provider value={defaultUser}>
+        <UserMenu />
+      </UserContext.Provider>
+    );
+  }
+
+  it('shows avatar and name for authenticated user', () => {
+    mountWithUser({
+      isAuthenticated: true,
+      user: { id: '1', name: 'Alice', email: 'alice@example.com', avatarUrl: '/img/alice.jpg' },
+    });
+    cy.get('[data-cy="user-avatar"]').should('be.visible');
+    cy.get('[data-cy="user-name"]').should('have.text', 'Alice');
+  });
+
+  it('calls logout when sign-out is clicked', () => {
+    mountWithUser({ isAuthenticated: true, user: { id: '1', name: 'Alice', email: '', avatarUrl: '' } });
+    cy.get('[data-cy="user-menu-btn"]').click();
+    cy.get('[data-cy="sign-out-item"]').click();
+    cy.get('@logout').should('have.been.calledOnce');
+  });
+
+  it('shows sign-in link for unauthenticated state', () => {
+    mountWithUser({ isAuthenticated: false, user: null });
+    cy.get('[data-cy="sign-in-link"]').should('be.visible');
+  });
+});
+```
+
+```typescript
+// src/components/ProductForm.cy.tsx — testing with React Query
+import React from 'react';
+import { ProductForm } from './ProductForm';
+
+describe('ProductForm', () => {
+  it('submits form and shows success toast', () => {
+    // Intercept the API call that React Query fires on form submit
+    cy.intercept('POST', '/api/products', {
+      statusCode: 201,
+      body: { id: 'p-123', name: 'Blue Widget', price: 29.99 },
+    }).as('createProduct');
+
+    cy.mount(<ProductForm />);
+
+    cy.get('[data-cy="product-name"]').type('Blue Widget');
+    cy.get('[data-cy="product-price"]').type('29.99');
+    cy.get('[data-cy="submit-btn"]').click();
+
+    cy.wait('@createProduct');
+    cy.get('[data-cy="success-toast"]').should('contain', 'Product created');
+  });
+
+  it('shows field validation errors', () => {
+    cy.mount(<ProductForm />);
+    cy.get('[data-cy="submit-btn"]').click();
+    cy.get('[data-cy="name-error"]').should('contain', 'Name is required');
+    cy.get('[data-cy="price-error"]').should('contain', 'Price is required');
+  });
+});
+```
+
+**[community]** WHY: The most common CT mistake with connected components is using the real production store instead of a fresh isolated store per test. The production store may contain state from a previous test's dispatch calls because module-level singletons persist across tests within the same spec file. Creating a new `configureStore()` inside `cy.mount()` on every call ensures complete isolation — each test starts with exactly the `preloadedState` you specify and no accumulated side effects. The same principle applies to React Query: sharing a `QueryClient` across tests means cached query results from one test can be returned instantly to the next test (bypassing the `cy.intercept()` stub entirely), causing false passes. Always create fresh provider instances inside the `cy.mount()` wrapper.
+
+---
+
+### 140. `cy.intercept()` with TypeScript Generic Types
+
+`cy.intercept()` supports TypeScript generics for both the request body (`ReqBody`) and response body (`ResBody`), enabling compile-time type safety in route handler callbacks. This is especially valuable for teams maintaining typed API contracts.
+
+```typescript
+// Define your API types (or import from a shared package)
+interface CreateProductRequest {
+  name: string;
+  price: number;
+  sku: string;
+  categoryId: string;
+}
+
+interface CreateProductResponse {
+  id: string;
+  name: string;
+  price: number;
+  sku: string;
+  createdAt: string;
+}
+
+interface PaginatedProductsResponse {
+  items: Array<{ id: string; name: string; price: number }>;
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+// Typed intercept — req.body and res.body are fully typed
+it('validates the create-product request payload', () => {
+  cy.intercept<CreateProductRequest, CreateProductResponse>(
+    'POST',
+    '/api/products',
+    (req) => {
+      // req.body is typed as CreateProductRequest — TypeScript catches typos
+      expect(req.body.name).to.be.a('string');
+      expect(req.body.price).to.be.a('number').and.to.be.greaterThan(0);
+
+      req.reply({
+        statusCode: 201,
+        body: {
+          id: 'prod-abc-123',
+          name:        req.body.name,       // echo back typed field
+          price:       req.body.price,
+          sku:         req.body.sku,
+          createdAt:   new Date().toISOString(),
+        } satisfies CreateProductResponse,  // compile-time check the stub shape
+      });
+    }
+  ).as('createProduct');
+
+  cy.visit('/products/new');
+  cy.get('[data-cy="product-name"]').type('Blue Widget');
+  cy.get('[data-cy="product-price"]').type('29.99');
+  cy.get('[data-cy="product-sku"]').type('BW-001');
+  cy.get('[data-cy="submit-btn"]').click();
+
+  cy.wait('@createProduct').then(({ request, response }) => {
+    // Both request and response are typed via the generics
+    const reqBody = request.body as CreateProductRequest;
+    const resBody = response?.body as CreateProductResponse;
+    expect(reqBody.sku).to.eq('BW-001');
+    expect(resBody.id).to.match(/^prod-/);
+  });
+});
+
+// Typed paginated response intercept
+it('renders the first page of products from a typed stub', () => {
+  const stub: PaginatedProductsResponse = {
+    items: [
+      { id: 'p1', name: 'Widget A', price: 9.99 },
+      { id: 'p2', name: 'Widget B', price: 14.99 },
+    ],
+    total: 50,
+    page: 1,
+    pageSize: 2,
+  };
+
+  cy.intercept<never, PaginatedProductsResponse>(
+    'GET',
+    '/api/products*',
+    { statusCode: 200, body: stub }
+  ).as('getProducts');
+
+  cy.visit('/products');
+  cy.wait('@getProducts');
+
+  cy.get('[data-cy="product-card"]').should('have.length', 2);
+  cy.get('[data-cy="pagination-total"]').should('contain', '50');
+});
+
+// Typed GraphQL intercept — match by operationName, type the variables and data
+interface CreateUserVariables {
+  input: { email: string; role: 'admin' | 'user' };
+}
+
+interface CreateUserData {
+  createUser: { id: string; email: string };
+}
+
+it('intercepts a typed GraphQL mutation', () => {
+  cy.intercept<{ query: string; variables: CreateUserVariables }, { data: CreateUserData }>(
+    'POST',
+    '/graphql',
+    (req) => {
+      // Dynamic alias based on operation name — key pattern for GraphQL testing
+      if (req.body.query.includes('CreateUser')) {
+        req.alias = 'createUser';          // set alias dynamically in handler
+        req.reply({
+          statusCode: 200,
+          body: {
+            data: {
+              createUser: { id: 'u-789', email: req.body.variables.input.email },
+            },
+          },
+        });
+      }
+    }
+  );
+
+  cy.visit('/admin/users/new');
+  cy.get('[data-cy="email-input"]').type('newuser@example.com');
+  cy.get('[data-cy="role-select"]').select('admin');
+  cy.get('[data-cy="create-btn"]').click();
+
+  cy.wait('@createUser').then(({ response }) => {
+    const data = response?.body?.data as CreateUserData;
+    expect(data.createUser.email).to.eq('newuser@example.com');
+  });
+});
+```
+
+**[community]** WHY: Without generics, `req.body` and `res.body` are typed as `any`, making it easy to assert on the wrong property name (e.g., `req.body.productName` when the API sends `req.body.name`) — the test passes because `undefined` is compared to a string and the assertion is vacuously false but Cypress doesn't throw. Adding generics catches these mismatches at compile time, especially valuable in teams that share API type packages between frontend and test code. Note: `satisfies` (TypeScript 4.9+) is preferred over type assertions on stub bodies because it provides an exact shape check without widening the type for the local variable.
+
+---
+
+### 141. Real-World Authentication Patterns — OAuth, JWT Injection, and API Seeding
+
+Beyond `cy.session()`, production-scale Cypress suites use three complementary patterns for authentication: API-based login (bypassing the UI entirely), token injection into `localStorage`/cookies, and `cy.origin()` for OAuth redirects.
+
+```typescript
+// Pattern A: API-based login — fastest approach for apps with a REST login endpoint
+// cypress/support/auth.ts
+
+export function loginViaApi(email: string, password: string): void {
+  cy.session(
+    ['api-login', email],
+    () => {
+      // Authenticate directly against the API — no browser navigation, no form rendering
+      cy.request({
+        method: 'POST',
+        url: `${Cypress.env('API_BASE_URL')}/auth/login`,
+        body: { email, password },
+        failOnStatusCode: true,
+      }).then((response) => {
+        const { accessToken, refreshToken } = response.body as {
+          accessToken: string;
+          refreshToken: string;
+        };
+        // Store tokens exactly as the application would
+        window.localStorage.setItem('access_token', accessToken);
+        window.localStorage.setItem('refresh_token', refreshToken);
+        // Set the session cookie if the app uses cookie-based auth
+        cy.setCookie('session', accessToken, { httpOnly: false });
+      });
+    },
+    {
+      validate() {
+        // Check localStorage for a non-expired token (fast — no API call)
+        cy.window().its('localStorage').invoke('getItem', 'access_token').should('not.be.null');
+      },
+      cacheAcrossSpecs: true,
+    }
+  );
+}
+```
+
+```typescript
+// Pattern B: JWT injection — for apps that accept tokens in localStorage or headers
+// Use when you have a test-only endpoint that issues short-lived tokens, or
+// when your Auth server supports machine-to-machine client credentials flow.
+
+// cypress/support/auth.ts
+export function injectTestJwt(role: 'admin' | 'user' | 'readonly'): void {
+  cy.session(
+    ['jwt-inject', role],
+    () => {
+      // Call a test-only token endpoint (guard it with TEST_SECRET in your backend)
+      cy.request({
+        method: 'POST',
+        url: `${Cypress.env('API_BASE_URL')}/test/token`,
+        body: {
+          role,
+          secret: Cypress.env('TEST_TOKEN_SECRET'),  // stored in cypress.env.json or CI secret
+        },
+        failOnStatusCode: true,
+      }).then((resp) => {
+        const { token, expiresAt } = resp.body as { token: string; expiresAt: number };
+        cy.window().then((win) => {
+          win.localStorage.setItem('auth_token', token);
+          win.localStorage.setItem('auth_expires', expiresAt.toString());
+        });
+      });
+    },
+    {
+      validate() {
+        cy.window().then((win) => {
+          const expires = Number(win.localStorage.getItem('auth_expires'));
+          // Validate the cached token hasn't expired (with 60s buffer)
+          expect(expires - Date.now()).to.be.greaterThan(60_000);
+        });
+      },
+      cacheAcrossSpecs: true,
+    }
+  );
+}
+```
+
+```typescript
+// Pattern C: OAuth/OIDC via cy.origin() — for Auth0, Okta, Azure AD SSO flows
+// The application redirects to a third-party origin; cy.origin() allows Cypress
+// to interact with the IdP login form.
+
+export function loginViaOAuth(email: string, password: string): void {
+  const idpOrigin = Cypress.env('IDP_ORIGIN') as string; // e.g. 'https://login.auth0.com'
+
+  cy.session(
+    ['oauth', email],
+    () => {
+      cy.visit('/login');
+      cy.get('[data-cy="sso-login-btn"]').click();
+
+      // cy.origin() handles the cross-origin redirect to the IdP
+      cy.origin(
+        idpOrigin,
+        { args: { email, password } },
+        ({ email: e, password: p }) => {
+          // Inside cy.origin: interact with the IdP login form
+          cy.get('#username').type(e);
+          cy.get('#password').type(p, { log: false });  // mask password in Command Log
+          cy.get('[type="submit"]').click();
+        }
+      );
+
+      // After the OAuth callback, assert we're back on our origin
+      cy.url().should('include', '/dashboard');
+      // Capture the session cookie set by the callback
+      cy.getCookie('sid').should('not.be.null');
+    },
+    {
+      validate() {
+        // Validate the session cookie is still present
+        cy.getCookie('sid').should('not.be.null');
+      },
+      cacheAcrossSpecs: true,
+    }
+  );
+}
+```
+
+```typescript
+// Pattern D: MFA/TOTP bypass for test environments
+// Never mock MFA in production — use a dedicated test account with a known TOTP seed,
+// or have your backend accept a bypass header for staging environments.
+
+export function loginWithTotpBypass(email: string): void {
+  cy.session(
+    ['mfa-bypass', email],
+    () => {
+      cy.request({
+        method: 'POST',
+        url: `${Cypress.env('API_BASE_URL')}/auth/login`,
+        body: { email },
+        headers: {
+          // Staging-only header — backend validates BYPASS_SECRET before skipping MFA
+          'x-cypress-mfa-bypass': Cypress.env('MFA_BYPASS_SECRET'),
+        },
+      }).then((resp) => {
+        window.localStorage.setItem('access_token', resp.body.token);
+      });
+    },
+    {
+      validate() {
+        cy.window().its('localStorage').invoke('getItem', 'access_token').should('not.be.null');
+      },
+      cacheAcrossSpecs: true,
+    }
+  );
+}
+```
+
+**Auth pattern decision matrix:**
+
+| Scenario | Recommended pattern | Why |
+|----------|--------------------|----|
+| REST API with `/login` endpoint | API-based login (Pattern A) | Fastest — no browser page load |
+| App uses `localStorage` token | JWT injection (Pattern B) | No round-trip to server after first run |
+| Auth0/Okta/Azure AD SSO | cy.origin() OAuth (Pattern C) | Only way to interact with IdP login form |
+| MFA-protected staging environment | TOTP bypass header (Pattern D) | Avoids TOTP library complexity in tests |
+| Mixed auth (some tests need full UI) | cy.session() with UI flow (Pattern 1) | When OAuth is the actual tested feature |
+
+**[community]** WHY: Teams that use UI login in every `beforeEach` without `cy.session()` caching typically spend 15-30% of total test suite time just on login pages. API-based auth (Pattern A) cuts that to near-zero for apps with a direct login endpoint. The critical insight for OAuth apps is that `cy.origin()` is not optional — trying to interact with an Auth0 login form without `cy.origin()` throws a cross-origin error that cannot be suppressed. Pattern D (MFA bypass header) must be gated by a staging-only config flag on the backend — never deploy it to production. The `x-cypress-mfa-bypass` approach is preferable to disabling MFA entirely in staging, because it forces the MFA code path to remain active (the bypass is processed after the MFA check, not before).
+
+---
+
+## Additional Real-World Gotchas (Iteration 45) [community]
+
+125. **`@cypress/grep` `grepFilterSpecs: true` does not find tags on tests inside utility helper files imported by specs — only scans the spec file itself** [community] — When a spec file imports a helper that defines `it()` blocks and passes tags on them (a pattern some teams use for shared behavior), setting `grepFilterSpecs: true` causes those tests to be excluded from filtered runs even when their tags match. The `grepFilterSpecs` logic reads spec files as raw text and searches for the `tags:` string; it does not resolve imports or execute the file. If your spec file imports `sharedLoginTests.ts` which contains `it('login works', { tags: '@smoke' }, ...)`, a `grepTags=@smoke` filter will exclude the entire spec because the spec file itself has no `tags:` string. The fix: always define tagged tests directly in the spec file, or add a re-export comment like `// tags: @smoke` at the top of spec files that rely on imported tagged tests, which the scanner will detect as a positive match.
+
+126. **`Cypress.Commands.addQuery()` inner function must be synchronous — calling `cy.*` commands inside it causes unpredictable behavior** [community] — The function passed to `addQuery()` is called synchronously on every retry cycle by the Cypress query engine. It must return a jQuery element (or `null` to trigger a retry) without using any `cy.*` commands. Calling `cy.get()`, `cy.wrap()`, or any other Cypress command inside the `addQuery` callback enqueues them into the global command queue mid-cycle, which causes the commands to execute out of order relative to the surrounding test. Symptoms include commands from the `addQuery` callback appearing in the Command Log at unexpected times, or test assertions running before the query has actually resolved. If you need to fetch data (e.g., call an API to populate a lookup), use `Cypress.Commands.add()` instead and return the final `cy.wrap()` result. Reserve `addQuery()` for purely DOM-based lookups using jQuery selectors.
+
+127. **React Query in CT specs always returns stale cached data from a previous test when the `QueryClient` is a module-level singleton** [community] — A common setup mistake in Cypress CT is placing `const queryClient = new QueryClient()` at the module level of `cypress/support/component.ts`. Because module-level state persists across tests within a spec run, the second test in a spec file receives React Query's in-memory cache populated by the first test — including data fetched via `cy.intercept()` stubs. The cache hit bypasses the intercept entirely, and the second test never fires a network request. The symptom is that the second test's `cy.wait('@alias')` call times out because no request was made. Fix: create a `new QueryClient()` inside `cy.mount()` for every mount call, or call `queryClient.clear()` in `afterEach`. The per-mount approach is more reliable because it requires no global teardown.
+
+128. **OAuth `cy.origin()` callback body cannot reference variables from the outer scope via closure — use `args` parameter** [community] — The `cy.origin()` callback runs in a separate JavaScript context (the IdP origin's execution environment). Closures over outer-scope variables do not work: `cy.origin(idpOrigin, () => { cy.get('#username').type(email) })` throws `ReferenceError: email is not defined` at runtime because `email` from the outer test scope is not serialized into the callback bundle. All data the callback needs must be passed via the `args` parameter and destructured in the callback signature: `cy.origin(idpOrigin, { args: { email, password } }, ({ email: e, password: p }) => { ... })`. The `args` values are serialized to JSON and deserialized in the callback context, so they must be JSON-serializable. Passing functions, class instances, or circular references as `args` throws a serialization error at call time.
 
 ---

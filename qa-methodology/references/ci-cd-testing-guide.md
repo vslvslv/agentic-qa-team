@@ -1,5 +1,5 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training knowledge + iterative refinement pass | new: typescriptlang.org/docs/handbook/release-notes/typescript-5-9 (TS 5.9 May 2025: --module node20 stable — locked Node 20 semantics with no future behavior changes unlike nodenext; cache instantiations on mapper types — ~11% faster tsc on complex libraries like Zod/tRPC; types:[] in tsc --init default tsconfig blocks accidental @types/* ambient pollution; ArrayBuffer type hierarchy change — Uint8Array.buffer now returns SharedArrayBuffer|ArrayBuffer union, may produce new CI type errors on upgrade; moduleDetection:force default in tsc --init; import defer deferred module evaluation — requires --module preserve or esnext, NOT supported under node20/node18/nodenext, reduces test cold-start by deferring heavy fixture init to first property access; noUncheckedSideEffectImports — new strict flag errors on import 'polyfill' if module cannot be resolved or has no @types declarations, catches dead imports silently ignored before TS 5.9, enable as non-blocking audit first on polyfill-heavy codebases) | prev: typescriptlang.org/docs/handbook/release-notes/typescript-5-8 (TS 5.8 Feb 2025: --erasableSyntaxOnly validates Node.js type-stripping compatibility — errors on enums/namespaces/parameter-properties/import=/export=; --module node18 stable — disallows require() of ESM; --module nodenext allows require() of ESM on Node 22+; --libReplacement false skips @typescript/lib-* package lookups for faster CI; granular branch return type checking catches any-infected return expressions) | nodejs.org/blog/release/v24.0.0 (Node 24 LTS: --test-global-setup for zero-framework global setup/teardown, snapshot testing stable since Node 23.4, programmatic coverage thresholds lineCoverage/branchCoverage/functionCoverage in node:test run(), type stripping at RC status, npm 11 bundled: --ignore-scripts suppresses prepare, bulk audit endpoint fallback removed, requires Node ^20.17.0 || >=22.9.0) | prev: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
@@ -9031,5 +9031,426 @@ enforceGate(report, threshold);
 > [community] Surviving mutants in AI-generated tests follow a predictable pattern: 60–70% are arithmetic operator mutations (changing `+` to `-`, `>` to `>=`) and boundary checks that the LLM skipped. Feeding the surviving mutant locations back into the LLM as "these specific lines are not tested: add an assertion that verifies X" produces targeted improvements in one generation. Teams that close this feedback loop report mutation scores improving from an initial 45–55% (cold LLM output) to 72–80% (after one feedback round) on the same source code.
 
 ---
+
+### Timing-Based Test Splitting for Even Shard Load [community]
+
+Static shard splitting (file count ÷ shards) produces uneven loads when test files have vastly different execution times. A single 90-second file can dominate an entire shard while other shards finish in 20 seconds. Timing-based splitting uses per-file duration history from a previous run to construct shards of approximately equal wall-clock duration.
+
+> [community] Teams that switch from count-based to timing-based sharding report 20–35% reduction in total CI wall-clock time for the same shard count, because the slowest-shard bottleneck is eliminated. The caveat: you need at least one prior run's timing data. Cache the timing file as a CI artifact from the main branch and restore it for PR jobs.
+
+**Vitest timing-based shard builder (TypeScript):**
+
+```typescript
+// scripts/build-timing-shards.ts — assign test files to shards by duration
+import * as fs from 'fs';
+import * as path from 'path';
+import { globSync } from 'glob';
+
+interface TimingEntry { file: string; durationMs: number }
+
+/** Load previous run timings from Jest JSON reporter output, or use 1000ms as default */
+function loadTimings(timingFile: string, testFiles: string[]): TimingEntry[] {
+  const defaults = new Map<string, number>();
+  if (fs.existsSync(timingFile)) {
+    const raw = JSON.parse(fs.readFileSync(timingFile, 'utf8')) as {
+      testResults?: Array<{ testFilePath: string; perfStats?: { start: number; end: number } }>;
+    };
+    for (const r of raw.testResults ?? []) {
+      const ms = (r.perfStats?.end ?? 0) - (r.perfStats?.start ?? 0);
+      defaults.set(r.testFilePath, ms);
+    }
+  }
+  return testFiles.map(file => ({
+    file,
+    durationMs: defaults.get(path.resolve(file)) ?? 1_000,  // default 1s for unknown files
+  }));
+}
+
+/** Greedy bin-packing: assign each file (sorted by duration desc) to the least-loaded shard */
+function buildShards(timings: TimingEntry[], shardCount: number): TimingEntry[][] {
+  const shards: TimingEntry[][] = Array.from({ length: shardCount }, () => []);
+  const shardTotals: number[] = new Array(shardCount).fill(0);
+
+  const sorted = [...timings].sort((a, b) => b.durationMs - a.durationMs);
+  for (const entry of sorted) {
+    const lightest = shardTotals.indexOf(Math.min(...shardTotals));
+    shards[lightest].push(entry);
+    shardTotals[lightest] += entry.durationMs;
+  }
+
+  console.log('[timing-shards] Estimated shard durations:');
+  shardTotals.forEach((ms, i) => console.log(`  Shard ${i + 1}: ${(ms / 1000).toFixed(1)}s`));
+  return shards;
+}
+
+const SHARD_COUNT  = parseInt(process.env['SHARD_COUNT']  ?? '4', 10);
+const SHARD_INDEX  = parseInt(process.env['SHARD_INDEX']  ?? '1', 10) - 1; // 1-based → 0-based
+const TEST_GLOB    = process.env['TEST_GLOB']   ?? 'tests/**/*.test.ts';
+const TIMING_FILE  = process.env['TIMING_FILE'] ?? 'test-results/jest-results.json';
+
+const testFiles = globSync(TEST_GLOB);
+const timings   = loadTimings(TIMING_FILE, testFiles);
+const shards    = buildShards(timings, SHARD_COUNT);
+const myFiles   = shards[SHARD_INDEX] ?? [];
+
+// Write file list to stdout for the test runner to consume
+console.log(myFiles.map(t => t.file).join('\n'));
+```
+
+**GitHub Actions — timing-based sharding workflow:**
+
+```yaml
+# .github/workflows/e2e-timing-sharded.yml — load-balanced shards using historical timing
+name: E2E Timing-Based Sharding
+
+on: [pull_request]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Restore timing data collected from the most recent main-branch run
+      - name: Restore timing data
+        uses: actions/cache/restore@v4
+        with:
+          path: test-results/jest-results.json
+          key: test-timing-main-${{ runner.os }}
+          restore-keys: test-timing-main-
+
+      - run: npx playwright install --with-deps chromium
+
+      # Compute which files belong to this shard based on historical durations
+      - name: Compute shard file list
+        id: shard-files
+        run: |
+          FILES=$(SHARD_COUNT=4 SHARD_INDEX=${{ matrix.shard }} \
+                  TIMING_FILE=test-results/jest-results.json \
+                  npx ts-node scripts/build-timing-shards.ts | tr '\n' ' ')
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+
+      - name: Run e2e (timing shard ${{ matrix.shard }}/4)
+        run: npx playwright test ${{ steps.shard-files.outputs.files }} --reporter=blob
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report/
+
+  # On main: re-run suite and save fresh timing data for future PR sharding
+  update-timing:
+    if: github.ref == 'refs/heads/main'
+    needs: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npx jest --json --outputFile=test-results/jest-results.json || true
+      - uses: actions/cache/save@v4
+        with:
+          path: test-results/jest-results.json
+          key: test-timing-main-${{ runner.os }}-${{ github.run_id }}
+```
+
+> [community] The greedy bin-packing algorithm achieves load balance within 5–10% of the theoretical optimum for most test suites. The remaining imbalance comes from test files that cannot be split further (one large file with a single `describe` block). If a single file dominates a shard, split the file into smaller focused suites — do not increase shard count as a workaround.
+
+---
+
+### Deployment Gate: `can-i-deploy` and Pre-Deploy Smoke Patterns [community]
+
+A deployment gate is a CI check that must pass BEFORE the deploy step runs — distinct from post-deploy health checks. The two most production-relevant deployment gates are Pact's `can-i-deploy` (which checks consumer/provider contract compatibility before any service deploys) and a pre-deploy smoke suite (which validates the compiled artifact in isolation before it reaches any shared environment).
+
+> [community] Engineering teams with mature microservice architectures report that `can-i-deploy` prevents more production incidents per quarter than any other single CI gate. The signal is unambiguous: "this version of Service A is not compatible with the currently deployed version of Service B" — a check that no amount of unit or integration testing can provide, because it requires knowledge of what is actually running in production.
+
+**`can-i-deploy` gate in GitHub Actions (TypeScript service):**
+
+```yaml
+# .github/workflows/deploy.yml — Pact can-i-deploy gate before staging deploy
+name: Deploy with Contract Gate
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish-pacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm run test:contract    # generates pact files in pacts/
+      - name: Publish consumer pacts to broker
+        run: |
+          npx pact-broker publish pacts/ \
+            --consumer-app-version "${{ github.sha }}" \
+            --branch "${{ github.ref_name }}" \
+            --broker-base-url "${{ vars.PACT_BROKER_URL }}" \
+            --broker-token "${{ secrets.PACT_BROKER_TOKEN }}"
+
+  can-i-deploy:
+    needs: publish-pacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Check this version is compatible with what is deployed in the staging environment
+      - name: Can I deploy? (staging)
+        run: |
+          npx pact-broker can-i-deploy \
+            --pacticipant "${{ vars.APP_NAME }}" \
+            --version "${{ github.sha }}" \
+            --to-environment staging \
+            --broker-base-url "${{ vars.PACT_BROKER_URL }}" \
+            --broker-token "${{ secrets.PACT_BROKER_TOKEN }}"
+
+  deploy-staging:
+    needs: can-i-deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.example.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci && npm run deploy:staging
+        env:
+          DEPLOY_TOKEN: ${{ secrets.STAGING_DEPLOY_TOKEN }}
+
+  record-deployment:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm install -g @pact-foundation/pact-node
+      - name: Record deployment to staging (enables future can-i-deploy checks)
+        run: |
+          npx pact-broker record-deployment \
+            --pacticipant "${{ vars.APP_NAME }}" \
+            --version "${{ github.sha }}" \
+            --environment staging \
+            --broker-base-url "${{ vars.PACT_BROKER_URL }}" \
+            --broker-token "${{ secrets.PACT_BROKER_TOKEN }}"
+```
+
+**TypeScript pre-deploy smoke test (runs against compiled artifact, not deployed env):**
+
+```typescript
+// tests/smoke/artifact-smoke.test.ts — validate build artifact before any deploy
+// Starts the application from dist/ and runs critical path checks in isolation
+import { describe, it, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn, type ChildProcess } from 'node:child_process';
+
+let server: ChildProcess;
+let baseUrl: string;
+
+before(async () => {
+  const port = 10000 + Math.floor(Math.random() * 55535);
+  baseUrl = `http://localhost:${port}`;
+
+  server = spawn('node', ['dist/server.js'], {
+    env: { ...process.env, PORT: String(port), NODE_ENV: 'test' },
+    stdio: 'pipe',
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error('Server failed to start within 10s')),
+      10_000,
+    );
+    server.stdout?.on('data', (chunk: Buffer) => {
+      if (chunk.toString().includes('Listening')) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+    server.on('error', reject);
+  });
+}, 15_000);
+
+after(() => { server.kill(); });
+
+describe('Pre-deploy artifact smoke tests', () => {
+  it('health endpoint returns ok', async () => {
+    const res = await fetch(`${baseUrl}/health`);
+    assert.strictEqual(res.status, 200);
+    const body = await res.json() as { status: string };
+    assert.strictEqual(body.status, 'ok');
+  });
+
+  it('version endpoint returns semver string', async () => {
+    const res = await fetch(`${baseUrl}/api/version`);
+    assert.strictEqual(res.status, 200);
+    const body = await res.json() as { version: string };
+    assert.match(body.version, /^\d+\.\d+\.\d+/);
+  });
+
+  it('unauthenticated requests to protected routes return 401', async () => {
+    const res = await fetch(`${baseUrl}/api/admin/users`);
+    assert.strictEqual(res.status, 401);
+  });
+});
+```
+
+> [community] Pre-deploy smoke tests that validate `dist/` rather than `src/` catch the "tests passed but the build is broken" class of defect — misconfigured `tsconfig.json` output, a missing env substitution in the production build, or an accidentally committed `require('debug')` that is absent in the production bundle. Teams running smoke tests against the built artifact before any deploy catch 3–5 such defects per quarter.
+
+> [community] Pact Nirvana Level 6 ("Platinum") — `can-i-deploy` as a required gate before every deployment — is achievable in 2–4 weeks for a team already at Level 5 (automated pact publication in CI). The prerequisite for Level 6 is that `record-deployment` is called after every successful deploy. Without it, `can-i-deploy --to-environment staging` has no deployment history to compare against and will either fail or pass vacuously. Complete Level 5 and add `record-deployment` before introducing the `can-i-deploy` gate.
+
+---
+
+### Advanced GitHub Actions Cache Strategies [community]
+
+The built-in `actions/cache` step has several advanced behaviors that most teams underuse: `save-always` (persist cache even when the job fails), cross-workflow cache sharing (all workflows in the same repo share the cache namespace), and the 10 GB per-repo total cache limit. Managing these correctly prevents both cache misses and cache eviction storms.
+
+> [community] Teams that hit the 10 GB GitHub Actions cache limit silently revert to zero-cache behavior on the next run — no warning is emitted. The symptom: occasional CI runs that are 3–4× slower than usual with no apparent reason. Add a cache size monitoring step on the main branch. Teams that monitor cache usage avoid the intermittent slow runs entirely.
+
+**`save-always` — persist cache even on test failure:**
+
+```yaml
+# Playwright browser install should be cached even when tests fail
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      - name: Cache Playwright browsers (save even on failure)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          # save-always: true — cache is written even if subsequent steps or the job fails.
+          # Without this, a failing e2e job never saves browsers; the next run re-downloads them.
+          save-always: true
+
+      - run: npx playwright install --with-deps
+      - run: npx playwright test
+```
+
+**Cross-workflow cache warming (pre-warm before parallel workflows need it):**
+
+```yaml
+# .github/workflows/warm-cache.yml — runs on lockfile changes to pre-warm npm cache
+name: Warm CI Cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'package-lock.json'
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm       # writes ~/.npm cache entry keyed on lockfile hash
+      - run: npm ci
+      # Also warm the TypeScript incremental build cache
+      - name: Warm tsbuildinfo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .tsbuildinfo
+            packages/*/.tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ hashFiles('tsconfig*.json', 'src/**/*.ts') }}
+          save-always: true
+      - run: npx tsc --noEmit --incremental
+```
+
+**TypeScript cache size audit script:**
+
+```typescript
+// scripts/check-cache-size.ts — warn when CI cache directories are too large
+import { execSync } from 'node:child_process';
+import * as fs from 'node:fs';
+
+interface DirReport { path: string; sizeMb: number }
+
+const CACHE_PATHS = [
+  'node_modules',
+  '~/.cache/ms-playwright',
+  '.tsbuildinfo',
+  'dist',
+  'coverage',
+];
+
+const WARNING_THRESHOLD_MB = 500;
+
+function dirSizeMb(dirPath: string): number {
+  try {
+    const resolved = dirPath.replace('~', process.env['HOME'] ?? '~');
+    if (!fs.existsSync(resolved)) return 0;
+    const out = execSync(`du -sm "${resolved}" 2>/dev/null`, { encoding: 'utf8' });
+    return parseInt(out.split('\t')[0], 10);
+  } catch {
+    return 0;
+  }
+}
+
+const reports: DirReport[] = CACHE_PATHS
+  .map(p => ({ path: p, sizeMb: dirSizeMb(p) }))
+  .filter(r => r.sizeMb > 0);
+
+console.table(reports);
+
+const large = reports.filter(r => r.sizeMb > WARNING_THRESHOLD_MB);
+if (large.length > 0) {
+  const paths = large.map(r => r.path).join(', ');
+  console.warn(`[cache-size] WARNING: ${paths} exceed ${WARNING_THRESHOLD_MB} MB`);
+  console.warn('[cache-size] Consider excluding .cache subdirs to avoid the 10 GB repo cache limit');
+  if (process.env['GITHUB_STEP_SUMMARY']) {
+    fs.appendFileSync(
+      process.env['GITHUB_STEP_SUMMARY'],
+      `\n## Cache Size Warning\nDirectories exceeding ${WARNING_THRESHOLD_MB} MB: ${paths}\n`,
+    );
+  }
+}
+```
+
+**Exclude `.cache` subdirectory to avoid storing esbuild/babel caches:**
+
+```yaml
+# node_modules cache that excludes internal tool caches (esbuild, webpack, babel)
+- name: Cache node_modules (exclude .cache subdirs)
+  uses: actions/cache@v4
+  with:
+    path: |
+      node_modules
+      !node_modules/.cache
+    key: node-modules-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+    restore-keys: node-modules-${{ runner.os }}-
+```
+
+> [community] GitHub Actions caches are immutable — a cache entry with a given key can never be updated in place. After 10–15 lockfile updates, old cache entries accumulate and push the repo toward the 10 GB eviction boundary. Periodically purge stale entries: `gh cache list --limit 100 | awk '{print $1}' | xargs -I{} gh cache delete {}`. Teams that add a monthly cache cleanup to their maintenance calendar avoid sudden "mystery slow CI" events from cache eviction.
+
+> [community] The most common cache bloat source: Playwright browser binaries cached without scoping to the Playwright version. When Playwright updates internally (e.g., via a patch release of `@playwright/test`), the browser binary may change but the lockfile hash stays the same — so the cache hit serves the wrong binary version. Always include the Playwright version in the cache key: `key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}`. Better yet, extract the version string explicitly and include it: `npx playwright --version | cut -d' ' -f2`.
+
+---
+
+
 
 

@@ -1,6 +1,7 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 59 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 60 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: playwright-testresult-annotations-reporter, vitest-context-annotate, playwright-testproject-workers-v152, github-actions-dorny-test-reporter -->
+<!-- Iteration 60: Pattern 102 (EventEmitter maxListeners warning as flakiness signal — detect listener leaks before they cascade); Pattern 103 (jest.doMock() + resetModules for dynamic per-test mocking without hoisting surprises); Pattern 104 (global unhandledRejection handler in test setup — surface swallowed async errors as test failures); Gotcha 50 (EventEmitter listener leak in parallel workers); Gotcha 51 (jest.mock hoisting order breaks dynamic mock tests); AP50 (process.on unhandledRejection not set up in test harness); Quick Reference additions (iteration 60) -->
 <!-- Iteration 59: Pattern 100 (Playwright v1.52 testResult.annotations per-retry custom reporter for structured flakiness tracking); Pattern 101 (Vitest 3.2 context.annotate() API for attaching structured metadata visible in all reporters); Gotcha 49 (dorny/test-reporter GitHub Action for PR-level flakiness annotations from JUnit XML); AP49 (calling getSeed() inside test bodies instead of setup — returns undefined at test-time) -->
 <!-- Iteration 58: Pattern 97 (Playwright v1.45 page.clock — deterministic browser-level time control replacing fake-timer patches); Pattern 98 (Playwright v1.42 page.addLocatorHandler() — automatic overlay/interstitial dismissal to eliminate action-blocking flakiness); Pattern 99 (Vitest 4.0 sequence.shuffle + getSeed() — seeded random ordering with seed capture for reproducible order-dependent flakiness); AP48 (page.clock.install() called after navigation — undefined behavior from out-of-order clock init); Quick Reference additions (iteration 58) -->
 <!-- Iteration 57: Pattern 94 (Playwright v1.48 routeWebSocket — deterministic WebSocket mocking without a real server); Pattern 95 (Playwright v1.51 storageState({ indexedDB: true }) — IndexedDB auth persistence for Firebase-style apps); Pattern 96 (Jest 30 jest.onGenerateMock — centralized auto-mock configuration); AP47 (jest.onGenerateMock silent no-op with __mocks__ folder); Gotcha 48 (WebSocketRoute onMessage stops auto-forwarding) -->
@@ -10485,3 +10486,505 @@ export default class SeedCaptureReporter implements Reporter {
 | Vitest `context.annotate()` API | Official | https://vitest.dev/guide/test-annotations | Structured test metadata visible in HTML, JUnit, GitHub Actions, TAP, and verbose reporters — v3.2+ |
 | dorny/test-reporter GitHub Action | Community | https://github.com/dorny/test-reporter | Parse JUnit/Jest XML and post inline PR flakiness annotations as GitHub Checks — v1.9+ supports `fail-on-flaky` |
 | Vitest `sequence` config | Official | https://vitest.dev/config/sequence | `sequence.shuffle`, `sequence.seed`, `sequence.concurrent`, `sequence.hooks` |
+
+---
+
+## Pattern 102 — EventEmitter `maxListeners` Warning as a Flakiness Signal  [community]
+
+Node.js `EventEmitter` emits a `MaxListenersExceededWarning` when more than 10 listeners are
+attached to a single event. In a test suite, this warning is a leading indicator of a listener
+leak that will eventually cause order-dependent failures: listener A from test 1 fires during
+test 2's execution and mutates shared state, producing a result that looks non-deterministic.
+
+The warning is emitted to `process.stderr` and does not fail the test — so most teams never see
+it until the cascade hits. Promoting it to a thrown error in the test harness surfaces the leak
+before it becomes a flakiness mystery.
+
+```typescript
+// test-setup/event-emitter-guard.ts
+// Add to vitest.config.ts setupFiles: ['./test-setup/event-emitter-guard.ts']
+// or jest.config.ts globalSetup / setupFilesAfterFramework
+
+import { EventEmitter } from 'events';
+
+/**
+ * Promote EventEmitter MaxListenersExceededWarning to a thrown error.
+ * Without this, listener leaks accumulate silently across tests until they cause
+ * order-dependent failures that are very hard to attribute to their root cause.
+ *
+ * Lowering the threshold to 5 for tests catches leaks earlier than the Node.js default of 10.
+ */
+EventEmitter.defaultMaxListeners = 5; // stricter than Node default (10) — catches leaks sooner
+
+// Capture the original emit to intercept MaxListenersExceededWarning
+const originalEmit = process.emit.bind(process);
+
+// @ts-expect-error — overriding process.emit signature intentionally
+process.emit = function (event: string, ...args: unknown[]): boolean {
+  if (
+    event === 'warning' &&
+    args[0] instanceof Error &&
+    (args[0] as NodeJS.ErrnoException).name === 'MaxListenersExceededWarning'
+  ) {
+    // Convert the warning into a hard error — surfaces the listener leak immediately
+    // The error message includes the emitter type and event name for fast diagnosis
+    throw new Error(
+      `[TEST HARNESS] Listener leak detected: ${(args[0] as Error).message}\n` +
+      'Root cause: a test is attaching listeners without removing them in afterEach.\n' +
+      'Fix: call emitter.removeListener() or emitter.off() in afterEach, or use emitter.once().'
+    );
+  }
+  return originalEmit(event, ...args);
+};
+```
+
+```typescript
+// Example: EventEmitter listener leak and its fix
+// BAD: listener attached in beforeEach, never removed — leaks across all tests in the file
+import { EventEmitter } from 'events';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { OrderEventBus } from '../src/OrderEventBus';
+
+const bus = new OrderEventBus(); // module-level singleton — shared across tests
+
+describe('OrderEventBus — BAD: listener leak', () => {
+  let received: string[] = [];
+
+  beforeEach(() => {
+    received = [];
+    // PROBLEM: each test adds a new listener; none are removed in afterEach
+    // After 5 tests, MaxListenersExceededWarning fires (threshold = 5)
+    bus.on('order:created', (orderId: string) => received.push(orderId));
+  });
+
+  it('receives order:created event', async () => {
+    await bus.emit('order:created', 'ORD-001');
+    expect(received).toContain('ORD-001');
+  });
+});
+
+// GOOD: capture and remove listener in afterEach
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+
+describe('OrderEventBus — GOOD: listener cleanup', () => {
+  let received: string[] = [];
+  // Store handler reference so we can remove the exact same function in afterEach
+  let handler: (orderId: string) => void;
+
+  beforeEach(() => {
+    received = [];
+    handler = (orderId: string) => received.push(orderId);
+    // Attach the handler — will be removed in afterEach
+    bus.on('order:created', handler);
+  });
+
+  afterEach(() => {
+    // Remove the exact handler reference — prevents listener accumulation
+    bus.off('order:created', handler);
+  });
+
+  it('receives order:created event', async () => {
+    await bus.emit('order:created', 'ORD-001');
+    expect(received).toContain('ORD-001');
+  });
+
+  it('does NOT receive events from previous test', async () => {
+    // Previous test's handler was removed — no stale listener to fire
+    expect(received).toHaveLength(0); // starts clean because afterEach removed the handler
+  });
+});
+```
+
+```typescript
+// BEST: use EventEmitter.once() when each test only needs a single event
+// once() auto-removes the listener after the first emission — zero cleanup required
+import { describe, it, expect } from 'vitest';
+
+describe('OrderEventBus — BEST: once() pattern', () => {
+  it('receives order:created once, no cleanup needed', () => {
+    return new Promise<void>((resolve, reject) => {
+      // once() automatically removes itself after firing — no afterEach cleanup
+      bus.once('order:created', (orderId: string) => {
+        try {
+          expect(orderId).toBe('ORD-001');
+          resolve();
+        } catch (e) {
+          reject(e);
+        }
+      });
+      // Set a timeout guard — prevents the test from hanging if the event never fires
+      setTimeout(() => reject(new Error('order:created event never fired — timeout')), 3000);
+      bus.emit('order:created', 'ORD-001');
+    });
+  });
+});
+```
+
+**Listener count audit utility** — run before committing to catch leaks missed by the threshold:
+
+```typescript
+// scripts/audit-event-listeners.ts
+// Run: npx ts-node scripts/audit-event-listeners.ts
+// Inspects all EventEmitter instances reachable from the test process and reports listener counts.
+
+import { EventEmitter } from 'events';
+
+/**
+ * Patches EventEmitter to track all instances globally.
+ * Add to test-setup before any imports to capture all emitters.
+ */
+const emitters: WeakRef<EventEmitter>[] = [];
+const OriginalEE = EventEmitter;
+
+class TrackedEventEmitter extends EventEmitter {
+  constructor() {
+    super();
+    emitters.push(new WeakRef(this));
+  }
+}
+
+// Replace global EventEmitter in tests — any code that does `new EventEmitter()` is tracked
+// This is a test-only override — never use in production
+Object.defineProperty(global, 'EventEmitter', { value: TrackedEventEmitter, writable: true });
+
+// Report after each test suite completes:
+export function reportListenerCounts(): void {
+  let hasLeak = false;
+  for (const ref of emitters) {
+    const ee = ref.deref();
+    if (!ee) continue; // GC'd — no longer a concern
+    for (const event of ee.eventNames()) {
+      const count = ee.listenerCount(event);
+      if (count > 3) { // threshold: > 3 listeners on any single event in tests is suspicious
+        console.warn(`[LISTENER AUDIT] ${ee.constructor.name}.on('${String(event)}') has ${count} listeners — possible leak`);
+        hasLeak = true;
+      }
+    }
+  }
+  if (!hasLeak) console.log('[LISTENER AUDIT] OK — no suspicious listener counts');
+}
+```
+
+---
+
+## Pattern 103 — `jest.doMock()` + `resetModules` for Order-Independent Dynamic Mocking  [community]
+
+`jest.mock()` is **hoisted** to the top of the file by Babel/ts-jest transform — it runs before
+any imports. This means you cannot conditionally mock a module differently per test case using
+`jest.mock()`. Teams that try to override a mock in a `beforeEach` or per-test call produce
+surprising results because the hoisted `jest.mock()` wins. `jest.doMock()` is the non-hoisted
+variant designed for exactly this use case.
+
+This pattern surfaces as flakiness when developers see: "test A passes, test B passes, but
+when run together in order A→B, test B fails" — because `jest.mock()` from test A's file
+scope overrides what test B's `jest.doMock()` attempted to set.
+
+```typescript
+// BAD: trying to vary mocks per test with jest.mock() — hoisting defeats the intent
+import { jest } from '@jest/globals';
+
+// This mock is hoisted — it runs BEFORE all imports, so both tests see the same mock
+jest.mock('../src/featureFlags', () => ({
+  isEnabled: jest.fn().mockReturnValue(false), // always false — test 2's override never takes effect
+}));
+
+import { featureFlags } from '../src/featureFlags';
+import { CheckoutService } from '../src/CheckoutService';
+
+describe('CheckoutService — BAD mock ordering', () => {
+  it('hides beta checkout when flag is off', async () => {
+    // OK: flag is false (the hoisted mock)
+    const result = await CheckoutService.getCheckoutVariant();
+    expect(result).toBe('standard');
+  });
+
+  it('shows beta checkout when flag is on', async () => {
+    // BROKEN: this override looks right but jest.mock() is already hoisted at file load time
+    // jest.mock('../src/featureFlags', () => ({ isEnabled: jest.fn().mockReturnValue(true) }));
+    // The above line is silently ignored or conflicts — test sees false, not true
+    (featureFlags.isEnabled as jest.Mock).mockReturnValue(true); // manual workaround — brittle
+    const result = await CheckoutService.getCheckoutVariant();
+    expect(result).toBe('beta'); // may pass or fail depending on import order
+  });
+});
+```
+
+```typescript
+// GOOD: jest.doMock() + jest.resetModules() for per-test module isolation
+// Each test gets a fresh module with its own mock — no hoisting, no interference
+
+import { beforeEach, afterEach, describe, it, expect } from '@jest/globals';
+
+describe('CheckoutService — GOOD: doMock per test', () => {
+  beforeEach(() => {
+    // Reset the module registry before each test — ensures doMock applies to a fresh require
+    jest.resetModules();
+  });
+
+  afterEach(() => {
+    jest.resetModules(); // defensive second reset — ensures cleanup even if test throws
+  });
+
+  it('hides beta checkout when flag is off', async () => {
+    // doMock is NOT hoisted — it applies only from this point forward in this test
+    jest.doMock('../src/featureFlags', () => ({
+      featureFlags: { isEnabled: jest.fn().mockReturnValue(false) },
+    }));
+
+    // Dynamic import AFTER doMock — gets the fresh mocked version
+    const { CheckoutService } = await import('../src/CheckoutService');
+    const result = await CheckoutService.getCheckoutVariant();
+    expect(result).toBe('standard');
+  });
+
+  it('shows beta checkout when flag is on', async () => {
+    // Independent mock — not affected by the previous test's doMock
+    jest.doMock('../src/featureFlags', () => ({
+      featureFlags: { isEnabled: jest.fn().mockReturnValue(true) },
+    }));
+
+    const { CheckoutService } = await import('../src/CheckoutService');
+    const result = await CheckoutService.getCheckoutVariant();
+    expect(result).toBe('beta'); // deterministic: this test always uses its own mock
+  });
+});
+```
+
+```typescript
+// Vitest equivalent: vi.doMock() — same semantics as jest.doMock(), not hoisted
+// Use with vi.resetModules() for identical isolation
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+describe('FeatureFlagService — Vitest doMock', () => {
+  beforeEach(() => {
+    vi.resetModules(); // clear module cache before each test
+  });
+
+  it('returns correct variant for control group', async () => {
+    vi.doMock('../src/experimentService', () => ({
+      getVariant: vi.fn().mockResolvedValue('control'),
+    }));
+
+    const { ExperimentService } = await import('../src/experimentService');
+    const variant = await ExperimentService.getVariant('checkout-ab-test', 'user-42');
+    expect(variant).toBe('control');
+  });
+
+  it('returns correct variant for treatment group', async () => {
+    // Independent mock — vi.resetModules() in beforeEach ensures isolation
+    vi.doMock('../src/experimentService', () => ({
+      getVariant: vi.fn().mockResolvedValue('treatment'),
+    }));
+
+    const { ExperimentService } = await import('../src/experimentService');
+    const variant = await ExperimentService.getVariant('checkout-ab-test', 'user-99');
+    expect(variant).toBe('treatment');
+  });
+});
+```
+
+**When to use `jest.mock()` (hoisted) vs `jest.doMock()` (non-hoisted):**
+
+| Scenario | Use `jest.mock()` | Use `jest.doMock()` |
+|----------|--------------------|----------------------|
+| Same mock for all tests in the file | Yes | No (overkill) |
+| Different mock behaviour per test | No (hoisting defeats this) | Yes |
+| Mocking a module and using static `import` | Yes | No — requires dynamic `import()` |
+| Testing module initialization side effects | No | Yes — `resetModules()` gives fresh init |
+| Team has Babel transform (`babel-jest`) | Yes — hoisting works | Yes — no hoisting by default |
+
+---
+
+## Pattern 104 — Global `unhandledRejection` Handler for Surfacing Swallowed Async Errors  [community]
+
+Unhandled Promise rejections are a major source of "phantom" flakiness: an async operation
+fails silently in one test but its side effects (state mutation, resource allocation, log
+pollution) corrupt a later test. Node.js 15+ turns unhandled rejections into process exits by
+default — but Jest and Vitest intercept this and convert them to warnings that may not fail the
+current test.
+
+Setting up a global `unhandledRejection` handler in the test harness turns these silent
+corruptions into immediate test failures — attributable to the correct test case, not a
+mysterious downstream failure.
+
+```typescript
+// test-setup/unhandled-rejection-guard.ts
+// Add to vitest.config.ts setupFiles: ['./test-setup/unhandled-rejection-guard.ts']
+// or jest.config.ts setupFilesAfterFramework: ['<rootDir>/test-setup/unhandled-rejection-guard.ts']
+
+/**
+ * Converts unhandled Promise rejections into test failures.
+ *
+ * WITHOUT this: an async operation that throws in test A (without being awaited)
+ * surfaces as a mysterious failure in test B — order-dependent, non-reproducible.
+ *
+ * WITH this: the rejection is captured immediately and attributed to the running test
+ * (via Jest's current test name or Vitest's current test context).
+ *
+ * Node.js behaviour note:
+ * - Node.js 15+: unhandled rejections are fatal by default (process exits)
+ * - Jest < 29: swallows rejections silently as warnings
+ * - Jest 29+: converts to test failure, but only if the rejection happens DURING a test
+ * - Vitest: converts to test failure with better stack traces than Jest
+ *
+ * This guard provides consistent behaviour across all three and older versions.
+ */
+
+let currentTestName = 'unknown test (outside test body)';
+
+// Track which test is currently running — used in the rejection handler message
+if (typeof beforeEach !== 'undefined') {
+  beforeEach((context?: { task?: { name: string } }) => {
+    // Vitest passes context; Jest does not — handle both
+    currentTestName = context?.task?.name ?? expect?.getState?.()?.currentTestName ?? 'unknown';
+  });
+}
+
+const rejectionHandler = (reason: unknown, promise: Promise<unknown>) => {
+  // Format the rejection for maximum diagnosability
+  const message =
+    reason instanceof Error
+      ? `${reason.name}: ${reason.message}\n${reason.stack ?? ''}`
+      : JSON.stringify(reason, null, 2);
+
+  const diagnostic =
+    `[TEST HARNESS] Unhandled Promise rejection during: "${currentTestName}"\n` +
+    `Rejection reason: ${message}\n` +
+    `Promise: ${promise}\n` +
+    `Root cause: an async operation was NOT awaited. ` +
+    `Check for missing 'await' in beforeEach, afterEach, or the test body itself.\n` +
+    `ESLint fix: enable '@typescript-eslint/no-floating-promises' to catch this statically.`;
+
+  // In test environments, throw as an Error so the test runner attributes it to the current test
+  // This is safer than process.exit() which would abort the entire suite
+  throw new Error(diagnostic);
+};
+
+process.on('unhandledRejection', rejectionHandler);
+
+// Clean up the handler after all tests complete — prevents interference with production code
+if (typeof afterAll !== 'undefined') {
+  afterAll(() => {
+    process.off('unhandledRejection', rejectionHandler);
+  });
+}
+```
+
+```typescript
+// Test demonstrating why unhandledRejection matters — the "ghost failure" pattern
+
+import { describe, it, expect } from 'vitest';
+import { EmailService } from '../src/EmailService';
+
+// ANTI-PATTERN: unawaited async in test body — triggers unhandledRejection silently
+it('sends welcome email (broken — unawaited)', () => {
+  // The email service call is not awaited — if it rejects, the rejection
+  // floats into the next test's execution context, failing THAT test, not this one
+  EmailService.send({ to: 'alice@example.com', subject: 'Welcome' }); // MISSING await
+  // This test "passes" even if EmailService.send() throws after 50ms
+});
+
+it('unrelated test that inexplicably fails', async () => {
+  // The rejection from the previous test surfaces HERE
+  // Without the unhandledRejection guard, this test is blamed for a bug it didn't cause
+  const users = await UserService.list();
+  expect(users).toHaveLength(0); // may fail because the previous rejection polluted state
+});
+
+// CORRECT: always await async operations in test bodies
+it('sends welcome email (correct — awaited)', async () => {
+  // Explicit await — any rejection is immediately attributed to THIS test
+  await EmailService.send({ to: 'alice@example.com', subject: 'Welcome' });
+  // If EmailService.send() rejects, this test fails — correctly, immediately, attributably
+});
+```
+
+```typescript
+// Complement: enable @typescript-eslint/no-floating-promises in test files
+// This is the static analysis equivalent of the runtime unhandledRejection guard
+// Add to .eslintrc.cjs or eslint.config.mjs:
+
+// For ESLint flat config (eslint.config.mjs):
+import tseslint from '@typescript-eslint/eslint-plugin';
+import tsparser from '@typescript-eslint/parser';
+
+export default [
+  {
+    files: ['**/*.test.ts', '**/*.spec.ts'],
+    languageOptions: { parser: tsparser },
+    plugins: { '@typescript-eslint': tseslint },
+    rules: {
+      // Catches: expression that returns a Promise without being awaited
+      '@typescript-eslint/no-floating-promises': ['error', {
+        ignoreVoid: false,  // void operator does NOT count as "handled" in tests
+        ignoreIIFE: false,  // immediately-invoked async functions must be awaited
+      }],
+      // Catches: Promise-returning function in callback positions without await
+      '@typescript-eslint/no-misused-promises': 'error',
+    },
+  },
+];
+```
+
+---
+
+## Anti-Patterns (iteration 60)
+
+### AP50 — No `unhandledRejection` Guard in Test Harness  [community]
+**What:** Test suites that do not install a global `unhandledRejection` handler (Pattern 104) and rely on the test runner's default behaviour to surface async errors.
+**Why harmful:** The default behaviour of Jest < 29 and many other test runners is to log the rejection as a warning *after* all tests complete, attributing it to no specific test case. Engineers see "UnhandledPromiseRejection: ..." in CI output but cannot identify which test caused it. This produces a class of "intermittent" failures that disappear on re-run because the rejection arrives in a different test's window. The root cause is always a missing `await` — and `@typescript-eslint/no-floating-promises` would have caught it statically. Fix: install Pattern 104 in your `setupFiles` AND enable `@typescript-eslint/no-floating-promises` in test file linting rules.
+
+### AP51 — Using `jest.mock()` for Per-Test Module Variation Without `resetModules`  [community]
+**What:** Calling `jest.mock('./module', factory)` inside `beforeEach` or `describe` blocks expecting each call to replace the previous mock for that test.
+**Why harmful:** `jest.mock()` is hoisted by the Babel transform — ALL calls to `jest.mock()` in a file are moved to the top, before any imports, regardless of where they appear in the source. Multiple `jest.mock()` calls for the same module path in a file are de-duplicated by the last one seen at hoist time, not the last one called at runtime. This creates non-deterministic mock application depending on declaration order — test A and test B may share the same mock factory, neither gets what the developer intended. Fix: use `jest.doMock()` (non-hoisted) with `jest.resetModules()` in `beforeEach` for per-test module variation (Pattern 103).
+
+---
+
+## Real-World Gotchas (iteration 60)  [community]
+
+**Gotcha 50 — EventEmitter Listener Leak in Parallel Workers Creates Cross-Worker Ghost Failures**
+When a `globalSetup` script creates a shared event bus or pub/sub client (e.g., a Redis subscriber,
+a WebSocket client) at the suite level, and multiple Vitest/Jest workers import this shared object
+via module cache, listeners registered in worker A can fire during worker B's execution. This
+produces failures in B that are attributed to B's test context but were actually triggered by A's
+listener. Symptoms: a test fails with `"received 2 calls, expected 1"` on a mock that the test
+never explicitly called — because A's listener called it. Fix: always create event-driven resources
+per-test (not per-suite or per-module) when running in parallel, and use `EventEmitter.defaultMaxListeners`
+reduction in setup files (Pattern 102) to catch leaks before they cascade.
+
+**Gotcha 51 — `jest.mock()` Hoisting Order Is Determined by Babel AST Traversal, Not Source Line Order**
+Teams that write `jest.mock('./a')` on line 15 and `jest.mock('./b')` on line 25, expecting them
+to be applied in that order, are surprised when the execution order differs. The Babel jest-hoist
+plugin traverses the AST and collects all `jest.mock()` calls, then emits them at the top of the
+file in the order encountered by the traverser — which matches source order in simple cases but
+diverges with nested function calls, conditional blocks, and template literals. The practical
+implication: if you rely on mock A being registered before mock B (e.g., because module A
+re-exports from module B), the order may flip. Fix: use a single `jest.mock()` per module path
+per file, avoid conditional `jest.mock()` calls entirely, and use `jest.doMock()` for any case
+where execution order relative to other code matters.
+
+---
+
+## Quick Reference additions (iteration 60)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Mock never overrides correctly per test — one factory wins for all tests | `jest.mock()` hoisted to file top; per-test override impossible | Pattern 103 (jest.doMock + resetModules) | AP51 (jest.mock in beforeEach expecting per-test variation) |
+| Test B fails with "expected 1 call, received 2" — test B never registered that mock | EventEmitter listener from test A still active in test B | Pattern 102 (maxListeners guard, once(), off() in afterEach) | No afterEach listener cleanup |
+| Async error surfaces in wrong test — unattributable CI failure | Unawaited Promise rejection floating across test boundaries | Pattern 104 (unhandledRejection guard + no-floating-promises lint) | AP50 (no unhandledRejection handler) |
+| `jest.mock()` factory runs before import — module shape differs from expected | Mock hoisting moves factory before module resolution | Pattern 103 (jest.doMock after resetModules) | jest.mock() in describe/beforeEach for dynamic behaviour |
+| Listener count keeps growing across parallel workers — MaxListenersExceeded | Shared EventEmitter in globalSetup, multiple workers attach listeners | Pattern 102 (per-test emitter, defaultMaxListeners reduction) | Module-level singleton EventEmitter shared across workers |
+
+---
+
+## Key Resources (iteration 60 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Jest `jest.doMock()` API | Official | https://jestjs.io/docs/jest-object#jestdomockmodulename-factory-options | Non-hoisted module mock — essential for per-test module variation |
+| Jest `jest.resetModules()` API | Official | https://jestjs.io/docs/jest-object#jestresetmodules | Clears module registry — required companion to doMock for fresh require |
+| Node.js `EventEmitter.defaultMaxListeners` | Official | https://nodejs.org/api/events.html#emittersetmaxlistenersn | API for setting max listener threshold — lower in tests for early leak detection |
+| Node.js `process: unhandledRejection` | Official | https://nodejs.org/api/process.html#event-unhandledrejection | Event fired for unhandled Promise rejections — harness integration point |
+| `@typescript-eslint/no-floating-promises` | Official | https://typescript-eslint.io/rules/no-floating-promises | Static analysis rule that catches missing await — pair with unhandledRejection guard |
+| `@typescript-eslint/no-misused-promises` | Official | https://typescript-eslint.io/rules/no-misused-promises | Catches Promise-returning functions in callback positions — companion rule |

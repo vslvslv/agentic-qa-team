@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -94,9 +94,17 @@
 <!--            — singletons and module-level state from globalSetup are shared with all tests          -->
 <!--            and cannot be cleared between tests (Gotcha 105)                                        -->
 
----
+<!--          Iteration 26 (2026-05-12): Testcontainers PostgreSqlContainer per-suite lifecycle     -->
+<!--            with Jest globalSetup/globalTeardown — hermetic Docker isolation (Pattern 44);        -->
+<!--            MSW v2 `http.*` handler isolation with `server.resetHandlers()` in afterEach —        -->
+<!--            `{ once: true }` does not auto-remove handler entry from stack (Pattern 45, Gotcha 106);-->
+<!--            Jest `projects` for monorepo module-registry isolation — root setupFilesAfterFramework -->
+<!--            runs in every project worker including jsdom (Pattern 46, Gotcha 107); EventEmitter    -->
+<!--            listener leak detection via `listenerCount` assertion + captured ref in describe scope -->
+<!--            (Pattern 47, Gotcha 108); Testcontainers teardown resilience against OOM crash        -->
+<!--            (Gotcha 105)                                                                           -->
 
-## Core Principles
+---
 
 ### 1. FIRST: The five properties every isolated test must have
 
@@ -6157,4 +6165,481 @@ strictly scoped and safe regardless of pool type.
 | Node.js Async Context Docs — AsyncLocalStorage | Official | https://nodejs.org/docs/latest-v24.x/api/async_context.html | Full API reference for `defaultValue`, `name`, `enterWith`, `run()` — Node.js 24 semantics |
 | Node.js 24 — `--test-global-setup` flag | Official | https://nodejs.org/docs/latest-v24.x/api/test.html#--test-global-setup | Same-process global setup/teardown module; `globalSetup` + `globalTeardown` named exports |
 | Node.js 24 — Automatic subtest completion (PR #56664) | Official | https://github.com/nodejs/node/pull/56664 | Removes need to `await t.test()` — changes subtest lifecycle and resource cleanup ordering |
+
+---
+
+## Extended Patterns — Iteration 26
+
+### Pattern 44: Testcontainers PostgreSQL per-suite lifecycle with Jest `globalSetup` (TypeScript)  [community]
+
+[Testcontainers](https://testcontainers.com/) spins up a real Docker container for each test
+suite, giving every CI job a genuinely isolated database with no shared state concerns. The
+container lifecycle belongs in Jest `globalSetup`/`globalTeardown` so it is started once for
+the entire run and torn down cleanly after the last test. Within each test file, per-test
+isolation is provided by the transaction-rollback pattern (Pattern 7).
+
+```typescript
+// jest.global-setup.ts
+import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
+
+const STATE_FILE = path.join(os.tmpdir(), 'jest-tc-state.json');
+
+export default async function globalSetup(): Promise<void> {
+  const container: StartedPostgreSqlContainer = await new PostgreSqlContainer('postgres:16-alpine')
+    .withDatabase('testdb')
+    .withUsername('testuser')
+    .withPassword('testpass')
+    .start();
+
+  // Write serializable primitives — never export the live container object
+  await fs.writeFile(
+    STATE_FILE,
+    JSON.stringify({
+      connectionUri: container.getConnectionUri(),
+      containerId: container.getId(),
+    }),
+  );
+
+  // Make URL available to test files via environment variable
+  process.env.DATABASE_URL = container.getConnectionUri();
+}
+
+// jest.global-teardown.ts
+import { GenericContainer } from 'testcontainers';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
+
+const STATE_FILE = path.join(os.tmpdir(), 'jest-tc-state.json');
+
+export default async function globalTeardown(): Promise<void> {
+  const raw = await fs.readFile(STATE_FILE, 'utf-8').catch(() => null);
+  if (!raw) return;
+  const { containerId } = JSON.parse(raw) as { containerId: string };
+  // Stop the container by ID without re-importing the live object
+  const container = await GenericContainer.fromExistingContainer(containerId);
+  await container.stop();
+  await fs.unlink(STATE_FILE).catch(() => {});
+}
+```
+
+```typescript
+// jest.config.ts
+import { defineConfig } from 'jest';
+
+export default defineConfig({
+  globalSetup: './jest.global-setup.ts',
+  globalTeardown: './jest.global-teardown.ts',
+  testEnvironment: 'node',
+  transform: { '^.+\\.tsx?$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }] },
+});
+```
+
+```typescript
+// users.integration.test.ts — uses transaction rollback per test (Pattern 7)
+import { Pool } from 'pg';
+import { UserRepository } from '../src/UserRepository';
+
+describe('UserRepository — Testcontainers integration', () => {
+  let pool: Pool;
+
+  beforeAll(async () => {
+    // DATABASE_URL injected by globalSetup via process.env
+    pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        name  TEXT NOT NULL
+      )
+    `);
+  });
+
+  afterAll(async () => {
+    await pool.end();
+  });
+
+  describe('per-test isolation via SAVEPOINT rollback', () => {
+    let client: import('pg').PoolClient;
+
+    beforeEach(async () => {
+      client = await pool.connect();
+      await client.query('BEGIN');
+      await client.query('SAVEPOINT test_start');
+    });
+
+    afterEach(async () => {
+      // Roll back to savepoint — leaves DB in pre-test state for next test
+      await client.query('ROLLBACK TO SAVEPOINT test_start');
+      await client.query('ROLLBACK');
+      client.release();
+    });
+
+    it('inserts a user and retrieves it by email', async () => {
+      const repo = new UserRepository(client);
+
+      const user = await repo.create({ email: 'alice@example.com', name: 'Alice' });
+      const found = await repo.findByEmail('alice@example.com');
+
+      expect(found).toMatchObject({ id: user.id, name: 'Alice' });
+    });
+
+    it('returns null for an email that was not inserted in this test', async () => {
+      // alice@example.com was rolled back — this test starts with an empty table
+      const repo = new UserRepository(client);
+
+      const found = await repo.findByEmail('alice@example.com');
+
+      expect(found).toBeNull();
+    });
+  });
+});
+```
+
+**Why Testcontainers over a shared dev database:** A shared dev database accumulates stale rows,
+requires manual seeding coordination across team members, and makes parallel CI runs interfere
+with each other. Testcontainers starts the container from a known-clean image, so the test run
+is fully hermetic and can be reproduced exactly by any developer or CI agent with Docker installed.
+
+---
+
+### Pattern 45: MSW v2 handler isolation with `server.resetHandlers()` (TypeScript)  [community]
+
+MSW v2 replaces the v1 `rest.*` namespace with `http.*` and `graphql.*` handlers. The isolation
+contract is unchanged — `server.resetHandlers()` must be called in `afterEach` to discard any
+per-test overrides registered with `server.use()`. Without the reset, handler overrides registered
+inside a test accumulate on the handler stack and affect all subsequent tests in the file.
+
+```typescript
+// test-utils/msw-server.ts — shared server instance (module singleton)
+import { setupServer } from 'msw/node';
+import { http, HttpResponse } from 'msw';
+
+// Base handlers — apply to every test unless overridden
+export const baseHandlers = [
+  http.get('/api/users/:id', ({ params }) => {
+    return HttpResponse.json({ id: params['id'], name: 'Default User' });
+  }),
+  http.post('/api/users', async ({ request }) => {
+    const body = await request.json() as { name: string };
+    return HttpResponse.json({ id: '1', name: body.name }, { status: 201 });
+  }),
+];
+
+export const server = setupServer(...baseHandlers);
+```
+
+```typescript
+// vitest.setup.ts  (or jest.setup.ts)
+import { server } from './test-utils/msw-server';
+import { beforeAll, afterAll, afterEach } from 'vitest';
+
+// Start the MSW intercept layer before any test file runs
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+
+// CRITICAL: reset per-test overrides after every test
+// Without this, server.use() inside a test leaks to subsequent tests
+afterEach(() => server.resetHandlers());
+
+// Tear down after the full suite
+afterAll(() => server.close());
+```
+
+```typescript
+// UserService.test.ts — per-test handler overrides without cross-test leakage
+import { describe, it, expect } from 'vitest';
+import { http, HttpResponse } from 'msw';
+import { server } from './test-utils/msw-server';
+import { UserService } from '../src/UserService';
+
+const service = new UserService('http://localhost');
+
+describe('UserService.getUser', () => {
+  it('returns user data from the base handler', async () => {
+    // Uses the base handler — no override needed
+    const user = await service.getUser('42');
+
+    expect(user).toEqual({ id: '42', name: 'Default User' });
+  });
+
+  it('surfaces a 404 response as a domain NotFoundError', async () => {
+    // Per-test override: shadow the base handler for this test only
+    server.use(
+      http.get('/api/users/:id', () =>
+        HttpResponse.json({ message: 'Not found' }, { status: 404 })
+      ),
+    );
+
+    // After this test, afterEach calls server.resetHandlers() —
+    // the next test sees the original base handler, not this 404 override
+    await expect(service.getUser('99')).rejects.toThrow('NotFoundError');
+  });
+
+  it('next test still uses base handler — override was discarded by resetHandlers()', async () => {
+    // Proves resetHandlers() works: no 404 override from the previous test
+    const user = await service.getUser('1');
+
+    expect(user.name).toBe('Default User');
+  });
+});
+```
+
+**MSW v2 isolation gotchas:**
+- `server.use()` *prepends* handlers — it does NOT replace them. The first matching handler wins.
+  If you use `server.use(http.get('/api/users/:id', ...))` twice without a reset in between,
+  the second call adds another handler on top, making the stack grow indefinitely.
+- `onUnhandledRequest: 'error'` in `server.listen()` is the recommended setting for test suites.
+  It converts any request that reaches no handler into a test failure, surfacing accidental
+  network calls that should have been mocked. Use `onUnhandledRequest: 'warn'` during initial
+  migration to avoid hard failures before all handlers are defined.
+- `server.resetHandlers(...newHandlers)` (with arguments) replaces the base handler list entirely.
+  Call it without arguments (the common case) to only discard per-test overrides while preserving
+  base handlers.
+
+---
+
+### Pattern 46: Jest `projects` for monorepo test isolation without cross-package state leakage (TypeScript)  [community]
+
+In a monorepo with multiple packages sharing a root Jest config, each `project` entry runs in
+its own module registry and environment. Without `projects`, Jest's module cache is shared across
+all packages in `--runInBand` mode, causing singleton state from one package's tests to leak
+into another package's tests when the module is `require()`d again.
+
+```typescript
+// jest.config.ts (monorepo root)
+import { defineConfig } from 'jest';
+
+export default defineConfig({
+  // Each project gets its own module registry — equivalent to separate jest.config.ts per package
+  projects: [
+    {
+      displayName: 'packages/api',
+      testMatch: ['<rootDir>/packages/api/**/*.test.ts'],
+      testEnvironment: 'node',
+      transform: { '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/packages/api/tsconfig.json' }] },
+      // moduleNameMapper resolves workspace packages without hoisting side-effects
+      moduleNameMapper: {
+        '^@myorg/shared(.*)$': '<rootDir>/packages/shared/src$1',
+      },
+      // Project-level setupFilesAfterFramework — does not affect other projects
+      setupFilesAfterFramework: ['<rootDir>/packages/api/jest.setup.ts'],
+    },
+    {
+      displayName: 'packages/web',
+      testMatch: ['<rootDir>/packages/web/**/*.test.tsx'],
+      testEnvironment: 'jsdom',
+      transform: { '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/packages/web/tsconfig.json' }] },
+      moduleNameMapper: {
+        '^@myorg/shared(.*)$': '<rootDir>/packages/shared/src$1',
+      },
+      setupFilesAfterFramework: ['<rootDir>/packages/web/jest.setup.ts'],
+    },
+    {
+      displayName: 'packages/shared',
+      testMatch: ['<rootDir>/packages/shared/**/*.test.ts'],
+      testEnvironment: 'node',
+      transform: { '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/packages/shared/tsconfig.json' }] },
+    },
+  ],
+  // Global coverage collection — merged across all projects
+  collectCoverageFrom: ['packages/*/src/**/*.ts', '!**/*.d.ts'],
+});
+```
+
+```typescript
+// packages/api/jest.setup.ts — runs ONLY for the api project
+import { server } from './test-utils/msw-server';
+import { beforeAll, afterAll, afterEach } from '@jest/globals';
+
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
+// This MSW server instance is fully isolated from packages/web's MSW server —
+// they run in separate Jest workers with separate module registries
+```
+
+**Why `projects` matters for isolation:**
+- Without `projects`, a module-level singleton (e.g., an event bus, connection pool, or service
+  registry) imported by both `packages/api` and `packages/web` tests may be the *same instance*
+  if Jest reuses the module cache. With `projects`, each project has a fully isolated module
+  registry: the same module imported in two projects produces two independent instances.
+- `setupFilesAfterFramework` at the project level applies *only* to that project's test files.
+  Root-level `setupFilesAfterFramework` in the parent config applies to *all* projects. Mixing
+  the two accidentally creates asymmetric setup state: one package's tests run with a mock that
+  another package's tests do not have.
+
+---
+
+### Pattern 47: EventEmitter leak detection and per-test listener cleanup (TypeScript)  [community]
+
+Node.js emits `MaxListenersExceededWarning` when more than 10 listeners are attached to the
+same `EventEmitter`. In Jest/Vitest, this typically means a `beforeEach` adds a listener but
+the corresponding `afterEach` removes it from the wrong reference or not at all. Left unchecked,
+leaked listeners cause test-order-dependent behavior: the 11th test sees accumulated listener
+state from the previous 10.
+
+```typescript
+import { EventEmitter } from 'node:events';
+import { beforeEach, afterEach, it, expect, describe } from 'vitest';
+import { OrderProcessor } from '../src/OrderProcessor';
+
+// Intentionally lower limit to detect leaks early — default is 10
+EventEmitter.defaultMaxListeners = 5;
+
+describe('OrderProcessor event isolation', () => {
+  let emitter: EventEmitter;
+  let processor: OrderProcessor;
+
+  // Listener reference captured so afterEach can remove the exact function
+  let onOrderPlaced: (orderId: string) => void;
+  const capturedOrders: string[] = [];
+
+  beforeEach(() => {
+    emitter = new EventEmitter();
+    processor = new OrderProcessor(emitter);
+    capturedOrders.length = 0; // reset accumulator
+
+    onOrderPlaced = (orderId: string) => capturedOrders.push(orderId);
+    emitter.on('order:placed', onOrderPlaced);
+  });
+
+  afterEach(() => {
+    // Remove the exact listener reference — prevents MaxListenersExceededWarning
+    emitter.off('order:placed', onOrderPlaced);
+    // Verify no listeners were left attached by the SUT itself
+    expect(emitter.listenerCount('order:placed')).toBe(0);
+  });
+
+  it('emits order:placed when an order is submitted', () => {
+    processor.submit({ id: 'o1', items: ['item-a'] });
+
+    expect(capturedOrders).toEqual(['o1']);
+  });
+
+  it('only captures events from this test — no contamination from previous test', () => {
+    // If afterEach had not removed the listener, the previous test's listener
+    // would still be attached to the same emitter reference, causing double-fire
+    processor.submit({ id: 'o2', items: ['item-b'] });
+
+    expect(capturedOrders).toHaveLength(1);
+    expect(capturedOrders[0]).toBe('o2');
+  });
+});
+```
+
+**Anti-pattern — anonymous listener in `beforeEach` without matching `off`:**
+
+```typescript
+// WRONG: arrow function literal creates a new reference each time;
+// emitter.off() cannot match it — listener accumulates across tests
+beforeEach(() => {
+  emitter.on('order:placed', (id) => capturedOrders.push(id));
+  //          ^^^ new function reference every call — cannot be removed with off()
+});
+// Fix: capture the function in a variable in describe scope, as shown above
+```
+
+---
+
+## Gotchas — Iteration 26
+
+105. **Testcontainers `GenericContainer.fromExistingContainer()` requires the container to still be running — calling it in `globalTeardown` after a test-runner crash may throw.** [community]
+    When a Jest worker crashes mid-run (OOM, SIGKILL), `globalTeardown` still runs — but the
+    container may have already been stopped by Docker's `--rm` flag if the container was started
+    with auto-remove. Calling `container.stop()` on an already-stopped container throws. The
+    safe teardown pattern: write the container ID to a temp file in `globalSetup`, then in
+    `globalTeardown` use the Docker CLI as a fallback if the Testcontainers SDK throws, or
+    simply ignore `ENOENT` / "container not found" errors.
+    ```typescript
+    // jest.global-teardown.ts — defensive teardown
+    import { GenericContainer } from 'testcontainers';
+    import * as fs from 'node:fs/promises';
+    import * as path from 'node:path';
+    import * as os from 'node:os';
+    import { execSync } from 'node:child_process';
+
+    const STATE_FILE = path.join(os.tmpdir(), 'jest-tc-state.json');
+
+    export default async function globalTeardown(): Promise<void> {
+      const raw = await fs.readFile(STATE_FILE, 'utf-8').catch(() => null);
+      if (!raw) return; // globalSetup never completed — nothing to tear down
+      const { containerId } = JSON.parse(raw) as { containerId: string };
+      try {
+        const c = await GenericContainer.fromExistingContainer(containerId);
+        await c.stop();
+      } catch {
+        // Container may already be stopped; fall back to docker CLI
+        try { execSync(`docker rm -f ${containerId}`, { stdio: 'ignore' }); } catch { /* ignore */ }
+      }
+      await fs.unlink(STATE_FILE).catch(() => {});
+    }
+    ```
+
+106. **MSW v2 `server.use()` with `{ once: true }` does not call `resetHandlers()` — the one-time handler is consumed but the handler stack entry is not removed.** [community]
+    MSW v2 introduced `{ once: true }` on handler registration, which causes the handler to
+    respond to only the first matching request and then fall through to the next handler. Teams
+    mistake "one-time" for "auto-cleanup" — but the handler *entry* remains in the stack even
+    after being consumed. If `resetHandlers()` is not called in `afterEach`, the consumed entry
+    accumulates: after 100 tests each registering a one-time override, the handler stack has 100
+    entries. This slows handler matching and can confuse debugging. The fix is unchanged:
+    always call `server.resetHandlers()` in `afterEach`, regardless of whether you used
+    `{ once: true }`. MSW's `resetHandlers()` removes ALL overrides added via `server.use()`,
+    consumed or not.
+
+107. **Jest `projects` with shared `setupFilesAfterFramework` in the root config runs the setup in every project's worker — including projects where the setup references services that are not configured for that project.** [community]
+    A root-level `setupFilesAfterFramework: ['./jest.root-setup.ts']` entry in a monorepo
+    `jest.config.ts` runs in the worker for *every* project — including `packages/web` (jsdom
+    environment) and `packages/api` (node environment). If `jest.root-setup.ts` imports a
+    Node.js-only module (e.g., `pg`, `ioredis`) without a guard, the jsdom-environment workers
+    for `packages/web` throw `ReferenceError: require is not defined` or module resolution
+    errors. The fix: move environment-specific setup to project-level `setupFilesAfterFramework`
+    entries, and keep root-level setup to environment-neutral concerns only (global matchers,
+    timezone, locale).
+    ```typescript
+    // jest.root-setup.ts — SAFE: environment-neutral only
+    import { expect } from '@jest/globals';
+    import { toMatchCloseTo } from './test-utils/custom-matchers';
+
+    expect.extend({ toMatchCloseTo });
+    // No Node.js-only imports — this runs in both jsdom and node workers
+    ```
+
+108. **`EventEmitter.removeAllListeners()` in `afterEach` removes listeners added by the SUT internally — causing false positives where the next test's SUT fires no events because its internal listeners were stripped.** [community]
+    `emitter.removeAllListeners()` is a blunt instrument. If the system under test registers its
+    own listeners on the emitter during construction or `start()`, calling `removeAllListeners()`
+    in `afterEach` strips those too. The next `beforeEach` creates a new `OrderProcessor(emitter)`
+    but the emitter's SUT-internal listeners are gone — causing tests to pass when events are
+    not being processed at all. Always use `emitter.off(event, specificListener)` with the exact
+    function reference captured in `beforeEach`. If you need to clean up SUT-internal listeners,
+    expose a `destroy()` method on the SUT and call it in `afterEach`, then recreate the emitter
+    fresh rather than reusing the same instance.
+
+---
+
+## Quick Reference Additions — Iteration 26
+
+| Problem | Symptom | Solution | Framework |
+|---------|---------|----------|-----------|
+| CI database tests interfere across runs | Flaky failures when two branches run in same environment | Testcontainers `PostgreSqlContainer` per suite — full Docker isolation | Jest + Testcontainers |
+| MSW handler override persists to next test | Second test gets 404 that was registered in previous test | `afterEach(() => server.resetHandlers())` in `vitest.setup.ts` | MSW v2 + Vitest/Jest |
+| Same module singleton leaks between monorepo packages | `packages/api` tests affect `packages/web` singleton state | Jest `projects` — separate module registry per project | Jest monorepo |
+| `MaxListenersExceededWarning` in CI only | Listener count grows with each test; fails after N tests | Capture listener ref in `describe` scope; `emitter.off(event, ref)` in `afterEach` | Vitest/Jest |
+| Testcontainers teardown fails after CI OOM kill | `globalTeardown` throws "container not found" | Wrap `container.stop()` in try/catch; fall back to `docker rm -f` CLI | Jest globalTeardown |
+
+---
+
+## Key Resources — Iteration 26 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Testcontainers for Node.js | Official | https://node.testcontainers.org/ | Full API docs for `PostgreSqlContainer`, `GenericContainer`, lifecycle hooks, `fromExistingContainer` |
+| Testcontainers Cloud Docs | Official | https://testcontainers.com/cloud/docs/ | Cloud Docker daemon — eliminates local Docker requirement in CI; Turbo mode for parallel container starts |
+| MSW v2 — `http` namespace migration | Official | https://mswjs.io/docs/migrations/1.x-to-2.x | `rest.*` → `http.*` and `graphql.*`; `HttpResponse` API; `{ once: true }` handler option |
+| MSW v2 — `server.resetHandlers()` | Official | https://mswjs.io/docs/api/setup-server/reset-handlers | Confirms reset discards ALL `server.use()` overrides including consumed `{ once: true }` handlers |
+| Jest — `projects` configuration | Official | https://jestjs.io/docs/configuration#projects-arraystring--projectconfig | Per-project module registry isolation; `displayName`, `testMatch`, `setupFilesAfterFramework` scoping |
+| Node.js EventEmitter — `listenerCount` | Official | https://nodejs.org/docs/latest-v24.x/api/events.html#emitterlistenercounteventname-listener | `listenerCount(event)` for post-`afterEach` leak assertion; `defaultMaxListeners` tuning |
 | Vitest 4.1 Blog — aroundEach / aroundAll | Official | https://vitest.dev/blog/vitest-4-1 | `aroundEach` + `aroundAll` hooks; composition with `AsyncLocalStorage.run()` for scoped per-test context |

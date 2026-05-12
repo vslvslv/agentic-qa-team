@@ -1,5 +1,5 @@
-# Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 54 | score: 99/100 | date: 2026-05-12 -->
+# Detox Patterns & Best Practices (JavaScript/TypeScript)
+<!-- lang: JavaScript/TypeScript | sources: official docs + community + training knowledge | iteration: 55 | score: 99/100 | date: 2026-05-12 -->
 <!-- WebFetch live sources verified for Detox 20.47–20.51.1 (Jan–May 2026 releases) + PRs #4932 #4912 #4928 #4936 #4943 #4948 #4868 + Issues #4937 #4942 #4945 #4901 #4850 #4887 (May 2026) -->
 <!-- iteration 54 (2026-05-12) adds: Pattern 62 (detox-copilot AI-assisted natural-language test steps — opt-in LLM layer in Detox 20.50+, AnthropicPromptHandler example, caching, CI job separation), Gotcha 97 (Android 16/API 36 enforced edge-to-edge breaks scrollTo('bottom') in open-keyboard forms — tapReturnKey() workaround), Gotcha 98 (iOS 26 extended home indicator zone preempts swipe('up') near bottom safe area — startNormalizedY workaround), anti-pattern checklist rows 97-100; 62 patterns total; ~10590+ lines -->
 <!-- iteration 53 (2026-05-12) adds: Gotcha 94 (launchApp({ resetAppState: true, permissions: {} }) silently ignores permissions on Android — separate the reset and permissions calls, Issue #4850), Gotcha 95 (Node.js 20+ emits DEP0190 security deprecation warning during Detox test runs due to spawn(shell:true) with array args in TestRunnerCommand.js, Issue #4887 — benign but noisy), Gotcha 96 (device.appStatus() does not exist yet — workaround using private client.currentStatus() is unreliable when sync is disabled, Issue #4945 — Pattern 61 for the safe helper), Pattern 61 (idle-aware polling with disableSynchronization + currentStatus() private API workaround — safe pattern for media/animation-heavy screens), anti-pattern checklist rows 94-96, Android 16 Espresso looper fix note (PR #4868, Detox 20.45+); 61 patterns total; ~10400+ lines -->
@@ -10547,4 +10547,881 @@ await element(by.id('bottom-drawer-handle')).swipe('up', 'slow', 0.5, 0.5, 0.15)
 | Using `copilot.perform()` steps in regression suites without a separate CI job | Gate Copilot tests with `--testPathPattern copilot`; LLM calls are slow and non-deterministic — they belong in a separate exploratory job, not in the blocking regression gate (Pattern 62) |
 | `copilot.perform()` on a large view hierarchy (>500 nodes) without caching | Enable `copilot.cache(true)` (Detox 20.51+) or simplify the screen before the step; deep hierarchies can exceed LLM context windows and produce incorrect actions (Pattern 62) |
 | `scrollTo('bottom')` in a form test after typing text on an Android 16 emulator | Dismiss the keyboard with `tapReturnKey()` or `pressBack()` before scrolling; Android 16 enforces edge-to-edge and the keyboard no longer shrinks the window (Gotcha 97) |
+
+---
+
+## Additional Patterns (iteration 55 additions)
+
+<!-- iteration 55 (2026-05-12) adds: Pattern 63 (TypeScript-first Detox project scaffold — full tsconfig, jest.config.ts, typed helpers, detox.config.ts, and typed launchArgs factory), Pattern 64 (mocking native modules via jest.mock() at the JS boundary — NativeModules, TurboModules, and NativeEventEmitter stubs), Pattern 65 (performance considerations — suite startup time, parallelism tuning, bundler cache, and launch profiling), Pattern 66 (screenshot-on-failure reporter plugin — custom Jest environment + afterEach screenshot + Allure attachment), Gotcha 99 (TypeScript path aliases in e2e/tsconfig.json silently ignored by ts-jest unless moduleNameMapper is set in jest.config.ts), Gotcha 100 (jest.mock() inside Detox tests runs in the React Native JS environment, not in the test process — use launchArgs or MSW instead), Gotcha 101 (parallel workers multiplied by suite setup time — benchmark with DETOX_WORKER_COUNT=1 first), Gotcha 102 (screenshot artifact path collision when two shards run the same testID on the same machine), Detox vs Appium comparison table, performance tuning reference; 66 patterns total; ~10800+ lines -->
+
+### Pattern 63 — TypeScript-first Detox project scaffold
+
+A complete TypeScript-native Detox project structure eliminates the common drift between JS and TS configs. This pattern shows the full scaffolding: `detox.config.ts`, `e2e/tsconfig.json`, `e2e/jest.config.ts`, typed helpers, and a typed `launchArgs` factory.
+
+**Directory structure:**
+```
+e2e/
+  tsconfig.json           ← TS config scoped to e2e only
+  jest.config.ts          ← Jest runner config (TypeScript)
+  setup.ts                ← global setup (init + install)
+  teardown.ts             ← global teardown (cleanup)
+  helpers/
+    launchArgs.ts         ← typed launchArgs factory
+    testHelpers.ts        ← shared typed utilities
+  tests/
+    login.test.ts
+    onboarding.test.ts
+detox.config.ts           ← Detox configuration (root level)
+```
+
+**`detox.config.ts`:**
+```typescript
+import { defineConfig } from 'detox/internals';
+
+export default defineConfig({
+  testRunner: {
+    args: {
+      config: 'e2e/jest.config.ts',
+      detectOpenHandles: true,
+    },
+    jest: {
+      setupTimeout: 120_000,
+      teardownTimeout: 30_000,
+      retries: process.env.CI ? 1 : 0,
+      bail: false,
+    },
+  },
+  apps: {
+    'ios.debug': {
+      type: 'ios.app',
+      binaryPath: 'ios/build/Build/Products/Debug-iphonesimulator/YourApp.app',
+      build: 'xcodebuild -workspace ios/YourApp.xcworkspace -scheme YourApp -configuration Debug -sdk iphonesimulator -derivedDataPath ios/build',
+    },
+    'android.debug': {
+      type: 'android.apk',
+      binaryPath: 'android/app/build/outputs/apk/debug/app-debug.apk',
+      build: 'cd android && ./gradlew :app:assembleDebug :app:assembleAndroidTest -DtestBuildType=debug',
+    },
+  },
+  devices: {
+    simulator: {
+      type: 'ios.simulator',
+      device: { type: 'iPhone 16' },
+    },
+    emulator: {
+      type: 'android.emulator',
+      device: { avdName: 'Pixel_7_API_35' },
+    },
+  },
+  configurations: {
+    'ios.sim.debug': {
+      device: 'simulator',
+      app: 'ios.debug',
+    },
+    'android.emu.debug': {
+      device: 'emulator',
+      app: 'android.debug',
+      behavior: {
+        launchApp: 'auto',
+      },
+    },
+  },
+});
+```
+
+**`e2e/tsconfig.json`:**
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "outDir": "./build",
+    "rootDir": "./",
+    "baseUrl": ".",
+    "paths": {
+      "@helpers/*": ["./helpers/*"]
+    },
+    "types": ["detox", "node", "jest"]
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["./build/**"]
+}
+```
+
+**`e2e/jest.config.ts`:**
+```typescript
+import type { Config } from 'jest';
+
+const config: Config = {
+  rootDir: '.',
+  testEnvironment: 'detox/runners/jest/testEnvironment',
+  testMatch: ['<rootDir>/tests/**/*.test.ts'],
+  transform: {
+    '^.+\\.tsx?$': [
+      'ts-jest',
+      {
+        tsconfig: '<rootDir>/tsconfig.json',
+        // Faster transpile-only mode — skip type checks during test runs
+        // Run `tsc --noEmit` separately in CI to catch type errors
+        diagnostics: false,
+      },
+    ],
+  },
+  moduleNameMapper: {
+    // Must mirror paths in tsconfig.json
+    '@helpers/(.*)': '<rootDir>/helpers/$1',
+  },
+  globalSetup: '<rootDir>/setup.ts',
+  globalTeardown: '<rootDir>/teardown.ts',
+  verbose: true,
+  testTimeout: 120_000,
+  retryTimes: process.env.CI ? 1 : 0,
+  reporters: [
+    'default',
+    [
+      'jest-junit',
+      {
+        outputDirectory: './artifacts/junit',
+        outputName: `junit-${process.env.JEST_WORKER_ID ?? '1'}.xml`,
+        classNameTemplate: '{classname}',
+        titleTemplate: '{title}',
+      },
+    ],
+  ],
+};
+
+export default config;
+```
+
+**`e2e/helpers/launchArgs.ts` — typed launchArgs factory:**
+```typescript
+// Typed factory for Detox launchArgs — avoids stringly-typed config objects
+export interface AppLaunchArgs {
+  mockApiUrl?: string;
+  featureFlags?: Record<string, boolean>;
+  mockUserId?: string;
+  skipOnboarding?: boolean;
+  environment?: 'staging' | 'production' | 'test';
+}
+
+/**
+ * Serializes typed config to Detox launchArgs format.
+ * Detox launchArgs values must all be strings.
+ */
+export function buildLaunchArgs(args: AppLaunchArgs): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (args.mockApiUrl !== undefined) result.mockApiUrl = args.mockApiUrl;
+  if (args.featureFlags !== undefined) result.featureFlags = JSON.stringify(args.featureFlags);
+  if (args.mockUserId !== undefined) result.mockUserId = args.mockUserId;
+  if (args.skipOnboarding !== undefined) result.skipOnboarding = String(args.skipOnboarding);
+  if (args.environment !== undefined) result.environment = args.environment;
+  return result;
+}
+```
+
+**`e2e/helpers/testHelpers.ts` — shared typed utilities:**
+```typescript
+import { by, element, waitFor, expect as detoxExpect } from 'detox';
+
+/**
+ * Waits for a testID element to be visible, with sensible defaults.
+ */
+export async function waitForVisible(
+  testID: string,
+  timeoutMs = 5_000,
+): Promise<void> {
+  await waitFor(element(by.id(testID)))
+    .toBeVisible()
+    .withTimeout(timeoutMs);
+}
+
+/**
+ * Types text into a testID input, clearing it first.
+ */
+export async function typeIntoField(testID: string, text: string): Promise<void> {
+  await element(by.id(testID)).clearText();
+  await element(by.id(testID)).replaceText(text);
+}
+
+/**
+ * Taps an element and waits for a result element to appear.
+ */
+export async function tapAndWait(
+  tapTestID: string,
+  waitTestID: string,
+  timeoutMs = 5_000,
+): Promise<void> {
+  await element(by.id(tapTestID)).tap();
+  await waitForVisible(waitTestID, timeoutMs);
+}
+```
+
+**`e2e/tests/login.test.ts` — typed test file:**
+```typescript
+import { device, by, element, waitFor, expect as detoxExpect } from 'detox';
+import { buildLaunchArgs } from '@helpers/launchArgs';
+import { waitForVisible, typeIntoField, tapAndWait } from '@helpers/testHelpers';
+
+describe('Login', () => {
+  beforeAll(async () => {
+    await device.launchApp({
+      newInstance: true,
+      launchArgs: buildLaunchArgs({
+        environment: 'test',
+        mockApiUrl: 'http://localhost:9876',
+        skipOnboarding: true,
+      }),
+    });
+  });
+
+  beforeEach(async () => {
+    await device.reloadReactNative();
+  });
+
+  it('logs in with valid credentials', async () => {
+    await typeIntoField('email-input', 'user@example.com');
+    await typeIntoField('password-input', 'secret123');
+    await tapAndWait('login-button', 'home-screen');
+  });
+
+  it('shows error for invalid credentials', async () => {
+    await typeIntoField('email-input', 'wrong@example.com');
+    await typeIntoField('password-input', 'wrongpass');
+    await element(by.id('login-button')).tap();
+    await waitForVisible('login-error-message');
+    await detoxExpect(element(by.id('login-error-message'))).toHaveText(
+      'Invalid email or password',
+    );
+  });
+});
+```
+
+---
+
+### Pattern 64 — Mocking native modules at the JavaScript boundary
+
+Detox runs the full React Native app binary — you cannot `jest.mock()` native modules from within a Detox test file because the test process and the JS bundle are separate processes. The correct strategy depends on the type of module being mocked.
+
+**Strategy A — launchArgs injection (recommended for feature flags and config)**
+
+```typescript
+// e2e/tests/payments.test.ts
+import { device } from 'detox';
+import { buildLaunchArgs } from '@helpers/launchArgs';
+
+describe('Payments (offline mode)', () => {
+  beforeAll(async () => {
+    // Inject config via launchArgs — the app reads this on startup
+    await device.launchApp({
+      newInstance: true,
+      launchArgs: buildLaunchArgs({
+        mockApiUrl: 'http://localhost:9876',  // points to local mock server
+        featureFlags: { paymentV2: true, applePay: false },
+      }),
+    });
+  });
+
+  it('shows fallback UI when payment SDK is unavailable', async () => {
+    await waitFor(element(by.id('payment-fallback-message')))
+      .toBeVisible()
+      .withTimeout(4000);
+  });
+});
+```
+
+**Strategy B — MSW (Mock Service Worker) network interception**
+
+Use MSW with `msw-react-native` for mocking HTTP calls at the JS layer. This is the preferred approach for API mocks because it requires no test server and works in both Jest unit tests and Detox e2e tests.
+
+```typescript
+// e2e/mocks/mockServer.ts
+// Start a lightweight Express server that MSW handlers serve through
+import { setupServer } from 'msw/node';
+import { http, HttpResponse } from 'msw';
+
+export const mockServer = setupServer(
+  http.post('https://api.example.com/auth/login', async ({ request }) => {
+    const body = await request.json() as { email: string; password: string };
+    if (body.email === 'valid@example.com') {
+      return HttpResponse.json({ token: 'mock-jwt-token', userId: 'user-123' });
+    }
+    return HttpResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+  }),
+
+  http.get('https://api.example.com/products', () => {
+    return HttpResponse.json({
+      items: [
+        { id: '1', name: 'Widget A', price: 9.99 },
+        { id: '2', name: 'Widget B', price: 19.99 },
+      ],
+    });
+  }),
+
+  http.get('https://api.example.com/products/:id', ({ params }) => {
+    return HttpResponse.json({ id: params.id, name: `Product ${params.id}`, price: 9.99 });
+  }),
+);
+```
+
+**Strategy C — NativeModules stub via `userDefaults` / `launchArgs` + app-side conditional**
+
+For native modules that cannot be easily mocked (e.g., camera, biometrics, in-app purchase), the recommended approach is to make the module injectable via a React Native context or a compile-time flag, and override it via `launchArgs`.
+
+```typescript
+// In your app's native module wrapper (src/modules/camera.ts):
+//
+// function getCameraModule() {
+//   if (process.env.NODE_ENV === 'test' || global.DETOX_TEST === 'true') {
+//     return MockCameraModule;  // no-op stub
+//   }
+//   return RealCameraModule;
+// }
+//
+// In your e2e test:
+await device.launchApp({
+  newInstance: true,
+  launchArgs: { DETOX_TEST: 'true', useMockCamera: 'true' },
+});
+```
+
+**Strategy D — TurboModule/NativeEventEmitter isolation with `setURLBlacklist`**
+
+When a native module triggers continuous background network activity (e.g., a telemetry SDK that polls an endpoint), Detox's synchronizer stalls waiting for the network calls to settle. Use `setURLBlacklist` to exclude those URLs from sync tracking, rather than disabling synchronization globally.
+
+```typescript
+// e2e/setup.ts
+import { device } from 'detox';
+
+export default async function setup(): Promise<void> {
+  await device.launchApp({ newInstance: true });
+
+  // Exclude analytics and telemetry endpoints from Detox sync tracking
+  // so they don't cause waitFor timeouts on busy CI agents
+  await device.setURLBlacklist([
+    '.*analytics\\.example\\.com.*',
+    '.*telemetry\\.example\\.com.*',
+    '.*crashlytics\\.com.*',
+    '.*sentry\\.io.*',
+  ]);
+}
+```
+
+**What NOT to do — common mistakes:**
+
+```typescript
+// BROKEN: jest.mock() in a Detox test file does NOT affect the app bundle
+// The test file runs in Node.js; the app bundle runs in the simulator JS thread
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn().mockResolvedValue(null),  // This mock never applies to the app
+}));
+
+// BROKEN: Directly importing and calling native modules from test files
+import AsyncStorage from '@react-native-async-storage/async-storage';
+await AsyncStorage.setItem('key', 'value');  // Will throw — native module not available in test process
+```
+
+---
+
+### Pattern 65 — Performance considerations and suite startup time optimization
+
+Detox test suites frequently take longer than expected due to avoidable bottlenecks. Measure before optimizing — the root cause is usually one of five things.
+
+**The five common performance bottlenecks:**
+
+| Bottleneck | Symptom | Fix |
+|---|---|---|
+| Cold app launch per test file | Each `describe` block waits 10-30s for a fresh launch | Use `reloadReactNative()` in `beforeEach` instead of `launchApp({ newInstance: true })` |
+| Metro bundler cold start | First test waits 30-90s for the JS bundle | Pre-warm Metro: `yarn start` before `yarn detox test` in local dev |
+| Insufficient parallelism | Total CI time = sum of all test times | Use `--workers=N` matching your CI runner's vCPU count |
+| Too many `disableSynchronization` + `waitFor` manual waits | Tests are effectively sleeping | Profile with `--debug-synchronization 500` to find the true sync stalls |
+| Artifact collection on every test | Screenshots/logs accumulated 2-5GB on long suites | Set `artifacts.captureViewHierarchy: 'manual'`; only capture on failure |
+
+**Parallelism configuration (`detox.config.ts`):**
+
+```typescript
+import { defineConfig } from 'detox/internals';
+
+export default defineConfig({
+  testRunner: {
+    args: {
+      config: 'e2e/jest.config.ts',
+      // Set workers via CLI: `npx detox test --workers=4`
+      // Or set per-configuration:
+    },
+    jest: {
+      // For CI: set retries to 1 to recover from transient flakiness without
+      // full re-runs. Set to 0 locally so failures are immediately visible.
+      retries: Number(process.env.CI ?? 0),
+      // Bail after N test failures — prevents burning CI time when the build is broken
+      bail: process.env.CI ? 5 : false,
+    },
+  },
+  artifacts: {
+    // Capture screenshots only on failure — not on every test
+    screenshot: 'failing',
+    // View hierarchy is expensive to capture; only do it manually
+    // via device.captureViewHierarchy() in your beforeEach/debug code
+    captureViewHierarchy: 'manual',
+    // Collect logs only for failing tests
+    log: {
+      enabled: true,
+      keepOnlyFailingTestArtifacts: true,
+    },
+    // Video is the most expensive artifact — only record for CI reruns
+    video: process.env.CI_RECORD_VIDEO === 'true' ? 'all' : 'none',
+    rootDir: './artifacts',
+  },
+  // ...apps, devices, configurations
+});
+```
+
+**Benchmarking suite startup time:**
+
+```typescript
+// e2e/helpers/perfHelper.ts
+/**
+ * Times an async operation and logs the duration.
+ * Useful during local profiling — remove from CI builds.
+ */
+export async function timeOperation(
+  label: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const start = Date.now();
+  try {
+    await fn();
+  } finally {
+    const duration = Date.now() - start;
+    console.log(`[PERF] ${label}: ${duration}ms`);
+  }
+}
+```
+
+**Efficient `beforeAll` / `beforeEach` strategy:**
+
+```typescript
+// e2e/tests/productCatalog.test.ts — efficient lifecycle for a multi-test describe
+import { device, by, element, waitFor } from 'detox';
+import { buildLaunchArgs } from '@helpers/launchArgs';
+
+describe('Product Catalog', () => {
+  // Cold-boot once for the entire describe block — shared across all it() tests
+  beforeAll(async () => {
+    await device.launchApp({
+      newInstance: true,
+      launchArgs: buildLaunchArgs({
+        environment: 'test',
+        skipOnboarding: true,
+        mockApiUrl: 'http://localhost:9876',
+      }),
+    });
+    // Navigate to the catalog screen once; each test starts here
+    await waitFor(element(by.id('catalog-screen')))
+      .toBeVisible()
+      .withTimeout(10_000);
+  });
+
+  // Cheap JS-only reload between tests — ~300ms vs ~8s for newInstance
+  beforeEach(async () => {
+    await device.reloadReactNative();
+    // Re-navigate after reload if needed
+    await waitFor(element(by.id('catalog-screen')))
+      .toBeVisible()
+      .withTimeout(8_000);
+  });
+
+  afterAll(async () => {
+    await device.terminateApp();
+  });
+
+  it('shows all products', async () => {
+    await waitFor(element(by.id('product-list')))
+      .toBeVisible()
+      .withTimeout(5_000);
+    await expect(element(by.id('product-item-0'))).toBeVisible();
+  });
+
+  it('filters by category', async () => {
+    await element(by.id('category-filter-electronics')).tap();
+    await waitFor(element(by.id('product-item-electronics-0')))
+      .toBeVisible()
+      .withTimeout(3_000);
+  });
+});
+```
+
+**Metro bundler cache warm-up in CI:**
+
+```yaml
+# .github/workflows/e2e-ios.yml (cache step)
+- name: Restore Metro cache
+  uses: actions/cache@v4
+  with:
+    path: |
+      ${{ runner.temp }}/metro-cache
+    key: metro-cache-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/*.js', '**/*.ts', '!node_modules/**', '!e2e/**') }}
+    restore-keys: |
+      metro-cache-${{ hashFiles('**/package-lock.json') }}-
+
+- name: Pre-warm Metro bundler
+  run: |
+    TMPDIR=${{ runner.temp }}/metro-cache npx react-native bundle \
+      --entry-file index.js \
+      --platform ios \
+      --dev true \
+      --bundle-output /tmp/bundle-warmup.js \
+      --assets-dest /tmp/assets-warmup/ \
+      &
+    # Run in background; Detox will connect when it starts
+```
+
+---
+
+### Pattern 66 — Screenshot-on-failure custom Jest environment plugin
+
+Detox's built-in `screenshot: 'failing'` artifact setting captures the final screen state. For more granular control — e.g., attaching screenshots at specific test steps, or integrating with Allure — you can augment the Detox Jest environment with a custom `afterEach` hook.
+
+**`e2e/helpers/screenshotOnFailure.ts`:**
+
+```typescript
+import * as path from 'path';
+import * as fs from 'fs';
+import { device } from 'detox';
+
+const SCREENSHOT_DIR = path.join(__dirname, '..', 'artifacts', 'screenshots');
+
+/**
+ * Call this at the END of a test's afterEach to capture a screenshot
+ * when the test failed. The filename includes the test title and worker ID
+ * to prevent path collisions in sharded CI runs.
+ *
+ * Usage in test file:
+ *   afterEach(async () => {
+ *     await screenshotOnFailure(expect.getState());
+ *   });
+ */
+export async function screenshotOnFailure(
+  jestState: jest.MatcherState,
+): Promise<string | null> {
+  if (!jestState.isNot && jestState.assertionCalls > 0) {
+    // Test passed — skip
+    return null;
+  }
+
+  const failed = jestState.currentTestName ?? 'unknown-test';
+  const workerId = process.env.JEST_WORKER_ID ?? '1';
+  const timestamp = Date.now();
+
+  // Sanitize test name for use as a filename
+  const safeTestName = failed
+    .replace(/[^a-zA-Z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .slice(0, 80);
+
+  const filename = `${safeTestName}-worker${workerId}-${timestamp}.png`;
+  const outputPath = path.join(SCREENSHOT_DIR, filename);
+
+  if (!fs.existsSync(SCREENSHOT_DIR)) {
+    fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+  }
+
+  try {
+    const screenshotPath = await device.takeScreenshot(safeTestName);
+    fs.copyFileSync(screenshotPath, outputPath);
+    console.log(`[screenshot] saved: ${outputPath}`);
+    return outputPath;
+  } catch (err) {
+    console.warn(`[screenshot] failed to capture: ${err}`);
+    return null;
+  }
+}
+```
+
+**Usage in a test file:**
+
+```typescript
+// e2e/tests/checkout.test.ts
+import { device, by, element, waitFor, expect as detoxExpect } from 'detox';
+import { screenshotOnFailure } from '@helpers/screenshotOnFailure';
+
+describe('Checkout', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  afterEach(async () => {
+    // Capture screenshot on any test failure
+    await screenshotOnFailure(expect.getState());
+  });
+
+  it('completes checkout flow', async () => {
+    await element(by.id('cart-checkout-button')).tap();
+    await waitFor(element(by.id('checkout-confirm-screen')))
+      .toBeVisible()
+      .withTimeout(6_000);
+    await element(by.id('confirm-order-button')).tap();
+    await waitFor(element(by.id('order-success-screen')))
+      .toBeVisible()
+      .withTimeout(10_000);
+  });
+});
+```
+
+**Allure-integrated screenshot attachment:**
+
+```typescript
+// e2e/helpers/allureScreenshot.ts
+import * as allure from 'allure-js-commons';
+import * as fs from 'fs';
+import { device } from 'detox';
+
+export async function attachScreenshot(label: string): Promise<void> {
+  const screenshotPath = await device.takeScreenshot(label);
+  const buffer = fs.readFileSync(screenshotPath);
+  allure.attachment(label, buffer, 'image/png');
+}
+
+export async function attachScreenshotOnFailure(
+  jestState: jest.MatcherState,
+): Promise<void> {
+  const currentTestPassed =
+    jestState.assertionCalls > 0 &&
+    !jestState.currentTestName?.includes('FAIL');
+
+  if (!currentTestPassed) {
+    const label = `Failure - ${jestState.currentTestName ?? 'unknown'}`;
+    await attachScreenshot(label).catch((err) => {
+      console.warn(`[allure screenshot] capture error: ${err}`);
+    });
+  }
+}
+```
+
+---
+
+## Detox vs. Appium — Decision Guide
+
+When selecting between Detox and Appium for a new React Native project, the key factors are:
+
+| Factor | Detox | Appium |
+|---|---|---|
+| **Sync model** | Auto-sync with RN JS thread (gray-box) | Black-box; requires explicit waits or Appium's element await |
+| **Flakiness** | Lower on React Native — sync eliminates most timing issues | Higher; requires careful `waitUntil`/`implicitWait` tuning |
+| **Language** | JavaScript/TypeScript only | Any language (Java, Python, JS, C#, Ruby) |
+| **Platform support** | iOS + Android (React Native apps only) | iOS, Android, Windows, macOS, web (any native app) |
+| **Non-RN app support** | No — RN apps only | Yes — any native app |
+| **CI setup complexity** | Moderate (iOS requires macOS runner) | Moderate–high (Appium server process; session management) |
+| **WebView support** | `by.web()` matchers (Detox 20+) | Full Chromium/WebKit via context switching |
+| **Community size** | Smaller; focused on RN ecosystem | Larger; multi-platform, multi-language |
+| **Test authoring speed** | Fast — testID-driven; Detox globals available | Slower — POM setup, capability matrices, driver lifecycle |
+| **Recommended for** | React Native greenfield projects, internal apps | Multi-platform requirements, existing Appium investment, hybrid apps |
+
+**Choose Detox when:**
+- Your app is pure React Native (not Expo Go with OTA updates that bypass the native binary)
+- You want deterministic, fast e2e tests without extensive wait-tuning
+- Your team writes JavaScript/TypeScript already
+
+**Choose Appium (WDIO) when:**
+- You need to test both a React Native mobile app and a web app in the same test suite
+- Your team has existing Appium/Selenium experience
+- The app has significant native code paths that Detox's sync engine cannot handle
+
+---
+
+## Gotcha 99 — TypeScript path aliases in `e2e/tsconfig.json` are silently ignored by ts-jest unless `moduleNameMapper` is also set in `jest.config.ts` [community]
+
+**Root cause**: `ts-jest` reads type information from `tsconfig.json` but does not automatically apply `paths` (path aliases) at the module resolution level — that is `webpack`/`vite`'s job in normal builds. Jest resolves modules using its own `moduleNameMapper`, which must be configured separately to mirror the `paths` defined in `tsconfig.json`.
+
+**Symptom**: Tests compile without TypeScript errors (TS resolves the paths correctly during type checking), but at runtime Jest throws `Cannot find module '@helpers/launchArgs' from 'e2e/tests/login.test.ts'`.
+
+```typescript
+// BAD: tsconfig.json has paths, but jest.config.ts is missing moduleNameMapper
+// e2e/tsconfig.json
+{
+  "compilerOptions": {
+    "paths": {
+      "@helpers/*": ["./helpers/*"]  // TS sees this
+    }
+  }
+}
+
+// e2e/jest.config.ts — MISSING moduleNameMapper causes runtime error
+const config: Config = {
+  transform: { '^.+\\.tsx?$': ['ts-jest', { tsconfig: './tsconfig.json' }] },
+  // ← moduleNameMapper not set → Jest cannot resolve @helpers/* at runtime
+};
+```
+
+```typescript
+// FIXED: Add moduleNameMapper to jest.config.ts that mirrors tsconfig paths
+const config: Config = {
+  transform: { '^.+\\.tsx?$': ['ts-jest', { tsconfig: './tsconfig.json' }] },
+  moduleNameMapper: {
+    // Must mirror every entry in tsconfig.json "paths"
+    '@helpers/(.*)': '<rootDir>/helpers/$1',
+    '@fixtures/(.*)': '<rootDir>/fixtures/$1',
+  },
+};
+```
+
+**Rule of thumb**: Every `paths` entry in `e2e/tsconfig.json` needs a corresponding `moduleNameMapper` entry in `jest.config.ts`. Use the `ts-jest` utility `pathsToModuleNameMapper` to keep them in sync automatically:
+
+```typescript
+// e2e/jest.config.ts — auto-sync paths from tsconfig
+import { pathsToModuleNameMapper } from 'ts-jest';
+import { compilerOptions } from './tsconfig.json';
+import type { Config } from 'jest';
+
+const config: Config = {
+  moduleNameMapper: pathsToModuleNameMapper(compilerOptions.paths ?? {}, {
+    prefix: '<rootDir>/',
+  }),
+  // ...rest of config
+};
+
+export default config;
+```
+
+---
+
+## Gotcha 100 — `jest.mock()` in Detox test files runs in the test (Node.js) process, NOT in the app's JS bundle [community]
+
+**Root cause**: Detox's architecture separates the test process (Node.js running Jest) from the app process (React Native JS thread running inside the simulator). `jest.mock()` patches the module registry in the test process — but the app runs its own completely isolated JS environment. Any `jest.mock()` call in a Detox test file has zero effect on the app's behavior.
+
+**Symptom**: A developer migrates from React Native Jest unit tests (where `jest.mock()` works perfectly) to Detox e2e tests and mocks a native module expecting the mock to affect the app. The app still uses the real native module, and the test either fails with a real side effect or behaves unexpectedly.
+
+```typescript
+// BROKEN: This mock has NO effect in a Detox test file
+jest.mock('@react-native-community/camera', () => ({
+  // This mock never reaches the app bundle — the app still uses the real Camera
+  useCameraDevice: () => ({ id: 'mock-camera', position: 'back' }),
+}));
+
+it('shows camera preview', async () => {
+  await element(by.id('camera-view')).tap();  // App launches REAL camera — may fail in simulator
+});
+```
+
+**Correct alternatives:**
+
+1. **launchArgs injection** (Pattern 63): Pass a flag to the app; handle the mock inside the app code itself.
+2. **MSW network mock** (Pattern 27): For HTTP-based native modules, intercept at the network level.
+3. **App-level conditional rendering**: In test builds (`__DEV__` or `process.env.E2E_TEST`), render mock components instead of real native module components.
+4. **Detox `setURLBlacklist`**: Suppress network calls from native SDKs rather than mocking the module.
+
+```typescript
+// CORRECT: Control app behavior via launchArgs (Pattern 63)
+beforeAll(async () => {
+  await device.launchApp({
+    newInstance: true,
+    launchArgs: {
+      // App reads this and conditionally uses a mock camera provider
+      useMockCamera: 'true',
+      mockCameraDeviceId: 'back',
+    },
+  });
+});
+```
+
+---
+
+## Gotcha 101 — Parallel worker count multiplies suite setup time — benchmark with `DETOX_WORKER_COUNT=1` first [community]
+
+**Root cause**: Detox parallelism (via Jest `--workers`) launches one simulator or emulator per worker. Each worker performs its own app build check, app install, and initial launch. On an 8-core macOS runner, setting `--workers=4` can make individual test files run 4x faster, but if the suite setup (app install + first launch) takes 45s per worker, you pay 45s × 4 workers = 180s in setup overhead before any test runs.
+
+**Symptom**: Total CI time with `--workers=4` is only slightly faster (or slower) than `--workers=1` because the setup overhead dominates.
+
+**How to diagnose:**
+
+```bash
+# Baseline: single worker — total time = sequential
+npx detox test -c ios.sim.debug --workers=1 2>&1 | tail -5
+
+# Try 2 workers
+npx detox test -c ios.sim.debug --workers=2 2>&1 | tail -5
+
+# Try 4 workers (diminishing returns if setup overhead > test time)
+npx detox test -c ios.sim.debug --workers=4 2>&1 | tail -5
+```
+
+**Rule of thumb**: Parallelism gives good returns when:
+- Each test file takes > 60s to run (setup overhead is amortized)
+- The CI runner has ≥ 4 vCPUs AND ≥ 8GB RAM per worker (simulators are memory-heavy)
+- Test files are balanced in execution time (one huge test file will bottleneck the whole run)
+
+**Splitting test files for balanced parallelism:**
+
+```typescript
+// e2e/jest.config.ts — use Jest shard for CI parallelism
+// In CI: `npx detox test --workers=2 -- --shard=1/4` (and 2/4, 3/4, 4/4 in parallel jobs)
+const config: Config = {
+  testMatch: ['<rootDir>/tests/**/*.test.ts'],
+  // Do NOT set maxWorkers here — control it via --workers on the CLI
+  // to allow the same config to run single-threaded locally and parallel in CI
+};
+```
+
+---
+
+## Gotcha 102 — Screenshot artifact path collision when two shards capture the same test name on the same machine [community]
+
+**Root cause**: When Detox test suites are sharded across multiple Jest workers on the same CI machine (using `--workers=N` or `--shard`), two workers can run tests with identical names (e.g., both run `it('logs in')`). If `device.takeScreenshot('logs-in')` is called with the same label in both workers, the screenshot files can overwrite each other or cause `ENOENT` errors when the artifact directory is shared.
+
+**Symptom**: CI artifact uploads show fewer screenshots than expected; some screenshots contain content from a different test than labeled; or `fs.copyFileSync` throws because a worker is writing while another is reading.
+
+```typescript
+// BAD: Screenshot label based on test name only — collides across workers
+await device.takeScreenshot('logs-in');  // Worker 1 and Worker 2 both create "logs-in.png"
+```
+
+```typescript
+// FIXED: Include JEST_WORKER_ID and timestamp in the screenshot filename
+const workerId = process.env.JEST_WORKER_ID ?? '0';
+const timestamp = Date.now();
+const label = `logs-in-w${workerId}-${timestamp}`;
+await device.takeScreenshot(label);
+// Produces unique filenames: "logs-in-w1-1715512345000.png", "logs-in-w2-1715512346001.png"
+```
+
+**Also applies to mock server ports** — if a test in Pattern 51 binds a fixed port (e.g., `9876`), two workers on the same machine will collide. Always use `listen(0)` (OS-assigned port) and pass the actual port via `launchArgs` (as shown in Pattern 51).
+
+**Recommended artifact directory layout for sharded CI:**
+
+```
+artifacts/
+  worker-1/
+    screenshots/
+    junit/
+  worker-2/
+    screenshots/
+    junit/
+```
+
+```typescript
+// e2e/helpers/artifactPaths.ts
+import * as path from 'path';
+
+export function getArtifactDir(subdir: 'screenshots' | 'junit'): string {
+  const workerId = process.env.JEST_WORKER_ID ?? '0';
+  const artifactDir = process.env.DETOX_ARTIFACTS_DIR ?? path.join(__dirname, '..', 'artifacts');
+  return path.join(artifactDir, `worker-${workerId}`, subdir);
+}
+```
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 55 additions)
+
+| Anti-Pattern | Fix |
+|---|---|
+| Using `jest.mock()` in Detox test files to mock native modules | `jest.mock()` runs in the test process, not the app bundle — use `launchArgs` injection, MSW, or app-side conditionals instead (Gotcha 100, Pattern 64) |
+| Hard-coding port `9876` in mock server for Detox tests | Use `listen(0)` and pass the OS-assigned port via `launchArgs`; avoids `EADDRINUSE` on parallel workers (Pattern 51, Gotcha 102) |
+| Setting `--workers=N` without benchmarking first | Profile with `--workers=1` baseline; if setup overhead dominates, more workers may hurt; balance test file sizes (Gotcha 101) |
+| Using the same screenshot label in parallel shards | Include `JEST_WORKER_ID` and timestamp in every `device.takeScreenshot()` call; colliding filenames produce incorrect or missing artifacts (Gotcha 102) |
+| Omitting `moduleNameMapper` when using tsconfig `paths` in e2e tests | Add matching `moduleNameMapper` entries to `jest.config.ts`; or use `pathsToModuleNameMapper` from `ts-jest` to keep them in sync automatically (Gotcha 99) |
+| Running `tsc --noEmit` inside each test file's transform | Set `diagnostics: false` in ts-jest config; run `tsc --noEmit` as a separate CI step to keep test execution fast (Pattern 63) |
 | `element.swipe('up', 'fast', 0.7)` on an element near the bottom of the screen on iOS 26 | Start the swipe above `startNormalizedY = 0.3` or provide a tap-based trigger; iOS 26 extended the system home-indicator gesture zone to ~34pt from bottom (Gotcha 98) |

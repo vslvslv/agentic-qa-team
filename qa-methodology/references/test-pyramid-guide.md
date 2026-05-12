@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 46 | score: 98/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 47 | score: 98/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
@@ -4046,3 +4046,689 @@ The combined anti-pattern of `test.failing.each` + unchecked accumulation produc
 | fast-check v4 Changelog | Tool | https://github.com/dubzzz/fast-check/blob/main/CHANGELOG.md | v4.x ESM-only migration (March 2025); CommonJS bundles removed; `@fast-check/vitest` 0.4+ dropped CJS — add to `optimizeDeps.include` for CommonJS Vitest projects |
 | Vitest 5.0 beta.1 Release | Tool | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.1 | `createReport` programmatic API for assembling merged pyramid reports; ARIA tree utilities exported from `vitest/browser`; `pretty-format` replaces `loupe.inspect` in snapshot output |
 | Bun 1.2 Release Blog | Tool | https://bun.sh/blog/bun-v1.2 | `--rerun-each` for flakiness detection; `--bail` fail-fast; JUnit reporter (`--reporter=junit`); LCOV coverage; `test.only()` without `--only` flag; new Jest-compatible matchers |
+
+---
+
+<!-- new (2026-05-12 iter 47): Vitest 5.0 stable migration checklist, property-based integration testing with fast-check, AI agent test governance patterns (Playwright MCP + per-PR pyramid audit), Temporal API clock injection pattern extended to property tests, TypeScript module augmentation in test helpers, shared test infrastructure as a package pattern -->
+
+### Vitest 5.0 Stable Migration Checklist  [community]
+
+Vitest 5.0 stable is the anticipated successor to the 4.x line (beta.2 released May 5, 2026). Before upgrading a production test pyramid from `vitest@^4.1` to `vitest@^5.0`, work through this checklist. Each item maps to a breaking change in the beta releases and corresponds to a specific pyramid level where the change is most impactful.
+
+| # | Change | Impact level | Migration action |
+|---|--------|-------------|-----------------|
+| 1 | Attachment dir: `.vitest-attachements/` → `.vitest/attachments/` | All levels | Update any CI script that reads screenshot/trace artifacts by hardcoded path; update `attachmentsDir` in config |
+| 2 | Blob report dir: `.vitest-blob/` → `.vitest/blob/` | All levels | Update `--outputFile` in `--reporter=blob` invocations; update the `vitest merge-reports` path in merge jobs |
+| 3 | `test.sequential()` / `suite.sequential()` removed | Unit + integration | Replace with `test('...', { concurrent: false }, ...)` — a codemod can automate this |
+| 4 | `expect` package inlined — `'vitest/expect'` import path removed | Unit level | Change `import { expect } from 'vitest/expect'` to `import { expect } from 'vitest'` |
+| 5 | Locators are objects, not strings | Browser/component level | Stop parsing locator `.toString()` output in custom assertion helpers |
+| 6 | `pretty-format` replaces `loupe.inspect` for inline snapshots | Unit level | Review snapshot diffs after upgrade — output format may change for complex objects |
+| 7 | `configDefaults.reporters` now exported | All levels | No action unless your CI script imported it from an internal path |
+| 8 | V8 coverage tracks `node:child_process` + `node:worker_threads` | Integration level | Review coverage thresholds — branch coverage may increase; recalibrate if thresholds were tight |
+
+```typescript
+// scripts/pre-upgrade-audit.ts — run BEFORE upgrading to Vitest 5.0
+// Checks for breaking patterns in the current codebase
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
+const issues: string[] = [];
+
+function scanDir(dir: string): void {
+  for (const entry of readdirSync(dir)) {
+    const fullPath = join(dir, entry);
+    const stat = statSync(fullPath);
+    if (stat.isDirectory() && !entry.startsWith('.') && entry !== 'node_modules') {
+      scanDir(fullPath);
+    } else if (stat.isFile() && (entry.endsWith('.ts') || entry.endsWith('.yml') || entry.endsWith('.yaml'))) {
+      const content = readFileSync(fullPath, 'utf8');
+      const lines = content.split('\n');
+      lines.forEach((line, i) => {
+        const lineNum = i + 1;
+        // Check 1: hardcoded .vitest-attachements/ path (double-e typo in old dir name)
+        if (line.includes('.vitest-attachements')) {
+          issues.push(`${fullPath}:${lineNum} — stale .vitest-attachements/ path`);
+        }
+        // Check 2: hardcoded .vitest-blob/ path
+        if (line.includes('.vitest-blob')) {
+          issues.push(`${fullPath}:${lineNum} — stale .vitest-blob/ path`);
+        }
+        // Check 3: test.sequential() usage
+        if (/test\.sequential\(|suite\.sequential\(/.test(line)) {
+          issues.push(`${fullPath}:${lineNum} — test.sequential() removed in Vitest 5.0`);
+        }
+        // Check 4: import from vitest/expect
+        if (line.includes("from 'vitest/expect'") || line.includes('from "vitest/expect"')) {
+          issues.push(`${fullPath}:${lineNum} — 'vitest/expect' import path removed; use 'vitest'`);
+        }
+        // Check 5: locator.toString() parsing
+        if (line.includes('.toString()') && (line.includes('locator') || line.includes('getBy'))) {
+          issues.push(`${fullPath}:${lineNum} — locator.toString() may break (locators are now objects)`);
+        }
+      });
+    }
+  }
+}
+
+scanDir('./src');
+scanDir('./tests');
+scanDir('./e2e');
+scanDir('./.github');
+
+if (issues.length > 0) {
+  console.error(`\nFound ${issues.length} Vitest 5.0 migration issue(s):\n`);
+  issues.forEach((issue) => console.error(`  • ${issue}`));
+  process.exit(1);
+} else {
+  console.log('No Vitest 5.0 migration issues detected — safe to upgrade.');
+}
+```
+
+```bash
+# Run the audit script before upgrading
+npx tsx scripts/pre-upgrade-audit.ts
+
+# Safe upgrade path: use a feature branch
+git checkout -b chore/vitest-5-upgrade
+npm install vitest@^5.0.0 --save-dev
+
+# 1. Run unit tests first — lowest risk of directory/reporter changes affecting them
+npx vitest run --project unit
+
+# 2. Check that .vitest/ directory was created (not .vitest-attachements/)
+ls .vitest/
+
+# 3. Run integration tests
+npx vitest run --project integration
+
+# 4. Run with merge-reports using new blob path
+npx vitest run --reporter=blob --outputFile=.vitest/blob/unit.blob --project unit
+npx vitest merge-reports .vitest/blob/ --reporter=html
+
+# 5. If all pass, update CI scripts and merge
+```
+
+**Pyramid-specific upgrade note for the V8 coverage change (item #8):** If your integration test level uses `node:worker_threads` (e.g., Vitest's `pool: 'forks'` which uses workers internally, or test cases that spawn worker threads directly), the Vitest 5.0 V8 coverage engine now tracks branches inside worker threads. This can shift branch coverage percentages upward at the integration level. If your CI pipeline fails because the integration level's branch coverage *increased* past a threshold configured as an exact number (e.g., `thresholds.branches: 82`), recalibrate the threshold based on the new numbers. [community: github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2]
+
+---
+
+### Property-Based Testing at the Integration Level  [community]
+
+Property-based testing (PBT) with `fast-check` is well-established at the unit test level (covered in the earlier `@fast-check/vitest` section). It also applies powerfully at the **integration test level** for validating invariants that must hold across the entire stack — including persistence, serialisation, and network boundaries. The key insight: if a property holds for a single constructed input, it should hold for any valid input. Integration-level PBT catches edge cases in database constraints, ORM serialisation, API schema validation, and JSON round-tripping that hand-crafted test cases consistently miss.
+
+**When to use PBT at the integration level vs. unit level:**
+
+| Scenario | Level | Rationale |
+|----------|-------|-----------|
+| Pure business logic invariants | Unit | Fast, no I/O; fc.property() catches edge cases in < 1 ms per case |
+| Database round-trip invariants | Integration | Verifies ORM serialisation + DB constraint + retrieval fidelity |
+| HTTP API schema invariants | Integration | Verifies Zod validation + HTTP 422 contract across arbitrary inputs |
+| JSON serialisation round-trips | Unit or Integration | Unit if testing the serialiser in isolation; integration if testing through the HTTP layer |
+| Cross-service contract invariants | Contract level | Pact DSL + property generators for interaction bodies |
+
+```typescript
+// tests/integration/orders.property.integration.test.ts
+// Property-based integration test: order round-trip invariants (fast-check + Vitest + testcontainers)
+// Asserts that ANY valid CreateOrderInput can be persisted and retrieved without data loss
+import { describe, beforeAll, afterAll, afterEach } from 'vitest';
+import { test, fc } from '@fast-check/vitest';
+import { GenericContainer, type StartedTestContainer } from 'testcontainers';
+import { DataSource } from 'typeorm';
+import { OrderRepository } from '../../src/orders/order.repository.js';
+import { Order } from '../../src/orders/order.entity.js';
+import type { CreateOrderInput } from '../../src/orders/types.js';
+
+let container: StartedTestContainer;
+let dataSource: DataSource;
+let repo: OrderRepository;
+
+beforeAll(async () => {
+  container = await new GenericContainer('postgres:16')
+    .withEnvironment({ POSTGRES_PASSWORD: 'test', POSTGRES_DB: 'testdb' })
+    .withExposedPorts(5432)
+    .start();
+
+  dataSource = new DataSource({
+    type: 'postgres',
+    host: container.getHost(),
+    port: container.getMappedPort(5432),
+    username: 'postgres',
+    password: 'test',
+    database: 'testdb',
+    entities: [Order],
+    synchronize: true,
+  });
+  await dataSource.initialize();
+  repo = new OrderRepository(dataSource);
+}, 60_000);
+
+afterAll(async () => {
+  await dataSource.destroy();
+  await container.stop();
+});
+
+afterEach(async () => {
+  // Truncate between property runs to avoid state accumulation
+  await dataSource.getRepository(Order).clear();
+});
+
+// Arbitraries: generate valid CreateOrderInput values
+const skuArb = fc.string({ minLength: 2, maxLength: 16 }).filter((s) => /^[A-Z0-9-]+$/.test(s));
+const itemArb = fc.record({
+  sku: skuArb,
+  qty: fc.integer({ min: 1, max: 999 }),
+});
+const createOrderArb = fc.record<CreateOrderInput>({
+  customerId: fc.string({ minLength: 1, maxLength: 64 }),
+  items: fc.array(itemArb, { minLength: 1, maxLength: 20 }),
+});
+
+describe('OrderRepository — integration property tests', () => {
+  // Property 1: round-trip integrity — anything persisted can be retrieved unchanged
+  test.prop([createOrderArb], { numRuns: 20 })(
+    'persisted order is retrievable with identical data',
+    async (input) => {
+      const saved = await repo.create(input);
+      const fetched = await repo.findById(saved.id);
+
+      // Property: the DB round-trip does not alter customerId or item count
+      expect(fetched).not.toBeNull();
+      expect(fetched!.customerId).toBe(input.customerId);
+      expect(fetched!.items).toHaveLength(input.items.length);
+    },
+  );
+
+  // Property 2: status invariant — every newly created order starts as 'pending'
+  test.prop([createOrderArb], { numRuns: 20 })(
+    'new order always has pending status regardless of input',
+    async (input) => {
+      const saved = await repo.create(input);
+      // This property catches ORM bugs that accidentally write a non-pending initial status
+      expect(saved.status).toBe('pending');
+    },
+  );
+
+  // Property 3: uniqueness — every created order gets a distinct id
+  test.prop([fc.tuple(createOrderArb, createOrderArb)], { numRuns: 10 })(
+    'two created orders always have different ids',
+    async ([input1, input2]) => {
+      const [order1, order2] = await Promise.all([
+        repo.create(input1),
+        repo.create(input2),
+      ]);
+      expect(order1.id).not.toBe(order2.id);
+    },
+  );
+});
+```
+
+**Why 20 runs instead of the default 100?** Integration-level PBT uses `numRuns: 20` because each run involves a real database write+read cycle. 20 runs against a Postgres container takes ~2–5 seconds — acceptable at the integration level. Unit-level PBT defaults to 100+ runs because each run is < 1 ms. Tune `numRuns` based on the per-case execution time and the acceptable integration test suite duration. For critical invariants on complex schemas, 50 runs provides better coverage without excessive CI time.
+
+**Shrinking at the integration level:** When fast-check finds a failing input, it automatically shrinks the counterexample to the smallest input that still fails. At the integration level, this means the shrunk counterexample is the minimal `CreateOrderInput` that breaks the invariant — making it easy to diagnose whether the failure is a missing DB constraint, a serialisation bug, or a boundary condition in the ORM mapping. The shrunk counterexample is printed in the Vitest output and is reproducible with `{ seed, path }` options. [community: fast-check.io/docs/introduction/why, @fast-check/vitest 0.4+ ESM-only note from earlier section]
+
+---
+
+### AI Agent Test Governance: Beyond Ratio Checks  [community]
+
+The guide has covered AI pyramid drift prevention through ratio checks (the `check-ai-test-drift.ts` script) and ESLint rules for over-mocking detection. This section documents the **next layer of governance** that teams adopting AI coding assistants in 2025–2026 have found necessary: per-PR test quality audits that measure not just quantity but structural quality of AI-generated tests.
+
+**The problem with count-only governance:**
+
+Ratio checks (`unit/integration ratio < 10`) catch quantity imbalances but miss quality problems:
+- AI-generated unit tests that all test the same code path (100% unit count but < 50% branch coverage)
+- AI-generated integration tests that never assert on database state (they call the API but only check the HTTP status, not the persisted data)
+- AI-generated e2e tests that hardcode test data rather than using deterministic seeds
+
+**Per-PR test quality audit using Vitest JSON output:**
+
+```typescript
+// scripts/check-test-quality.ts — structural quality checks on AI-generated tests
+// Run as a CI step after: vitest run --reporter=json --outputFile=vitest-results.json
+// AND after: vitest run --coverage --reporter=json --outputFile=vitest-coverage.json
+
+import { readFileSync, existsSync } from 'node:fs';
+
+interface TestResult {
+  testFilePath: string;
+  testResults: Array<{
+    fullName: string;
+    status: 'passed' | 'failed' | 'pending';
+    ancestorTitles: string[];
+    title: string;
+  }>;
+  numPassingTests: number;
+}
+
+interface VitestResults {
+  testResults: TestResult[];
+}
+
+interface CoverageFile {
+  [filePath: string]: {
+    b: Record<string, [number, number]>;  // branch coverage: [hit, total]
+    f: Record<string, number>;             // function coverage
+    s: Record<string, number>;             // statement coverage
+  };
+}
+
+const resultsPath = './vitest-results.json';
+const coveragePath = './coverage/coverage-final.json';
+
+if (!existsSync(resultsPath)) {
+  console.log('No vitest-results.json found — skipping quality check.');
+  process.exit(0);
+}
+
+const results = JSON.parse(readFileSync(resultsPath, 'utf8')) as VitestResults;
+const warnings: string[] = [];
+
+// Quality check 1: detect test files with only one test case (copy-paste pattern)
+for (const suite of results.testResults) {
+  if (
+    suite.numPassingTests === 1 &&
+    /\.unit\.test\.ts$/.test(suite.testFilePath)
+  ) {
+    warnings.push(
+      `WARN: ${suite.testFilePath} has only 1 test case. ` +
+        'AI-generated unit files often cover a single happy path. Add edge cases.',
+    );
+  }
+}
+
+// Quality check 2: detect integration test files with no DB/HTTP assertions (name heuristic)
+for (const suite of results.testResults) {
+  if (/\.integration\.test\.ts$/.test(suite.testFilePath)) {
+    const testNames = suite.testResults.map((t) => t.fullName.toLowerCase());
+    const hasDbAssertion = testNames.some(
+      (name) => name.includes('persists') || name.includes('retrieves') ||
+                name.includes('creates') || name.includes('returns') ||
+                name.includes('finds') || name.includes('updates'),
+    );
+    if (!hasDbAssertion) {
+      warnings.push(
+        `WARN: ${suite.testFilePath} — no integration test case names suggest state assertions. ` +
+          'Ensure integration tests verify DB state, not just HTTP status codes.',
+      );
+    }
+  }
+}
+
+// Quality check 3: branch coverage below threshold for new files (if coverage data available)
+if (existsSync(coveragePath)) {
+  const coverage = JSON.parse(readFileSync(coveragePath, 'utf8')) as CoverageFile;
+  for (const [filePath, fileCov] of Object.entries(coverage)) {
+    const branches = Object.values(fileCov.b);
+    if (branches.length === 0) continue;
+    const totalBranches = branches.reduce((acc, [, total]) => acc + total, 0);
+    const coveredBranches = branches.reduce((acc, [hit]) => acc + (hit > 0 ? 1 : 0), 0);
+    const branchCovPct = totalBranches > 0 ? (coveredBranches / totalBranches) * 100 : 100;
+    if (branchCovPct < 60 && /src\//.test(filePath)) {
+      warnings.push(
+        `WARN: ${filePath} — branch coverage ${branchCovPct.toFixed(0)}% < 60%. ` +
+          'AI-generated tests often miss error paths and edge cases.',
+      );
+    }
+  }
+}
+
+if (warnings.length > 0) {
+  console.warn('\nTest quality warnings (not blocking, but review recommended):');
+  warnings.forEach((w) => console.warn(`  • ${w}`));
+  // Exit 0 — warnings only; set to exit(1) to make this a hard gate
+} else {
+  console.log('Test quality checks passed.');
+}
+```
+
+```yaml
+# .github/workflows/test-quality.yml — AI test governance workflow
+name: Test Quality Audit
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  quality-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run unit + integration tests with JSON output and coverage
+        run: |
+          npx vitest run --project unit --project integration \
+            --reporter=json --outputFile=vitest-results.json \
+            --coverage --coverage.reporter=json
+
+      - name: Run pyramid ratio check
+        run: npx tsx scripts/check-pyramid-shape.ts
+
+      - name: Run AI test quality audit
+        run: npx tsx scripts/check-test-quality.ts
+
+      - name: Check for vi.mock() overuse (ESLint)
+        run: npx eslint src --rule 'no-restricted-syntax: warn' --max-warnings=0
+```
+
+**Playwright MCP integration for e2e test governance:**
+
+Playwright v1.56+ includes an [MCP (Model Context Protocol) server](https://playwright.dev/docs/mcp) that exposes browser control as tool calls consumable by AI coding assistants. When a developer uses Claude Code or GitHub Copilot with the Playwright MCP server active, the AI assistant can navigate the app, capture ARIA snapshots, and generate test code directly. The governance hook is the same `pyramid-agent-check.yml` workflow — but you can also extract the ARIA snapshot quality:
+
+```typescript
+// scripts/check-mcp-test-quality.ts — validate Playwright MCP-generated tests for ARIA locator usage
+// Scans newly added test files for brittle locators vs. role-based locators
+import { readFileSync, existsSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+
+// Get list of .spec.ts files added or modified in this PR
+const changedFiles = execSync('git diff --name-only HEAD~1 -- "**/*.spec.ts"')
+  .toString()
+  .trim()
+  .split('\n')
+  .filter(Boolean);
+
+let brittleLocatorCount = 0;
+let roleBasedLocatorCount = 0;
+
+for (const file of changedFiles) {
+  if (!existsSync(file)) continue;
+  const content = readFileSync(file, 'utf8');
+
+  // Count brittle locators (CSS class, nth-child, placeholder-text without role)
+  const brittleMatches = content.match(/getByPlaceholder|\.locator\(['"`][.#]/g) ?? [];
+  brittleLocatorCount += brittleMatches.length;
+
+  // Count role-based locators (ARIA-safe)
+  const roleMatches = content.match(/getByRole|getByLabel|getByText|getByAltText|getByTitle/g) ?? [];
+  roleBasedLocatorCount += roleMatches.length;
+}
+
+const totalLocators = brittleLocatorCount + roleBasedLocatorCount;
+if (totalLocators > 0) {
+  const brittlePct = (brittleLocatorCount / totalLocators) * 100;
+  console.log(`Locator quality: ${roleBasedLocatorCount} role-based, ${brittleLocatorCount} brittle (${brittlePct.toFixed(0)}% brittle)`);
+  if (brittlePct > 30) {
+    console.warn(
+      `WARNING: ${brittlePct.toFixed(0)}% of new e2e locators are brittle (CSS/placeholder). ` +
+        'Prefer getByRole, getByLabel, or getByText. Run `npx playwright codegen --target=playwright` to regenerate with ARIA locators.',
+    );
+  }
+}
+```
+
+[community: playwright.dev/docs/mcp, github.com/microsoft/playwright/tree/main/packages/playwright-mcp — Playwright MCP server for AI assistant integration]
+
+---
+
+### TypeScript Module Augmentation in Test Helpers  [community]
+
+TypeScript's declaration merging and module augmentation allow test-helper packages to extend existing interfaces and add test-specific methods — without modifying the production codebase. This pattern is useful for large TypeScript monorepos where test helpers need to add assertion methods to domain objects or extend Vitest's `expect` with domain-specific matchers.
+
+**Pattern: augmenting Vitest's `Assertion` interface with domain matchers:**
+
+```typescript
+// packages/test-helpers/src/matchers/order-matchers.ts
+// Extends Vitest's expect with typed domain matchers — zero `as any` required
+import { expect } from 'vitest';
+import type { Order } from '@myapp/domain';
+
+// Step 1: extend Vitest's Assertion interface via module augmentation
+// This adds type-safe custom matchers to `expect(value).toBeValidOrder()`
+declare module 'vitest' {
+  interface Assertion<T = unknown> {
+    toBeValidOrder(): void;
+    toHaveOrderStatus(status: Order['status']): void;
+    toHaveOrderItems(count: number): void;
+  }
+}
+
+// Step 2: implement the matchers
+expect.extend({
+  toBeValidOrder(received: unknown) {
+    if (!received || typeof received !== 'object') {
+      return {
+        pass: false,
+        message: () => `Expected a valid Order object, received: ${JSON.stringify(received)}`,
+      };
+    }
+    const order = received as Partial<Order>;
+    const hasId = typeof order.id === 'string' && order.id.startsWith('ord_');
+    const hasStatus = ['pending', 'confirmed', 'cancelled'].includes(order.status ?? '');
+    const hasItems = Array.isArray(order.items);
+    return {
+      pass: hasId && hasStatus && hasItems,
+      message: () =>
+        `Expected ${JSON.stringify(received)} to be a valid Order ` +
+        `(id starts with 'ord_', status in [pending|confirmed|cancelled], items is array)`,
+    };
+  },
+
+  toHaveOrderStatus(received: unknown, expected: Order['status']) {
+    const order = received as Partial<Order>;
+    return {
+      pass: order.status === expected,
+      message: () =>
+        `Expected order status to be '${expected}', received '${order.status}'`,
+    };
+  },
+
+  toHaveOrderItems(received: unknown, count: number) {
+    const order = received as Partial<Order>;
+    const actual = order.items?.length ?? 0;
+    return {
+      pass: actual === count,
+      message: () => `Expected order to have ${count} items, found ${actual}`,
+    };
+  },
+});
+```
+
+```typescript
+// vitest.setup.ts — import the matchers extension in the global setup file
+// This ensures all test files get the custom matchers without individual imports
+import './packages/test-helpers/src/matchers/order-matchers.js';
+```
+
+```typescript
+// tests/integration/orders.integration.test.ts — using custom domain matchers
+import { it, expect } from 'vitest';
+import { OrdersService } from '../../src/orders/orders.service.js';
+
+it('creates a valid order', async () => {
+  const service = new OrdersService();
+  const result = await service.create({ customerId: 'c1', items: [{ sku: 'A1', qty: 1 }] });
+
+  // Type-safe custom matchers — no `as any`, full IntelliSense
+  expect(result).toBeValidOrder();
+  expect(result).toHaveOrderStatus('pending');
+  expect(result).toHaveOrderItems(1);
+
+  // Negation works correctly: TypeScript infers `.not.toBeValidOrder()` from the augmented type
+  const invalidObj = { id: 'invalid', status: 'unknown' };
+  expect(invalidObj).not.toBeValidOrder();
+});
+```
+
+**When to use module augmentation in test helpers:**
+- Large teams where the same domain assertions appear in 20+ test files — centralising them reduces duplication
+- Regulated environments where audit-required assertions must be consistent (HIPAA, PCI-DSS test evidence)
+- Monorepos with a `packages/test-helpers` shared package consumed by multiple services
+
+**When NOT to use it:**
+- Small codebases (< 5 test files sharing the assertion) — inline `expect(result.status).toBe('pending')` is simpler
+- When the custom matcher wraps simple property checks — this creates abstraction overhead without meaningful concision gain [community: vitest.dev/guide/extending-matchers, TypeScript Handbook — Declaration Merging]
+
+---
+
+### Shared Test Infrastructure as an Internal Package  [community]
+
+In TypeScript monorepos with multiple services, test infrastructure tends to be duplicated: each service has its own `beforeAll` container setup, its own factory functions, its own MSW handler setup. The *shared test package* pattern extracts this into a versioned `packages/test-infra` (or `packages/testing`) internal package that services import. This reduces drift and makes infrastructure upgrades (e.g., upgrading to Testcontainers Cloud, switching from SQLite to Postgres parity) a single-package change rather than a multi-service refactor.
+
+**Package structure:**
+
+```
+packages/test-infra/
+├── src/
+│   ├── containers/
+│   │   ├── postgres.ts        # PostgresContainer lifecycle helper
+│   │   ├── redis.ts           # RedisContainer lifecycle helper
+│   │   └── index.ts
+│   ├── factories/
+│   │   ├── order.factory.ts   # fishery factory for Order
+│   │   ├── user.factory.ts    # fishery factory for User
+│   │   └── index.ts
+│   ├── msw/
+│   │   ├── inventory-handlers.ts  # MSW handlers for inventory-service
+│   │   ├── payment-handlers.ts    # MSW handlers for payment-service
+│   │   └── index.ts
+│   └── index.ts               # barrel export
+├── package.json               # name: "@myapp/test-infra", sideEffects: false
+└── tsconfig.json
+```
+
+```typescript
+// packages/test-infra/src/containers/postgres.ts
+// Shared Postgres container lifecycle — used by all integration test suites
+import { GenericContainer, type StartedTestContainer } from 'testcontainers';
+import { DataSource, type DataSourceOptions } from 'typeorm';
+
+export interface PostgresTestDb {
+  dataSource: DataSource;
+  cleanup: () => Promise<void>;
+}
+
+export async function createPostgresTestDb(
+  entities: DataSourceOptions['entities'],
+  containerVersion = 'postgres:16',
+): Promise<PostgresTestDb> {
+  const container: StartedTestContainer = await new GenericContainer(containerVersion)
+    .withEnvironment({ POSTGRES_PASSWORD: 'test', POSTGRES_DB: 'testdb' })
+    .withExposedPorts(5432)
+    .start();
+
+  const dataSource = new DataSource({
+    type: 'postgres',
+    host: container.getHost(),
+    port: container.getMappedPort(5432),
+    username: 'postgres',
+    password: 'test',
+    database: 'testdb',
+    entities,
+    synchronize: true,
+  });
+  await dataSource.initialize();
+
+  return {
+    dataSource,
+    cleanup: async () => {
+      await dataSource.destroy();
+      await container.stop();
+    },
+  };
+}
+```
+
+```typescript
+// packages/test-infra/src/factories/order.factory.ts
+// Shared typed factory — compile-time error when Order interface gains a required field
+import { Factory } from 'fishery';
+import { faker } from '@faker-js/faker';
+import type { Order } from '@myapp/domain';
+
+export const orderFactory = Factory.define<Order>(() => ({
+  id: `ord_${faker.string.alphanumeric(8)}`,
+  customerId: faker.string.alphanumeric(8),
+  total: faker.number.float({ min: 10, max: 500, fractionDigits: 2 }),
+  status: 'pending',
+  items: [{ sku: `SKU-${faker.string.alphanumeric(4)}`, qty: faker.number.int({ min: 1, max: 10 }) }],
+  createdAt: faker.date.recent(),
+}));
+```
+
+```typescript
+// services/orders-api/tests/integration/orders.integration.test.ts
+// Consuming the shared test infrastructure
+import { beforeAll, afterAll, afterEach, it, expect } from 'vitest';
+import { createPostgresTestDb, orderFactory } from '@myapp/test-infra';
+import type { PostgresTestDb } from '@myapp/test-infra';
+import { Order } from '../../src/orders/order.entity.js';
+import { OrderRepository } from '../../src/orders/order.repository.js';
+
+let db: PostgresTestDb;
+let repo: OrderRepository;
+
+beforeAll(async () => {
+  db = await createPostgresTestDb([Order]);
+  repo = new OrderRepository(db.dataSource);
+}, 60_000);
+
+afterAll(() => db.cleanup());
+afterEach(async () => {
+  await db.dataSource.getRepository(Order).clear();
+});
+
+it('creates order from factory and retrieves it', async () => {
+  // Factory: build() creates the TypeScript object; db.dataSource.getRepository().save() persists it
+  const input = orderFactory.build();
+  const saved = await repo.create({ customerId: input.customerId, items: input.items });
+  const fetched = await repo.findById(saved.id);
+  expect(fetched?.customerId).toBe(input.customerId);
+});
+```
+
+**Governance benefits of the shared test infrastructure package:**
+- Container version upgrades (e.g., `postgres:16` → `postgres:17`) are a single change in `test-infra`
+- When `Order` gains a required field, `orderFactory` fails at compile time across all consuming services simultaneously — not silently at runtime
+- MSW handler updates for a shared external API (e.g., inventory-service contract change) are propagated automatically via the shared package version bump
+
+**Adoption cost:** Initial setup requires configuring TypeScript `references` between service packages and `test-infra` in `tsconfig.json`, and ensuring the monorepo task runner (Nx, Turborepo, pnpm workspaces) marks `test-infra` as an affected dependency of all services. Without the `tsconfig.json references`, affected-task pipelines may skip service tests after `test-infra` changes — exactly the monorepo gotcha documented in gotcha #18. [community: nx.dev/concepts/module-federation/shared-libs, pnpm.io/workspaces]
+
+---
+
+53. **Shared test infrastructure packages require strict `tsconfig.json references` or affected tasks miss service tests after infra upgrades** [community] — When a `packages/test-infra` package is updated (e.g., upgrading the Postgres container version from `postgres:16` to `postgres:17`), Nx and Turborepo's affected-task algorithms must know that all service integration tests depend on `test-infra`. This dependency is only communicated if each service's `tsconfig.json` contains a `references` entry for `test-infra`: `{ "references": [{ "path": "../../../packages/test-infra" }] }`. If the reference is declared only in `package.json` `dependencies` (and not in `tsconfig.json`), the build graph does not include the TypeScript dependency — the affected algorithm marks `test-infra` as changed but does not propagate the change to consuming services' test tasks. The result: an infrastructure upgrade that fixes a container version compatibility issue appears to pass CI (the `test-infra` package's own tests pass) while all service integration tests silently run against the old container version because they were not marked as affected. Fix: use Nx's `@nx/enforce-module-boundaries` ESLint rule or a custom script to verify that every `package.json` dependency on `@myapp/test-infra` has a corresponding `tsconfig.json references` entry:
+
+```bash
+# CI check: verify tsconfig.json references match package.json dependencies for test-infra
+# Run from monorepo root
+for svc_dir in services/*/; do
+  pkg="$svc_dir/package.json"
+  tsconf="$svc_dir/tsconfig.json"
+  if grep -q '"@myapp/test-infra"' "$pkg" 2>/dev/null; then
+    if ! grep -q '"path".*test-infra' "$tsconf" 2>/dev/null; then
+      echo "ERROR: $svc_dir has @myapp/test-infra in package.json but no tsconfig.json reference"
+      exit 1
+    fi
+  fi
+done
+echo "All test-infra tsconfig.json references are in sync."
+```
+
+[community: nx.dev/reference/project-configuration#implicitdependencies, Turborepo docs — package.json dependencies vs tsconfig.json references in affected computation]
+
+---
+
+54. **Property-based integration tests without bounded `numRuns` can make CI unpredictable** [community] — When `test.prop()` or `fc.assert()` is used at the integration test level without an explicit `numRuns` limit, fast-check defaults to 100 runs. Each integration-level run involves real I/O (database writes, HTTP calls, container interactions). 100 runs × 50–100 ms per run = 5–10 seconds per single property test case. A test file with 5 property tests accumulates 25–50 seconds of additional CI time at the integration level. This is usually acceptable — but teams that inadvertently have fast-check running at default `numRuns` in large integration test suites can see CI time balloon to 5–10 minutes without a clear cause. Fix: always specify `numRuns` explicitly for integration-level PBT. Recommended values: `numRuns: 10–20` for DB round-trip tests; `numRuns: 5` for tests involving external HTTP stubs; `numRuns: 50–100` only for pure in-memory property tests where I/O is not involved. Add a lint rule or Vitest configuration that warns when `test.prop()` is found in integration test files without a `numRuns` option:
+
+```typescript
+// eslint rule: warn on test.prop() in integration test files without numRuns
+// .eslintrc.cjs — requires AST inspection; shown as a conceptual selector
+module.exports = {
+  overrides: [
+    {
+      files: ['**/*.integration.test.ts'],
+      rules: {
+        'no-restricted-syntax': [
+          'warn',
+          {
+            // Detects test.prop([...]) without an options object as the second argument
+            selector: 'CallExpression[callee.object.name="test"][callee.property.name="prop"]:not(:has(> .arguments:nth-child(2)[type="ObjectExpression"]))',
+            message: 'test.prop() at integration level requires explicit numRuns option to bound CI time. Use test.prop([arbs], { numRuns: 20 }).',
+          },
+        ],
+      },
+    },
+  ],
+};
+```
+
+[community: fast-check.io/docs/configuration/numruns, production experience with PBT at integration level in TypeScript monorepos 2025–2026]

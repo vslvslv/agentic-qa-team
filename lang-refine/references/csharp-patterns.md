@@ -1,6 +1,16 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 40 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 41 | score: 98/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 41 (2026-05-12): added xUnit ClassData/IEnumerable<object[]> patterns and InlineData vs MemberData vs
+       ClassData comparison table; added Moq Protected().Setup() for abstract members, MockRepository batch
+       VerifyAll(), and multi-invocation Callback capture; added FluentAssertions custom assertion extensions
+       (ReferenceTypeAssertions<T>, Execute.Assertion API, AssertionChain v8 migration note); added Bogus nested
+       object generation, locale-aware fakers, and inherited Faker<T> pattern with fluent builder; added
+       NSubstitute When/Do callbacks, sequential Returns(..., ..., ...), and ThrowsAsync; added
+       WebApplicationFactory for minimal-API programs (partial class Program gotcha), TestAuthHandler pattern,
+       and WithWebHostBuilder per-test scoping gotcha; added Anti-Patterns table for advanced testing patterns
+       — sourced from learn.microsoft.com/aspnet/core/test/integration-tests, github.com/bchavez/Bogus,
+       fluentassertions.com/extensibility, nsubstitute.github.io
      Iter 40 (2026-05-12): added .NET 10 MTP native dotnet test support via global.json (runner opt-in, compatibility
        matrix, before/after workflow comparison); added xUnit v3 TestContext static API (TestContext.Current,
        SendDiagnosticMessage, CancellationToken, TestState, thread-continuation gotcha); added TUnit [Timeout]
@@ -8474,4 +8484,466 @@ public class OrderTestBuilder
 | Mixing `coverlet.collector` and `coverlet.msbuild` in the same solution | Incoherent merged reports — line counts differ per mode | Pick one mode per solution; DataCollector (`--collect`) is the simpler default |
 | Writing xUnit tests that assume execution order without `ITestCaseOrderer` | xUnit runs tests within a class in reflection-defined order, which varies by platform | Either make tests fully independent or apply `ITestCaseOrderer` + `[TestPriority]` |
 | Calling `CreateHttpClient` before `WaitForResourceAsync` in Aspire tests | Race condition — container may not be listening yet, producing flaky `Connection refused` | Always await `WaitForResourceAsync` + `WaitAsync(timeout)` before first HTTP call |
+
+---
+
+## xUnit Theories — ClassData, IEnumerable, and Complex-Type MemberData
+
+`[Theory]` with `[InlineData]` only works for compile-time constants. For complex types, reference objects, or large data sets, use `ClassData` or `MemberData` pointing to a static property that returns `TheoryData<T>` or `IEnumerable<object[]>`.
+
+```csharp
+// --- ClassData approach — encapsulates test data in a dedicated class ---
+public class DiscountTestData : TheoryData<string, decimal, decimal>
+{
+    public DiscountTestData()
+    {
+        Add("SUMMER10",  100m, 90m);   // code, price, expected
+        Add("HALF50",    200m, 100m);
+        Add("INVALID",   100m, 100m);  // no discount for unknown code
+        Add("",          50m,  50m);   // empty code — no discount
+    }
+}
+
+[Theory]
+[ClassData(typeof(DiscountTestData))]
+public void ApplyPromoCode_ReturnsCorrectTotal(
+    string code, decimal price, decimal expected)
+{
+    var result = new DiscountEngine().Apply(code, price);
+    result.Should().Be(expected);
+}
+
+// --- MemberData from external static property (cross-class sharing) ---
+public static class SharedOrderTestData
+{
+    public static TheoryData<Order, string> InvalidOrders => new()
+    {
+        { new Order { Total = -1m },   "Total cannot be negative" },
+        { new Order { CustomerId = 0 }, "CustomerId is required" },
+        { new Order { Items = [] },     "Order must have at least one item" },
+    };
+}
+
+[Theory]
+[MemberData(nameof(SharedOrderTestData.InvalidOrders),
+    MemberType = typeof(SharedOrderTestData))]
+public void Validate_InvalidOrder_ReturnsError(Order order, string expectedMessage)
+{
+    var result = new OrderValidator().Validate(order);
+    result.Errors.Should().Contain(e => e.ErrorMessage.Contains(expectedMessage));
+}
+```
+
+**Choosing between `[InlineData]`, `[MemberData]`, and `[ClassData]`:**
+
+| Attribute | Best for | Limitation |
+|---|---|---|
+| `[InlineData]` | 1–4 primitive parameters, readable in-line | Constants only (no `new`, `DateTime`, etc.) |
+| `[MemberData]` | Static property on same or another class; strongly typed via `TheoryData<T>` | Property must be `public static` |
+| `[ClassData]` | Large data sets, domain-specific generators, data from files | Requires a dedicated class; less co-located with the test |
+
+> **Gotcha [community]:** When using `[MemberData]` pointing to an `IEnumerable<object[]>`, xUnit serializes each row for display in the test runner. If a row contains a non-serializable type (e.g., a custom class), the test runner shows `TestMethod (System.Object[])` instead of the actual values, making failure diagnosis harder. Switch to `TheoryData<T>` for strongly typed rows — xUnit v3 serializes them by type so each row shows meaningful display names.
+
+---
+
+## Moq — Protected Members, MockRepository, and Invocation Capture
+
+The standard `Setup()` API cannot reach `protected` methods. Use `mock.Protected()` from `Moq.Protected` for that scenario. `MockRepository` creates mocks in bulk and calls `VerifyAll()` on all of them in one line.
+
+```csharp
+using Moq;
+using Moq.Protected;
+
+// --- Protected method mocking ---
+public abstract class ReportGenerator
+{
+    protected abstract string RenderBody(IEnumerable<Order> orders);
+
+    public string Generate(IEnumerable<Order> orders)
+        => $"<html><body>{RenderBody(orders)}</body></html>";
+}
+
+[Fact]
+public void Generate_CallsRenderBody_ReturnsWrappedHtml()
+{
+    var mock = new Mock<ReportGenerator> { CallBase = true };
+
+    mock.Protected()
+        .Setup<string>("RenderBody", ItExpr.IsAny<IEnumerable<Order>>())
+        .Returns("<p>test content</p>")
+        .Verifiable();
+
+    var result = mock.Object.Generate([new Order { Id = 1 }]);
+
+    result.Should().Contain("<p>test content</p>");
+    mock.Protected().Verify("RenderBody", Times.Once(),
+        ItExpr.IsAny<IEnumerable<Order>>());
+}
+
+// --- MockRepository — centralised lifecycle for related mocks ---
+[Fact]
+public async Task Checkout_SendsEmailAndSavesOrder()
+{
+    var repo = new MockRepository(MockBehavior.Strict);
+
+    var orderRepo  = repo.Create<IOrderRepository>();
+    var emailSvc   = repo.Create<IEmailService>();
+
+    orderRepo.Setup(r => r.SaveAsync(It.IsAny<Order>(), default))
+             .ReturnsAsync(42);
+    emailSvc.Setup(e => e.SendAsync(It.IsAny<string>(), It.IsAny<string>()))
+            .Returns(Task.CompletedTask);
+
+    var sut = new CheckoutService(orderRepo.Object, emailSvc.Object);
+    await sut.ProcessAsync(new Cart { Items = [new CartItem("SKU-1", 1, 9.99m)] });
+
+    repo.VerifyAll();  // asserts every Setup() was called — replaces individual Verify() lines
+}
+
+// --- Capturing multiple invocations for sequence assertions ---
+[Fact]
+public async Task BulkProcess_SavesOrdersInReceivedOrder()
+{
+    var savedOrders = new List<Order>();
+    var mockRepo = new Mock<IOrderRepository>();
+
+    mockRepo.Setup(r => r.SaveAsync(It.IsAny<Order>(), default))
+            .Callback<Order, CancellationToken>((o, _) => savedOrders.Add(o))
+            .ReturnsAsync(0);
+
+    var sut = new BulkProcessor(mockRepo.Object);
+    await sut.ProcessBatchAsync([
+        new Order { Id = 1 },
+        new Order { Id = 2 },
+        new Order { Id = 3 }
+    ]);
+
+    savedOrders.Select(o => o.Id).Should().ContainInOrder(1, 2, 3);
+    mockRepo.Verify(r => r.SaveAsync(It.IsAny<Order>(), default), Times.Exactly(3));
+}
+```
+
+> **Gotcha [community]:** `MockBehavior.Strict` throws `MockException` for any call without a matching `Setup()` — including property getters. If your SUT reads mock properties in logging or toString paths, strict mocks cause unexpected failures. Prefer `MockBehavior.Strict` only for well-defined interface contracts; use the default `MockBehavior.Loose` for broad service dependencies and rely on `Verify()` calls to enforce call expectations.
+
+---
+
+## FluentAssertions — Custom Assertion Extensions
+
+FluentAssertions is extensible: you can add domain-specific assertions that produce readable failure messages identical in style to built-in ones. Implement `ReferenceTypeAssertions<TSubject, TAssertions>` (or `ObjectAssertions`) and use `AssertionChain` (FA v7+) or `Execute.Assertion` (FA v6) to build the failure message.
+
+```csharp
+// dotnet add package FluentAssertions
+// Custom assertion for a domain Order type
+using FluentAssertions;
+using FluentAssertions.Execution;
+using FluentAssertions.Primitives;
+
+public class OrderAssertions : ReferenceTypeAssertions<Order, OrderAssertions>
+{
+    public OrderAssertions(Order subject) : base(subject) { }
+
+    protected override string Identifier => "order";
+
+    // Assert the order is in a given status
+    public AndConstraint<OrderAssertions> BeInStatus(
+        string expected, string because = "", params object[] becauseArgs)
+    {
+        Execute.Assertion
+            .BecauseOf(because, becauseArgs)
+            .ForCondition(Subject.Status == expected)
+            .FailWith(
+                "Expected {context:order} to be in status {0}{reason}, but found {1}.",
+                expected, Subject.Status);
+
+        return new AndConstraint<OrderAssertions>(this);
+    }
+
+    // Assert the order total is within an acceptable range
+    public AndConstraint<OrderAssertions> HaveTotalApproximately(
+        decimal expected, decimal precision = 0.01m,
+        string because = "", params object[] becauseArgs)
+    {
+        Execute.Assertion
+            .BecauseOf(because, becauseArgs)
+            .ForCondition(Math.Abs(Subject.Total - expected) <= precision)
+            .FailWith(
+                "Expected {context:order} total to be approximately {0} (±{1}){reason}, but found {2}.",
+                expected, precision, Subject.Total);
+
+        return new AndConstraint<OrderAssertions>(this);
+    }
+}
+
+// Extension method wires the custom assertions to the Should() chain
+public static class OrderAssertionExtensions
+{
+    public static OrderAssertions Should(this Order order)
+        => new OrderAssertions(order);
+}
+
+// Usage in tests — reads like built-in FluentAssertions
+[Fact]
+public async Task ProcessOrder_UpdatesStatusAndTotal()
+{
+    var order = await _sut.ProcessAsync(new Cart { Items = [new CartItem("SKU-1", 2, 49.99m)] });
+
+    order.Should().BeInStatus("Processed")
+         .And.HaveTotalApproximately(99.98m)
+         .And.NotBeNull();
+}
+```
+
+> **Gotcha [community]:** In FluentAssertions v8+, `Execute.Assertion` was replaced by `AssertionChain.GetOrCreate()` as part of the soft-assertion (`AssertionScope`) redesign. If you implement custom assertions against v6/v7's `Execute.Assertion` API and later upgrade to v8, compile errors appear at every custom assertion class. Isolate custom assertion extensions in their own assembly and add a compatibility shim test so upgrade pain is caught immediately.
+
+---
+
+## Bogus — Nested Objects, Inheritance, and Locale-Aware Fakers
+
+Basic Bogus usage covers flat object generation. Production models often have nested objects, inheritance hierarchies, and locale-specific constraints.
+
+```csharp
+// dotnet add package Bogus
+using Bogus;
+
+// --- Nested object generation ---
+var addressFaker = new Faker<Address>()
+    .RuleFor(a => a.Street,  f => f.Address.StreetAddress())
+    .RuleFor(a => a.City,    f => f.Address.City())
+    .RuleFor(a => a.ZipCode, f => f.Address.ZipCode())
+    .RuleFor(a => a.Country, f => f.Address.CountryCode());
+
+var customerFaker = new Faker<Customer>()
+    .RuleFor(c => c.Id,          f => f.Random.Guid())
+    .RuleFor(c => c.FirstName,   f => f.Name.FirstName())
+    .RuleFor(c => c.LastName,    f => f.Name.LastName())
+    .RuleFor(c => c.Email,       (f, c) => f.Internet.Email(c.FirstName, c.LastName))
+    .RuleFor(c => c.HomeAddress, _ => addressFaker.Generate())
+    .RuleFor(c => c.Orders,      f => new Faker<Order>()
+        .RuleFor(o => o.Id,    g => g.Random.Int(1, 9999))
+        .RuleFor(o => o.Total, g => Math.Round(g.Random.Decimal(5, 500), 2))
+        .Generate(f.Random.Int(1, 5)));  // 1-5 orders per customer
+
+// --- Locale-specific data ---
+var germanFaker = new Faker<Customer>("de")
+    .RuleFor(c => c.FirstName, f => f.Name.FirstName())
+    .RuleFor(c => c.City,      f => f.Address.City());  // generates German city names
+
+// --- Inheriting Faker<T> for reusable domain fakers ---
+public class OrderFaker : Faker<Order>
+{
+    public OrderFaker(string status = "Pending") : base("en")
+    {
+        RuleFor(o => o.Id,         f => f.Random.Int(1, 100_000));
+        RuleFor(o => o.CustomerId, f => f.Random.Int(1, 1_000));
+        RuleFor(o => o.Status,     _ => status);
+        RuleFor(o => o.Total,      f => Math.Round(f.Random.Decimal(1, 999), 2));
+        RuleFor(o => o.CreatedAt,  f => f.Date.RecentOffset(30).UtcDateTime);
+    }
+
+    public OrderFaker WithTotal(decimal total)
+    {
+        RuleFor(o => o.Total, _ => total);
+        return this;
+    }
+}
+
+// Usage: different states, deterministic seed
+var pendingOrders  = new OrderFaker("Pending").UseSeed(100).Generate(5);
+var shippedOrders  = new OrderFaker("Shipped").UseSeed(200).Generate(3);
+var highValueOrder = new OrderFaker().WithTotal(999.99m).Generate();
+```
+
+> **Gotcha [community]:** `Randomizer.Seed = new Random(42)` sets a **global** seed that affects all `Faker<T>` instances in the process. In parallel test execution this causes data races — two test classes writing to the same global seed produce non-deterministic sequences. Prefer **instance-level seeding** via `faker.UseSeed(n)` and keep each test's faker construction local to that test or fixture. Use `Randomizer.Seed` only in a single-threaded test project with no parallelism.
+
+---
+
+## NSubstitute — When/Do Callbacks and Multiple Return Sequences
+
+Beyond basic `.Returns()`, NSubstitute supports callbacks (`.When().Do()`), sequences of return values, and exception throwing.
+
+```csharp
+// dotnet add package NSubstitute
+using NSubstitute;
+using NSubstitute.ExceptionExtensions;
+
+public interface IEventPublisher
+{
+    Task PublishAsync(string eventName, object payload, CancellationToken ct = default);
+    int GetPublishedCount();
+}
+
+[Fact]
+public async Task OrderService_PublishesEventOnSuccess()
+{
+    var publisher = Substitute.For<IEventPublisher>();
+    var capturedEvents = new List<string>();
+
+    // When/Do — callback executed on every matching call
+    publisher
+        .When(p => p.PublishAsync(Arg.Any<string>(), Arg.Any<object>(), Arg.Any<CancellationToken>()))
+        .Do(info => capturedEvents.Add(info.ArgAt<string>(0)));
+
+    publisher.PublishAsync(Arg.Any<string>(), Arg.Any<object>())
+             .Returns(Task.CompletedTask);
+
+    var sut = new OrderService(publisher);
+    await sut.PlaceOrderAsync(new Order { Id = 1 });
+
+    capturedEvents.Should().ContainSingle().Which.Should().Be("order.placed");
+    await publisher.Received(1).PublishAsync("order.placed", Arg.Any<object>());
+}
+
+// Multiple sequential return values — Returns(first, second, ...)
+[Fact]
+public async Task RetryPolicy_SucceedsOnThirdAttempt()
+{
+    var client = Substitute.For<IExternalClient>();
+
+    client.FetchAsync(Arg.Any<string>())
+          .Returns(
+              _ => throw new HttpRequestException("timeout"),   // 1st call throws
+              _ => throw new HttpRequestException("timeout"),   // 2nd call throws
+              _ => Task.FromResult("{ \"status\": \"ok\" }"));  // 3rd succeeds
+
+    var sut = new RetryingClient(client, maxRetries: 3);
+    var result = await sut.FetchWithRetryAsync("https://api.example.com/data");
+
+    result.Should().Contain("ok");
+    await client.Received(3).FetchAsync(Arg.Any<string>());
+}
+
+// Throwing exceptions — use .Throws() or .ThrowsAsync()
+[Fact]
+public async Task OrderService_HandlesRepositoryException_Gracefully()
+{
+    var repo = Substitute.For<IOrderRepository>();
+    repo.SaveAsync(Arg.Any<Order>(), Arg.Any<CancellationToken>())
+        .ThrowsAsync(new DbException("Connection pool exhausted"));
+
+    var sut = new OrderService(repo, NullLogger<OrderService>.Instance);
+    var act = async () => await sut.ProcessAsync(new Order { Id = 99 });
+
+    await act.Should().ThrowAsync<OrderProcessingException>()
+             .WithMessage("*processing failed*");
+}
+```
+
+> **Gotcha [community]:** NSubstitute does not support mocking non-virtual (concrete) methods. If you attempt to configure a non-virtual method on a class substitute, the configuration is silently ignored — the real implementation runs instead. This is the same limitation as Moq's non-strict mode: the mock compiles and runs but your setup has no effect. Always mock interfaces or virtual members; use wrapper/adapter classes around concrete third-party types you need to substitute.
+
+---
+
+## WebApplicationFactory — Minimal API Programs and Auth Testing
+
+Since .NET 6 minimal APIs use `Program` as the entry point without an explicit `Startup` class. `WebApplicationFactory<Program>` works the same way, but `Program` must be accessible from the test project. The idiomatic fix is a `partial class Program { }` declaration in `Program.cs`.
+
+```csharp
+// In Program.cs (production) — add at the end of the file:
+// Makes Program visible to the test assembly
+public partial class Program { }
+
+// In the test project:
+// dotnet add package Microsoft.AspNetCore.Mvc.Testing
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+
+public class OrdersApiIntegrationTests : IClassFixture<OrderApiFactory>
+{
+    private readonly HttpClient _client;
+
+    public OrdersApiIntegrationTests(OrderApiFactory factory)
+        => _client = factory.CreateClient();
+
+    [Fact]
+    public async Task GetOrders_AuthenticatedUser_Returns200()
+    {
+        var response = await _client.GetAsync("/api/orders");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+}
+
+// Custom factory — replaces DB + injects test auth
+public class OrderApiFactory : WebApplicationFactory<Program>
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.ConfigureTestServices(services =>
+        {
+            // Replace the production DbContext
+            var descriptor = services.SingleOrDefault(
+                d => d.ServiceType == typeof(DbContextOptions<AppDbContext>));
+            if (descriptor is not null) services.Remove(descriptor);
+
+            services.AddDbContext<AppDbContext>(opts =>
+                opts.UseSqlite("DataSource=:memory:"));
+
+            // Inject a test authentication handler that auto-authenticates
+            services.AddAuthentication("TestScheme")
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
+                        "TestScheme", _ => { });
+        });
+
+        builder.UseEnvironment("Testing");
+    }
+}
+
+// Test authentication handler — issues a fixed identity
+public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+{
+    public TestAuthHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger, UrlEncoder encoder)
+        : base(options, logger, encoder) { }
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        var claims = new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, "test-user-id"),
+            new Claim(ClaimTypes.Name, "Test User"),
+            new Claim(ClaimTypes.Role, "Admin"),
+        };
+        var identity = new ClaimsIdentity(claims, "TestScheme");
+        var ticket   = new AuthenticationTicket(new ClaimsPrincipal(identity), "TestScheme");
+        return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
+}
+```
+
+**Scoping service overrides per-test with `WithWebHostBuilder`:**
+
+```csharp
+// Override services for one specific test without creating a subclass
+[Fact]
+public async Task PostOrder_WhenEmailFails_Returns500()
+{
+    var failingEmailMock = new Mock<IEmailService>();
+    failingEmailMock.Setup(e => e.SendAsync(It.IsAny<string>(), It.IsAny<string>()))
+                    .ThrowsAsync(new SmtpException("relay unavailable"));
+
+    var client = _factory.WithWebHostBuilder(builder =>
+        builder.ConfigureTestServices(services =>
+        {
+            services.AddSingleton(failingEmailMock.Object);
+        }))
+        .CreateClient();
+
+    var response = await client.PostAsJsonAsync("/api/orders", new CreateOrderDto());
+    response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+}
+```
+
+> **Gotcha [community]:** `WithWebHostBuilder` creates a new `TestServer` for every call. If your test class instantiates clients via `_factory.WithWebHostBuilder(...)` inside multiple `[Fact]` methods, a new server (and new DI container) is spun up per test, making the test suite much slower than expected. For per-test service overrides, scope via `WithWebHostBuilder` only when truly needed; for shared overrides, subclass `WebApplicationFactory<TProgram>` and inject the factory as `IClassFixture<>`.
+
+---
+
+## Anti-Patterns Quick Reference — Advanced Testing Patterns
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `[InlineData]` with `new` expressions for complex types | Does not compile — `[InlineData]` is an attribute limited to constant values | Use `[ClassData]` or `[MemberData]` pointing to `TheoryData<T>` |
+| Static `Randomizer.Seed` in parallel test projects | Global state causes races — tests see non-deterministic data when run in parallel | Use per-instance seeding: `new Faker<T>().UseSeed(n)` |
+| NSubstitute configuring non-virtual class methods | Setup is silently ignored; real implementation runs — false confidence in test isolation | Mock interfaces or mark methods `virtual`; wrap concrete third-party types in an adapter |
+| Writing `Protected().Setup()` for every protected override | Couples tests to implementation details — changing internals breaks tests, not bugs | Test via the public API; use `Protected()` only when the protected method IS the contract (e.g., `HttpMessageHandler.SendAsync`) |
+| `WithWebHostBuilder` in every `[Fact]` method | New `TestServer` per test — suite runs 10x slower than with a shared factory | Subclass `WebApplicationFactory` for common overrides; `WithWebHostBuilder` only for exceptional per-test scenarios |
+| Custom FA assertion calling `Execute.Assertion` after FA v8 upgrade | Compile error: `Execute.Assertion` removed in FA v8 — breaks all custom extensions | Update to `AssertionChain.GetOrCreate()` API; add an upgrade test in CI |
 | Using `dotnet-reportgenerator` with a single test project's XML | Multi-project solutions have multiple XML files; missing files skews coverage down | Use glob pattern `"**/coverage.cobertura.xml"` to collect all test project outputs |

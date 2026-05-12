@@ -1,6 +1,27 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 40 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 41 | score: 98/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 41 (2026-05-12): added TypeScript-Specific Testing Utilities section (type guards as
+       reusable test assertions, isDefined/isApiSuccess/isApiError guards, generic test helper
+       utilities with assertDefined/waitForCondition/makeFixture patterns, Awaited<ReturnType<...>>
+       for typing async mock return values); added Type-Safe Mocking with jest-mock-extended section
+       (mock<T>(), mockDeep<T>(), calledWith() argument-scoped returns, captor(), fallbackMockImplementation
+       pitfall, mockReset vs mockClear vs mockRestore pitfall); added TypeScript Strict Mode — Impact
+       on Tests section (strictNullChecks forcing nullable test coverage, exactOptionalPropertyTypes
+       breaking hand-written fixtures, useUnknownInCatchVariables for error assertion, toError helper);
+       added Discriminated Union Testing section (per-variant test organisation, assertNever compile
+       guard, table-driven union tests with satisfies); added Branded Types in Tests section
+       (Brand<T,B> utility, smart constructors, fixtures with branded types, satisfies + branded
+       combined, JSON round-trip pitfall); added satisfies Operator in Test Fixtures section
+       (literal type preservation vs annotation widening, satisfies for exhaustive fixture coverage,
+       excess property pitfall with union arrays); added Testing-Specific Anti-Patterns table
+       (7 new rows: raw jest.fn(), as any internals, Partial fixtures, assertion cast, undefined mock,
+       __mocks__ without jest.mock(), branded as cast) — sourced from
+       jest-mock-extended github.com/marchaos/jest-mock-extended,
+       typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html,
+       typescriptlang.org/docs/handbook/2/narrowing.html (verified 2026-05-12)
+-->
+<!-- iteration trace (previous):
      Iter 40 (2026-05-12): added Type-Level Testing with expectTypeOf / assertType section (Vitest
        built-in expectTypeOf API, tsd / expect-type patterns, assertType helper, testing generic
        return types, toEqualTypeOf vs toMatchTypeOf, common pitfalls); added TypeScript 6.0 —
@@ -6117,5 +6138,634 @@ reporter.format.toUpperCase(); // ✅ string method available without type guard
 | `expectTypeOf(...).toMatchTypeOf<T>()` for exact type equality | `toMatchTypeOf` only checks assignability (like `extends`) — passes even if actual type is wider | Use `.toEqualTypeOf<T>()` for strict bidirectional type equality |
 | `Temporal.PlainDateTime` for cross-timezone scheduling | PlainDateTime has no timezone — DST transitions create ambiguous wall-clock times | Use `Temporal.ZonedDateTime` for any time that must be correct across timezones |
 | Using `Date` objects in new TypeScript 6.0+ code | `Date` is mutable, timezone-implicit, and millisecond-precision — all fixed by Temporal | Use Temporal API types; convert from `Date` via `Temporal.Instant.fromEpochMilliseconds()` |
+
+---
+
+## TypeScript-Specific Testing Utilities
+
+### Type Guards as Reusable Test Assertions
+
+User-defined type predicates serve double duty in tests: they narrow types for assertions AND document the expected shape of test data. Centralising type guards in a `test/helpers/type-guards.ts` module prevents scattered `as` casts throughout test files.
+
+```typescript
+// test/helpers/type-guards.ts
+
+// Generic "is defined" guard — eliminates null/undefined from a value
+export function isDefined<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
+}
+
+// Shape guard for API responses
+export interface ApiSuccess<T> {
+  ok: true;
+  data: T;
+}
+export interface ApiError {
+  ok: false;
+  error: string;
+  code: number;
+}
+export type ApiResult<T> = ApiSuccess<T> | ApiError;
+
+export function isApiSuccess<T>(result: ApiResult<T>): result is ApiSuccess<T> {
+  return result.ok === true;
+}
+
+export function isApiError<T>(result: ApiResult<T>): result is ApiError {
+  return result.ok === false;
+}
+
+// Usage in tests — no `as` casts needed
+import { describe, it, expect } from 'vitest';
+import { isApiSuccess, isDefined } from './helpers/type-guards';
+
+describe('fetchUser', () => {
+  it('returns user data on success', async () => {
+    const result = await fetchUser(1);
+    // Type predicate makes TypeScript know result.data exists here
+    expect(isApiSuccess(result)).toBe(true);
+    if (isApiSuccess(result)) {
+      expect(result.data.id).toBe(1);          // ✅ result.data is typed as User
+      expect(result.data.name).toBeDefined();   // no cast needed
+    }
+  });
+});
+```
+
+---
+
+### Generic Test Helper Utilities
+
+Parameterised helper functions eliminate duplicated assertion boilerplate and make test intent explicit. Generic signatures preserve type safety — the test helper becomes a typed API contract.
+
+```typescript
+// test/helpers/assertions.ts
+
+// Assert a value is defined and return the narrowed type (throws otherwise)
+export function assertDefined<T>(
+  value: T | null | undefined,
+  message = 'Expected value to be defined'
+): T {
+  if (value === null || value === undefined) {
+    throw new Error(message);
+  }
+  return value;
+}
+
+// Wait for an element or async value to satisfy a predicate
+export async function waitForCondition<T>(
+  fn: () => T | Promise<T>,
+  predicate: (val: T) => boolean,
+  options: { timeout?: number; interval?: number } = {}
+): Promise<T> {
+  const { timeout = 5000, interval = 50 } = options;
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const val = await fn();
+    if (predicate(val)) return val;
+    await new Promise(r => setTimeout(r, interval));
+  }
+  throw new Error(`Condition not met within ${timeout}ms`);
+}
+
+// Type-safe fixture builder — requires all fields then allows partial override
+export function makeFixture<T>(defaults: T) {
+  return (overrides: Partial<T> = {}): T => ({ ...defaults, ...overrides });
+}
+
+// Usage
+const makeUser = makeFixture({
+  id: 1 as UserId,
+  name: 'Alice',
+  email: 'alice@example.com' as Email,
+  role: 'user' as const,
+  createdAt: new Date('2024-01-01'),
+});
+
+const adminUser = makeUser({ role: 'admin', name: 'Bob' });
+// adminUser is typed as User — all fields present, overrides applied
+```
+
+---
+
+### `Awaited<ReturnType<...>>` — Typing Async Mock Return Values
+
+When mocking async functions, the return type must match `Promise<T>` at the mock boundary but `T` at the assertion boundary. The `Awaited` utility type bridges this gap without manual type annotation.
+
+```typescript
+import { vi, expect } from 'vitest';
+
+// The service we want to mock
+interface UserRepository {
+  findById(id: number): Promise<User | null>;
+  findAll(): Promise<User[]>;
+  save(user: User): Promise<User>;
+}
+
+// Derive the resolved value type from the function signature
+type FindByIdResult = Awaited<ReturnType<UserRepository['findById']>>;
+// → User | null  (the awaited value, not Promise<User | null>)
+
+type SaveResult = Awaited<ReturnType<UserRepository['save']>>;
+// → User
+
+// Building a type-safe mock with explicit return types
+const mockRepo: UserRepository = {
+  findById: vi.fn<[number], Promise<User | null>>(),
+  findAll:  vi.fn<[], Promise<User[]>>(),
+  save:     vi.fn<[User], Promise<User>>(),
+};
+
+// Set return values using the derived types
+const mockUser: FindByIdResult = { id: 1, name: 'Alice', email: 'alice@test.com' };
+vi.mocked(mockRepo.findById).mockResolvedValue(mockUser);
+
+// Assertions use the same derived type — no repetition, no drift
+it('returns user when found', async () => {
+  const result = await mockRepo.findById(1);
+  expect(result).toEqual(mockUser satisfies FindByIdResult);
+});
+```
+
+---
+
+## Type-Safe Mocking with `jest-mock-extended`
+
+The `jest-mock-extended` library (npm: `jest-mock-extended`) provides fully type-safe mocks driven by TypeScript interfaces. Unlike `jest.fn()` which requires manual typing, `mock<T>()` infers all method signatures from the interface definition and enforces matching at call-site.
+
+### Installation
+
+```bash
+npm install --save-dev jest-mock-extended
+# Requires Jest ≥ 27 and TypeScript ≥ 4.5
+```
+
+### `mock<T>()` — Basic Interface Mock
+
+```typescript
+import { mock } from 'jest-mock-extended';
+
+interface PaymentGateway {
+  charge(amount: number, currency: string): Promise<{ transactionId: string }>;
+  refund(transactionId: string): Promise<boolean>;
+  getBalance(accountId: string): Promise<number>;
+}
+
+describe('OrderService', () => {
+  const gateway = mock<PaymentGateway>();
+
+  beforeEach(() => {
+    // mock<T>() returns a MockProxy<T> — all methods are jest.fn() under the hood
+    // Reset between tests to avoid leaking state
+    gateway.charge.mockReset();
+    gateway.refund.mockReset();
+  });
+
+  it('charges the correct amount', async () => {
+    // Type-safe mock setup — argument types are enforced by the interface
+    gateway.charge.mockResolvedValue({ transactionId: 'txn_123' });
+
+    const service = new OrderService(gateway);
+    const result = await service.processPayment(99.99, 'USD');
+
+    expect(gateway.charge).toHaveBeenCalledWith(99.99, 'USD');
+    expect(result.transactionId).toBe('txn_123');
+  });
+});
+```
+
+### `mockDeep<T>()` — Nested Object Mocking
+
+Use `mockDeep<T>()` when an interface contains nested objects (not just methods). It recursively wraps every nested property in a mock proxy.
+
+```typescript
+import { mockDeep } from 'jest-mock-extended';
+
+interface DatabaseClient {
+  users: {
+    findById(id: number): Promise<User | null>;
+    create(data: Omit<User, 'id'>): Promise<User>;
+  };
+  orders: {
+    findByUserId(userId: number): Promise<Order[]>;
+  };
+  transaction<T>(fn: (client: DatabaseClient) => Promise<T>): Promise<T>;
+}
+
+const db = mockDeep<DatabaseClient>();
+
+it('creates a user in a transaction', async () => {
+  const createdUser: User = { id: 1, name: 'Bob', email: 'bob@test.com' };
+
+  // Deep mock: nested method access is also typed
+  db.users.create.mockResolvedValue(createdUser);
+
+  // calledWith() scopes the mock return to specific arguments only
+  db.users.findById.calledWith(1).mockResolvedValue(createdUser);
+  db.users.findById.calledWith(99).mockResolvedValue(null);
+
+  await userService.createUser({ name: 'Bob', email: 'bob@test.com' }, db);
+
+  expect(db.users.create).toHaveBeenCalledWith(
+    expect.objectContaining({ name: 'Bob' })
+  );
+});
+```
+
+### `calledWith()` — Argument-Scoped Return Values
+
+The `calledWith()` extension is the killer feature of `jest-mock-extended`. It sets a return value only when the mock is called with specific arguments — removing the need for `jest.fn().mockImplementation(arg => ...)` branching logic.
+
+```typescript
+import { mock, anyString, any } from 'jest-mock-extended';
+
+interface EmailService {
+  send(to: string, subject: string, body: string): Promise<void>;
+  validate(email: string): boolean;
+}
+
+const emailSvc = mock<EmailService>();
+
+// Different return value per argument combination
+emailSvc.validate.calledWith('valid@example.com').mockReturnValue(true);
+emailSvc.validate.calledWith('bad-email').mockReturnValue(false);
+
+// Wildcard matchers — match any string, any number, etc.
+emailSvc.send.calledWith(anyString(), 'Welcome', anyString()).mockResolvedValue();
+
+// captor() captures the argument for later assertion
+import { captor } from 'jest-mock-extended';
+const subjectCaptor = captor<string>();
+emailSvc.send.calledWith('bob@test.com', subjectCaptor, anyString()).mockResolvedValue();
+
+await notificationService.sendWelcome('bob@test.com');
+expect(subjectCaptor.value).toContain('Welcome');
+```
+
+[community] **Pitfall: `mock<T>()` initialises all methods as jest stubs that return `undefined` by default.** If your code under test checks a return value and the test forgets to configure it, the mock silently returns `undefined` — which may not cause an immediate failure. Pass `{ fallbackMockImplementation: () => { throw new Error('Not mocked') } }` as the second argument to `mock()` to make unconfigured calls throw, surfacing missing setup early.
+
+```typescript
+// Strict mode: unconfigured calls throw instead of returning undefined
+const strictGateway = mock<PaymentGateway>(
+  {},
+  { fallbackMockImplementation: () => { throw new Error('Unmocked method called'); } }
+);
+```
+
+[community] **Pitfall: `mockReset()` vs `mockClear()` vs `mockRestore()` confusion.** `mockClear()` resets call counts and arguments but keeps the mock implementation; `mockReset()` also removes configured return values; `mockRestore()` is only meaningful for `jest.spyOn` (restores the original implementation). For `jest-mock-extended` mocks, use `mockReset()` in `beforeEach` to ensure each test starts from a clean state.
+
+---
+
+## TypeScript Strict Mode — Impact on Tests
+
+Enabling `strict: true` (or specific flags like `strictNullChecks`, `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`) directly changes what test code compiles. Understanding these impacts prevents the common mistake of relaxing strict mode in `tsconfig.test.json`.
+
+### `strictNullChecks` in Test Assertions
+
+```typescript
+// Without strictNullChecks: TypeScript trusts nullable values are always set
+interface User { id: number; address?: { city: string } }
+
+function getCity(user: User): string {
+  return user.address.city; // No error without strict — runtime crash if address unset
+}
+
+// With strictNullChecks: tests must handle the undefined branch
+describe('getCity', () => {
+  it('returns city when address is set', () => {
+    const user: User = { id: 1, address: { city: 'Berlin' } };
+    expect(getCity(user)).toBe('Berlin');
+  });
+
+  it('handles missing address', () => {
+    const user: User = { id: 2 };
+    // With strict: TypeScript forces you to write this test
+    expect(() => getCity(user)).toThrow();
+    // Or better: fix the function to return string | undefined
+  });
+});
+```
+
+### `exactOptionalPropertyTypes` in Test Fixtures
+
+`exactOptionalPropertyTypes` distinguishes between `{ prop?: string }` (field may be absent) and `{ prop: string | undefined }` (field present with undefined value). This changes how test fixtures must be written.
+
+```typescript
+// tsconfig: "exactOptionalPropertyTypes": true
+
+interface UserProfile {
+  name: string;
+  bio?: string;       // may be absent from the object entirely
+}
+
+// ❌ This is now a type error with exactOptionalPropertyTypes
+const profile1: UserProfile = { name: 'Alice', bio: undefined };
+// Error: Type '{ name: string; bio: undefined; }' is not assignable to 'UserProfile'
+//   Types of property 'bio' are incompatible.
+
+// ✅ Either omit the field entirely
+const profile2: UserProfile = { name: 'Alice' };
+
+// ✅ Or provide a real value
+const profile3: UserProfile = { name: 'Alice', bio: 'Engineer at Acme' };
+
+// In test fixtures: use conditional spread pattern for optional fields
+function makeProfile(bio?: string): UserProfile {
+  return {
+    name: 'Test User',
+    ...(bio !== undefined && { bio }),  // only adds 'bio' key when value is provided
+  };
+}
+```
+
+[community] **Pitfall: `exactOptionalPropertyTypes` breaks most hand-written test fixtures that assign `undefined` to optional fields.** The migration is not `s/: undefined/: omit/` — it requires audit of every fixture. Use `Partial<T>` with a spread pattern or a factory helper (see `makeFixture` above) to centralise the pattern. The most common hidden breakage is in `Object.assign`-based merges: `Object.assign({}, defaults, { bio: undefined })` explicitly sets `bio: undefined`, which `exactOptionalPropertyTypes` treats differently from omission.
+
+### `useUnknownInCatchVariables` in Test Error Assertions
+
+```typescript
+// Without flag: caught error is 'any' — no type safety
+try {
+  doSomething();
+} catch (err) {
+  expect(err.message).toBe('...');  // compiles but fragile
+}
+
+// With useUnknownInCatchVariables (included in strict): error is 'unknown'
+try {
+  doSomething();
+} catch (err: unknown) {
+  // Must narrow before accessing properties
+  expect(err instanceof Error).toBe(true);
+  if (err instanceof Error) {
+    expect(err.message).toBe('Expected error message');
+    expect(err.name).toBe('TypeError');
+  }
+}
+
+// Helper: type-safe error extraction for test assertions
+function toError(err: unknown): Error {
+  if (err instanceof Error) return err;
+  return new Error(String(err));
+}
+
+it('throws with correct message', () => {
+  let caught: unknown;
+  try { riskyOperation(); } catch (e) { caught = e; }
+  const error = toError(caught);
+  expect(error.message).toMatch(/network timeout/i);
+});
+```
+
+---
+
+## Discriminated Union Testing — Exhaustive Patterns
+
+Testing discriminated unions requires covering every variant AND verifying that unhandled variants produce compile-time errors. The patterns below enforce both.
+
+### Per-Variant Test Organisation
+
+```typescript
+type PaymentMethod =
+  | { type: 'card';   last4: string; brand: 'visa' | 'mastercard' }
+  | { type: 'bank';   accountLast4: string; routingNumber: string }
+  | { type: 'wallet'; walletId: string; provider: 'paypal' | 'stripe' };
+
+// Organise tests by discriminant value — mirrors the union structure
+describe('formatPaymentLabel', () => {
+  describe('card', () => {
+    it('formats Visa card correctly', () => {
+      const method: PaymentMethod = { type: 'card', last4: '4242', brand: 'visa' };
+      expect(formatPaymentLabel(method)).toBe('Visa ending in 4242');
+    });
+
+    it('formats Mastercard correctly', () => {
+      const method: PaymentMethod = { type: 'card', last4: '5555', brand: 'mastercard' };
+      expect(formatPaymentLabel(method)).toBe('Mastercard ending in 5555');
+    });
+  });
+
+  describe('bank', () => {
+    it('shows account last 4 digits', () => {
+      const method: PaymentMethod = {
+        type: 'bank', accountLast4: '6789', routingNumber: '021000021'
+      };
+      expect(formatPaymentLabel(method)).toBe('Bank account ending in 6789');
+    });
+  });
+
+  describe('wallet', () => {
+    it('shows provider name', () => {
+      const method: PaymentMethod = { type: 'wallet', walletId: 'pp_123', provider: 'paypal' };
+      expect(formatPaymentLabel(method)).toBe('PayPal wallet');
+    });
+  });
+});
+```
+
+### `assertNever` as a Compile-Time Exhaustiveness Guard in Tests
+
+```typescript
+// Utility function: only callable with never — compile error if a variant is unhandled
+function assertNever(value: never, message?: string): never {
+  throw new Error(message ?? `Unhandled variant: ${JSON.stringify(value)}`);
+}
+
+// Use in a switch to guarantee every union variant has a test case
+function describePayment(method: PaymentMethod): string {
+  switch (method.type) {
+    case 'card':   return `Card ${method.brand} ***${method.last4}`;
+    case 'bank':   return `Bank ***${method.accountLast4}`;
+    case 'wallet': return `${method.provider} wallet`;
+    default:       return assertNever(method); // TS error if a case is missing
+  }
+}
+
+// The exhaustiveness check propagates to tests: adding a new union variant
+// causes a compile error on the switch default — reminding you to add a test.
+```
+
+### Table-Driven Union Tests with `satisfies`
+
+```typescript
+// Define test cases as a typed array — satisfies ensures each case is a valid PaymentMethod
+const paymentCases = [
+  { method: { type: 'card',   last4: '4242', brand: 'visa' },                   expected: 'Visa ending in 4242' },
+  { method: { type: 'card',   last4: '5555', brand: 'mastercard' },             expected: 'Mastercard ending in 5555' },
+  { method: { type: 'bank',   accountLast4: '6789', routingNumber: '021000021' }, expected: 'Bank account ending in 6789' },
+  { method: { type: 'wallet', walletId: 'pp_123', provider: 'paypal' },         expected: 'PayPal wallet' },
+] satisfies Array<{ method: PaymentMethod; expected: string }>;
+// ↑ compile error if any test case has an invalid PaymentMethod shape
+
+it.each(paymentCases)('formats $method.type correctly', ({ method, expected }) => {
+  expect(formatPaymentLabel(method)).toBe(expected);
+});
+```
+
+---
+
+## Branded Types in Tests
+
+Branded (nominal) types prevent accidental mixing of structurally identical primitives at the type level — a `UserId` and an `OrderId` are both `number` at runtime but distinct types at compile time. Test fixtures must use the correct branded type to remain valid.
+
+### Defining Branded Types
+
+```typescript
+// Base brand utility type
+type Brand<T, B extends string> = T & { readonly __brand: B };
+
+// Domain branded types
+type UserId    = Brand<number, 'UserId'>;
+type OrderId   = Brand<number, 'OrderId'>;
+type Email     = Brand<string, 'Email'>;
+type ISO8601   = Brand<string, 'ISO8601'>;
+
+// Smart constructors — validate and return branded types
+function userId(id: number): UserId {
+  if (!Number.isInteger(id) || id <= 0) throw new Error(`Invalid UserId: ${id}`);
+  return id as UserId;
+}
+
+function email(raw: string): Email {
+  if (!/^[^@]+@[^@]+\.[^@]+$/.test(raw)) throw new Error(`Invalid email: ${raw}`);
+  return raw.toLowerCase() as Email;
+}
+
+function iso8601(raw: string): ISO8601 {
+  if (isNaN(Date.parse(raw))) throw new Error(`Invalid ISO8601: ${raw}`);
+  return raw as ISO8601;
+}
+```
+
+### Using Branded Types in Test Fixtures
+
+```typescript
+// test/fixtures/users.ts
+import { userId, email, iso8601, type UserId, type Email } from '../src/types/branded';
+
+// Factory that enforces correct branded types — no raw primitives
+export function makeUser(overrides: Partial<User> = {}): User {
+  return {
+    id:        userId(1),
+    email:     email('alice@example.com'),
+    createdAt: iso8601('2024-01-15T09:00:00Z'),
+    role:      'user',
+    ...overrides,
+  };
+}
+
+// Cannot accidentally pass an OrderId where UserId is expected
+describe('UserService.findById', () => {
+  it('fetches user by id', async () => {
+    const uid = userId(42);
+    // const oid = orderId(42);
+    // service.findById(oid);  // ← TypeScript error: Argument of type 'OrderId' is not
+    //                         //   assignable to parameter of type 'UserId'
+
+    const user = await service.findById(uid);
+    expect(user.id).toBe(uid);
+  });
+});
+```
+
+### Branded Types with `satisfies` for Fixture Validation
+
+```typescript
+// Combining satisfies with branded types validates the entire fixture at compile time
+const TEST_USERS = {
+  alice: {
+    id:    1 as UserId,
+    email: 'alice@test.com' as Email,
+    role:  'admin' as const,
+  },
+  bob: {
+    id:    2 as UserId,
+    email: 'bob@test.com' as Email,
+    role:  'user' as const,
+  },
+} satisfies Record<string, Pick<User, 'id' | 'email' | 'role'>>;
+
+// TEST_USERS.alice.role is 'admin' (literal) — not string
+// Typo in email or wrong id type → compile error, not silent runtime bug
+```
+
+[community] **Pitfall: Using `as UserId` directly in test fixtures without a smart constructor bypasses validation.** `1 as UserId` is a type-level cast — it does NOT validate the value at runtime. In tests, this is often acceptable (you control the test data), but smart constructors (`userId(1)`) document the intent and catch incorrect values like `userId(-1)` or `userId(NaN)` during test setup rather than at assertion time.
+
+[community] **Pitfall: Branded types do not survive JSON round-trips.** `JSON.parse(JSON.stringify(userId(1)))` returns a plain `number`, not `UserId`. When testing code paths that deserialise data (API responses, database rows), always re-apply smart constructors after parsing rather than casting the result directly.
+
+---
+
+## `satisfies` Operator in Test Fixtures
+
+The `satisfies` operator is a natural fit for test data objects: it validates shape without widening the inferred type, so literal types remain narrow for precise assertions.
+
+### Pattern: Validate Fixtures Without Losing Literal Types
+
+```typescript
+interface Route {
+  path: string;
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  auth: boolean;
+}
+
+// ❌ Type annotation widens 'GET' to 'GET' | 'POST' | 'PUT' | 'DELETE'
+const routeA: Route = { path: '/users', method: 'GET', auth: false };
+routeA.method; // type: 'GET' | 'POST' | 'PUT' | 'DELETE'
+
+// ✅ satisfies validates but preserves literal type
+const routeB = { path: '/users', method: 'GET', auth: false } satisfies Route;
+routeB.method; // type: 'GET'
+
+// Benefit in tests: conditional assertions stay precise
+it('sets correct content-type for method', () => {
+  if (routeB.method === 'GET') {
+    // TypeScript knows this branch is reachable without any cast
+    expect(handler.contentType).toBe('application/json');
+  }
+});
+```
+
+### Pattern: `satisfies` for Exhaustive Fixture Coverage
+
+Use `satisfies Array<UnionType>` to ensure your test fixtures cover specific union variants with type-checked shapes:
+
+```typescript
+type HttpStatus =
+  | { code: 200; body: string }
+  | { code: 201; location: string }
+  | { code: 400; errors: string[] }
+  | { code: 404; resource: string }
+  | { code: 500; detail: string };
+
+// If a new HttpStatus variant is added and a fixture is missing the required field,
+// satisfies reports a compile error at the fixture definition — not at assertion time
+const STATUS_FIXTURES = [
+  { code: 200, body: 'OK' },
+  { code: 201, location: '/users/1' },
+  { code: 400, errors: ['Name required'] },
+  { code: 404, resource: 'User' },
+  { code: 500, detail: 'Internal Server Error' },
+] satisfies HttpStatus[];
+
+it.each(STATUS_FIXTURES)('handles status %d', (status) => {
+  const response = buildResponse(status);
+  expect(response.statusCode).toBe(status.code);
+});
+```
+
+[community] **Pitfall: `satisfies` does not perform excess property checking on array elements when the array type has a union element type.** Each element is checked against all union members independently — TypeScript picks the best match. An element with an extra property may pass if it satisfies at least one member. Use discriminated unions (a shared `code` literal in this case) to ensure each element is matched to exactly one member.
+
+---
+
+## Anti-Patterns: Testing-Specific Quick Reference
+
+| Anti-pattern | Why it's harmful | What to do instead |
+|---|---|---|
+| Raw `jest.fn()` without type parameter | Return type inferred as `unknown`, call arguments not checked | `jest.fn<ReturnType, [ArgType1, ArgType2]>()` or use `jest-mock-extended` |
+| `(service as any).privateMethod()` in tests | Bypasses type checking; breaks silently on refactor | Inject a mock/spy at the interface boundary instead of reaching into internals |
+| Fixtures typed with `Partial<T>` everywhere | Allows missing required fields — tests may not reflect production data | Use `makeFixture<T>(defaults)(overrides)` pattern with full defaults |
+| `expect(result as ExpectedType).toBe(...)` | Type assertion before assertion hides actual type mismatch | Use type guard (`isApiSuccess(result)`) to narrow and assert simultaneously |
+| `mockResolvedValue(undefined as any)` | Circumvents strict null checks; hides missing mock setup | Configure the return value explicitly; use `fallbackMockImplementation` to make missing setup throw |
+| Importing from `__mocks__/` without `jest.mock()` call | Manual mocks are not automatically applied in Jest v27+ | Always call `jest.mock('../path/to/module')` at the top of the test file |
+| Branded type `as` cast in fixtures without validation | Passes wrong values (negative IDs, invalid emails) silently | Use smart constructors in test factories; reserve `as` cast for fixture constants only |
 | `infer U extends string` as a cast | Constrained infer FILTERS — resolves to `never` when U is not a string subtype | Use `Extract<U, string>` in the body to extract the string portion from a mixed union |
 | `{ ... } satisfies T as const` (wrong order) | TypeScript parse error — `satisfies` binds before `as const` | Always write `{ ... } as const satisfies T` |

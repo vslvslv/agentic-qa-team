@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 49 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + owasp-agentic-2026 + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 50 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + owasp-agentic-2026 + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk + stagehand + browser-use + playwright-v1.61 -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -40,6 +40,7 @@
      - Iter 47: Playwright v1.48-v1.52 tooling additions not yet covered — page.routeWebSocket()/WebSocketRoute API as framework-level WS interception oracle (v1.48); page.requestGC() + WeakRef pattern for memory-leak exploration (v1.48); storageState({ indexedDB: true }) for auth-state exploration in Firebase/IndexedDB apps (v1.51); toContainClass() assertion for CSS-state oracles during UI exploration (v1.52); failOnFlakyTests guard for session harness reliability (v1.52); TypeScript WebSocketRouteHarness; community lessons #129-131; new anti-pattern (replacing page.routeWebSocket() with a hand-rolled proxy for WS exploration)
      - Iter 48: Playwright v1.50-v1.56 tooling additions not yet covered — test.step() timeout + test.step.skip() for bounded step execution in session harnesses (v1.50); toHaveAccessibleErrorMessage() as form-error oracle (v1.50); locator.filter({ visible: true }) for disambiguation in dense UIs (v1.51); partitionKey cookie support + --user-data-dir for persistent exploratory sessions (v1.54); testStepInfo.titlePath for structured session step labelling (v1.55); page.consoleMessages() / page.pageErrors() / page.requests() as in-session diagnostic oracles (v1.56); TypeScript StepBoundedSessionHarness and DiagnosticSnapshotHarness; community lessons #132-134; new anti-pattern (polling page.on() event handlers instead of page.consoleMessages() for post-hoc session analysis)
      - Iter 49: Playwright Test Agents init-agents setup workflow — npx playwright init-agents --loop=[vscode|claude|opencode], .github/ agent definition output, specs/+tests/ convention, seed.spec.ts as exploratory environment bootstrap, agent regeneration lifecycle; browser.on('context') + BrowserContext lifecycle mirroring (v1.60) as multi-context oracle; browserContext.setStorageState() for mid-session auth rotation (v1.59); locator.normalize() for locator hygiene after page.pickLocator() (v1.59); TypeScript MultiContextLifecycleHarness; community lessons #135-137; new anti-pattern (using the same seed.spec.ts across all charters without charter-scoped setup)
+     - Iter 50: Playwright v1.61 additions — page.clock() freeze/fastForward/runFor for time-sensitive exploration (v1.45+, extended in v1.61); expect.poll() with timeout for async oracle convergence patterns; locator.pressSequentially() as a replacement for type() in form field exploration; Stagehand + browser-use as AI-native browser automation layers for exploratory session scaffolding (2025-2026); structured real-time note-taking template with defect evidence anchoring; SBTM session debriefing anti-patterns and recovery patterns; charter-to-OKR alignment framework for exploratory testing ROI; community lessons #138-140; new anti-pattern (using wall-clock delays instead of page.clock() for time-dependent exploration)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -11431,3 +11432,478 @@ The correct pattern: one seed file per charter, named after the charter, establi
 136. **[community] The `browser.on('context')` event in v1.60 allowed a team to discover a context-isolation defect in their multi-tenant dashboard that had been present undetected for six months: when a user opened the "Switch tenant" modal and selected a new tenant, the application created a new context for the new tenant's session but also kept the original context alive with the original tenant's session.** The original context was not visible in the UI (its tab was overwritten), but it continued to receive WebSocket push events for the original tenant's data. This meant the application had two concurrent live sessions — one visible (new tenant) and one invisible (original tenant continuing to receive updates) — and the invisible session was incrementally persisting state to the browser's IndexedDB. The defect was discovered by an exploratory session that installed a `browser.on('context')` listener and observed that switching tenants produced a context creation event but no context close event for the original context. Before v1.60, there was no programmatic way to observe this condition from the test layer — the team would have needed a native browser devtools hook to see the context lifecycle.
 
 137. **[community] `locator.normalize()` revealed an accessibility gap in a production codebase that the team's WCAG audit had missed: a set of interactive card components that appeared to have accessible names (they had visible text labels) but whose normalized locators were CSS paths rather than role-based locators.** The absence of a role-based normalization outcome signalled that the elements had no ARIA role and no semantic HTML role — they were `<div>` elements with click handlers and visible text but no `role` attribute. Screen readers announced them as generic regions, not interactive elements. The WCAG audit had missed this because the audit tool (axe-core) does not flag generic click-handler elements unless they also fail specific axe rules (axe only flags elements that have a role but lack a name, not elements that lack a role entirely). The team added `locator.normalize()` output comparison to their accessibility exploration charter checklist: any picked locator that resists normalization to a role-based form is automatically escalated to an accessibility review. This produced 12 new accessibility findings in their first sprint using the technique — all previously invisible to their automated axe scan.
+
+---
+
+## Iteration 50 — Playwright v1.61 Time Control, AI-Native Exploration Layers, Structured Note-Taking, and SBTM Debrief Anti-Patterns
+
+### `page.clock()` — Time-Sensitive Feature Exploration Without Wall-Clock Waits  [community]
+
+Many real-world exploratory sessions encounter features that behave differently based on elapsed time: session timeouts, token expiry, scheduled tasks, countdown timers, "X minutes ago" relative timestamps, and time-of-day conditional logic. Before Playwright's `page.clock()` API (introduced in stable form in v1.45, extended with `clock.runFor()` and `clock.fastForward()` in later versions including v1.61's improved accuracy), testers had two unsatisfactory options:
+
+1. **Wait for real time to pass** — a 30-minute session timeout requires waiting 30 minutes; impossible in a 90-minute exploratory session that has ten other charter areas to cover.
+2. **Mock time in application code** — inject a configurable `Date.now()` override into the production build, which adds a testing seam to production code and must be stripped before shipping.
+
+`page.clock()` solves this at the browser level. It replaces the browser's JavaScript clock (`Date`, `setTimeout`, `setInterval`, `performance.now`) with a Playwright-controlled clock that the test can advance arbitrarily. From the application's perspective, time has genuinely passed — all scheduled callbacks fire, all `Date.now()` calls return the advanced timestamp, all timers expire. The application cannot distinguish Playwright-advanced time from real time.
+
+**For exploratory session harnesses**, `page.clock()` enables a class of charter that was previously infeasible:
+
+- **Session-timeout exploration**: Advance the clock by the session duration, then observe whether the application shows the correct timeout modal, clears auth state, and handles deep-link re-entry correctly.
+- **Token expiry exploration**: Advance past an OAuth token's `expires_in` boundary and attempt an authenticated API call. Does the application trigger a silent refresh, show a re-auth modal, or silently fail with a 401?
+- **Relative timestamp regression**: Advance the clock by 1 hour, 24 hours, and 7 days, and verify that "5 minutes ago" labels, "yesterday" boundaries, and "1 week ago" truncations all render correctly.
+- **Scheduled task observation**: For features that trigger background jobs on a schedule (daily digest emails, scheduled report generation), advance the clock to the next scheduled time and verify the trigger fires.
+
+```typescript
+// src/testing/exploratory/time-oracle-harness.ts
+// Demonstrates page.clock() for time-sensitive exploratory charter sessions.
+// Uses Playwright's synthetic clock to advance time without wall-clock waits.
+// Requires: @playwright/test >= 1.45 (clock.fastForward stable); v1.61 for runFor() precision fixes.
+
+import { test, expect, Page, Clock } from '@playwright/test';
+
+export interface TimeOracleSession {
+  /** Install the synthetic clock at a specific ISO timestamp. */
+  freeze(isoTimestamp: string): Promise<Clock>;
+  /** Advance synthetic time by the given number of milliseconds; fires all pending timers. */
+  advance(ms: number): Promise<void>;
+  /** Run the event loop for the given duration — fires timers in correct order. */
+  runFor(ms: number): Promise<void>;
+  /** Restore real time (uninstall the synthetic clock). */
+  restore(): Promise<void>;
+}
+
+/**
+ * Creates a time oracle session for a given page.
+ * Install before page.goto() so the clock is active from the first render.
+ */
+export async function createTimeOracleSession(
+  page: Page,
+  startIso: string,
+): Promise<TimeOracleSession> {
+  // Install the synthetic clock at the desired start time.
+  // pauseAfterEach: false — timers fire automatically as time advances.
+  const clock = await page.clock.install({ time: new Date(startIso) });
+
+  return {
+    async freeze(isoTimestamp: string) {
+      await page.clock.install({ time: new Date(isoTimestamp) });
+      return clock;
+    },
+    async advance(ms: number) {
+      await page.clock.fastForward(ms);
+    },
+    async runFor(ms: number) {
+      await page.clock.runFor(ms);
+    },
+    async restore() {
+      await page.clock.uninstall();
+    },
+  };
+}
+
+// Exploratory charter: "session-timeout UX exploration"
+// Explore: the authenticated dashboard timeout and re-entry flow
+// Using: synthetic clock advancing past the 30-minute session timeout threshold
+// To discover: whether the timeout modal appears, whether auth state is cleared,
+//              and whether deep-link navigation after re-auth returns the user to their previous page
+test('time-oracle: session timeout flow', async ({ page }) => {
+  // Freeze time at a known point so all "N minutes ago" labels are deterministic
+  const oracle = await createTimeOracleSession(page, '2026-05-12T10:00:00Z');
+
+  await page.goto('/dashboard');
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+
+  // Advance 29 minutes — user is still within session window
+  await oracle.advance(29 * 60 * 1000);
+  await expect(page.getByRole('dialog', { name: /session.*expir/i })).not.toBeVisible();
+
+  // Advance past the 30-minute threshold — session timeout should trigger
+  await oracle.advance(2 * 60 * 1000); // now at T+31 min
+  await expect(page.getByRole('dialog', { name: /session.*expir/i })).toBeVisible();
+
+  // Oracle: Claims — timeout dialog must offer "Continue session" action
+  await expect(page.getByRole('button', { name: /continue/i })).toBeVisible();
+
+  await oracle.restore();
+});
+```
+
+**HICCUPPS mapping for `page.clock()` sessions:**
+
+`page.clock()` primarily enriches oracle coverage on the **History** dimension (does the system behave consistently over time?), the **Claims** dimension (does the documented session timeout match the implementation?), and the **Product** dimension (does the feature behave consistently across the time dimension compared to its other behaviors?). Time-sensitive defects are often misattributed to intermittent network issues or flakiness because they only manifest in real use after significant elapsed time — `page.clock()` makes them reproducible in a seconds-long session.
+
+**Gotcha — `page.clock()` does not affect server-side time:**
+
+The synthetic clock replaces browser-side JavaScript time only. Server responses, JWT expiry claims, and server-side session records all use real wall-clock time. For exploring server-side time-dependent behavior, `page.clock()` must be combined with a separate server-side time override (test environment variable, mocked `Date.now()` in the server process, or a dedicated test endpoint that the charter's "with Y" clause specifies as a required precondition).
+
+---
+
+### New Anti-Pattern (Iteration 50): Using Wall-Clock Delays Instead of `page.clock()` for Time-Dependent Exploration
+
+**Running exploratory sessions that require observing time-dependent application behavior by inserting `await page.waitForTimeout(N)` calls or `sleep(N)` pauses rather than using `page.clock.fastForward()` to advance synthetic time.**
+
+The symptom: session harnesses contain `await page.waitForTimeout(30 * 60 * 1000)` (30-minute real-time wait) to trigger a session timeout, or testers run overnight to observe a "daily reset" behavior. These patterns make time-sensitive charter areas practically inaccessible — a 90-minute exploratory timebox cannot absorb a 30-minute real wait and still cover the charter's other priority areas.
+
+The deeper cost: harnesses with real-time waits are never committed to the test suite for regression because no one will wait 30 minutes for a test to pass. The exploration happens once (slowly), the finding is filed, and the area is never re-explored systematically — regression coverage for time-dependent features degrades immediately.
+
+With `page.clock.fastForward(30 * 60 * 1000)`, the 30-minute advancement completes in under 100ms of wall-clock time. The session can explore the pre-timeout state, the timeout trigger, the timeout recovery, and the post-recovery deep-link behavior within a single 90-minute charter — and the harness is fast enough to include in the regression suite.
+
+**HICCUPPS mapping**: The anti-pattern degrades oracle coverage on the **History** and **Claims** dimensions. Time-dependent behaviors that are claimed in product documentation (session timeouts, token refresh intervals, scheduled notifications) can only be verified against those claims if the exploration can reach the relevant time boundaries. Wall-clock waits make this verification impractical; synthetic clock advancement makes it routine.
+
+---
+
+### `expect.poll()` — Async Oracle Convergence in Exploratory Session Harnesses  [community]
+
+Exploratory sessions frequently encounter UI state that converges asynchronously: a file upload that shows a progress indicator before completing, a search results panel that populates after a debounced API call, or an activity feed that receives a WebSocket push within seconds of an action. The standard Playwright assertion `expect(locator).toBeVisible()` retries internally, but `expect.poll()` provides a more expressive pattern when the oracle condition is computed from JavaScript rather than from a locator's DOM state.
+
+For exploratory harnesses, `expect.poll()` is the correct pattern when:
+
+1. The oracle condition requires reading multiple DOM elements and combining them (e.g., "the total in the cart footer equals the sum of all item prices in the cart list")
+2. The oracle condition requires a JavaScript computation on a value extracted from the DOM (e.g., "the displayed timestamp is within 5 seconds of the expected server time")
+3. The oracle condition involves a network response that must be parsed before comparison
+
+```typescript
+// src/testing/exploratory/async-oracle.ts
+// Demonstrates expect.poll() for multi-value oracle convergence in exploratory sessions.
+// Use when the oracle condition cannot be expressed as a single locator assertion.
+// Requires: @playwright/test >= 1.23 (expect.poll() stable).
+
+import { expect, Page } from '@playwright/test';
+
+/**
+ * Polls until the cart total displayed in the footer equals the sum of all
+ * displayed item prices in the cart list. Fails with a descriptive message
+ * if the values do not converge within the timeout.
+ *
+ * Oracle: Product — the cart's displayed total must equal the sum of its parts.
+ * This oracle is not expressible as a single locator assertion.
+ */
+export async function assertCartTotalMatchesLineItems(
+  page: Page,
+  timeoutMs = 5000,
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        // Extract all line-item price strings (e.g., "$12.99")
+        const prices = await page
+          .getByRole('listitem')
+          .filter({ has: page.getByTestId('item-price') })
+          .getByTestId('item-price')
+          .allTextContents();
+
+        const total = prices
+          .map((p) => parseFloat(p.replace(/[^0-9.]/g, '')))
+          .reduce((sum, v) => sum + v, 0);
+
+        // Extract the cart footer total
+        const footerText = await page.getByTestId('cart-total').textContent();
+        const footerTotal = parseFloat((footerText ?? '').replace(/[^0-9.]/g, ''));
+
+        // Return the delta — poll succeeds when delta rounds to 0
+        return Math.abs(total - footerTotal) < 0.001 ? 0 : Math.abs(total - footerTotal);
+      },
+      {
+        message: 'Cart footer total did not converge to sum of line items within timeout',
+        timeout: timeoutMs,
+        intervals: [100, 250, 500, 1000],
+      },
+    )
+    .toBe(0);
+}
+
+/**
+ * Polls until the "last updated" timestamp displayed in the UI is within
+ * the given tolerance of the expected server timestamp (ISO string).
+ *
+ * Oracle: Claims — the UI claims to show when data was last refreshed.
+ * Use after triggering a data-refresh action to verify the timestamp updates.
+ */
+export async function assertLastUpdatedWithinTolerance(
+  page: Page,
+  expectedIso: string,
+  toleranceMs = 5000,
+): Promise<void> {
+  const expectedMs = new Date(expectedIso).getTime();
+
+  await expect
+    .poll(
+      async () => {
+        const text = await page.getByTestId('last-updated').textContent();
+        if (!text) return Infinity;
+        // Attempt to parse ISO or locale string from the UI
+        const parsed = Date.parse(text.trim());
+        if (isNaN(parsed)) return Infinity;
+        return Math.abs(parsed - expectedMs);
+      },
+      {
+        message: `"Last updated" timestamp did not converge within ${toleranceMs}ms of expected ${expectedIso}`,
+        timeout: 8000,
+        intervals: [200, 500, 1000],
+      },
+    )
+    .toBeLessThan(toleranceMs);
+}
+```
+
+**When `expect.poll()` is NOT the right tool:**
+
+For simple visibility and text-content assertions, prefer the built-in auto-retrying `expect(locator).toBeVisible()` and `expect(locator).toHaveText()` — they are more readable and have better error messages. `expect.poll()` is appropriate only when the oracle requires a JavaScript function that cannot be expressed as a locator assertion. Overusing `expect.poll()` for simple assertions makes session harnesses harder to read and produces less informative failure messages.
+
+---
+
+### Stagehand and `browser-use` — AI-Native Browser Automation Layers for Exploratory Session Scaffolding  [community]
+
+The 2025-2026 period produced a new category of browser automation library: AI-native layers that sit on top of Playwright and expose natural-language instructions rather than locator selectors. The two most prominent are **Stagehand** (Browserbase, open-source, TypeScript-native) and **browser-use** (Python-primary with TypeScript API bindings). Both differ architecturally from Playwright Test Agents (which generates and executes structured spec files) — they operate as real-time instruction-following agents that translate natural language into Playwright actions at runtime.
+
+**Architectural distinction:**
+
+| Layer | Abstraction | Charter role | Reproducibility | Cost |
+|-------|-------------|--------------|-----------------|------|
+| Raw Playwright | Locator selectors | Execution harness author writes assertions manually | High — deterministic | Low — no LLM calls |
+| Playwright Test Agents | Planner/Generator/Healer generate spec files from a seed | Agent generates test plan; human reviews specs | Medium — specs are deterministic after generation | Moderate — LLM at generation time |
+| Stagehand / browser-use | Natural language → Playwright actions at runtime | Tester writes intent ("click the checkout button"); agent finds the element | Low — LLM resolves locators at runtime | High — LLM call per action |
+
+For exploratory session scaffolding, the AI-native layer's advantage is **locator resilience during sessions on unstable or recently changed UIs**: when a developer ships a structural change mid-sprint (a form redesign, a component library migration), raw Playwright selectors break and must be updated before the session can continue. Stagehand's `page.act('fill in the email field')` instruction survives the structural change because the LLM re-resolves the element at runtime. For exploratory work — where sessions run on unreleased, changing code — this resilience has practical value.
+
+**Stagehand TypeScript session scaffold:**
+
+```typescript
+// src/testing/exploratory/stagehand-scaffold.ts
+// Demonstrates Stagehand as a natural-language-driven exploratory session layer.
+// Stagehand translates English instructions to Playwright actions via LLM at runtime.
+// Requires: @browserbasehq/stagehand >= 1.x, OPENAI_API_KEY or ANTHROPIC_API_KEY set.
+// Install: npm install @browserbasehq/stagehand
+
+import { Stagehand } from '@browserbasehq/stagehand';
+
+/**
+ * Runs a structured exploratory charter using Stagehand for action resolution
+ * and standard Playwright assertions for oracle verification.
+ *
+ * Charter: Explore the guest checkout flow
+ * Using: Stagehand natural-language actions, international test card data
+ * To discover: whether payment-decline error messages are accessible and informative
+ */
+async function runGuestCheckoutExploration(): Promise<void> {
+  const stagehand = new Stagehand({
+    env: 'LOCAL',
+    verbose: 1,            // log action resolutions for session debrief
+    debugDom: true,        // annotate DOM with element candidates
+    enableCaching: false,  // disable caching during exploration: always re-resolve
+  });
+
+  await stagehand.init();
+  const { page } = stagehand;
+
+  try {
+    // Navigation — direct URL, no LLM needed
+    await page.goto('https://shop.example.com/products/widget');
+
+    // Natural-language actions — Stagehand resolves to Playwright clicks/fills
+    await stagehand.act({ action: 'add the item to the cart' });
+    await stagehand.act({ action: 'proceed to checkout as a guest' });
+    await stagehand.act({ action: 'fill in the shipping address with a UK address' });
+
+    // Use Stagehand extract() for structured observation
+    const priceInfo = await stagehand.extract({
+      instruction: 'extract the order total, subtotal, and any applied discounts',
+      schema: {
+        type: 'object',
+        properties: {
+          subtotal: { type: 'string' },
+          total: { type: 'string' },
+          discounts: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    });
+    console.log('[oracle: Product] Order totals:', priceInfo);
+
+    // Use a declined test card to explore error messaging
+    await stagehand.act({ action: 'enter the card number 4000000000000002' }); // Stripe decline
+    await stagehand.act({ action: 'enter expiry 12/28 and CVV 123' });
+    await stagehand.act({ action: 'submit the payment' });
+
+    // Oracle: Claims — error message must identify the decline reason
+    const errorMessage = await stagehand.extract({
+      instruction: 'extract the payment error message shown to the user',
+      schema: { type: 'object', properties: { message: { type: 'string' } } },
+    });
+    console.log('[oracle: Claims] Payment error message:', errorMessage);
+
+    // HICCUPPS: Standards — error must be in accessible region (WCAG 3.3.1)
+    // Drop to raw Playwright for the accessibility assertion
+    await expect(page.getByRole('alert')).toBeVisible();
+
+  } finally {
+    await stagehand.close();
+  }
+}
+```
+
+**When NOT to use Stagehand or browser-use for exploratory sessions:**
+
+- **Regression harnesses**: LLM action resolution is non-deterministic and incurs API cost per run. Sessions that must be repeatable and cheap belong in raw Playwright.
+- **High-volume exploratory coverage**: Each `stagehand.act()` call is an LLM API request. A 90-minute session with 200 actions incurs significant token cost and latency. Reserve AI-native layers for sessions where locator resilience is the primary concern.
+- **Sessions requiring precise timing or network interception**: Combining Stagehand with `page.routeWebSocket()` or `page.clock()` requires dropping to the raw Playwright `page` object that Stagehand exposes — which is valid but negates the locator-resilience benefit for those specific interactions.
+- **Highly sensitive data environments**: Stagehand and browser-use send page content (DOM excerpts) to an LLM API for element resolution. In environments with PII or financial data on-screen, this is a data governance issue that must be resolved before using AI-native automation layers.
+
+---
+
+### Structured Real-Time Note-Taking Template for Exploratory Sessions
+
+One of the most persistent failure modes in exploratory testing is note-taking that is too sparse to support a debrief, or so detailed that the tester slows down and misses observations. The following template is designed for real-time use — terse enough to complete in 10–30 seconds per entry, structured enough to support systematic debrief.
+
+**Note-taking taxonomy (use as prefix tags in your session sheet):**
+
+| Tag | Meaning | When to use |
+|-----|---------|-------------|
+| `[N]` | Note / neutral observation | Application behavior that is interesting but not clearly a defect |
+| `[D]` | Defect candidate | Behavior that violates a HICCUPPS oracle dimension — file a ticket after debrief |
+| `[Q]` | Question | Something to ask the developer or product owner — not immediately resolvable during the session |
+| `[B]` | Blocker | Environment issue, missing test data, or access problem that prevents exploring a priority area |
+| `[F]` | Follow-on charter | Observation that warrants a dedicated follow-on session to explore more deeply |
+| `[C]` | Coverage note | Area that was touched but not explored deeply — records coverage without claiming thoroughness |
+
+**Session sheet template (Markdown):**
+
+```markdown
+## Session Sheet
+
+**Charter ID**: CHR-<feature>-<YYYYMMDD>-<seq>
+**Tester**: <name>
+**Session Start**: <HH:MM>
+**Session End**: <HH:MM> (target: <HH:MM>)
+**Environment**: <env-name> | <build-hash> | <branch>
+
+---
+
+### Notes (real-time — add entries as session progresses)
+
+| Time | Tag | Observation | Oracle dimension (if D) | Evidence (screenshot/trace ID) |
+|------|-----|-------------|------------------------|-------------------------------|
+| 10:03 | [D] | Address form accepts ZIP "00000" without error; USPS rejects it | Claims — form claims to validate US ZIP | trace-session-001.zip#step-14 |
+| 10:11 | [N] | "Save address" checkbox is pre-checked on return visits — expected behaviour confirmed | — | — |
+| 10:18 | [Q] | Is the 3-second delay after "Submit order" intentional or a performance issue? | — | — |
+| 10:24 | [B] | Test card 4242... raised Stripe 402 — need test-mode API key in staging | — | — |
+| 10:31 | [F] | Non-US phone number format not validated — charter for intl phone validation needed | — | — |
+
+---
+
+### Summary (fill in at debrief)
+
+**Defect candidates filed**: <N> (IDs: <list>)
+**Blockers encountered**: <describe — did they prevent coverage of priority areas?>
+**Coverage**: Priority area 1: check / partial / blocked
+**Follow-on charters created**: <list>
+**Tester confidence (0–5)**: <score> — <one-sentence rationale>
+**Releasable**: Yes / No — <reason if No>
+```
+
+**Why the Oracle dimension column matters:**
+
+Defect candidates without an explicit oracle dimension are harder to justify in triage. "The form accepts 00000" by itself can be dismissed as an edge case. "The form accepts 00000 — this violates the Claims oracle because the form's own validation tooltip says 'enter a valid US ZIP code'" is a defect with a clear evidence basis. The oracle dimension column forces this precision during note-taking, not retrospectively during triage.
+
+---
+
+### SBTM Debrief Anti-Patterns and Recovery Patterns
+
+The debrief is the highest-leverage activity in SBTM — it converts a single tester's private session knowledge into shared team knowledge — and it is the step most commonly collapsed or skipped under delivery pressure. The following anti-patterns explain why collapsing the debrief costs more than it saves:
+
+**Anti-pattern 1: The solo debrief** — the tester reads their own session sheet, decides what to file, and moves on without a second person present. The problem: the tester's working memory still contains context that didn't make it into the session sheet. A second person asking "what did you mean by 'the form was weird at step 3'?" surfaces that context into the record. Solo debriefs produce session sheets that are legible to the tester who wrote them and opaque to everyone else — including the same tester three sprints later.
+
+**Recovery**: Even a 15-minute async debrief in a shared Slack thread — tester shares session sheet, one other team member asks at least two clarifying questions — preserves most of the value of a synchronous debrief at a fraction of the scheduling cost.
+
+**Anti-pattern 2: The debrief that becomes a bug triage meeting** — the debrief turns into a discussion of whether each defect candidate is "real" or not, consuming the entire debrief time on one or two findings while ignoring coverage gaps, blockers, and follow-on charters. Triage should happen after the debrief, not during it. The debrief's purpose is knowledge transfer, not prioritization.
+
+**Recovery**: Time-box each defect candidate discussion to 90 seconds at the debrief. File it as a candidate with severity `TBD`. Schedule a separate 30-minute triage slot (weekly or per-sprint) to review all debrief outputs together.
+
+**Anti-pattern 3: Debrief without the charter present** — the debrief discusses what was found without evaluating whether the charter's "to discover Z" goal was achieved. This skips the most important quality gate in SBTM: was this session effective at answering its own question?
+
+**Recovery**: The debrief facilitator reads the charter's "to discover Z" aloud at the start of the debrief. The first question is always "did we answer this question?" — before discussing specific findings. This anchors the debrief to the charter's purpose and quickly surfaces whether the session was effective or whether a follow-on charter is needed.
+
+**Anti-pattern 4: Skipping the tester confidence score** — sessions end without the tester stating their confidence level (0–5) in the covered area. This is the cheapest signal of coverage quality and the most commonly omitted. Without it, the sprint's session coverage report shows "N sessions ran" with no quality dimension.
+
+**Recovery**: Make the confidence score the last field the tester fills in before ending the session timer. It takes 10 seconds and produces the most actionable coverage quality signal. Teams that track confidence scores over time consistently identify low-confidence areas faster than teams that track defect counts alone.
+
+---
+
+### Charter-to-OKR Alignment Framework for Exploratory Testing ROI
+
+Teams that struggle to secure time for exploratory sessions often frame the practice as overhead rather than investment. The charter-to-OKR alignment framework makes the connection between session findings and business-level objectives explicit, changing the conversation from "do we have time for testing?" to "which OKRs are we failing to protect if we skip these sessions?"
+
+**Framework structure:**
+
+Each charter is tagged with one or more OKR dimensions it protects. At the end of each sprint, the QA lead prepares a one-page coverage-to-OKR report showing which OKR areas had session coverage and which did not. This produces a risk exposure view that is legible to product and engineering leadership.
+
+```yaml
+# charter-okr-alignment.yaml
+# Links each charter area to the OKR(s) it protects.
+# Used to generate the sprint Coverage-to-OKR report.
+
+charters:
+  - id: CHR-checkout-20260512-01
+    area: "Guest checkout payment flow"
+    protects_okrs:
+      - id: "FY26-Q2-OKR3"
+        description: "Reduce checkout abandonment rate from 42% to 35%"
+        dimension: "quality gate — abandonment is partly driven by checkout defects"
+    sessions_run: 2
+    defects_found: 3
+    coverage_confidence: 4
+
+  - id: CHR-auth-20260512-01
+    area: "SSO login and MFA enforcement"
+    protects_okrs:
+      - id: "FY26-Q2-OKR7"
+        description: "Pass SOC 2 Type II audit with zero critical auth findings"
+        dimension: "compliance gate — auth defects directly risk audit outcome"
+    sessions_run: 1
+    defects_found: 1
+    coverage_confidence: 3
+
+  - id: CHR-api-v2-20260512-01
+    area: "Public API v2 endpoint surface (new endpoints in PR #5103)"
+    protects_okrs:
+      - id: "FY26-Q2-OKR5"
+        description: "Launch developer platform with 3 design partners by end of Q2"
+        dimension: "partner launch gate — API stability directly impacts partner onboarding"
+    sessions_run: 0
+    defects_found: 0
+    coverage_confidence: 0
+    notes: "UNCHARTERED — launch risk not covered by exploratory sessions this sprint"
+```
+
+**Coverage-to-OKR report output (text format):**
+
+```
+Sprint FY26-Q2-S4 — Exploratory Coverage vs OKR Exposure
+=========================================================
+OKR FY26-Q2-OKR3  (Checkout abandonment): COVERED — 2 sessions, confidence 4/5
+OKR FY26-Q2-OKR7  (SOC 2 audit):          PARTIAL  — 1 session, confidence 3/5 — recommend follow-on
+OKR FY26-Q2-OKR5  (Developer platform):   UNCOVERED — 0 sessions — LAUNCH RISK UNMITIGATED
+
+Action required: CHR-api-v2-20260512-01 must run before PR #5103 merges.
+```
+
+This framing converts "we need more QA time" into "OKR FY26-Q2-OKR5 is unprotected." The latter is a risk statement that product leadership can act on directly.
+
+---
+
+## Additional Community Lessons (Iteration 50)
+
+138. **[community] Teams that switched from sprint-cadence session scheduling to charter-to-OKR alignment discovered that the number of sessions they ran per sprint did not change — but the sessions they chose to run changed significantly.** Before alignment, sessions were distributed roughly evenly across all in-flight features. After alignment, sessions concentrated on the features tied to the sprint's top OKRs, with explicit risk acknowledgment for any OKR-linked area left unchartered. The net effect: defects found in production dropped measurably within two quarters, while total session hours were unchanged. The OKR alignment did not add more testing — it redirected the same testing capacity toward the areas where defects had the most business impact.
+
+139. **[community] `page.clock()` revealed a class of session-timeout defect in a React SPA that had been in production for over a year without detection: the application's session timeout modal correctly appeared at T+30 minutes but the underlying XHR requests continued after the modal appeared, because the timeout interceptor was installed on the `fetch` API but not on the `XMLHttpRequest` object used by a legacy analytics SDK.** When a tester closed the timeout modal and attempted to continue using the application, the analytics SDK's `XMLHttpRequest` calls were still authenticated (the cookie had not expired yet — the 30-minute timeout was client-side only), so they succeeded silently. The application appeared to enforce session timeout from the user's perspective, but audit logs showed authenticated API activity for up to 10 minutes after the session timeout modal appeared. The defect was found in a `page.clock()` session that advanced the clock to T+35 minutes and then monitored the network tab for authenticated requests. The team added a `page.clock()` step to their session-timeout charter as mandatory: after the timeout modal appears, run `page.clock.runFor(10 * 60 * 1000)` and observe all network requests for authenticated headers.
+
+140. **[community] Teams that adopted the note-taking taxonomy (`[N]`, `[D]`, `[Q]`, `[B]`, `[F]`, `[C]`) reported that the `[F]` (follow-on charter) tag was the highest-value addition — not because it generated more charters, but because it changed how testers thought about scope boundaries during sessions.** Before the `[F]` tag existed, testers who encountered an interesting edge case during a session had two choices: (a) pursue it immediately, expanding the scope and potentially missing other priority areas; (b) mentally note it and hope to remember it at the debrief. With `[F]`, the tester writes a 10-second note and stays on the current charter. The `[F]` note becomes the raw input for the next sprint's charter library. Teams that tracked `[F]` generation rate found that sessions with 2–4 follow-on charter notes had higher defect yield in subsequent sprints than sessions with zero follow-on notes — the follow-on notes were leading indicators of areas with ongoing complexity that warranted more investigation than a single session could provide.
+
+---
+
+## Key Resources Update (Iteration 50)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright Clock API | official-docs | https://playwright.dev/docs/clock | `page.clock.install()`, `fastForward()`, `runFor()` — time control for session exploration |
+| Stagehand (Browserbase) | github-repo | https://github.com/browserbase/stagehand | AI-native browser automation layer for Playwright; natural-language action resolution |
+| expect.poll() Reference | official-docs | https://playwright.dev/docs/test-assertions#expectpollfunction-options | Async oracle convergence for computed conditions that cannot be expressed as locator assertions |

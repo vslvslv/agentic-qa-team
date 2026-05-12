@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 46 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 47 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes, playwright.dev/docs/api/class-websocketroute, playwright.dev/docs/test-global-setup-teardown, playwright.dev/docs/api/class-test#test-abort, github.com/mswjs/msw/releases, playwright.dev/docs/release-notes#version-157, playwright.dev/docs/release-notes#version-159, playwright.dev/docs/release-notes#version-160, vitest.dev/blog/vitest-3-2, vitest.dev/blog/vitest-4-1); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
@@ -10938,3 +10938,470 @@ export function injectSuspendedUserResponse(server: SetupServerApi, userId: stri
 | MSW v2.14.2 release notes | Official | https://github.com/mswjs/msw/releases/tag/v2.14.2 | `NetworkApi` type and handler controller exports — typed handler container pattern for TypeScript-first MSW setups |
 | faker v10.4.0 release notes | Official | https://github.com/faker-js/faker/releases/tag/v10.4.0 | Food module plant-based variety; Finnish phone numbers (`fakerFI.phone.number()`); Norwegian (nb_NO) zodiac, sex, vehicle data |
 | Playwright 1.60 release notes | Official | https://playwright.dev/docs/release-notes#version-160 | `browser.on('context')` observer event; `test.abort()` for fixture precondition enforcement; HAR as first-class tracing API |
+| Vitest test.each API docs | Official | https://vitest.dev/api/#test-each | Printf and object-property formatting; template literal tables; test.for() context-injection alternative |
+| MSW WebSocketHandler.test() | Official | https://github.com/mswjs/msw/releases/tag/v2.13.6 | Public `test()` method for verifying handler invocations in test assertions |
+
+---
+
+<!-- iter-47: Data-driven testing with test.each/test.for + factory data; MSW WebSocketHandler.test() v2.13.6; Vitest test.for() TypeScript context injection; 3 new community gotchas (#35–#37); 3 new Key Resources (2026-05-12) -->
+
+## Data-Driven Testing with `test.each` and Factory-Generated Data  [community]
+
+**Data-driven testing** (also called **parameterized testing** per ISTQB CTFL 4.0) runs the same
+test logic with multiple datasets, each forming a distinct test case. Combined with factories,
+it eliminates copy-paste test methods and centralises the set of test conditions in one place.
+
+**Why it matters:** Without parameterized testing, covering 6 boundary conditions for an
+order validator requires 6 separate `it()` blocks with nearly identical bodies. With
+`test.each`, a single test body + a data table = 6 test cases. When the test logic changes,
+only one place needs updating.
+
+### `test.each` with factory overrides — array table syntax
+
+The array table syntax is the most common form: each inner array is the argument list
+for one test run. Use factory `build()` as the data source so overrides stay type-safe.
+
+```typescript
+// specs/order-validation.each.test.ts — data-driven with factory overrides
+import { test, expect, describe } from 'vitest';
+import { buildOrder } from '../factories/order.factory';
+import { orderValidator } from '../services/order-validator';
+
+// Each tuple: [description, factory override, expected result]
+const validationCases: [string, Parameters<typeof buildOrder>[0], boolean][] = [
+  ['valid pending order',         { status: 'pending', totalCents: 5000 },   true],
+  ['paid order is valid',         { status: 'paid',    totalCents: 5000 },   true],
+  ['zero-cent order is invalid',  { status: 'pending', totalCents: 0 },      false],
+  ['negative cents is invalid',   { status: 'pending', totalCents: -1 },     false],
+  ['cancelled order is invalid',  { status: 'cancelled', totalCents: 500 },  false],
+  ['draft order passes validation', { status: 'draft', totalCents: 100 },    true],
+];
+
+describe('order validation', () => {
+  test.each(validationCases)(
+    '%s',
+    (_, overrides, expected) => {
+      const order = buildOrder(overrides);
+      const result = orderValidator.validate(order);
+      expect(result.valid).toBe(expected);
+    }
+  );
+});
+```
+
+### `test.each` with object rows — `$propertyName` title syntax
+
+When the data table has named fields, use object rows and `$propertyName` in the title
+string. This produces readable test names in CI output without manual format strings.
+
+```typescript
+// specs/checkout.each.test.ts — object rows with $propertyName titles
+import { test, expect } from 'vitest';
+import { buildUser } from '../factories/user.factory';
+import { checkoutService } from '../services/checkout.service';
+
+interface CheckoutCase {
+  scenario: string;
+  userOverrides: Parameters<typeof buildUser>[0];
+  expectedStatus: 'success' | 'blocked' | 'payment_required';
+  expectedReason?: string;
+}
+
+const checkoutCases: CheckoutCase[] = [
+  {
+    scenario: 'active free user without items',
+    userOverrides: { status: 'active', subscriptionTier: 'free' },
+    expectedStatus: 'blocked',
+    expectedReason: 'empty_cart',
+  },
+  {
+    scenario: 'suspended user is blocked at checkout',
+    userOverrides: { status: 'suspended' },
+    expectedStatus: 'blocked',
+    expectedReason: 'account_suspended',
+  },
+  {
+    scenario: 'premium user without payment method',
+    userOverrides: { status: 'active', subscriptionTier: 'premium', paymentMethodId: null },
+    expectedStatus: 'payment_required',
+    expectedReason: 'no_payment_method',
+  },
+  {
+    scenario: 'premium user with valid payment succeeds',
+    userOverrides: { status: 'active', subscriptionTier: 'premium', paymentMethodId: 'pm-visa-001' },
+    expectedStatus: 'success',
+  },
+];
+
+// Test title: "checkout: $scenario → $expectedStatus"
+test.each(checkoutCases)(
+  'checkout: $scenario → $expectedStatus',
+  ({ userOverrides, expectedStatus, expectedReason }) => {
+    const user = buildUser(userOverrides);
+    const cart = { items: [{ productId: 'p-001', quantity: 1, unitCents: 999 }] };
+    const result = checkoutService.initiate(user, cart);
+
+    expect(result.status).toBe(expectedStatus);
+    if (expectedReason) {
+      expect(result.reason).toBe(expectedReason);
+    }
+  }
+);
+```
+
+### `test.each` template literal tables — structured tabular format
+
+Template literal tables let you write parameterized cases in a columnar format that
+reads like a specification table. Each row becomes one test case; column headers become
+parameter names.
+
+```typescript
+// specs/discount.each.test.ts — template literal table
+import { test, expect } from 'vitest';
+import { buildOrder } from '../factories/order.factory';
+import { discountService } from '../services/discount.service';
+
+// Template literal table: each row is ${value} separated by pipes
+// Column headers become destructured parameter names
+test.each`
+  tier          | coupon          | totalCents | expectedDiscount
+  ${'free'}     | ${null}         | ${5000}    | ${0}
+  ${'free'}     | ${'SAVE10'}     | ${5000}    | ${500}
+  ${'premium'}  | ${null}         | ${5000}    | ${500}
+  ${'premium'}  | ${'SAVE10'}     | ${5000}    | ${1000}
+  ${'enterprise'}| ${null}        | ${5000}    | ${1500}
+  ${'enterprise'}| ${'SAVE10'}    | ${5000}    | ${2000}
+`(
+  '$tier tier + coupon=$coupon: discount should be $expectedDiscount cents',
+  ({ tier, coupon, totalCents, expectedDiscount }) => {
+    const order = buildOrder({
+      totalCents,
+      subscriptionTier: tier as 'free' | 'premium' | 'enterprise',
+    });
+    const result = discountService.calculate(order, coupon);
+    expect(result.discountCents).toBe(expectedDiscount);
+  }
+);
+```
+
+---
+
+## `test.for()` — The Context-Injecting Alternative to `test.each`  [community]
+
+Vitest's `test.for()` is a newer alternative to `test.each` that provides the
+Vitest **TestContext** (fixtures + expect + task) to each parameterized run. Unlike
+`test.each`, `test.for()` does **not spread arrays** — each row is passed as a
+single argument, making it more natural for nested arrays and allowing `expect.soft()`
+(which requires context).
+
+**Why it matters for factories:** `test.for()` with context enables two patterns
+`test.each` cannot: (1) accessing Vitest fixtures (`{ db, activeUser }`) inside
+a parameterized test, and (2) using `context.expect.soft()` for multiple non-failing
+assertions within one parameterized run.
+
+```typescript
+// specs/user-roles.for.test.ts — test.for() with context + soft assertions
+import { test, expect } from 'vitest';
+import { buildUser } from '../factories/user.factory';
+import { permissionService } from '../services/permission.service';
+
+type PermissionCase = {
+  role: 'admin' | 'editor' | 'viewer';
+  action: 'read' | 'write' | 'delete';
+  expectedAllowed: boolean;
+};
+
+const permissionMatrix: PermissionCase[] = [
+  { role: 'admin',  action: 'read',   expectedAllowed: true  },
+  { role: 'admin',  action: 'write',  expectedAllowed: true  },
+  { role: 'admin',  action: 'delete', expectedAllowed: true  },
+  { role: 'editor', action: 'read',   expectedAllowed: true  },
+  { role: 'editor', action: 'write',  expectedAllowed: true  },
+  { role: 'editor', action: 'delete', expectedAllowed: false },
+  { role: 'viewer', action: 'read',   expectedAllowed: true  },
+  { role: 'viewer', action: 'write',  expectedAllowed: false },
+  { role: 'viewer', action: 'delete', expectedAllowed: false },
+];
+
+// test.for() does NOT spread the row — row is a single object argument
+// test.each() would receive (role, action, expectedAllowed) — test.for() receives ({ role, action, expectedAllowed })
+test.for(permissionMatrix)(
+  '$role can $action: $expectedAllowed',
+  ({ role, action, expectedAllowed }, context) => {
+    const user = buildUser({ role } as any);
+    const result = permissionService.check(user, action);
+
+    // context.expect.soft() collects all failures before reporting — no early bail
+    // test.each() does NOT support this (no context parameter)
+    context.expect.soft(result.allowed).toBe(expectedAllowed);
+    context.expect.soft(result.checkedAt).toBeInstanceOf(Date);
+  }
+);
+```
+
+**`test.for()` with async factory fixtures:**
+
+```typescript
+// specs/db-roles.for.test.ts — test.for() with fixture context (Vitest 4.1+)
+import { test, expect } from '../test/fixtures/vitest-4.1-fixtures';
+import { buildUser } from '../factories/user.factory';
+import { userRepository } from '../repositories/user.repository';
+
+const statusCases = [
+  { status: 'active',    shouldPersist: true  },
+  { status: 'suspended', shouldPersist: true  },
+  { status: 'pending',   shouldPersist: true  },
+  { status: 'deleted',   shouldPersist: false },  // invalid status — repo rejects
+] as const;
+
+// test.for() receives the fixture context (db, activeUser, etc.) as second argument
+test.for(statusCases)(
+  'userRepository.create() with status=$status',
+  async ({ status, shouldPersist }, { expect: ctxExpect }) => {
+    const input = buildUser({ status: status as any });
+
+    if (shouldPersist) {
+      const saved = await userRepository.create(input);
+      ctxExpect.soft(saved.id).toBeTruthy();
+      ctxExpect.soft(saved.status).toBe(status);
+    } else {
+      await ctxExpect(userRepository.create(input)).rejects.toThrow('invalid_status');
+    }
+  }
+);
+```
+
+**`test.each` vs `test.for` decision guide:**
+
+| Feature | `test.each` | `test.for` |
+|---------|-------------|------------|
+| Array spreading | Yes — `[a, b, c]` spreads to `(a, b, c)` | No — `[a, b, c]` stays as `([a, b, c], ctx)` |
+| Object rows | Yes — `{ a, b }` destructured | Yes — same |
+| TestContext access | No | Yes — `(row, context)` |
+| `expect.soft()` | No | Yes (via `context.expect.soft()`) |
+| Snapshot testing in concurrent tests | No | Yes (context-scoped snapshots) |
+| Template literal tables | Yes | No |
+| Best for | Simple value tables, BVA, equivalence classes | Matrix tests needing soft assertions or fixtures |
+
+---
+
+## MSW `WebSocketHandler.test()` — Asserting WebSocket Handler Invocations  [community]
+
+MSW v2.13.6 introduced a public `.test()` method on `WebSocketHandler` that returns
+a handler controller object. The controller exposes `invocations` — a list of all
+WebSocket connections that matched the handler — enabling assertion-style verification
+that specific WebSocket events were emitted or received.
+
+**Why it matters for test data:** E2E and integration tests for real-time features
+(live dashboards, chat, collaborative editing) need to assert that specific WebSocket
+messages were sent with factory-generated payloads. Before `.test()`, the only way to
+assert WS message content was via page-level Playwright assertions or custom capture
+stores. `.test()` gives you a direct channel to inspect what the MSW mock handler
+received.
+
+```typescript
+// test-helpers/ws-test-handler.ts — using WebSocketHandler.test() for message assertions
+import { ws } from 'msw';
+import { setupServer } from 'msw/node';
+
+// Factory for WebSocket message payloads (typed)
+interface OrderUpdateMessage {
+  type: 'order.updated';
+  orderId: string;
+  status: 'paid' | 'shipped' | 'delivered';
+  timestamp: string;
+}
+
+function buildOrderUpdateMessage(
+  overrides: Partial<OrderUpdateMessage> = {}
+): OrderUpdateMessage {
+  return {
+    type: 'order.updated',
+    orderId: `ord-${Math.random().toString(36).slice(2, 9)}`,
+    status: 'paid',
+    timestamp: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+// Create the WebSocket handler and expose its test controller
+const orderWsLink = ws.link('ws://localhost:4000/orders');
+
+export const orderWsHandler = orderWsLink.addEventListener('connection', ({ client }) => {
+  // Echo factory-built messages back to the client for E2E test assertions
+  client.addEventListener('message', (event) => {
+    const message = JSON.parse(event.data as string);
+    if (message.type === 'subscribe.order') {
+      // Respond with a factory-generated update
+      client.send(JSON.stringify(buildOrderUpdateMessage({ orderId: message.orderId })));
+    }
+  });
+});
+
+// .test() returns a controller with invocations tracking
+export const orderWsController = orderWsHandler.test();
+
+// Server setup (used in test files)
+export const server = setupServer(orderWsHandler);
+```
+
+```typescript
+// specs/order-ws.test.ts — asserting WebSocket interactions with .test()
+import { test, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { server, orderWsController } from '../test-helpers/ws-test-handler';
+import { orderSubscriptionService } from '../services/order-subscription.service';
+
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterEach(() => {
+  server.resetHandlers();
+  // IMPORTANT: Clear invocations between tests (gotcha #35 pattern)
+  orderWsController.clear();
+});
+afterAll(() => server.close());
+
+test('order subscription service connects to WebSocket and receives update', async () => {
+  // Subscribe to order updates via the real service
+  const received: unknown[] = [];
+  await orderSubscriptionService.subscribe('ord-test-001', (msg) => received.push(msg));
+
+  // Wait for the WS message to arrive
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // Assert using the controller's invocations — no page-level assertions needed
+  expect(orderWsController.invocations).toHaveLength(1);
+
+  const [connection] = orderWsController.invocations;
+  expect(connection.client.url).toContain('/orders');
+
+  // Assert on received messages (parsed from the raw WS frames)
+  expect(received).toHaveLength(1);
+  expect((received[0] as any).type).toBe('order.updated');
+  expect((received[0] as any).orderId).toBe('ord-test-001');
+});
+
+test('controller.invocations is empty after clear()', () => {
+  // Demonstrates that clear() resets state between tests (no interference)
+  expect(orderWsController.invocations).toHaveLength(0);
+});
+```
+
+**`WebSocketHandler.test()` vs Playwright `page.routeWebSocket()`:**
+
+| Approach | Layer | Best for |
+|----------|-------|----------|
+| `WebSocketHandler.test()` (MSW) | Unit/integration | Service-layer WS assertions; no browser needed |
+| `page.routeWebSocket()` (Playwright) | E2E | Browser-level WS interception; full page lifecycle |
+
+---
+
+## Community Gotcha #35 — `WebSocketHandler.test()` invocations accumulate across tests if `.clear()` is not called  [community]
+
+**[community]** MSW v2.13.6's `WebSocketHandler.test()` returns a persistent controller
+whose `.invocations` array accumulates across all test runs in the same process. If
+`afterEach(() => controller.clear())` is omitted, test N sees all connections from
+tests 1 through N — assertions like `expect(controller.invocations).toHaveLength(1)` fail
+after the first test because the invocations array has grown. **Why harmful:** The failure
+looks like a test-ordering issue (first test passes, subsequent tests fail) but the root
+cause is missing controller cleanup. The fix is to call `controller.clear()` in `afterEach`.
+
+```typescript
+// afterEach cleanup for WebSocketHandler test controllers
+afterEach(() => {
+  server.resetHandlers();
+  orderWsController.clear();   // REQUIRED: clears invocations for next test
+});
+```
+
+---
+
+## Community Gotcha #36 — `test.for()` does not support template literal table syntax; using it fails silently  [community]
+
+**[community]** `test.for()` accepts only an array of values as its first argument.
+Calling `test.for\`\` col1 | col2 ... \`` (template literal table syntax, which works
+for `test.each`) silently fails in Vitest — the template tag is not supported and the
+test is registered with `undefined` data. The test runner may not error immediately;
+instead, the parameterized test cases simply never execute. **Why harmful:** The test
+file passes CI (no test failures) but the parameterized suite is effectively empty —
+all the test cases are silently dropped. Detection: add `expect(cases).not.toHaveLength(0)`
+at the module level, or use `test.each` when template literal tables are needed.
+
+```typescript
+// WRONG: test.for() does NOT support template literal tables
+// The tagged template returns undefined — test cases never run
+test.for`
+  status       | expected
+  ${'active'}  | ${true}
+`('test: $status', ({ status, expected }) => { /* never executes */ });
+
+// CORRECT: use test.each for template literal tables
+test.each`
+  status       | expected
+  ${'active'}  | ${true}
+  ${'suspended'} | ${false}
+`('$status user is valid: $expected', ({ status, expected }) => {
+  expect(validateUser(buildUser({ status }))).toBe(expected);
+});
+
+// CORRECT: use test.for for array-of-objects tables (with context access)
+test.for([
+  { status: 'active',    expected: true  },
+  { status: 'suspended', expected: false },
+])(
+  '$status user is valid: $expected',
+  ({ status, expected }) => {
+    expect(validateUser(buildUser({ status: status as any }))).toBe(expected);
+  }
+);
+```
+
+---
+
+## Community Gotcha #37 — `describe.each` with factory functions evaluates data at module parse time — faker calls outside `each()` generate once  [community]
+
+**[community]** `describe.each` (like `test.each`) evaluates its data array at the time
+the `describe.each(...)` call is parsed — not lazily per test run. If factory data is
+generated inline (e.g., `describe.each([buildUser(), buildUser()])`), both users are
+built once when the module loads. In Vitest with `isolate: true` (default), each test
+file gets a fresh module registry so this is safe — but with `isolate: false` (shared
+process across files), module-level factory calls persist between test files. **Why
+harmful:** A `describe.each` in a shared process accumulates stale factory-generated data
+across files. With `faker` seeded globally, the first test file gets users at faker
+position 0, the second file gets users at position N (wherever faker left off). Fix:
+wrap factory calls inside a `beforeEach` or use `test.for()` (which calls the factory
+per-row-per-run).
+
+```typescript
+// RISKY with isolate: false — data built once at module parse time
+describe.each([
+  buildUser({ status: 'active' }),    // evaluated at module load
+  buildUser({ status: 'suspended' }), // evaluated at module load
+])('user $status suite', (user) => {
+  // 'user' is the same object on every test run in this process
+  test('status is set correctly', () => {
+    expect(user.status).toBeDefined();
+  });
+});
+
+// SAFE — factory called fresh per describe block instantiation
+// Use test.for() or move factory calls inside beforeEach
+test.for([
+  { status: 'active'    as const },
+  { status: 'suspended' as const },
+])(
+  'user $status is handled correctly',
+  ({ status }) => {
+    const user = buildUser({ status }); // fresh user per test run
+    expect(user.status).toBe(status);
+  }
+);
+```
+
+---
+
+## Key Resources (iter-47 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest test.each API docs | Official | https://vitest.dev/api/#test-each | Printf and `$property` formatting; template literal tables; array vs object rows |
+| Vitest test.for API docs | Official | https://vitest.dev/api/#test-for | Context-injecting parameterized tests; `expect.soft()` in parameterized suites; fixtures in test.for |
+| MSW WebSocketHandler.test() | Official | https://github.com/mswjs/msw/releases/tag/v2.13.6 | Public `test()` method for asserting WebSocket handler invocations; `controller.clear()` pattern |

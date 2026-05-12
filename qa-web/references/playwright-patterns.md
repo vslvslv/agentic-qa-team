@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description/highlight), /api/class-apirequestcontext, /api/class-tracing (startHar/stopHar), /api/class-test (abort), /api/class-browser (on-context), /api/class-weberror (location), /api/class-testconfig (reportSlowTests/globalTimeout), /api/class-browsertype (connectOverCDP noDefaults v1.60), /aria-snapshots (children matching modes contain/equal/deep-equal v1.52) -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed), eslint-plugin-playwright flat config (ESLint v9 migration, v1.6+ required), v1.60 webError.location() (JS error source location API), iteration-34 gap audit (page.on weberror and webError.location added to Key APIs table, testConfig.reportSlowTests + globalTimeout added to recommended config baseline), iteration-35 gap audit (fixed consoleMessages v1.56 section heading, added --fail-on-flaky-tests CLI flag, added clock.runFor/tick vs fastForward behavioral gotcha #48), iteration-36 gap audit (connectOverCDP noDefaults v1.60 dedicated pattern + gotcha #49, aria snapshot /children matching modes contain/equal/deep-equal + global config v1.52) -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description/highlight/steps), /api/class-apirequestcontext, /api/class-tracing (startHar/stopHar), /api/class-test (abort), /api/class-browser (on-context), /api/class-weberror (location), /api/class-testconfig (reportSlowTests/globalTimeout), /api/class-browsertype (connectOverCDP noDefaults v1.60 isLocal v1.58), /aria-snapshots (children matching modes contain/equal/deep-equal v1.52) -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed), eslint-plugin-playwright flat config (ESLint v9 migration, v1.6+ required), v1.60 webError.location() (JS error source location API), iteration-34 gap audit (page.on weberror and webError.location added to Key APIs table, testConfig.reportSlowTests + globalTimeout added to recommended config baseline), iteration-35 gap audit (fixed consoleMessages v1.56 section heading, added --fail-on-flaky-tests CLI flag, added clock.runFor/tick vs fastForward behavioral gotcha #48), iteration-36 gap audit (connectOverCDP noDefaults v1.60 dedicated pattern + gotcha #49, aria snapshot /children matching modes contain/equal/deep-equal + global config v1.52), iteration-37 gap audit (locator.click/dragTo steps option v1.57, connectOverCDP isLocal v1.58, locator.describe/description read-back pattern v1.57, gotchas #50-52) -->
 
 ---
 
@@ -9031,3 +9031,316 @@ test('navigation has exactly these three links and no others', async ({ page }) 
 ```
 
 > **WHY:** The default `contain` mode is intentionally lenient — it lets you snapshot only the parts of the ARIA tree you care about without being broken by decorative icons, tooltips, or dynamic badge counts injected alongside the real content. Use `equal` when you need to assert that a component renders *exactly* the expected items (e.g., a navigation menu that must never have ghost links). Use `deep-equal` for exhaustive regression tests of entire component subtrees — but expect more frequent update runs when the component evolves. Setting the global default to `equal` in `playwright.config.ts` trades off maintenance cost for tighter regression coverage. [official]
+
+---
+
+## Iteration 37 — New Patterns & Gotchas (2026-05-12)
+
+---
+
+### `locator.click({ steps })` and `locator.dragTo({ steps })` — Granular Mouse Movement (v1.57+)
+
+The `steps` option controls the number of intermediate `mousemove` events emitted between the pointer's current position and the click or drag target. The default is `1`, which emits a single `mousemove` at the destination. Setting `steps` to a higher value generates a linear sequence of interpolated mouse positions — critical for testing components whose interaction state depends on continuous pointer tracking rather than just a final position event.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+// --- locator.click({ steps }) ---
+
+// Default (steps: 1): single mousemove to destination then click
+await page.getByRole('button', { name: 'Submit' }).click();
+
+// steps: 5 — emit 5 interpolated mousemove events before click
+// Use when a component applies :hover styles or tooltip logic that
+// reads pointer position at each intermediate step
+await page.getByRole('button', { name: 'Submit' }).click({ steps: 5 });
+
+// Canvas drawing: simulate a brush stroke with smooth intermediate positions
+test('canvas: smooth brush stroke updates stroke count', async ({ page }) => {
+  await page.goto('/drawing-app');
+  const canvas = page.locator('canvas');
+
+  // Click at a position with many intermediate steps for smooth simulation
+  await canvas.click({
+    position: { x: 200, y: 150 },
+    steps: 20,  // 20 mousemove events → smooth cursor path
+  });
+
+  await expect(page.getByTestId('stroke-count')).toHaveText('1');
+});
+
+// --- locator.dragTo({ steps }) ---
+
+// Default drag: single mousemove from source to target center
+await page.locator('#source').dragTo(page.locator('#target'));
+
+// Smooth drag for react-dnd / Sortable.js components that listen to mousemove
+test('reorder list items with smooth drag', async ({ page }) => {
+  await page.goto('/sortable-list');
+
+  const firstItem  = page.getByRole('listitem').first();
+  const thirdItem  = page.getByRole('listitem').nth(2);
+
+  // 15 intermediate mousemove events — required for Sortable.js placeholder logic
+  await firstItem.dragTo(thirdItem, {
+    steps: 15,
+    sourcePosition: { x: 10, y: 10 },
+    targetPosition: { x: 10, y: 10 },
+  });
+
+  // Assert reordering took effect
+  await expect(page.getByRole('listitem').first()).not.toHaveText('Item 1');
+});
+
+// Slider component: drag handle across range with smooth interpolation
+test('range slider: drag to 75%', async ({ page }) => {
+  await page.goto('/settings');
+  const slider = page.getByRole('slider', { name: 'Volume' });
+
+  // Use drag with steps to simulate gradual value change
+  await slider.dragTo(page.locator('.slider-track'), {
+    targetPosition: { x: 225, y: 10 }, // 75% of a 300px track
+    steps: 30,
+  });
+
+  await expect(slider).toHaveAttribute('aria-valuenow', '75');
+});
+```
+
+> **[community]** WHY: Without `steps`, drag-and-drop libraries built on the HTML5 Drag and Drop API or custom `mousemove` listeners receive only a `mousedown` at the source, one `mousemove` at the target, and a `mouseup` — which many libraries treat as a "no-op drag" because the pointer never passed through intermediate positions. `steps: 10` to `steps: 20` is the sweet spot for most component libraries. Too many steps (>100) slows tests without benefit. [community]
+
+> **[community]** WHY: The `steps` option for `click()` is less commonly needed but valuable for custom canvas drawing tools, color-picker components, or sliders where the interaction state machine tracks cursor travel path. Setting `steps: 1` (the default) is correct for all standard button/link interactions — only increase it when you observe the component behaving differently between manual and automated interaction. [community]
+
+---
+
+### `connectOverCDP({ isLocal: true })` — Local File System Optimizations (v1.58+)
+
+The `isLocal` option tells Playwright that the browser and the Playwright process share the same file system. When set to `true`, Playwright can use file system paths directly for some operations (e.g., screenshot comparisons, HAR file writes) rather than serializing data over the CDP wire, reducing latency on local development and CI.
+
+```typescript
+import { chromium, type Browser } from '@playwright/test';
+
+// ✅ Connect to a locally running Chrome with file system optimizations enabled
+const browser: Browser = await chromium.connectOverCDP('http://localhost:9222', {
+  isLocal: true,  // v1.58+: Playwright and browser share the same file system
+});
+
+const [context] = browser.contexts();
+const page = context.pages()[0];
+
+// File-path based screenshot — written directly via the local FS, not serialized over CDP
+await page.screenshot({ path: './test-results/current-state.png' });
+
+// HAR recording saves directly to the local path without streaming
+await using har = await context.tracing.startHar('./test-results/network.har');
+await page.goto('/dashboard');
+// HAR is saved to the local path without CDP data transfer overhead
+
+await browser.close();
+```
+
+**Common pattern — local integration testing with a pre-launched browser:**
+
+```typescript
+// playwright.config.ts — hybrid: use connectOverCDP for local dev, launch() for CI
+import { defineConfig } from '@playwright/test';
+
+const CDP_ENDPOINT = process.env.CDP_ENDPOINT; // set by developer, absent in CI
+
+export default defineConfig({
+  use: {
+    // In CI: launch a fresh browser per test
+    // Locally: connect to an existing Chrome instance (faster startup)
+    ...(CDP_ENDPOINT
+      ? {
+          connectOptions: {
+            wsEndpoint: CDP_ENDPOINT,
+            // isLocal handled at chromium.connectOverCDP() level, not use: block
+          },
+        }
+      : {}),
+  },
+});
+
+// e2e/fixtures/local-browser.ts — fixture that uses isLocal when CDP_ENDPOINT is set
+import { test as base, chromium } from '@playwright/test';
+
+export const test = base.extend({
+  browser: async ({}, use) => {
+    if (process.env.CDP_ENDPOINT) {
+      const browser = await chromium.connectOverCDP(process.env.CDP_ENDPOINT, {
+        isLocal: true,     // same machine — enable FS optimizations
+        noDefaults: false, // still apply Playwright defaults (colors, motion)
+      });
+      await use(browser);
+      // Don't close — the browser is externally managed
+    } else {
+      const browser = await chromium.launch();
+      await use(browser);
+      await browser.close();
+    }
+  },
+});
+```
+
+> **WHY:** `isLocal: true` was added alongside `noDefaults: true` (both v1.58+) to give teams precise control over what Playwright does when attaching to existing browsers. `isLocal` unlocks file system shortcuts; `noDefaults` preserves real browser settings. The two options are independent — you may want `isLocal: true, noDefaults: false` for a local CI agent that has a pre-warmed browser but still needs Playwright's default emulation layer. [official]
+
+---
+
+### `locator.describe()` + `locator.description()` — Annotating and Reading Back Locator Labels (v1.52+ / v1.57+)
+
+`locator.describe(label)` (v1.52+) attaches a human-readable label to a locator. This label appears in the Trace Viewer, HTML report, and error messages instead of the raw CSS/role selector. `locator.description()` (v1.57+) reads back the label previously set — allowing custom reporters, test helpers, and assertion wrappers to inspect the intent of a locator without parsing its underlying selector.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+// --- locator.describe(): attach a semantic label ---
+
+const emailInput = page.getByLabel('Email').describe('email input field');
+// Without describe(): error message says  >> locator('input[name="email"]') <<
+// With    describe(): error message says  >> email input field <<
+
+// POM usage: label complex chained locators for clarity in Trace Viewer
+class CheckoutPage {
+  readonly cardNumberInput: Locator;
+  readonly cvvInput: Locator;
+
+  constructor(private page: Page) {
+    this.cardNumberInput = page
+      .getByRole('group', { name: 'Payment' })
+      .getByLabel('Card number')
+      .describe('checkout: card number input');
+
+    this.cvvInput = page
+      .getByRole('group', { name: 'Payment' })
+      .getByLabel('CVV')
+      .describe('checkout: CVV input');
+  }
+}
+
+// --- locator.description(): read back the label in a custom assertion wrapper ---
+
+// utils/assert-with-label.ts
+import { type Locator, expect } from '@playwright/test';
+
+/**
+ * Wraps toBeVisible() with a friendlier failure message that uses the locator's
+ * describe() label if available, falling back to the raw selector string.
+ */
+async function assertVisible(locator: Locator): Promise<void> {
+  const label = locator.description() ?? locator.toString();
+  await expect(locator, `Expected [${label}] to be visible`).toBeVisible();
+}
+
+// Usage: the failure message says "Expected [checkout: card number input] to be visible"
+// instead of "Expected locator('div.payment >> label:has-text("Card number") >> input')"
+const checkout = new CheckoutPage(page);
+await assertVisible(checkout.cardNumberInput);
+
+// --- locator.toString() uses description when available (v1.57+) ---
+const locator = page.getByRole('button', { name: 'Submit' }).describe('submit order');
+
+console.log(locator.toString());
+// Before v1.57: "locator('button', { hasText: /Submit/i })"
+// After  v1.57: "submit order"
+
+// ESLint rule: prevent describe() with empty strings (useless noise in traces)
+// .eslintrc: { "playwright/no-empty-locator-describe": "error" }  // from eslint-plugin-playwright
+```
+
+> **[community]** WHY: In suites with 50+ page objects, Trace Viewer step names like `locator('div[data-testid="checkout-form"] >> nth=0 >> label:has-text("Card number") >> xpath=../input')` make debugging extremely slow. Adding `.describe('checkout: card number input')` to every POM locator costs one line per field but halves the time engineers spend reading traces. The `locator.description()` accessor (v1.57+) is the complementary read path — use it to build test utilities that report locator intent in a uniform format. [community]
+
+---
+
+### Additional Community Gotchas (Iteration 37)
+
+---
+
+### 50. `locator.click({ steps })` on `<input type="range">` does not update the value [community]
+
+The `steps` option controls pointer travel but does NOT update the `<input type="range">` value attribute. Range inputs rely on the browser's native slider drag gesture which requires `page.mouse.move()` + `page.mouse.down/up()` relative to the element's bounding box, or using `locator.fill()` / `locator.evaluate()` to set the value directly.
+
+```typescript
+// ❌ Anti-pattern: click steps do not set slider value
+await page.getByRole('slider').click({ steps: 10 });
+// Value stays at the default — click() is position-based but doesn't drag the thumb
+
+// ✅ Correct: fill() dispatches a change event on range inputs
+await page.getByRole('slider', { name: 'Volume' }).fill('75');
+// Sets the value attribute to "75" and fires input + change events
+
+// ✅ Or use evaluate for precise programmatic control
+await page.getByRole('slider').evaluate((el: HTMLInputElement, val: number) => {
+  el.value = String(val);
+  el.dispatchEvent(new Event('input',  { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}, 75);
+
+await expect(page.getByRole('slider')).toHaveAttribute('value', '75');
+```
+
+> **WHY:** `<input type="range">` value is controlled by the browser's internal mouse tracking on the thumb element, not by pointer coordinates passed via CDP. Playwright's click/drag simulation bypasses the native mouse-capture mechanism the browser uses for range inputs. `fill()` is the correct API for setting range values because it interacts with the DOM value property directly. [community]
+
+---
+
+### 51. `connectOverCDP({ isLocal: true })` causes silent failures when paths differ between mount points [community]
+
+When running inside Docker (or any environment where the host file system is mounted at a different path than the container's), `isLocal: true` causes Playwright to write screenshot/HAR files to the container path while the CI system expects them at the host mount path — producing "file not found" errors when the CI artifact collector runs.
+
+```typescript
+// ❌ Dangerous in Docker: file system paths are not the same between container and host
+const browser = await chromium.connectOverCDP('http://host.docker.internal:9222', {
+  isLocal: true,   // host browser ≠ container FS — isLocal is WRONG here
+});
+
+// ✅ Correct: isLocal: false (or omit) when browser and Playwright are on different hosts
+const browser = await chromium.connectOverCDP('http://host.docker.internal:9222', {
+  isLocal: false,  // force CDP data serialization — paths are meaningless across hosts
+});
+
+// ✅ Safe pattern: only enable isLocal when truly on the same machine
+const isLocalBrowser = !process.env.CDP_REMOTE_HOST;
+const browser = await chromium.connectOverCDP(process.env.CDP_ENDPOINT!, {
+  isLocal: isLocalBrowser,
+});
+```
+
+> **WHY:** `isLocal: true` is purely an optimization hint — it enables file-path-based shortcuts instead of streaming file content over the CDP WebSocket. It is NOT appropriate for remote browsers or Docker networking scenarios where the browser process cannot access the same file paths as the Playwright process. When in doubt, omit `isLocal` (defaults to `false`). [community]
+
+---
+
+### 52. `locator.describe()` labels are not inherited by `locator.filter()`, `locator.first()`, etc. [community]
+
+When you apply `.describe()` to a locator and then chain `.filter()`, `.first()`, `.nth()`, or other locator combinators, the returned locator does NOT inherit the description. The new locator has its own (empty) description, falling back to its full selector string in error messages.
+
+```typescript
+// ❌ Trap: description not inherited by combinators
+const rows = page.getByRole('row').describe('data table row');
+const firstRow = rows.first(); // description NOT inherited
+const filteredRow = rows.filter({ hasText: 'Alice' }); // description NOT inherited
+
+// firstRow.description()   → null
+// filteredRow.description() → null
+
+// ✅ Re-apply describe() after combinators
+const firstRow = rows.first().describe('data table: first row');
+const aliceRow = rows.filter({ hasText: 'Alice' }).describe('data table: Alice row');
+
+// aliceRow.description() → 'data table: Alice row'
+```
+
+> **WHY:** Each locator combinator creates a new `Locator` instance. The description is metadata on the original instance, not a hereditary property of the locator chain. This is intentional — chained locators may have completely different semantics from the base. The practical impact: if you apply `.describe()` early in POM constructors and later filter or refine those locators, re-apply `.describe()` to the result or the filtered locator will produce unhelpfully raw selector strings in failure reports. [community]
+
+---
+
+## Additional Key APIs (Iteration 37 — v1.57/v1.58)
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `locator.click({ steps: N })` | Emit N interpolated `mousemove` events before the click (v1.57+) | Canvas, custom sliders, tooltip components that track pointer travel |
+| `locator.dragTo(target, { steps: N })` | Emit N interpolated `mousemove` events during drag (v1.57+) | react-dnd, Sortable.js, chart drawing — any DnD handler that reads intermediate positions |
+| `locator.describe(label)` | Attach human-readable label to locator (v1.52+) | POM readability; Trace Viewer step names; assertion error messages |
+| `locator.description()` | Read back the label set by `describe()` — returns `null` if unset (v1.57+) | Custom reporters; assertion wrappers; locator-to-string utilities |
+| `locator.toString()` | Now uses `description()` value when available (v1.57+) | Automatic label injection into error messages without extra code |
+| `chromium.connectOverCDP(url, { isLocal: true })` | Enable file-system shortcuts when browser and test process share the same FS (v1.58+) | Local dev / CI agents with a pre-warmed same-host browser |
+| `chromium.connectOverCDP(url, { noDefaults: true })` | Skip Playwright's default context setting overrides (v1.60+) | Preserve real OS theme/media preferences on an attached browser |

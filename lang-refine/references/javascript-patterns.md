@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 55 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 56 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -6181,3 +6181,602 @@ test('renders correct date in header', () => {
 - `Temporal.Instant`, `PlainDate`, `PlainDateTime`, and `ZonedDateTime` are **immutable value objects** — you cannot set them to a fixed value without replacing the `Temporal.Now` source.
 - Dependency injection is the cleanest long-term pattern; the monkey-patch approach is a short-term fix for untestable legacy code.
 - If your project uses `@js-temporal/polyfill`, `vi.useFakeTimers()` works because the polyfill reads from `Date.now()`. Once you migrate to native Temporal, switch to DI. [community]
+
+---
+
+## ESM Module Mocking Patterns
+
+ESM (ECMAScript Modules) has live bindings and is evaluated once — mocking it requires a different approach from CommonJS. The key challenge: `import` statements are hoisted and evaluated before any test setup code runs, so you cannot re-assign imported names after the fact.
+
+### Vitest: vi.mock() — The Standard ESM Mock
+
+`vi.mock()` is automatically hoisted to the top of the file by Vitest's transformer, running before any `import` statement. This makes it the most ergonomic ESM mock approach.
+
+```javascript
+// math.js
+export function add(a, b)      { return a + b; }
+export function multiply(a, b) { return a * b; }
+export const PI = 3.14159;
+
+// math.test.js
+import { describe, it, expect, vi } from 'vitest';
+import { add, multiply, PI } from './math.js';
+
+// ── Complete replacement ─────────────────────────────────────────────
+// vi.mock is hoisted to the top; runs before the import above
+vi.mock('./math.js', () => ({
+  add:      vi.fn(() => 99),
+  multiply: vi.fn(() => 42),
+  PI:       3,
+}));
+
+it('uses mocked add', () => {
+  expect(add(1, 2)).toBe(99);       // returns mock value, not real add()
+  expect(add).toHaveBeenCalledWith(1, 2);
+});
+
+// ── Partial mock: keep some exports real, replace others ─────────────
+vi.mock('./math.js', async (importOriginal) => {
+  const mod = await importOriginal(); // real module
+  return {
+    ...mod,                           // spread all real exports
+    add: vi.fn(() => 999),            // override only 'add'
+    // multiply and PI remain real
+  };
+});
+
+it('mocked add, real multiply', () => {
+  expect(add(1, 2)).toBe(999);       // mocked
+  expect(multiply(2, 3)).toBe(6);    // real implementation
+  expect(PI).toBeCloseTo(3.14159);   // real constant
+});
+```
+
+### Vitest: vi.hoisted() — Variables in Mock Factories
+
+`vi.mock()` factories run before imports, so they cannot reference file-scoped `let`/`const` variables. Use `vi.hoisted()` to define variables that ARE available to mock factories.
+
+```javascript
+import { describe, it, expect, vi } from 'vitest';
+import { fetchUser } from './api.js';
+
+// ❌ WRONG: mockFn is defined after the vi.mock call is hoisted
+let mockFn = vi.fn();
+vi.mock('./api.js', () => ({
+  fetchUser: mockFn, // undefined — mockFn not in scope when factory runs
+}));
+
+// ✅ CORRECT: vi.hoisted() runs before imports, same as vi.mock factories
+const mocks = vi.hoisted(() => ({
+  fetchUser: vi.fn(),
+  saveUser:  vi.fn(),
+}));
+
+vi.mock('./api.js', () => ({
+  fetchUser: mocks.fetchUser,
+  saveUser:  mocks.saveUser,
+}));
+
+it('fetchUser is called with the right id', async () => {
+  mocks.fetchUser.mockResolvedValue({ id: 1, name: 'Alice' });
+  const user = await fetchUser(1);
+  expect(mocks.fetchUser).toHaveBeenCalledWith(1);
+  expect(user.name).toBe('Alice');
+});
+```
+
+### Vitest: Automocking with spy:true — Spy Without Replacing
+
+The `{ spy: true }` option keeps the real module implementation intact but wraps every export in a spy so you can assert on calls.
+
+```javascript
+vi.mock('./analytics.js', { spy: true });
+
+import { trackEvent } from './analytics.js';
+
+it('trackEvent is called on button click', () => {
+  simulateButtonClick();
+  // trackEvent still runs real code, but is now a spy
+  expect(trackEvent).toHaveBeenCalledWith('button_click', { id: 'submit' });
+});
+```
+
+### Jest: jest.unstable_mockModule() for ESM
+
+Jest's `jest.mock()` hoisting only works for CommonJS. For ESM files, use `jest.unstable_mockModule()` — it does NOT hoist, so you must use dynamic `import()` after calling it.
+
+```javascript
+import { jest } from '@jest/globals';
+
+// 1. Call BEFORE any dynamic import of the module
+jest.unstable_mockModule('./math.js', () => ({
+  add:      jest.fn(() => 99),
+  multiply: jest.fn(() => 42),
+  PI:       3,
+}));
+
+// 2. Import AFTER mocking — gets the mocked version
+const { add, multiply } = await import('./math.js');
+
+test('add returns mocked value', () => {
+  expect(add(1, 2)).toBe(99);
+});
+
+// ── Partial ESM mock in Jest ─────────────────────────────────────────
+jest.unstable_mockModule('./api.js', async () => {
+  const original = await jest.importActual('./api.js');
+  return {
+    ...original,
+    fetchUser: jest.fn().mockResolvedValue({ id: 1, name: 'Alice' }),
+  };
+});
+
+const { fetchUser, saveUser } = await import('./api.js');
+// fetchUser is mocked; saveUser is real
+```
+
+**Key constraint [community]:** `jest.unstable_mockModule()` is still experimental in Jest. The API name includes "unstable" deliberately — the Jest team has not finalized ESM mocking support. For production projects with heavy ESM mocking, Vitest's `vi.mock()` is significantly more ergonomic.
+
+### Dynamic Import Mocking
+
+Both Vitest and Jest support mocking dynamic `import()` calls. The key is mocking the module before any code that will dynamically import it runs.
+
+```javascript
+// ── Vitest: mock before the code that calls dynamic import() ─────────
+vi.mock('./chart.js', () => ({
+  default: vi.fn(class FakeChart {
+    constructor(ctx) { this.ctx = ctx; }
+    render(data) { return `FakeChart(${data.length} points)`; }
+  }),
+}));
+
+// Component that uses dynamic import internally:
+// async function loadChart() {
+//   const { default: Chart } = await import('./chart.js');
+//   return new Chart(canvas);
+// }
+
+it('loads chart component dynamically', async () => {
+  const chart = await loadChart();
+  expect(chart.render([1, 2, 3])).toBe('FakeChart(3 points)');
+});
+
+// ── vi.doMock() — unmocked by default, mock per-test ─────────────────
+// vi.doMock() is NOT hoisted — use when you need different mocks per test
+it('test A: uses slow analytics', async () => {
+  vi.doMock('./analytics.js', () => ({ track: vi.fn() }));
+  const { track } = await import('./analytics.js');
+  track('event');
+  expect(track).toHaveBeenCalledOnce();
+  vi.resetModules(); // Clear module cache so next test gets a fresh import
+});
+
+it('test B: uses stub analytics', async () => {
+  vi.doMock('./analytics.js', () => ({ track: vi.fn(() => { throw new Error('fail'); }) }));
+  const { track } = await import('./analytics.js');
+  expect(() => track('event')).toThrow('fail');
+  vi.resetModules();
+});
+```
+
+---
+
+## Spy Patterns — Advanced vi.spyOn() and jest.spyOn()
+
+Spies wrap existing functions to record call information without replacing the implementation by default. They are the right tool when you want to assert that a function was called without disabling its actual behavior.
+
+### Basic Spying — Observe Without Replacing
+
+```javascript
+import { vi, expect, it } from 'vitest';
+
+const math = {
+  add:      (a, b) => a + b,
+  multiply: (a, b) => a * b,
+};
+
+it('spies on add without changing its behavior', () => {
+  const spy = vi.spyOn(math, 'add');
+
+  const result = math.add(2, 3);
+
+  expect(result).toBe(5);                      // real implementation ran
+  expect(spy).toHaveBeenCalledOnce();
+  expect(spy).toHaveBeenCalledWith(2, 3);
+  expect(spy).toHaveReturnedWith(5);
+
+  spy.mockRestore(); // put back the original function
+});
+```
+
+### Prototype Method Spying — All Instances Covered
+
+Spying on `ClassName.prototype.method` intercepts calls on ALL instances, existing and future, without requiring a reference to a specific instance.
+
+```javascript
+import { vi, it, expect, beforeEach, afterEach } from 'vitest';
+import { AudioPlayer } from './audio-player.js';
+
+let playSpy;
+
+beforeEach(() => {
+  // Spy on the prototype — affects every instance created in this test
+  playSpy = vi.spyOn(AudioPlayer.prototype, 'play');
+});
+
+afterEach(() => {
+  playSpy.mockRestore(); // always restore after each test
+});
+
+it('PlayerConsumer calls play on the injected player', () => {
+  const player   = new AudioPlayer();         // instance AFTER spy is set
+  const consumer = new PlayerConsumer(player);
+  consumer.startPlayback('song.mp3');
+
+  expect(playSpy).toHaveBeenCalledOnce();
+  expect(playSpy).toHaveBeenCalledWith('song.mp3');
+});
+
+it('play throws when player is stopped', () => {
+  playSpy.mockImplementation(() => {
+    throw new Error('Player is stopped');
+  });
+  const player = new AudioPlayer();
+  expect(() => player.play('song.mp3')).toThrow('Player is stopped');
+});
+```
+
+### Getter and Setter Spies
+
+```javascript
+// Spy on a property getter
+const permissionsObj = {
+  get isAdmin() { return false; }
+};
+
+const getterSpy = vi.spyOn(permissionsObj, 'isAdmin', 'get')
+  .mockReturnValue(true);
+
+expect(permissionsObj.isAdmin).toBe(true); // returns mocked value
+expect(getterSpy).toHaveBeenCalledOnce();
+
+// Spy on a class prototype getter
+class Session {
+  get isExpired() { return Date.now() > this.expiresAt; }
+}
+
+vi.spyOn(Session.prototype, 'isExpired', 'get').mockReturnValue(false);
+const session = new Session();
+expect(session.isExpired).toBe(false); // mocked regardless of expiry time
+```
+
+### Static Method Spying
+
+```javascript
+class ApiClient {
+  static async get(url) { /* real HTTP call */ }
+  static async post(url, data) { /* real HTTP call */ }
+}
+
+it('calls ApiClient.get with the correct URL', async () => {
+  const getSpy = vi.spyOn(ApiClient, 'get')
+    .mockResolvedValue({ id: 42, name: 'Alice' });
+
+  const result = await getUserById(42);
+
+  expect(getSpy).toHaveBeenCalledWith('/api/users/42');
+  expect(result.name).toBe('Alice');
+
+  getSpy.mockRestore();
+});
+```
+
+### Spying on Module Exports
+
+To spy on a named export, import the entire module as a namespace and spy on the namespace object.
+
+```javascript
+// ── Vitest: spyOn named export ───────────────────────────────────────
+import * as mathModule from './math.js';
+import { vi, it, expect } from 'vitest';
+
+it('add is called from computeTotal', () => {
+  const addSpy = vi.spyOn(mathModule, 'add');
+
+  // code under test imports from './math.js' — same reference
+  computeTotal([1, 2, 3]);
+
+  expect(addSpy).toHaveBeenCalledTimes(2); // two intermediate additions
+  addSpy.mockRestore();
+});
+
+// ── Mock reset/restore patterns ──────────────────────────────────────
+// mockClear()   — resets call history (calls, instances, results) but keeps implementation
+// mockReset()   — clears history AND removes mock implementation (returns undefined)
+// mockRestore() — restores original implementation (only works for spies from vi.spyOn)
+
+afterEach(() => {
+  vi.restoreAllMocks(); // restore ALL spies; equivalent to each.mockRestore()
+});
+```
+
+---
+
+## Vitest vs Jest — Decision Guide
+
+Both are excellent test runners for JavaScript. The choice depends on your project setup, not their quality. Here is a practical comparison:
+
+| Dimension | Vitest | Jest |
+|---|---|---|
+| Config sharing | Reuses `vite.config.js` — zero extra config for Vite projects | Separate `jest.config.js`; needs babel-jest or ts-jest transformer |
+| ESM support | First-class — `vi.mock()` works natively with ESM | Experimental via `--experimental-vm-modules` + `jest.unstable_mockModule()` |
+| Speed (watch mode) | HMR-based; reruns only changed files | File-system watch; restarts the full runner |
+| TypeScript | Direct support via Vite/esbuild; no config needed | Requires `ts-jest` or `babel-jest` + `@babel/preset-typescript` |
+| Snapshot testing | ✅ Compatible with Jest snapshots | ✅ Original implementation |
+| Browser testing | Vitest Browser Mode (Playwright/WebdriverIO) | jest-environment-jsdom (simulated DOM) |
+| Coverage | v8 (built-in) or istanbul via `@vitest/coverage-v8` | istanbul via `jest --coverage` |
+| Parallel execution | Worker threads by default | Worker processes (heavier) |
+| API compatibility | Jest-compatible: `describe`, `it`, `expect`, `vi` ↔ `jest` | Jest native |
+| Ecosystem maturity | Newer (2021); rapidly maturing | Older (2014); larger existing ecosystem |
+
+### When to choose Vitest
+
+```javascript
+// vite.config.js — one file configures both dev server and test runner
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  plugins: [react()],
+
+  // test config lives here — no separate jest.config.js
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./test/setup.ts'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
+      exclude: ['**/*.d.ts', 'test/**'],
+    },
+    // Type-check tests as part of the test run
+    typecheck: { enabled: true },
+  },
+});
+```
+
+**Choose Vitest when:**
+- Your project uses Vite (React/Vue/Svelte/SvelteKit, Astro, etc.)
+- You want native ESM support without `--experimental-vm-modules`
+- You want fast watch mode with HMR-level reruns
+- You prefer a single config file
+
+**Choose Jest when:**
+- Legacy project using Create React App, Next.js (pages router), or another non-Vite setup
+- Existing large test suite already running on Jest — migration cost outweighs benefit
+- You need mature ecosystem integrations (e.g., `jest-circus`, specific Jest runner plugins)
+
+### API Differences: vi vs jest
+
+The `vi` and `jest` namespaces are largely interchangeable. Key differences:
+
+```javascript
+// ── Vitest-only APIs ─────────────────────────────────────────────────
+vi.hoisted(() => { /* runs before imports */ });
+vi.doMock('./mod.js', factory);       // non-hoisted, per-test mock
+vi.importActual('./mod.js');          // get real module inside vi.mock factory
+vi.importMock('./mod.js');            // get automocked module
+vi.stubGlobal('fetch', mockFetch);    // mock globals (fetch, window, etc.)
+vi.stubEnv('NODE_ENV', 'test');       // mock process.env values
+vi.mockObject(obj, { spy: true });    // deep-spy an object's methods
+
+// ── Jest-only APIs ───────────────────────────────────────────────────
+jest.unstable_mockModule('./mod.js', factory); // ESM mocking
+jest.requireActual('./mod.js');                // real module inside jest.mock
+jest.requireMock('./mod.js');                  // get the mock
+
+// ── Both have these (compatible) ────────────────────────────────────
+vi.fn() === jest.fn();                // mock function factory
+vi.spyOn() === jest.spyOn();          // spy wrapper
+vi.useFakeTimers() === jest.useFakeTimers();
+vi.advanceTimersByTime(ms) === jest.advanceTimersByTime(ms);
+vi.clearAllMocks() === jest.clearAllMocks();
+vi.resetAllMocks() === jest.resetAllMocks();
+vi.restoreAllMocks() === jest.restoreAllMocks();
+```
+
+---
+
+## Prototype Mocking and Class Constructor Patterns
+
+### Mocking a Class Constructor Completely
+
+Replace a class with a `vi.fn()` / `jest.fn()` that acts as a constructor — all `new` calls return a controlled fake instance.
+
+```javascript
+// sound-player.js
+export class SoundPlayer {
+  playSoundFile(filename) { /* real audio playback */ }
+  stopAll()               { /* real stop */ }
+}
+
+// consumer.test.js
+import { vi, describe, it, expect, beforeEach } from 'vitest';
+
+const mockPlaySoundFile = vi.fn();
+const mockStopAll       = vi.fn();
+
+vi.mock('./sound-player.js', () => ({
+  SoundPlayer: vi.fn().mockImplementation(() => ({
+    playSoundFile: mockPlaySoundFile,
+    stopAll:       mockStopAll,
+  })),
+}));
+
+import { SoundPlayer } from './sound-player.js';
+import { SoundPlayerConsumer } from './consumer.js';
+
+beforeEach(() => {
+  SoundPlayer.mockClear();     // reset constructor call count
+  mockPlaySoundFile.mockClear();
+  mockStopAll.mockClear();
+});
+
+it('creates a SoundPlayer and plays a file', () => {
+  const consumer = new SoundPlayerConsumer();
+  consumer.playSomethingCool();
+
+  // Constructor was called once
+  expect(SoundPlayer).toHaveBeenCalledTimes(1);
+  // Instance method was called with the right filename
+  expect(mockPlaySoundFile).toHaveBeenCalledWith('song.mp3');
+});
+
+it('can access the mock instance created during construction', () => {
+  const consumer = new SoundPlayerConsumer();
+
+  // SoundPlayer.mock.instances[0] is the fake object returned by the constructor
+  const instance = SoundPlayer.mock.instances[0];
+  consumer.playSomethingCool();
+  expect(instance.playSoundFile).toHaveBeenCalled();
+});
+```
+
+### Prototype Pollution Simulation (Security Test Pattern)
+
+Testing that your safe-merge utilities block prototype pollution requires carefully crafted test objects.
+
+```javascript
+import { it, expect } from 'vitest';
+import { safeMerge } from './merge.js';
+
+it('blocks __proto__ key from polluting Object.prototype', () => {
+  const attackPayload = JSON.parse('{"__proto__": {"isAdmin": true}}');
+  const target = {};
+
+  safeMerge(target, attackPayload);
+
+  // Prototype should NOT be polluted
+  expect({}.isAdmin).toBeUndefined();
+  expect(Object.prototype.isAdmin).toBeUndefined();
+  // The key should not have been applied
+  expect(Object.hasOwn(target, '__proto__')).toBe(false);
+});
+
+it('blocks constructor.prototype access', () => {
+  const attackPayload = { 'constructor': { 'prototype': { 'isAdmin': true } } };
+  const target = {};
+
+  safeMerge(target, attackPayload);
+
+  expect({}.isAdmin).toBeUndefined();
+});
+```
+
+---
+
+## Testing with Modern JS Features (Optional Chaining, Nullish Coalescing)
+
+Code using `?.` and `??` can contain subtle logic paths that tests must exercise. Always cover both the "value present" and "value absent" branches.
+
+### Testing Optional Chaining Paths
+
+```javascript
+// utils/config.js
+export function getApiEndpoint(config, service) {
+  return config?.services?.[service]?.endpoint
+    ?? `https://api.default.com/${service}`;
+}
+
+// utils/config.test.js
+import { it, expect } from 'vitest';
+import { getApiEndpoint } from './config.js';
+
+// Test the PRESENT path — all levels defined
+it('returns configured endpoint when fully specified', () => {
+  const config = {
+    services: {
+      payments: { endpoint: 'https://payments.internal.com' },
+    },
+  };
+  expect(getApiEndpoint(config, 'payments')).toBe('https://payments.internal.com');
+});
+
+// Test NULL config — top-level optional chaining short-circuits
+it('returns default endpoint when config is null', () => {
+  expect(getApiEndpoint(null, 'payments')).toBe('https://api.default.com/payments');
+});
+
+// Test MISSING service — middle-level short-circuit
+it('returns default endpoint when service key is absent', () => {
+  const config = { services: {} };
+  expect(getApiEndpoint(config, 'payments')).toBe('https://api.default.com/payments');
+});
+
+// Test endpoint is 0 or empty string — nullish coalescing only falls back on null/undefined
+it('keeps empty string endpoint (not falsy fallback)', () => {
+  const config = { services: { payments: { endpoint: '' } } };
+  // '' is falsy but NOT null/undefined — ?? does NOT fall back
+  expect(getApiEndpoint(config, 'payments')).toBe('');
+});
+```
+
+### Testing Nullish Coalescing Default Semantics
+
+```javascript
+// notification.js
+export function buildNotification(options = {}) {
+  return {
+    title:   options.title   ?? 'Notification',
+    count:   options.count   ?? 1,     // count=0 is valid — should NOT fall back
+    enabled: options.enabled ?? true,  // enabled=false is valid — should NOT fall back
+  };
+}
+
+// notification.test.js
+it('uses defaults when options are undefined', () => {
+  const n = buildNotification({});
+  expect(n.title).toBe('Notification');
+  expect(n.count).toBe(1);
+  expect(n.enabled).toBe(true);
+});
+
+it('preserves falsy-but-valid values (0 and false)', () => {
+  const n = buildNotification({ count: 0, enabled: false, title: '' });
+  // ?? only falls back on null/undefined — 0, false, '' are kept
+  expect(n.count).toBe(0);       // NOT 1 (the default)
+  expect(n.enabled).toBe(false); // NOT true (the default)
+  expect(n.title).toBe('');      // NOT 'Notification' (the default)
+});
+
+it('falls back when values are explicitly null', () => {
+  const n = buildNotification({ count: null, enabled: null });
+  expect(n.count).toBe(1);      // null → fall back to default
+  expect(n.enabled).toBe(true); // null → fall back to default
+});
+```
+
+**Testing rule [community]:** for every `??` operator in production code, write at least three test cases: (1) value is `undefined`, (2) value is `null`, (3) value is the relevant falsy non-null value (`0`, `false`, `''`). Cases 1 and 2 should fall back; case 3 should NOT. Failing to cover case 3 leads to bugs where valid zero/false values are replaced by defaults.
+
+---
+
+## Additional Testing Community Pitfalls
+
+**46. Not Calling `vi.mock()` at the Module Top Level** [community] — `vi.mock()` is hoisted by Vitest's transformer, but only when it appears as a **top-level statement** in the test file. Placing `vi.mock()` inside a `describe()` block, `beforeEach()`, or an `if` branch means the hoisting transformation does not apply — the call runs after the static `import` has already loaded the real module. WHY it causes problems: the mock is silently ignored; the test uses the real implementation, passes or fails unexpectedly, and the developer doesn't understand why the mock isn't working. Fix: always call `vi.mock()` at the top level of the test file, outside any block.
+
+**47. Using `vi.spyOn()` Without `mockRestore()` Across Tests** [community] — Spies created with `vi.spyOn()` replace the original function on the object. If not restored, every subsequent test in the suite sees the spy — including tests that expect the real implementation. WHY it causes problems: tests start interfering with each other; a test that "shouldn't" be using a spy silently calls the mock implementation. Fix: always call `spy.mockRestore()` in `afterEach`, or call `vi.restoreAllMocks()` globally in `afterEach` / in your `vitest.config` setup file (`restoreMocks: true`).
+
+**48. `jest.unstable_mockModule()` Not Hoisting — Importing Before Mocking** [community] — Unlike `jest.mock()`, `jest.unstable_mockModule()` does NOT hoist. If the test file uses a static `import` statement for the module being mocked, the real module is loaded before `unstable_mockModule()` runs. WHY it causes problems: the mock is registered but the static import already holds the real module binding — the test sees real code, not the mock. Fix: never use static `import` for modules you plan to mock with `jest.unstable_mockModule()`; always use `await import()` AFTER calling `jest.unstable_mockModule()`.
+
+**49. Forgetting `mockClear()` Between Tests for Constructor Mocks** [community] — When you mock a class constructor with `vi.fn()`, the `mock.instances` and `mock.calls` arrays accumulate across tests unless explicitly cleared. WHY it causes problems: a test checking `expect(MockClass).toHaveBeenCalledTimes(1)` passes on the first run but fails with count=2 or count=3 on subsequent runs because previous test calls are still counted. Fix: call `MockClass.mockClear()` in `beforeEach`, or configure `clearMocks: true` in `vitest.config` to clear all mocks automatically before each test.
+
+**50. Spying on ESM Named Exports — Live Bindings Cannot Be Reassigned** [community] — In ESM, named exports are live bindings. `vi.spyOn()` needs a writable object property to replace; ESM bindings are read-only from the consumer's perspective. WHY it causes problems: `vi.spyOn(namedExport, ...)` fails with a TypeError (`Cannot set property ... which has only a getter`) for ESM named exports that are not accessed through a namespace import. Fix: import the entire module as a namespace (`import * as mod from './mod.js'`) and spy on `mod.methodName` — the namespace object is writable even for ESM.
+
+```javascript
+// ❌ WRONG — namedExport is a live ESM binding (read-only)
+import { add } from './math.js';
+vi.spyOn(add, ...); // TypeError: Cannot spy on a primitive value
+
+// ✅ CORRECT — namespace object is writable
+import * as math from './math.js';
+const spy = vi.spyOn(math, 'add').mockReturnValue(999);
+// All code that imports add from './math.js' now calls the spy
+```

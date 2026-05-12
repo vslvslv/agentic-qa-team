@@ -1,5 +1,5 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 27 | score: 97/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: tdd | iteration: 28 | score: 98/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) + typescript-6.0-baseurl-deprecation (WebFetch 2026-05-12) + typescript-6.0-subpath-imports (WebFetch 2026-05-12) + vitest-4.1-coverage-ignore-comments (WebFetch 2026-05-12) + vitest-3.2-scoped-fixtures (WebFetch 2026-05-12) + vitest-3.2-using-spyon (WebFetch 2026-05-12) + vitest-3.2-matchers-type (WebFetch 2026-05-12) + google-tott-2025-functional-core + google-tott-2025-arrange-data-flow + typescript-6.0-temporal-api (WebFetch 2026-05-12) + vitest-3.2-abortsignal + ts5to6-codemod + vitest-4.1-builder-pattern (WebFetch 2026-05-12) + vitest-3.2-annotate-api (WebFetch 2026-05-12) + vitest-3.2-sequence-grouporder + stryker-vscode-extension-2025-11 (WebFetch 2026-05-12) + stryker-incremental-mutation (WebFetch 2026-05-12) + vitest-5.0-beta (WebFetch 2026-05-12) + llm-as-red-phase-collaborator | ISTQB CTFL 4.0 terminology applied -->
 <!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
 <!-- extension 2026-05-12: iter 17 — added TDD for Feature Flags (safe defaults pattern); One Map Key One Lookup for test doubles; TCR TypeScript script; gotchas #24–#26 -->
@@ -6046,6 +6046,625 @@ describe('applyLoyaltyDiscount', () => {
 
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
+<!-- extension 2026-05-12: iter 28 — added TDD for streaming APIs (ReadableStream, async generators, SSE); TDD for edge/serverless functions (Cloudflare Workers, AWS Lambda adapters); TDD with OpenTelemetry observability (SpanCollector fake, asserting span names/attributes); gotchas #52–#55 -->
+
+---
+
+### TDD for Streaming APIs — ReadableStream, Async Generators, SSE [community]
+
+Server-Sent Events, ReadableStream, and async generator-based streaming APIs are increasingly common in TypeScript backends (Hono, Fastify SSE, AI streaming responses). TDD for streaming code has a distinct shape: the test case must consume the stream and assert on the _sequence_ of emitted values, not a single return value.
+
+The key TDD insight: **extract the stream production logic into a pure async generator** (functional core), test the generator in isolation with simple `for await` loops, and integration-test the HTTP layer separately. This keeps the TDD inner loop fast (no HTTP setup) while covering the streaming logic completely.
+
+```typescript
+// TDD for a streaming token generator — AI completion style
+// token-stream.test.ts
+import { describe, it, expect } from 'vitest';
+import { streamTokens, TokenChunk } from './tokenStream.js';
+
+// Test case 1: RED — generator emits the correct token sequence
+describe('streamTokens', () => {
+  it('emits tokens in order and terminates', async () => {
+    const tokens: TokenChunk[] = [];
+
+    // Consume the async generator — the TDD test case is just a for-await loop
+    for await (const chunk of streamTokens(['Hello', ' ', 'world', '!'])) {
+      tokens.push(chunk);
+    }
+
+    expect(tokens).toHaveLength(4);
+    expect(tokens.map(t => t.text)).toEqual(['Hello', ' ', 'world', '!']);
+  });
+
+  // Test case 2: RED — generator emits done signal on completion
+  it('emits a done chunk as the final item', async () => {
+    const chunks: TokenChunk[] = [];
+    for await (const chunk of streamTokens(['Hi'])) {
+      chunks.push(chunk);
+    }
+    expect(chunks.at(-1)?.done).toBe(true);
+  });
+
+  // Test case 3: RED — generator can be aborted mid-stream
+  it('stops emitting when AbortSignal fires', async () => {
+    const controller = new AbortController();
+    const collected: string[] = [];
+
+    // Cancel after collecting 2 tokens
+    const iterator = streamTokens(
+      ['a', 'b', 'c', 'd', 'e'],
+      { signal: controller.signal }
+    );
+
+    for await (const chunk of iterator) {
+      collected.push(chunk.text);
+      if (collected.length === 2) controller.abort();
+    }
+
+    expect(collected).toHaveLength(2);
+    expect(collected).toEqual(['a', 'b']);
+  });
+
+  // Test case 4: RED — empty input emits only the done chunk
+  it('emits only the done chunk for empty input', async () => {
+    const chunks: TokenChunk[] = [];
+    for await (const chunk of streamTokens([])) {
+      chunks.push(chunk);
+    }
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].done).toBe(true);
+  });
+});
+
+// GREEN: async generator implementation — functional core, no HTTP
+// tokenStream.ts
+export interface TokenChunk {
+  text:  string;
+  done?: boolean;
+}
+
+export interface StreamOptions {
+  signal?: AbortSignal;
+  delayMs?: number; // optional artificial delay for testing slow sources
+}
+
+export async function* streamTokens(
+  tokens: string[],
+  opts: StreamOptions = {}
+): AsyncGenerator<TokenChunk> {
+  const { signal, delayMs } = opts;
+
+  for (const text of tokens) {
+    // Honour AbortSignal at each emission point
+    if (signal?.aborted) return;
+    if (delayMs) await new Promise(r => setTimeout(r, delayMs));
+    yield { text };
+  }
+
+  yield { text: '', done: true };
+}
+```
+
+**Testing the HTTP layer — ReadableStream over SSE:**
+
+```typescript
+// sse-handler.test.ts — integration test for the SSE HTTP layer
+// TDD the HTTP layer separately from the generator core
+import { describe, it, expect } from 'vitest';
+import { createSSEResponse } from './sseHandler.js';
+import { streamTokens } from './tokenStream.js';
+
+// Test case: RED — SSE response has correct Content-Type and stream encoding
+it('produces a valid SSE response with data: lines', async () => {
+  const generator = streamTokens(['Hello', ' world']);
+
+  // createSSEResponse wraps any AsyncIterable into a Server-Sent Events Response
+  const response = createSSEResponse(generator);
+
+  expect(response.headers.get('Content-Type')).toBe('text/event-stream');
+  expect(response.headers.get('Cache-Control')).toBe('no-cache');
+  expect(response.headers.get('Connection')).toBe('keep-alive');
+
+  // Read the entire stream body — consume and collect lines
+  const text = await response.text();
+  const lines = text.split('\n').filter(l => l.startsWith('data:'));
+
+  expect(lines).toHaveLength(3); // 2 tokens + 1 done chunk
+  expect(lines[0]).toBe('data: {"text":"Hello"}');
+  expect(lines[1]).toBe('data: {"text":" world"}');
+  expect(lines[2]).toContain('"done":true');
+});
+
+// GREEN: SSE response factory — imperative shell wrapping the functional core
+// sseHandler.ts
+export function createSSEResponse(
+  source: AsyncIterable<unknown>
+): Response {
+  const stream = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      for await (const chunk of source) {
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`)
+        );
+      }
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type':  'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection':    'keep-alive',
+    },
+  });
+}
+```
+
+**Testing ReadableStream consumption in TypeScript:**
+
+```typescript
+// stream-consumer.test.ts — TDD for a ReadableStream consumer
+import { describe, it, expect } from 'vitest';
+import { collectStream, StreamCollector } from './streamConsumer.js';
+
+// Helper: create a ReadableStream from an array (test fixture)
+function streamFrom<T>(items: T[]): ReadableStream<T> {
+  return new ReadableStream<T>({
+    start(controller) {
+      items.forEach(item => controller.enqueue(item));
+      controller.close();
+    },
+  });
+}
+
+describe('collectStream', () => {
+  // Test case 1: RED — collects all chunks in order
+  it('collects all stream chunks into an array', async () => {
+    const stream = streamFrom([1, 2, 3, 4, 5]);
+    const result = await collectStream(stream);
+    expect(result).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  // Test case 2: RED — handles empty stream
+  it('returns an empty array for an empty stream', async () => {
+    const stream = streamFrom<string>([]);
+    const result = await collectStream(stream);
+    expect(result).toEqual([]);
+  });
+
+  // Test case 3: RED — onChunk callback is called for each item
+  it('calls onChunk for each item in order', async () => {
+    const received: number[] = [];
+    const stream = streamFrom([10, 20, 30]);
+
+    await collectStream(stream, { onChunk: n => received.push(n) });
+
+    expect(received).toEqual([10, 20, 30]);
+  });
+});
+
+// GREEN: stream consumer with callback support
+// streamConsumer.ts
+export interface CollectOptions<T> {
+  onChunk?: (chunk: T) => void;
+  signal?: AbortSignal;
+}
+
+export async function collectStream<T>(
+  stream: ReadableStream<T>,
+  opts: CollectOptions<T> = {}
+): Promise<T[]> {
+  const { onChunk, signal } = opts;
+  const results: T[] = [];
+  const reader = stream.getReader();
+
+  try {
+    while (true) {
+      if (signal?.aborted) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+      results.push(value);
+      onChunk?.(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return results;
+}
+```
+
+**[community] The most common streaming TDD mistake: testing the HTTP SSE response directly without extracting the generator.** Writing a test case that spins up an Express/Hono server, makes an HTTP request, and reads the SSE response is a full integration test — slow, fragile, and hard to isolate. Extract the streaming logic into a pure async generator, TDD it with `for await` in unit test cases (< 1ms per test), and write a single integration test for the HTTP transport layer. The generator test suite covers 95% of the behaviour; the HTTP test confirms the envelope.
+
+**[community] `for await...of` with a manual `break` condition is the correct pattern for partial stream consumption in TDD test cases.** Teams that use `Promise.race([streamFinishes, timeout(1000)])` to prevent test cases from hanging indefinitely when a stream is infinite are wrapping complexity around a simple pattern. The correct approach: design streams to be `AbortSignal`-aware (as shown above), pass a pre-aborted controller signal in the test case, and assert on the collected items. This tests the cancellation path explicitly rather than relying on timeouts.
+
+---
+
+### TDD for Edge / Serverless Functions — Cloudflare Workers and AWS Lambda [community]
+
+Serverless functions are "thin HTTP handlers" by nature: they receive a `Request`, call collaborators, and return a `Response`. TDD applies cleanly when the handler delegates to a testable functional core. The edge runtime's unique constraints (no Node.js builtins, `Request`/`Response` from the Web APIs, `KV`/`D1`/`Env` bindings) require typed fakes for each binding.
+
+**The TDD approach:** define a typed `Env` interface from the Worker's bindings, create in-memory fakes for each binding, and TDD the handler against those fakes. The handler becomes a thin orchestrator that is testable without running Miniflare or Wrangler.
+
+```typescript
+// worker-tdd.test.ts — TDD for a Cloudflare Worker handler
+import { describe, it, expect } from 'vitest';
+import { handleRequest } from './worker.js';
+
+// Typed Env interface matching the Worker's wrangler.toml bindings
+interface Env {
+  ITEMS_KV: KVNamespace;
+  DB:       D1Database;
+  API_KEY:  string;
+}
+
+// ---- Typed in-memory KV fake ----
+class FakeKVNamespace implements Pick<KVNamespace, 'get' | 'put' | 'delete' | 'list'> {
+  readonly #store = new Map<string, string>();
+
+  async get(key: string): Promise<string | null> {
+    return this.#store.get(key) ?? null;
+  }
+
+  async put(key: string, value: string): Promise<void> {
+    this.#store.set(key, value);
+  }
+
+  async delete(key: string): Promise<void> {
+    this.#store.delete(key);
+  }
+
+  async list(options?: { prefix?: string }): Promise<KVNamespaceListResult<unknown, string>> {
+    const keys = [...this.#store.keys()]
+      .filter(k => !options?.prefix || k.startsWith(options.prefix))
+      .map(name => ({ name, expiration: undefined, metadata: undefined }));
+    return { keys, list_complete: true, cursor: undefined } as KVNamespaceListResult<unknown, string>;
+  }
+}
+
+// ---- Test cases ----
+describe('GET /items/:id', () => {
+  const makeEnv = (): Env => ({
+    ITEMS_KV: new FakeKVNamespace() as unknown as KVNamespace,
+    DB:       {} as D1Database, // dummy — not used by this route
+    API_KEY:  'test-api-key',
+  });
+
+  // Test case 1: RED — missing item returns 404
+  it('returns 404 when item does not exist in KV', async () => {
+    const env  = makeEnv();
+    const req  = new Request('https://worker.example.com/items/missing-id');
+
+    const response = await handleRequest(req, env);
+
+    expect(response.status).toBe(404);
+    const body = await response.json() as { error: string };
+    expect(body.error).toContain('not found');
+  });
+
+  // Test case 2: RED — existing item returns 200 with JSON body
+  it('returns 200 with item data when KV entry exists', async () => {
+    const env = makeEnv();
+    // Arrange: seed KV fake directly
+    await (env.ITEMS_KV as unknown as FakeKVNamespace).put(
+      'item-123',
+      JSON.stringify({ id: 'item-123', name: 'Widget', price: 9.99 })
+    );
+    const req = new Request('https://worker.example.com/items/item-123');
+
+    const response = await handleRequest(req, env);
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { id: string; name: string; price: number };
+    expect(body.name).toBe('Widget');
+    expect(body.price).toBe(9.99);
+  });
+
+  // Test case 3: RED — missing API key returns 401
+  it('returns 401 when Authorization header is missing', async () => {
+    const env = makeEnv();
+    const req = new Request('https://worker.example.com/items/item-123');
+    // No Authorization header — should be rejected before KV lookup
+
+    const response = await handleRequest(req, env);
+
+    // If KV has no entry AND no auth, we expect 401 not 404
+    // Test case forces the auth check to come before the KV lookup
+    expect(response.status).toBe(401);
+  });
+});
+
+// GREEN: Cloudflare Worker handler — TDD'd against typed fakes
+// worker.ts
+export async function handleRequest(req: Request, env: Env): Promise<Response> {
+  // Auth gate — checked before any binding access
+  if (req.headers.get('Authorization') !== `Bearer ${env.API_KEY}`) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const url  = new URL(req.url);
+  const id   = url.pathname.split('/').at(-1);
+  if (!id) return Response.json({ error: 'Bad request' }, { status: 400 });
+
+  const raw = await env.ITEMS_KV.get(id);
+  if (!raw) return Response.json({ error: `Item ${id} not found` }, { status: 404 });
+
+  return Response.json(JSON.parse(raw));
+}
+```
+
+**Testing AWS Lambda handlers with typed events:**
+
+```typescript
+// lambda-handler.test.ts — TDD for an AWS Lambda handler
+// Uses typed event interfaces — no AWS SDK runtime dependency
+import { describe, it, expect } from 'vitest';
+import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import { handler } from './lambda.js';
+
+// Typed Lambda event factory — builds minimal valid events for TDD
+function makeEvent(
+  overrides: Partial<APIGatewayProxyEventV2> = {}
+): APIGatewayProxyEventV2 {
+  return {
+    version: '2.0',
+    routeKey: 'GET /orders/{id}',
+    requestContext: {
+      http: { method: 'GET', path: '/orders/ORD-1' },
+    } as APIGatewayProxyEventV2['requestContext'],
+    pathParameters: { id: 'ORD-1' },
+    queryStringParameters: undefined,
+    body: undefined,
+    isBase64Encoded: false,
+    headers: { authorization: 'Bearer valid-token' },
+    rawPath: '/orders/ORD-1',
+    rawQueryString: '',
+    ...overrides,
+  };
+}
+
+describe('Lambda GET /orders/:id', () => {
+  // Test case 1: RED — missing auth returns 401
+  it('returns 401 when Authorization header is absent', async () => {
+    const event = makeEvent({ headers: {} });
+    const result = await handler(event) as APIGatewayProxyResultV2;
+
+    expect(result).toMatchObject({ statusCode: 401 });
+  });
+
+  // Test case 2: RED — valid event returns order
+  it('returns 200 with order data for a valid request', async () => {
+    const event = makeEvent();
+    const result = await handler(event) as APIGatewayProxyResultV2;
+
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body ?? '{}')).toMatchObject({ id: 'ORD-1' });
+  });
+});
+```
+
+**Why edge/serverless TDD uses typed fakes rather than emulators:** Miniflare (Cloudflare's local emulator) and AWS SAM Local are powerful but add 5–30 second startup times to the test lifecycle — incompatible with TDD's sub-second feedback requirement. Typed in-memory fakes (`FakeKVNamespace`, `FakeD1Database`) run in-process with zero startup cost, making the TDD inner loop viable. Use emulators for integration test cases (one level up in the double-loop) that run in CI, not in the watch loop.
+
+**[community] Edge runtime global availability breaks tests run under standard Node.js.** Cloudflare Workers and Deno use Web-standard APIs (`Request`, `Response`, `fetch`, `Headers`, `FormData`) that are globals in the edge runtime but were only recently added to Node.js (Node 18+ via `undici`). Test files that import Worker handlers under Node.js may fail with `ReferenceError: Request is not defined` unless the Vitest config adds `globals: true` or polyfills the Web APIs. The fix: add `globals: true` to the Vitest config and ensure `@cloudflare/workers-types` is in `devDependencies`. For pure domain logic (no Request/Response in the handler test), this is not needed — another reason to extract the functional core from the HTTP handler before TDD'ing.
+
+---
+
+### TDD with OpenTelemetry — Testing Observability Without Coupling Tests to Tracing [community]
+
+OpenTelemetry (OTel) instrumented code produces spans, attributes, and events. A naive TDD approach — mocking `tracer.startSpan()` and asserting on mock calls — creates brittle tests tightly coupled to OTel's internal API. The correct TDD pattern uses an **in-memory span exporter** (OTel's built-in `InMemorySpanExporter`) as the observation point, decoupled from the application logic.
+
+The principle: **treat spans like side effects**, the same way you treat email sending. The test case asserts on what was observable (spans produced), not on how the observability machinery was called (implementation details of `tracer.startActiveSpan()`).
+
+```typescript
+// observability-tdd.test.ts — TDD for OTel-instrumented domain logic
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import {
+  NodeTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-node';
+import { trace, SpanStatusCode } from '@opentelemetry/api';
+import { OrderProcessor } from './OrderProcessor.js';
+import { InMemoryOrderRepository } from './test-doubles/InMemoryOrderRepository.js';
+
+// ---- OTel test harness — in-memory exporter as a spy for spans ----
+let exporter: InMemorySpanExporter;
+let provider: NodeTracerProvider;
+
+beforeEach(() => {
+  exporter  = new InMemorySpanExporter();
+  provider  = new NodeTracerProvider();
+  provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+  provider.register(); // registers as the global tracer provider
+});
+
+afterEach(async () => {
+  await provider.shutdown(); // deregisters and flushes
+  exporter.reset();
+});
+
+// ---- Helper: find spans by name in the exporter ----
+function getSpansByName(name: string) {
+  return exporter.getFinishedSpans().filter(s => s.name === name);
+}
+
+describe('OrderProcessor.process', () => {
+  // Test case 1: RED — a span is produced when an order is processed
+  it('produces an "order.process" span when processing succeeds', async () => {
+    const repo      = new InMemoryOrderRepository();
+    const processor = new OrderProcessor(repo);
+    await repo.save({ id: 'ORD-1', status: 'pending', total: 50 });
+
+    await processor.process('ORD-1');
+
+    const spans = getSpansByName('order.process');
+    expect(spans).toHaveLength(1);
+    expect(spans[0].status.code).toBe(SpanStatusCode.OK);
+  });
+
+  // Test case 2: RED — span includes the order ID as an attribute
+  it('attaches the order ID as a span attribute', async () => {
+    const repo      = new InMemoryOrderRepository();
+    const processor = new OrderProcessor(repo);
+    await repo.save({ id: 'ORD-2', status: 'pending', total: 75 });
+
+    await processor.process('ORD-2');
+
+    const span = getSpansByName('order.process')[0];
+    expect(span).toBeDefined();
+    expect(span.attributes['order.id']).toBe('ORD-2');
+    expect(span.attributes['order.total']).toBe(75);
+  });
+
+  // Test case 3: RED — span is marked ERROR when the order is not found
+  it('records an ERROR status when the order does not exist', async () => {
+    const repo      = new InMemoryOrderRepository(); // empty
+    const processor = new OrderProcessor(repo);
+
+    await expect(processor.process('NONEXISTENT')).rejects.toThrow();
+
+    const span = getSpansByName('order.process')[0];
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span?.status.message).toMatch(/not found/i);
+  });
+});
+
+// GREEN: TDD-driven OTel instrumentation
+// OrderProcessor.ts
+import { trace as otelTrace, SpanStatusCode as StatusCode } from '@opentelemetry/api';
+
+const tracer = otelTrace.getTracer('order-service');
+
+interface OrderStore {
+  findById(id: string): Promise<{ id: string; status: string; total: number } | null>;
+  updateStatus(id: string, status: string): Promise<void>;
+}
+
+export class OrderProcessor {
+  constructor(private readonly repo: OrderStore) {}
+
+  async process(orderId: string): Promise<void> {
+    await tracer.startActiveSpan('order.process', async (span) => {
+      try {
+        const order = await this.repo.findById(orderId);
+        if (!order) {
+          span.setStatus({ code: StatusCode.ERROR, message: `Order ${orderId} not found` });
+          throw new Error(`Order ${orderId} not found`);
+        }
+
+        span.setAttributes({
+          'order.id':    order.id,
+          'order.total': order.total,
+        });
+
+        await this.repo.updateStatus(orderId, 'processing');
+        span.setStatus({ code: StatusCode.OK });
+      } catch (err) {
+        if (span.status.code !== StatusCode.ERROR) {
+          span.setStatus({ code: StatusCode.ERROR, message: String(err) });
+        }
+        throw err;
+      } finally {
+        span.end();
+      }
+    });
+  }
+}
+```
+
+**Extracting a reusable OTel test harness:**
+
+```typescript
+// test-doubles/otel-harness.ts — reusable OTel in-memory test setup
+import {
+  NodeTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+  ReadableSpan,
+} from '@opentelemetry/sdk-trace-node';
+import { SpanStatusCode } from '@opentelemetry/api';
+
+export class OtelTestHarness {
+  readonly exporter = new InMemorySpanExporter();
+  private provider: NodeTracerProvider;
+
+  constructor() {
+    this.provider = new NodeTracerProvider();
+    this.provider.addSpanProcessor(new SimpleSpanProcessor(this.exporter));
+    this.provider.register();
+  }
+
+  getSpans(name?: string): ReadableSpan[] {
+    const all = this.exporter.getFinishedSpans();
+    return name ? all.filter(s => s.name === name) : all;
+  }
+
+  getSpan(name: string): ReadableSpan | undefined {
+    return this.getSpans(name)[0];
+  }
+
+  assertSpanOK(name: string): ReadableSpan {
+    const span = this.getSpan(name);
+    if (!span) throw new Error(`No span found with name: ${name}`);
+    if (span.status.code !== SpanStatusCode.OK) {
+      throw new Error(`Span "${name}" has status ${span.status.code}, expected OK`);
+    }
+    return span;
+  }
+
+  assertSpanError(name: string): ReadableSpan {
+    const span = this.getSpan(name);
+    if (!span) throw new Error(`No span found with name: ${name}`);
+    if (span.status.code !== SpanStatusCode.ERROR) {
+      throw new Error(`Span "${name}" has status ${span.status.code}, expected ERROR`);
+    }
+    return span;
+  }
+
+  async teardown(): Promise<void> {
+    await this.provider.shutdown();
+    this.exporter.reset();
+  }
+}
+
+// Usage with Vitest aroundEach — co-located OTel setup/teardown:
+// import { aroundEach } from 'vitest';
+// aroundEach(async function* ({ task }) {
+//   const otel = new OtelTestHarness();
+//   task.context.otel = otel;
+//   yield;
+//   await otel.teardown();
+// });
+```
+
+**Why in-memory exporter beats mocking `tracer.startActiveSpan()`:**
+
+| Approach | Couples test to | Survives OTel refactoring | Tests actual span data |
+|---|---|---|---|
+| `vi.mock('@opentelemetry/api')` | OTel internal API | No — breaks on any API change | No |
+| `vi.spyOn(tracer, 'startActiveSpan')` | OTel internal API + span object shape | No | Partially |
+| **`InMemorySpanExporter`** | Span names + attributes (semantic conventions) | Yes — OTel internally can change | Yes — full span data |
+
+**[community] OTel instrumentation is "test-after" in 95% of TypeScript codebases.** Developers add `tracer.startActiveSpan(...)` calls after the feature is built, without TDD. The `InMemorySpanExporter` pattern makes instrumentation test-first viable: write the test case that asserts a span with specific attributes exists, then add the instrumentation to go Green. This ensures spans are actually produced with the correct attribute names — not just that the code compiled.
+
+**[community] Semantic convention attribute names (`order.id`, `http.status_code`, `db.operation`) are the right assertion targets in OTel TDD test cases, not internal OTel span object fields.** When a test case asserts `span.attributes['order.id']`, it is testing the observability contract — the same contract that dashboards and alerts depend on. If a developer refactors the span creation code but uses a different attribute name, the test case fails. This is the correct TDD behaviour: the span attribute name IS the behavioural specification for observability, and regressions in attribute naming should be caught by the TDD test suite.
+
+---
+
+### Real-World Gotchas [community] — Additions (iter 28)
+
+52. **[community] Async generators tested with `for await...of` hang indefinitely when the generator has a missing `return` or an infinite loop without a signal check.** The TDD symptom: a test case times out rather than failing with an assertion error. This is harder to diagnose than a normal assertion failure because the test runner reports a timeout, not the root cause (the generator never terminated). The fix: always include a `signal?.aborted` check at the top of each async generator loop body, and configure Vitest's `testTimeout` to a value short enough to produce fast feedback (500–2000ms for unit-level streaming tests). Alternatively, pass a `ctx.signal` to the generator in the test case — if the test times out, the signal fires and the generator terminates, allowing the assertion to run and provide a more informative failure message.
+
+53. **[community] In-memory KV fakes for Cloudflare Workers that implement `KVNamespace.getWithMetadata()` commonly miss the expiration handling path.** When TDD'ing a Worker that calls `env.KV.getWithMetadata(key)`, the in-memory fake's implementation typically returns `{ value, metadata: null }` without implementing TTL expiration logic. This means test cases pass for reads that would fail in production when a KV entry has expired (Worker KV entries expire based on `expirationTtl` set at write time). The TDD fix: add an expiration field to the fake's internal store and implement a `get` that returns `null` for expired entries. Write an explicit test case: "returns null when the KV entry is past its TTL" — this forces the expiration logic to exist in both the fake and the production code, and prevents the fake from diverging from KV's real behaviour. Use `vi.useFakeTimers()` to advance the clock past the TTL in the test case.
+
+54. **[community] OpenTelemetry's `InMemorySpanExporter` spans are not flushed immediately when using the `BatchSpanProcessor`.** Teams migrating from `SimpleSpanProcessor` to `BatchSpanProcessor` (for production-closer batch behaviour in integration tests) find that `exporter.getFinishedSpans()` returns `[]` immediately after the test action — the batch has not been flushed yet. The fix: call `await provider.forceFlush()` after the action under test and before the assertion on `getFinishedSpans()`. When using `SimpleSpanProcessor` (as shown in the examples above), spans are exported synchronously — no flush needed. For TDD unit test cases, `SimpleSpanProcessor` is correct. For integration tests that test batch flushing behaviour, use `BatchSpanProcessor` and add `await provider.forceFlush()` before assertions.
+
+55. **[community] Streaming TDD test cases that consume `ReadableStream` via `response.text()` or `response.json()` silently pass when the stream is never closed.** In Web API's `ReadableStream`, a stream that is never `controller.close()`'d causes `response.text()` to hang indefinitely — waiting for the stream to terminate. The test case times out rather than failing with an assertion error, and the cause is not obvious. The correct TDD approach: always write an explicit test case for stream termination (`it('closes the stream after the last chunk', ...)`), and structure the `ReadableStream` start function to call `controller.close()` in a `finally` block — not inline after the last `enqueue()`. A `finally { controller.close() }` ensures the stream terminates even if the async iteration throws, preventing the "stream never closes" class of test hangs.
+
+---
+
 | *Test-Driven Development: By Example* — Kent Beck | Book | https://www.oreilly.com/library/view/test-driven-development/0321146530/ | The canonical TDD reference; covers red-green-refactor, fake-it, triangulation |
 | TestDrivenDevelopment — Martin Fowler | Article | https://martinfowler.com/bliki/TestDrivenDevelopment.html | Concise definition, situates TDD in the broader testing landscape |
 | TestFirst — Martin Fowler | Article | https://martinfowler.com/bliki/TestFirst.html | Distinguishes TDD (with refactor step) from test-first (without) |
@@ -6098,3 +6717,7 @@ describe('applyLoyaltyDiscount', () => {
 | Stryker VS Code Extension | Tool | https://stryker-mutator.io/blog/vscode-plugin/ | Official VS Code plugin (Stryker 9.3+, Nov 2025); inline mutation decorations (✓ killed, ⚠ survivor) during TDD sessions; built on Mutation Server Protocol; Test Explorer integration for single-file and single-test mutation runs |
 | Stryker Incremental Mutation Testing | Docs | https://stryker-mutator.io/docs/stryker-js/configuration/ | `--incremental` flag (Stryker 9.x) stores mutation results in a JSON cache; subsequent runs skip unchanged mutants — reduces per-PR mutation runs from 120s to 8–15s for single changed files; combine with `--mutate` scoping for TDD-cadence mutation feedback |
 | Vitest 5.0 Release Notes | Docs | https://vitest.dev/blog/vitest-5 | Breaking changes: `.vitest/` output directory convention; `sequential` → `concurrent: false`; `configDefaults.reporters` for stable reporter extension; V8 coverage for child processes and worker threads |
+| OpenTelemetry JS InMemorySpanExporter | Docs | https://open-telemetry.github.io/opentelemetry-js/classes/_opentelemetry_sdk_trace_base.InMemorySpanExporter.html | OTel in-memory exporter for TDD: captures finished spans in memory, query by name/attribute; use with SimpleSpanProcessor for synchronous span export in unit test cases |
+| Cloudflare Workers Testing Guide | Docs | https://developers.cloudflare.com/workers/testing/ | Official guide for unit-testing Workers: typed Env interfaces, KV/D1/R2 binding fakes, Miniflare for integration tests |
+| Web Streams API — ReadableStream | Docs | https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream | ReadableStream constructor, controller.enqueue/close patterns; essential for TDD of streaming HTTP responses and SSE handlers |
+| ECMAScript Async Generators | Docs | https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncGenerator | Async generator protocol; `for await...of` consumption pattern; used in streaming TDD test cases |

@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 45 | score: 98/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) + qa-methodology-refine extension run 2026-05-12 iter 41 (WebAIM Million 2025 published data, Playwright locator.normalize() Playwright 1.50 pattern, axe-core 4.11.4 anchor ancestry selector escaping fix, WCAG 3.0 task-level outcome testing pattern refinements, community gotchas 77-80) + qa-methodology-refine extension run 2026-05-12 iter 42 (ARIA-in-HTML W3C Rec April 2026 — selectedcontent element testing + role=none gotcha, label element ARIA permitted attributes July 2025 update, image role img synonym December 2024, community gotchas 81-83) + qa-methodology-refine extension run 2026-05-12 iter 43 (Jest v30 incompatibility with jest-axe v10, Playwright locator.describe() v1.53 accessibility workflow pattern, community gotchas 84-85) + qa-methodology-refine extension run 2026-05-12 iter 44 (Playwright 1.60 testInfoError.errorContext aria snapshot in failure output, cypress-axe v1.7.0 Cypress 15 support + retry option, Playwright 1.52 failOnFlakyTests for accessibility CI gates, community gotchas 86-88) + qa-methodology-refine extension run 2026-05-12 iter 45 (WCAG 3.0 March 2026 Outcomes→Requirements/Foundational→Core terminology pivot, @axe-core/mcp Claude Desktop configuration pattern with AxeResultsSchema TypeScript types, axe-core 4.11.3 position:fixed offscreen exclusion behavior, EU EAA post-June-2025 sector-phased enforcement in EU member states, community gotchas 89-91) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 46 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) + qa-methodology-refine extension run 2026-05-12 iter 41 (WebAIM Million 2025 published data, Playwright locator.normalize() Playwright 1.50 pattern, axe-core 4.11.4 anchor ancestry selector escaping fix, WCAG 3.0 task-level outcome testing pattern refinements, community gotchas 77-80) + qa-methodology-refine extension run 2026-05-12 iter 42 (ARIA-in-HTML W3C Rec April 2026 — selectedcontent element testing + role=none gotcha, label element ARIA permitted attributes July 2025 update, image role img synonym December 2024, community gotchas 81-83) + qa-methodology-refine extension run 2026-05-12 iter 43 (Jest v30 incompatibility with jest-axe v10, Playwright locator.describe() v1.53 accessibility workflow pattern, community gotchas 84-85) + qa-methodology-refine extension run 2026-05-12 iter 44 (Playwright 1.60 testInfoError.errorContext aria snapshot in failure output, cypress-axe v1.7.0 Cypress 15 support + retry option, Playwright 1.52 failOnFlakyTests for accessibility CI gates, community gotchas 86-88) + qa-methodology-refine extension run 2026-05-12 iter 45 (WCAG 3.0 March 2026 Outcomes→Requirements/Foundational→Core terminology pivot, @axe-core/mcp Claude Desktop configuration pattern with AxeResultsSchema TypeScript types, axe-core 4.11.3 position:fixed offscreen exclusion behavior, EU EAA post-June-2025 sector-phased enforcement in EU member states, community gotchas 89-91) + qa-methodology-refine extension run 2026-05-12 iter 46 (Playwright accessibility assertions unified TypeScript reference — toHaveAccessibleName/Description/Role/ErrorMessage, ARIA tabs pattern React+jest-axe+Playwright E2E, ARIA 1.2 combobox structure and keyboard contract tests, testInfo.attach() axe scan CI report pattern, community gotchas 92-95) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -9282,4 +9282,419 @@ async function scanUrlForA11yViolations(url: string): Promise<AxeMcpScanOutput> 
 90. **[community] axe-core 4.11.3 changed how elements with `position: fixed` and offscreen coordinates are classified — this breaks some `visually-hidden` utility patterns that relied on the old behavior**: Prior to axe-core 4.11.3, elements styled with the common "visually hidden" pattern (`position: absolute; width: 1px; height: 1px; clip: rect(0,0,0,0); overflow: hidden`) were sometimes incorrectly reported as violations when also applying `position: fixed` with large negative coordinates (e.g., `left: -9999px`). axe-core 4.11.3 improved the offscreen detection logic specifically for `position: fixed` elements — it now correctly excludes elements that are positioned outside the visible viewport using fixed positioning. The side effect is that tests that previously passed by accident (the element was excluded via a different code path) may now fail if the element is considered on-screen under the new logic. WHY: if your `visually-hidden` CSS uses `position: fixed` (uncommon but present in some legacy component libraries), audit it against 4.11.3. The recommended modern visually-hidden pattern uses `position: absolute` — this is unaffected by the 4.11.3 change.
 
 91. **[community] EU EAA post-June 2025 enforcement is not uniform across all EU member states — some sectors have phased timelines extending to 2027, and B2B-only products in certain sectors may be exempt until re-assessed**: The European Accessibility Act deadline of June 28, 2025 was the transposition deadline for member states to have national laws in force. However, several EU member states legislated sector-specific transition periods: for example, some member states grant providers of self-service terminals (ATMs, ticketing kiosks) up to five years from the original EAA transposition date (extending to 2027) if replacement is disproportionately burdensome. The EAA also includes a microenterprise exemption (fewer than 10 employees and less than €2M turnover) for some service categories. For QA teams, this means: (1) do not assume that passing EN 301 549 v3.3.2 / WCAG 2.2 AA is legally required for every product in every EU market on the same date; (2) check the specific national implementing regulation for each target market; (3) document which standard version and which annex applies to your product category. WHY: B2B platform teams have incorrectly assumed EAA does not apply to them because their end customers are businesses — but if the business's customers are consumers, the EAA may still apply through the supply chain.
+
+---
+
+## Playwright Accessibility Assertions — Unified TypeScript Reference (Iteration 46)
+
+Playwright v1.44+ ships a suite of first-class accessibility assertions on `Locator`. Using
+them in place of raw `getAttribute('aria-*')` checks makes tests more readable and more
+aligned with how assistive technologies see the DOM.
+
+### All Five Locator Accessibility Assertions in a Single Spec
+
+```typescript
+// tests/accessibility/assertions.spec.ts
+import { test, expect } from '@playwright/test';
+
+test.describe('Playwright accessibility assertion suite', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/components/form');
+  });
+
+  test('input has correct accessible name from associated label', async ({ page }) => {
+    const emailInput = page.getByRole('textbox', { name: 'Email address' });
+    // toHaveAccessibleName — v1.44+
+    // Matches the computed accessible name (label text, aria-label, aria-labelledby)
+    await expect(emailInput).toHaveAccessibleName('Email address');
+  });
+
+  test('input has correct accessible description from hint text', async ({ page }) => {
+    const passwordInput = page.getByRole('textbox', { name: 'Password' });
+    // toHaveAccessibleDescription — v1.44+
+    // Matches aria-describedby target text or aria-description attribute
+    await expect(passwordInput).toHaveAccessibleDescription(/at least 8 characters/i);
+  });
+
+  test('error message is surfaced via accessible error message', async ({ page }) => {
+    // toHaveAccessibleErrorMessage — v1.44+
+    // Reads aria-errormessage target text; only resolves when aria-invalid="true"
+    await page.getByRole('button', { name: 'Submit' }).click();
+    const emailInput = page.getByRole('textbox', { name: 'Email address' });
+    await expect(emailInput).toHaveAccessibleErrorMessage(/valid email/i);
+  });
+
+  test('icon button exposes its role correctly', async ({ page }) => {
+    const closeButton = page.locator('[data-testid="close-modal"]');
+    // toHaveRole — v1.44+
+    // Validates the computed ARIA role, including implicit roles from HTML semantics
+    await expect(closeButton).toHaveRole('button');
+  });
+
+  test('navigation landmark is reachable', async ({ page }) => {
+    const nav = page.getByRole('navigation', { name: 'Main navigation' });
+    await expect(nav).toHaveRole('navigation');
+    await expect(nav).toHaveAccessibleName('Main navigation');
+    // Also verify it is visible and focusable via keyboard skip link
+    await page.keyboard.press('Tab');
+    const skipLink = page.getByRole('link', { name: /skip to main/i });
+    await expect(skipLink).toBeFocused();
+  });
+});
+```
+
+> **Why these assertions over `getAttribute`**: `toHaveAccessibleName` uses the full
+> accessible name computation algorithm (ARIA spec §4.3) — it resolves `aria-labelledby`
+> chains, reads `<label>` associations, and falls back to `title`. A raw
+> `getAttribute('aria-label')` check misses all of that and produces false negatives when
+> the accessible name comes from a `<label>`.
+
+---
+
+## ARIA Tabs Pattern — TypeScript Component Testing (Iteration 46)
+
+The ARIA tabs pattern (role=`tablist` / `tab` / `tabpanel`) is one of the most commonly
+broken composite widgets in production. axe-core flags structural violations (missing
+`aria-selected`, wrong owner relations) but not keyboard flow. Test both.
+
+### React Component (TypeScript)
+
+```typescript
+// src/components/Tabs/Tabs.tsx
+import React, { KeyboardEvent, useState } from 'react';
+
+interface Tab { id: string; label: string; content: React.ReactNode; }
+
+export function Tabs({ tabs, label }: { tabs: Tab[]; label: string }) {
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      setActiveIndex((index + 1) % tabs.length);
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      setActiveIndex((index - 1 + tabs.length) % tabs.length);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setActiveIndex(0);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      setActiveIndex(tabs.length - 1);
+    }
+  };
+
+  return (
+    <div>
+      <div role="tablist" aria-label={label}>
+        {tabs.map((tab, i) => (
+          <button
+            key={tab.id}
+            role="tab"
+            id={`tab-${tab.id}`}
+            aria-selected={i === activeIndex}
+            aria-controls={`panel-${tab.id}`}
+            tabIndex={i === activeIndex ? 0 : -1}
+            onClick={() => setActiveIndex(i)}
+            onKeyDown={(e) => handleKeyDown(e, i)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      {tabs.map((tab, i) => (
+        <div
+          key={tab.id}
+          role="tabpanel"
+          id={`panel-${tab.id}`}
+          aria-labelledby={`tab-${tab.id}`}
+          hidden={i !== activeIndex}
+        >
+          {tab.content}
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+### jest-axe: Structure and Keyboard Flow Tests
+
+```typescript
+// src/components/Tabs/Tabs.test.tsx
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import { Tabs } from './Tabs';
+
+expect.extend(toHaveNoViolations);
+
+const SAMPLE_TABS = [
+  { id: 'overview',  label: 'Overview',  content: <p>Overview content</p>  },
+  { id: 'details',   label: 'Details',   content: <p>Details content</p>   },
+  { id: 'history',   label: 'History',   content: <p>History content</p>   },
+];
+
+describe('Tabs — axe structural checks', () => {
+  it('has no axe violations in default state', async () => {
+    const { container } = render(<Tabs tabs={SAMPLE_TABS} label="Product information" />);
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('has no axe violations after switching tabs', async () => {
+    const { container } = render(<Tabs tabs={SAMPLE_TABS} label="Product information" />);
+    await userEvent.click(screen.getByRole('tab', { name: 'Details' }));
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+});
+
+describe('Tabs — keyboard navigation', () => {
+  it('ArrowRight moves focus to the next tab and activates it', async () => {
+    render(<Tabs tabs={SAMPLE_TABS} label="Product information" />);
+    const firstTab = screen.getByRole('tab', { name: 'Overview' });
+    firstTab.focus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveFocus();
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('ArrowLeft wraps from first tab to last tab', async () => {
+    render(<Tabs tabs={SAMPLE_TABS} label="Product information" />);
+    const firstTab = screen.getByRole('tab', { name: 'Overview' });
+    firstTab.focus();
+    await userEvent.keyboard('{ArrowLeft}');
+    expect(screen.getByRole('tab', { name: 'History' })).toHaveFocus();
+  });
+
+  it('Home key moves to first tab regardless of current position', async () => {
+    render(<Tabs tabs={SAMPLE_TABS} label="Product information" />);
+    await userEvent.click(screen.getByRole('tab', { name: 'History' }));
+    screen.getByRole('tab', { name: 'History' }).focus();
+    await userEvent.keyboard('{Home}');
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveFocus();
+  });
+
+  it('End key moves to last tab regardless of current position', async () => {
+    render(<Tabs tabs={SAMPLE_TABS} label="Product information" />);
+    screen.getByRole('tab', { name: 'Overview' }).focus();
+    await userEvent.keyboard('{End}');
+    expect(screen.getByRole('tab', { name: 'History' })).toHaveFocus();
+  });
+
+  it('inactive tab panels are hidden from accessibility tree', () => {
+    render(<Tabs tabs={SAMPLE_TABS} label="Product information" />);
+    // hidden panels must not be reachable by AT
+    const hiddenPanel = screen.getByRole('tabpanel', { name: 'Details', hidden: true });
+    expect(hiddenPanel).toHaveAttribute('hidden');
+  });
+});
+```
+
+### Playwright E2E: Full-Page axe + Keyboard Flow
+
+```typescript
+// tests/accessibility/tabs.spec.ts
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Tabs widget — E2E accessibility', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/product/12345');
+    await page.getByRole('tablist').waitFor();
+  });
+
+  test('tablist has no axe violations', async ({ page }, testInfo) => {
+    // Scope scan to the tablist region only to reduce noise
+    const results = await new AxeBuilder({ page })
+      .include('[role="tablist"]')
+      .analyze();
+    await testInfo.attach('axe-tabs-scan', {
+      body: JSON.stringify(results.violations, null, 2),
+      contentType: 'application/json',
+    });
+    expect(results.violations).toHaveLength(0);
+  });
+
+  test('Tab key enters the tablist and ArrowRight navigates tabs', async ({ page }) => {
+    // Tab into the tablist from the element preceding it
+    await page.keyboard.press('Tab');
+    const firstTab = page.getByRole('tab').first();
+    await expect(firstTab).toBeFocused();
+    // ArrowRight should move to the second tab
+    await page.keyboard.press('ArrowRight');
+    await expect(page.getByRole('tab').nth(1)).toBeFocused();
+    // Tab key should move OUT of the tablist (to the tabpanel content)
+    await page.keyboard.press('Tab');
+    const panel = page.getByRole('tabpanel').first();
+    await expect(panel).not.toHaveAttribute('hidden');
+  });
+});
+```
+
+> **[community] WAI-ARIA APG Tabs pattern warning**: The APG pattern uses
+> "automatic activation" (keyboard focus activates the tab) for most desktop use cases.
+> If your component uses "manual activation" (only Space/Enter activates), you must add
+> explicit keyboard tests for that contract. Automated tools will not flag this discrepancy.
+
+---
+
+## ARIA Combobox (ARIA 1.2) — TypeScript Accessibility Testing Patterns (Iteration 46)
+
+The ARIA 1.2 combobox pattern (2021+) changed the owned-element structure versus ARIA 1.1.
+Many production implementations still use the deprecated ARIA 1.1 pattern, which axe-core
+now flags as a violation. Test both structure and keyboard contract.
+
+### jest-axe: Combobox Structure Checks
+
+```typescript
+// src/components/Combobox/Combobox.test.tsx
+import React, { useState } from 'react';
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { axe, toHaveNoViolations } from 'jest-axe';
+
+expect.extend(toHaveNoViolations);
+
+// Minimal ARIA 1.2-compliant combobox for illustration
+function ComboboxExample() {
+  const [value, setValue] = useState('');
+  const [open, setOpen] = useState(false);
+  const options = ['Apple', 'Apricot', 'Avocado'].filter(o =>
+    o.toLowerCase().startsWith(value.toLowerCase())
+  );
+
+  return (
+    <div>
+      <label htmlFor="fruit-input">Choose a fruit</label>
+      <input
+        id="fruit-input"
+        role="combobox"
+        aria-expanded={open}
+        aria-autocomplete="list"
+        aria-controls="fruit-listbox"
+        aria-haspopup="listbox"
+        value={value}
+        onChange={e => { setValue(e.target.value); setOpen(true); }}
+        onBlur={() => setOpen(false)}
+      />
+      {open && (
+        <ul id="fruit-listbox" role="listbox" aria-label="Fruit suggestions">
+          {options.map(opt => (
+            <li key={opt} role="option" aria-selected={false}
+                onMouseDown={() => { setValue(opt); setOpen(false); }}>
+              {opt}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+describe('Combobox — axe structural checks', () => {
+  it('has no violations in collapsed state', async () => {
+    const { container } = render(<ComboboxExample />);
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('has no violations when listbox is open', async () => {
+    const { container } = render(<ComboboxExample />);
+    await userEvent.type(screen.getByRole('combobox'), 'a');
+    expect(await axe(container)).toHaveNoViolations();
+  });
+});
+
+describe('Combobox — keyboard contract', () => {
+  it('Down arrow opens the listbox and moves focus into options', async () => {
+    render(<ComboboxExample />);
+    const input = screen.getByRole('combobox');
+    await userEvent.click(input);
+    await userEvent.keyboard('{ArrowDown}');
+    // After ArrowDown, aria-expanded should be true
+    expect(input).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('Escape closes the listbox', async () => {
+    render(<ComboboxExample />);
+    await userEvent.type(screen.getByRole('combobox'), 'ap');
+    await userEvent.keyboard('{Escape}');
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-expanded', 'false');
+  });
+});
+```
+
+> **[community] ARIA 1.1 vs ARIA 1.2 combobox**: In ARIA 1.1, the `textbox` was owned
+> inside a `combobox` container. ARIA 1.2 reversed this — the `textbox` **is** the
+> combobox, and `aria-controls` points to the external listbox. axe-core 4.4+ reports
+> ARIA 1.1 comboboxes as `aria-required-children` violations. If your UI library (e.g.,
+> an older version of Headless UI, Downshift, or React Select) still uses ARIA 1.1
+> markup, upgrade before running axe scans. WHY: AT vendors (NVDA, JAWS, VoiceOver)
+> have already migrated to ARIA 1.2 interaction models.
+
+---
+
+## `testInfo.attach()` — Attaching Axe Results to Playwright HTML Reports (Iteration 46)
+
+Attaching the full axe scan JSON to Playwright's HTML report is the recommended pattern
+for debugging CI accessibility failures. Without the attachment, teams only see the
+violation count in the test output and have to re-run locally.
+
+```typescript
+// tests/accessibility/full-page-scan.spec.ts
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test('homepage full-page axe scan — attach results to report', async ({ page }, testInfo) => {
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze();
+
+  // Always attach — even when passing — so pass/fail history is reviewable in CI
+  await testInfo.attach('axe-full-page-results', {
+    body: JSON.stringify(
+      {
+        url: page.url(),
+        timestamp: new Date().toISOString(),
+        violations: results.violations,
+        passes: results.passes.length,
+        incomplete: results.incomplete.length,
+        inapplicable: results.inapplicable.length,
+      },
+      null,
+      2,
+    ),
+    contentType: 'application/json',
+  });
+
+  // Only assert on violations so the test doesn't fail on incomplete items
+  expect(
+    results.violations,
+    `${results.violations.length} axe violation(s) — see attachment axe-full-page-results`,
+  ).toHaveLength(0);
+});
+```
+
+> **Why always attach even when passing**: Playwright's HTML report retains attachments
+> for passing tests. This lets you track accessibility metric trends over time (how many
+> passes/incomplete items exist across builds) without writing a separate metrics pipeline.
+> The JSON attachment is typically 20–200 KB — small enough to store in CI artefacts
+> indefinitely.
+
+---
+
+### New Community Gotchas (Iteration 46)
+
+92. **[community] `aria-label` on a `<div>` with `role="group"` is valid, but `aria-label` on a `<div>` with no role is silently ignored by all major ATs — yet axe-core does not flag it as a violation**: Developers frequently add `aria-label` to wrapper `<div>` elements expecting assistive technologies to announce the label when the user navigates to the container. Without an explicit role that accepts a name (e.g., `group`, `region`, `landmark`), the `aria-label` is technically allowed by the spec but has no semantic effect. VoiceOver, NVDA, and JAWS all ignore it. axe-core 4.11.x does not flag this as a violation (it is not a WCAG failure; it is a best-practice gap). WHY: add the appropriate role to make the label meaningful, or use a visible heading instead. Automated scans alone will not catch this class of AT-invisible labelling.
+
+93. **[community] Playwright's `toMatchAriaSnapshot()` assertion (v1.49+) will fail intermittently on pages with dynamic `aria-label` values that include timestamps, user names, or counters**: The YAML-based aria snapshot records the accessibility tree at the time the baseline was captured. Any element whose accessible name includes a dynamic value (e.g., `"Notifications (3 new)"`, `"Last updated 2 minutes ago"`, `"Hello, Alice"`) will cause a snapshot mismatch on every run unless the template uses a regex matcher. Use `expect(page).toMatchAriaSnapshot({ name: /notifications/i })` or replace dynamic portions with `…` in the YAML baseline. WHY: teams that copy-paste aria snapshots from the CLI without sanitising dynamic values end up with brittle tests that fail in CI but pass locally (where the user name and counter values happen to match).
+
+94. **[community] `axe.run()` called on a page that has not finished rendering (e.g., immediately after `page.goto()` without waiting for network idle or a key element) consistently under-reports violations**: The scan only analyses what is in the DOM at call time. If your SPA lazy-loads components or renders async data, calling `axe.run()` on `DOMContentLoaded` will miss large portions of the page. The correct pattern is: `await page.waitForLoadState('networkidle')` (or `await expect(page.getByRole('main')).toBeVisible()`) before `AxeBuilder.analyze()`. WHY: teams running axe on CI with fast machines see fewer violations than QA running on slower machines where async content loads more visibly — the issue is scan timing, not environment.
+
+95. **[community] `color-contrast` is the single most common axe violation category (WebAIM Million 2025: 80.8% of home pages) yet it is also the one most likely to be suppressed with `axe.configure({ rules: [{ id: 'color-contrast', enabled: false }] })` under pressure to ship**: If your accessibility CI gate suppresses `color-contrast`, the rule disable must be documented in a tracked decision record (ADR or issue) with a remediation deadline. Suppressing it permanently makes the gate meaningless for the most common real-world accessibility failure. WHY: each suppressed rule narrows the axe gate to a smaller and smaller subset of WCAG 2.x — if enough rules are disabled, the gate no longer correlates with actual WCAG 2.1 AA compliance and gives legal and compliance teams a false assurance of coverage.
 

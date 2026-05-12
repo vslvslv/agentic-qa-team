@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 45 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 46 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -4462,3 +4462,610 @@ thresholds to match the new numbers and move on — the revealed files represent
 | Node.js 24 release notes | Official | https://nodejs.org/en/blog/release/v24.0.0 | Node 24 breaking change: `test()`/`t.test()` no longer return Promises; global setup/teardown; `--experimental-strip-types` still RC status |
 | Vitest coverage config — skipFull | Official | https://vitest.dev/config/coverage#coverage-skipfull | coverage.skipFull: suppress 100%-covered files from terminal text reporter; AI-agent auto-sets this; see G56 |
 | Vitest 4.1 aroundEach/aroundAll hooks | Official | https://vitest.dev/blog/vitest-4-1 | Transaction-context hooks: aroundEach wraps each test, aroundAll wraps suites; creates rollback-path coverage gaps (G57) |
+| ts-jest configuration docs | Official | https://kulshekhar.github.io/ts-jest/docs/getting-started/options | ts-jest transform options: diagnostics, isolatedModules, pathsToModuleNameMapper, useESM; all affect coverage accuracy |
+| nyc (Istanbul 1.x CLI) | Community | https://github.com/istanbuljs/nyc | Legacy Istanbul CLI; still in use in pre-Vitest/Jest 29 Node projects; migration path to @vitest/coverage-istanbul covered in G15 |
+| Nx coverage configuration | Official | https://nx.dev/recipes/testing/ci-coverage | Nx monorepo coverage merging, workspace-level thresholds, affected project runs |
+| Turborepo + Vitest coverage | Community | https://turbo.build/repo/docs/guides/tools/vitest | Turborepo pipeline caching for coverage artefacts; avoiding stale coverage from cache hits |
+
+---
+
+## Patterns (continued)
+
+### Pattern 34 — ts-jest advanced configuration for accurate Istanbul coverage  [community]
+
+`ts-jest` is the dominant TypeScript transformer for Jest. Its default settings are safe but
+not coverage-optimal. The three most impactful options for coverage accuracy are:
+
+- `diagnostics`: TypeScript compilation errors during test runs. Disabling this silences
+  type errors but allows tests to run on code that would fail `tsc --noEmit`, which can
+  produce phantom branches from incorrect types. Keep diagnostics enabled in CI.
+- `isolatedModules`: compile each file independently, skipping cross-file type information.
+  Dramatically speeds up ts-jest (2–4x) but disables const enum inlining and type-only
+  import elimination — both of which affect Istanbul's branch count.
+- `pathsToModuleNameMapper`: reads TypeScript path aliases from `tsconfig.json` and
+  generates the corresponding Jest `moduleNameMapper` config. Missing this when path
+  aliases are used causes ts-jest to fail to resolve aliased imports, producing 0 %
+  coverage on modules behind aliases.
+
+```typescript
+// jest.config.ts — ts-jest with coverage-optimised settings (Jest 30.3+ defineConfig)
+import { defineConfig } from 'jest';
+import { pathsToModuleNameMapper } from 'ts-jest';
+import { compilerOptions } from './tsconfig.json';
+
+export default defineConfig({
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+
+  // ts-jest transform configuration:
+  transform: {
+    '^.+\\.tsx?$': [
+      'ts-jest',
+      {
+        // Keep TypeScript diagnostics enabled in CI — disabling hides real type errors
+        // that can produce phantom coverage branches.
+        diagnostics: {
+          warnOnly: false,          // fail the test run, don't just warn
+          exclude: [/\.spec\.ts$/], // allow spec files to use looser types (test helpers)
+        },
+
+        // isolatedModules: true speeds up ts-jest 2-4x, but disables const enum inlining.
+        // For payment/auth modules with many const enums, set to false for accurate
+        // branch counts. For pure-function utility packages, true is safe.
+        isolatedModules: false,     // set true for speed in non-critical packages
+
+        // Tell ts-jest which tsconfig to use:
+        tsconfig: 'tsconfig.test.json',
+
+        // useESM: required for ESM-native TypeScript (Node 22+ with "type": "module")
+        // Note: set extensionsToTreatAsEsm: ['.ts'] in Jest config simultaneously.
+        // useESM: false,           // default; set true for ESM projects
+      },
+    ],
+  },
+
+  // Auto-generate moduleNameMapper from TypeScript path aliases.
+  // Without this, Jest cannot resolve @/components, @lib/utils, etc.
+  // pathsToModuleNameMapper reads from tsconfig.json at root:
+  moduleNameMapper: pathsToModuleNameMapper(compilerOptions.paths ?? {}, {
+    prefix: '<rootDir>/',
+  }),
+
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    'src/**/*.tsx',
+    '!src/**/*.d.ts',
+    '!src/**/index.ts',
+    '!src/**/__mocks__/**',
+    '!src/**/*.stories.ts',
+  ],
+
+  // V8 is generally faster; for accurate branch tracking in ts-jest projects use 'babel'.
+  // 'babel' here means Istanbul instrumentation (Babel transforms before Istanbul sees code).
+  coverageProvider: 'babel',        // Istanbul-mode: accurate branch tracking for TS
+
+  coverageReporters: ['text-summary', 'html', 'lcov', 'json-summary'],
+  coverageThreshold: {
+    global: { lines: 80, branches: 75, functions: 80, statements: 80 },
+  },
+});
+```
+
+```bash
+# Install ts-jest and required peer dependencies for Jest 30+
+npm install --save-dev ts-jest jest @types/jest typescript
+
+# Verify path alias resolution is working:
+npx jest --showConfig | grep moduleNameMapper
+
+# Run with coverage and check branch count:
+npx jest --coverage --coverageReporters=text
+```
+
+**`isolatedModules` and const enums**: TypeScript const enums (`const enum Status { Active = 1 }`)
+are inlined at compile time. With `isolatedModules: true`, ts-jest cannot inline them — it
+transforms them to runtime object lookups instead. The extra conditional checks generated by
+non-inlined const enums create branches that Istanbul counts, causing branch coverage to appear
+lower than expected. If your codebase uses const enums in critical paths, keep
+`isolatedModules: false` for the modules that define or consume them.
+
+---
+
+### Pattern 35 — nyc → Istanbul 2.x migration: matching threshold semantics  [community]
+
+Legacy TypeScript projects using `nyc` (Istanbul 1.x CLI) via `mocha` + `ts-node` frequently
+have coverage thresholds in `.nycrc.json` or `package.json`'s `nyc` key. When migrating to
+`@vitest/coverage-istanbul` or Jest's Babel provider, threshold semantics differ in several ways
+that can cause previously-passing or previously-failing checks to unexpectedly swap.
+
+Key semantic differences between nyc and Istanbul 2.x (Jest/Vitest):
+
+1. **`branches` counting for try/catch**: nyc counts a `try/catch` block as 2 branches (try path
+   and catch path). Istanbul 2.x may count the `catch` as a separate function scope in some TypeScript
+   compilation modes, leading to higher branch counts and thus lower branch percentages on the same code.
+
+2. **Optional parameter defaults**: `function foo(x = 5)` compiles to a conditional in JS. nyc counts
+   the "parameter present" and "parameter absent" as branches. Istanbul 2.x behaviour depends on
+   whether `isolatedModules` is enabled — with `isolatedModules: true`, the conditional may not appear.
+
+3. **`--check-coverage` vs `coverageThreshold`**: nyc's `--check-coverage` exits non-zero before
+   writing report files; Jest/Vitest write the report first, then check thresholds. This means in nyc,
+   a threshold failure produces no artefact; in Jest/Vitest, the report is always written
+   (unless `reportOnFailure: false`).
+
+```json
+// .nycrc.json — legacy nyc configuration (reference for migration)
+{
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.d.ts", "src/**/index.ts", "src/**/__mocks__/**"],
+  "extension": [".ts"],
+  "reporter": ["lcov", "text-summary"],
+  "branches": 75,
+  "lines": 80,
+  "functions": 80,
+  "statements": 80,
+  "check-coverage": true,
+  "all": true,
+  "sourceMap": true,
+  "instrument": true
+}
+```
+
+```typescript
+// vitest.config.ts — equivalent Vitest config (replaces .nycrc.json semantics)
+// Migration notes:
+// - nyc "all": true  →  Vitest: set coverage.include explicitly (Vitest 4 replacement for all: true)
+// - nyc "extension": [".ts"]  →  Vitest: use explicit .ts globs in coverage.include
+// - nyc "branches": 75  →  Vitest: thresholds.branches: 75
+// - nyc "check-coverage": true  →  Vitest: thresholds object (always checked after tests run)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',         // equivalent to nyc's Istanbul 1.x instrumentation
+      include: ['src/**/*.ts'],     // replaces nyc "all": true (Vitest 4: include IS all: true)
+      exclude: [
+        'src/**/*.d.ts',
+        'src/**/index.ts',
+        'src/**/__mocks__/**',
+      ],
+      reporter: ['lcov', 'text-summary', 'json-summary'],
+      reportsDirectory: './coverage',
+      reportOnFailure: true,        // always write report (unlike nyc --check-coverage)
+      thresholds: {
+        branches: 75,
+        lines: 80,
+        functions: 80,
+        statements: 80,
+      },
+    },
+  },
+});
+```
+
+```bash
+# Migration validation: run both nyc and Vitest Istanbul on the same code, compare branch counts
+# This catches semantic differences before decommissioning nyc.
+
+# 1. nyc run (legacy):
+npx nyc --reporter=json-summary mocha 'test/**/*.spec.ts'
+cp coverage/coverage-summary.json coverage/nyc-baseline.json
+
+# 2. Vitest run (new):
+npx vitest run --coverage --reporter=json
+cp coverage/coverage-summary.json coverage/vitest-baseline.json
+
+# 3. Compare branch counts:
+node -e "
+  const nyc = require('./coverage/nyc-baseline.json');
+  const vt = require('./coverage/vitest-baseline.json');
+  console.log('nyc total branches:', nyc.total.branches);
+  console.log('vitest total branches:', vt.total.branches);
+  const diff = vt.total.branches.total - nyc.total.branches.total;
+  console.log('branch count delta (vitest - nyc):', diff);
+  // A positive delta means Vitest Istanbul sees MORE branches than nyc —
+  // threshold may need to be LOWERED temporarily after migration.
+"
+```
+
+**Expected outcomes**: Istanbul 2.x typically reports 5–15 % more branches than nyc on the same
+TypeScript codebase, because it instruments more TypeScript-specific constructs (optional chaining,
+nullish coalescing, default parameters). This means the migration may initially lower your branch
+percentage — temporarily lower thresholds to the new baseline, then ratchet up over the next sprint.
+
+---
+
+### Pattern 36 — Turborepo and Nx: merging coverage across workspace packages in CI  [community]
+
+Monorepo orchestration tools (Turborepo, Nx) run test tasks per-package in parallel. Each
+package produces its own `coverage/coverage-summary.json`. Without a merge step, there is no
+project-wide coverage view — only per-package numbers.
+
+**Turborepo approach**: configure `turbo.json` to treat the coverage output directory as a
+persistent output. Then collect all per-package summaries in a merge script.
+
+**Nx approach**: Nx has first-class support for merging code coverage reports using
+`@nx/coverage-reporter` or the `combine-coverage` target.
+
+```json
+// turbo.json — configure test task with coverage output (Turborepo 2.x)
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "test:coverage": {
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"],
+      "cache": false
+    }
+  }
+}
+```
+
+```typescript
+// scripts/merge-coverage.ts — merge per-package coverage-summary.json files
+// Run after `turbo run test:coverage` or `nx run-many --target=test:coverage`
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+
+interface FileCoverage {
+  lines:      { total: number; covered: number; pct: number };
+  branches:   { total: number; covered: number; pct: number };
+  functions:  { total: number; covered: number; pct: number };
+  statements: { total: number; covered: number; pct: number };
+}
+
+interface CoverageSummary {
+  total: FileCoverage;
+  [filePath: string]: FileCoverage;
+}
+
+function addCoverage(a: FileCoverage, b: FileCoverage): FileCoverage {
+  const merge = (
+    ka: { total: number; covered: number; pct: number },
+    kb: { total: number; covered: number; pct: number },
+  ) => {
+    const total   = ka.total   + kb.total;
+    const covered = ka.covered + kb.covered;
+    return { total, covered, pct: total === 0 ? 100 : Math.round((covered / total) * 100 * 100) / 100 };
+  };
+  return {
+    lines:      merge(a.lines,      b.lines),
+    branches:   merge(a.branches,   b.branches),
+    functions:  merge(a.functions,  b.functions),
+    statements: merge(a.statements, b.statements),
+  };
+}
+
+const ZERO: FileCoverage = {
+  lines:      { total: 0, covered: 0, pct: 100 },
+  branches:   { total: 0, covered: 0, pct: 100 },
+  functions:  { total: 0, covered: 0, pct: 100 },
+  statements: { total: 0, covered: 0, pct: 100 },
+};
+
+function mergeCoverageReports(packagesDir: string, outputPath: string): void {
+  const merged: CoverageSummary = { total: { ...ZERO } };
+
+  const packages = readdirSync(packagesDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+
+  let found = 0;
+  for (const pkg of packages) {
+    const summaryPath = join(packagesDir, pkg, 'coverage', 'coverage-summary.json');
+    try {
+      const summary: CoverageSummary = JSON.parse(readFileSync(summaryPath, 'utf-8'));
+      for (const [file, entry] of Object.entries(summary)) {
+        if (file === 'total') continue;
+        merged[file] = entry;
+      }
+      merged.total = addCoverage(merged.total, summary.total);
+      found++;
+    } catch {
+      // Package may not have run tests — skip silently
+    }
+  }
+
+  writeFileSync(outputPath, JSON.stringify(merged, null, 2));
+  console.log(`Merged ${found} package coverage reports → ${outputPath}`);
+  console.log(`Global branch coverage: ${merged.total.branches.pct}%`);
+  console.log(`Global line coverage:   ${merged.total.lines.pct}%`);
+}
+
+mergeCoverageReports(
+  resolve(process.cwd(), 'packages'),
+  resolve(process.cwd(), 'coverage/merged-summary.json'),
+);
+```
+
+```yaml
+# .github/workflows/monorepo-coverage.yml — Turborepo parallel coverage + merge
+name: Monorepo Coverage
+
+on: [pull_request]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+
+      - name: Run coverage for all packages
+        # turbo runs test:coverage in parallel across all packages
+        run: npx turbo run test:coverage
+
+      - name: Merge per-package coverage summaries
+        run: npx tsx scripts/merge-coverage.ts
+
+      - name: Enforce merged coverage threshold
+        run: npx tsx scripts/check-coverage.ts coverage/merged-summary.json
+
+      - name: Upload merged coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage/merged-summary.json
+```
+
+**Nx alternative**: for Nx workspaces, use `nx run-many --target=test --all --parallel=4`
+to run coverage in parallel, then use `@nx/coverage-reporter` or the third-party
+`merge-istanbul-coverage` CLI to combine LCOV files from each project's
+`dist/coverage/lcov.info` into a single merged report.
+
+**Critical gotcha**: Turborepo caches task outputs by default. Coverage artefacts from a
+cached run reflect the state at cache creation time, not the current commit. Always set
+`"cache": false` for `test:coverage` tasks, or include all source files in the cache
+key. A stale coverage report that shows 85 % while the current code has new uncovered
+paths is the most common monorepo coverage failure mode.
+
+---
+
+### G61 — V8 provider in Jest: `coverageProvider: 'v8'` vs `'babel'` decision matrix  [community]
+
+Jest supports two coverage providers: `'v8'` (Node's built-in V8 coverage) and `'babel'`
+(Istanbul instrumentation via Babel transforms). The choice affects coverage accuracy,
+test speed, and branch granularity in TypeScript projects.
+
+**V8 provider** (`coverageProvider: 'v8'`):
+- Uses Node's built-in V8 coverage — no instrumentation overhead during test execution.
+  Typically 10–30 % faster than Babel/Istanbul for the test run itself.
+- Branch detection: coarser than Istanbul. `||`/`&&` short-circuits, optional chaining
+  (`?.`), and nullish coalescing (`??`) are often not tracked as separate branches.
+- Source map quality: V8 maps back to original TypeScript via source maps. Quality depends
+  on source map completeness — `inlineSourceMap: false` with `sourceMap: true` preferred.
+- Best for: speed-critical test suites, utility packages, projects where branch accuracy
+  on complex expressions is not a compliance concern.
+
+**Babel provider** (`coverageProvider: 'babel'`):
+- Istanbul instruments the Babel-transformed output at the source level. Slower (20–40 %
+  overhead on test execution) but tracks all Istanbul-defined branch types.
+- Tracks: `if`/`else`, ternary, `||`/`&&` short-circuits, optional chaining, nullish
+  coalescing, `switch` cases, logical assignment (`??=`, `||=`, `&&=`).
+- Source map quality: Istanbul generates its own source maps from the Babel transform
+  output — generally more accurate than V8's engine-level maps for complex TypeScript.
+- Best for: payment/auth/security modules, regulated codebases, code with complex
+  conditional chains where branch accuracy is critical.
+
+**Note**: this V8 vs Babel distinction is specific to **Jest**. In **Vitest 3.2+**, the
+V8 provider uses AST-based remapping that closes the accuracy gap with Istanbul — the V8
+vs Istanbul choice in Vitest is primarily a speed vs legacy-compatibility decision, not
+an accuracy decision (see Principle 6). For Jest projects, the V8 vs Babel tradeoff
+remains relevant because Jest's V8 provider does not yet have Vitest's AST remapping.
+
+```typescript
+// jest.config.ts — V8 provider: fast, less precise branches (Jest 30.3+)
+import { defineConfig } from 'jest';
+
+export default defineConfig({
+  preset: 'ts-jest',
+  coverageProvider: 'v8',
+  coverageThreshold: {
+    global: {
+      lines: 80,
+      // V8 branch counts are lower than Istanbul — set branch threshold slightly lower
+      // when switching from Babel to V8, then re-establish after measuring the actual V8 numbers.
+      branches: 70,   // lower than Babel equivalent (75) to account for V8's coarser tracking
+      functions: 80,
+      statements: 80,
+    },
+  },
+});
+```
+
+```typescript
+// jest.config.ts — Babel/Istanbul provider: accurate branches (Jest 30.3+)
+import { defineConfig } from 'jest';
+
+export default defineConfig({
+  preset: 'ts-jest',
+  coverageProvider: 'babel',   // Istanbul instrumentation — accurate branch tracking
+  coverageThreshold: {
+    global: {
+      lines: 80,
+      branches: 75,   // accurate Istanbul branch tracking — can use full threshold
+      functions: 80,
+      statements: 80,
+    },
+  },
+});
+```
+
+| Decision criterion | Use V8 (`coverageProvider: 'v8'`) | Use Babel (`coverageProvider: 'babel'`) |
+|--------------------|-----------------------------------|-----------------------------------------|
+| Priority | Speed | Branch accuracy |
+| TypeScript complexity | Simple functions, utilities | Complex conditions, payment/auth logic |
+| Compliance requirement | None | ISO 26262 / DO-178C / PCI-DSS |
+| Optional chaining in critical paths | Not critical | Important to track `?.` branches |
+| Jest version | Any | Any |
+| Vitest equivalent | V8 with AST remap (Vitest 3.2+) | Istanbul provider |
+
+**Migration path from Babel to V8 in Jest**: (1) run with `coverageProvider: 'babel'` and
+record baseline; (2) switch to `coverageProvider: 'v8'`; (3) compare coverage summaries
+— branch numbers will likely rise (V8 misses some branches) while the number of branch
+entries drops. Lower branch thresholds to the new V8 baseline, then evaluate whether the
+lost branch granularity is acceptable for your risk profile.
+
+---
+
+### G62 — Statement coverage vs line coverage: they are not the same metric  [community]
+
+Istanbul and V8 report four coverage types: `lines`, `branches`, `functions`, and
+`statements`. Teams often assume `statements` and `lines` are equivalent, but they differ
+in important ways for TypeScript:
+
+- **Line coverage**: whether any code on a given source line was executed. A line with
+  three statements counts as one covered line if any statement on it executes.
+- **Statement coverage**: whether each individual statement was executed, regardless of
+  how many statements share a line. A line like `const x = a || b; return x;` written
+  as a one-liner counts as **one line** but **two statements** — the assignment and the
+  return.
+
+TypeScript code style (chaining, ternary expressions on one line) means statement
+and line counts frequently diverge. Istanbul tracks them separately; V8 in Vitest 3.2+
+(AST remapping) and Jest's Babel provider also track them separately.
+
+**Practical implication**: a codebase with many chained expressions (`pipe`, `map/filter/reduce`
+chains, Promise chains) will show higher line coverage than statement coverage, because
+a single line executing one step of a chain is "covered" from a line perspective but may
+have uncovered statements in adjacent chained calls that short-circuit.
+
+```typescript
+// src/utils/pipeline.ts — line vs statement coverage divergence example
+export function processItems(items: string[]): string[] {
+  // This is ONE line with MULTIPLE statements — Istanbul counts each statement
+  return items.filter(Boolean).map((s) => s.trim()).filter((s) => s.length > 0);
+}
+```
+
+```typescript
+// src/utils/pipeline.test.ts — tests that reveal the divergence
+import { processItems } from './pipeline';
+
+// Test A: line covered, but only the filter(Boolean) and map branches execute:
+it('processes valid strings', () => {
+  expect(processItems(['hello', 'world'])).toEqual(['hello', 'world']);
+  // All three steps execute → all three statements covered.
+});
+
+// If only this test ran: line coverage = 100%, statement coverage = 100%.
+// Remove the above test and add only:
+it('handles empty array', () => {
+  expect(processItems([])).toEqual([]);
+  // filter(Boolean) executes (returns empty), map never calls cb, final filter never calls cb.
+  // Line coverage: 100% (the line executed). Statement coverage: 67% (3 statements, cb of 2 never run).
+});
+```
+
+**Threshold recommendation**: always configure BOTH `lines` and `statements` thresholds.
+The combination catches two different categories of gaps. Teams that set only `lines: 80`
+miss statement-level gaps in chained TypeScript expressions.
+
+---
+
+### G63 — Coverage reporter `clover` default included by Vitest: silent overhead in every CI run  [community]
+
+The Vitest default coverage reporter array is `['text', 'html', 'clover', 'json']` (covered
+briefly in Pattern 33). A specific production gotcha: the `clover` XML reporter generates
+a full per-line XML document for all covered source files. On codebases with 100+ TypeScript
+files, `clover.xml` can be 3–8 MB. CI runners with slow disk I/O (shared cloud runners,
+container filesystems) take 5–15 additional seconds purely on `clover.xml` write time.
+
+**Detection**: check coverage job wall-clock time in CI. Add a timer around the coverage step:
+
+```bash
+# Detect clover overhead: compare runtimes with and without clover in reporter array
+time npx vitest run --coverage --coverage.reporter=text,html,json
+time npx vitest run --coverage --coverage.reporter=text,html,clover,json
+# A difference > 5 seconds in the clover run = clover is the bottleneck.
+```
+
+**Fix**: remove `clover` from the reporter array unless your CI system (TeamCity, Bamboo)
+specifically reads `clover.xml`. For GitHub Actions and GitLab CI, `lcov` and
+`json-summary` are the correct formats. See Pattern 33 for the minimal CI reporter set.
+
+The default reporter array also includes `json` (full per-file coverage data, can be 10–50 MB
+on large projects) and `html` (hundreds of HTML files). In production CI:
+
+```typescript
+// vitest.config.ts — CORRECTED from Vitest defaults to minimal CI set
+// The Vitest defaults ['text','html','clover','json'] are appropriate for local development
+// but wasteful for CI. Replace with the minimal set for your CI system.
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      // Minimal CI-optimised reporter set (replaces Vitest defaults):
+      reporter: process.env.CI
+        ? ['text-summary', 'lcov', 'json-summary']  // CI: fast, small output
+        : ['text', 'html-spa', 'json-summary'],      // local: human-readable HTML
+      reportsDirectory: './coverage',
+    },
+  },
+});
+```
+
+**G63 takeaway**: the `clover` default in Vitest is a historical artefact from when Vitest
+inherited Istanbul's default reporter list. Modern TypeScript CI pipelines almost universally
+do not need `clover.xml`. Audit your Vitest coverage reporter list and remove unused formats.
+
+---
+
+### G64 — ts-jest `diagnostics: false` creates invisible coverage debt on type-unsafe code  [community]
+
+`ts-jest` supports `diagnostics: false` to suppress TypeScript compile errors during test
+runs. This is sometimes used in legacy codebases to unblock test execution while type errors
+are being addressed. The coverage impact is insidious: TypeScript type errors in production
+code often correlate with unchecked `null`/`undefined` paths, missing exhaustive type
+guards, and incorrect branch narrowing. When `diagnostics: false` allows code with these
+errors to compile and run, Istanbul or V8 reports those error-path branches as covered (the
+test executed a path that should have been a type error) — but the branch represents
+incorrect runtime behavior, not a real code path.
+
+**WHY it matters**: a team with `diagnostics: false` and 85 % branch coverage may actually
+have significant coverage debt hidden behind type errors. When `diagnostics` is eventually
+re-enabled, compile errors surface — and fixing them often reveals or removes branches,
+changing the coverage numbers unpredictably.
+
+```typescript
+// jest.config.ts — safe diagnostics configuration for legacy migration
+import { defineConfig } from 'jest';
+
+export default defineConfig({
+  preset: 'ts-jest',
+  transform: {
+    '^.+\\.tsx?$': [
+      'ts-jest',
+      {
+        diagnostics: {
+          // Suppress errors only in test files (type helpers, any-typed test fixtures)
+          // but KEEP errors in production source code:
+          exclude: [/\.test\.ts$/, /\.spec\.ts$/, /__mocks__/],
+          // Treat warnings as errors in source files to catch type narrowing issues:
+          warnOnly: false,
+          // Ignore specific TS error codes that are unavoidable during migration:
+          // ignoreCodes: [2305, 2339],  // only use as temporary bridge
+        },
+      },
+    ],
+  },
+});
+```
+
+**Migration path**: if `diagnostics: false` is in your current ts-jest config, run
+`npx tsc --noEmit` in CI as a separate step alongside tests. This surfaces real type errors
+without blocking test execution, allowing the team to quantify the type debt before
+progressively enabling `diagnostics` in ts-jest. Once all source type errors are resolved,
+enable `diagnostics: true` and measure whether branch coverage changes — large changes
+(>5 percentage points) indicate the type errors were masking real branch gaps.
+
+---
+
+| ts-jest type-checking config | Official | https://kulshekhar.github.io/ts-jest/docs/getting-started/options/diagnostics | diagnostics option: warnOnly, exclude patterns, ignoreCodes — controls whether TS errors fail tests |

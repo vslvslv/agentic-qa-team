@@ -1,6 +1,7 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 36 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 37 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
 <!-- Iter 36 additions: TypeScript 5.5+ strict compiler flags affecting BDD step definitions — noUncheckedIndexedAccess changes DataTable row access patterns (requires null-coalescing guards), isolatedDeclarations requires explicit return types on exported step factories; AI-generated Gherkin quality evaluation checklist — 7-criterion pre-acceptance framework (INVEST, ubiquitous language, data specificity, step atomicity, observable outcomes, tag hygiene, implementation freedom) with TypeScript scoring utility; Cucumber.js v12.8.0 externalise option full section — extracts inline step definitions into importable modules, enables step sharing across features without World pollution -->
+<!-- Iter 37 additions: BDD with MSW (Mock Service Worker) — full Node.js server setup, domain handler library, World integration, per-scenario handler overrides via use(), After hook reset pattern, community notes on parallel-worker safety; vitest-cucumber integration — Gherkin feature files in Vitest runner, loadFeature+defineFeature API, vitest.config.ts setup, trade-off table vs @cucumber/cucumber, shared step helper pattern; Rule keyword: complete Example Mapping → feature file round-trip walkthrough — billing domain with three Rules, Rule-scoped Background, Scenario Outline inside Rule, TypeScript step definitions, community notes on fidelity checking and Rule+Background scoping -->
 <!-- Iter 35 additions: Playwright v1.54-v1.56 BDD-relevant APIs not previously covered — TestStepInfo.titlePath (v1.55) for hierarchical step path and collision-free artifact naming in sharded CI, Playwright Test Agents npx playwright init-agents (v1.56) planner/generator/healer loop and BDD Discovery integration, page.pickLocator() (v1.59) interactive locator discovery utility for step definition authoring with BDD vs --debug=cli comparison table; resource links added for all three APIs -->
 <!-- Iter 34 additions: Completed iter-33 announced sections missing from body — page.screencast() with action annotations for BDD failure video capture (v1.59), expect(locator).toHaveCSS() pseudo option for ::before/::after pseudo-element CSS assertions (v1.60); resource links added for both APIs -->
 <!-- Iter 33 additions: Playwright v1.59-v1.60 BDD-relevant APIs not yet covered — await using disposable pattern for BDD resource cleanup (v1.59), page.ariaSnapshot() on full pages (v1.59), --debug=cli for interactive BDD step debugging (v1.59), page.screencast() with action annotations for BDD failure video (v1.59), locator.drop() for drag-and-drop BDD scenarios (v1.60), HAR recording as first-class tracing API (v1.60), getByRole() description option for accessible-name-aware step assertions (v1.60), expect(locator).toHaveCSS() pseudo option for ::before/::after state assertions (v1.60); Quick Reference card updated with v1.59-v1.60 APIs -->
@@ -10330,4 +10331,553 @@ console.log(`\nTotal: ${steps.length} step definitions across ${byFile.size} fil
 
 - [TypeScript `noUncheckedIndexedAccess` handbook](https://www.typescriptlang.org/tsconfig#noUncheckedIndexedAccess) — adds `undefined` to all array index and object index-signature types; use Cucumber's `hashes()` and `rowsHash()` DataTable methods to avoid numeric index access in step definitions
 - [TypeScript `isolatedDeclarations` handbook](https://www.typescriptlang.org/tsconfig#isolatedDeclarations) — requires explicit return types on all exported functions; affects step definition factory functions — add explicit `: void` return type annotation
+
+---
+
+## BDD with MSW (Mock Service Worker) — Step-Level API Mocking  [community]
+
+MSW (Mock Service Worker) intercepts outgoing HTTP requests at the network layer, making
+it the cleanest way to isolate BDD integration scenarios from live backend dependencies.
+Unlike Playwright's `page.route()`, MSW works at the Node.js `fetch`/`XMLHttpRequest`
+level, meaning it intercepts requests made by the application's own service layer — not
+just requests originating from the browser page. This enables BDD step definitions for
+integration scenarios (service functions, React hooks, API clients) without running a real
+server.
+
+**Why MSW is different from `page.route()`:**
+
+| Approach | Intercepts | Use in BDD |
+|---|---|---|
+| `page.route()` | Browser-originated requests only | End-to-end step definitions (Playwright) |
+| MSW service worker | Browser + fetch (service worker context) | E2E BDD with frontend service isolation |
+| MSW server (Node) | Node.js `fetch`, `http`, `https`, `axios` | Integration BDD — no browser required |
+| WireMock / Nock | HTTP at test process level | Legacy Node.js; requires running stub server |
+
+**Installation and setup:**
+
+```bash
+npm install --save-dev msw
+# MSW v2 requires Node 18+ (native fetch); no polyfill needed
+```
+
+**Define request handlers once, reuse across step definitions:**
+
+```typescript
+// src/support/msw-handlers.ts — domain handlers for BDD scenarios
+import { http, HttpResponse } from 'msw';
+
+export const defaultHandlers = [
+  http.get('/api/users/:id', ({ params }) => {
+    return HttpResponse.json({
+      id: params.id,
+      name: 'Alice Example',
+      email: 'alice@example.com',
+      role: 'admin',
+    });
+  }),
+
+  http.post('/api/orders', async ({ request }) => {
+    const body = await request.json() as { items: unknown[] };
+    return HttpResponse.json(
+      { orderId: 'ORD-1234', status: 'pending', itemCount: body.items?.length ?? 0 },
+      { status: 201 }
+    );
+  }),
+
+  http.get('/api/orders/:id', ({ params }) => {
+    return HttpResponse.json({
+      orderId: params.id,
+      status: 'confirmed',
+      total: 149.99,
+    });
+  }),
+];
+```
+
+**BDD World with MSW server — attach to Cucumber lifecycle:**
+
+```typescript
+// src/support/world.ts — extend CustomWorld to carry the MSW server instance
+import { setWorldConstructor, World, IWorldOptions } from '@cucumber/cucumber';
+import { setupServer } from 'msw/node';
+import { RequestHandler } from 'msw';
+import { defaultHandlers } from './msw-handlers';
+
+export class CustomWorld extends World {
+  // MSW server is scoped to the scenario — each scenario gets a fresh handler stack
+  readonly mswServer = setupServer(...defaultHandlers);
+
+  constructor(options: IWorldOptions) {
+    super(options);
+  }
+}
+
+setWorldConstructor(CustomWorld);
+```
+
+**Hooks — start MSW before each scenario, clean up after:**
+
+```typescript
+// src/support/hooks.ts — MSW lifecycle integrated with Cucumber hooks
+import { Before, After } from '@cucumber/cucumber';
+import { CustomWorld } from './world';
+
+Before(async function (this: CustomWorld) {
+  // Start intercepting — onUnhandledRequest: 'warn' surfaces missing handlers early
+  this.mswServer.listen({ onUnhandledRequest: 'warn' });
+});
+
+After(async function (this: CustomWorld) {
+  // Remove scenario-specific overrides before shutdown
+  this.mswServer.resetHandlers();
+  this.mswServer.close();
+});
+```
+
+**Gherkin feature file using MSW-backed API scenarios:**
+
+```gherkin
+# features/orders/order-creation.feature
+Feature: Order creation
+
+  Rule: An order can only be created for items that are in stock
+
+    Scenario: Creating an order for in-stock items returns a confirmation
+      Given the inventory API reports all requested items as in stock
+      When I submit an order for 2 units of "Wireless Keyboard"
+      Then the order should be created with status "pending"
+      And the order response should include an order ID
+
+    Scenario: Creating an order when inventory is unavailable returns an error
+      Given the inventory API reports "Wireless Keyboard" as out of stock
+      When I submit an order for 2 units of "Wireless Keyboard"
+      Then the order creation should fail with "Item out of stock"
+```
+
+**Step definitions using MSW handler overrides per scenario:**
+
+```typescript
+// src/steps/order-creation.steps.ts
+import { Given, When, Then } from '@cucumber/cucumber';
+import { http, HttpResponse } from 'msw';
+import { expect } from 'chai';
+import { CustomWorld } from '../support/world';
+import { createOrder } from '../../src/services/order.service';
+
+// Override default handler for "out of stock" scenario
+Given(
+  'the inventory API reports {string} as out of stock',
+  function (this: CustomWorld, itemName: string): void {
+    // use() adds a one-time handler that takes precedence over defaults
+    this.mswServer.use(
+      http.get('/api/inventory', () =>
+        HttpResponse.json({ items: [{ name: itemName, inStock: false }] })
+      )
+    );
+  }
+);
+
+Given(
+  'the inventory API reports all requested items as in stock',
+  function (this: CustomWorld): void {
+    // Default handler already returns in-stock; explicitly confirm for clarity
+    this.mswServer.use(
+      http.get('/api/inventory', () =>
+        HttpResponse.json({ items: [{ name: 'Wireless Keyboard', inStock: true }] })
+      )
+    );
+  }
+);
+
+When(
+  'I submit an order for {int} units of {string}',
+  async function (this: CustomWorld, quantity: number, itemName: string): Promise<void> {
+    try {
+      this.lastOrderResponse = await createOrder({ item: itemName, quantity });
+      this.lastError = undefined;
+    } catch (err) {
+      this.lastError = err as Error;
+      this.lastOrderResponse = undefined;
+    }
+  }
+);
+
+Then(
+  'the order should be created with status {string}',
+  function (this: CustomWorld, expectedStatus: string): void {
+    expect(this.lastOrderResponse).to.exist;
+    expect(this.lastOrderResponse!.status).to.equal(expectedStatus);
+  }
+);
+
+Then(
+  'the order response should include an order ID',
+  function (this: CustomWorld): void {
+    expect(this.lastOrderResponse!.orderId).to.match(/^ORD-\d+$/);
+  }
+);
+
+Then(
+  'the order creation should fail with {string}',
+  function (this: CustomWorld, expectedMessage: string): void {
+    expect(this.lastError).to.exist;
+    expect(this.lastError!.message).to.include(expectedMessage);
+  }
+);
+```
+
+**[community] MSW handler override scope**: `mswServer.use()` prepends handlers —
+the most recently added handler wins for the same route. `mswServer.resetHandlers()`
+(called in `After`) removes all `use()`-added overrides but preserves the
+`setupServer(...defaultHandlers)` baseline. This means each scenario starts with a
+predictable default state and any scenario-specific overrides are automatically cleaned
+up, preventing one scenario's network state from leaking into the next. This is the
+principal advantage of MSW over `nock` or manual `fetch` mocks, which require explicit
+restoration and frequently cause flakiness in parallel test runs.
+
+**[community] MSW + Cucumber parallel workers**: Cucumber's `--parallel N` option runs
+scenarios in separate Node.js worker processes. Each worker process creates its own
+`setupServer()` instance with its own isolated handler stack — no cross-scenario
+handler pollution. MSW's Node.js server mode is safe for parallel BDD execution by
+design.
+
+---
+
+## vitest-cucumber — Gherkin Feature Files in Vitest  [community]
+
+`vitest-cucumber` (npm: `vitest-cucumber`) bridges Gherkin `.feature` files and the
+Vitest test runner. It is an alternative to `@cucumber/cucumber` for TypeScript projects
+that already use Vitest for unit and component tests and want BDD integration tests
+in the same runner — without adding a second test framework binary.
+
+**When to choose vitest-cucumber over @cucumber/cucumber:**
+
+| Factor | vitest-cucumber | @cucumber/cucumber |
+|---|---|---|
+| Existing test runner | Already using Vitest | Greenfield or Jest |
+| Report consolidation | Single Vitest HTML/JSON report | Separate Cucumber report |
+| Playwright integration | Bring your own | playwright-bdd (richer) |
+| Ecosystem maturity | Younger; fewer formatters | Battle-tested (10+ years) |
+| TypeScript config | Same tsconfig as unit tests | Separate ts-node/register |
+
+**Installation:**
+
+```bash
+npm install --save-dev vitest-cucumber vitest @vitest/coverage-v8
+```
+
+**`vitest.config.ts` — include `.feature` files:**
+
+```typescript
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    include: ['features/**/*.feature', 'src/**/*.spec.ts'],
+    reporters: ['verbose', 'html'],
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.spec.ts', 'src/steps/**/*.ts'],
+    },
+  },
+});
+```
+
+**Feature file (standard Gherkin — identical to Cucumber.js):**
+
+```gherkin
+# features/pricing/discount.feature
+Feature: Discount code application
+
+  Scenario: Valid percentage discount reduces order total
+    Given I have a cart with a total of 100
+    When I apply a 10 percent discount code
+    Then my cart total should be 90
+
+  Scenario: Expired discount code is rejected
+    Given I have a cart with a total of 100
+    When I apply an expired discount code
+    Then I should see the error "Discount code has expired"
+    And my cart total should remain 100
+```
+
+**Step bindings with `vitest-cucumber` API:**
+
+```typescript
+// features/pricing/discount.steps.ts
+import { loadFeature, defineFeature } from 'vitest-cucumber';
+import { expect } from 'vitest';
+import { applyDiscount, DiscountResult } from '../../src/services/discount.service';
+import { Cart, createCart } from '../../src/domain/cart';
+
+const feature = loadFeature('./features/pricing/discount.feature');
+
+defineFeature(feature, (test) => {
+  let cart: Cart;
+  let result: DiscountResult | undefined;
+  let errorMessage: string | undefined;
+
+  test('Valid percentage discount reduces order total', ({ given, when, then }) => {
+    given(/I have a cart with a total of (\d+)/, (total: string) => {
+      cart = createCart({ total: Number(total) });
+    });
+
+    when(/I apply a (\d+) percent discount code/, (percent: string) => {
+      result = applyDiscount(cart, { type: 'percent', value: Number(percent) });
+    });
+
+    then(/my cart total should be (\d+)/, (expectedTotal: string) => {
+      expect(result?.total).toBe(Number(expectedTotal));
+    });
+  });
+
+  test('Expired discount code is rejected', ({ given, when, then, and }) => {
+    given(/I have a cart with a total of (\d+)/, (total: string) => {
+      cart = createCart({ total: Number(total) });
+    });
+
+    when('I apply an expired discount code', () => {
+      try {
+        applyDiscount(cart, {
+          type: 'percent',
+          value: 20,
+          expiresAt: new Date('2023-01-01'),
+        });
+      } catch (err) {
+        errorMessage = (err as Error).message;
+      }
+    });
+
+    then(/I should see the error "(.+)"/, (message: string) => {
+      expect(errorMessage).toBe(message);
+    });
+
+    and(/my cart total should remain (\d+)/, (expectedTotal: string) => {
+      expect(cart.total).toBe(Number(expectedTotal));
+    });
+  });
+});
+```
+
+**[community] vitest-cucumber trade-off in practice**: `vitest-cucumber` runs step
+definitions inside Vitest's test runner, which means you get Vitest's snapshot
+testing, `vi.fn()` mock utilities, and `vi.useFakeTimers()` directly inside step
+definitions — no adapter glue required. The trade-off is that advanced Cucumber.js
+features (custom formatters, Plugin API, Cucumber Expressions, `externalise`, parallel
+profiles) are not available. For teams whose BDD coverage is at the service/domain
+layer only — not end-to-end browser automation — `vitest-cucumber` eliminates the
+context-switch between `vitest run` and `cucumber-js` in CI.
+
+**[community] Shared step definitions with barrel exports**: Unlike Cucumber.js, which
+auto-discovers step files via glob patterns in `cucumber.json`, `vitest-cucumber` step
+bindings live in the same file that calls `defineFeature()`. In large suites, extract
+shared step logic into helper functions imported by multiple `defineFeature` files —
+rather than trying to share step definitions across features the Cucumber.js way. The
+Cucumber.js approach (global step registry) does not apply to `vitest-cucumber`.
+
+---
+
+## BDD `Rule` Keyword: Example Mapping to Feature File — Complete Walkthrough  [community]
+
+The `Rule` keyword (Gherkin 6+) maps directly to the output of an Example Mapping
+workshop. Each `Rule` block represents one business rule (a blue card in Example
+Mapping). Each `Scenario` within the `Rule` represents a concrete example (a green
+card). This section shows the complete round-trip from a workshop to a production
+feature file.
+
+### Example Mapping Session Output (pre-feature file)
+
+Assume a Three Amigos session for a "subscription billing" feature produces:
+
+```
+Story: Customer is billed on their renewal date
+
+  Rule (blue): Standard monthly renewal charges the stored card on file
+    Example (green): Card charge succeeds → subscription extended by 30 days
+    Example (green): Card declined → subscription enters "payment failed" status
+
+  Rule (blue): A grace period applies before cancellation for failed payments
+    Example (green): First failed payment → grace period starts (7 days)
+    Example (green): Payment recovered within grace period → subscription continues
+    Example (green): Grace period expires without payment → subscription cancelled
+
+  Rule (blue): Free trial conversions do not charge during the trial period
+    Example (green): Trial day 1-13 → no charge
+    Example (green): Trial day 14 (renewal) → first charge applied
+```
+
+### Feature File Mapping (one `Rule` per blue card, one `Scenario` per green card)
+
+```gherkin
+# features/billing/subscription-renewal.feature
+Feature: Subscription billing on renewal date
+  As a subscription service
+  We want to bill customers reliably on their renewal date
+  So that subscriptions remain active without manual intervention
+
+  Rule: Standard monthly renewal charges the stored card on file
+
+    Scenario: Card charge succeeds — subscription is extended
+      Given a customer has an active monthly subscription due for renewal today
+      And the customer has a valid card on file
+      When the billing system processes the renewal
+      Then the customer's card should be charged the subscription amount
+      And the subscription should be extended by 30 days
+      And the customer should receive a renewal receipt by email
+
+    Scenario: Card is declined — subscription enters payment failed status
+      Given a customer has an active monthly subscription due for renewal today
+      And the customer's card on file is declined
+      When the billing system processes the renewal
+      Then the customer's card should not be charged
+      And the subscription status should change to "payment_failed"
+      And the customer should receive a payment failure notification
+
+  Rule: A grace period applies before cancellation for failed payments
+
+    Background:
+      Given a customer has a subscription in "payment_failed" status
+      And the payment failure occurred today
+
+    Scenario: First failed payment — grace period begins
+      When the billing system evaluates the subscription
+      Then a 7-day grace period should start
+      And the customer should be able to access the service
+
+    Scenario: Payment recovered within the grace period — subscription continues
+      Given the customer is in their grace period with 3 days remaining
+      When the customer updates their payment method
+      And the billing system retries the charge
+      Then the charge should succeed
+      And the subscription should return to "active" status
+
+    Scenario: Grace period expires without payment — subscription is cancelled
+      Given the customer's grace period expired yesterday
+      When the billing system processes the expired subscription
+      Then the subscription should be cancelled
+      And the customer should lose access to the service
+      And a cancellation confirmation email should be sent
+
+  Rule: Free trial conversions do not charge during the trial period
+
+    Scenario Outline: Trial day billing behaviour
+      Given a customer started a 14-day free trial on day 1
+      When the billing system evaluates the subscription on day <day>
+      Then the outcome should be "<outcome>"
+
+      Examples:
+        | day | outcome                                           |
+        | 1   | no charge — trial active                          |
+        | 7   | no charge — trial active                          |
+        | 13  | no charge — last day of trial                     |
+        | 14  | charge applied — first billing cycle begins       |
+        | 15  | charge applied — second day of first billing cycle|
+```
+
+### TypeScript Step Definitions for the Billing Feature
+
+```typescript
+// src/steps/subscription-billing.steps.ts
+import { Given, When, Then, Before } from '@cucumber/cucumber';
+import { expect } from '@playwright/test';
+import { CustomWorld } from '../support/world';
+import {
+  createSubscription,
+  processRenewal,
+  Subscription,
+  BillingResult,
+} from '../../src/services/billing.service';
+
+Before(async function (this: CustomWorld) {
+  this.subscription = undefined;
+  this.billingResult = undefined;
+});
+
+Given(
+  'a customer has an active monthly subscription due for renewal today',
+  async function (this: CustomWorld): Promise<void> {
+    this.subscription = await createSubscription({
+      status: 'active',
+      plan: 'monthly',
+      renewalDate: new Date(),
+    });
+  }
+);
+
+Given(
+  'the customer has a valid card on file',
+  async function (this: CustomWorld): Promise<void> {
+    await this.page.request.post(`/api/billing/customers/${this.subscription!.customerId}/card`, {
+      data: { cardToken: 'tok_visa_valid', last4: '4242' },
+    });
+  }
+);
+
+Given(
+  "the customer's card on file is declined",
+  async function (this: CustomWorld): Promise<void> {
+    await this.page.request.post(`/api/billing/customers/${this.subscription!.customerId}/card`, {
+      data: { cardToken: 'tok_chargeDeclined', last4: '0002' },
+    });
+  }
+);
+
+When(
+  'the billing system processes the renewal',
+  async function (this: CustomWorld): Promise<void> {
+    this.billingResult = await processRenewal(this.subscription!.id);
+  }
+);
+
+Then(
+  "the customer's card should be charged the subscription amount",
+  function (this: CustomWorld): void {
+    expect(this.billingResult!.charged).toBe(true);
+    expect(this.billingResult!.amount).toBeGreaterThan(0);
+  }
+);
+
+Then(
+  'the subscription should be extended by {int} days',
+  function (this: CustomWorld, days: number): void {
+    const expectedDate = new Date();
+    expectedDate.setDate(expectedDate.getDate() + days);
+    const actual = new Date(this.billingResult!.nextRenewalDate);
+    // Allow 1-minute tolerance for test execution time
+    expect(Math.abs(actual.getTime() - expectedDate.getTime())).toBeLessThan(60_000);
+  }
+);
+
+Then(
+  'the subscription status should change to {string}',
+  function (this: CustomWorld, expectedStatus: string): void {
+    expect(this.billingResult!.subscriptionStatus).toBe(expectedStatus);
+  }
+);
+```
+
+**[community] `Rule` + `Background` at rule scope**: A `Background` inside a `Rule`
+block runs before every `Scenario` within that rule only — not before scenarios in other
+rules. This lets you share setup steps for a specific business rule without polluting the
+setup of every scenario in the file. The Feature-level `Background` runs before all
+scenarios regardless of which `Rule` they belong to. Using both levels in the same file is
+valid and common in complex billing, permissions, or multi-rule domain features.
+
+**[community] Example Mapping fidelity check**: After converting a Three Amigos session
+to a feature file, run a fidelity check: count the blue cards in the meeting notes and
+confirm each has a corresponding `Rule` block; count the green cards under each rule and
+confirm each has a corresponding `Scenario`. Any green card without a scenario is a
+coverage gap. Any `Scenario` without a corresponding green card is a scenario that was
+added post-workshop — flag it for review to ensure it was intentionally agreed upon and
+not added unilaterally by a developer implementing an undiscussed edge case.
+
+---
+
+## Additional Resources (Iteration 37 Additions)
+
+- [MSW (Mock Service Worker) Node.js integration](https://mswjs.io/docs/integrations/node) — `setupServer()`, handler lifecycle, `use()` for per-test overrides; v2 requires Node 18+ native fetch
+- [vitest-cucumber (npm)](https://www.npmjs.com/package/vitest-cucumber) — Gherkin `.feature` files as Vitest tests; `loadFeature()` + `defineFeature()` API
+- [Gherkin `Rule` keyword reference](https://cucumber.io/docs/gherkin/reference/#rule) — official scope rules: Rule-level Background, tags on Rule blocks, nesting constraints
+- [Example Mapping introduction (Matt Wynne)](https://cucumber.io/blog/bdd/example-mapping-introduction/) — structured Three Amigos workshop technique; blue/green/yellow/red card system; direct mapping to `Rule`/`Scenario` structure
 - [Cucumber.js `externalise` option](https://github.com/cucumber/cucumber-js/blob/main/docs/profiles.md) — v12.8.0+ option that emits step-definition-pattern messages for programmatic step indexing; combine with `dryRun: true` to enumerate all loaded steps without executing scenarios
