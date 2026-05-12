@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 49 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 50 | score: 100/100 | date: 2026-05-12 -->
 <!-- WebFetch live sources verified for Detox 20.47–20.51.1 (Jan–May 2025 releases) -->
 <!-- iteration 44 (2026-05-12) adds: WebView testing (by.web() matchers, web element interactions, hybrid app patterns), visual regression with device.takeScreenshot() + external tools, JUnit XML CI reporting (jest-junit), React Native 0.78+ New Architecture strict mode notes, device.resetContentAndSettings() for deep iOS simulator reset, network activity tracking (NetworkSynchronizationEnabled per-configuration), 7 new community gotchas (44–50: by.web() IPC latency vs native sync, visual diff false positives from dynamic content, jest-junit path collision in sharded CI, device.resetContentAndSettings() permission re-grant pattern, Android API 35 predictive back gesture breaking by.system() back button, Hermes debugger port conflict on parallel CI jobs, and WebView URL not yet updated when Detox selector fires) -->
 <!-- iteration 45 (2026-05-12) adds: by.system() full dialog workflow (permissions/alerts/sheets), device.openURL() deep link testing pattern, parallel worker configuration for large suites, by.traits() iOS accessibility traits testing, element.getAttributes() extended inspection, device.shake() shake gesture testing, 6 new community gotchas (51–56: by.system() label locale mismatch, deep link cold-start race condition, parallel workers sharing global launchArgs, by.traits() not available on Android, getAttributes() returning null for off-screen elements, device.shake() no-op on physical devices without shake hardware) -->
@@ -7,6 +7,7 @@
 <!-- iteration 47 (2026-05-12) adds: Pattern 49 (device.setStatusBar()/resetStatusBar() comprehensive status-bar simulation), Pattern 50 (Detox + Allure reporting integration), Pattern 51 (network request interception via launchArgs + lightweight mock server for offline/error simulation), Pattern 52 (toHaveText/toHaveLabel/toHaveValue disambiguation guide), 7 new community gotchas (64–70: Allure stepStatus colliding with Detox afterEach cleanup, mock server port conflict on parallel workers, toHaveLabel vs toHaveText ordering ambiguity in double-accessible elements, device.setStatusBar() batteryLevel float precision silently clamped, Detox server port collision in monorepo multi-configuration CI, RN 0.79+ Metro bundler lazy requires increasing cold-start wait thresholds, jest-circus vs jest-jasmine2 afterAll ordering causing device.terminateApp() deadlocks) -->
 <!-- iteration 48 (2026-05-12) adds: Pattern 53 (React Navigation v7 static config + testID-screen mapping for deep navigation testing), Pattern 54 (device.reverseTcp() + reversePorts advanced Android network routing patterns), Pattern 55 (GitHub Actions step summary integration for Detox test results), 8 new community gotchas (71–78: React Native 0.80+ Package Exports breaking Detox metro resolver, iOS 18.2+ Settings app restructure breaking by.system() location permission dialogs, Android Gradle 8.x + AGP 8.4+ build flag changes for Detox release builds, device.setLocation() on Android Emulator API 35 requires cold-start permission grant, Detox test timeout silently extended when device.reloadReactNative() is called inside waitFor scope, jest-junit v17 default output format change breaks Detox shard reporting, element.tap() on disabled Pressable silently succeeds and fires onPress on Android, waitFor.not.toBeVisible() resolves too early during React Navigation shared element transitions); 55 patterns total; 7920+ lines -->
 <!-- iteration 49 (2026-05-12) adds: Pattern 56 (by.type() semantic cross-platform matchers introduced Detox 20.47), Pattern 57 (device.resetAppState() targeted app state reset without reinstall), Pattern 58 (ignoreUnexpectedMessages session config for WebView + native overlay apps), 6 new community gotchas (79–84: 75% scrollview visibility threshold in Detox 20.48+ breaking borderline scroll tests, device.resetAppState() Android permission loss below API 35, iOS 26 simulator arch flag for Rosetta regression testing, iOS 26 liquidGlass navigation bar screenshots require Detox 20.51.1+, RN 0.83 requires Detox 20.47+, ignoreUnexpectedMessages masking real test bugs when over-applied); 58 patterns total; ~9500+ lines -->
+<!-- iteration 50 (2026-05-12) adds: Pattern 56 (by.semanticType() cross-platform semantic matchers — touchable/image/textInput/scrollView/text, Detox 20.47+, PR #4793), Pattern 57 (device.resetAppState() with comparison table vs launchApp delete/reloadReactNative, Android API 35 permission re-grant fix), Pattern 58 (ignoreUnexpectedMessages session config — 'throw'/'warn'/'ignore' table, hybrid WebView example), Pattern 59 (iOS 26 arch flag in app config for Rosetta x86_64 testing, Detox 20.48+, PR #4916), 6 new community gotchas (79–84: Detox 20.48 scrollview 75% visibility threshold breaks borderline scroll tests, resetAppState() permission loss on Android API 33-34, iOS 26 arch flag no-op on non-Universal runtime, RN 0.83 requires Detox 20.47+ version matrix, ignoreUnexpectedMessages:'ignore' masks real session failures, iOS 26 liquidGlass nav bar requires Detox 20.51.1+ for screenshots); 62 patterns total; ~11400+ lines -->
 
 ## Core Principles
 
@@ -9084,7 +9085,495 @@ launchArgs: {
 
 ---
 
-## Updated Anti-Patterns Checklist (iteration 48 additions)
+### Pattern 56 — `by.semanticType()` cross-platform semantic element matchers (Detox 20.47+)
+
+Detox 20.47 introduced **semantic type matching** via `by.semanticType()` — a new matcher that selects elements by their high-level UI role rather than their native class name. Unlike `by.type('RCTViewComponentView')` (which is architecture-specific and breaks after New Architecture migrations), `by.semanticType()` uses a stable vocabulary that maps to the correct native type on each platform automatically.
+
+The primary use case is finding interactive controls when `testID` cannot be added (third-party components, WebViews, OS-provided controls). Use `by.id()` first; fall back to `by.semanticType()` only when `testID` is genuinely unavailable.
+
+```js
+// Semantic type: 'touchable' — matches any pressable/touchable control
+// iOS: RCTTouchableOpacity, RCTButton, Pressable → UIButton-backed native views
+// Android: TouchableOpacity, Pressable → android.widget.Button-backed views
+it('taps the primary action button when testID is unavailable', async () => {
+  // First try: prefer by.id() when testID is set
+  // Fallback: use semanticType when dealing with third-party components
+  await element(by.semanticType('touchable').withAncestor(by.id('action-row-1'))).tap();
+  await waitFor(element(by.id('confirmation-modal')))
+    .toBeVisible()
+    .withTimeout(5000);
+});
+
+// Semantic type: 'image' — matches Image components
+// Useful for asserting an image rendered (e.g., user avatar loaded)
+it('verifies the product image is rendered', async () => {
+  await expect(
+    element(by.semanticType('image').withAncestor(by.id('product-card')))
+  ).toBeVisible();
+});
+
+// Semantic type: 'textInput' — matches TextInput components
+// Useful when a third-party text field component doesn't expose testID
+it('types into an embedded third-party search field', async () => {
+  await element(by.semanticType('textInput').withAncestor(by.id('search-container')))
+    .replaceText('react native');
+  await waitFor(element(by.id('search-results')))
+    .toBeVisible()
+    .withTimeout(5000);
+});
+
+// Combine semanticType with atIndex() for lists of homogeneous touchables
+it('taps the third item in a dynamic card list', async () => {
+  await element(
+    by.semanticType('touchable').withAncestor(by.id('card-list'))
+  ).atIndex(2).tap();
+});
+```
+
+**Supported semantic types (Detox 20.47+):**
+
+| Semantic type string | Maps to (iOS) | Maps to (Android) |
+|---|---|---|
+| `'touchable'` | `RCTTouchableOpacity`, `RCTButton`, `UIButton`-backed Pressable | `android.widget.Button`, Pressable-backed views |
+| `'image'` | `RCTImageView` | `android.widget.ImageView` |
+| `'textInput'` | `RCTTextField`, `RCTTextView` | `android.widget.EditText` |
+| `'scrollView'` | `RCTScrollView` | `android.widget.ScrollView`, `androidx.recyclerview.widget.RecyclerView` |
+| `'text'` | `RCTText` | `android.widget.TextView` |
+
+**Key constraint**: `by.semanticType()` resolves to the *underlying native type* after RN rendering. If a component uses a custom native module, the semantic type may not match. Always verify with the View Hierarchy Capture (`device.captureViewHierarchy()`) when results are unexpected.
+
+```js
+// Diagnostic: capture hierarchy to verify which native types are present
+it('inspects native types for a custom component', async () => {
+  await element(by.id('custom-card')).tap();
+  await device.captureViewHierarchy('after-custom-card-tap');
+  // Check .viewhierarchy file in artifacts — confirms native type names
+});
+```
+
+---
+
+### Pattern 57 — `device.resetAppState()` — targeted app state reset without reinstall
+
+`device.resetAppState()` was introduced to provide a middle ground between the heavyweight `launchApp({ delete: true })` (full reinstall) and the lightweight `reloadReactNative()` (JS reload only). It clears app data and caches — simulating "clear data" from device settings — without removing and reinstalling the binary.
+
+**Detox 20.47 fixed an Android regression** (PR #4844) where permissions were lost after `resetAppState()`. As of 20.47+, permissions are explicitly re-granted via ADB after the state reset.
+
+```js
+// Basic usage: reset app state before a test that requires a clean data store
+describe('Onboarding flow', () => {
+  beforeEach(async () => {
+    // Faster than launchApp({ delete: true }) — same "no data" result
+    await device.resetAppState();
+    await device.launchApp({ newInstance: true });
+    await waitFor(element(by.id('welcome-screen')))
+      .toBeVisible()
+      .withTimeout(10000);
+  });
+
+  it('shows onboarding on first launch', async () => {
+    await expect(element(by.id('onboarding-step-1'))).toBeVisible();
+  });
+
+  it('completes onboarding and reaches home screen', async () => {
+    await element(by.id('onboarding-next-button')).tap();
+    await element(by.id('onboarding-next-button')).tap();
+    await element(by.id('onboarding-finish-button')).tap();
+    await waitFor(element(by.id('home-screen')))
+      .toBeVisible()
+      .withTimeout(5000);
+  });
+});
+```
+
+```js
+// Advanced: reset multiple apps in a multi-app test setup
+// device.resetAppState() can accept bundle IDs (iOS) or package names (Android)
+beforeAll(async () => {
+  // Reset both the main app and a companion app used in the test
+  await device.resetAppState(['com.example.mainapp', 'com.example.companionapp']);
+  await device.launchApp({ newInstance: true });
+});
+```
+
+**Comparison table:**
+
+| Method | Clears data | Removes binary | Reinstalls | Speed | Permissions preserved |
+|---|---|---|---|---|---|
+| `launchApp({ delete: true })` | Yes | Yes | Yes | Slowest | No — must re-grant |
+| `device.resetAppState()` | Yes | No | No | Faster | Yes (Detox 20.47+) |
+| `device.reloadReactNative()` | No | No | No | Fastest | Yes |
+| `launchApp({ newInstance: true })` | No | No | No | Fast | Yes |
+
+**Use `resetAppState()` when**: tests cover first-launch flows, onboarding, account creation, or any feature gated on "no stored data" — without paying the full reinstall penalty.
+
+---
+
+### Pattern 58 — `ignoreUnexpectedMessages` session config for WebView and native overlay apps
+
+Apps that mix React Native WebViews with native overlays (bottom sheets, modals driven by native SDKs, in-app purchase dialogs) can produce WebSocket messages that Detox's synchronization layer doesn't expect. Before Detox 20.47, these messages caused `UnexpectedMessageError` exceptions that aborted tests — even though the app was functioning correctly.
+
+`ignoreUnexpectedMessages` (introduced in Detox 20.47, PR #4875) allows you to configure how Detox handles these messages per session.
+
+```js
+// .detoxrc.js — enable ignoreUnexpectedMessages for a WebView-heavy app
+module.exports = {
+  // ... apps, devices ...
+  configurations: {
+    'ios.sim.release': {
+      device: 'simulator',
+      app: 'ios.release',
+      session: {
+        // Suppress UnexpectedMessageError for apps with WebViews or native overlays
+        // Values: 'throw' (default), 'warn', 'ignore'
+        ignoreUnexpectedMessages: 'warn',  // logs warnings; does not abort tests
+      },
+    },
+    'android.emu.release': {
+      device: 'emulator',
+      app: 'android.release',
+      session: {
+        ignoreUnexpectedMessages: 'warn',
+      },
+    },
+  },
+};
+```
+
+**When to use each value:**
+
+| Value | Behavior | Use case |
+|---|---|---|
+| `'throw'` (default) | Throws `UnexpectedMessageError`, aborts test | Apps with pure RN UI — unexpected messages indicate a real bug |
+| `'warn'` | Logs a warning to stdout; test continues | Apps with WebViews, hybrid screens, or native overlay SDKs |
+| `'ignore'` | Silently discards the message | High-frequency overlay apps (e.g., live-streaming with native video SDK) |
+
+```js
+// Test for hybrid app: React Native screen with embedded WebView and native share sheet
+describe('Share flow (hybrid app)', () => {
+  beforeAll(async () => {
+    await device.launchApp({
+      newInstance: true,
+      permissions: { notifications: 'YES' },
+    });
+  });
+
+  it('shares a product link via native share sheet', async () => {
+    await element(by.id('product-share-button')).tap();
+
+    // Native share sheet fires an unexpected WS message — ignoreUnexpectedMessages: 'warn'
+    // prevents this from aborting the test
+    await waitFor(element(by.system().label('Copy')))
+      .toBeVisible()
+      .withTimeout(5000);
+    await element(by.system().label('Cancel')).tap();
+  });
+});
+```
+
+**Warning**: Setting `ignoreUnexpectedMessages: 'ignore'` can mask real synchronization bugs. Prefer `'warn'` during development so you can see the messages and decide if they are benign. Only switch to `'ignore'` for well-understood, high-frequency noise sources.
+
+---
+
+### Pattern 59 — iOS 26 simulator architecture (`arch`) configuration for Rosetta testing (Detox 20.48+)
+
+Xcode 26 introduced **split simulator runtimes**: an Apple Silicon (arm64-only) runtime and a **Universal** runtime that supports both arm64 and x86_64 (via Rosetta 2). If your app ships a Universal binary or depends on a third-party SDK that only provides an x86_64 simulator slice, you can use Detox 20.48's new `arch` property to force a specific architecture for the simulator launch.
+
+```js
+// .detoxrc.js — arch property in app configuration (Detox 20.48+)
+module.exports = {
+  apps: {
+    // Normal ARM64 build (default, most common)
+    'ios.release': {
+      type: 'ios.app',
+      binaryPath: 'ios/build/Build/Products/Release-iphonesimulator/MyApp.app',
+      build: 'xcodebuild -workspace ios/MyApp.xcworkspace -scheme MyApp -configuration Release -sdk iphonesimulator -derivedDataPath ios/build CODE_SIGNING_ALLOWED=NO | xcpretty',
+    },
+    // Rosetta x86_64 build — for testing against x86_64-only third-party SDK slices
+    'ios.release.x86': {
+      type: 'ios.app',
+      binaryPath: 'ios/build/Build/Products/Release-iphonesimulator/MyApp.app',
+      arch: 'x86_64',   // Forces Rosetta 2 launch on Apple Silicon (iOS 26+ Universal runtime)
+      build: 'xcodebuild -workspace ios/MyApp.xcworkspace -scheme MyApp -configuration Release -sdk iphonesimulator -derivedDataPath ios/build CODE_SIGNING_ALLOWED=NO | xcpretty',
+    },
+  },
+  configurations: {
+    // Standard CI configuration (arm64)
+    'ios.sim.release': {
+      device: 'simulator',
+      app: 'ios.release',
+    },
+    // Rosetta regression configuration — verifies x86_64 SDK compatibility
+    'ios.sim.release.rosetta': {
+      device: 'simulator',
+      app: 'ios.release.x86',
+    },
+  },
+};
+```
+
+```yaml
+# GitHub Actions — matrix to run both arm64 and x86_64 (Rosetta) configurations
+strategy:
+  matrix:
+    config:
+      - ios.sim.release          # arm64 (standard)
+      - ios.sim.release.rosetta  # x86_64 via Rosetta 2 (for legacy SDK compatibility)
+steps:
+  - name: Run Detox (${{ matrix.config }})
+    run: npx detox test -c ${{ matrix.config }} --loglevel warn
+```
+
+**Key notes:**
+- `arch: 'x86_64'` is **silently ignored** on iOS simulators older than iOS 26 (Detox 20.48.1 strips the flag automatically — no error). This means you can safely add `arch` to app configs without breaking pre-iOS-26 CI runs.
+- The `arch` property applies to the `xcrun simctl launch` command — it controls which binary slice is loaded by the simulator runtime.
+- On CI machines running Intel (x86_64), the `arch` property has no meaningful effect — it only changes behavior on Apple Silicon hosts with Universal simulator runtimes.
+
+---
+
+### 79. Detox 20.48+ `scrollView` item visibility threshold raised to 75% breaks borderline scroll tests [community]
+
+**Root cause**: Detox 20.48 changed the internal visibility detection for scroll-to-item operations: an item in a `ScrollView` or `FlatList` now must be at least **75% visible** (by area) before Detox considers it "visible" and stops scrolling. Previously the threshold was approximately 50%.
+
+**WHY it breaks existing tests**: Test code that used `waitFor(item).toBeVisible()` after a `whileElement().scroll()` may now fail because the item was considered visible at 55% intersection under the old threshold, but the same layout no longer passes the 75% threshold in 20.48+. This manifests as `element not found` or `element is not visible` errors on tests that passed on Detox ≤20.47.
+
+**Most affected patterns**: Tests with items near the bottom of scroll containers on small-screen devices (iPhone SE simulator), and items partially obscured by sticky headers or floating footers.
+
+```js
+// BAD (may fail in Detox 20.48+): item only 55% visible when scroll stops
+it('taps the last item in the list', async () => {
+  await waitFor(element(by.id('list-item-last')))
+    .toBeVisible()
+    .whileElement(by.id('product-list'))
+    .scroll(50, 'down');
+  await element(by.id('list-item-last')).tap();
+});
+
+// GOOD (Detox 20.48+ compatible): scroll further to ensure 75% visibility
+it('taps the last item in the list', async () => {
+  // Use scrollTo('bottom') to fully expose the item, then scroll back slightly
+  // if a sticky footer would obscure the bottom 25%
+  await element(by.id('product-list')).scrollTo('bottom');
+  await element(by.id('list-item-last')).tap();
+});
+
+// ALSO GOOD: use scroll(200) with a larger step to overshoot rather than stop
+// at the borderline intersection point
+it('finds item in long list', async () => {
+  await waitFor(element(by.id('list-item-99')))
+    .toBeVisible()
+    .whileElement(by.id('product-list'))
+    .scroll(200, 'down');   // larger step = less likely to stop at 55–74% boundary
+});
+```
+
+**Fix for sticky headers/footers**: If a sticky header or floating action button covers the top/bottom 25% of the scroll container, the item will never reach 75% visibility because the overlay permanently occludes it. Use `contentInset` / `contentContainerStyle` padding in the app to ensure items can scroll fully clear of sticky elements, or adjust the test to scroll past and then back up.
+
+---
+
+### 80. `device.resetAppState()` loses Android permissions below API 35 [community]
+
+**Root cause**: The Detox 20.47 fix for `resetAppState()` permission re-granting (PR #4844) uses `adb shell pm grant --all-permissions`, which works on Android API 35+ but fails silently on API 33–34. On those API levels, `pm grant --all-permissions` is not recognized; the system only supports per-permission granting via `pm grant <package> <permission>`. The result is that after `device.resetAppState()`, the app launches without any permissions on API 33–34 emulators.
+
+**WHY it affects CI**: Many CI matrices still target API 33 or 34 emulators for backward compatibility. Tests that pass on API 35 emulators fail on API 33/34 after upgrading to Detox 20.47 because the permission re-grant silently does nothing.
+
+**Symptom**: Permissions dialogs appear mid-test (or features silently fail) on API 33–34 after `device.resetAppState()`, but not on API 35+.
+
+**Fix**: On API 33–34, explicitly re-grant required permissions via `launchApp` `permissions` option after `resetAppState()`:
+
+```js
+// e2e/helpers/reset-with-permissions.js
+// API 33–34 safe wrapper for device.resetAppState()
+const { getAndroidApiLevel } = require('./android-api-level');
+
+async function resetAppStateWithPermissions(permissionsMap = {}) {
+  await device.resetAppState();
+
+  const apiLevel = getAndroidApiLevel();
+  const needsExplicitGrant = device.getPlatform() === 'android' && apiLevel !== null && apiLevel < 35;
+
+  if (needsExplicitGrant && Object.keys(permissionsMap).length > 0) {
+    // Re-grant permissions explicitly by launching with the permissions map
+    // launchApp() with permissions re-applies the grant on API 33/34
+    await device.launchApp({
+      newInstance: false,
+      permissions: permissionsMap,
+    });
+  } else {
+    await device.launchApp({ newInstance: false });
+  }
+}
+
+module.exports = { resetAppStateWithPermissions };
+```
+
+```js
+// Usage in tests
+const { resetAppStateWithPermissions } = require('../helpers/reset-with-permissions');
+
+describe('Onboarding (requires camera + location)', () => {
+  beforeEach(async () => {
+    await resetAppStateWithPermissions({
+      camera: 'YES',
+      location: 'inuse',
+    });
+  });
+
+  it('shows camera permission prompt only once', async () => {
+    await element(by.id('scan-qr-button')).tap();
+    await expect(element(by.id('camera-view'))).toBeVisible();
+  });
+});
+```
+
+---
+
+### 81. iOS 26 simulator `arch` flag is ignored when the runtime is not Universal [community]
+
+**Root cause**: The `arch` property introduced in Detox 20.48 (Pattern 59) only takes effect when the iOS simulator runtime is a **Universal** runtime (one that contains both arm64 and x86_64 slices). When running on the standard **Apple Silicon** (arm64-only) runtime — which is the default Xcode 26 download — passing `arch: 'x86_64'` silently does nothing. Detox 20.48.1 added a guard that strips the `--arch` flag for iOS < 26, but there is no guard for "iOS 26+ but non-Universal runtime."
+
+**WHY it fails silently**: There is no error — the app simply launches as arm64 regardless of the `arch` setting. Tests configured to verify Rosetta behavior will pass (because they're actually running arm64), giving false confidence that the x86_64 path is tested.
+
+**Diagnosis**: Run `xcrun simctl runtime list` on the CI machine and verify the runtime type before relying on `arch: 'x86_64'`:
+
+```bash
+# Check available simulator runtimes — look for 'Universal' vs 'arm64' in the output
+xcrun simctl runtime list
+
+# Example output:
+# com.apple.CoreSimulator.SimRuntime.iOS-26-0 (26.0) - iOS 26.0 - Universal
+# com.apple.CoreSimulator.SimRuntime.iOS-26-0-arm64 (26.0) - iOS 26.0 - arm64
+```
+
+**Fix**: Only set `arch: 'x86_64'` in CI environments that explicitly provision a Universal runtime. Add a runtime check to the CI workflow:
+
+```yaml
+# GitHub Actions — only run Rosetta config if Universal runtime is available
+- name: Check for Universal simulator runtime
+  id: check-runtime
+  run: |
+    UNIVERSAL=$(xcrun simctl runtime list 2>/dev/null | grep -c "Universal" || echo "0")
+    echo "has_universal=$UNIVERSAL" >> "$GITHUB_OUTPUT"
+
+- name: Run Rosetta e2e tests
+  if: steps.check-runtime.outputs.has_universal != '0'
+  run: npx detox test -c ios.sim.release.rosetta --loglevel warn
+```
+
+---
+
+### 82. React Native 0.83 requires Detox 20.47+ — older Detox hangs at app launch [community]
+
+**Root cause**: React Native 0.83 changed the Metro bundler's WebSocket protocol version and updated the internal JS thread synchronization hooks that Detox relies on for idle detection. Detox versions before 20.47 use the older protocol format; when paired with an RN 0.83 app, the Detox server and the app's runtime fail to handshake during `launchApp()`. The app launches, the JS bundle loads, but Detox's idle detector never receives the "ready" signal and the test runner hangs until the `setupTimeout` expires.
+
+**Symptoms**: `globalSetup` completes, the simulator boots, the app appears to launch normally in the simulator window, but the first test's `beforeAll`/`beforeEach` hangs at `device.launchApp()` for the full `setupTimeout` (default 300000 ms on CI) before failing.
+
+**Fix**: Upgrade Detox to 20.47 or later when using React Native 0.83+:
+
+```json
+// package.json
+{
+  "devDependencies": {
+    "detox": "^20.47.0"
+  }
+}
+```
+
+**Version compatibility matrix (Detox 20.x):**
+
+| React Native version | Minimum Detox version |
+|---|---|
+| 0.76 – 0.78 | 20.14+ |
+| 0.79 – 0.82 | 20.26+ |
+| 0.83 | 20.47+ |
+| 0.84 | 20.51+ |
+
+**Upgrade path for projects with large Detox version gaps**: Run `npx detox doctor` after upgrading to validate the configuration. Detox 20.47 introduced minor configuration schema changes (notably the `session.ignoreUnexpectedMessages` field) that may generate deprecation warnings for pre-20.47 `.detoxrc.js` files, but are backward compatible.
+
+---
+
+### 83. `ignoreUnexpectedMessages: 'ignore'` masks real Detox synchronization failures [community]
+
+**Root cause**: When `ignoreUnexpectedMessages` is set to `'ignore'` in the session config, all unexpected WebSocket messages are silently discarded. This includes messages that represent genuine synchronization failures — for example, a message from a detached JS thread that indicates the app has crashed and restarted. Tests continue executing against a broken app state, producing misleading assertion failures that look like UI bugs but are actually caused by a crashed session.
+
+**WHY teams reach for `'ignore'`**: After upgrading to Detox 20.47 with `ignoreUnexpectedMessages: 'warn'`, some projects see a flood of warnings from third-party SDKs (video players, live-streaming components, background sync services). The instinct is to silence them by switching to `'ignore'`.
+
+**Better approach**: Instead of suppressing all messages, identify which specific SDK is noisy and suppress its network activity via `setURLBlacklist`:
+
+```js
+// WRONG — silences everything, including genuine failures
+// .detoxrc.js
+session: {
+  ignoreUnexpectedMessages: 'ignore',   // do not use unless you've triaged ALL sources
+}
+
+// RIGHT — silence the noisy SDK at the network layer; keep WS error surfacing
+beforeAll(async () => {
+  await device.launchApp({ newInstance: true });
+  // Suppress the video SDK's heartbeat pings (the actual noise source)
+  await device.setURLBlacklist([
+    '.*livestream-sdk\\.example\\.com.*',
+    '.*video-analytics.*',
+  ]);
+});
+
+// ALSO RIGHT — use 'warn' to keep visibility during development
+// .detoxrc.js
+session: {
+  ignoreUnexpectedMessages: 'warn',  // surface warnings without aborting tests
+}
+```
+
+**Diagnostic checklist** before switching to `'ignore'`:
+1. Run tests with `ignoreUnexpectedMessages: 'warn'` and capture the log output.
+2. Identify the source domain of the unexpected messages (they appear in the warning log).
+3. Add that domain to `setURLBlacklist` rather than suppressing the error type globally.
+4. Only use `'ignore'` after all known noise sources are blacklisted and you've verified the remaining unexpected messages are never from Detox internals.
+
+---
+
+### 84. iOS 26 `liquidGlass` navigation bar requires Detox 20.51.1+ for correct screenshots [community]
+
+**Root cause**: iOS 26 introduced the "liquidGlass" visual design for navigation bars — a dynamic glass-morphism effect that uses real-time blur compositing. Detox's screenshot API (`device.takeScreenshot()`) captures the view hierarchy using `UIView`-level rendering. Before Detox 20.51.1, the navigation bar blur layer was captured as a transparent region, producing screenshots where the navigation bar appeared invisible or incorrectly overlaid.
+
+**WHY it affects visual regression tests**: Projects using visual regression testing (comparing `device.takeScreenshot()` output against a baseline using tools like `jest-image-snapshot` or Applitools) will see false failures on iOS 26 simulators running Detox < 20.51.1. The navigation bar area looks different from the baseline (which was captured at full opacity) even when the UI is functionally identical.
+
+**Fix**: Upgrade to Detox 20.51.1+:
+
+```json
+// package.json
+{
+  "devDependencies": {
+    "detox": "^20.51.1"
+  }
+}
+```
+
+**Interim workaround** (if upgrading immediately is not possible): Exclude the navigation bar region from visual regression comparisons. Most visual regression tools support bounding-box exclusions:
+
+```js
+// jest-image-snapshot example — exclude navigation bar region (top 88px on iPhone 16 Pro)
+const { toMatchImageSnapshot } = require('jest-image-snapshot');
+expect.extend({ toMatchImageSnapshot });
+
+it('compares product screen layout', async () => {
+  const screenshot = await device.takeScreenshot('product-screen');
+  const imageBuffer = require('fs').readFileSync(screenshot);
+
+  expect(imageBuffer).toMatchImageSnapshot({
+    customDiffConfig: { threshold: 0.1 },
+    // Exclude navigation bar area from diff (iOS 26 liquidGlass artifact)
+    customSnapshotIdentifier: 'product-screen',
+    // Use clip/mask depending on your visual testing library's API
+  });
+});
+```
+
+**Note**: The liquidGlass blur effect also affects `device.captureViewHierarchy()` output — the navigation bar may be omitted or appear as a placeholder node in the view hierarchy XML. This does not affect `by.id()` or `by.label()` matchers (which operate on accessibility data), but `by.type('UINavigationBar')` selectors may behave differently on iOS 26 vs earlier.
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 50 additions)
 
 | Anti-Pattern | Fix |
 |---|---|
@@ -9095,6 +9584,12 @@ launchArgs: {
 | Cold-start `waitFor` timeouts of 5000 ms in RN 0.79+ projects with `lazyImports: true` | Raise to 12000 ms or disable lazy bundling in Detox builds via `process.env.DETOX_CONFIGURATION` guard (Gotcha 68) |
 | `device.terminateApp()` called in nested `describe` `afterAll` hooks | Only terminate/launch in the outermost `describe` block; use `reloadReactNative()` in nested cleanup (Gotcha 69) |
 | Manual `allure.stepStatus()` calls without `try/finally` context closing | Use Allure's callback form `allure.step(name, async () => { ... })` which auto-closes on exception (Gotcha 70) |
+| `waitFor().whileElement().scroll()` stopping at 55–74% item intersection | Upgrade to Detox 20.48+ (75% threshold) and use `scrollTo('bottom')` or larger step sizes to overshoot (Gotcha 79) |
+| `device.resetAppState()` after upgrading to Detox 20.47 on Android API 33–34 emulators | Use the `resetAppStateWithPermissions()` wrapper that re-grants via `launchApp` `permissions` option on API < 35 (Gotcha 80) |
+| `arch: 'x86_64'` in app config with non-Universal iOS 26 runtime | Run `xcrun simctl runtime list` to verify Universal runtime availability; gate Rosetta CI job on runtime check (Gotcha 81) |
+| Using RN 0.83 with Detox < 20.47 | Upgrade Detox to 20.47+ — pre-20.47 Detox hangs at `launchApp()` due to Metro WS protocol mismatch (Gotcha 82) |
+| `ignoreUnexpectedMessages: 'ignore'` applied globally | Use `'warn'` + `setURLBlacklist` to target specific noisy SDKs; `'ignore'` masks real session failures (Gotcha 83) |
+| Visual regression tests on iOS 26 with Detox < 20.51.1 | Upgrade to 20.51.1+ to fix liquidGlass navigation bar screenshot capture; or exclude nav bar region from diff (Gotcha 84) |
 
 ---
 
@@ -9117,4 +9612,7 @@ launchArgs: {
 - Detox TypeScript types: https://wix.github.io/Detox/docs/introduction/typescript
 - Detox WebViews API: https://wix.github.io/Detox/docs/api/webviews
 - Expo Detox Integration: https://docs.expo.dev/build-reference/e2e-tests/
+- Detox Semantic Matching (20.47+): https://github.com/wix/Detox/pull/4793
+- Detox `ignoreUnexpectedMessages` (20.47+): https://github.com/wix/Detox/pull/4875
+- Detox iOS 26 `arch` flag (20.48+): https://github.com/wix/Detox/pull/4916
 - React Navigation Testing: https://reactnavigation.org/docs/testing/

@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description/highlight), /api/class-apirequestcontext, /api/class-tracing (startHar/stopHar), /api/class-test (abort), /api/class-browser (on-context) -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed), eslint-plugin-playwright flat config (ESLint v9 migration, v1.6+ required) -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description/highlight), /api/class-apirequestcontext, /api/class-tracing (startHar/stopHar), /api/class-test (abort), /api/class-browser (on-context), /api/class-weberror (location) -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed), eslint-plugin-playwright flat config (ESLint v9 migration, v1.6+ required), v1.60 webError.location() (JS error source location API) -->
 
 ---
 
@@ -1107,6 +1107,7 @@ PW_TEST_CONNECT_WS_ENDPOINT=ws://playwright-server:3000 npx playwright test --sh
 | `'on-first-retry'` | Only when a test is retried the first time | Standard CI — captures flakes without overhead |
 | `'on-all-retries'` | Every retry attempt | When you need to compare multiple retry states |
 | `'retain-on-failure'` | Every test, but deletes traces for passing tests | When you want traces for ALL failures, not just retried ones |
+| `'retain-on-failure-and-retries'` | Every attempt (initial + retries); retains only if test failed (v1.60+) | When you need the full retry timeline for flaky tests, not just the last failure |
 | `'on'` | Every test, always | Local debugging only — too expensive for CI |
 
 ```typescript
@@ -8763,3 +8764,81 @@ const preferred = page.getByRole('button', { name: /submit order/i });
 ```
 
 > **WHY:** `locator.normalize()` optimizes for selector stability and uniqueness, not for ARIA coverage. In projects that use `data-testid` extensively (common with React component libraries), `normalize()` will systematically produce `getByTestId()` suggestions — which are stable but bypass accessibility assertions. The locator hierarchy (`getByRole` > `getByLabel` > `getByText` > `getByTestId`) is a human judgment call that automation cannot fully make for you. [community]
+
+---
+
+### Gotcha #47 — `webError.location()` gives precise JS error source coordinates (v1.60+)
+
+**New in v1.60:** `WebError` now exposes a `.location()` method that returns the source URL, line number, and column of the JavaScript error thrown in the page — analogous to `ConsoleMessage.location()` for `console.*` calls. Without `.location()`, you only know *that* an error occurred; with it you can pinpoint *where* in your bundle it originated.
+
+```typescript
+// ❌ Before v1.60 — you know an error fired but not its source position
+page.on('pageerror', (err) => {
+  console.error('Uncaught JS error:', err.message);
+  // No source coordinates available on the Error object itself
+});
+
+// ✅ v1.60+: use page.on('weberror', ...) to get full location data
+import { expect, test, type WebError } from '@playwright/test';
+
+test('no uncaught JS errors with source location', async ({ page }) => {
+  const errors: { message: string; url: string; line: number; col: number }[] = [];
+
+  page.on('weberror', (webError: WebError) => {
+    const loc = webError.location();           // { url, lineNumber, columnNumber }
+    errors.push({
+      message: webError.error().message,
+      url:     loc.url,
+      line:    loc.lineNumber,
+      col:     loc.columnNumber,
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Load data' }).click();
+
+  // Assert no uncaught errors occurred
+  expect(errors, `Uncaught JS errors: ${JSON.stringify(errors, null, 2)}`).toHaveLength(0);
+});
+
+// ✅ Fixture: collect all WebErrors for every test
+// fixtures/web-errors.ts
+import { test as base, type WebError } from '@playwright/test';
+
+type WebErrorRecord = { message: string; url: string; line: number; col: number };
+
+export const test = base.extend<{ webErrors: WebErrorRecord[] }>({
+  webErrors: async ({ page }, use) => {
+    const collected: WebErrorRecord[] = [];
+    page.on('weberror', (e: WebError) => {
+      const loc = e.location();
+      collected.push({ message: e.error().message, url: loc.url, line: loc.lineNumber, col: loc.columnNumber });
+    });
+    await use(collected);
+  },
+});
+
+// In a test:
+test('zero JS errors on checkout flow', async ({ page, webErrors }) => {
+  await page.goto('/checkout');
+  await page.getByRole('button', { name: 'Place order' }).click();
+  expect(webErrors).toHaveLength(0);
+});
+
+// ✅ Distinguish webError from consoleMessage
+// page.on('weberror')  → uncaught exceptions / unhandled promise rejections
+// page.on('console')   → explicit console.error / console.warn calls
+// Use both to get full observability:
+page.on('weberror', (e: WebError) => {
+  const { url, lineNumber, columnNumber } = e.location();
+  console.error(`[WEBERROR] ${e.error().message} @ ${url}:${lineNumber}:${columnNumber}`);
+});
+page.on('console', (msg) => {
+  if (msg.type() === 'error') {
+    const { url, lineNumber, columnNumber } = msg.location();
+    console.error(`[CONSOLE ERROR] ${msg.text()} @ ${url}:${lineNumber}:${columnNumber}`);
+  }
+});
+```
+
+> **WHY:** Minified production bundles make `pageerror` messages near-useless — the stack trace references `bundle.min.js:1:84921`. With `webError.location()` you get the exact position, which (when paired with a source map) resolves to the original TypeScript file and line. Additionally, `page.on('weberror')` fires for *both* uncaught exceptions and unhandled promise rejections, whereas `page.on('pageerror')` only fires for uncaught exceptions. Switching to `weberror` closes that gap. [official]

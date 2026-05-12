@@ -1,6 +1,20 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 35 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 36 | score: 97/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 36 (2026-05-12): added TypeScript 5.5 RegExp Syntax Checking section (4 validation types:
+       syntax errors, invalid backreferences, named group references, ECMAScript version mismatch;
+       gotcha: only checks regex literals, not `new RegExp()` constructor calls; testing relevance:
+       regex-based matchers and validation schemas); added TypeScript 5.5 Constant Indexed Access
+       Narrowing section (`obj[key]` now narrows when both are const, testing relevance for fixture
+       property access by computed key); added TypeScript 5.6 Always-Truthy/Nullish Detection section
+       (broader than the version table "Disallow NaN equality" entry — covers regex literals, arrow
+       functions, unreachable ?? right operand; testing gotchas for conditional test guards);
+       added TypeScript 5.5 `${configDir}` tsconfig template variable section (monorepo path
+       portability, contrast with `baseUrl` anti-pattern); added 4 new rows to Anti-Patterns table
+       for always-truthy checks, `new RegExp(str)` for regex validation, computed-key narrowing,
+       and `${configDir}` vs hardcoded paths — sourced from
+       typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html and
+       typescriptlang.org/docs/handbook/release-notes/typescript-5-6.html (verified 2026-05-12)
      Iter 35 (2026-05-12): added `using` declaration for test resource cleanup (Disposable interface in
        beforeEach/afterEach), type-safe `expect.extend` custom matchers (Jest MatcherFunction + declare module
        augmentation, Vitest CustomMatcherResult), Vitest 2.x `vi.fn` generic type parameter change
@@ -4863,3 +4877,315 @@ The following rows extend the Anti-Patterns table earlier in this guide with tes
 | `vi.fn<[Args], Return>()` two-generic form in Vitest 2.x | Returns `Mock<unknown>` — type checking on `.mockResolvedValue`, `.mock.calls` is silently disabled | Use single function-type generic: `vi.fn<(arg: T) => R>()` |
 | `satisfies ApiEvent[]` expecting exhaustiveness over union variants | Array satisfies validates element shapes, not union coverage — new discriminants are not caught | Use `satisfies Record<Union['discriminant'], Union>` for exhaustive keyed coverage |
 | Casting test fixtures with `as MyType` | Type cast bypasses shape validation — adding a field to `MyType` doesn't error on the stale fixture | Use `satisfies MyType` for validation without widening, or `const x: MyType = { ... }` for full assignment checking |
+| Always-truthy condition on regex literal (`if (/pattern/)`) | Regex literals are always truthy — the condition never branches correctly; TS 5.6 now errors | Use `.test(str)` to evaluate the regex against a value: `if (/pattern/.test(str))` |
+| `new RegExp(str)` for validated regex patterns | Dynamic `RegExp` constructor calls are NOT syntax-checked by TypeScript 5.5 — invalid patterns fail only at runtime | Use a regex literal so TypeScript validates syntax, backreferences, and ES version compatibility at compile time |
+| Using computed key access `obj[key]` without narrowing (pre-5.5) | TypeScript previously widened `obj[key]` to the full index type even after a `typeof` check — losing the narrowing | TypeScript 5.5+ narrows `obj[key]` when both `obj` and `key` are effectively constant; explicit annotation required for truly dynamic keys |
+| Hardcoded relative paths in monorepo `tsconfig.json` `paths` | `"../../shared/*"` breaks if the config file is moved or the repo structure changes | Use `"${configDir}/*"` (TS 5.5+) to make paths relative to the tsconfig file's own directory, not the build root |
+
+---
+
+## TypeScript 5.5 — RegExp Syntax Checking
+
+TypeScript 5.5 introduced compile-time syntax validation of regular expression literals. The compiler now catches four categories of errors that previously failed silently at runtime.
+
+### 1. Syntax Errors
+
+```typescript
+// ❌ Extra closing parenthesis — unbalanced group
+let re1 = /@robot(\s+(please|immediately)))? do task/;
+//                                         ~
+// Error: Unexpected ')'. Did you mean to escape it with backslash?
+
+// ❌ Dangling quantifier with no preceding atom
+let re2 = /*/;
+// Error: Nothing to repeat.
+```
+
+### 2. Invalid Backreferences
+
+```typescript
+// ❌ \3 references a group that doesn't exist (only groups 1 and 2 are present)
+let re3 = /@typedef \{import\((.+)\)\.([a-zA-Z_]+)\} \3/u;
+//                                                    ~~
+// Error: This backreference refers to a group that does not exist.
+//        There are only 2 capturing groups in this regular expression.
+```
+
+### 3. Invalid Named Group References
+
+```typescript
+// ❌ \k<namedImport> names a group that doesn't exist
+let re4 = /(?<importPath>.+)\.(?<importedEntity>[a-zA-Z_]+) \k<namedImport>/;
+//                                                              ~~~~~~~~~~~
+// Error: There is no capturing group named 'namedImport' in this regular expression.
+
+// ✅ Correct: reference the actual group name
+let re5 = /(?<importPath>.+)\.(?<importedEntity>[a-zA-Z_]+) \k<importedEntity>/;
+```
+
+### 4. ECMAScript Version Compatibility
+
+```typescript
+// ❌ Named capturing groups require ES2018 — error when targeting older versions
+// tsconfig: "target": "ES2015"
+let re6 = /(?<year>\d{4})-(?<month>\d{2})/;
+//          ~~~~~~~~~~      ~~~~~~~~~~~~~
+// Error: Named capturing groups are only available when targeting 'ES2018' or later.
+// Fix: Update target to 'ES2018'+, or use positional groups: /(\d{4})-(\d{2})/
+
+// ❌ The 'v' (unicode sets) flag requires ES2024
+let re7 = /[\p{Script=Greek}&&\p{Letter}]/v;
+// Error: This regular expression flag is only available when targeting 'ES2024' or later.
+```
+
+### Testing Relevance
+
+RegExp validation is especially valuable for testing utilities that use regex patterns for matching, fixture filtering, or schema validation:
+
+```typescript
+// ❌ Subtle bug in a test helper: extra ) causes wrong match behavior
+function assertMatchesPattern(value: string, pattern: string): void {
+  // Using new RegExp() — NOT checked by TypeScript 5.5
+  const re = new RegExp(pattern);  // runtime error if pattern is invalid
+  expect(value).toMatch(re);
+}
+
+// ✅ Safer: use a regex literal in the test — TypeScript validates at compile time
+it('matches expected format', () => {
+  const re = /^usr_[0-9a-f]{8}$/;  // ← syntax validated at compile time
+  expect(userId).toMatch(re);
+});
+```
+
+[community] **Pitfall: TypeScript 5.5 ONLY validates regex literals — not `new RegExp(string)` calls.** When a regex pattern is passed as a string (e.g., `new RegExp(userInput)`, `new RegExp(PATTERN_CONSTANT)`), TypeScript performs no validation. This is intentional — the pattern may be constructed dynamically at runtime. If you have complex regex logic that must be validated at compile time, extract the literal form and assign to a `const` first:
+
+```typescript
+// ❌ No compile-time validation
+const PATTERN = "^usr_[0-9a-f]{8}$";
+const re = new RegExp(PATTERN);  // TypeScript does not check PATTERN
+
+// ✅ Compile-time validation via literal
+const re = /^usr_[0-9a-f]{8}$/;  // TypeScript checks this
+
+// If you need the string form too:
+const re = /^usr_[0-9a-f]{8}$/;  // validates here
+const PATTERN = re.source;        // extract string after validation
+```
+
+---
+
+## TypeScript 5.5 — Constant Indexed Access Narrowing
+
+TypeScript 5.5 added narrowing support for `obj[key]` expressions where both `obj` and `key` are effectively constant within a control flow branch. Previously, index access was always widened to the full index signature type — even after a `typeof` check.
+
+```typescript
+// Before TypeScript 5.5: obj[key] not narrowed
+function processRecord(obj: Record<string, unknown>, key: string) {
+  if (typeof obj[key] === 'string') {
+    obj[key].toUpperCase();  // ❌ Error before 5.5: 'unknown' not narrowed to 'string'
+  }
+}
+
+// TypeScript 5.5+: obj[key] narrows correctly when both obj and key are const in the branch
+function processRecord(obj: Record<string, unknown>, key: string) {
+  if (typeof obj[key] === 'string') {
+    obj[key].toUpperCase();  // ✅ TypeScript 5.5: 'unknown' narrows to 'string'
+  }
+}
+```
+
+**Testing relevance — accessing fixture properties by computed key:**
+
+```typescript
+// Common test pattern: iterate over fixture keys and validate types
+interface Fixture {
+  name: string;
+  count: number;
+  active: boolean;
+}
+
+const fixture: Fixture = { name: 'Alice', count: 5, active: true };
+const key = 'name' as keyof Fixture;
+
+// Before 5.5: string | number | boolean (widened)
+// After 5.5: string (narrowed because typeof check is narrowing-compatible)
+if (typeof fixture[key] === 'string') {
+  fixture[key].toUpperCase();  // ✅ TypeScript 5.5+ — correctly narrowed to string
+}
+
+// TS 5.5 constraint: BOTH obj and key must be effectively constant in the branch
+// If key is reassigned inside the if block, narrowing is lost
+function narrowingLost(obj: Record<string, unknown>, key: string) {
+  if (typeof obj[key] === 'string') {
+    key = 'other';           // reassignment invalidates narrowing
+    obj[key].toUpperCase();  // ❌ Error: 'unknown', narrowing was broken by key reassignment
+  }
+}
+```
+
+[community] **Pitfall:** Narrowing of `obj[key]` still requires that neither `obj` nor `key` are mutated inside the narrowing block. Assigning to either variable after the `typeof` check will widen the type back. In test loops that reassign the iteration variable, add explicit non-null assertions or move the assertion logic to a helper with an immutable key parameter.
+
+---
+
+## TypeScript 5.6 — Always-Truthy and Always-Nullish Detection
+
+TypeScript 5.6 added compile-time detection of conditions that always evaluate the same way — catching common bugs caused by typos, logic errors, and misuse of JavaScript operators.
+
+### Always-Truthy Conditions
+
+```typescript
+// ❌ Regex literal as a condition — ALWAYS truthy (the regex object, not the match result)
+if (/0x[0-9a-f]/) {
+  // Error: This kind of expression is always truthy.
+  // FIX: if (/0x[0-9a-f]/.test(input))
+}
+
+// ❌ Arrow function as a condition — ALWAYS truthy (functions are truthy objects)
+const isPositive = (n: number) => n > 0;
+if (isPositive) {
+  // Error: This kind of expression is always truthy.
+  // FIX: if (isPositive(value))
+}
+
+// ❌ Class as a condition — ALWAYS truthy (class constructors are truthy)
+class Validator {}
+if (Validator) {
+  // Error: This kind of expression is always truthy.
+  // FIX: if (new Validator().isValid(input)) — or compare to null/undefined explicitly
+}
+```
+
+**Intentional patterns that are allowed:** TypeScript 5.6 explicitly permits `while (true)`, `if (false)`, and other idioms that programmers use deliberately. The check targets expressions where the truthy/falsy behavior is almost certainly unintentional.
+
+### Unreachable `??` Right Operand
+
+```typescript
+// ❌ Right operand of ?? is unreachable — left side is never nullish
+function clamp(value: number, max: number): number {
+  return value < max ?? 100;
+  //               ~~~~~~~
+  // Error: Right operand of '??' is unreachable because the left operand is never nullish.
+  // 'value < max' is a boolean — it can never be null or undefined.
+  // FIX: return (value < max ? value : max) ?? 100;
+  //      Or:   return value < max ? value : 100;
+}
+
+// ❌ Nullish coalescing on a value that's already non-null by type
+function getLabel(status: 'active' | 'inactive'): string {
+  return status ?? 'unknown';
+  //             ~~~~~~~~~~
+  // Error: Right operand of '??' is unreachable because 'status' is never nullish.
+  // 'active' | 'inactive' cannot be null or undefined.
+  // FIX: Remove the ?? fallback — it's dead code.
+}
+```
+
+### Testing Relevance
+
+These checks are especially valuable in test files where conditional guards and fixture logic are common:
+
+```typescript
+// ❌ Common test anti-pattern: calling the mock instead of checking the mock
+const mockSend = vi.fn();
+if (mockSend) {
+  // Error: This kind of expression is always truthy.
+  // The mock function object is always truthy — this test guard always passes.
+  // FIX: if (mockSend.mock.calls.length > 0) — check that it was actually called
+}
+
+// ❌ Regex literal in assertion helper — always truthy, never validates
+function assertMatches(value: string): void {
+  const pattern = /^[a-z]+$/;
+  if (pattern) {   // ← Error: always truthy! The regex object, not a match.
+    console.log('matches');
+  }
+  // FIX: if (pattern.test(value)) { ... }
+}
+
+// ✅ Correct: check the result of .test(), not the regex itself
+function assertLowercase(value: string): void {
+  if (/^[a-z]+$/.test(value)) {
+    console.log('valid lowercase');
+  }
+}
+```
+
+[community] **Pitfall: TS 5.6's always-truthy check on `if (fn)` catches a real class of bugs in test files.** It's common to write `if (mockFn)` thinking it checks whether the mock was called, or `if (MyClass)` thinking it checks whether the class is defined. Both are always truthy. The fix pattern: for mocks, check `mockFn.mock.calls.length > 0` or use `expect(mockFn).toHaveBeenCalled()`; for class existence, use `if (typeof MyClass !== 'undefined')`. TypeScript 5.6 makes these silent logic bugs into hard compiler errors.
+
+---
+
+## TypeScript 5.5 — `${configDir}` Template Variable in tsconfig Paths
+
+TypeScript 5.5 added a `${configDir}` template variable for use in `tsconfig.json` values (specifically `paths` and `baseUrl`). It expands to the absolute directory containing the `tsconfig.json` file, making path mappings portable across monorepo structures.
+
+### The Problem It Solves
+
+In a monorepo with a root `tsconfig.json` and per-package configs that extend it, `paths` entries using relative paths are relative to the **root config**, not the **extending config**. This means paths break when a package is nested at a different depth:
+
+```
+monorepo/
+  tsconfig.base.json     ← shared config
+  packages/
+    api/
+      tsconfig.json      ← extends ../../tsconfig.base.json
+    admin/ui/
+      tsconfig.json      ← extends ../../../tsconfig.base.json
+```
+
+```json
+// tsconfig.base.json — PROBLEM: relative path is resolved from where it's used, not defined
+{
+  "compilerOptions": {
+    "paths": {
+      "@shared/*": ["../../shared/src/*"]  // ← relative to tsconfig.base.json's location
+    }
+  }
+}
+// For packages/api/ → resolves to monorepo/shared/src/* ✅
+// For packages/admin/ui/ → resolves to monorepo/packages/shared/src/* ❌ (wrong depth)
+```
+
+### Solution: `${configDir}`
+
+```json
+// tsconfig.base.json — CORRECT: ${configDir} always resolves to the directory
+// of the CONSUMING config file (the one that `extends` this one), not the base
+{
+  "compilerOptions": {
+    "paths": {
+      "@shared/*": ["${configDir}/../../shared/src/*"]
+    }
+  }
+}
+// For packages/api/tsconfig.json:      → packages/api/../../shared/src/* = monorepo/shared/src/*
+// For packages/admin/ui/tsconfig.json: → packages/admin/ui/../../shared/src/* = packages/shared/src/* ✅
+
+// Or in a root config that references its own siblings:
+{
+  "compilerOptions": {
+    "paths": {
+      "@utils/*":   ["${configDir}/src/utils/*"],
+      "@services/*": ["${configDir}/src/services/*"]
+    }
+  }
+}
+// Always correct regardless of cwd or how the project is referenced
+```
+
+**Combining with `extends` chains:**
+
+```json
+// packages/api/tsconfig.json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // ${configDir} here refers to packages/api/ — the directory of THIS file
+    // ${configDir} in tsconfig.base.json will also expand to packages/api/
+    // (the consuming file's directory, not the base file's directory)
+  }
+}
+```
+
+[community] **Pitfall: `${configDir}` was added in TypeScript 5.5 and has no effect in earlier versions.** Tools that read `tsconfig.json` without using TypeScript's own parser (some webpack plugins, older editors) may not expand the variable. If your build tooling uses an older parser, the `${configDir}` literal appears as-is and path resolution silently fails. Verify your build tool's TypeScript version before adopting this feature.
+
+[community] **Pitfall: `${configDir}` is only supported in `paths` and `baseUrl` — NOT in `rootDir`, `outDir`, `include`, or `exclude`.** Teams discovering `${configDir}` sometimes apply it to other tsconfig fields expecting uniform path resolution. Outside of `paths`/`baseUrl`, the literal `${configDir}` appears verbatim and is NOT expanded.

@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.13 release notes, Mockito 5.x release notes, AssertJ docs, Testcontainers docs, WireMock docs, Awaitility docs, Spring Boot 3.4 release notes, Spring Framework 6.2 MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass) | mixed | iteration: 31 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.13 release notes, JUnit 6.0 release notes, Mockito 5.x-5.22 release notes, AssertJ 3.27 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Framework 6.2 MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, Spring Boot 3.5 SSL Testcontainers, Mockito 5.22 Kotlin singleton mocking) | mixed | iteration: 32 | score: 98/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -4749,4 +4749,384 @@ sf.getStatistics().setStatisticsEnabled(true);
 | `MockMvc` with Hamcrest matchers | Verbose; Hamcrest failure messages lack context; mixes two assertion libraries in one test | Use `MockMvcTester` with AssertJ assertions (auto-configured by `@WebMvcTest` in Spring Boot 3.4+) |
 | `@ParameterizedTest` on every method in a class that shares the same setup | Each method needs its own source annotation; setup is duplicated | Use `@ParameterizedClass` (JUnit 5.13) to run the entire class with each argument set |
 | Manual `close()` in `@AfterEach` for test resources | Verbose; easy to forget; hides intent | Use `@AutoClose` (JUnit 5.11) on the field — JUnit calls `close()` automatically after each test |
+| Hardcoded Testcontainers module coordinates (pre-2.0) | `org.testcontainers:mysql` → artifact renamed; build breaks silently on upgrade | Use `org.testcontainers:testcontainers-mysql` (2.0+); check all module artifact IDs on upgrade |
+| AssertJ `extracting(Function...)` assuming `List<Object>` | 3.27+ narrows to common supertype; code expecting `Object` may fail to compile | Use `.extracting(User::name)` for single field (returns `AbstractStringAssert`); cast only when truly needed |
+| JUnit 5 test code compiled with Java < 17 targeting JUnit 6 | JUnit 6 requires Java 17 minimum; Java 8/11 tests cannot run | Keep JUnit 5.x for Java 8–16 projects; migrate to JUnit 6 only after Java 17 baseline is set |
+| `@CsvSource` using `lineSeparator` attribute | JUnit 6 removed `lineSeparator` — auto-detection replaces it; breaks builds | Remove the attribute; JUnit 6 auto-detects line endings |
+
+---
+
+## Testcontainers 2.0 — Migration and Breaking Changes (October 2024)
+
+Testcontainers 2.0 introduced several breaking changes that affect existing test suites. Most projects targeting Spring Boot 3.x should upgrade but must address the module coordinate renames before the build compiles.
+
+### Module Artifact ID Renaming
+
+All container module artifact IDs gained a `testcontainers-` prefix. Update Maven/Gradle dependencies:
+
+```xml
+<!-- BEFORE (Testcontainers 1.x) -->
+<dependency>
+  <groupId>org.testcontainers</groupId>
+  <artifactId>postgresql</artifactId>
+</dependency>
+<dependency>
+  <groupId>org.testcontainers</groupId>
+  <artifactId>mysql</artifactId>
+</dependency>
+<dependency>
+  <groupId>org.testcontainers</groupId>
+  <artifactId>kafka</artifactId>
+</dependency>
+
+<!-- AFTER (Testcontainers 2.0+) -->
+<dependency>
+  <groupId>org.testcontainers</groupId>
+  <artifactId>testcontainers-postgresql</artifactId>
+  <version>2.0.0</version>
+</dependency>
+<dependency>
+  <groupId>org.testcontainers</groupId>
+  <artifactId>testcontainers-mysql</artifactId>
+  <version>2.0.0</version>
+</dependency>
+<dependency>
+  <groupId>org.testcontainers</groupId>
+  <artifactId>testcontainers-kafka</artifactId>
+  <version>2.0.0</version>
+</dependency>
+```
+
+### Package Restructuring
+
+Container classes moved to module-specific packages. Update imports:
+
+```java
+// BEFORE (Testcontainers 1.x)
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.MySQLContainer;
+import org.testcontainers.containers.KafkaContainer;
+
+// AFTER (Testcontainers 2.0+)
+import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.mysql.MySQLContainer;
+import org.testcontainers.kafka.KafkaContainer;
+```
+
+### JUnit 4 Support Removed
+
+Testcontainers 2.0 removed JUnit 4 support entirely. Any `@Rule`-based container management must migrate to JUnit 5 `@Container` + `@Testcontainers`:
+
+```java
+// BEFORE (JUnit 4 @Rule pattern — removed in Testcontainers 2.0)
+@Rule
+public PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
+// AFTER — JUnit 5 with @Testcontainers extension (works in both 1.x and 2.x)
+@Testcontainers
+class MyTest {
+    @Container
+    static final PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:16-alpine");
+}
+```
+
+### Default Constructor Changes
+
+Container classes no longer provide a no-arg default constructor. Always specify an image:
+
+```java
+// BEFORE — no-arg constructor used the default image (removed in 2.0)
+PostgreSQLContainer<?> db = new PostgreSQLContainer<>();  // compilation error in 2.0
+
+// AFTER — always specify the image explicitly
+PostgreSQLContainer<?> db = new PostgreSQLContainer<>("postgres:16-alpine");
+```
+
+**Gotcha — `@ServiceConnection` with Testcontainers 2.0 + Spring Boot 3.x:** `@ServiceConnection` fully supports 2.0 container classes. The package import change is the only adaptation required — the annotation behaviour is unchanged.
+
+---
+
+## AssertJ 3.27 — New Assertions (December 2024)
+
+AssertJ 3.27 added several new assertion methods relevant to modern Java testing. The most commonly needed additions are the `actual()` escape hatch, CompletableFuture time-bounded assertions, and the `doesNotMatch(Predicate)` negative predicate check.
+
+### `actual()` — Access the Subject Under Test
+
+`actual()` returns the wrapped object directly from an assertion chain without terminating it, enabling you to pass the subject to a helper while staying in AssertJ's fluent style:
+
+```java
+import static org.assertj.core.api.Assertions.assertThat;
+
+@Test
+void usingActualToInspectSubject() {
+    User user = new User("Alice", "alice@example.com", 30);
+
+    assertThat(user)
+        .isNotNull()
+        .satisfies(u -> {
+            // actual() provides the typed subject without breaking the chain
+            User subject = assertThat(u).actual();  // returns User
+            System.out.println("Testing user: " + subject.name());  // debugging
+        });
+
+    // More common use: extracting for further assertion
+    assertThat(List.of("foo", "bar", "baz"))
+        .filteredOn(s -> s.startsWith("b"))
+        .actual()  // List<String> — the filtered result
+        .forEach(s -> assertThat(s).hasSize(3));
+}
+```
+
+### CompletableFuture Time-Bounded Assertions (3.27)
+
+New assertions for testing async code with explicit timeout bounds — no Awaitility needed for simple cases:
+
+```java
+import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import static org.assertj.core.api.Assertions.assertThat;
+
+@Test
+void completableFutureTimeBoundedAssertions() throws Exception {
+    CompletableFuture<String> future = CompletableFuture
+        .supplyAsync(() -> {
+            // some computation
+            return "result";
+        });
+
+    // Asserts completion within a timeout — fails if future doesn't complete in time
+    assertThat(future)
+        .succeedsWithin(Duration.ofSeconds(2))
+        .isEqualTo("result");
+
+    // isCompletedWithValueMatchingWithin (3.27) — verify value AND timing
+    assertThat(CompletableFuture.completedFuture("hello"))
+        .isCompletedWithValueMatching(s -> s.startsWith("hel"), "should start with hel");
+
+    CompletableFuture<String> failingFuture =
+        CompletableFuture.failedFuture(new RuntimeException("boom"));
+
+    // Assert the future fails with a specific exception type within a timeout
+    assertThat(failingFuture)
+        .failsWithin(Duration.ofSeconds(1))
+        .withThrowableOfType(RuntimeException.class)
+        .withMessage("boom");
+}
+```
+
+### `doesNotMatch(Predicate)` — Negative Predicate Testing (3.27)
+
+Complements the existing `matches(Predicate)` with a clear negative form:
+
+```java
+import java.util.function.Predicate;
+import static org.assertj.core.api.Assertions.assertThat;
+
+@Test
+void negativePredicateAssertion() {
+    String username = "alice_123";
+
+    // Before 3.27 — verbose: negate the predicate inline
+    assertThat(username).matches(s -> !s.contains(" "), "should not contain spaces");
+
+    // 3.27+ — explicit negative form; clearer intent in failure messages
+    Predicate<String> containsSpaces = s -> s.contains(" ");
+    assertThat(username).doesNotMatch(containsSpaces, "username should not contain spaces");
+
+    // Useful in collection assertions too
+    assertThat(List.of("alice", "bob", "carol"))
+        .allSatisfy(name -> assertThat(name).doesNotMatch(
+            s -> s.isBlank(), "name should not be blank"));
+}
+```
+
+**Gotcha — `extracting(Function...)` type narrowing in 3.27:** `assertThat(list).extracting(fn1, fn2)` now returns the common supertype instead of `List<Object>`. If your test code was explicitly typed to `Object`, it may fail to compile. Fix: use `.extracting(fn).as(String.class)` or rely on the narrowed type.
+
+---
+
+## JUnit 6.0 — Migration Notes (2025)
+
+JUnit 6.0 is the first major version bump since JUnit 5. Key changes affect build configuration, minimum Java version, and CSV parsing. Most JUnit 5.x test code compiles on JUnit 6 with only import changes and dependency updates.
+
+### Breaking Changes Checklist
+
+**Java 17 minimum.** JUnit 6 requires Java 17+. Projects on Java 8–16 must stay on JUnit 5.x.
+
+**Module changes.** `junit-platform-runner` is removed; replace with the Launcher API or IDE/build-tool native integration. `junit-platform-jfr` is absorbed into `junit-platform-launcher`.
+
+**`@MethodOrderer.Alphanumeric` removed.** Replace with `@MethodOrderer.Default` for ordering by method name, or `@TestMethodOrder(MethodOrderer.MethodName.class)`.
+
+**`MethodOrderer.Alphanumeric` and `ClassOrderer.Alphanumeric` removed.** No direct replacement — use `MethodName` or a custom comparator.
+
+**`ReflectionSupport.loadClass()` removed.** Use `ClassLoader.loadClass()` or `Class.forName()` directly.
+
+**FastCSV replaces univocity-parsers for `@CsvSource`/`@CsvFileSource`.** Most CSV data works unchanged. The `lineSeparator` attribute is removed (auto-detection). Extra characters after closing quotes now throw a parse exception instead of silently passing.
+
+**JSpecify nullability annotations.** All JUnit APIs now carry `@Nullable`/`@NonNull` annotations from the JSpecify project. Null safety violations that were previously silent become compile-time warnings with `-Xlint:null`.
+
+### New Features Worth Adopting
+
+**Kotlin suspend function support.** `@Test` methods can now use the `suspend` modifier directly — no coroutine bridge required for Kotlin coroutine tests.
+
+**`ExtensionContext.Store.computeIfAbsent()`** replaces the deprecated `getOrComputeIfAbsent()`. The new method does not accept null return values, avoiding the ambiguity between "absent" and "stored null".
+
+```java
+// JUnit 5.x — getOrComputeIfAbsent (deprecated in 6.0, removed)
+Object resource = store.getOrComputeIfAbsent(MyKey.class, k -> createResource());
+
+// JUnit 6.0 — computeIfAbsent (non-null return; throws on null from supplier)
+MyResource resource = store.computeIfAbsent(MyKey.class, k -> createResource(), MyResource.class);
+```
+
+**`--fail-fast` cancellation token.** JUnit 6 introduces a `CancellationToken` that propagates cancellation from the launcher to running tests, enabling clean shutdown of long-running test suites in CI.
+
+**`@TestMethodOrder` inheritance.** `@TestMethodOrder` on a parent class now applies recursively to all `@Nested` inner classes — no need to repeat the annotation.
+
+### Migration Path from JUnit 5.x
+
+1. Set Java 17 as the project minimum (`<java.version>17</java.version>` in Maven, `sourceCompatibility = JavaVersion.VERSION_17` in Gradle).
+2. Update JUnit BOM: `junit-bom:6.0.0`.
+3. Remove `junit-platform-runner` dependency; configure the JUnit Platform Launcher directly.
+4. Replace `@MethodOrderer.Alphanumeric` with `@TestMethodOrder(MethodOrderer.MethodName.class)`.
+5. Audit `@CsvSource` data for extra characters after quoted values — FastCSV is stricter.
+6. Run `./mvnw test` (or `./gradlew test`) and fix any compilation errors from removed APIs.
+
+---
+
+## Mockito 5.22 — Kotlin Singleton Mocking and Auto-Detection
+
+### Kotlin `object` Declaration Mocking (5.22)
+
+Mockito 5.22 added support for mocking Kotlin `object` declarations (singletons) via `mockSingleton()`. Previously, Kotlin objects could only be mocked with PowerMock or special Kotlin test libraries. This is relevant in mixed Java/Kotlin codebases where singleton services are defined as Kotlin objects.
+
+```java
+// Kotlin singleton (object declaration)
+// object EmailService { fun send(to: String): Boolean = TODO() }
+
+import org.mockito.Mockito;
+
+// Java test mocking a Kotlin object singleton
+try (var mock = Mockito.mockSingleton(EmailService.class)) {
+    // All calls to EmailService.INSTANCE.send(...) now go through the mock
+    Mockito.when(EmailService.INSTANCE.send(Mockito.any())).thenReturn(true);
+
+    boolean result = EmailService.INSTANCE.send("alice@example.com");
+
+    assertThat(result).isTrue();
+    Mockito.verify(EmailService.INSTANCE).send("alice@example.com");
+}
+// After try block: original singleton behaviour is restored
+```
+
+**Note:** Kotlin `object` mocking requires the inline mock maker (default on Java 21+). Calling `mockSingleton()` on a regular (non-Kotlin-object) class throws `IllegalArgumentException`.
+
+### `ReturnsEmptyValues` for Unstubbed `Future`/`CompletionStage` (5.22)
+
+Mockito 5.22 also changed the default answer for unstubbed methods returning `Future` or `CompletionStage`: they now return a **completed future** with a null value rather than `null` itself. This prevents `NullPointerException` in code that chains `.thenApply(...)` on an unstubbed method result without checking for null.
+
+```java
+@Mock
+OrderService orderService;  // not stubbed
+
+@Test
+void unstubbedFutureReturnsCompletedFuture() {
+    // Before 5.22: orderService.placeAsync() returned null → NPE on .thenApply()
+    // After 5.22: returns CompletableFuture.completedFuture(null) → safe to chain
+
+    CompletableFuture<Order> result = orderService.placeAsync(new OrderRequest());
+    // result is non-null completed future; chaining is safe
+    result.thenApply(order -> order != null ? order.id() : "none");  // no NPE
+}
+```
+
+---
+
+## Spring Boot 3.5 — SSL Testcontainers Support
+
+Spring Boot 3.5 extended `@ServiceConnection` to support encrypted connections. New annotations enable SSL between the test and the Testcontainers service for supported technologies.
+
+```java
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.boot.testcontainers.service.connection.ssl.PostgreSqlSslBundle;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+
+@SpringBootTest
+@Testcontainers
+class SecurePostgresIntegrationTest {
+
+    // @ServiceConnection with SSL — new in Spring Boot 3.5
+    // Spring configures a TLS DataSource pointing at the container's SSL endpoint
+    @Container
+    @ServiceConnection
+    @PostgreSqlSslBundle           // annotation enables SSL for this connection
+    static final PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:16-alpine")
+            .withCreateContainerCmdModifier(cmd ->
+                cmd.withCmd("postgres", "-c", "ssl=on"));
+
+    // DataSource is automatically configured with TLS — no manual ssl-mode property needed
+}
+```
+
+**Supported SSL annotations (Spring Boot 3.5):** `@CassandraSslBundle`, `@ElasticsearchSslBundle`, `@KafkaSslBundle`, `@MongoDbSslBundle`, `@RabbitMqSslBundle`, `@RedisSslBundle`, and `@PostgreSqlSslBundle`.
+
+**When to use SSL Testcontainers:** When your production database requires TLS and you want integration tests to verify TLS handshake, certificate validation, and connection behaviour — not just query correctness. Without this feature, TLS-related misconfigurations only surface at production deployment.
+
+---
+
+## AssertJ Record and Sealed Class Introspection (3.27+)
+
+AssertJ 3.27.1 fixed record accessor introspection, making record-based assertions more reliable in `usingRecursiveComparison()` and field-extracting assertions. Sealed class support also improved with native JDK methods replacing reflection heuristics.
+
+```java
+// Record assertions — improved in 3.27.1
+public record Address(String street, String city, String zip) {}
+public record User(String name, String email, Address address) {}
+
+@Test
+void recursiveComparisonWithRecords() {
+    User actual   = new User("Alice", "alice@example.com",
+                             new Address("123 Main St", "Springfield", "12345"));
+    User expected = new User("Alice", "alice@example.com",
+                             new Address("123 Main St", "Springfield", "12345"));
+
+    // usingRecursiveComparison correctly introspects record accessors in 3.27.1+
+    assertThat(actual)
+        .usingRecursiveComparison()
+        .isEqualTo(expected);
+
+    // Single-field assertion on nested record component
+    assertThat(actual)
+        .extracting(u -> u.address().city())
+        .isEqualTo("Springfield");
+
+    // Ignoring specific fields in recursive comparison
+    assertThat(actual)
+        .usingRecursiveComparison()
+        .ignoringFields("email")          // skip email comparison
+        .isEqualTo(expected);
+}
+
+// Sealed class isInstanceOf — uses JDK isSealed()/getPermittedSubclasses() in 4.0.0-M1+
+public sealed interface Shape permits Circle, Rectangle {}
+public record Circle(double radius) implements Shape {}
+public record Rectangle(double w, double h) implements Shape {}
+
+@Test
+void sealedClassAssertions() {
+    Shape shape = new Circle(5.0);
+
+    assertThat(shape).isInstanceOf(Circle.class);
+    assertThat(shape)
+        .isNotInstanceOf(Rectangle.class)
+        .satisfies(s -> assertThat(((Circle) s).radius()).isEqualTo(5.0));
+}
+```
+
+**Gotcha — recursive comparison with records pre-3.27.1:** Record components are accessed via generated accessor methods (`name()`, not `getName()`). Older AssertJ versions missed these using reflection strategies designed for JavaBeans. 3.27.1 fixed the introspection to use `Class.getRecordComponents()`, which returns `RecordComponent` objects with the correct accessor methods.
+
 

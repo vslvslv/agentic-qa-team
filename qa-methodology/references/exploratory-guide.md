@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 44 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 45 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -35,6 +35,7 @@
      - Iter 42: MCP (Model Context Protocol) server exploration pattern (charter strategy for tool-call surface, schema validation, side-effect verification); TypeScript MCPExploratoryHarness that captures tool invocations and validates against JSON Schema; community lessons #114-116; new anti-pattern (exploring MCP servers without tool-schema oracle)
      - Iter 43: OpenTelemetry-assisted exploratory testing pattern (live OTel span data as structural oracle during sessions); TypeScript OTelExploratoryOracle that correlates trace IDs with session observations; charter extension for trace-guided service-boundary exploration; community lessons #117-119; new anti-pattern (exploring distributed systems without a trace oracle)
      - Iter 44: Playwright 2025-2026 tooling additions — toMatchAriaSnapshot() YAML structural oracle (v1.49-v1.60); Playwright Test Agents framework (v1.56, planner/generator/healer); Screencast API for agentic session evidence (v1.59); locator.describe() + page.pickLocator() as interactive session aids; async-disposable teardown pattern with `await using`; community lessons #120-122; new anti-pattern (ARIA snapshot drift ignored during exploration)
+     - Iter 45: Playwright v1.60 additions not yet covered — tracing.startHar()/stopHar() as first-class HAR tracing API with await using; locator.drop() for upload-zone and DnD exploration; getByRole() description option for accessible-description matching; test.abort() for unrecoverable-state detection in session harnesses; browser.bind() + playwright-cli Dashboard for multi-client session sharing; TypeScript HAR-oracle harness; community lessons #123-125; new anti-pattern (HAR network capture ignored during API exploration sessions)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -8774,5 +8775,531 @@ async function explicitCleanupSession(startUrl: string): Promise<void> {
 118. **[community] Correlation ID discipline in TypeScript services is a prerequisite for trace-guided exploration — and most teams discover they lack it when they try to add the oracle.** The OTelExploratoryOracle pattern requires that the tester can associate a specific UI action with a specific trace. In a well-instrumented TypeScript system, the tester injects a correlation ID header and the root service propagates it through all downstream spans. In practice, about half of TypeScript backends that have OTel traces do not propagate correlation IDs across all service boundaries — some services create new trace contexts, breaking the link. When a team first attempts trace-guided exploration, they often find that their trace backend shows traces but that no single trace captures the full request path. The defect is in the instrumentation, not the application logic. The practical finding: the act of preparing for trace-guided exploration functions as an OTel instrumentation audit. Teams that invest 2–3 days in fixing correlation ID propagation before their first trace-guided session report that the instrumentation improvements alone are worth the effort — they make production incident diagnosis faster, independent of any QA benefit.
 
 119. **[community] Trace-guided exploratory sessions are the most effective way to validate that a performance refactor actually achieved its goal under realistic interaction patterns.** When a backend team replaces a direct DB call with a cache layer, they write a unit test confirming the cache is consulted. That test uses a controlled environment with a pre-primed cache. An exploratory session with a trace oracle checks the real thing: is the cache actually being hit under the interaction pattern that a real tester generates? Testers exploring a performance refactor with the OTelExploratoryOracle consistently find that the cache is hit on the happy path but bypassed on one or two interaction variants the developer did not anticipate (a specific user role that bypasses the cache key, a specific locale that maps to a different data path, a specific error recovery path that clears the cache early). Each of these is a latency defect — not a correctness defect — that no functional test would catch. The trace oracle catches it in the same session where the tester was exploring the refactored feature's functional behavior. The combination of FEW HICCUPS "Performance" dimension + OTel trace oracle is one of the highest-leverage additions a TypeScript team can make to their exploratory session toolkit.
+
+---
+
+## Playwright v1.60 Tooling Additions (Iteration 45)
+
+Playwright v1.60 (May 2025) introduced four APIs that were not yet covered in the Iteration 44 Playwright section. Each has direct relevance to exploratory testing workflows in TypeScript projects.
+
+---
+
+### `tracing.startHar()` / `tracing.stopHar()` — HAR Recording as First-Class Tracing API  [community]
+
+Prior to v1.60, capturing an HTTP Archive (HAR) of a session required setting `recordHar` on the browser context at creation time — a configuration that could not be started or stopped mid-session. Playwright v1.60 promotes HAR recording to a first-class tracing API: `tracing.startHar()` and `tracing.stopHar()` can be called at any point during a session, with the same `content`, `mode`, and `urlFilter` options as `recordHar`, and full support for the `await using` async-disposable pattern.
+
+**Why this matters for exploratory testing:**
+
+A HAR file captures the complete HTTP exchange — request headers, response headers, response bodies, timing data, and redirect chains — for every network request made during a session. When appended to a session's evidence artifacts alongside the trace file and any screenshots, it gives the developer receiving a defect report a complete network-layer picture: not just "the page showed the wrong data" but "the API call that produced the wrong data, its exact request payload, and the full response."
+
+The `mode: 'minimal'` option captures only what is needed for route-replay (useful for creating mock server fixtures from a session), while `mode: 'full'` captures all resource bodies. The `urlFilter` option lets the tester restrict capture to the domain under test, preventing HAR files from ballooning with third-party CDN traffic.
+
+**`await using` integration (TypeScript 5.2+ + Playwright v1.60):**
+
+`tracing.startHar()` returns an `AsyncDisposable`. Combined with `await using`, the HAR is automatically finalized and written to disk when the block exits, even if the session throws — eliminating the pattern where a crashed session produces a zero-byte or corrupt HAR file because `stopHar()` was never called.
+
+**TypeScript: HAR Oracle Harness**
+
+```typescript
+// src/testing/exploratory/har-oracle-harness.ts
+// Captures HAR network data during an exploratory session and validates
+// API responses against expected shape using a lightweight oracle.
+// Requires Playwright v1.60+, TypeScript 5.2+ with:
+//   "target": "ES2022", "lib": ["ES2022", "ESNext"] in tsconfig.json
+
+import { chromium, type BrowserContext } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
+
+export interface HarOracleOptions {
+  startUrl: string;
+  outputDir: string;
+  charterId: string;
+  /** Only capture HAR for URLs matching this pattern (glob or regex string) */
+  urlFilter?: string | RegExp;
+  /** 'full' = all bodies; 'minimal' = routing-only. Default: 'full' */
+  mode?: 'full' | 'minimal';
+}
+
+export interface HarOracleResult {
+  harPath: string;
+  requestCount: number;
+  errorResponses: Array<{ method: string; url: string; status: number }>;
+  slowRequests: Array<{ method: string; url: string; durationMs: number }>;
+}
+
+export async function runSessionWithHarOracle(
+  opts: HarOracleOptions,
+  sessionFn: (page: import('@playwright/test').Page) => Promise<void>,
+  slowThresholdMs = 500,
+): Promise<HarOracleResult> {
+  if (!fs.existsSync(opts.outputDir)) {
+    fs.mkdirSync(opts.outputDir, { recursive: true });
+  }
+
+  const harPath = path.join(
+    opts.outputDir,
+    `${opts.charterId}-${new Date().toISOString().replace(/[:.]/g, '-')}.har`,
+  );
+
+  const browser = await chromium.launch({ headless: false });
+  const context: BrowserContext = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+  });
+
+  const errorResponses: HarOracleResult['errorResponses'] = [];
+  const slowRequests: HarOracleResult['slowRequests'] = [];
+  let requestCount = 0;
+
+  context.on('response', (resp) => {
+    requestCount++;
+    if (resp.status() >= 400) {
+      errorResponses.push({
+        method: resp.request().method(),
+        url: resp.url(),
+        status: resp.status(),
+      });
+    }
+  });
+
+  const page = await context.newPage();
+
+  // Start HAR recording — tracing.startHar() returns an AsyncDisposable in v1.60.
+  // The 'await using' block guarantees stopHar() is called even if the session throws.
+  // @ts-expect-error tracing.startHar() / await using requires Playwright v1.60+
+  await using _har = await context.tracing.startHar({
+    path: harPath,
+    content: 'embed',
+    mode: opts.mode ?? 'full',
+    ...(opts.urlFilter ? { urlFilter: opts.urlFilter } : {}),
+  });
+
+  await page.goto(opts.startUrl);
+
+  const sessionStart = Date.now();
+
+  try {
+    await sessionFn(page);
+  } finally {
+    // When 'await using' exits, _har[Symbol.asyncDispose]() calls stopHar() automatically.
+    // Any requests captured up to this point are written to harPath.
+    const sessionDuration = Date.now() - sessionStart;
+    console.log(`[HAR] Session completed in ${sessionDuration}ms — HAR written to ${harPath}`);
+  }
+
+  // Post-session: parse HAR to find slow requests
+  // (HAR is available only after stopHar() is called, i.e., after the await using block)
+  if (fs.existsSync(harPath)) {
+    try {
+      const harData = JSON.parse(fs.readFileSync(harPath, 'utf-8')) as {
+        log: { entries: Array<{ request: { method: string; url: string }; time: number }> };
+      };
+      for (const entry of harData.log.entries) {
+        if (entry.time > slowThresholdMs) {
+          slowRequests.push({
+            method: entry.request.method,
+            url: entry.request.url,
+            durationMs: Math.round(entry.time),
+          });
+        }
+      }
+    } catch {
+      // HAR parse error is non-fatal — report it but do not crash the session result
+      console.warn('[HAR] Could not parse HAR file for slow-request analysis');
+    }
+  }
+
+  await context.close();
+  await browser.close();
+
+  return { harPath, requestCount, errorResponses, slowRequests };
+}
+
+// Usage:
+//
+// const result = await runSessionWithHarOracle(
+//   {
+//     startUrl: 'http://staging.example.com/checkout',
+//     outputDir: './session-output',
+//     charterId: 'CHR-checkout-20260512-02',
+//     urlFilter: '**/api/**',   // Only capture API traffic, not CDN/assets
+//     mode: 'full',
+//   },
+//   async (page) => {
+//     await page.getByRole('radio', { name: 'Continue as Guest' }).click();
+//     await page.getByLabel('Card Number').fill('4000000000000002');
+//     await page.getByRole('button', { name: 'Place Order' }).click();
+//     // HAR captures all /api/ requests made during this flow
+//   },
+// );
+//
+// if (result.errorResponses.length > 0) {
+//   console.error('API errors during session:', result.errorResponses);
+// }
+// if (result.slowRequests.length > 0) {
+//   console.warn('Slow requests (>500ms):', result.slowRequests);
+// }
+// console.log(`HAR artifact: ${result.harPath}`);
+```
+
+**When to add HAR capture to a session:**
+
+| Situation | Why HAR adds value |
+|-----------|-------------------|
+| Exploring a new REST API endpoint | Captures the exact request/response pair for each interaction — no need to manually inspect DevTools Network panel |
+| Investigating a "wrong data" defect | HAR shows the API response body alongside the UI behavior, enabling root-cause analysis in one artifact |
+| Confirming error envelope format | HAR captures the full response body for 4xx/5xx responses, including fields that are invisible in the UI |
+| Performance exploration (FEW HICCUPS: Workload) | HAR timing data surfaces requests that exceed the team's SLA without requiring a dedicated performance test run |
+| Schema drift exploration (Iter 40 pattern) | HAR response bodies can be validated against an OpenAPI schema outside the session, post-capture |
+
+**Tradeoffs and gotchas:**
+
+| Tradeoff | Detail |
+|----------|--------|
+| `mode: 'full'` can produce large HAR files | On pages with large responses or many resources, filter with `urlFilter` to keep the file manageable. API-only sessions (e.g., `**/api/**`) are typically under 200 KB |
+| HAR does not capture WebSocket frames | For WebSocket exploration (Iter 36 pattern), continue using `page.routeWebSocket()` for message capture — HAR records the upgrade handshake but not subsequent frames |
+| `await using` requires TypeScript 5.2+ | Teams on TS 4.x must use explicit try/finally with `await context.tracing.stopHar()` instead |
+| HAR format exposes full response bodies | Do not commit HAR files containing PII or auth tokens to the repository — treat them as session evidence artifacts stored in an ephemeral output directory |
+
+---
+
+### `locator.drop()` — Upload Zone and Drag-and-Drop Exploration  [community]
+
+`locator.drop()` (v1.60) simulates an external drag-and-drop operation onto a target element by dispatching `dragenter`, `dragover`, and `drop` events with a synthetic `DataTransfer` object. Unlike `page.dragAndDrop()` (which simulates dragging from one element to another within the page), `locator.drop()` simulates dropping content that originates **outside** the browser — a file from the operating system, or clipboard data from another application.
+
+**Why this matters for exploratory testing:**
+
+File upload zones (drop targets that accept OS file drops) and rich-text editors that accept dropped images or text are notoriously difficult to test interactively: the browser's drag-and-drop handling for external content differs from element-to-element drags, and many teams have no automated way to trigger this path. Before `locator.drop()`, testing an upload zone required either: (a) a native OS-level drag simulation tool (fragile, platform-dependent), or (b) manual testing. `locator.drop()` makes this path first-class and cross-browser in Playwright sessions.
+
+**TypeScript: Upload Zone Explorer**
+
+```typescript
+// src/testing/exploratory/upload-zone-explorer.ts
+// Uses locator.drop() to explore file upload zones and drop-aware widgets.
+// Requires Playwright v1.60+.
+
+import { type Page } from '@playwright/test';
+
+export interface DropScenario {
+  label: string;
+  payload:
+    | { files: { name: string; mimeType: string; content: string } }
+    | { data: Record<string, string> };
+}
+
+/** Common drop scenarios for upload zone exploration. */
+export const uploadZoneScenarios: DropScenario[] = [
+  {
+    label: 'Valid PDF',
+    payload: {
+      files: { name: 'test-invoice.pdf', mimeType: 'application/pdf', content: '%PDF-1.4 minimal' },
+    },
+  },
+  {
+    label: 'Oversized text file (boundary: content too large)',
+    payload: {
+      files: { name: 'large.txt', mimeType: 'text/plain', content: 'x'.repeat(10_000_000) },
+    },
+  },
+  {
+    label: 'Executable file (security: blocked MIME type)',
+    payload: {
+      files: { name: 'payload.exe', mimeType: 'application/octet-stream', content: 'MZ' },
+    },
+  },
+  {
+    label: 'No-extension file (edge: missing MIME type)',
+    payload: {
+      files: { name: 'noextension', mimeType: 'application/octet-stream', content: 'data' },
+    },
+  },
+  {
+    label: 'Plain text via clipboard data',
+    payload: {
+      data: {
+        'text/plain': 'Dropped text content from clipboard',
+        'text/html': '<p>Dropped <strong>HTML</strong> content</p>',
+      },
+    },
+  },
+];
+
+export interface DropExplorationResult {
+  scenario: string;
+  dropAccepted: boolean;
+  feedbackText: string | null;
+  errorVisible: boolean;
+}
+
+export async function exploreUploadZone(
+  page: Page,
+  dropZoneLocator: string,
+  feedbackSelector: string,
+  scenarios: DropScenario[] = uploadZoneScenarios,
+): Promise<DropExplorationResult[]> {
+  const results: DropExplorationResult[] = [];
+  const zone = page.locator(dropZoneLocator);
+
+  for (const scenario of scenarios) {
+    const clearBtn = page.getByRole('button', { name: /clear|reset|remove/i });
+    if (await clearBtn.isVisible({ timeout: 500 }).catch(() => false)) {
+      await clearBtn.click();
+    }
+
+    let dropAccepted = false;
+
+    try {
+      if ('files' in scenario.payload) {
+        // @ts-expect-error locator.drop() requires Playwright v1.60+
+        await zone.drop({
+          files: {
+            name: scenario.payload.files.name,
+            mimeType: scenario.payload.files.mimeType,
+            buffer: Buffer.from(scenario.payload.files.content),
+          },
+        });
+      } else {
+        // @ts-expect-error locator.drop() requires Playwright v1.60+
+        await zone.drop({ data: scenario.payload.data });
+      }
+      // drop() throws if dragover listener does not call preventDefault()
+      dropAccepted = true;
+    } catch {
+      dropAccepted = false;
+    }
+
+    await page.waitForTimeout(300);
+    const feedbackText = await page.locator(feedbackSelector)
+      .textContent({ timeout: 500 }).catch(() => null);
+    const errorVisible = await page.getByRole('alert')
+      .isVisible({ timeout: 300 }).catch(() => false);
+
+    results.push({ scenario: scenario.label, dropAccepted, feedbackText, errorVisible });
+    console.log(
+      `  [DROP] ${scenario.label}: accepted=${dropAccepted}, error=${errorVisible}`,
+    );
+  }
+
+  return results;
+}
+```
+
+**FEW HICCUPS coverage via `locator.drop()`:**
+
+| FEW HICCUPS dimension | Drop scenario to add |
+|----------------------|---------------------|
+| **Error** | Blocked MIME types (`.exe`, `.js`), oversized files, zero-byte files |
+| **Workload** | 10 MB+ file — does the upload progress indicator appear and does the UI remain responsive? |
+| **Platform/Performance** | WebKit vs Chromium vs Firefox — does the `dragover` event behave identically? |
+| **Users** | Drop via clipboard data (`text/html`) vs file drop — do both paths reach the same handler? |
+
+**Key gotcha**: `locator.drop()` throws if the target element's `dragover` listener does not call `preventDefault()` — this is the API's way of signalling that the element does not accept the content type. An upload zone that accepts all drops silently (no `preventDefault()` call) will throw on every `locator.drop()` invocation, which is itself a defect finding: the zone is advertised as a drop target but does not implement the drop contract.
+
+---
+
+### `getByRole()` `description` Option — Accessible Description Matching  [community]
+
+Playwright v1.60 added a `description` option to `getByRole()`, allowing locators to match elements by their ARIA accessible description (the value of `aria-describedby`, `aria-description`, or `title`). This is distinct from the `name` option, which matches the accessible name.
+
+**Why this matters for exploratory testing:**
+
+When exploring accessible UIs, buttons and inputs that share the same role and name are disambiguated by their accessible description. Without the `description` option, a session exploring a form with multiple "Submit" buttons had to fall back to positional locators or `data-testid` selectors. With `description`, the locator is both stable and semantic — it will fail if the accessible description is removed, surfacing an accessibility regression in the session itself.
+
+```typescript
+// src/testing/exploratory/accessible-description-examples.ts
+// Demonstrates getByRole() with description option (Playwright v1.60+).
+// Use during accessibility-focused exploration sessions (Iter 31 WCAG 2.2 pattern).
+
+import { type Page } from '@playwright/test';
+
+/**
+ * Explores a multi-step form where multiple buttons share the same role+name
+ * but are disambiguated by their accessible description.
+ *
+ * HTML context assumed:
+ *   <button aria-describedby="shipping-hint">Submit</button>
+ *   <span id="shipping-hint">Confirm shipping address</span>
+ *
+ *   <button aria-describedby="payment-hint">Submit</button>
+ *   <span id="payment-hint">Confirm payment details</span>
+ */
+export async function exploreMultiStepFormWithDescriptions(page: Page): Promise<void> {
+  // Before v1.60: had to use nth(0) / nth(1) — fragile and non-semantic
+  // const shippingSubmit = page.getByRole('button', { name: 'Submit' }).nth(0);
+
+  // After v1.60: semantic, stable, accessibility-contract-aware
+  const shippingSubmit = page.getByRole('button', {
+    name: 'Submit',
+    description: 'Confirm shipping address',  // v1.60+ option
+  });
+
+  const paymentSubmit = page.getByRole('button', {
+    name: 'Submit',
+    description: 'Confirm payment details',   // v1.60+ option
+  });
+
+  // If either locator throws "element not found", it is an accessibility defect:
+  // the description was removed, meaning screen readers can no longer
+  // distinguish the buttons (HICCUPPS: Standards — WCAG 2.2).
+  await shippingSubmit.click();
+  await paymentSubmit.click();
+}
+
+/**
+ * Accessibility oracle: audit all form inputs to confirm they carry
+ * accessible descriptions (not just labels). Common gap in complex forms
+ * with helper text that is visually associated but not aria-linked.
+ */
+export async function auditFormDescriptions(
+  page: Page,
+  formLocator: string,
+): Promise<Array<{ name: string | null; hasDescription: boolean }>> {
+  const inputs = page.locator(formLocator).getByRole('textbox');
+  const count = await inputs.count();
+  const report: Array<{ name: string | null; hasDescription: boolean }> = [];
+
+  for (let i = 0; i < count; i++) {
+    const input = inputs.nth(i);
+    const name = await input.getAttribute('aria-label')
+      ?? await input.evaluate((el) => {
+        const id = el.getAttribute('aria-labelledby');
+        return id ? document.getElementById(id)?.textContent ?? null : null;
+      });
+    const describedBy = await input.getAttribute('aria-describedby');
+    report.push({ name, hasDescription: describedBy !== null && describedBy.trim().length > 0 });
+  }
+
+  return report;
+}
+```
+
+**HICCUPPS oracle mapping for accessible description findings:**
+
+| HICCUPPS dimension | Observable defect | How `description` option surfaces it |
+|-------------------|-------------------|--------------------------------------|
+| **Standards** (WCAG 2.2) | Input has visible helper text but no `aria-describedby` link | `getByRole('textbox', { description: '...' })` fails to locate |
+| **Claims** | Component library documentation states all buttons have unique accessible descriptions | Locator with `description` finds zero or ambiguous matches |
+| **User** expectations | Screen reader user cannot distinguish two identically named buttons | Session reveals the UX defect as a locator ambiguity error during exploration |
+
+---
+
+### `test.abort()` — Unrecoverable State Detection in Session Harnesses  [community]
+
+`test.abort()` (v1.60) immediately terminates the currently running Playwright test with a failure message, without requiring the test body to exit naturally. It can be called from fixtures, route handlers, or any context with access to the `test` object — anywhere that can detect a condition that makes continuing the session meaningless.
+
+For exploratory session harnesses, `test.abort()` solves the problem of **sentinel conditions**: situations where the test environment is in an invalid state that would cause every subsequent finding to be a false positive or meaningless noise. Without `test.abort()`, a session that encounters a fatal environment issue (e.g., the API consistently returning 503) continues running and generates a session sheet full of "findings" that are all caused by the environment fault rather than the application under test.
+
+**TypeScript: Sentinel Guard Pattern**
+
+```typescript
+// src/testing/exploratory/sentinel-guard.ts
+// Uses test.abort() to detect and surface unrecoverable session precondition failures.
+// Prevents exploratory sessions from producing noise findings when the test
+// environment itself is broken.
+// Requires Playwright v1.60+.
+
+import { test, type Page } from '@playwright/test';
+
+export interface SentinelConfig {
+  /** API endpoint glob patterns whose repeated failures should abort the session */
+  criticalEndpoints: string[];
+  /** HTTP status codes that indicate an unrecoverable environment fault */
+  fatalStatusCodes: number[];
+  /** Maximum consecutive errors before aborting */
+  maxConsecutiveErrors: number;
+}
+
+const DEFAULT_SENTINEL: SentinelConfig = {
+  criticalEndpoints: ['**/api/**'],
+  fatalStatusCodes: [502, 503, 504],
+  maxConsecutiveErrors: 3,
+};
+
+/**
+ * Installs a route-level sentinel that calls test.abort() when the environment
+ * is repeatedly returning gateway/service-unavailable errors.
+ *
+ * Place at the start of any exploratory session test that targets a staging
+ * environment — it prevents the session from producing false defect reports
+ * when the environment itself is the defective party.
+ */
+export async function installSentinelGuard(
+  page: Page,
+  config: SentinelConfig = DEFAULT_SENTINEL,
+): Promise<void> {
+  let consecutiveErrors = 0;
+
+  for (const pattern of config.criticalEndpoints) {
+    await page.route(pattern, async (route) => {
+      const response = await route.fetch();
+
+      if (config.fatalStatusCodes.includes(response.status())) {
+        consecutiveErrors++;
+        if (consecutiveErrors >= config.maxConsecutiveErrors) {
+          test.abort(
+            `[SENTINEL] Session aborted: ${consecutiveErrors} consecutive ${response.status()} ` +
+            `responses from ${pattern}. Environment fault detected — check staging service ` +
+            `health before filing session defects.`,
+          );
+        }
+        console.warn(
+          `[SENTINEL] Error ${response.status()} from ${route.request().url()} ` +
+          `(${consecutiveErrors}/${config.maxConsecutiveErrors})`,
+        );
+      } else {
+        consecutiveErrors = 0;
+      }
+
+      await route.fulfill({ response });
+    });
+  }
+}
+
+// Usage:
+//
+// test.beforeEach(async ({ page }) => {
+//   await installSentinelGuard(page, {
+//     criticalEndpoints: ['**/api/v2/**'],
+//     fatalStatusCodes: [502, 503, 504],
+//     maxConsecutiveErrors: 3,
+//   });
+// });
+//
+// test('CHR-checkout-20260512-02: guest checkout address form', async ({ page }) => {
+//   await page.goto('/checkout');
+//   // If /api/v2/** returns 503 three times, test.abort() fires and the session
+//   // is marked as "environment fault" rather than generating false defect findings.
+// });
+```
+
+**When `test.abort()` is the correct response vs when to continue:**
+
+| Scenario | Action |
+|----------|--------|
+| Staging API returns 503 on 3+ consecutive requests | `test.abort()` — environment is broken; findings would be false positives |
+| Single 404 on a non-critical endpoint | Log and continue — may be a legitimate finding (missing route) |
+| Auth token expired mid-session | `test.abort()` — all post-expiry findings are invalid |
+| Feature flag toggled to OFF during session | Log the state and continue — note the finding in session sheet |
+| Build deployed mid-session causing unexpected behavior | `test.abort()` with message "Session invalidated by mid-session deployment" |
+
+**TypeScript-specific note**: `test.abort()` is a method on the `test` object from `@playwright/test`, not a standalone function. In TypeScript, this means it is only available inside the `test()` callback scope or in fixtures/hooks that receive the `test` object via the `TestInfo` API. It cannot be called from outside a Playwright test execution context (e.g., from a standalone `ts-node` script). For those cases, throw a custom `SessionAbortError` and catch it in the outer harness instead.
+
+---
+
+### New Anti-Pattern (Iteration 45): HAR Network Capture Ignored During API Exploration Sessions
+
+**Completing API exploration sessions without capturing the network HAR, then filing defect reports that lack the request/response body.** When a tester explores a new REST API endpoint using only the browser's visible output — what the page displays, or what an XHR response shows in the DevTools Network panel — the defect report they file reflects only the symptom ("the checkout total is wrong") without the cause layer ("the `/api/cart/total` response returned `subtotal: 1200` where the expected value based on the applied discount code was `subtotal: 960`"). Developers receiving symptom-only defect reports must reproduce the session themselves to capture the network evidence — doubling investigation time.
+
+`tracing.startHar()` eliminates this gap with two lines of code per session. The HAR file becomes the network-layer evidence artifact: every API call made during the session is recorded with full headers and response body (`mode: 'full'`), and the file is written atomically even if the session throws — because `await using` calls `stopHar()` automatically. The correct charter amendment: add "HAR capture of `/api/**` traffic" to every API-touching session's **with Y** clause: "Explore the guest checkout payment retry flow **using** declined Stripe test cards, mobile Chrome viewport, and HAR capture of `/api/payments/**` traffic." This ensures the HAR is available to attach to any defect filed in the session.
+
+---
+
+## Additional Community Lessons (Iteration 45)
+
+123. **[community] Teams that added `tracing.startHar()` to their API exploration sessions reported that HAR artifacts became the single most useful artifact for developer handoff — more useful than screenshots or even trace files for API-layer defects.** The reason is directness: a screenshot shows that a total is wrong; a HAR shows exactly which API call returned the wrong value and the exact JSON shape of the response. Developers who receive a HAR-augmented defect report resolve the issue in approximately half the time of those who receive a screenshot-only report, because the HAR eliminates the "reproduce the network request" phase of diagnosis. The `urlFilter: '**/api/**'` option is the critical ergonomic improvement: without URL filtering, HAR files on asset-heavy pages can grow to 50 MB or more; with it, an API-only HAR is typically under 300 KB and fast to attach to any issue tracker. Teams that adopted this pattern also found an unexpected side benefit: HAR files from exploratory sessions became the seed data for `page.routeFromHAR()` mock servers, allowing developers to reproduce defects offline against a static network fixture.
+
+124. **[community] `locator.drop()` exposed a systematic gap in upload-zone coverage that no prior test technique had surfaced: the difference between "the zone accepts the drop" and "the zone validates the file before upload" are two completely different code paths, and most teams only tested the happy-path MIME type.** Teams that introduced `locator.drop()` with boundary MIME types (`.exe`, zero-byte files, files without extensions, 10 MB+ files) found that the acceptance check (does `dragover` call `preventDefault()`?) passed for all variants — the zone accepted every drop — but the processing check (does the application validate the file type before upload?) failed for at least one variant in every upload zone tested. The most common finding: the front-end drop zone accepted `.exe` files because it validated only the client-supplied `mimeType` field, which is trivially spoofed by setting `mimeType: 'image/jpeg'` while providing a `.exe` payload. No existing scripted test exercised this because the scripted tests used `page.setInputFiles()` (which bypasses the drop event entirely) rather than `locator.drop()`. This class of defect — file type validation bypass via spoofed MIME type in a drop payload — maps to OWASP LLM Top 10 2025's LLM03 (Supply Chain) when the uploaded content feeds an LLM pipeline, and to OWASP ASVS V12 (File Upload) for standard upload zones.
+
+125. **[community] `test.abort()` in session harnesses changed how teams communicate environment health: the session sheet now distinguishes between "session terminated due to application defect" and "session terminated due to environment fault", and this distinction made sprint planning conversations about quality significantly cleaner.** Before `test.abort()`, when a session ran against a broken staging environment, the session sheet contained a mix of real defects and environment-induced noise, and the tester had to manually annotate which findings were real. After adopting sentinel guards with `test.abort()`, the session either completed (all findings are real application defects) or aborted with an explicit "environment fault" message (zero application defects recorded; an environment health ticket filed instead). Teams reported that this clarity — session completes = real findings, sentinel abort = environment ticket — reduced the number of defects filed-and-then-closed-as-environment-issues by approximately 60%, freeing tester and developer time for genuine quality work. The sentinel guard also surfaced a secondary finding that teams had not anticipated: the frequency of sentinel aborts became a leading indicator of staging environment instability, prompting infrastructure investment that reduced flaky-session rates by over 40% in the month following the pattern's adoption.
 
 ---

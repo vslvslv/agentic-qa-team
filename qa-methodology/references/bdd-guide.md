@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 31 | score: 98/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 32 | score: 99/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 32 additions: Playwright v1.51-v1.60 BDD-relevant APIs not yet covered — TestStepInfo (v1.51) for step-level attachments and conditional skip, IndexedDB storageState (v1.51) for auth token persistence, toContainClass() (v1.52) for ergonomic CSS class assertions, locator.describe() (v1.53) for trace/report labeling, page.consoleMessages()/pageErrors()/requests() (v1.56) for in-step observability, testConfig.tag (v1.57) for run-level tagging in CI, test.abort() (v1.60) for fixture-driven early exit; Cucumber.js v12.8.1 junit-xml-formatter dependency fix; version matrix updated to split v12.6 row; Quick Reference card updated with new Playwright APIs -->
 <!-- Iter 31 additions: Playwright 1.45-1.60 BDD-relevant APIs — Clock API for time-dependent scenarios (password expiry, token TTL, session timeout), WebSocketRoute for WebSocket mocking/interception without real backend, toMatchAriaSnapshot() for semantic markup BDD assertions, toHaveAccessibleErrorMessage() for error-state a11y step definitions; Cucumber community ownership note (2025) — project returned to open-source community governance -->
 <!-- Iter 30 additions: Cucumber.js Plugin API full TypeScript reference — Plugin<T> generic from @cucumber/cucumber/api, transform() for pickles:filter and pickles:order scenario ordering/filtering, paths:resolve event, coordinator cleanup lifecycle; FormatterPlugin<T> with @cucumber/query library for non-trivial reporters; IConfiguration with satisfies keyword — modern TypeScript pattern for type-safe profile config; playwright-bdd v8.4.0 quality-of-life details — deterministic fixture name ordering, in-file BDD fixtures hidden from reports -->
 <!-- Iter 29 additions: Gherkin DocString backtick delimiter (```) — Markdown-friendly alternative to """ for multi-line content in feature files; full delimiter comparison table with editor syntax-highlighting and content-type annotation support notes -->
@@ -1343,6 +1344,11 @@ If fewer than 6 of these boxes are checked, start with **Example Mapping only** 
 | Time-dependent scenarios | Use `page.clock.setFixedTime()` + `fastForward()` for client-side expiry; DB seeder for server-side JWT `exp` |
 | WebSocket mock testing | `context.routeWebSocket()` (Playwright v1.48+) intercepts WS without a real backend |
 | Semantic a11y assertions | `toMatchAriaSnapshot()` (v1.49+) for ARIA tree structure; `toHaveAccessibleErrorMessage()` (v1.50+) for error associations |
+| CSS class assertions | `expect(locator).toContainClass('active')` (v1.52+) — more reliable than regex on full `class` attribute |
+| Step observability | `page.consoleMessages()` / `page.pageErrors()` / `page.requests()` (v1.56+) for in-step browser log capture |
+| Locator labeling | `locator.describe('Add to cart button')` (v1.53+) enriches trace viewer and report output without changing selector |
+| Auth token persistence | `browserContext.storageState({ indexedDB: true })` (v1.51+) captures IndexedDB tokens (Firebase Auth, etc.) |
+| Run-level tagging in CI | `testConfig.tag: ['regression', 'nightly']` (v1.57+) tags the entire run in Playwright report metadata |
 
 ---
 
@@ -6128,9 +6134,12 @@ file is active.
 | v9.x | 14, 16, 18 | CommonJS default; `ts-node/register` for TypeScript |
 | v10.x | 16, 18, 20 | ESM migration; `import:` replaces `require:` |
 | v11.x | 18, 20, 22 | Typed World generics; `--retry` flag; native `--import` |
-| v12.0–v12.6 | 20, 22, 24, 25 | TypeScript config; built-in `--shard`; plugin API; named hooks |
+| v12.0–v12.5 | 20, 22, 24, 25 | TypeScript config; built-in `--shard`; plugin API; named hooks |
+| v12.6.0 | 20, 22, 24, 25 | `colorsEnabled` format option deprecated → use `FORCE_COLOR` env var |
 | v12.7+ | 20, 22, 24, 25 | + env var propagation to parallel workers (critical fix) |
-| v12.8+ | 20, 22, 24, 25 | + custom externalising; thrown-string fix |
+| v12.8.0 | 20, 22, 24, 25 | + custom externalising |
+| v12.8.1 | 20, 22, 24, 25 | + `junit-xml-formatter` ↔ `query` dependency conflict resolved |
+| v12.8.3 | 20, 22, 24, 25 | thrown-string error fix (latest stable as of 2026-05-12) |
 
 ---
 
@@ -8879,3 +8888,301 @@ are safe; minor releases occasionally introduce deprecation warnings that are no
 - [Playwright `toHaveAccessibleErrorMessage()` docs](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-accessible-error-message) — v1.50+ assertion for `aria-errormessage` and `aria-describedby` error associations
 - [Playwright release notes v1.45–v1.60](https://playwright.dev/docs/release-notes) — Clock API (v1.45), WebSocketRoute (v1.48), toMatchAriaSnapshot (v1.49), toHaveAccessibleErrorMessage (v1.50), toContainClass (v1.52), test.abort() (v1.60)
 - [Cucumber community GitHub](https://github.com/cucumber/cucumber-js) — community-governed since 2025; issue tracker, milestone roadmap, and contributor guide
+
+---
+
+### Playwright v1.51–v1.60: Additional BDD-Relevant APIs  [community]
+
+The iterations up to 31 covered Playwright APIs through v1.50 (`toMatchAriaSnapshot`, `toHaveAccessibleErrorMessage`). Releases v1.51–v1.60 introduced further APIs that improve TypeScript BDD step definitions — particularly around step-level observability, auth persistence, and locator semantics.
+
+#### `TestStepInfo` — Step-Level Attachments and Conditional Skip (v1.51+)
+
+Playwright v1.51 exposed `TestStepInfo` as a parameter to `test.step()` callbacks. In playwright-bdd, this is accessible via the `$testInfo` fixture. It allows attaching evidence at the *step* level (not just the scenario level) and conditionally skipping a step when a prerequisite is absent.
+
+```typescript
+// src/steps/checkout.steps.ts — step-level attachment using TestStepInfo via $testInfo
+import { createBdd } from 'playwright-bdd';
+import { expect } from '@playwright/test';
+const { When, Then } = createBdd();
+
+Then(
+  'I should see an order confirmation page',
+  async ({ page, $testInfo }) => {
+    const confirmationBanner = page.getByTestId('order-confirmation');
+
+    // Attach the confirmation element's text to the step — visible in trace viewer
+    const text = await confirmationBanner.textContent();
+    await $testInfo.attach('Confirmation text', {
+      body: text ?? '(empty)',
+      contentType: 'text/plain',
+    });
+
+    await expect(confirmationBanner).toBeVisible();
+    await expect(page).toHaveURL(/\/order\/confirmation/);
+  }
+);
+
+// Conditional step skip — skip step if feature flag is off in this environment
+Given(
+  'the feature flag {string} is active',
+  async ({ page, $testInfo }, flagName: string) => {
+    const res = await page.request.get(`/api/feature-flags/${flagName}`);
+    const { enabled } = await res.json() as { enabled: boolean };
+    if (!enabled) {
+      // Skip the step (and mark scenario pending) if the flag is off in this env
+      $testInfo.skip(!enabled, `Feature flag ${flagName} is not enabled in ${process.env.TEST_ENV}`);
+      return;
+    }
+    // Proceed — flag is enabled
+  }
+);
+```
+
+**[community] Step-level attachments vs scenario-level**: Attaching evidence at the step level (v1.51+) rather than in the `After` hook means the attachment appears inline with the step in the Playwright HTML report — next to the step name, not at the bottom of the scenario. For BDD scenarios with multiple `Then` assertions, step-level attachments make it immediately clear which step captured which screenshot or API response. Use scenario-level `After` attachments only for failure screenshots (taken after the scenario ends); use step-level for diagnostic evidence captured mid-scenario.
+
+#### `IndexedDB` in `storageState()` — Auth Token Persistence (v1.51+)
+
+Applications using Firebase Authentication, Supabase, or custom IndexedDB token stores require `storageState()` to capture IndexedDB contents in addition to cookies and `localStorage`. Without the `indexedDB: true` option, `storageState()` saves a partial auth state that fails to reproduce the login in subsequent scenarios.
+
+```typescript
+// src/support/auth-setup.ts — capture auth state including IndexedDB (Playwright v1.51+)
+import { chromium, type FullConfig } from '@playwright/test';
+
+async function globalSetup(config: FullConfig) {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+
+  // Perform login (Firebase Auth writes tokens to IndexedDB)
+  await page.goto(`${config.use?.baseURL}/login`);
+  await page.getByTestId('email').fill(process.env.TEST_USER_EMAIL ?? '');
+  await page.getByTestId('password').fill(process.env.TEST_USER_PASSWORD ?? '');
+  await page.getByTestId('submit').click();
+  await page.waitForURL('**/dashboard');
+
+  // Save state INCLUDING IndexedDB — required for Firebase Auth and similar
+  await page.context().storageState({
+    path: '.auth/user-state.json',
+    indexedDB: true,  // v1.51+ option — captures IndexedDB contents
+  });
+
+  await browser.close();
+}
+
+export default globalSetup;
+```
+
+**[community] When `indexedDB: true` is required**: Applications that use Firebase Auth, Supabase client-side auth, or any SDK that stores JWT refresh tokens in IndexedDB will produce `401 Unauthorized` responses in BDD scenarios that use `storageState` without `indexedDB: true`. The symptom is scenarios that pass in isolation (fresh login) but fail when reusing saved state. If your BDD smoke scenarios consistently fail on the first step that requires authentication when running with `--storage-state`, add `indexedDB: true` to your `storageState()` call.
+
+#### `expect(locator).toContainClass()` — Ergonomic Class Assertions (v1.52+)
+
+The existing `toHaveClass()` assertion matches the entire `class` attribute string, requiring exact matches or complex regex for elements with many CSS classes. `toContainClass()` checks for the presence of a specific class name without caring about order or other classes.
+
+```typescript
+// src/steps/checkout.steps.ts — toContainClass() for state-based assertions (v1.52+)
+import { Then } from '@cucumber/cucumber';
+import { expect } from '@playwright/test';
+import { AppWorld } from '../support/world';
+
+// Matches: Then the checkout button should be disabled
+Then('the checkout button should be disabled', async function (this: AppWorld) {
+  // toContainClass('disabled') checks that the class list contains 'disabled'
+  // regardless of what other classes are present — more reliable than regex on full class string
+  await expect(this.page.getByTestId('checkout-button')).toContainClass('disabled');
+});
+
+// Matches: Then the active navigation item should be highlighted
+Then(
+  'the {string} navigation item should be highlighted',
+  async function (this: AppWorld, navItem: string) {
+    const navLink = this.page.getByRole('link', { name: navItem });
+    // Works whether the element has "active font-bold text-blue-600" or just "active"
+    await expect(navLink).toContainClass('active');
+  }
+);
+
+// Matches: Then the form submit button should not be in a loading state
+Then('the form submit button should not be in a loading state', async function (this: AppWorld) {
+  // Negative assertion — button should not have the loading class
+  await expect(this.page.getByRole('button', { name: 'Submit' })).not.toContainClass('loading');
+});
+```
+
+**[community] `toContainClass()` vs `toHaveAttribute('class', /active/)` regex**: Before v1.52, the standard pattern was `await expect(el).toHaveAttribute('class', /active/)`. The issue: if an element has class `inactive`, the regex `/active/` incorrectly matches. `toContainClass('active')` uses proper class tokenization — it checks the space-delimited class list for the exact token `active`, not a substring match. This eliminates a class of false-positive assertions in BDD suites.
+
+#### `locator.describe()` — Semantic Locator Labels (v1.53+)
+
+`locator.describe()` adds a semantic label to a locator that appears in the Playwright trace viewer and HTML report without changing the underlying selector. In BDD step definitions, this replaces cryptic selector strings with business-domain descriptions in report output.
+
+```typescript
+// src/pages/CheckoutPage.ts — locator.describe() for business-readable traces (v1.53+)
+import { Page } from '@playwright/test';
+
+export class CheckoutPage {
+  constructor(private readonly page: Page) {}
+
+  // Instead of seeing "locator('[data-testid="confirm-order"]')" in the trace,
+  // the label "Confirm order button" appears — readable by product managers reviewing failures
+  readonly confirmOrderButton = this.page
+    .getByTestId('confirm-order')
+    .describe('Confirm order button');
+
+  readonly orderTotal = this.page
+    .getByTestId('order-total')
+    .describe('Order total amount display');
+
+  readonly errorMessage = this.page
+    .getByTestId('error-message')
+    .describe('Checkout error message');
+}
+```
+
+**[community] `describe()` in BDD failure reports**: When a BDD scenario fails on a `Then` step that asserts on a locator, the Playwright HTML report shows the locator expression in the failure. Without `describe()`, this is `locator('[data-testid="confirm-order"]')`. With `describe()`, it reads `Confirm order button`. For stakeholders reading BDD failure reports (product managers, QA leads), the labeled version is immediately actionable — they know what component failed without reading selector syntax.
+
+#### `page.consoleMessages()`, `page.pageErrors()`, `page.requests()` — In-Step Observability (v1.56+)
+
+Playwright v1.56 added snapshot methods that retrieve recent browser-side events without setting up listeners in advance. These are directly useful in BDD `Then` steps that need to assert on side effects: console warnings emitted by a component, errors thrown during navigation, or network requests made in response to a user action.
+
+```typescript
+// src/steps/observability.steps.ts — in-step browser observability (Playwright v1.56+)
+import { Then } from '@cucumber/cucumber';
+import { expect } from '@playwright/test';
+import { AppWorld } from '../support/world';
+
+// Matches: Then no console errors should have been emitted during checkout
+Then('no console errors should have been emitted during checkout', async function (this: AppWorld) {
+  // page.consoleMessages() returns recent console messages without prior listener setup
+  const consoleMessages = await this.page.consoleMessages();
+  const errors = consoleMessages.filter(msg => msg.type() === 'error');
+
+  if (errors.length > 0) {
+    const errorTexts = errors.map(e => `[console.error] ${e.text()}`).join('\n');
+    throw new Error(
+      `Expected no console errors during checkout, but ${errors.length} were emitted:\n${errorTexts}`
+    );
+  }
+});
+
+// Matches: Then no JavaScript errors should have occurred on the page
+Then('no JavaScript errors should have occurred on the page', async function (this: AppWorld) {
+  // page.pageErrors() retrieves uncaught JS errors (unhandled rejections, thrown exceptions)
+  const pageErrors = await this.page.pageErrors();
+  if (pageErrors.length > 0) {
+    const errorTexts = pageErrors.map(e => e.message).join('\n');
+    throw new Error(`Uncaught JS errors during scenario:\n${errorTexts}`);
+  }
+});
+
+// Matches: Then the analytics event for "order_placed" should have been sent
+Then(
+  'the analytics event for {string} should have been sent',
+  async function (this: AppWorld, eventName: string) {
+    // page.requests() retrieves recent network requests — check for analytics beacon
+    const requests = await this.page.requests();
+    const analyticsRequest = requests.find(req =>
+      req.url().includes('/analytics/events') &&
+      req.postData()?.includes(eventName)
+    );
+
+    if (!analyticsRequest) {
+      const allAnalyticsUrls = requests
+        .filter(r => r.url().includes('/analytics'))
+        .map(r => r.url())
+        .join('\n  ');
+      throw new Error(
+        `No analytics request found for event "${eventName}".\n` +
+        `Analytics requests made:\n  ${allAnalyticsUrls || '(none)'}`
+      );
+    }
+  }
+);
+```
+
+**[community] `page.requests()` for BDD side-effect validation**: The classic problem with asserting on network side effects (analytics, audit logging, webhook triggers) in BDD scenarios is that setting up network listeners requires hooking into `Before` — before the scenario runs. The v1.56 `page.requests()` snapshot method eliminates this setup: the `Then` step can retroactively query all requests made since the page loaded. This makes "And an audit log entry should have been created" steps implementable without modifying hooks.
+
+**[community] Console error assertions as BDD quality gates**: Adding a standard `Then no console errors should have been emitted` step to smoke scenarios catches JavaScript errors that do not surface as visible UI failures. A broken import, a failed API call that is silently caught, or a React render error that falls back to an error boundary — all produce console errors that are invisible to end users but indicate quality regressions. This step is low-cost to add and high-value in production: it catches entire categories of defects that page-level assertions miss.
+
+#### `testConfig.tag` — Run-Level Tagging in Playwright Reports (v1.57+)
+
+Playwright v1.57 added `testConfig.tag` (an array of strings), which applies metadata tags to the entire test run. These tags appear in the Playwright HTML report and Allure integration, making it easy to filter historical runs (e.g., "show all `regression` runs from the last 7 days").
+
+```typescript
+// playwright.config.ts — run-level tags for BDD suites (Playwright v1.57+)
+import { defineConfig } from '@playwright/test';
+import { defineBddConfig } from 'playwright-bdd';
+
+const testDir = defineBddConfig({
+  features: 'features/**/*.feature',
+  steps: 'src/steps/**/*.ts',
+});
+
+export default defineConfig({
+  testDir,
+  // Run-level tags — appear in Playwright HTML report metadata and Allure
+  // Useful for: filtering CI history ("show all nightly runs"), release gating,
+  // distinguishing smoke from regression in multi-profile CI pipelines
+  metadata: {
+    // playwright-bdd compatible metadata field for run identification
+    runType: process.env.BDD_PROFILE ?? 'smoke',
+    buildId: process.env.GITHUB_RUN_NUMBER ?? 'local',
+    environment: process.env.TEST_ENV ?? 'local',
+  },
+  reporter: [
+    ['html', { outputFolder: 'reports/playwright-html' }],
+    // In Playwright standalone (without playwright-bdd), use testConfig.tag:
+    // tag: [process.env.BDD_PROFILE ?? 'smoke'],  // v1.57+ native tag array
+  ],
+  use: {
+    baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
+    screenshot: 'only-on-failure',
+    trace: 'on-first-retry',
+  },
+});
+```
+
+#### `test.abort()` — Fixture-Driven Early Exit (v1.60+)
+
+Playwright v1.60 added `test.abort()` — callable from a fixture setup to fail the test with a human-readable message when a precondition cannot be satisfied. In BDD scenarios, this replaces `test.skip()` when the scenario cannot be meaningfully skipped (it should be counted as a failure, not silently omitted).
+
+```typescript
+// src/fixtures/app-fixtures.ts — test.abort() for hard precondition failures (Playwright v1.60+)
+import { test as base } from '@playwright/test';
+import { createBdd } from 'playwright-bdd';
+
+const test = base.extend<{ verifiedBackend: void }>({
+  // Fixture that validates the backend is reachable before any BDD scenario starts.
+  // If unreachable, aborts with a clear message rather than letting each scenario
+  // fail with a cryptic connection refused error.
+  verifiedBackend: [async ({ request }, use) => {
+    const response = await request
+      .get('/api/health')
+      .catch(() => null);
+
+    if (!response || !response.ok()) {
+      // test.abort() marks the test as failed (not skipped) with an explicit message.
+      // This is more honest than test.skip() — the test failed because the environment
+      // was not ready, not because the test was intentionally skipped.
+      test.abort(`Backend unreachable at ${process.env.BASE_URL ?? 'http://localhost:3000'}/api/health. ` +
+        `Check that the test environment is deployed before running BDD.`);
+    }
+
+    await use();
+  }, { auto: true }], // auto: true — runs for every test without explicit fixture injection
+});
+
+export const { Given, When, Then } = createBdd(test);
+```
+
+**[community] `test.abort()` vs `test.skip()` for BDD precondition failures**: Use `test.skip()` when the scenario is legitimately not applicable to the current environment (e.g., `@production-only` scenario running against staging). Use `test.abort()` when the environment should support the scenario but is broken. `abort()` produces a FAILED result in CI rather than SKIPPED, which prevents deployment if the environment check fails. In a healthy CI pipeline, you never want to silently skip scenarios due to infrastructure issues — you want to fail loudly.
+
+---
+
+## Additional Resources (Iteration 32 Additions)
+
+- [Playwright `TestStepInfo` docs](https://playwright.dev/docs/api/class-teststepinfo) — v1.51+ step-level `attach()` and `skip()` for conditional step execution in playwright-bdd fixtures
+- [Playwright `storageState` indexedDB option](https://playwright.dev/docs/api/class-browsercontext#browser-context-storage-state) — v1.51+ `indexedDB: true` option for capturing IndexedDB auth tokens (Firebase Auth, Supabase, custom IndexedDB stores)
+- [Playwright `toContainClass()` docs](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-contain-class) — v1.52+ class token assertion (avoids substring-match false positives from `toHaveAttribute('class', /active/)`)
+- [Playwright `locator.describe()` docs](https://playwright.dev/docs/api/class-locator#locator-describe) — v1.53+ semantic labeling of locators for trace viewer and HTML report readability
+- [Playwright `page.consoleMessages()` docs](https://playwright.dev/docs/api/class-page#page-console-messages) — v1.56+ snapshot retrieval of recent console messages without prior listener setup
+- [Playwright `page.pageErrors()` docs](https://playwright.dev/docs/api/class-page#page-page-errors) — v1.56+ retrieval of uncaught JavaScript errors on the page
+- [Playwright `page.requests()` docs](https://playwright.dev/docs/api/class-page#page-requests) — v1.56+ snapshot of recent network requests; use in `Then` steps to assert on analytics and audit log side effects
+- [Playwright `test.abort()` docs](https://playwright.dev/docs/api/class-test#test-abort) — v1.60+ fixture-driven test abort with explicit failure message; use for hard infrastructure precondition failures

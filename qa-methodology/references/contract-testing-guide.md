@@ -1,11 +1,12 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26) | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases/tag/v16.4.0 (WebFetch 2026-05-12 iteration 27), github.com/pact-foundation/pact-js/issues/1762 (WebFetch 2026-05-12 iteration 27) | community: production lessons -->
 <!-- new in iteration 24: extended MatchersV3 quick reference (atMostLike, constrainedArrayLike, includes, nullValue, equal, eachKeyMatches, eachValueMatches), InterfaceToTemplate<T> TypeScript utility, constrainedArrayLike bounded-array pattern, community lessons 47-49 (executeTest single-interaction-per-call constraint, constrainedArrayLike for bounded APIs, InterfaceToTemplate drift) -->
 <!-- new in iteration 26: Multipart form data / file upload contract testing pattern (multipartBody/binaryFile V4 DSL, official docs May 2026), SpecificationVersion enum for explicit spec version control, community lessons 54-57 (EADDRINUSE with provider.setup() missing finalize, Jest --watch tracing subscriber warning, multipart form data over-specification anti-pattern, SpecificationVersion enum usage) -->
+<!-- new in iteration 27: CORRECTON — addInteractionReference section replaced with accurate .reference(group, name, value) traceability annotation API (issue #1762, v16.4.0); previous section incorrectly described it as an interaction-reuse mechanism with a fabricated InteractionObject API; table entry and v16 API list updated to match actual function signature and purpose -->
 <!-- new in iteration 25: The Bug Catcher Rule (formal principle for interaction inclusion), BDD-style scenario sentence pattern, V4 statusCode class matching (success/clientError/serverError), mTLS client certificate workaround for VerifierV3, ConsumerVersionSelector fallbackBranch TypeScript type gap, status code range matching feature request #1600, community lessons 50-53 (5 reasons contract testing fails, BDD-style naming prevents duplicate interactions, status code class matching avoids unnecessary provider states, mTLS/client-cert provider verification) -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
-<!-- new in iteration 18: contract_requiring_verification_published webhook (supersedes contract_content_changed, Pact Broker 2.82.0+), pact-js v16.2 withMatchingRules for async/sync interactions, pact-js v16.4 addInteractionReference, PactFlow Drift (spec-driven provider compliance CI), updated Pact Specification Version Reference table with v16.1–v16.4, community lesson 29 (deprecated webhook event), community lesson 30 (Drift for BDCT gap) -->
+<!-- new in iteration 18: contract_requiring_verification_published webhook (supersedes contract_content_changed, Pact Broker 2.82.0+), pact-js v16.2 withMatchingRules for async/sync interactions, pact-js v16.4 .reference() traceability annotation, PactFlow Drift (spec-driven provider compliance CI), updated Pact Specification Version Reference table with v16.1–v16.4, community lesson 29 (deprecated webhook event), community lesson 30 (Drift for BDCT gap) -->
 <!-- new in iteration 19: addGraphQLInteraction() native V4 GraphQL DSL (pact-js v16.0.0+) replaces body-matching regex approach, PactFlow MCP Server (August 2025) section, community lessons 31 and 32 (GraphQL native DSL migration, MCP-assisted contract test generation) -->
 <!-- new in iteration 20: pact-js v16.3.1 patch (content type extraction from matchers), POST/PUT/PATCH GIGO anti-pattern, UI layer testing limitations, over-specifying validation rules anti-pattern, community lessons 33–35 -->
 <!-- new in iteration 21: pact-js v16.3.0 race condition bug (issue #1713, parallel Vitest load), provider verification filtering enhancement request (issue #1748), community lessons 36–37 -->
@@ -2401,7 +2402,7 @@ Understanding which Pact specification version your pact files use affects compa
 | Pact V4 | pact-js v16.2 | `withMatchingRules` extended to async message and synchronous message interactions | Full matching rule support across all interaction types |
 | Pact V4 | pact-js v16.3 | `.pending()`, `.withComment()`, `.withTestName()` per-interaction metadata | Per-interaction advisory-only flag; comments and test names visible in Broker UI |
 | Pact V4 | pact-js v16.3.1 | Bug fix: content type extraction from matcher-wrapped `Content-Type` headers | Resolves body-parser failure when `Content-Type` header uses `like()` matcher in provider verification |
-| Pact V4 | pact-js v16.4 | `addInteractionReference()` — external interaction reference support | Reuse interaction definitions stored outside the test file; v16.4.0 released 2026-05-04 |
+| Pact V4 | pact-js v16.4 | `.reference(group, name, value)` — external reference link annotation on V4 interactions | Attaches a named external link (Jira ticket, GitHub PR, etc.) to an interaction for traceability in the Broker UI; v16.4.0 released 2026-05-04 |
 
 **Migration notes for TypeScript projects:**
 
@@ -2436,7 +2437,7 @@ import { PactV2, MatchersV2 } from '@pact-foundation/pact'; // replaces old Pact
 **New V4 APIs added in pact-js v13–v16:**
 - `addAsynchronousInteraction()` — V4 DSL method for async message contracts (replaces `MessageConsumerPact` for V4 pact files)
 - `addSynchronousInteraction()` — V4 DSL for synchronous message/gRPC contracts
-- `addInteractionReference()` — V4 DSL method to support external interaction references (v16.4+)
+- `.reference(group, name, value)` — V4 DSL method to attach a named external reference link (e.g., a Jira ticket or GitHub PR) to an interaction for traceability in the Broker UI (v16.4+)
 - Interaction metadata: `.withComment()`, `.withTestName()`, `.pending()` on V4 interactions (v16.3+) — allows marking interactions as advisory-only inline without `enablePending` at the verifier level
 
 **Older migration notes:**
@@ -3372,81 +3373,85 @@ describe('AuditService consumes metadata events (withMatchingRules)', () => {
 
 ---
 
-### pact-js v16.4 — `addInteractionReference` (TypeScript — external interaction reuse)
+### pact-js v16.4 — `.reference()` (TypeScript — external reference link annotation)
 
-`addInteractionReference` was added in pact-js v16.4.0 (2026-05-04). It allows a consumer test to reference an interaction that is defined externally — in a shared package, a separate file, or a contract repository — rather than defining the interaction inline. This supports large teams that share interaction definitions across multiple consumer services.
+`.reference(group, name, value)` was added in pact-js v16.4.0 (2026-05-04) to the V4 DSL's unconfigured interaction stage for HTTP interactions, asynchronous messages, and synchronous messages. It attaches a **named external link** to an interaction — for example, a Jira ticket, GitHub PR, or Confluence page — that is then visible in the Pact Broker and PactFlow UI for traceability. This is a metadata/annotation feature, not a code-sharing mechanism.
+
+**What it does:** Adds a reference entry (`group` + `name` → `value` URL) to the interaction's metadata in the pact file. The link appears in the Broker UI alongside the interaction, helping teams trace which tickets or PRs drove a contract change.
+
+**What it does NOT do:** It does not reuse interaction definitions from external files. For sharing interaction definitions across consumers, use a regular TypeScript module with exported `InteractionObject` factory functions imported in each consumer test file (standard module import — no special Pact API needed).
 
 ```typescript
-// shared/inventory-interactions.ts
-// Shared interaction definitions for the InventoryService contract.
-// Consumers import these rather than defining interactions inline.
-// Centralizes the contract definition; reduces duplication across consumer test files.
-import { PactV3, MatchersV3, InteractionObject } from '@pact-foundation/pact';
+// inventory-client.pact.spec.ts
+// Demonstrates .reference() to annotate an interaction with its originating Jira ticket.
+import path from 'path';
+import { Pact, MatchersV3 } from '@pact-foundation/pact';
+import { InventoryClient } from '../src/inventory-client';
 
 const { like, string, integer } = MatchersV3;
 
-// Exported interaction definitions — consumers use addInteractionReference() to include them
-export const InventoryInteractions = {
-  getStockForKnownSku: (): InteractionObject => ({
-    state: 'SKU ABC-123 exists with 10 units in stock',
-    uponReceiving: 'a request for stock level of SKU ABC-123',
-    withRequest: {
-      method: 'GET',
-      path: '/inventory/ABC-123',
-      headers: { Accept: 'application/json' },
-    },
-    willRespondWith: {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: {
-        sku: string('ABC-123'),
-        available: integer(10),
-        warehouseId: like('WH-001'),
-      },
-    },
-  }),
-} as const;
-```
-
-```typescript
-// checkout-service.consumer.pact.spec.ts
-// Uses addInteractionReference to reuse the shared InventoryInteractions definition.
-// The checkout service also needs the same InventoryService endpoint as the order service.
-import path from 'path';
-import { PactV3 } from '@pact-foundation/pact';
-import { CheckoutClient } from '../src/checkout-client';
-import { InventoryInteractions } from '../shared/inventory-interactions';
-
-const provider = new PactV3({
-  consumer: 'CheckoutService',
+// V4 DSL (Pact class, not PactV3) — .reference() is only available on V4 interactions
+const provider = new Pact({
+  consumer: 'OrderService',
   provider: 'InventoryService',
   dir: path.resolve(process.cwd(), 'pacts'),
-  port: 8093,
   logLevel: 'warn',
+  // V4: no port — auto-assigned
 });
 
-describe('CheckoutService → InventoryService contract (shared interaction reference)', () => {
-  it('verifies stock level for checkout validation', async () => {
-    // addInteractionReference: include a pre-defined interaction object.
-    // The pact file records the interaction identically to an inline definition.
-    // Verification on the provider side is unchanged.
+describe('OrderService → InventoryService contract (with reference annotation)', () => {
+  it('returns stock level — annotated with originating Jira ticket', async () => {
     await provider
-      .addInteractionReference(InventoryInteractions.getStockForKnownSku())
+      .addInteraction()
+      .given('SKU ABC-123 exists with 10 units in stock')
+      .uponReceiving('a request for stock level of SKU ABC-123')
+      // .reference(group, name, value) — attaches a named link to this interaction.
+      // Visible in Broker UI; helps trace the ticket that required this interaction.
+      // Multiple .reference() calls are allowed; each adds a separate link.
+      .reference('Jira', 'INV-142', 'https://jira.example.com/browse/INV-142')
+      .withRequest('GET', '/inventory/ABC-123', (builder) => {
+        builder.headers({ Accept: 'application/json' });
+      })
+      .willRespondWith(200, (builder) => {
+        builder.jsonBody({
+          sku: string('ABC-123'),
+          available: integer(10),
+          warehouseId: like('WH-001'),
+        });
+      })
       .executeTest(async (mockServer) => {
-        const client = new CheckoutClient(mockServer.url);
-        const result = await client.checkInventory('ABC-123');
+        const client = new InventoryClient(mockServer.url);
+        const result = await client.getStock('ABC-123');
+        expect(result.sku).toBe('ABC-123');
         expect(result.available).toBeGreaterThanOrEqual(0);
       });
   });
 });
 ```
 
+**Chaining multiple references on one interaction:**
+
+```typescript
+// Attach both a Jira ticket and a GitHub PR to the same interaction
+await provider
+  .addInteraction()
+  .given('...')
+  .uponReceiving('...')
+  .reference('Jira', 'INV-142', 'https://jira.example.com/browse/INV-142')
+  .reference('GitHub', 'PR-789', 'https://github.com/org/repo/pull/789')
+  .withRequest('GET', '/inventory/ABC-123', (builder) => { /* ... */ })
+  .willRespondWith(200, (builder) => { /* ... */ })
+  .executeTest(async (mockServer) => { /* ... */ });
+```
+
 **Key points:**
-- `addInteractionReference(interactionObject)` accepts an `InteractionObject` (the same type used by `PactV3`'s interaction builder) and produces an identical pact file to inline definition — provider verification is unaffected
-- Primary use case: multiple consumer services that all depend on the same provider endpoint. Instead of duplicating the interaction definition in each test file, they import from a shared package — a rename or type change in the shared definition updates all consumers simultaneously
-- `addInteractionReference` is a V4 DSL addition (available in pact-js v16.4.0+, Pact V4 spec); it is not available in `PactV3`
-- Prefer inline interactions for simple test cases — `addInteractionReference` is most valuable when ≥3 consumers share an identical interaction with a single provider endpoint
-- The shared interactions module should be versioned alongside the provider contract (e.g., in a monorepo `packages/contracts/` directory or a published `@org/api-contracts` npm package)
+- `.reference(group, name, value)` is a **traceability annotation** — it does not affect mock server behaviour, pact matching, or provider verification outcomes
+- `group` is a category label (e.g., `'Jira'`, `'GitHub'`, `'Confluence'`); `name` is the identifier (e.g., `'TICKET-123'`); `value` is the URL or link target
+- Available on V4 HTTP interactions, asynchronous messages, and synchronous messages — it is NOT available on `PactV3` interactions
+- Requires `Pact` (V4 alias) class with `.addInteraction()` builder — not available on the `PactV3` fluent builder chain
+- The reference metadata is stored in the pact file and published to the Broker; it appears in the Broker and PactFlow UI alongside the interaction for traceability
+- Multiple `.reference()` calls on the same interaction are supported — each adds a separate entry
+- **For sharing interaction definitions across consumers:** use standard TypeScript module exports — define interaction factory functions in a shared file and import them in each consumer test. No special Pact API is needed for this pattern
 
 ---
 

@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 36 | score: 96/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -56,6 +56,17 @@
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/field-keyword,
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/first-class-span-types,
        learn.microsoft.com/dotnet/csharp/language-reference/operators/member-access-operators
+     Iter 36 (2026-05-12): added NUnit 4.x migration guide (Classic API → NUnit.Framework.Legacy, Assert.AreEqual
+       obsolete, NUnit4TestAdapter requirement); added MSTest v4 — Assert.That lambda, CallerArgumentExpression
+       diagnostics, breaking API surface changes; added FluentAssertions v8 breaking changes (Xceed Community
+       License, DataSets moved to separate package, Span/Memory/ReadOnlySpan assertions, BeNaN/NotBeNaN,
+       ComparingNullCollectionsAsEmpty, ComparingNullStringsAsEmpty, BeEquivalentTo perf improvement);
+       added TUnit framework overview (source generators, parallel-by-default, [Arguments]/[MatrixDataSource]/
+       [ClassDataSource], DI injection, [DependsOn], [NotInParallel], built-in assertions); added xUnit v3
+       CancellationToken injection into test methods and Assert.Multiple soft assertions; added community
+       gotchas: FluentAssertions v8 Xceed license surprise, NUnit 4 classic API removal shock, TUnit parallel
+       default breaks test-order dependencies — sourced from github.com/fluentassertions/fluentassertions/releases,
+       github.com/microsoft/testfx/releases, github.com/nunit/nunit/releases, github.com/thomhurst/TUnit
      Iter 35 (2026-05-12): added comprehensive testing section — Moq patterns (MockBehavior.Strict/Loose,
        argument matchers, SetupSequence, Verify call counts, async Task/ValueTask setups), NSubstitute
        as alternative (Arg.*, Received(), DidNotReceive()), FluentAssertions deep-dive (BeEquivalentTo,
@@ -6239,3 +6250,524 @@ await service.StartProcessingAsync();
 await service.WaitForCompletionAsync(timeout: TimeSpan.FromSeconds(5));
 processed.Should().BeTrue();
 ```
+
+---
+
+## NUnit 4.x — Migration and Breaking Changes
+
+NUnit 4.0 (released November 2023) and subsequent 4.x releases (through 4.6 as of May 2026) dropped the classic assertion API that shipped since NUnit 2. Classic assertions such as `Assert.AreEqual`, `Assert.IsNull`, `Assert.IsTrue`, and `Assert.IsFalse` were removed from the `NUnit.Framework` namespace and moved to a compatibility shim in `NUnit.Framework.Legacy`.
+
+### Classic API → Constraint Model Migration
+
+```csharp
+// NUnit 3 — classic API (still compiles with NUnit.Framework.Legacy import)
+using NUnit.Framework.Legacy;
+
+Assert.AreEqual(expected, actual);
+Assert.AreNotEqual(a, b);
+Assert.IsNull(value);
+Assert.IsNotNull(value);
+Assert.IsTrue(condition);
+Assert.IsFalse(condition);
+Assert.AreSame(a, b);
+Assert.IsInstanceOf<T>(obj);
+Assert.Throws<T>(() => action());
+
+// NUnit 4 — constraint model (preferred; already available in NUnit 3)
+using NUnit.Framework;
+
+Assert.That(actual, Is.EqualTo(expected));
+Assert.That(actual, Is.Not.EqualTo(a));
+Assert.That(value, Is.Null);
+Assert.That(value, Is.Not.Null);
+Assert.That(condition, Is.True);
+Assert.That(condition, Is.False);
+Assert.That(actual, Is.SameAs(a));
+Assert.That(obj, Is.InstanceOf<T>());
+Assert.That(() => action(), Throws.TypeOf<T>());
+```
+
+**Why the change?** The constraint model (`Assert.That`) produces superior failure messages by embedding the full assertion expression. Classic assertions give "Expected 5 but was 3"; the constraint model gives "Expected: 5 But was: 3" with the expression that produced the value.
+
+**Migration path:** The `NUnit.Framework.Legacy` package exists specifically as a temporary migration aid. Add `dotnet add package NUnit.Framework.Legacy` and use `using NUnit.Framework.Legacy;` to compile unchanged NUnit 3 test files. The intent is to migrate each file to the constraint model over time and then remove the legacy dependency.
+
+### NUnit 4 Additional Breaking Changes
+
+```csharp
+// TestAdapter version: NUnit 4 requires NUnit3TestAdapter v4.6+ (VS 2022 17.8+)
+// Install: dotnet add package NUnit3TestAdapter --version 4.6.*
+
+// [SetUpFixture] changes: now uses [OneTimeSetUp]/[OneTimeTearDown] exclusively
+[SetUpFixture]
+public class AssemblySetUp
+{
+    [OneTimeSetUp]
+    public static void InitializeAll() { /* runs once per assembly */ }
+
+    [OneTimeTearDown]
+    public static void TearDownAll() { /* runs once after all tests */ }
+}
+
+// Multiple asserts — NUnit 4 adds Assert.Multiple for soft assertions
+[Test]
+public void Order_HasExpectedProperties()
+{
+    var order = new Order(Id: 1, Status: "Shipped", Total: 99.99m);
+
+    // All assertions evaluated; all failures reported (not just the first)
+    Assert.Multiple(() =>
+    {
+        Assert.That(order.Id, Is.EqualTo(1));
+        Assert.That(order.Status, Is.EqualTo("Shipped"));
+        Assert.That(order.Total, Is.EqualTo(99.99m).Within(0.001m));
+    });
+}
+```
+
+**NUnit 4 requirement checklist:**
+- `NUnit` package `>= 4.0`
+- `NUnit3TestAdapter` package `>= 4.6`
+- Microsoft Testing Platform (`dotnet test`) or VSTest adapter — both supported in NUnit 4
+- Replace `using NUnit.Framework;` classic assertions with constraint model, or add `using NUnit.Framework.Legacy;` as a bridge
+
+---
+
+## MSTest v4 — Assert.That and CallerArgumentExpression (2024+)
+
+MSTest v4 (released October 2024) adds a new `Assert.That` overload that accepts a lambda expression, inspects the expression via `CallerArgumentExpression`, and emits detailed diagnostics on failure. It also restructured internal types that should never have been public.
+
+```csharp
+// Install: dotnet add package MSTest.TestFramework --version 4.*
+//          dotnet add package MSTest.TestAdapter --version 4.*
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+
+[TestClass]
+public class ZooTests
+{
+    [TestMethod]
+    public void GetAnimal_ReturnsExpected()
+    {
+        var zoo = new Zoo();
+        zoo.Add(new Animal("Giraffe"));
+
+        Animal animal = zoo.GetAnimal();
+
+        // v4: Assert.That with lambda — inspects the expression at compile time
+        // Failure message: "'expected' expression: '"Giraffe"', 'actual' expression: 'animal.Name'
+        //                   Expected: "Giraffe"  Actual: "Zebra""
+        Assert.That(() => animal.Name == "Giraffe");
+    }
+}
+```
+
+**MSTest v4 improvements:**
+- `Assert.That(() => expr)` — evaluates `expr`, on failure shows expression text, expected value, and actual value side-by-side
+- `CallerArgumentExpression` used internally across all `Assert.*` methods for richer messages (e.g., `Assert.AreEqual(expected, actual)` now shows the expression `actual` came from, not just the value)
+- Internal types hidden: many previously public types in the MSTest pipeline were made internal; existing test code is unaffected unless you directly referenced infrastructure types
+- `Microsoft.Testing.Platform` updated to v2 — aligns with .NET 10 testing infrastructure
+
+**MSTest v3 → v4 migration:** For most teams the migration is a package version bump (`3.x` → `4.x`). Only teams that extended MSTest internals (custom runners, reflection over MSTest types) are affected by the API surface changes.
+
+---
+
+## FluentAssertions v8 — Breaking Changes and New Assertions (2024+)
+
+FluentAssertions v8 (released late 2024) introduced major breaking changes alongside new assertion capabilities.
+
+### License Change — Xceed Community License
+
+```
+// FluentAssertions v7 (2023): commercial license required for business use
+// FluentAssertions v8 (2024): Xceed Community License
+//
+// Xceed Community License key terms:
+// - Free for open-source (MIT / Apache / etc.) projects
+// - Free for evaluation and learning
+// - Commercial license required for closed-source / proprietary software
+//
+// Decision tree:
+// Open-source project?              → Use FluentAssertions v8 (free)
+// Proprietary / commercial project? → Pin FA to v6.x (MIT), switch to Shouldly,
+//                                      or purchase an Xceed commercial license
+//
+// Shouldly v4.3 (MIT, Jan 2025) is a drop-in alternative for most assertions:
+//   price.ShouldBe(99.99m);
+//   list.ShouldContain(x => x.Id == 42);
+//   action.ShouldThrow<ArgumentException>();
+```
+
+### Breaking API Changes in v8
+
+```csharp
+// DataSet / DataTable assertions REMOVED from core package
+// Install separately: dotnet add package FluentAssertions.DataSets
+using FluentAssertions.DataSets;   // v8 only — separate package
+dataSet.Should().HaveTable("Orders");
+
+// HttpResponseMessage assertions REMOVED from core package
+// Use built-in MSTest / xUnit assertions, or inspect the response object manually:
+response.StatusCode.Should().Be(HttpStatusCode.OK);  // still works (StatusCode is a property)
+// No more: response.Should().HaveStatusCode(HttpStatusCode.OK);
+
+// .NET Framework < 4.7 and .NET Core < 3.0 support dropped
+// Minimum: .NET 4.7+ / .NET Core 3.1+ / .NET 5+
+```
+
+### New Assertions in v8.x
+
+```csharp
+// Span<T> / ReadOnlySpan<T> / Memory<T> / ReadOnlyMemory<T> assertions (v8.9+)
+ReadOnlySpan<byte> buffer = GetData();
+buffer.Should().HaveLength(4);
+buffer.Should().StartWith(new byte[] { 0xFF, 0xD8 });   // JPEG header
+buffer.Should().Contain(new byte[] { 0xFF, 0xD9 });     // JPEG footer
+
+Memory<char> chars = "hello".AsMemory();
+chars.Should().BeEquivalentTo("hello".AsMemory());
+
+// BeNaN / NotBeNaN — floating-point NaN checks (v8.0+)
+double result = Math.Sqrt(-1);
+result.Should().BeNaN();
+
+double goodValue = Math.Sqrt(4);
+goodValue.Should().NotBeNaN();
+
+// HaveMillisecond / NotHaveMillisecond — temporal precision assertions (v8.9+)
+DateTime ts = new DateTime(2025, 1, 15, 10, 30, 45, 500);
+ts.Should().HaveMillisecond(500);
+ts.Should().NotHaveMillisecond(0);
+
+// BeEquivalentTo with new null-handling options (v8.10+)
+// ComparingNullCollectionsAsEmpty — null collection == empty collection
+actualDto.Should().BeEquivalentTo(expectedDto, opts =>
+    opts.ComparingNullCollectionsAsEmpty());
+
+// ComparingNullStringsAsEmpty — null string == "" during equivalency
+actualDto.Should().BeEquivalentTo(expectedDto, opts =>
+    opts.ComparingNullStringsAsEmpty());
+
+// Performance: BeEquivalentTo on large unordered collections is significantly
+// faster in v8.10+ due to optimized set-comparison algorithm (no longer O(n²))
+```
+
+**FluentAssertions version decision table:**
+
+| Project type | Recommended version | License |
+|---|---|---|
+| Open-source / FOSS | v8.x (latest) | Xceed Community (free) |
+| Proprietary, budget constrained | v6.x (MIT) | MIT — no upgrade |
+| Proprietary, willing to pay | v8.x + Xceed commercial license | Commercial |
+| Proprietary, any budget | Shouldly v4.x | MIT — free |
+
+---
+
+## xUnit v3 — Additional New Features
+
+The current guide covers xUnit v3's `IAsyncLifetime`, `TheoryData<T>`, and `IAssemblyFixture`. The following features are also notable in v3.x (stable from 3.0 in early 2024, latest 3.2.2 as of April 2025):
+
+### CancellationToken Injection into Test Methods
+
+xUnit v3 test methods can accept a `CancellationToken` parameter directly. The framework provides a token that is cancelled when the test timeout expires or the test runner is shut down — no manual `CancellationTokenSource` needed.
+
+```csharp
+using Xunit;
+
+public class OrderServiceTests
+{
+    // xUnit v3: declare CancellationToken parameter — framework injects it automatically
+    [Fact]
+    public async Task GetOrderAsync_ReturnsOrder(CancellationToken cancellationToken)
+    {
+        var service = new OrderService();
+
+        // Pass the framework-provided token — auto-cancelled on test timeout
+        var order = await service.GetOrderAsync(1, cancellationToken);
+
+        order.Should().NotBeNull();
+        order!.Id.Should().Be(1);
+    }
+
+    // Works for Theory too
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task GetOrderAsync_MultipleIds(int id, CancellationToken cancellationToken)
+    {
+        var order = await _service.GetOrderAsync(id, cancellationToken);
+        order.Should().NotBeNull();
+    }
+}
+```
+
+**Why this matters:** In xUnit v2, passing a cancellation token to async tests required wiring up `CancellationTokenSource` manually, then disposing it in `Dispose()`. The v3 injection eliminates this boilerplate and ties the timeout/cancellation lifecycle to the test runner directly.
+
+### Assert.Multiple — Soft Assertions
+
+xUnit v3 adds `Assert.Multiple` for evaluating multiple independent assertions without aborting on the first failure. All failures are collected and reported together.
+
+```csharp
+[Fact]
+public async Task PlaceOrder_ReturnsFullyPopulatedResponse()
+{
+    var response = await _sut.PlaceOrderAsync(new OrderRequest(CustomerId: 1));
+
+    // All assertions evaluated — all failures listed in the output
+    Assert.Multiple(
+        () => Assert.NotNull(response),
+        () => Assert.Equal("Pending", response!.Status),
+        () => Assert.True(response.Id > 0, "Id should be positive"),
+        () => Assert.NotEqual(default, response.CreatedAt)
+    );
+}
+```
+
+**Comparison with FluentAssertions `AssertionScope`:**
+
+```csharp
+// FluentAssertions equivalent — also collects all failures
+using (new AssertionScope())
+{
+    response.Should().NotBeNull();
+    response!.Status.Should().Be("Pending");
+    response.Id.Should().BePositive();
+    response.CreatedAt.Should().NotBe(default);
+}
+```
+
+Both collect all failures before throwing. Use `Assert.Multiple` (xUnit v3 built-in) if you want no extra dependencies; use `AssertionScope` if your team already uses FluentAssertions.
+
+---
+
+## TUnit — Source-Generated, Parallel-by-Default Test Framework
+
+TUnit is a modern .NET testing framework (v1.44 as of May 2025) that uses Roslyn source generators for test discovery at compile time rather than runtime reflection. This removes the need for a runner host process and makes tests compatible with Native AOT.
+
+### Core Differences from xUnit / NUnit
+
+| Feature | xUnit v3 | NUnit 4 | TUnit |
+|---|---|---|---|
+| Test discovery | Runtime reflection | Runtime reflection | Compile-time source generators |
+| Default parallelism | Per-collection isolation | Sequential within fixture | Parallel by default (all tests) |
+| Native AOT | No | No | Yes |
+| DI in tests | Manual / WebApplicationFactory | Manual | Built-in `[ClassDataSource]` with DI |
+| Assembly fixture | `IAssemblyFixture<T>` | `[SetUpFixture]` | `[ClassDataSource(Shared = SharedType.PerTestSession)]` |
+| Soft assertions | `Assert.Multiple` | `Assert.Multiple` | Built-in `.AwaitAssertion` / `AssertionScope` |
+
+### Getting Started
+
+```csharp
+// Install: dotnet add package TUnit
+using TUnit.Core;
+
+public class CartTests
+{
+    // [Test] replaces [Fact] and [Theory] from xUnit
+    [Test]
+    public async Task AddItem_UpdatesTotal()
+    {
+        var cart = new ShoppingCart();
+        await cart.AddItemAsync(new CartItem("SKU-1", 2, 9.99m));
+
+        await Assert.That(cart.Total).IsEqualTo(19.98m);
+    }
+
+    // [Arguments] replaces [InlineData] / [TestCase]
+    [Test]
+    [Arguments(10.0, 0.2, 8.0)]
+    [Arguments(100.0, 0.5, 50.0)]
+    [Arguments(0.0, 0.1, 0.0)]
+    public async Task ApplyDiscount_ReturnsExpected(
+        double price, double discount, double expected)
+    {
+        var result = PricingEngine.Apply(price, discount);
+        await Assert.That(result).IsEqualTo(expected).Within(0.001);
+    }
+
+    // [MatrixDataSource] — combinatorial: all combinations of all parameter values
+    [Test]
+    [MatrixDataSource]
+    public async Task IsValidPrice_Combinatorial(
+        [Matrix(0.0, 1.0, -1.0)] double price,
+        [Matrix(true, false)] bool allowNegative)
+    {
+        bool result = PricingEngine.IsValidPrice(price, allowNegative);
+        if (allowNegative || price >= 0)
+            await Assert.That(result).IsTrue();
+        else
+            await Assert.That(result).IsFalse();
+    }
+}
+```
+
+### Dependency Injection in Tests
+
+TUnit supports direct DI injection into test class constructors when the class is registered as a `[ClassDataSource]`:
+
+```csharp
+// Register real services via ClassDataSource — no WebApplicationFactory needed for unit DI
+[ClassDataSource<OrderService>(Shared = SharedType.PerTestSession)]
+public class OrderServiceTests(OrderService sut)
+{
+    [Test]
+    public async Task GetByIdAsync_ExistingOrder_ReturnsOrder()
+    {
+        var order = await sut.GetByIdAsync(1, default);
+        await Assert.That(order).IsNotNull();
+    }
+}
+```
+
+### Controlling Parallelism
+
+```csharp
+// TUnit runs ALL tests in parallel by default — use these attributes to restrict:
+
+// [DependsOn] — ensure one test runs after another
+[Test]
+public async Task CreateOrder_Succeeds() { /* ... */ }
+
+[Test]
+[DependsOn(nameof(CreateOrder_Succeeds))]
+public async Task ShipOrder_AfterCreate_Succeeds() { /* ... */ }
+
+// [NotInParallel] with a key — tests with the same key run sequentially
+[Test]
+[NotInParallel("DatabaseMutations")]
+public async Task UpdateOrder_StatusToShipped() { /* ... */ }
+
+[Test]
+[NotInParallel("DatabaseMutations")]
+public async Task CancelOrder_ByCustomer() { /* ... */ }
+
+// [ParallelLimit<T>] — cap concurrency for a resource (e.g., DB connections)
+public class DatabaseLimiter : IParallelLimit
+{
+    public int Limit => 5;  // max 5 concurrent DB tests
+}
+
+[Test]
+[ParallelLimit<DatabaseLimiter>]
+public async Task HeavyDatabaseTest() { /* ... */ }
+```
+
+### Built-In Assertions
+
+TUnit ships its own assertion library using an async-first fluent API:
+
+```csharp
+// Scalar
+await Assert.That(value).IsEqualTo(42);
+await Assert.That(name).StartsWith("Alice");
+await Assert.That(flag).IsTrue();
+await Assert.That(obj).IsNull();
+
+// Collections
+await Assert.That(list).HasCount().EqualTo(3);
+await Assert.That(list).Contains(x => x.Id == 42);
+await Assert.That(list).IsInOrder().Using<int>(Comparer<int>.Default);
+
+// Exceptions
+await Assert.ThrowsAsync<ArgumentException>(async () => await sut.DoAsync(null));
+
+// Equivalency
+await Assert.That(actual).IsEquivalentTo(expected);
+```
+
+**When to choose TUnit:** TUnit is the right choice when you need Native AOT compatibility, source-generator-based discovery (faster CI cold start), or you want parallel-by-default semantics with fine-grained dependency control. Teams migrating from xUnit will find the attribute surface familiar; the main adjustment is switching from `Assert.Equal(expected, actual)` to `await Assert.That(actual).IsEqualTo(expected)`.
+
+---
+
+## Real-World Gotchas — Testing Libraries v7/v8/v4 [community]
+
+### **FluentAssertions v8 Xceed License — Commercial Projects Silently Non-Compliant** [community]
+
+Upgrading `<PackageReference Include="FluentAssertions" Version="*" />` (wildcard) automatically pulled v8 for many teams at end of 2024. The Xceed Community License for v8 requires a commercial license for proprietary software. Teams with wildcard version pins got the license change without reviewing it. WHY it causes problems: legal exposure in commercial codebases that auto-updated via `dotnet outdated` or Dependabot. Fix: (a) pin to v6.x explicitly (`Version="6.*"`), (b) switch to Shouldly or Awaitility.NET (both MIT), or (c) review and purchase Xceed license. Auditing `dotnet list package` across all repos is the first step.
+
+```xml
+<!-- Pin to MIT-licensed v6.x -->
+<PackageReference Include="FluentAssertions" Version="6.*" />
+
+<!-- Or switch to Shouldly (MIT, actively maintained) -->
+<PackageReference Include="Shouldly" Version="4.*" />
+```
+
+### **NUnit 4 Classic API Removal — `Assert.AreEqual` Not Found** [community]
+
+Teams upgrading from NUnit 3 to NUnit 4 by bumping the package version encounter `CS0117: 'Assert' does not contain a definition for 'AreEqual'`. This shocks teams that have thousands of `Assert.AreEqual` calls. WHY it causes problems: a version bump becomes a large refactor. The fix is NOT to roll back NUnit 4 — instead, add `NUnit.Framework.Legacy` as a temporary shim and plan incremental migration to `Assert.That(actual, Is.EqualTo(expected))`.
+
+```xml
+<!-- Temporary migration bridge — remove after migrating all test files -->
+<PackageReference Include="NUnit.Framework.Legacy" Version="1.*" />
+```
+
+```csharp
+// Add this using to any file with classic assertions — no code changes needed yet
+using NUnit.Framework.Legacy;
+
+// Your existing NUnit 3 classic assertions compile again:
+Assert.AreEqual(expected, actual);
+Assert.IsNull(value);
+```
+
+### **TUnit Parallel Default Breaks State-Sharing Test Patterns** [community]
+
+TUnit runs tests in parallel by default. Teams migrating from xUnit (where tests within a collection are sequential) discover that shared state — static fields, file system paths, database rows, environment variables — causes intermittent failures when tests run concurrently. WHY it causes problems: tests that passed with sequential execution corrupt each other's state in TUnit's parallel model. Fix: audit every test for shared mutable state. Use `[NotInParallel]` for tests that genuinely must be sequential, `[ParallelLimit<T>]` for resource-constrained tests, and `[DependsOn]` for ordered chains.
+
+```csharp
+// BAD: static mutable field accessed by multiple tests in parallel
+public class ReportTests
+{
+    private static List<string> _generatedFiles = new();
+
+    [Test]
+    public async Task GenerateReport_CreatesFile()
+    {
+        var path = await _sut.GenerateAsync();
+        _generatedFiles.Add(path);  // race condition in parallel
+    }
+}
+
+// GOOD: isolate per-test, use [NotInParallel] if truly sequential
+[Test]
+[NotInParallel("FileSystem")]
+public async Task GenerateReport_CreatesFile()
+{
+    var path = await _sut.GenerateAsync();
+    // local variable, not shared
+    File.Exists(path).Should().BeTrue();
+    File.Delete(path);
+}
+```
+
+### **xUnit v3 `CancellationToken` Parameter Must Be Last** [community]
+
+When using xUnit v3's automatic `CancellationToken` injection, the token parameter must be the last parameter in the method signature. If it appears before a `[Theory]` data parameter, xUnit treats it as a data-injection slot and fails to find matching test data. WHY it causes problems: subtle misordering causes `InvalidOperationException` at runtime with a confusing message about missing test data.
+
+```csharp
+// BAD: CancellationToken before Theory data parameter — xUnit tries to inject test data for it
+[Theory]
+[InlineData(1)]
+public async Task GetOrder_ById(CancellationToken ct, int id) { /* fails at discovery */ }
+
+// GOOD: CancellationToken last
+[Theory]
+[InlineData(1)]
+public async Task GetOrder_ById(int id, CancellationToken ct) { /* correct */ }
+
+// Also GOOD: [Fact] with only CancellationToken — no ordering issue
+[Fact]
+public async Task GetAllOrders(CancellationToken ct) { /* correct */ }
+```
+
+---
+
+## Anti-Patterns Quick Reference — Testing Library Updates
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| Wildcard `Version="*"` on FluentAssertions | Auto-upgrades to v8 Xceed license — legal exposure for commercial code | Pin to `"6.*"` (MIT) or switch to Shouldly `"4.*"` (MIT) |
+| Upgrading to NUnit 4 without `NUnit.Framework.Legacy` bridge | Breaks all `Assert.AreEqual` / `Assert.IsNull` calls — CI fails immediately | Add `NUnit.Framework.Legacy` package as bridge; migrate incrementally |
+| TUnit without parallelism attributes on shared-state tests | Parallel default corrupts shared state — intermittent CI failures | Use `[NotInParallel]` / `[DependsOn]` / per-test state isolation |
+| xUnit v3 `CancellationToken` not last in `[Theory]` method | Discovery error — test data injection sees token slot | Always declare `CancellationToken ct` as the last parameter |
+| MSTest v4 `Assert.That(() => a.Prop == b)` for null `a` | Lambda throws NRE before Assert evaluates it — test error, not assertion failure | Guard null before `Assert.That`, or use `Assert.IsNotNull(a)` first |
+| FluentAssertions v8 `DataSet` assertions after upgrade | `HaveTable` / `HaveColumn` no longer in core — `MissingMethodException` | Add `FluentAssertions.DataSets` NuGet package |

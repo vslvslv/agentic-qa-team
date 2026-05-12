@@ -1,6 +1,6 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 23 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) + typescript-6.0-baseurl-deprecation (WebFetch 2026-05-12) + typescript-6.0-subpath-imports (WebFetch 2026-05-12) + vitest-4.1-coverage-ignore-comments (WebFetch 2026-05-12) | ISTQB CTFL 4.0 terminology applied -->
 <!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
 <!-- extension 2026-05-12: iter 17 — added TDD for Feature Flags (safe defaults pattern); One Map Key One Lookup for test doubles; TCR TypeScript script; gotchas #24–#26 -->
 <!-- extension 2026-05-12: iter 18 — added Zod v4 TDD patterns (schemaMatching with v4 APIs, z.input/z.output for test data, migration pitfall); `using`/`await using` for TDD resource teardown; Neon DB branching for database-level TDD isolation; `Promise.try` for sync-to-async TDD wrappers; gotchas #27–#29 -->
@@ -8,6 +8,7 @@
 <!-- extension 2026-05-12: iter 20 — added "The Way of TDD" (Google TotT, March 2026) pattern synthesis; Vitest 4.1 experimental native Node.js execution for ultra-fast TDD loops; Browser Mode aroundEach tracing with page.mark(); TDD discipline checklist from The Way of TDD; gotchas #33–#35 -->
 <!-- extension 2026-05-12: iter 21 — added Vitest 4.1 viteModuleRunner:false (production-closer execution mode vs runner:node); Vitest 4.1 onCleanup() fixture teardown callback; Vitest 4.1 Chai-style mock assertions; TypeScript 6.0 this-less function context-sensitivity improvement; TypeScript 5.9 --module node20 vs nodenext distinction; TypeScript 7.0 preparation with --stableTypeOrdering; gotchas #36–#37 -->
 <!-- extension 2026-05-12: iter 22 — added Vitest 4.1 ARIA snapshot TDD for accessibility contracts (toMatchAriaSnapshot/toMatchAriaInlineSnapshot); Type-Level TDD with Vitest expectTypeOf and *.test-d.ts files; gotchas #38–#39 -->
+<!-- extension 2026-05-12: iter 23 — added TypeScript 6.0 baseUrl deprecation → paths migration for test aliases; #/ subpath import syntax alternative to @/ aliases; noUncheckedSideEffectImports now on-by-default in TS 6.0 (correction to earlier "opt-in" description); --moduleResolution bundler + --module commonjs valid combo; Vitest 4.1 coverage ignore comments with @preserve flag for esbuild; gotchas #40–#42 -->
 
 ## Core Principles
 
@@ -2421,7 +2422,7 @@ TypeScript 5.9 updated `tsc --init` to generate a prescriptive minimal `tsconfig
 
 **Why TDD benefits from the 5.9 baseline:** New projects initialized with `tsc --init` now start with the same strict settings that this guide has recommended since the first iteration. Teams no longer need to manually add `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` — the default scaffold enforces TDD-quality type precision from the first test case.
 
-**`noUncheckedSideEffectImports` (TypeScript 5.6, not 5.9):** This compiler option (introduced in TypeScript 5.6, available but off by default) flags imports that are only used for their side effects (e.g., `import './polyfill.js'`) when the module does not exist. Without it, TypeScript silently ignores missing side-effect-only imports. In TDD, enabling this catches test setup files that accidentally import a path that was renamed or deleted — a category of defect that previously produced silent test isolation failures. **Note:** This option is opt-in. Enable it in `tsconfig.json` explicitly: `"noUncheckedSideEffectImports": true`.
+**`noUncheckedSideEffectImports` (TypeScript 5.6, opt-in; TypeScript 6.0, on by default):** This compiler option (introduced in TypeScript 5.6, previously off by default) flags imports that are only used for their side effects (e.g., `import './polyfill.js'`) when the module does not exist. **As of TypeScript 6.0, this option defaults to `true` and no longer needs to be set explicitly.** Without it, TypeScript silently ignores missing side-effect-only imports. In TDD, this catches test setup files that accidentally import a path that was renamed or deleted — a category of defect that previously produced silent test isolation failures. If you are still on TypeScript 5.x, enable it explicitly: `"noUncheckedSideEffectImports": true`.
 
 ```typescript
 // Before TypeScript 5.9 noUncheckedSideEffectImports:
@@ -4753,6 +4754,171 @@ it('returns success response with users', async () => {
 
 39. **[community] `expectTypeOf(...).toEqualTypeOf<T>()` in `*.test-d.ts` files fails silently on TypeScript type cache mismatches.** When running `vitest typecheck --watch`, TypeScript's incremental compilation cache sometimes serves stale type information — causing a type test to report Green even though the type has regressed. The symptom: a `*.test-d.ts` test case passes locally but fails in CI (which runs without the incremental cache). The root cause is `tsBuildInfoFile` incremental caching not invalidating correctly when a dependent file changes. The fix: for `vitest typecheck` in CI, always pass `--force` to disable incremental compilation: `npx vitest typecheck run --typecheck.ignoreSourceErrors`. For local TDD sessions, this is generally not an issue — but teams should be aware that type-level TDD has a different cache invalidation surface than runtime TDD, and a Green type test in a stale watch session is not a guarantee. Run `npx tsc --noEmit --incremental false` as a CI gate alongside `vitest typecheck`.
 
+---
+
+### TypeScript 6.0 — `baseUrl` Deprecation and `#/` Subpath Imports for TDD Path Aliases [community]
+
+TypeScript 6.0 deprecates `baseUrl` as a module resolution root and introduces `#/` subpath import syntax. Both changes affect how TDD projects configure path aliases for clean test imports (e.g., `@domain/Cart` instead of `../../../domain/Cart`).
+
+#### `baseUrl` is Deprecated — Migrate Test Path Aliases to `paths`
+
+The `baseUrl` option in `compilerOptions` was widely used to enable bare-specifier imports like `import { Cart } from 'domain/Cart'`. In TypeScript 6.0, `baseUrl` no longer serves as a module resolution root and is fully removed in TypeScript 7.0. Teams that relied on `baseUrl` for test imports must migrate to explicit `paths` mappings.
+
+```jsonc
+// ❌ DEPRECATED in TypeScript 6.0 — baseUrl-relative imports fail in TS 7.0
+{
+  "compilerOptions": {
+    "baseUrl": "./src",         // ← deprecated; no longer a resolution root in TS 6.0
+    "paths": {
+      "@domain/*": ["domain/*"],  // ← relative to baseUrl — will break in TS 7.0
+      "@test-doubles/*": ["test-doubles/*"]
+    }
+  }
+}
+
+// ✅ CORRECT in TypeScript 6.0+ — all paths relative to tsconfig directory
+{
+  "compilerOptions": {
+    // No baseUrl — paths use full relative paths from tsconfig location
+    "paths": {
+      "@domain/*":        ["./src/domain/*"],
+      "@test-doubles/*":  ["./src/test-doubles/*"],
+      "@fixtures/*":      ["./src/__fixtures__/*"]
+    }
+  }
+}
+```
+
+**TDD impact of `baseUrl` deprecation:** Most TDD guides (including earlier iterations of this document) showed `paths` entries relative to a `baseUrl`. Teams using these examples must update their `tsconfig.json` **before** upgrading to TypeScript 6.0. The failure mode after upgrading without this fix: `Cannot find module '@domain/Cart'` errors in every test file that uses path aliases — not a TypeScript compile error (because `paths` still works), but a runtime `Cannot find module` error from the module resolver when `baseUrl`-relative paths no longer resolve.
+
+**Migration one-liner:** In the `paths` object, prepend `./src/` to every right-hand side entry that was previously relative to `baseUrl: "./src"`.
+
+#### `#/` Subpath Import Syntax — Node.js-Native Alias Alternative
+
+TypeScript 6.0 adds support for Node.js's `#/` subpath import syntax. Where `@/` path aliases require a bundler or `vite-tsconfig-paths`, the `#/` syntax is a Node.js-native standard — importable without any transpilation layer, making it ideal for Vitest's native Node.js execution mode (`runner: 'node'` or `viteModuleRunner: false`).
+
+```json
+// package.json — declare #/ subpath imports (no tsconfig paths needed)
+{
+  "name": "my-service",
+  "type": "module",
+  "imports": {
+    "#domain/*": "./src/domain/*.js",
+    "#test-doubles/*": "./src/test-doubles/*.js",
+    "#fixtures/*": "./src/__fixtures__/*.js"
+  }
+}
+```
+
+```jsonc
+// tsconfig.json — TypeScript 6.0 supports #/ resolution automatically
+// No paths entry needed — TypeScript reads the "imports" field from package.json
+{
+  "compilerOptions": {
+    "module": "nodenext",       // or "node20" — required for package.json imports support
+    "moduleResolution": "nodenext"
+  }
+}
+```
+
+```typescript
+// TDD test file — #/ imports resolved by Node.js natively, no bundler needed
+import { ShoppingCart } from '#domain/ShoppingCart.js';
+import { InMemoryCartRepository } from '#test-doubles/InMemoryCartRepository.js';
+
+describe('ShoppingCart', () => {
+  it('starts empty', () => {
+    const repo = new InMemoryCartRepository();
+    const cart = new ShoppingCart(repo);
+    expect(cart.total()).toBe(0);
+  });
+});
+```
+
+**Why `#/` subpath imports improve TDD ergonomics with native Node.js execution:**
+
+| Approach | Requires bundler/plugin | Works with `runner: 'node'` | Works with `viteModuleRunner: false` | TypeScript 6.0+ |
+|---|---|---|---|---|
+| `@/` via `vite-tsconfig-paths` | Yes (Vite plugin) | No | No | Yes |
+| `paths` in tsconfig + tsconfigPaths | Yes (Vite plugin or `tsconfig-paths`) | No | No | Yes |
+| `#/` via package.json `imports` | No | Yes | Yes | Yes (TS 6.0+) |
+
+**[community] Teams migrating to Vitest `runner: 'node'` for ultra-fast TDD loops often discover that `@/` path aliases stop resolving** — because `vite-tsconfig-paths` only works when Vite is active. `#/` subpath imports solve this: they are resolved by Node.js's own module system, working identically in Vite-based tests, `runner: 'node'` tests, and direct `node --experimental-strip-types` execution.
+
+**`--moduleResolution bundler` + `--module commonjs` (TypeScript 6.0):** Teams on CommonJS codebases that were blocked from using `--moduleResolution bundler` (which previously required ESM module syntax) can now combine `"module": "commonjs"` with `"moduleResolution": "bundler"` in TypeScript 6.0. This is the recommended migration path for CJS projects moving away from the deprecated `--moduleResolution node` (node10), and it removes a barrier for TDD teams using Vitest on CommonJS codebases who wanted bundler-style path resolution without switching to ESM.
+
+---
+
+### Vitest 4.1 — Coverage Ignore Comments with `@preserve` for esbuild [community]
+
+Vitest 4.1 documents a critical requirement for coverage ignore comments when using esbuild as the TypeScript transpiler (the default in Vitest): the `@preserve` annotation must be included to prevent esbuild from stripping the comment before the coverage instrumentation reads it.
+
+Without `@preserve`, coverage ignore directives silently fail — esbuild removes the comment during transpilation, the coverage instrumentation never sees the ignore directive, and the "ignored" code appears as uncovered in the report. This causes false TDD coverage gaps that mislead the team about untested branches.
+
+```typescript
+// ❌ WITHOUT @preserve — comment stripped by esbuild before coverage sees it
+// These directives are silently ignored in Vitest's esbuild pipeline:
+/* v8 ignore next */
+/* istanbul ignore next */
+/* v8 ignore start */
+/* istanbul ignore start */
+
+// ✅ WITH @preserve — esbuild retains the comment; coverage instrumentation reads it
+/* v8 ignore next -- @preserve */
+function unreachableErrorBranch(err: unknown): never {
+  // This branch is intentionally untestable (defensive catch in a hot path)
+  throw new Error(`Unexpected error: ${String(err)}`);
+}
+
+/* v8 ignore start -- @preserve */
+// Entire block excluded from coverage (e.g., platform-specific boot code)
+if (process.platform === 'win32' && process.env.NODE_ENV !== 'test') {
+  setupWindowsSpecificHandlers();
+}
+/* v8 ignore stop -- @preserve */
+
+// Multi-file exclusion: exclude an entire file from coverage reporting
+/* v8 ignore file -- @preserve */
+```
+
+**Both v8 and Istanbul provider formats require `@preserve` in Vitest esbuild pipelines:**
+
+```typescript
+// vitest.coverage.ts — correct usage patterns for both providers
+// v8 provider (default):
+/* v8 ignore next -- @preserve */
+/* v8 ignore start -- @preserve */
+/* v8 ignore stop -- @preserve */
+/* v8 ignore file -- @preserve */
+
+// Istanbul provider:
+/* istanbul ignore next -- @preserve */
+/* istanbul ignore if -- @preserve */
+/* istanbul ignore else -- @preserve */
+/* istanbul ignore start -- @preserve */
+/* istanbul ignore stop -- @preserve */
+```
+
+**TDD use cases for coverage ignore comments:**
+
+1. **Defensive error branches:** Catch blocks that handle errors the test suite cannot reliably trigger (OS-level failures, hardware errors). Ignoring them prevents them from appearing as TDD coverage gaps when the branch is genuinely untestable.
+
+2. **Platform-specific code:** `process.platform === 'win32'` branches that only run on Windows when tests run on Linux CI.
+
+3. **Development-only stubs:** Code that only runs outside `NODE_ENV === 'test'` — using `/* v8 ignore file */` to exclude entire development scaffolding files from coverage reporting.
+
+**[community] The most common TDD coverage ignore mistake is relying on bare `/* v8 ignore next */` without `@preserve` in a Vitest + esbuild project.** The directive appears to work locally if the developer uses `tsc` for a type check, but fails silently in the Vitest watch loop. The first signal is coverage reporting a lower-than-expected line count after "ignoring" a branch — the ignore had no effect. Add `@preserve` to all coverage ignore comments as a team-wide standard, regardless of whether esbuild is the current transpiler, because it is harmless when not needed and essential when it is.
+
+---
+
+### Real-World Gotchas [community] — Additions (iter 23)
+
+40. **[community] TypeScript 6.0 `noUncheckedSideEffectImports` is now on by default — TDD test setup files that import non-existent matchers will immediately error after upgrading.** In TypeScript 5.x, this option was opt-in and most projects did not enable it. After upgrading to TypeScript 6.0, any test file with a side-effect import to a path that does not exist — `import './test-doubles/matchers.js'` when the file was renamed or deleted — immediately produces a compile error rather than silently running with the matcher extension missing. This is the correct behaviour (it was a defect before), but teams will encounter it as a surprising post-upgrade failure: the test suite was passing (because the unresolved import was silently skipped), and after the upgrade it now fails to compile. The fix is the same as before: correct the import path. Teams can temporarily opt out with `"noUncheckedSideEffectImports": false` in `tsconfig.json` during migration, but the correct long-term response is fixing the broken imports.
+
+41. **[community] `baseUrl`-relative `paths` entries stop resolving after TypeScript 6.0 upgrade.** Teams whose `tsconfig.json` contains `"baseUrl": "./src"` and `paths` entries like `"@domain/*": ["domain/*"]` (relative to `baseUrl`) will find that all `@domain/*` imports fail to resolve after upgrading to TypeScript 6.0 — because `baseUrl` no longer serves as the resolution root. The TypeScript error is `Cannot find module '@domain/Cart' or its corresponding type declarations`, which appears in every test file that uses the alias. The fix is a mechanical one-line change per `paths` entry: replace relative-to-baseUrl paths with paths relative to the `tsconfig.json` directory. For a project with `baseUrl: "./src"` and a path entry `"@domain/*": ["domain/*"]`, the updated entry is `"@domain/*": ["./src/domain/*"]`. Run `tsc --noEmit` after the change to verify all imports resolve. A TDD test suite that exercises every module via its path alias will make this exhaustive immediately — every failing test case points to a broken alias entry.
+
+42. **[community] Coverage ignore comments without `@preserve` create phantom TDD coverage gaps that misdirect refactoring effort.** A TypeScript team running Vitest with the default esbuild transpiler may add `/* v8 ignore next */` to a defensive error branch, expect it to disappear from the coverage report, and then observe that their coverage drops (because the ignore was silently discarded by esbuild). The team responds by writing an otherwise-unnecessary test case to cover the unreachable branch — adding test ceremony for code that was correctly identified as untestable. The root cause: missing `@preserve` in the ignore comment. The fix is trivial (`-- @preserve`), but the symptom — "my coverage ignore comments don't work" — is confusing enough that teams often write unnecessary tests rather than diagnose the comment stripping. Add `-- @preserve` to every coverage ignore comment and enforce it via a `grep` or custom ESLint rule in the CI pipeline.
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -4795,3 +4961,6 @@ it('returns success response with users', async () => {
 | Google Testing Blog — "The Way of TDD" | Blog post | https://testing.googleblog.com/2026/03/the-way-of-tdd.html | 2026 Google TotT post; six TDD discipline commitments; emphasises Refactor phase as mandatory, Red as information, and baby steps as precise thinking — not timid |
 | Vitest 4.1 ARIA Snapshots Guide | Docs | https://vitest.dev/guide/browser/aria-snapshots | TDD for accessibility contracts: `toMatchAriaSnapshot` / `toMatchAriaInlineSnapshot` assert against the accessibility tree; catches semantic regressions that visual snapshots and Axe linting miss |
 | Vitest Type Testing Guide | Docs | https://vitest.dev/guide/testing-types.html | Type-level TDD with `expectTypeOf` in `*.test-d.ts` files; `@ts-expect-error` as Red type tests; `toEqualTypeOf` for exact type contract assertions; `vitest typecheck` for CI integration |
+| TypeScript 6.0 — Module Resolution Migration | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `baseUrl` fully deprecated in TS 6.0 (removed in 7.0); `paths` entries must use full relative paths; `#/` subpath imports as Node.js-native alias alternative; `--moduleResolution bundler` + `--module commonjs` now valid for CJS migrations |
+| Node.js Subpath Imports | Docs | https://nodejs.org/api/packages.html#subpath-imports | `package.json` `imports` field for `#/` subpath imports; works with Vitest `runner: 'node'` and `viteModuleRunner: false` without bundler plugins |
+| Vitest 4.1 Coverage Ignore Comments | Docs | https://vitest.dev/guide/coverage | Coverage ignore comments require `@preserve` annotation in esbuild pipelines: `/* v8 ignore next -- @preserve */`; without `@preserve`, esbuild strips comments before coverage instrumentation |

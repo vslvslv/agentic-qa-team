@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 47 | score: 95/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 48 | score: 98/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -51,6 +51,7 @@
      Iter 45 (2026-05-12): 100/100 (+0) — added inspect.ispackage() / CO_HAS_DOCSTRING / CO_METHOD / frame.f_generator idioms (Python 3.14); Signature.format(quote_annotation_strings=False); community gotcha #43 (free-threaded shared iterator race); sourced from docs.python.org/3/library/inspect.html + docs.python.org/3/howto/free-threading-python.html
      Iter 46 (2026-05-12): 100/100 (+0) — added structured logging with StructuredLogMessage t-string processor; adaptive threading strategy pattern; asyncio.timeout() dynamic rescheduling; community gotcha #44 (f_locals cross-thread crash in free-threaded mode); sourced from peps.python.org/pep-0750/ + docs.python.org/3/library/asyncio-task.html + practitioner synthesis
      [testing-focus run] Iter 47 (2026-05-12): 95/100 (+310 lines) — added comprehensive Testing section covering pytest fixtures/scopes/yield teardown/conftest.py, @pytest.mark.parametrize + pytest.param + indirect, built-in fixtures (tmp_path, monkeypatch, caplog, capsys, capfd), pytest.raises/warns/approx, pytest 8.x/9.x new features (RaisesGroup, HIDDEN_PARAM, subtests, native TOML config), Hypothesis property-based testing (@given, @settings, @example, @composite, st.* strategies, assume/note/target, database), and community gotchas #45 (fixture scope leakage), #46 (monkeypatch vs patch namespace), #47 (Hypothesis filter() rejection ratio); sourced from docs.pytest.org/en/stable/changelog.html + docs.pytest.org/en/stable/how-to/fixtures.html + practitioner synthesis
+     Iter 48 (2026-05-12): 98/100 (+350 lines) — added Hypothesis stateful testing (RuleBasedStateMachine, @rule, @initialize, @invariant, Bundle, multiple(), consumes(), run_state_machine_as_test); pytest 8.3/8.4/9.0 features: pytest.raises(check=), capteesys fixture, collect_imported_tests, console_output_style=times, --xfail-tb, --no-fold-skipped, strict_parametrization_ids; pytest 8.4 behavior changes (async-without-plugin → error, non-None return → error); community gotchas #48 (sync test requesting async fixture), #49 (non-None return from test); sourced from docs.pytest.org/en/stable/changelog.html + practitioner synthesis
 -->
 
 ## Core Philosophy
@@ -8350,3 +8351,414 @@ def test_increasing_endpoints_good(xs: list[int]) -> None:
 
 ---
 
+### Hypothesis Stateful Testing — `RuleBasedStateMachine`
+
+Stateful testing lets Hypothesis drive a system through a sequence of operations, checking invariants after every step. Where `@given` tests a single call in isolation, stateful tests model multi-step interactions — ideal for testing data structures, protocols, and any system where order matters.
+
+**Core API:**
+
+| Decorator / Class | Purpose |
+|---|---|
+| `RuleBasedStateMachine` | Base class; subclass to define a state machine |
+| `@rule(target=Bundle, **strategies)` | An operation Hypothesis can call; result goes into `Bundle` |
+| `@initialize(**strategies)` | Called exactly once at the start of each test run |
+| `@invariant()` | Called after every rule step; assert global properties here |
+| `Bundle(name)` | Named set of values produced by rules; used as inputs to later rules |
+| `multiple(*values)` | Return multiple values into a Bundle from one rule |
+| `consumes(bundle)` | Pull a value from a Bundle and remove it (one-shot use) |
+| `run_state_machine_as_test(cls)` | Convert a state machine class to a pytest-runnable function |
+
+```python
+from hypothesis import settings
+from hypothesis.stateful import (
+    Bundle,
+    RuleBasedStateMachine,
+    consumes,
+    initialize,
+    invariant,
+    multiple,
+    rule,
+    run_state_machine_as_test,
+)
+from hypothesis import strategies as st
+
+
+# ── Example: testing a simple ordered list implementation ────────────────────
+class ListMachine(RuleBasedStateMachine):
+    """
+    Model-based stateful test: drive a list through push/pop/clear operations
+    and verify length invariants hold at every step.
+    """
+
+    # Bundles hold values that rules can later consume
+    items = Bundle("items")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.model: list[int] = []     # the system under test (or its model)
+
+    # initialize: runs once per test sequence before any rules
+    @initialize(value=st.integers())
+    def init_with_value(self, value: int) -> None:
+        self.model = [value]
+
+    # rule with target: produces a value into the 'items' Bundle
+    @rule(target=items, value=st.integers())
+    def push(self, value: int) -> int:
+        self.model.append(value)
+        return value                  # returned value is stored in Bundle "items"
+
+    # rule consuming from Bundle: removes 'item' from the bundle after use
+    @rule(item=consumes(items))
+    def pop_specific(self, item: int) -> None:
+        if item in self.model:
+            self.model.remove(item)
+
+    @rule()
+    def clear(self) -> None:
+        self.model.clear()
+
+    @rule(target=items, a=st.integers(), b=st.integers())
+    def push_two(self, a: int, b: int):
+        self.model.extend([a, b])
+        return multiple(a, b)         # both a and b go into the Bundle
+
+    # invariant: checked after every rule; assert structural properties
+    @invariant()
+    def list_length_nonneg(self) -> None:
+        assert len(self.model) >= 0
+
+    @invariant()
+    def no_none_values(self) -> None:
+        assert all(v is not None for v in self.model)
+
+
+# ── Option A: convert to a pytest test function ───────────────────────────────
+TestListMachine = ListMachine.TestCase   # pytest discovers this as a test class
+
+
+# ── Option B: explicit function wrapper ──────────────────────────────────────
+def test_list_machine_explicit():
+    run_state_machine_as_test(ListMachine)
+
+
+# ── Option C: with custom settings ───────────────────────────────────────────
+@settings(max_examples=200, stateful_step_count=50)
+def test_list_machine_thorough():
+    run_state_machine_as_test(ListMachine)
+```
+
+**Key settings for stateful tests:**
+- `stateful_step_count` (default 50): maximum number of rule steps per test case. Increase for deeper interaction sequences.
+- `max_examples`: number of distinct test sequences to generate.
+
+**When to use stateful testing:**
+- Testing data structures (stacks, queues, caches, sorted containers) where correctness depends on operation order.
+- Protocol or session state machines (connection → authenticated → request → disconnected).
+- Any system where the outcome of operation B depends on what operation A did first.
+- Verifying that two implementations (production vs reference) produce identical results over the same sequence of operations (differential testing).
+
+```python
+# ── Differential stateful test: compare two implementations ──────────────────
+from hypothesis.stateful import RuleBasedStateMachine, Bundle, rule, invariant
+from hypothesis import strategies as st
+
+
+class DiffTest(RuleBasedStateMachine):
+    """Verify that a custom SortedList behaves identically to a sorted list."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reference: list[int] = []
+        # self.sut = SortedList()  # your implementation
+
+    @rule(val=st.integers())
+    def add(self, val: int) -> None:
+        self.reference.append(val)
+        self.reference.sort()
+        # self.sut.add(val)
+
+    @rule()
+    def pop_min(self) -> None:
+        if self.reference:
+            self.reference.pop(0)
+            # self.sut.pop_min()
+
+    @invariant()
+    def same_contents(self) -> None:
+        assert self.reference == sorted(self.reference)   # sanity
+        # assert list(self.sut) == self.reference         # real assertion
+```
+
+---
+
+### pytest 8.3 / 8.4 / 9.0 — New Features Reference
+
+#### `pytest.raises(check=...)` — Custom Exception Validation (pytest 8.4+)
+
+`check=` accepts a callable `(exc: BaseException) -> bool`. The test fails if the callable returns `False`. This replaces verbose `exc_info.value` attribute checks after the `with` block.
+
+```python
+import pytest
+
+
+def parse_config(text: str) -> dict:
+    if not text.strip():
+        raise ValueError("config is empty")
+    if "=" not in text:
+        raise ValueError(f"no key=value pair found in: {text!r}")
+    return dict(line.split("=", 1) for line in text.splitlines())
+
+
+# Old pattern — check exc_info after the block
+def test_empty_config_old():
+    with pytest.raises(ValueError) as exc_info:
+        parse_config("")
+    assert "empty" in str(exc_info.value)
+
+
+# New pytest 8.4+ pattern — check= callable inline
+def test_empty_config_new():
+    with pytest.raises(ValueError, check=lambda e: "empty" in str(e)):
+        parse_config("")
+
+
+# check= can do rich introspection
+def test_bad_format():
+    def validate(exc: BaseException) -> bool:
+        msg = str(exc)
+        return "no key=value" in msg and "missing" not in msg
+
+    with pytest.raises(ValueError, check=validate):
+        parse_config("no equals sign here")
+```
+
+---
+
+#### `capteesys` — Capture AND Pass-Through (pytest 8.4+)
+
+`capsys` captures stdout/stderr silently. `capteesys` captures them AND passes the output to the next capture handler set by `--capture=`. Use it when your test needs to assert on output while still letting it appear in the terminal (e.g., for CI visibility).
+
+```python
+import pytest
+
+
+def emit_progress(message: str) -> None:
+    print(f"[PROGRESS] {message}")
+
+
+# capsys: captures silently (output not shown in terminal)
+def test_progress_capsys(capsys):
+    emit_progress("step 1 done")
+    captured = capsys.readouterr()
+    assert "[PROGRESS] step 1 done" in captured.out
+
+
+# capteesys: captures AND passes to the next --capture= handler
+# Run with: pytest --capture=fd  (output visible in terminal AND captured)
+def test_progress_capteesys(capteesys):
+    emit_progress("step 1 done")
+    captured = capteesys.readouterr()
+    assert "[PROGRESS] step 1 done" in captured.out
+    # The output also appears in the terminal when --capture=fd or --capture=sys
+```
+
+**When to prefer `capteesys` over `capsys`:**
+- Debugging test failures where you want to see output in real time AND assert on it.
+- Integration tests in CI where the captured output feeds into downstream log parsing.
+
+---
+
+#### `collect_imported_tests = false` (pytest 8.4+)
+
+By default, pytest collects any `TestCase` class or `test_*` function in a test file, even if it was imported from another module. This causes duplicate test collection when you re-export test helpers.
+
+```python
+# helpers/base_tests.py
+class BaseTestCase:
+    def test_common_behaviour(self): ...
+
+# tests/test_widget.py
+from helpers.base_tests import BaseTestCase   # imported, not defined here
+
+class TestWidget(BaseTestCase):
+    def test_specific_widget(self): ...
+
+# WITHOUT collect_imported_tests=false:
+#   pytest collects BOTH BaseTestCase.test_common_behaviour AND TestWidget.*
+#   → BaseTestCase runs without context, may fail or produce spurious passes
+
+# WITH collect_imported_tests=false:
+#   pytest only collects TestWidget (defined in this file), not BaseTestCase
+```
+
+```toml
+# pyproject.toml
+[tool.pytest.ini_options]
+collect_imported_tests = false
+```
+
+---
+
+#### `console_output_style = "times"` (pytest 8.4+)
+
+Shows per-test execution time next to each result line. Useful for spotting slow tests without running `--durations`.
+
+```toml
+# pyproject.toml
+[tool.pytest.ini_options]
+console_output_style = "times"
+# Output example:
+# PASSED tests/test_api.py::test_fast_endpoint  0.003s
+# PASSED tests/test_api.py::test_slow_query     1.847s
+# FAILED tests/test_api.py::test_broken         0.012s
+```
+
+---
+
+#### `--xfail-tb` and `--no-fold-skipped` CLI Flags (pytest 8.3+)
+
+```bash
+# --xfail-tb: show tracebacks for xfail tests (same style as --tb)
+pytest --xfail-tb --tb=short
+
+# --no-fold-skipped: list every skipped test individually instead of grouping
+#   Default: "SKIPPED [12] tests/test_io.py: requires linux"
+#   With flag: shows each skipped test's full nodeid
+pytest --no-fold-skipped
+```
+
+Useful in CI: `--no-fold-skipped` makes it clear which specific tests were skipped and why, avoiding the hidden-skip problem where a misconfigured `skipif` silently hides many tests.
+
+---
+
+#### `strict_parametrization_ids` (pytest 9.0+)
+
+Duplicate parametrize IDs cause silent test collisions — two test cases get the same node ID, and the second one overwrites the first. `strict_parametrization_ids` makes this an error.
+
+```toml
+[tool.pytest.ini_options]
+strict_parametrization_ids = true
+```
+
+```python
+import pytest
+
+
+# This produces duplicate IDs "0" and "0" — confusing in output, easy to miss
+@pytest.mark.parametrize("x", [0, 0, 1])
+def test_values(x):
+    assert isinstance(x, int)
+
+# With strict_parametrization_ids=true, the above raises a collection error:
+# ERRORS: duplicate parametrize id "0" in test_values
+
+# Fix: use explicit ids= or pytest.param(id=...) to guarantee uniqueness
+@pytest.mark.parametrize("x", [
+    pytest.param(0, id="zero-first"),
+    pytest.param(0, id="zero-second"),
+    pytest.param(1, id="one"),
+])
+def test_values_explicit(x):
+    assert isinstance(x, int)
+```
+
+---
+
+### Real-World Gotchas (Testing-Specific, continued)
+
+### 48. Sync Test Requesting an Async Fixture Silently Skips Teardown (pytest 8.4+)  [community]
+
+**Problem:** A sync test function that takes an `async` fixture as a parameter used to emit a deprecation warning and then run with incomplete fixture lifecycle. In pytest 8.4+, this is a hard error.
+
+**Why:** Async fixtures require an event loop to run their setup and teardown. A sync test has no event loop; pytest cannot run the async fixture's `yield`-based teardown, meaning resources like database connections and HTTP sessions are never cleaned up. The old behaviour (warn + skip teardown) silently leaked resources.
+
+**Fix:** Either make the test `async def` (and add `pytest-asyncio`) or rewrite the fixture as a sync fixture that internally manages the event loop.
+
+```python
+import pytest
+import asyncio
+
+
+# BAD — sync test requesting async fixture (error in pytest 8.4+)
+@pytest.fixture
+async def async_conn():
+    conn = await open_connection()
+    yield conn
+    await conn.close()   # NEVER CALLED when test is sync
+
+
+async def open_connection():
+    await asyncio.sleep(0)
+    return object()
+
+
+# This raises: PytestUnraisableExceptionWarning → Error in pytest 8.4+
+# def test_uses_async_fixture(async_conn):
+#     assert async_conn is not None
+
+
+# GOOD option A — make the test async (requires pytest-asyncio)
+@pytest.mark.asyncio
+async def test_uses_async_fixture_async(async_conn):
+    assert async_conn is not None
+
+
+# GOOD option B — wrap the async fixture in a sync fixture using asyncio.run()
+@pytest.fixture
+def sync_conn():
+    """Sync wrapper: runs the async lifecycle synchronously."""
+    async def _open():
+        return await open_connection()
+
+    conn = asyncio.run(_open())
+    yield conn
+    # No async teardown needed if teardown is sync-safe
+
+
+def test_uses_sync_conn(sync_conn):
+    assert sync_conn is not None
+```
+
+**Rule:** Never mix async fixtures with sync tests. The direction is always: async fixture → async test, sync fixture → either test. If you see `PytestUnraisableExceptionWarning` about coroutines not being awaited, you have this mismatch.
+
+---
+
+### 49. Test Functions That Return Non-`None` Values Now Fail (pytest 8.4+)  [community]
+
+**Problem:** Prior to pytest 8.4, a test function that returned a truthy value emitted a warning (`PytestReturnNotNoneWarning`) but still passed. In pytest 8.4+, returning any non-`None` value is a hard error. This surfaces latent bugs where developers accidentally write `return` instead of `assert`.
+
+**Why:** The return value of a test function is discarded by pytest. A non-`None` return is almost always a mistake — either a misplaced `return result` that should be `assert result`, or a forgotten `assert`. Treating it as an error makes the mistake obvious immediately rather than producing a false pass.
+
+```python
+# BAD — returns a value instead of asserting it (silent pass before pytest 8.4)
+def test_compute_result_bad():
+    result = 2 + 2
+    return result == 4    # WRONG: this does NOT assert anything; just returns True
+    # pytest 8.4+: FAILED (PytestReturnNotNoneError)
+
+
+# GOOD — use assert
+def test_compute_result_good():
+    result = 2 + 2
+    assert result == 4    # correct
+
+
+# Also bad: generator test functions (yield in test body)
+# def test_gen():
+#     yield  # pytest 8.4+: explicit error, not just a warning
+# Fix: use @pytest.mark.parametrize or pytest 9.0+ subtests instead of yield
+
+
+# Common false-positive: test helpers that return a value
+def _helper_returns_bool() -> bool:
+    return True
+
+def test_uses_helper():
+    result = _helper_returns_bool()   # OK — result is assigned, not returned
+    assert result
+```
+
+**Rule:** Test functions must always return `None`. Any `return <value>` in a test function is a bug. Enable `--strict-markers` and keep `filterwarnings = ["error"]` in your config to catch these before pytest 8.4 enforces them as hard errors.
+
+---

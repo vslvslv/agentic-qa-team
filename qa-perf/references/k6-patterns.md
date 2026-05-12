@@ -1,8 +1,8 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/, /javascript-api/k6-experimental/fs/, /javascript-api/k6-experimental/streams/, /javascript-api/k6-websockets/, /using-k6/scenarios/concepts/open-vs-closed/, release-notes/v1.7.0, release-notes/v1.7.1 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.3.0, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/, /javascript-api/k6-experimental/fs/, /javascript-api/k6-experimental/streams/, /javascript-api/k6-websockets/, /using-k6/scenarios/concepts/open-vs-closed/, release-notes/v1.7.0, release-notes/v1.7.1 -->
 
-> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Iteration 32 adds: page.waitForResponse() pattern (v1.3+), locator.contentFrame() for iframe navigation chains, locator.boundingBox() for layout testing, getBy* locators on frameLocator scope, community gotchas 57–59 (waitForResponse race condition, boundingBox null on hidden elements, locator.contentFrame() vs frameLocator() disambiguation). Re-run `/qa-refine k6` to refresh.
 
 > **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `--summary-mode=legacy`, `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section. **New in v2.0.0 final:** HTTP API server disabled by default, cloud secrets auto-injected in `--local-execution`, `k6 cloud project list` command, extension tab-completion.
 
@@ -9242,5 +9242,370 @@ tar xOf k6-archive.tar metadata.json \
 >
 > Populate `K6_DEPS_JSON` from the `tar xOf k6-archive.tar metadata.json | jq '.dependencies'`
 > output during the Docker build step.
+
+---
+
+## Additional Community Gotchas (Iteration 32)
+
+### 57. `page.waitForResponse()` race condition — set the listener BEFORE triggering the action  [community]
+
+**What:** `page.waitForResponse(urlPattern)` returns a Promise that resolves with the first
+matching response. If the action that triggers the response (e.g., a button click) fires
+*before* the `waitForResponse` Promise is set up, the response arrives before the listener
+is registered — the Promise never resolves and the test hangs until the timeout.
+
+**WHY:** Browser events are asynchronous. A `click()` that immediately fires a fetch request
+may deliver the response in under 10 ms — faster than the JS scheduler gets to set up the
+`waitForResponse` listener if the two are awaited sequentially rather than in a `Promise.all`.
+
+**Fix:** Always use `Promise.all()` to set up `waitForResponse` and dispatch the action
+simultaneously:
+
+```javascript
+// WRONG — response may arrive before listener is ready
+await page.getByRole("button", { name: "Save" }).click();
+const saveRes = await page.waitForResponse("**/api/items");   // ← may hang
+
+// CORRECT — listener and action start at the same instant
+const [saveRes] = await Promise.all([
+  page.waitForResponse("**/api/items"),                        // set listener first
+  page.getByRole("button", { name: "Save" }).click(),         // trigger action
+]);
+check(saveRes.status(), { "save 200": (s) => s === 200 });
+```
+
+> **[community]:** `waitForResponse` accepts a URL string (exact match), a glob pattern
+> (`"**/api/**"`), or a predicate function `(res) => boolean`. The predicate form is the
+> most powerful: `page.waitForResponse((res) => res.url().includes("/api/items") && res.status() === 200)`.
+> Use the predicate when multiple requests to the same URL fire and you need a specific one.
+
+---
+
+### 58. `locator.boundingBox()` returns `null` for hidden elements — layout tests need visibility guards  [community]
+
+**What:** `locator.boundingBox()` returns `null` when the matched element is hidden
+(`display: none`, `visibility: hidden`, or `opacity: 0`). Tests that destructure the result
+without a null check (`const { x, y, width, height } = await loc.boundingBox()`) throw
+a `TypeError: Cannot destructure property 'x' of null` — which k6 records as a failed
+check but the VU continues running, producing misleading "layout error" metrics.
+
+**WHY:** Hidden elements have no layout box; the Chromium CDP call returns null rather
+than throwing. This matches browser behavior but surprises teams used to Selenium's
+`element.getRect()` which throws `ElementNotInteractableException` for hidden elements.
+
+**Fix:** Always guard `boundingBox()` results before destructuring:
+
+```javascript
+// k6/scripts/browser-layout.js — viewport coverage and overlap testing
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    layout_test: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 2,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/dashboard`);
+
+    // boundingBox() — get element geometry for layout validation
+    const heroBox = await page.getByRole("banner").boundingBox();
+
+    // GUARD: null check before destructuring
+    if (heroBox === null) {
+      check(false, { "hero banner visible": () => false });
+      return;
+    }
+
+    const { x, y, width, height } = heroBox;
+    check({ x, y, width, height }, {
+      "hero banner not off-screen": (b) => b.x >= 0 && b.y >= 0,
+      "hero banner spans full width": (b) => b.width >= 900,
+      "hero banner height > 0": (b) => b.height > 0,
+    });
+
+    // Verify two elements do not overlap (e.g. sticky nav covers content)
+    const navBox  = await page.locator("nav.sticky").boundingBox();
+    const heroTop = y;
+
+    if (navBox) {
+      const navBottom = navBox.y + navBox.height;
+      check(heroTop, {
+        "hero not obscured by sticky nav": (top) => top >= navBottom,
+      });
+    }
+
+  } finally {
+    await page.close();
+  }
+}
+```
+
+> **[community]:** Use `boundingBox()` to catch CSS regression bugs that don't appear in
+> functional checks — elements that render at `width: 0` or are pushed off-screen by a
+> flexbox overflow. Combine with `page.screenshot()` and a pixel-diff tool (e.g. `pixelmatch`)
+> for automated visual regression alongside k6 load tests.
+
+---
+
+### 59. `locator.contentFrame()` vs `page.frameLocator()` — wrong method for the use case causes silent `null`  [community]
+
+**What:** k6 (since v1.3) provides two ways to interact with iframe content:
+- `page.frameLocator(selector)` — scope future `locator()` calls inside the iframe (lazy, no async)
+- `locator.contentFrame()` — get the actual `Frame` object from a `<iframe>` element Locator (async)
+
+Teams that use `locator.contentFrame()` expecting the `frameLocator` chaining API receive a
+`Frame` object instead, which has a subtly different API. Conversely, teams using `page.frameLocator()`
+and then calling `.contentFrame()` on the result get an error because `FrameLocator` does not
+have a `contentFrame()` method.
+
+**WHY:** These are two different abstraction levels. `frameLocator()` returns a `FrameLocator`
+(query scope, lazy, supports `.locator()` chaining). `contentFrame()` returns a `Frame`
+(the live CDP frame reference, supports `.goto()`, `.title()`, `.evaluate()` directly).
+
+**Fix:** Use the right abstraction for the task:
+
+```javascript
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    iframe_demo: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 1,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/embed`);
+
+    // PATTERN A: frameLocator() — best for element interaction inside an iframe
+    // Use when: you want to click/fill/check elements inside the frame
+    const paymentFrame = page.frameLocator("#payment-iframe");
+    await paymentFrame.locator("#card-number").fill("4242424242424242");
+
+    // PATTERN B: locator.contentFrame() — best when you need Frame-level APIs
+    // Use when: you need frame.title(), frame.url(), frame.evaluate(), frame.goto()
+    const iframeElement = page.locator("iframe#analytics-frame");
+    const frame = await iframeElement.contentFrame();
+
+    if (frame) {
+      // Frame has page-level methods: title(), url(), evaluate()
+      const frameTitle = await frame.title();
+      check(frameTitle, { "analytics frame has title": (t) => t.length > 0 });
+
+      // Execute JS inside the frame context
+      const trackingId = await frame.evaluate(() => window.GA_TRACKING_ID);
+      check(trackingId, { "tracking ID injected in frame": (id) => !!id });
+    }
+
+    // getBy* locators work on frameLocator scope (k6 v1.3+)
+    // All semantic locator methods (getByRole, getByLabel, etc.) are available
+    const submitInFrame = paymentFrame.getByRole("button", { name: "Pay" });
+    await submitInFrame.waitFor({ state: "visible" });
+    check(await submitInFrame.isEnabled(), { "pay button enabled": Boolean });
+
+  } finally {
+    await page.close();
+  }
+}
+```
+
+| Use case | Method | Returns |
+|----------|--------|---------|
+| Click/fill/check elements inside iframe | `page.frameLocator(sel)` | `FrameLocator` |
+| Get frame URL, title, or run JS | `iframeLoc.contentFrame()` | `Frame \| null` |
+| Nested iframe element interaction | `fl.frameLocator(nestedSel)` | `FrameLocator` |
+| Semantic `getBy*` selectors in iframe | `frameLocator.getByRole(...)` | `Locator` |
+
+> **[community]:** `locator.contentFrame()` returns `null` if the `<iframe>` has not
+> yet loaded its `src` document. Always `await page.waitForLoadState("networkidle")` or
+> `await iframeLoc.waitFor({ state: "visible" })` before calling `contentFrame()` to
+> ensure the frame is ready.
+
+---
+
+## Browser Module — `page.waitForResponse()` (k6 v1.3+)  [community]
+
+`page.waitForResponse(urlOrPredicate, options?)` waits for a network response matching
+the given URL string, glob pattern, or predicate. It complements `waitForRequest()` for
+cases where you need to assert on the response status or body after a UI action triggers
+a fetch. Essential for SPAs where navigation is driven by XHR/fetch, not full page loads.
+
+```javascript
+// k6/scripts/browser-wait-response.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+import { Trend } from "k6/metrics";
+
+const apiLatency = new Trend("browser_api_latency_ms", true);
+
+export const options = {
+  scenarios: {
+    ui: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 3,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+  thresholds: {
+    browser_api_latency_ms: ["p(95)<1000"],
+    checks: ["rate==1.0"],
+  },
+};
+
+const APP = __ENV.APP_URL || "http://localhost:3001";
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${APP}/products`);
+
+    // 1. Wait for a specific status-code response — use predicate form
+    const [searchResp] = await Promise.all([
+      page.waitForResponse(
+        (res) => res.url().includes("/api/search") && res.status() === 200
+      ),
+      page.getByPlaceholder("Search...").fill("widget"),
+    ]);
+
+    // Measure time-to-data: from action to API response received
+    const timing = searchResp.timing();
+    apiLatency.add(timing.responseEnd - timing.requestStart);
+
+    const body = await searchResp.json();
+    check(body, {
+      "search results non-empty": (b) => Array.isArray(b.results) && b.results.length > 0,
+    });
+
+    // 2. Glob pattern — match any write to the cart endpoint
+    const [cartResp] = await Promise.all([
+      page.waitForResponse("**/api/cart/**"),
+      page.getByRole("button", { name: "Add to cart" }).first().click(),
+    ]);
+    check(cartResp.status(), { "cart update 200/201": (s) => s === 200 || s === 201 });
+
+    // 3. waitForResponse with timeout override (default is defaultTimeout, usually 30s)
+    try {
+      const [fastResp] = await Promise.all([
+        page.waitForResponse("**/api/recommendations", { timeout: 2000 }),
+        page.getByRole("link", { name: "Home" }).click(),
+      ]);
+      check(fastResp.status(), { "recommendations loaded quickly": (s) => s === 200 });
+    } catch (e) {
+      // Timeout is acceptable — recommendations are optional
+      console.warn("Recommendations timed out (non-critical):", e.message);
+    }
+
+  } finally {
+    await page.close();
+  }
+}
+```
+
+**`waitForResponse` vs `waitForRequest` comparison:**
+
+| | `waitForRequest` | `waitForResponse` |
+|-|-----------------|-------------------|
+| Resolves when | Request is sent | Response is received |
+| Has `.status()` | No | Yes |
+| Has `.json()` / `.body()` | No | Yes |
+| Has `.timing()` | No | Yes |
+| Use case | Assert API is called | Assert API returns expected data |
+| Measure API latency | No | Yes (`.timing().responseEnd - .timing().requestStart`) |
+
+> **[community]:** `response.json()` in `waitForResponse` is async (returns a Promise) —
+> this is different from k6's HTTP module where `res.json()` is synchronous. Always `await`
+> it: `const body = await searchResp.json()`. Calling it synchronously returns a Promise
+> object, not the body — this is a common migration mistake from `k6/http` patterns.
+
+---
+
+## Browser Module — `locator.contentFrame()` and `locator.boundingBox()` (k6 v1.3+)  [community]
+
+### `locator.contentFrame()` — Get Frame Reference from `<iframe>` Locator
+
+Returns the `Frame` object for the content inside a located `<iframe>` element.
+Unlike `page.frameLocator()` (which returns a query scope), `contentFrame()` gives you
+a live `Frame` reference with navigation and evaluation capabilities.
+
+```javascript
+// Pattern: navigate to a URL inside an iframe, then assert on the frame content
+const iframeLocator = page.locator("iframe#help-widget");
+await iframeLocator.waitFor({ state: "attached" });
+
+const frame = await iframeLocator.contentFrame();
+if (!frame) throw new Error("Help iframe not loaded");
+
+// Frame-level navigation
+await frame.goto("https://help.example.com/getting-started");
+
+// Frame title and URL
+check(await frame.title(), { "help page title": (t) => t.includes("Getting Started") });
+check(frame.url(), { "correct help URL": (u) => u.includes("getting-started") });
+
+// Evaluate JS inside the frame
+const hasAnalytics = await frame.evaluate(
+  () => typeof window.analytics !== "undefined"
+);
+check(hasAnalytics, { "analytics loaded in frame": Boolean });
+```
+
+### `locator.boundingBox()` — Element Geometry for Layout Assertions
+
+Returns `{ x, y, width, height }` relative to the viewport, or `null` if the element
+is not visible. Use it for CSS regression tests: verifying elements are within
+the viewport, have non-zero dimensions, and do not overlap critical UI regions.
+
+```javascript
+// Verify responsive layout: all cards fit within viewport at 1280×720
+await page.setViewportSize({ width: 1280, height: 720 });
+const cards = page.locator(".product-card");
+const cardCount = await cards.count();
+
+for (let i = 0; i < cardCount; i++) {
+  const box = await cards.nth(i).boundingBox();
+  if (!box) continue;  // hidden cards are acceptable
+  check(box, {
+    [`card ${i} within viewport width`]:  (b) => b.x + b.width <= 1280,
+    [`card ${i} within viewport height`]: (b) => b.y + b.height <= 720,
+    [`card ${i} has content area`]:       (b) => b.width > 0 && b.height > 0,
+  });
+}
+```
+
+> **[community]:** `locator.boundingBox()` uses the Chromium CDP `getBoxModel` call, which
+> includes CSS `transform` effects but NOT `clip-path`. An element clipped by `clip-path: inset(100%)`
+> still reports its full un-clipped bounding box. For true visibility testing, combine
+> `boundingBox()` with `locator.isVisible()` or `locator.isInViewport()`.
+
+---
+
+## Key APIs — Additions (k6 v1.3–v1.6)
+
+These APIs were added in k6 v1.3.0 through v1.6.0 and complement the main Key APIs table:
+
+| API | What it does | When to use |
+|-----|-------------|-------------|
+| `page.waitForResponse(urlOrFn, opts?)` | Wait for a network response matching URL/predicate | Assert SPA fetch responses after UI actions |
+| `locator.contentFrame()` | Get live `Frame` object for `<iframe>` element | Frame-level navigation, title, evaluate calls |
+| `locator.boundingBox()` | Get `{x,y,width,height}` of element, or `null` if hidden | Layout regression tests, overlap detection |
+| `frameLocator.getByRole(...)` | Semantic selector inside a frame scope (v1.3+) | ARIA-based element interaction inside iframes |
+| `frameLocator.locator(sel).contentFrame()` | Chain: scope to iframe, then get nested frame | Double-nested iframe interaction |
+| `page.waitForURL(url, opts?)` | Wait for page URL to match pattern after navigation | SPA routing assertions after click/submit |
+| `response.timing()` | Get `{ requestStart, responseEnd, ... }` timing breakdown | Measure API call latency from browser tests |
+| `response.json()` | Async JSON body parse from `waitForResponse` result | Assert API response body from browser tests |
 
 

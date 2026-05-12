@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 50 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 51 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -4919,5 +4919,240 @@ test('default config is production URL', async () => {
 | Relying on non-awaited subtests as implicit skips (Node.js 24) | All registered subtests now auto-run — previously dormant tests execute | Use `{ skip: true }` or `test.skip(...)` for explicit skipping |
 | `buf.resize()` on buffers from third-party APIs | Most library-returned buffers are not resizable — throws `TypeError` | Check `buf.resizable === true` before calling `resize()` |
 | `sharedBuf.grow(smaller)` — shrinking a SharedArrayBuffer | `SharedArrayBuffer` can only grow, never shrink — throws `TypeError` | Use plain `ArrayBuffer` with `resize()` when two-directional sizing is needed |
+
+---
+
+## `assert.partialDeepStrictEqual()` — Partial Object Matching in Tests (Node.js 24 Stable)
+
+`assert.partialDeepStrictEqual(actual, expected)` asserts that `actual` deeply contains all the properties in `expected`, while ignoring any additional properties in `actual`. It is the built-in equivalent of Jest's `expect(actual).toMatchObject(expected)` — and it graduated from experimental to **stable** in Node.js 24.
+
+This is the most testing-relevant addition in Node.js 24 for server-side test suites: it eliminates the need to destructure or spread `expected` values just to avoid strict full-equality failures when API responses contain extra fields.
+
+```javascript
+import assert from 'node:assert/strict';
+
+// ── Object partial match — extra properties in actual are ignored ─────
+assert.partialDeepStrictEqual(
+  { id: 1, name: 'Alice', createdAt: new Date(), __v: 0 },
+  { id: 1, name: 'Alice' },  // only these two fields must match
+);
+// ✅ passes — extra fields (createdAt, __v) are ignored
+
+// ── Fails if expected has a property actual does not ──────────────────
+assert.partialDeepStrictEqual(
+  { a: 1 },
+  { a: 1, b: 2 },  // expected has 'b', actual does not
+);
+// ❌ AssertionError
+
+// ── Nested objects — partial matching is recursive ────────────────────
+assert.partialDeepStrictEqual(
+  { user: { id: 42, name: 'Bob', email: 'bob@example.com', role: 'admin' } },
+  { user: { id: 42, name: 'Bob' } },
+);
+// ✅ passes — nested extra fields are also ignored
+
+// ── Arrays — sparse match: actual must contain all items in expected ──
+assert.partialDeepStrictEqual(
+  [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  [4, 5, 8],
+);
+// ✅ passes — checks that each expected item exists in actual (position-independent)
+
+// ── Set: must contain all expected elements ───────────────────────────
+assert.partialDeepStrictEqual(
+  new Set([{ a: 1 }, { b: 2 }, { c: 3 }]),
+  new Set([{ a: 1 }]),
+);
+// ✅ passes
+
+// ── Map: expected entries must exist in actual ────────────────────────
+assert.partialDeepStrictEqual(
+  new Map([['x', 1], ['y', 2], ['z', 3]]),
+  new Map([['x', 1], ['y', 2]]),
+);
+// ✅ passes — 'z' in actual is ignored
+
+// ── Practical: testing HTTP API responses ─────────────────────────────
+test('POST /users returns created user', async () => {
+  const res = await fetch('/users', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Alice', email: 'alice@example.com' }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const body = await res.json();
+
+  // Only assert on the fields we care about; ignore server-generated ones
+  assert.partialDeepStrictEqual(body, {
+    name: 'Alice',
+    email: 'alice@example.com',
+  });
+  // id, createdAt, updatedAt, __v are present but not asserted
+});
+
+// ── Error matching — only check name and message ─────────────────────
+async function test_errorFields() {
+  try {
+    await fetchUserProfile(999);
+    assert.fail('Expected error');
+  } catch (err) {
+    assert.partialDeepStrictEqual(err, {
+      name: 'NotFoundError',
+      message: 'User with id=999 not found',
+    });
+    // err.stack, err.isOperational, etc. are not asserted
+  }
+}
+```
+
+**Key differences from `deepStrictEqual`:**
+
+| | `deepStrictEqual` | `partialDeepStrictEqual` |
+|---|---|---|
+| Extra properties in `actual` | Fail | Ignored |
+| Prototype comparison | Yes | No |
+| Primitives | `Object.is()` | `Object.is()` |
+| Available since | Very early | Stable in Node.js 24 |
+| Jest equivalent | `expect(a).toEqual(e)` | `expect(a).toMatchObject(e)` |
+
+**Testing tip:** use `partialDeepStrictEqual` by default for API response assertions; switch to `deepStrictEqual` only when you need to guarantee no unexpected extra fields are returned (e.g., checking that sensitive fields like `password` or `secret` are NOT present in the response).
+
+---
+
+## `AsyncLocalStorage` Constructor Options — `defaultValue` and `name` (Node.js 24+)
+
+Node.js 24 adds two new options to the `AsyncLocalStorage` constructor:
+
+- **`defaultValue`** — the value returned by `getStore()` when called outside of any `run()` or `enterWith()` context, instead of `undefined`.
+- **`name`** — a string identifier for the store, accessible via `asyncLocalStorage.name`. Useful for debugging, logging, and diagnostic tooling.
+
+```javascript
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+// ── defaultValue: prevents null-checks on getStore() ─────────────────
+const requestContext = new AsyncLocalStorage({
+  defaultValue: { requestId: 'unknown', userId: null },
+  name: 'requestContext',
+});
+
+// Outside of any run() — returns defaultValue, not undefined
+const ctx = requestContext.getStore();
+console.log(ctx.requestId); // 'unknown' — not undefined, no null-check needed
+
+// Inside run() — returns the provided store
+requestContext.run({ requestId: 'req-123', userId: 42 }, () => {
+  console.log(requestContext.getStore().requestId); // 'req-123'
+});
+
+// After run() exits — back to defaultValue
+console.log(requestContext.getStore().requestId); // 'unknown'
+
+// ── name: identify stores in diagnostic output ────────────────────────
+const authStore  = new AsyncLocalStorage({ name: 'auth',  defaultValue: null });
+const traceStore = new AsyncLocalStorage({ name: 'trace', defaultValue: null });
+
+console.log(authStore.name);  // 'auth'
+console.log(traceStore.name); // 'trace'
+
+// In error handlers / diagnostics — show which store has no context
+function logMissingContext() {
+  for (const store of [authStore, traceStore]) {
+    if (!store.getStore()) {
+      console.warn(`AsyncLocalStorage '${store.name}' has no active context`);
+    }
+  }
+}
+
+// ── Testing pattern: defaultValue makes unit tests cleaner ───────────
+// Before Node.js 24: every test that calls code using getStore() had to
+// wrap in a run() or handle undefined returns defensively.
+// With defaultValue, code under test works correctly without a run() context,
+// and tests only need to run() when testing context-specific behavior.
+
+test('logs requestId from context', (t) => {
+  const loggedIds = [];
+  // No run() needed — defaults are used; avoids null-reference errors in the SUT
+  requestContext.run({ requestId: 'test-456' }, () => {
+    processRequest(); // internally calls requestContext.getStore().requestId
+  });
+});
+```
+
+**Why `defaultValue` matters for testing:** code that calls `getStore()` and accesses a property immediately (e.g., `requestContext.getStore().requestId`) throws a `TypeError` when called outside of a `run()` context if `defaultValue` is not set. With `defaultValue`, the code is safe to call without a context — meaning unit tests that don't care about the stored value don't need to wrap every call in `run()`.
+
+**Community gotcha [community]:** `defaultValue` is a single shared reference — if it is a mutable object, all context-free code shares the same object and mutations accumulate. Use an immutable default (`Object.freeze({ requestId: 'unknown' })`) or a primitive for safety; create fresh defaults per context via `run()` for mutable state.
+
+---
+
+## `import.meta.dirname` / `import.meta.filename` — Stable in Node.js 22+ (no longer experimental)
+
+`import.meta.dirname` and `import.meta.filename` are the ESM equivalents of the CommonJS `__dirname` and `__filename` globals. They were introduced as experimental in Node.js 21.2.0 and are **stable in Node.js 22+** — no flag required.
+
+```javascript
+// ── CJS equivalents (for reference) ─────────────────────────────────
+// __filename → '/home/user/project/src/server.js'
+// __dirname  → '/home/user/project/src'
+
+// ── ESM: import.meta.filename / import.meta.dirname (Node.js 22+) ────
+// import.meta.filename → '/home/user/project/src/server.js'
+// import.meta.dirname  → '/home/user/project/src'
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+// Read a file relative to the current module — the correct ESM pattern
+const config = JSON.parse(
+  readFileSync(join(import.meta.dirname, '../config.json'), 'utf8')
+);
+
+// Dynamic Worker URL using module-relative path (replaces import.meta.url workaround)
+import { Worker } from 'node:worker_threads';
+const worker = new Worker(join(import.meta.dirname, './worker.js'));
+
+// ── The old workaround (Node.js <21.2 / early ESM) ───────────────────
+// import { fileURLToPath } from 'node:url';
+// const __filename = fileURLToPath(import.meta.url);
+// const __dirname  = path.dirname(__filename);
+
+// ── import.meta.resolve() — resolve a specifier to a URL ─────────────
+// Returns an absolute URL string without loading the module
+const workerURL = import.meta.resolve('./worker.js');
+// 'file:///home/user/project/src/worker.js'
+const worker2 = new Worker(new URL(workerURL));
+```
+
+**Decision table:**
+
+| Need | Use |
+|---|---|
+| Current file path in ESM (Node.js 22+) | `import.meta.filename` |
+| Current directory in ESM (Node.js 22+) | `import.meta.dirname` |
+| Resolve a module URL without loading it | `import.meta.resolve(specifier)` |
+| Support Node.js < 21.2 | `fileURLToPath(import.meta.url)` + `path.dirname(...)` |
+| CJS only | `__filename` / `__dirname` (globals) |
+
+**Community gotcha [community]:** `import.meta.dirname` returns a filesystem path (`/home/user/project`), not a `file://` URL. Do NOT pass it directly to `new URL()` — that would produce a malformed URL. Use it with `path.join()` / `path.resolve()` for filesystem operations, or `import.meta.resolve()` when you need a URL.
+
+---
+
+## Additional Community Pitfalls (2026 — Node.js 24 New APIs)
+
+**64. `assert.partialDeepStrictEqual` Array Semantics Are Positional-Agnostic** [community] — Unlike `deepStrictEqual`, which requires arrays to match position-for-position, `partialDeepStrictEqual` treats arrays as multisets: `actual` must contain all elements from `expected`, but order and extra elements are ignored. WHY it causes problems: a test asserting `assert.partialDeepStrictEqual([3, 1, 2], [1, 2, 3])` passes, even though the arrays are in different order. If you need ordered array equality, use `deepStrictEqual`. Use `partialDeepStrictEqual` only when you specifically want order-independent subset checking.
+
+**65. `AsyncLocalStorage` `defaultValue` Is a Shared Reference** [community] — The object passed as `defaultValue` is returned by reference every time `getStore()` is called outside a `run()` context. WHY it causes problems: if two different code paths call `getStore()` outside a `run()` and one modifies the returned object (e.g., `store.userId = 42`), the mutation is visible to all other `getStore()` callers in the default context — a form of unintended global state. Fix: use an immutable default (`Object.freeze(...)`) or a primitive value; create fresh state per request inside `run()`.
+
+**66. `import.meta.dirname` Is a Path, Not a URL** [community] — Passing `import.meta.dirname` to `new URL()` creates a malformed URL (`new URL('/home/user/project')` → `TypeError` or wrong result) because `new URL` expects either a full URL or a relative reference with a base. WHY it causes problems: developers migrating from `new URL('...', import.meta.url)` patterns may reach for `import.meta.dirname` and accidentally create broken URL strings. Fix: use `import.meta.dirname` only with `node:path` functions (`path.join`, `path.resolve`); use `import.meta.resolve(specifier)` or `new URL('./relative', import.meta.url)` when you need a `file://` URL.
+
+---
+
+## Additional Anti-Patterns (Node.js 24 New APIs)
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `deepStrictEqual` for API response shapes | Fails on any extra field (timestamps, versions, internal fields); brittle as APIs evolve | Use `partialDeepStrictEqual` for shape-checking; `deepStrictEqual` only for exact equality |
+| `partialDeepStrictEqual` for ordered array checks | Array match is positional-agnostic — `[3,1,2]` matches expected `[1,2,3]` unexpectedly | Use `deepStrictEqual` for ordered arrays; `partialDeepStrictEqual` for subset checks |
+| Mutable `defaultValue` in `AsyncLocalStorage` constructor | Shared reference mutated in one code path pollutes all context-free calls | Pass `Object.freeze({...})` or a primitive as `defaultValue`; use `run()` for mutable state |
+| `new URL(import.meta.dirname)` | `import.meta.dirname` is a filesystem path, not a URL — produces malformed URL | Use `path.join(import.meta.dirname, ...)` for paths; `import.meta.resolve()` for URLs |
+| `fileURLToPath(import.meta.url)` + `path.dirname()` on Node.js 22+ | Verbose workaround for what `import.meta.dirname` now provides natively | Replace with `import.meta.dirname` on Node.js 22+ |
 
 ---

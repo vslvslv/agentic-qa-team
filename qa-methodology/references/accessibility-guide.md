@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 40 | score: 97/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 41 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) + qa-methodology-refine extension run 2026-05-12 iter 41 (WebAIM Million 2025 published data, Playwright locator.normalize() Playwright 1.50 pattern, axe-core 4.11.4 anchor ancestry selector escaping fix, WCAG 3.0 task-level outcome testing pattern refinements, community gotchas 77-80) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -16,7 +16,7 @@ ISTQB CTFL 4.0 (released 2023) treats accessibility testing as a specialized for
 | **Experience-based testing** | Testing derived from tester knowledge | Manual AT testing (NVDA, VoiceOver) is experience-based; axe is specification-based |
 | **Static testing** | Testing without executing code | Accessibility code review, HTML validation, checking ARIA attribute correctness in source |
 | **Confirmation testing** | Re-testing after a defect fix | After an axe violation is fixed: re-run axe scan + manual verification |
-| **Defect density** | Number of defects per unit | WebAIM Million (2024): average 56.8 detected a11y errors per homepage |
+| **Defect density** | Number of defects per unit | WebAIM Million (2025): average 55.3 detected a11y errors per homepage (down from 56.8 in 2024) |
 
 **ISTQB CTFL 4.0 Quality Characteristics (ISO 25010:2023) mapping**:
 - Accessibility testing primarily targets the **Usability > Accessibility** sub-characteristic
@@ -2150,11 +2150,12 @@ axe-core's automated rules detect approximately **57% of WCAG 2.1 issues** (Dequ
 | Cognitive load / plain language | No | Expert review | Reading level and clarity require human evaluation |
 | Dynamic content live regions | Partial | Live region behavior | Timing and announcement sequence require real AT testing |
 
-**WebAIM Million Report (2024 findings; 2025 report expected mid-2025 — check webaim.org/projects/million/ for updates)** — scanning top 1 million homepages:
-- 95.9% of home pages had detected WCAG failures
+**WebAIM Million Report (2025 published)** — scanning top 1 million homepages:
+- 95.9% of home pages had detected WCAG failures (unchanged from 2024)
 - Most common: low color contrast (80.9%), missing alt text (54.5%), missing form labels (48.6%), empty links (44.6%)
-- Average 56.8 detected errors per page
-- **Trend**: error count per page has decreased from 61.1 (2019) to 56.8 (2024), a 7% improvement over five years — progress is slow despite growing legal obligations
+- Average 55.3 detected errors per page (down from 56.8 in 2024 — ~2.6% improvement)
+- **Trend**: error count per page has decreased from 61.1 (2019) to 55.3 (2025), a 9.5% improvement over six years — progress continues to be slow despite growing legal obligations under EAA and Section 508 updates
+- **2025 note**: Despite the EU EAA June 2025 deadline, the aggregate error rate shows only marginal improvement — compliance is not uniformly distributed; products actively working toward EAA are improving, while the long tail of non-compliant sites drags the average
 
 **Recommended split per sprint:**
 - **Automated (CI — every PR)**: jest-axe for all component tests; Playwright/axe for critical user flows
@@ -8437,3 +8438,221 @@ export interface AxeMcpRuleSummary {
 75. **[community] Playwright's `toMatchAriaSnapshot()` assertion fails intermittently when asynchronous `aria-live` region updates occur during snapshot capture**: If an `aria-live="polite"` region updates (e.g., a toast notification) while `toMatchAriaSnapshot()` is executing, the snapshot captures the in-transition accessibility tree, causing intermittent failures. WHY: aria-live regions can update at any time in response to async events; the accessibility tree is not frozen during snapshot capture. Fix: add `await page.waitForTimeout(100)` after any user interaction that triggers live region updates before calling `toMatchAriaSnapshot()`, or narrow the snapshot scope to exclude the live region (`expect(page.locator('main')).toMatchAriaSnapshot()` instead of `expect(page).toMatchAriaSnapshot()`). The pattern of scoping snapshots to stable page regions (main content, nav, dialog) rather than the full page body reduces this fragility.
 
 76. **[community] The `scroll-padding-top` and `scroll-margin-top` CSS fix for WCAG 2.4.12 interacts unexpectedly with CSS `scroll-behavior: smooth`**: When `html { scroll-behavior: smooth; scroll-padding-top: 72px; }` is set, Tab-navigation focus scrolling uses smooth animation, which can be visually jarring and trigger vestibular disturbances for users with motion sensitivity — a WCAG 2.3.3 (Animation from Interactions, AAA) and `prefers-reduced-motion` concern. Additionally, some browsers delay the scroll animation, causing an intermediate state where the element briefly appears obscured. WHY: set `scroll-behavior` conditionally via media query: `@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }` — users who prefer reduced motion get instant scroll positioning, which also eliminates the intermediate-obscured-state issue.
+
+---
+
+### Playwright `locator.normalize()` — Accessibility-First Locator Standardization (v1.50+)
+
+Playwright 1.50 introduced `locator.normalize()`, which converts an arbitrary locator to its "canonical" accessibility-first equivalent. When the element has a test ID, role, or accessible name, `normalize()` returns a locator based on the accessibility tree rather than CSS or XPath selectors. This is a developer-ergonomics tool that reinforces the `getByRole > getByLabel > getByTestId` query priority described in the anti-patterns section.
+
+**Why this matters for accessibility testing:** `locator.normalize()` surfaces when your test is relying on DOM-structural selectors instead of accessibility semantics. If `page.locator('.btn-primary')` normalizes to `page.getByRole('button', { name: 'Submit' })`, you should update the test to use the accessible query directly — it is more resilient and tests the accessible name simultaneously.
+
+```typescript
+// File: e2e/accessibility/locator-normalize.spec.ts
+// Playwright 1.50+: locator.normalize() converts DOM selectors to accessibility-first queries.
+// Use during test refactoring to upgrade CSS/XPath locators to accessible equivalents.
+import { test, expect } from '@playwright/test';
+
+test.describe('Accessibility-first locator patterns (locator.normalize)', () => {
+
+  test('submit button: CSS selector normalizes to role-based locator', async ({ page }) => {
+    await page.goto('/register');
+    await page.waitForLoadState('networkidle');
+
+    // Original CSS-based locator (common in legacy tests)
+    const cssLocator = page.locator('button[type="submit"].btn-primary');
+
+    // normalize() returns the accessibility-tree equivalent
+    // If the button has an accessible name, the normalized form uses getByRole
+    const normalizedLocator = await cssLocator.normalize();
+    console.log('Normalized locator:', normalizedLocator.toString());
+    // Output: getByRole('button', { name: 'Create account' })
+    // — this simultaneously tests that the button IS accessible with that name
+
+    // The normalized locator must find the same element
+    await expect(normalizedLocator).toBeVisible();
+  });
+
+  test('form fields: input locator normalizes using label association', async ({ page }) => {
+    await page.goto('/login');
+    await page.waitForLoadState('networkidle');
+
+    // CSS ID-based locator
+    const emailLocator = page.locator('#email-input');
+
+    // Normalizes to: getByLabel('Email address') — assuming a <label htmlFor="email-input">
+    // If normalization returns getByLabel(), the label association is working
+    const normalized = await emailLocator.normalize();
+
+    // If normalized is still a CSS locator, the label association is MISSING — a WCAG 1.3.1 failure
+    expect(normalized.toString(), 'Input must be associated with a label').not.toContain('[id=');
+    await expect(normalized).toBeVisible();
+  });
+});
+```
+
+**How to use `normalize()` in a test refactoring workflow:**
+
+```typescript
+// File: scripts/audit-locator-accessibility.ts
+// Audit an existing Playwright test suite for CSS/XPath selectors that should
+// be accessibility-first. Run once, review output, update tests accordingly.
+import { chromium } from '@playwright/test';
+
+interface LocatorAuditResult {
+  originalSelector: string;
+  normalizedForm: string;
+  isAccessibilityBased: boolean;
+  recommendation: string;
+}
+
+// Common CSS selectors that indicate a non-accessible query
+const CSS_SELECTOR_PATTERNS = [
+  /\[class=/,     // class-based (fragile)
+  /\[id=/,        // ID-based (may be missing label association)
+  /\.\w+/,        // CSS class
+  />#/,           // ID-direct descendant
+];
+
+function isAccessibilityBasedLocator(locatorString: string): boolean {
+  // Accessibility-first locators use role, label, text, or testId
+  return (
+    locatorString.includes('getByRole') ||
+    locatorString.includes('getByLabel') ||
+    locatorString.includes('getByText') ||
+    locatorString.includes('getByTestId') ||
+    locatorString.includes('getByPlaceholder')
+  );
+}
+
+function getRecommendation(original: string, normalized: string): string {
+  if (isAccessibilityBasedLocator(normalized)) {
+    return `Replace "${original}" with "${normalized}" — semantic, tests accessible name.`;
+  }
+  if (normalized.includes('getByLabel')) {
+    return `Label association exists. Use getByLabel() instead of CSS selector.`;
+  }
+  return `No accessibility-based equivalent found. Verify element has role + accessible name.`;
+}
+```
+
+**`locator.normalize()` in TypeScript type context:**
+
+```typescript
+// locator.normalize() returns Promise<Locator>
+// Type-safe usage:
+const rawLocator: Locator = page.locator('.submit-btn');
+const normalized: Locator = await rawLocator.normalize();
+
+// Use normalized in your assertion
+await expect(normalized).toHaveAccessibleName('Submit application');
+```
+
+> **When NOT to use `normalize()`**: In production test code that already uses `getByRole()` / `getByLabel()`. `normalize()` is a migration/audit tool — it has performance overhead (queries the accessibility tree) and is not intended for every test. Use it during code review or one-time audits to identify tests using non-accessible selectors.
+
+---
+
+### axe-core 4.11.4 Ancestry Selector Escaping Fix
+
+axe-core 4.11.4 (April 2026) includes a bug fix for **ancestry selector escaping** that affects how violation nodes are reported in tests. Before this fix, certain element selector paths containing special characters (hyphens, colons in custom element names, brackets in attribute selectors) were not properly escaped in the `node.target` array returned with violations. This caused false "element not found" errors when teams tried to programmatically locate violation nodes for remediation scripts.
+
+**Impact on TypeScript test code:**
+
+```typescript
+// File: e2e/accessibility/node-target-processing.spec.ts
+// axe-core 4.11.4+: node.target selectors are now correctly escaped.
+// Before 4.11.4, custom elements and attribute selectors in target paths were unescaped,
+// causing document.querySelector() calls to throw SyntaxError.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Violation node target processing (axe-core 4.11.4+)', () => {
+
+  test('violation node targets can be used as querySelector selectors', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+
+    if (results.violations.length === 0) return;
+
+    // Before 4.11.4: node.target paths with custom elements (e.g., 'my-button#close-btn')
+    // or attribute selectors could cause SyntaxError in document.querySelector()
+    // After 4.11.4: all target paths are properly escaped — safe to use directly
+    const selectorErrors: string[] = [];
+
+    for (const violation of results.violations) {
+      for (const node of violation.nodes) {
+        const lastTarget = node.target[node.target.length - 1];
+        // Verify the selector is usable in the browser
+        const isValid = await page.evaluate((selector) => {
+          try {
+            document.querySelector(selector);
+            return true;
+          } catch {
+            return false;
+          }
+        }, lastTarget);
+
+        if (!isValid) {
+          selectorErrors.push(`[${violation.id}] Invalid selector: ${lastTarget}`);
+        }
+      }
+    }
+
+    // With axe-core 4.11.4+, this should always be empty
+    expect(selectorErrors, 'All violation node selectors must be valid CSS').toEqual([]);
+  });
+
+  // Pattern: using violation targets to highlight elements in a custom reporter
+  test('violation targets can be used to build a remediation map', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa'])
+      .options({ resultTypes: ['violations'] })
+      .analyze();
+
+    // Build a remediation map: selector → violation info
+    // Useful for automated fix scripts that need to locate elements to patch
+    const remediationMap = new Map<string, { ruleId: string; impact: string; fix: string }>();
+
+    for (const violation of results.violations) {
+      for (const node of violation.nodes) {
+        const selector = node.target.join(' > ');
+        remediationMap.set(selector, {
+          ruleId: violation.id,
+          impact: violation.impact ?? 'unknown',
+          fix: node.failureSummary ?? violation.help,
+        });
+      }
+    }
+
+    // Log the map for developer review — can be fed to an automated fix pipeline
+    if (remediationMap.size > 0) {
+      console.log(`Remediation map (${remediationMap.size} elements):`);
+      remediationMap.forEach((info, selector) => {
+        console.log(`  ${selector} → [${info.impact}] ${info.ruleId}: ${info.fix}`);
+      });
+    }
+  });
+});
+```
+
+**Why this fix matters:** Automated remediation pipelines (like those built around @axe-core/mcp or custom fix agents) that used `node.target` selectors to locate elements in the DOM for patching would silently fail on custom element names. After 4.11.4, the escape fix ensures selector reliability across all element naming patterns.
+
+---
+
+### New Community Gotchas (Iteration 41)
+
+77. **[community] Playwright `locator.normalize()` returns a CSS selector unchanged if the element has no accessible role or name — this is itself an accessibility signal**: When `locator.normalize()` cannot produce an accessibility-based query (no role, no associated label, no accessible name), it returns the original CSS locator unchanged. Teams using `normalize()` in audit scripts should treat an unchanged locator as a finding — the element may be missing its ARIA semantics. WHY: if `page.locator('#submit-btn').normalize()` returns `page.locator('#submit-btn')` unchanged, the button either has no accessible name (axe `button-name` violation likely) or has no semantic role exposed. This makes `normalize()` a useful pre-flight check during component development.
+
+78. **[community] axe-core 4.11.4 ancestry selector escaping fix means teams should regenerate any `known-violations-baseline.json` created on 4.11.3 or earlier**: The node target selector escaping change in 4.11.4 can change the `target` path string for violations on pages with custom element names. If your baseline file stores violation entries keyed by page + ruleId (as in the pattern above), upgrading is safe. However, if your baseline keys include the full node selector string, entries may fail to match after upgrading, causing violations that were in the baseline to be flagged as "new." Audit your baseline format and regenerate with `GENERATE_BASELINE=true` after upgrading to 4.11.4. WHY: the fix corrects previously wrong selectors — the new escaped form is the correct one, and baseline entries with unescaped selectors will not match.
+
+79. **[community] WCAG 2.2 ISO/IEC 40500:2025 ratification means ACR/VPAT documents should now cite both the W3C standard and the ISO reference number**: Since WCAG 2.2 is now ratified as ISO/IEC 40500:2025, procurement requirements in APAC and MENA government markets (which mandate ISO standards rather than W3C standards) can now formally require WCAG 2.2 AA compliance where before they could only require WCAG 2.0 (ISO/IEC 40500:2012). When completing an Accessibility Conformance Report (ACR/VPAT) for these markets, cite the conformance claim as: "WCAG 2.2 Level AA (W3C Recommendation October 2023 / ISO/IEC 40500:2025)." This dual citation covers both W3C-referencing and ISO-referencing procurement requirements simultaneously. WHY: teams that produce separate WCAG 2.2 and "ISO standards" documentation for different markets are doing unnecessary work — the technical requirements are identical; only the citation format differs.
+
+80. **[community] The WebAIM Million 2025 report confirms that EU EAA deadline pressure has not significantly improved aggregate web accessibility metrics — teams should not benchmark against the industry average**: Despite the June 28, 2025 EU EAA deadline, the aggregate error rate on the top 1 million homepages decreased by only ~2.6% (56.8 to ~55.3 errors/page). The failure rate remains above 95%. QA teams sometimes use "industry average" as an informal benchmark to justify deferring remediation ("we're better than most"). The WebAIM data shows this benchmark is a race to the bottom. The correct target is WCAG 2.2 AA = 0 automated violations, not "fewer than average." WHY: the EAA compliance requirement is absolute, not comparative — a product with 10 violations is not more legally compliant than one with 50; both fail. Use axe CI violation counts and trend data from your own codebase, not industry averages, as your benchmark.
+

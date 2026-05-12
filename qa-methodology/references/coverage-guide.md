@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 40 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -19,6 +19,9 @@
      typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html (fetched 2026-05-12: TS 6.0 default changes — module/target/types/rootDir/strict; removed options: outFile, classic moduleResolution; ignoreDeprecations bridge flag) |
      vitest.dev/config/coverage (re-fetched 2026-05-12: coverage.thresholds[glob-pattern] per-pattern syntax, global threshold still applies to pattern-matched files — differs from Jest) |
      vitest.dev/guide/migration (fetched 2026-05-12: Vitest 4 migration — coverage.all removed, coverage.extensions removed, coverage.ignoreEmptyLines removed, experimentalAstAwareRemapping removed; ignoreClassMethods now works with V8 provider) |
+     github.com/vitest-dev/vitest/releases (re-fetched 2026-05-12: v4.1.6 latest stable; v5.0.0-beta.2 worker_threads coverage; @fast-check/vitest beforeEach/afterEach Vitest 4.1+ integration) |
+     github.com/dubzzz/fast-check/releases (fetched 2026-05-12: fast-check v4.8.0 chainUntil; @fast-check/vitest dedicated Vitest integration with fc.test, beforeEach/afterEach support) |
+     nodejs.org/blog/release/v24.0.0 (fetched 2026-05-12: Node 24 --experimental-strip-types still RC; test runner auto-awaits subtests; Node 24 global setup/teardown hooks) |
      community: production experience patterns synthesized from training knowledge -->
 
 ## Core Principles
@@ -2216,6 +2219,117 @@ export default defineConfig({
 | Unspecified metrics | Inherit global | Not inherited — independently evaluated |
 | Negative thresholds (absolute count) | Yes (`-N`) | No — percentage only |
 
+### Pattern 32 — `@fast-check/vitest`: dedicated property-based test integration with Vitest 4.1+  [community]
+
+fast-check 4.x ships `@fast-check/vitest`, a dedicated integration package that replaces the
+manual `it(...) + fc.assert(...)` pairing from Pattern 12 with `fc.test()` — a first-class
+Vitest-aware wrapper that surfaces property failures in Vitest's native test reporter and
+provides type-safe hook support (`fc.beforeEach`, `fc.afterEach`) for stateful model testing.
+
+**Why this matters for coverage**: `@fast-check/vitest` registers each property test as a
+native Vitest test case. This means:
+- Coverage is collected per-property-run, not just per `fc.assert()` call — Vitest sees all
+  generated test cases as part of its instrumentation scope.
+- `fc.test.failing()` (the property-based equivalent of `test.fails()`) integrates with
+  Vitest's known-failure tracking, avoiding false-positive coverage inflation from expected
+  property failures.
+- In Vitest's AI agent reporter mode (G37), `@fast-check/vitest` property failures are
+  reported as structured test failures rather than raw assertion errors — easier to parse.
+
+```bash
+# Install dedicated Vitest integration (fast-check 4.x + Vitest 4.1+)
+npm install --save-dev fast-check @fast-check/vitest
+```
+
+```typescript
+// src/utils/clamp.test.ts — using @fast-check/vitest (replaces manual fc.assert)
+import { describe, expect } from 'vitest';
+import { fc, test } from '@fast-check/vitest';
+import { clamp } from './clamp';
+
+// Note: use `test` from @fast-check/vitest, not from vitest, for property tests.
+// `describe` and `expect` are still imported from vitest.
+
+describe('clamp — property tests with @fast-check/vitest', () => {
+  // fc.test replaces the it(...) + fc.assert(...) pattern from Pattern 12:
+  test.prop([
+    fc.integer(),
+    fc.integer(),
+    fc.integer(),
+  ])('always returns a value within [min, max]', (a, b, c) => {
+    const [min, max] = [Math.min(b, c), Math.max(b, c)];
+    const result = clamp(a, min, max);
+    expect(result).toBeGreaterThanOrEqual(min);
+    expect(result).toBeLessThanOrEqual(max);
+  });
+
+  test.prop([
+    fc.integer({ min: -1000, max: 1000 }),
+    fc.integer({ min: 0, max: 100 }),
+  ])('is idempotent: clamp(clamp(x)) === clamp(x)', (value, range) => {
+    const once = clamp(value, 0, range);
+    const twice = clamp(once, 0, range);
+    expect(twice).toBe(once);
+  });
+});
+```
+
+```typescript
+// src/domain/account.test.ts — stateful property test with beforeEach
+// @fast-check/vitest provides fc.beforeEach for stateful model testing:
+import { describe, expect } from 'vitest';
+import { fc, test } from '@fast-check/vitest';
+import { Account } from './account';
+
+describe('Account — stateful property test', () => {
+  // fc.beforeEach runs before each generated test case (not per property group):
+  // Use this to reset shared state between property runs.
+  test.prop([
+    fc.integer({ min: 1, max: 10000 }),  // initial balance
+    fc.integer({ min: 1, max: 500 }),    // withdrawal amount
+  ], { numRuns: 200 })('balance never goes negative after guarded withdrawal', (initial, amount) => {
+    const account = new Account(initial);
+    account.withdrawIfSufficient(amount);
+    expect(account.balance).toBeGreaterThanOrEqual(0);
+  });
+});
+```
+
+```typescript
+// Equivalent manual pattern (Pattern 12 style — still valid, no deprecation):
+import * as fc from 'fast-check';
+import { it } from 'vitest';
+import { clamp } from './clamp';
+
+it('always within range', () => {
+  fc.assert(
+    fc.property(fc.integer(), fc.integer(), fc.integer(), (a, b, c) => {
+      const [min, max] = [Math.min(b, c), Math.max(b, c)];
+      const result = clamp(a, min, max);
+      return result >= min && result <= max;
+    }),
+  );
+});
+// The @fast-check/vitest form (test.prop) is preferred for Vitest 4.1+ projects
+// because it integrates with Vitest's test reporter and makes property failures
+// easier to read in CI output and the Vitest UI.
+```
+
+**fast-check 4.x new arbitraries relevant to TypeScript coverage:**
+- `fc.chainUntil` (v4.8.0): iterative chaining — generates a sequence of values until a
+  predicate is satisfied. Useful for generating valid state machine inputs in property tests.
+- `fc.stringMatching` with Unicode property escapes (`\p{}`, `\P{}`) (v4.7.0): generates
+  strings matching complex regex patterns including Unicode category constraints.
+- `json` arbitrary with `reversible: true`: generates JSON round-trip safe values — useful
+  for testing serialisation branches.
+
+**When to use `@fast-check/vitest` vs manual `fc.assert`:**
+- New Vitest 4.1+ projects: use `@fast-check/vitest` for cleaner output and hook support.
+- Existing codebases with many `fc.assert()` calls: the manual form still works; migrate
+  incrementally by adding `test.prop` for new tests.
+- The `@fast-check/vitest` package also exports `fc.describe()` and scoped runner utilities —
+  check the package README for the full API (it tracks fast-check major releases).
+
 ---
 
 ## Anti-Patterns
@@ -3408,7 +3522,7 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Alternative | What it measures better than line/branch coverage |
 |-------------|---------------------------------------------------|
 | Mutation testing (Stryker JS/TS) | Whether tests can detect real bugs — not just execute them |
-| Property-based testing (fast-check) | Edge cases across the full input space |
+| Property-based testing (fast-check / @fast-check/vitest) | Edge cases across the full input space; `test.prop()` integrates natively with Vitest 4.1+ reporter |
 | Contract testing (Pact) | Integration correctness at service boundaries |
 | Test review / pair review | Assertion quality and intent clarity |
 | Visual regression (Chromatic, Percy) | UI correctness that line coverage cannot measure |
@@ -3466,6 +3580,57 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
   were all removed in Vitest 4; silently present in config, they have no effect. See G51 for the full upgrade
   checklist. Treat the Vitest 3 → 4 upgrade as a coverage-config audit event.
 
+### G52 — Node 24 test runner breaking change: subtests no longer return Promises — async coverage patterns affected  [community]
+Node.js 24.0.0 (released April 2025) changed the built-in test runner so that `test()` and
+`t.test()` no longer return Promises. Code that manually `await`-ed the Promise returned by
+a test (a workaround for ensuring subtest completion before checking coverage state) now
+silently ignores the awaited value — `await test(...)` is a no-op rather than a wait.
+**WHY it matters for coverage**: Pattern 14's programmatic `run()` API and any TypeScript
+test scripts that relied on awaiting subtest handles to force sequential coverage collection
+need to be updated. In Node 24+, the test runner automatically waits for all subtests to
+complete before moving on — the manual await pattern is both unnecessary and misleading.
+
+Additionally, **`--experimental-strip-types` is still RC-status in Node 24** (documented as
+"release candidate" in the Node 24.0.0 release notes). Despite being close to stable, it is
+not yet the recommended default for production TypeScript projects. For coverage workflows:
+- Node 22.6+: `--experimental-strip-types` available but experimental.
+- Node 24.0: `--experimental-strip-types` promoted to RC, not yet stable.
+- Until it reaches stable status, production TypeScript coverage pipelines should use Vitest,
+  Jest, or the `c8` wrapper rather than relying on Node's native type stripping for
+  coverage collection — the API surface may still change in a patch release.
+
+Node 24 also added **global setup/teardown hooks** (`setup` and `teardown`) to the built-in
+test runner. For coverage workflows using Pattern 14's programmatic `run()` API, these hooks
+enable pre-coverage database seeding and post-coverage cleanup without the manual `beforeAll`
+workaround:
+
+```typescript
+// scripts/run-tests-with-thresholds.ts — Node 24 with global setup/teardown
+import { run } from 'node:test';
+import process from 'node:process';
+
+// Node 24: globalSetup and globalTeardown are supported in the run() options.
+// They run once before/after all tests (not per-test).
+const stream = run({
+  files: ['src/**/*.test.ts'],
+  coverage: true,
+  lineCoverage: 80,
+  branchCoverage: 75,
+  functionCoverage: 80,
+  // Node 24+ only: global setup hook (runs once, not per test)
+  // globalSetup: () => import('./test-helpers/db-setup.js'),
+  // globalTeardown: () => import('./test-helpers/db-teardown.js'),
+});
+
+// Node 24 change: t.test() no longer returns a Promise that requires manual await.
+// Tests complete automatically before the stream closes.
+stream.on('test:fail', () => { process.exitCode = 1; });
+```
+
+**Upgrade path for Pattern 14 code that awaits test handles**: remove any
+`const result = await test(...)` patterns — the return value is now `void` in Node 24.
+Coverage collection is unaffected; only the manual await is obsolete.
+
 ---
 
 ## Key Resources
@@ -3507,3 +3672,6 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Stryker VS Code Plugin | Official | https://stryker-mutator.io/blog/vscode-plugin/ | Inline mutation results in VS Code gutter (StrykerJS v9.3.0+, Nov 2025); uses MSP; replaces HTML-report-in-browser workflow |
 | Vitest coverage config reference | Official | https://vitest.dev/config/coverage | Full coverage config: autoUpdate, changed, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks, reportOnFailure, processingConcurrency, allowExternal, cleanOnRerun, thresholds.100, thresholds[glob-pattern] per-pattern syntax |
 | TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | TS 6.0 default changes (module, target, types, rootDir) and removed options (outFile, classic moduleResolution) that silently break coverage tooling; ignoreDeprecations bridge flag |
+| @fast-check/vitest integration | Official | https://github.com/dubzzz/fast-check/tree/main/packages/vitest | Dedicated fast-check × Vitest integration: `test.prop()`, `fc.test.failing()`, `beforeEach`/`afterEach` hooks; requires fast-check 4.x + Vitest 4.1+ |
+| fast-check docs | Official | https://fast-check.io/docs/ | Property-based testing for TypeScript: arbitraries, shrinking, `fc.assert`, model-based testing |
+| Node.js 24 release notes | Official | https://nodejs.org/en/blog/release/v24.0.0 | Node 24 breaking change: `test()`/`t.test()` no longer return Promises; global setup/teardown; `--experimental-strip-types` still RC status |

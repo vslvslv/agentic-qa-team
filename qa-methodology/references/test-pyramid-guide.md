@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 42 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
@@ -13,10 +13,11 @@
 <!-- new (2026-05-12 iter 39): Node.js 24.14.0 LTS (Mar 2026) — `expectFailure` test option for explicitly marking xfail test cases in the built-in test runner (analogous to pytest's @pytest.mark.xfail); `env` option on the `run()` function for per-invocation environment variables; community gotcha: `expectFailure` at the integration level — using `expectFailure` as a quarantine mechanism without fixing the root cause accumulates known failures that are never addressed -->
 <!-- new (2026-05-12 iter 40): Node.js 26.0.0 (May 5, 2026) — TypeScript type stripping fully stable: `--experimental-transform-types` flag removed, bare `node .ts` works without any flag for erasable syntax on any supported Node.js 26 version; Temporal API enabled by default (replaces `new Date()` for time-sensitive unit tests); V8 14.6 — `Map.prototype.getOrInsertComputed`, `Iterator.concat()`; Node.js 26.1.0 (May 7, 2026) — `node:test` randomization: `--test-randomize` + `--test-random-seed=N` flags detect hidden order-dependencies at the unit and integration test levels; `getTestContext()` API accesses current TestContext from helper functions; `AbortSignal.timeout()` mock support in MockTimers; `testId` added to test event objects for structured test tracing; Vitest 4.1.6 (May 11, 2026) stable patch; community gotcha: Node.js 26 removes `--experimental-transform-types` — teams that explicitly passed the flag in CI scripts (e.g., `node --experimental-transform-types server.ts`) now see an "unknown flag" error on Node 26 upgrade -->
 <!-- new (2026-05-12 iter 41): TypeScript 5.9 — new `tsc --init` defaults (`module:nodenext`, `verbatimModuleSyntax:true`, `moduleDetection:force`, `isolatedModules:true`) silently break test tsconfigs that extend the root tsconfig; `import defer` lazy module evaluation affects test setup performance; `--module node20` stable (replaces unstable `nodenext` for Node 20 environments); BREAKING: `ArrayBuffer` type hierarchy change — `Buffer`/`TypedArray` no longer assignable to `ArrayBuffer` in test files using Node.js buffer types; Zod/tRPC cache-instantiation optimisation reduces "excessive type instantiation" errors in large test suites using `expect.schemaMatching`; `verbatimModuleSyntax:true` as `tsc --init` default breaks test files that import type-only symbols without `import type`; community gotchas: TS 5.9 `ArrayBuffer` change breaks `Buffer` usage in integration test helpers (gotcha #45), TS 5.9 `verbatimModuleSyntax` default breaks non-type test imports (gotcha #46) -->
+<!-- new (2026-05-12 iter 42): Node.js 24.15.0 (Apr 2026 LTS) — worker ID exposed during concurrent test execution (debugging parallel integration tests), `require(esm)` stable, module compile cache stable; Node.js 25.9.0 (Apr 2026) — BREAKING: `MockModuleOptions.defaultExport` + `MockModuleOptions.namedExports` consolidated into single `MockModuleOptions.exports` object (automated codemod: `npx codemod @nodejs/mock-module-exports`), fake timer compatibility with `node:test` fixed; community gotcha: Node.js 25.9 `mock.module()` API consolidation silently breaks integration test stubs that used `namedExports` or `defaultExport` after upgrading Node (gotcha #47) -->
 
 ---
 
-> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. New patterns (2026 iter 35): TypeScript 6.0 silently breaks test `tsconfig.json` (`types` defaults to `[]`, `strict` defaults to `true`, `module` defaults to `esnext`, `rootDir` defaults to `.`) — most test configs need explicit opt-ins after upgrading; Vitest 5.0.0-beta.2 (May 5, 2026) in active development — inline expect package, `sequential` removal, `.vitest/` directory restructure; Playwright v1.60 adds `tracing.startHar()` first-class HAR API + `locator.drop()` for drag-and-drop e2e tests. New patterns (2026 iter 36): Vitest 3.2 — Annotation API (structured test metadata for JUnit/HTML reporters), Scoped Fixtures (`scope:'file'|'worker'` in `test.extend`), `using vi.spyOn()` automatic spy restore, Test Signal API (AbortSignal for timeout cleanup), `sequence.groupOrder` replaces `&&`-chained CI commands for fail-fast ordering; TypeScript 5.8 — `--module node18` stable, `import with {type:'json'}` replaces deprecated `assert`, faster watch mode; Vitest 3.2 `workspace` config key deprecated in favour of inline `test.projects`. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI. New patterns (2026 iter 37): Playwright Agents (v1.56 — planner/generator/healer AI agents for e2e test creation and maintenance; pyramid governance required), Playwright v1.57 Speedboard reporter tab for identifying slow e2e tests + testConfig.webServer.wait named capture groups + Chrome for Testing + Service Worker BrowserContext routing, Playwright v1.59 page.screencast API, Playwright v1.60 browser.on('context') + getByRole description option + toHaveCSS pseudo-element option + webSocketRoute.protocols() for WebSocket integration tests + testInfoError.errorContext improved failure diagnostics; Vitest 4.1 vi.defineHelper (clean stack traces in custom assertions) + coverage.changed (per-PR coverage delta without slowing CI) + page.mark()/locator.mark() trace annotations in browser mode; TypeScript 6.0 esModuleInterop always true breaks legacy `import * as X` in test files + #/ subpath import shorthand. New patterns (2026 iter 38): Node.js v22.18.0 (Jul 2025) — TypeScript type stripping on by default, run `.ts` unit test files with bare `node` (no transpiler); Node.js 24 test runner — auto-wait subtests (BREAKING: `t.test()` no longer returns Promise), global setup/teardown, per-test `--test-timeout`; Node.js native TS limitations: no enums, no decorators, no parameter properties — NestJS integration tests cannot use bare `node`; Vitest 4.1 — `mockThrow`/`mockThrowOnce` for cleaner unit error scenarios, GitHub Actions Job Summary reporter (flaky-test highlighting + permalink URLs), agent reporter mode (AI coding tools get minimal output); Vitest 5.0 beta — multi-environment merge reports (non-sharded), JUnit jest-junit naming, `configDefaults.reporters`; Vitest 3.2 — `locators.extend` browser API, V8 AST-aware coverage, `watchTriggerPatterns`. New patterns (2026 iter 40): Node.js 26 (May 2026) — type stripping fully stable (no flags required on any supported Node 26 version), `--experimental-transform-types` removed (teams that used the flag explicitly in CI scripts will see "unknown flag" errors on Node 26 upgrade); Temporal API on by default (V8 14.6) — `Temporal.Now.plainDateTimeISO()` replaces `new Date()` for time-sensitive tests where timezone semantics matter; `node:test` randomization (`--test-randomize` + `--test-random-seed=N`) surfaces hidden unit-test order-dependencies without external tooling; `getTestContext()` enables context-free access to the current test from helper functions; `Iterator.concat()` (V8 14.6) for composing test data iterators at the unit level; Vitest 4.1.6 stable (May 11, 2026). New patterns (2026 iter 41): TypeScript 5.9 — new `tsc --init` prescriptive defaults (`module:nodenext`, `verbatimModuleSyntax:true`, `moduleDetection:force`, `isolatedModules:true`) that silently break test tsconfigs inheriting the root tsconfig; `--module node20` stable option for Node 20 LTS environments (replaces `nodenext` which may receive future breaking changes); BREAKING `ArrayBuffer` type hierarchy change — `Buffer` and `TypedArray` are no longer a subtype of `ArrayBuffer`, breaking integration test helpers that pass `Buffer` where `ArrayBuffer` is expected; `import defer` lazy module evaluation for expensive test setup modules; Zod/tRPC type instantiation cache improvement reduces "excessive type instantiation depth" errors in test suites using `expect.schemaMatching` on deep schemas; `verbatimModuleSyntax:true` new `tsc --init` default requires `import type` for type-only symbols — silently breaks test files with plain `import` of type-only exports after running `tsc --init` and inheriting the new defaults.
+> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. New patterns (2026 iter 35): TypeScript 6.0 silently breaks test `tsconfig.json` (`types` defaults to `[]`, `strict` defaults to `true`, `module` defaults to `esnext`, `rootDir` defaults to `.`) — most test configs need explicit opt-ins after upgrading; Vitest 5.0.0-beta.2 (May 5, 2026) in active development — inline expect package, `sequential` removal, `.vitest/` directory restructure; Playwright v1.60 adds `tracing.startHar()` first-class HAR API + `locator.drop()` for drag-and-drop e2e tests. New patterns (2026 iter 36): Vitest 3.2 — Annotation API (structured test metadata for JUnit/HTML reporters), Scoped Fixtures (`scope:'file'|'worker'` in `test.extend`), `using vi.spyOn()` automatic spy restore, Test Signal API (AbortSignal for timeout cleanup), `sequence.groupOrder` replaces `&&`-chained CI commands for fail-fast ordering; TypeScript 5.8 — `--module node18` stable, `import with {type:'json'}` replaces deprecated `assert`, faster watch mode; Vitest 3.2 `workspace` config key deprecated in favour of inline `test.projects`. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI. New patterns (2026 iter 37): Playwright Agents (v1.56 — planner/generator/healer AI agents for e2e test creation and maintenance; pyramid governance required), Playwright v1.57 Speedboard reporter tab for identifying slow e2e tests + testConfig.webServer.wait named capture groups + Chrome for Testing + Service Worker BrowserContext routing, Playwright v1.59 page.screencast API, Playwright v1.60 browser.on('context') + getByRole description option + toHaveCSS pseudo-element option + webSocketRoute.protocols() for WebSocket integration tests + testInfoError.errorContext improved failure diagnostics; Vitest 4.1 vi.defineHelper (clean stack traces in custom assertions) + coverage.changed (per-PR coverage delta without slowing CI) + page.mark()/locator.mark() trace annotations in browser mode; TypeScript 6.0 esModuleInterop always true breaks legacy `import * as X` in test files + #/ subpath import shorthand. New patterns (2026 iter 38): Node.js v22.18.0 (Jul 2025) — TypeScript type stripping on by default, run `.ts` unit test files with bare `node` (no transpiler); Node.js 24 test runner — auto-wait subtests (BREAKING: `t.test()` no longer returns Promise), global setup/teardown, per-test `--test-timeout`; Node.js native TS limitations: no enums, no decorators, no parameter properties — NestJS integration tests cannot use bare `node`; Vitest 4.1 — `mockThrow`/`mockThrowOnce` for cleaner unit error scenarios, GitHub Actions Job Summary reporter (flaky-test highlighting + permalink URLs), agent reporter mode (AI coding tools get minimal output); Vitest 5.0 beta — multi-environment merge reports (non-sharded), JUnit jest-junit naming, `configDefaults.reporters`; Vitest 3.2 — `locators.extend` browser API, V8 AST-aware coverage, `watchTriggerPatterns`. New patterns (2026 iter 40): Node.js 26 (May 2026) — type stripping fully stable (no flags required on any supported Node 26 version), `--experimental-transform-types` removed (teams that used the flag explicitly in CI scripts will see "unknown flag" errors on Node 26 upgrade); Temporal API on by default (V8 14.6) — `Temporal.Now.plainDateTimeISO()` replaces `new Date()` for time-sensitive tests where timezone semantics matter; `node:test` randomization (`--test-randomize` + `--test-random-seed=N`) surfaces hidden unit-test order-dependencies without external tooling; `getTestContext()` enables context-free access to the current test from helper functions; `Iterator.concat()` (V8 14.6) for composing test data iterators at the unit level; Vitest 4.1.6 stable (May 11, 2026). New patterns (2026 iter 41): TypeScript 5.9 — new `tsc --init` prescriptive defaults (`module:nodenext`, `verbatimModuleSyntax:true`, `moduleDetection:force`, `isolatedModules:true`) that silently break test tsconfigs inheriting the root tsconfig; `--module node20` stable option for Node 20 LTS environments (replaces `nodenext` which may receive future breaking changes); BREAKING `ArrayBuffer` type hierarchy change — `Buffer` and `TypedArray` are no longer a subtype of `ArrayBuffer`, breaking integration test helpers that pass `Buffer` where `ArrayBuffer` is expected; `import defer` lazy module evaluation for expensive test setup modules; Zod/tRPC type instantiation cache improvement reduces "excessive type instantiation depth" errors in test suites using `expect.schemaMatching` on deep schemas; `verbatimModuleSyntax:true` new `tsc --init` default requires `import type` for type-only symbols — silently breaks test files with plain `import` of type-only exports after running `tsc --init` and inheriting the new defaults. New patterns (2026 iter 42): Node.js 24.15.0 LTS (Apr 2026) — worker ID exposed during concurrent `node:test` execution (enables test-parallel diagnostic logging), `require(esm)` marked stable; Node.js 25.9.0 (Apr 2026) — BREAKING: `mock.module()` API consolidates `defaultExport` + `namedExports` into a single `exports` object — test files using the old separate-options form break silently on upgrade; fake timer / `node:test` compatibility fixed.
 
 ---
 
@@ -3031,6 +3032,117 @@ The key diagnostic step: if your test suite passes but `tsc --noEmit` fails with
 
 ---
 
+47. **Node.js 25.9.0 `mock.module()` API consolidation silently breaks integration test stubs** [community] — Node.js 25.9.0 (April 1, 2026) merged the `MockModuleOptions.defaultExport` and `MockModuleOptions.namedExports` options into a single `MockModuleOptions.exports` object. The old separate-option form is no longer accepted — a `mock.module()` call that uses `namedExports` or `defaultExport` will silently produce an object with the wrong shape (the old keys are ignored) rather than throwing an error, making this an especially treacherous breaking change. The failure mode at the unit and integration test levels: mocks that previously returned the correct exports now return `undefined` for each mocked export, causing `TypeError: fn is not a function` errors in the test body rather than a clear "invalid option" error. TypeScript `@types/node` for 25.9.0 was updated to remove the old option keys — upgrading `@types/node` surfaces all affected call sites at compile time before they fail at runtime. An automated Node.js-provided codemod (`npx codemod @nodejs/mock-module-exports`) transforms all affected call sites in a single pass. This change also affects the 24.15.0 LTS track — the `exports` consolidation was back-ported.
+
+```typescript
+// BEFORE Node.js 25.9.0 (namedExports / defaultExport separate — now ignored silently)
+import { mock, test } from 'node:test';
+import assert from 'node:assert/strict';
+
+// OLD: separate namedExports and defaultExport keys — SILENTLY BROKEN on 25.9.0+
+test('mock payment service', async () => {
+  mock.module('../src/payment-service.js', {
+    namedExports: {
+      processPayment: async () => ({ id: 'pay_001', status: 'ok' }),
+    },
+    defaultExport: { version: '2.0' },
+  });
+  const { processPayment } = await import('../src/payment-service.js');
+  const result = await processPayment({ amount: 100 });
+  // On 25.9.0+: processPayment is undefined — the mock silently produced wrong shape
+  assert.strictEqual(result.status, 'ok'); // TypeError: processPayment is not a function
+});
+
+// AFTER Node.js 25.9.0 (consolidated exports object — correct form)
+test('mock payment service', async () => {
+  mock.module('../src/payment-service.js', {
+    exports: {
+      // Named exports are own enumerable properties
+      processPayment: async () => ({ id: 'pay_001', status: 'ok' }),
+      // Default export is the `default` property
+      default: { version: '2.0' },
+    },
+  });
+  const { processPayment } = await import('../src/payment-service.js');
+  const result = await processPayment({ amount: 100 });
+  assert.strictEqual(result.status, 'ok'); // passes ✓
+});
+```
+
+Fix: run the automated codemod on all test files using `mock.module()` before upgrading Node.js past 25.8 or 24.14. Add a CI lint rule (`grep -rn "namedExports:\|defaultExport:" --include="*.test.ts" tests/`) to detect surviving old-form calls that the codemod may have missed (e.g., in dynamically constructed option objects). After migration, remove the codemod dependency and update `@types/node` to get compile-time safety against future `MockModuleOptions` changes. [official: nodejs.org/en/blog/release/v25.9.0, nodejs.org/en/blog/release/v24.15.0]
+
+---
+
+### Node.js 24.15.0 and 25.9.0: Concurrent Test Worker ID and Module Mocking  [community]
+
+Node.js 24.15.0 LTS (April 15, 2026) and Node.js 25.9.0 (April 1, 2026) each introduced targeted improvements to the built-in `node:test` runner and module system that affect integration test suites running on these LTS/current tracks.
+
+**Worker ID for concurrent test execution (Node.js 24.15.0):**
+
+When running integration test cases concurrently with the built-in runner (`--test-concurrency=N`), each test now exposes its worker ID through the `TestContext`. This enables worker-partitioned resource allocation — for example, assigning a separate database schema or port range to each worker — without coordination through external registries:
+
+```typescript
+// tests/integration/orders.integration.test.ts — worker ID for port partitioning
+// Node.js 24.15.0: test context now exposes workerId during concurrent execution
+import { test, type TestContext } from 'node:test';
+import assert from 'node:assert/strict';
+
+// Each concurrent worker gets a unique workerId (1-indexed)
+// Use it to partition isolated resources: ports, DB schemas, file paths
+test('creates order against worker-isolated DB schema', async (t: TestContext) => {
+  const workerId = (t as TestContext & { workerId?: number }).workerId ?? 1;
+  const schemaName = `test_worker_${workerId}`;
+
+  // Connect to worker-isolated schema — no cross-worker DB state pollution
+  const dbUrl = `postgresql://localhost:5432/testdb?search_path=${schemaName}`;
+  // ... test body using dbUrl
+  assert.ok(schemaName.startsWith('test_worker_'));
+});
+```
+
+This closes a parallelism gap at the integration test level: previously, teams running `node --test --test-concurrency=4` had to implement custom worker-ID mechanisms (environment variables, port increments) to avoid port and schema collisions between concurrent workers. The built-in `workerId` makes this a first-class pattern without external tooling.
+
+**`require(esm)` and module compile cache stability (Node.js 24.15.0):**
+
+`require()` of ECMAScript modules (previously experimental) is now marked stable in Node.js 24.15.0. The module compile cache (which speeds up repeated `require()` calls to TypeScript-stripped `.ts` files) is also stable. Together, these changes allow integration test setups that use a mix of CJS and ESM modules to run without the `--experimental-require-module` flag — removing a friction point in test pipeline configuration for codebases with mixed module formats.
+
+**`MockModuleOptions.exports` consolidation (Node.js 25.9.0 / back-ported to 24.15.0):**
+
+The `mock.module()` API now accepts a single `exports` object instead of separate `defaultExport` and `namedExports` options. The migration is covered in gotcha #47 above. Additionally, the `mock.module()` function now correctly handles CJS modules imported from ESM — a common pattern in TypeScript integration tests where test helpers are CommonJS and the code under test is ESM.
+
+**Fake timer compatibility with `node:test` (Node.js 25.9.0):**
+
+A long-standing incompatibility between `MockTimers` (the built-in mock timer API) and `node:test`'s concurrent execution model has been resolved. Previously, enabling `t.mock.timers.enable()` inside a concurrent test could corrupt the timer state for other concurrently running tests — causing non-deterministic timeout behaviour in integration test suites. After Node.js 25.9.0, each test's mock timers are isolated to the test's execution context.
+
+```typescript
+// Integration test: fake timer isolation in concurrent node:test execution (25.9.0 fixed)
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { SessionTimer } from '../src/session/session-timer.js';
+
+// These two tests can now run concurrently without timer state interference
+test('session expires after TTL (concurrent-safe)', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const timer = new SessionTimer({ ttlSeconds: 60 });
+
+  t.mock.timers.tick(61_000);
+  assert.strictEqual(timer.isExpired(), true);
+  // Mock timers are isolated to this test — no interference with sibling concurrent tests
+});
+
+test('session is active within TTL (concurrent-safe)', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const timer = new SessionTimer({ ttlSeconds: 60 });
+
+  t.mock.timers.tick(30_000);
+  assert.strictEqual(timer.isExpired(), false);
+});
+```
+
+Before 25.9.0, running both tests concurrently could cause either test to read the other's `Date` mock state — a source of hard-to-reproduce flakiness at the integration level. The fix makes `t.mock.timers` a safe default for concurrent integration test execution without requiring `--test-concurrency=1` as a workaround. [official: nodejs.org/en/blog/release/v24.15.0, nodejs.org/en/blog/release/v25.9.0]
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -3084,3 +3196,5 @@ The key diagnostic step: if your test suite passes but `tsc --noEmit` fails with
 | Node.js v24.14.0 LTS Release | Official | https://nodejs.org/en/blog/release/v24.14.0 | Node.js test runner `expectFailure` option (xfail semantics) + `env` option on `run()` for per-invocation environment variables (Mar 2026 LTS) |
 | Node.js v26.0.0 Release | Official | https://nodejs.org/en/blog/release/v26.0.0 | TypeScript type stripping stable and flag-free; `--experimental-transform-types` removed; Temporal API default (V8 14.6); V8 `Map.getOrInsertComputed` + `Iterator.concat` |
 | Node.js v26.1.0 Release | Official | https://nodejs.org/en/blog/release/v26.1.0 | `node:test` randomization (`--test-randomize` / `--test-random-seed`); `getTestContext()` API; `AbortSignal.timeout()` mock support; `testId` in test event objects |
+| Node.js v24.15.0 LTS Release | Official | https://nodejs.org/en/blog/release/v24.15.0 | Worker ID exposed in concurrent `node:test` execution; `require(esm)` stable; module compile cache stable; `mock.module()` `exports` option consolidation back-port (Apr 2026) |
+| Node.js v25.9.0 Release | Official | https://nodejs.org/en/blog/release/v25.9.0 | BREAKING: `MockModuleOptions.exports` consolidates `defaultExport` + `namedExports` (codemod: `npx codemod @nodejs/mock-module-exports`); fake timer isolation fixed for concurrent `node:test`; CJS-from-ESM mock coverage fix |

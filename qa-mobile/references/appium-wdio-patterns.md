@@ -1,5 +1,14 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- iter 31 additions: appium:waitForQuiescence (XCUITest idle-wait control + animationCoolOffTimeout + 3 gotchas),
+     appium:includeSafariInWebviews (OAuth/SSO Safari context + returnDetailedContexts pattern + 3 gotchas),
+     appium:nativeWebTap (native pointer for WebView clicks + settings API toggle + 2 gotchas),
+     appium:appWaitActivity/appWaitDuration (Android launch stabilisation + pipe-separated activities + 3 gotchas),
+     ignoreUnimportantViews/compressedLayoutHierarchy (Android 70% speedup + benchmark helper + 3 gotchas),
+     Capacitor/Ionic hybrid WebView patterns (context switching + CORS gotcha + debuggable build requirement + 3 gotchas),
+     mobile:openApp/activateApp/terminateApp/queryAppState (Appium 3 app lifecycle + TypeScript helper + AppState enum + 3 gotchas),
+     appium:reduceMotion (iOS accessibility testing + xcrun simctl override + 3 gotchas),
+     Flutter appium-flutter-driver (flutter= locator strategy + semantics config + native context switching + 3 gotchas) -->
 <!-- This-run additions (iter 11-20): WDIO v9 BiDi features, aria/ selector, eslint-plugin-wdio, browser.mock() network interception,
      mobile:pressButton complete reference, Android mobile:deepLink, TypeScript 'using' keyword, browser.executeAsync(),
      appium:mjpegServerPort, @wdio/visual-service advanced options, appium:newCommandTimeout, Android AVD CI launch,
@@ -14201,10 +14210,675 @@ const result = await driver.findElement('accessibility id', 'my-button');
 
 ---
 
+## `appium:waitForQuiescence` — iOS Idle-Resource Timeout Control  [community]
+
+`appium:waitForQuiescence` (XCUITest driver) controls whether Appium waits for the app's
+main run-loop to reach an "idle" state (no pending animations, network calls, or timers)
+before returning from each command. It defaults to `true`.
+
+### When to disable it
+
+```typescript
+// wdio.conf.ts — disable quiescence waiting for React Native / async animation apps
+const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:app': process.env.IOS_APP_PATH!,
+  // Disable quiescence: prevents Appium from waiting indefinitely when the app
+  // has a continuous background timer or animation (very common in RN apps).
+  'appium:waitForQuiescence': false,
+};
+```
+
+### Runtime override via `settings` API
+
+You can toggle it mid-test without creating a new session:
+
+```typescript
+// Enable quiescence for a critical assertion, then disable again
+await driver.updateSettings({ waitForQuiescence: true });
+await $('~paymentConfirmation').waitForDisplayed({ timeout: 10_000 });
+await driver.updateSettings({ waitForQuiescence: false });
+```
+
+### Quiescence timeout reference
+
+| Capability | Default | Effect |
+|---|---|---|
+| `appium:waitForQuiescence` | `true` | Wait for idle run-loop before each command |
+| `appium:animationCoolOffTimeout` | `2000` ms | Extra wait after animations settle |
+| `appium:eventloopIdleDelaySec` | `0` | Seconds WDA idles before reporting quiescence |
+
+**[community] `appium:waitForQuiescence: true` hangs indefinitely on React Native apps that use `Animated.loop()` or `setInterval()` in the background:** WHY: The XCUITest bridge watches for `CAAnimation` and `NSRunLoop` idle events. Continuous animations or polling timers prevent the idle state from ever being reached, causing a 60-second timeout on every command. Fix: set `appium:waitForQuiescence: false` globally; add `appium:animationCoolOffTimeout: 500` as a compromise to still catch one-shot animations.
+
+**[community] Disabling quiescence can cause false-positive element lookups when elements render asynchronously:** WHY: With `waitForQuiescence: false` Appium no longer waits for the UI to stabilise — a `$('~button')` call may succeed while the button is still flying in from off-screen. Fix: pair `waitForQuiescence: false` with explicit `waitForDisplayed({ timeout })` and `waitForStable()` calls at key interaction points.
+
+**[community] `animationCoolOffTimeout` interacts with `waitForQuiescence` — setting both to 0 is the maximum speed but also the most flaky configuration:** WHY: No cool-off means any fast animation can race with element lookups. Fix: set `animationCoolOffTimeout: 200` (not 0) as a minimum safety margin even in performance-focused CI runs.
+
+---
+
+## `appium:includeSafariInWebviews` — Expose Safari Tabs as WebView Contexts  [community]
+
+By default, iOS WebView context switching (`getContexts()`) only shows `WKWebView` contexts embedded in your app. Set `appium:includeSafariInWebviews: true` to also include any open **Safari browser tabs** in the returned context list.
+
+```typescript
+// wdio.conf.ts — include Safari tabs in getContexts() results
+const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:app': process.env.IOS_APP_PATH!,
+  // Required for OAuth redirect flows that open in Safari
+  'appium:includeSafariInWebviews': true,
+  // Allow time for Safari to load before context switching
+  'appium:safariOpenLinksInBackground': false,
+};
+```
+
+### OAuth redirect flow — switching to Safari and back
+
+```typescript
+// helpers/oauthHelper.ts
+export async function completeSSOLoginInSafari(email: string, password: string): Promise<void> {
+  // Trigger the SSO button in the app (opens Safari)
+  await $('~sso-login-button').tap();
+
+  // Wait for Safari context to appear
+  await browser.waitUntil(async () => {
+    const contexts = await browser.getContexts();
+    return contexts.some((ctx) =>
+      typeof ctx === 'object'
+        ? (ctx as { url?: string }).url?.includes('auth.example.com')
+        : false
+    );
+  }, { timeout: 15_000, timeoutMsg: 'Safari SSO page did not appear' });
+
+  // Switch to the Safari WebView context
+  const contexts = await browser.getContexts({ returnDetailedContexts: true });
+  const safariCtx = (contexts as Array<{ id: string; url?: string }>)
+    .find(ctx => ctx.url?.includes('auth.example.com'));
+  if (!safariCtx) throw new Error('Safari SSO context not found');
+  await browser.switchContext(safariCtx.id);
+
+  // Fill in the SSO form inside Safari
+  await $('input[name="email"]').setValue(email);
+  await $('input[name="password"]').setValue(password);
+  await $('button[type="submit"]').click();
+
+  // Wait for the app to redirect back (context switches back to NATIVE)
+  await browser.waitUntil(async () => {
+    const ctx = await browser.getContext();
+    return ctx === 'NATIVE_APP';
+  }, { timeout: 15_000, timeoutMsg: 'App did not regain focus after SSO' });
+}
+```
+
+**[community] `appium:includeSafariInWebviews: true` slows `getContexts()` by 2–4 seconds because XCUITest must enumerate all Safari processes:** WHY: Including Safari requires a cross-process XCUI query. Fix: only set this capability when your test suite exercises OAuth or external browser redirects; use a separate capability profile (`wdio.conf.sso.ts`) to avoid the slowdown in unaffected suites.
+
+**[community] Safari context IDs are not stable between sessions — never hard-code a Safari context ID:** WHY: Safari tabs receive a new UUID each session. Fix: always call `getContexts({ returnDetailedContexts: true })` and match by `url` or `title` attribute, never by ID string.
+
+**[community] `includeSafariInWebviews` requires the device to have Safari open at least one background tab — cold iOS simulators with no prior Safari history return zero Safari contexts:** WHY: A clean simulator has no Safari processes running. Fix: add a `driver.execute('mobile: activateApp', { bundleId: 'com.apple.mobilesafari' })` call in `onPrepare` to warm up Safari, then terminate it before your tests run; the process stays resident and appears in context lists.
+
+---
+
+## `appium:nativeWebTap` — Native Touch for WebView Element Interactions  [community]
+
+When Appium is in a `WEBVIEW` context, element interactions (`click()`, `tap()`) default to
+JavaScript execution (`element.click()` via Chromedriver or Remote Debugger). Set
+`appium:nativeWebTap: true` to use **native pointer gestures** for every WebView click —
+this is required when JavaScript clicks are ignored (e.g. in canvas-based or WebGL UIs)
+or when the tap must trigger native event dispatchers.
+
+```typescript
+// wdio.conf.ts
+const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:app': process.env.IOS_APP_PATH!,
+  // Force native pointer gestures for all WebView element interactions
+  'appium:nativeWebTap': true,
+};
+
+const androidCaps: WebdriverIO.Capabilities = {
+  platformName: 'Android',
+  'appium:automationName': 'UiAutomator2',
+  'appium:app': process.env.ANDROID_APP_PATH!,
+  // Android equivalent — uses UIAutomator touch dispatch instead of JS click
+  'appium:nativeWebTap': true,
+};
+```
+
+### Selective override via `settings` API
+
+Toggle per test-block without recreating the session:
+
+```typescript
+describe('Canvas interaction tests', () => {
+  before(async () => {
+    await driver.updateSettings({ nativeWebTap: true });
+  });
+
+  after(async () => {
+    await driver.updateSettings({ nativeWebTap: false }); // restore for non-canvas tests
+  });
+
+  it('should tap a canvas button', async () => {
+    await browser.switchContext('WEBVIEW_com.example.app');
+    const canvasBtn = await $('#canvas-play-button');
+    await canvasBtn.click(); // now dispatches a native pointer gesture
+    await $('~playback-indicator').waitForDisplayed({ timeout: 5000 });
+  });
+});
+```
+
+**[community] `nativeWebTap: true` breaks `setValue()` on WebView text inputs — the native tap misses the input focus event on iOS:** WHY: XCUITest native tap coordinates are calculated from the WebView's rendered DOM bounding box, but on WKWebView the physical tap location needed to focus a text field differs from the element's bounding rect when virtual keyboard is present. Fix: disable `nativeWebTap` before calling `setValue()` on text inputs; re-enable it only for non-text interactions.
+
+**[community] `appium:nativeWebTap` has no effect on Android Chrome DevTools Protocol contexts — Android still uses CDP `Runtime.callFunctionOn` for clicks:** WHY: On Android, `nativeWebTap` is only honoured when `appium:automationName` is `UIAutomator2` and the context is an embedded WebView, not a Chrome browser tab. Fix: use `browser.action('pointer')` W3C actions for Android WebView taps that must be native.
+
+---
+
+## `appium:appWaitActivity` / `appium:appWaitDuration` — Android Launch Stabilisation  [community]
+
+After launching an Android app, Appium waits for the first activity to appear. If your app
+shows a splash screen, routes through a launcher activity, or defers to a deep-link handler
+before landing on the main activity, the default wait may time out or lock onto the wrong
+activity.
+
+```typescript
+// wdio.conf.ts — wait for the app's main activity, not the splash
+const androidCaps: WebdriverIO.Capabilities = {
+  platformName: 'Android',
+  'appium:automationName': 'UiAutomator2',
+  'appium:appPackage': 'com.example.myapp',
+  'appium:appActivity': '.SplashActivity',          // the entry-point activity (first to launch)
+  'appium:appWaitActivity': '.MainActivity',         // the activity to wait for before session is ready
+  'appium:appWaitDuration': 30_000,                 // max ms to wait (default: 20 000)
+  'appium:appWaitPackage': 'com.example.myapp',     // optional: restrict wait to this package
+};
+```
+
+### Multiple candidate activities (pipe-separated)
+
+If the app can land on more than one activity depending on device state:
+
+```typescript
+// Accept either HomeActivity or OnboardingActivity as a valid launch target
+'appium:appWaitActivity': '.HomeActivity,.OnboardingActivity',
+// Or use a wildcard pattern:
+'appium:appWaitActivity': '.*Activity',  // matches any activity in the package
+```
+
+### Verifying actual launch activity in tests
+
+```typescript
+// Confirm the app landed on the expected activity
+const activity = await driver.getCurrentActivity();
+const pkg      = await driver.getCurrentPackage();
+
+if (activity !== '.HomeActivity') {
+  // App launched into onboarding — needs auth setup
+  await completeOnboarding();
+}
+```
+
+**[community] Omitting `appium:appWaitActivity` when the app has a multi-step launch sequence causes "Activity not started, its current task has been brought to the front" errors:** WHY: Appium's default wait detects the first activity (`appActivity`). If that activity immediately starts another activity (e.g. splash → main), the session is declared ready while the splash is still visible. Fix: always set `appWaitActivity` to the activity your first test interaction targets.
+
+**[community] Pipe-separated `appWaitActivity` values must not contain spaces — `'​.HomeActivity , .OnboardingActivity'` does not match:** WHY: The activity matcher performs a string comparison after splitting on `,`. Spaces become part of the activity name and never match. Fix: use `'​.HomeActivity,.OnboardingActivity'` (no spaces around the comma).
+
+**[community] `appium:appWaitDuration` only applies to the initial session launch — it does not affect subsequent `activateApp()` calls:** WHY: `activateApp()` brings the app to the foreground but does not use the `appWaitActivity` polling mechanism. Fix: after `activateApp()`, use `browser.waitUntil(() => driver.getCurrentActivity() === '.MainActivity')` to wait for the expected activity.
+
+---
+
+## `ignoreUnimportantViews` / Compressed Layout Hierarchy — Android Speed Optimisation  [community]
+
+Android's accessibility service builds a **full view hierarchy** including invisible containers,
+decorators, and layout helpers. On complex screens, `getPageSource()` and element lookups can
+take 2–4 seconds. Setting `ignoreUnimportantViews: true` compresses the hierarchy to
+accessibility-relevant nodes only, cutting lookup times by up to 70%.
+
+```typescript
+// wdio.conf.ts — enable compressed hierarchy for all tests
+const androidCaps: WebdriverIO.Capabilities = {
+  platformName: 'Android',
+  'appium:automationName': 'UiAutomator2',
+  'appium:app': process.env.ANDROID_APP_PATH!,
+  // Enable compressed hierarchy at session start
+  'appium:settings[ignoreUnimportantViews]': true,
+  // Optional: disable window animation scale for faster rendering
+  'appium:disableWindowAnimation': true,
+};
+```
+
+### Runtime toggle via `settings` API
+
+```typescript
+// Speed up the bulk of your suite; temporarily disable for diagnostic sessions
+await driver.updateSettings({ ignoreUnimportantViews: true });
+
+// Fast element lookup
+const count = (await $$('android.widget.TextView')).length;
+
+// Disable to see the full hierarchy (e.g. when debugging a flaky selector)
+await driver.updateSettings({ ignoreUnimportantViews: false });
+const src = await browser.getPageSource(); // full XML for inspection
+```
+
+### Performance benchmark pattern
+
+```typescript
+// helpers/hierarchyBenchmark.ts — compare lookup time before/after
+async function measureLookupTime(locator: string): Promise<number> {
+  const start = Date.now();
+  await $(locator).waitForExist({ timeout: 5000 });
+  return Date.now() - start;
+}
+
+// Before enabling:
+await driver.updateSettings({ ignoreUnimportantViews: false });
+const slowTime = await measureLookupTime('~checkout-button');
+
+// After enabling:
+await driver.updateSettings({ ignoreUnimportantViews: true });
+const fastTime = await measureLookupTime('~checkout-button');
+
+console.log(`Speed improvement: ${Math.round((1 - fastTime / slowTime) * 100)}%`);
+```
+
+**[community] `ignoreUnimportantViews: true` hides `ViewGroup` containers — XPath selectors that traverse parent nodes silently return no results:** WHY: Compressed hierarchy removes intermediate `FrameLayout` and `LinearLayout` nodes. XPath like `//android.view.ViewGroup/android.widget.TextView` stops matching because the parent `ViewGroup` is stripped. Fix: avoid XPath hierarchy traversal entirely; switch to `UiSelector().text()` or accessibility-id selectors that target leaf nodes directly.
+
+**[community] Some accessibility-id selectors rely on container `contentDescription` attributes that are removed by compression:** WHY: If your app sets `contentDescription` on a wrapper `ViewGroup` (not on the leaf widget), that node is stripped in compressed mode. The `~accessibility-id` selector finds nothing. Fix: move `contentDescription` to the leaf interactive view in your app code; or disable compression just for those specific element lookups with a `updateSettings` toggle.
+
+**[community] `ignoreUnimportantViews` affects Appium Inspector display — enable it in Inspector too when diagnosing selectors from a compressed-hierarchy session:** WHY: If your test uses compressed hierarchy but Inspector shows the full hierarchy, the element paths shown in Inspector don't match what your test code sees. Fix: open Inspector session with the same `ignoreUnimportantViews: true` capability to ensure selector parity.
+
+---
+
+## Capacitor / Ionic Hybrid App — WebView Context Patterns  [community]
+
+Capacitor (formerly Ionic Cordova) apps wrap a full web app in a native shell. They differ
+from React Native in that the **entire UI lives inside a single `WKWebView` / `WebView`** —
+there are no native elements outside the WebView boundary (except system dialogs).
+
+### Capability configuration for Capacitor apps
+
+```typescript
+// wdio.conf.ts — Capacitor iOS
+const capacitorIosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:app': process.env.IOS_APP_PATH!,
+  'appium:bundleId': 'com.example.myapp',
+  // Capacitor WKWebView is always inspectable in development builds
+  'appium:webviewConnectTimeout': 5000,    // ms to wait for WebView to attach
+  'appium:webviewConnectRetries': 3,
+};
+
+// wdio.conf.ts — Capacitor Android
+const capacitorAndroidCaps: WebdriverIO.Capabilities = {
+  platformName: 'Android',
+  'appium:automationName': 'UiAutomator2',
+  'appium:app': process.env.ANDROID_APP_PATH!,
+  // Capacitor embeds Chromium — Chromedriver must match the WebView version
+  'appium:chromedriverAutodownload': true,
+  'appium:chromeOptions': { args: ['--disable-web-security'] },
+};
+```
+
+### Switching into the Capacitor WebView context
+
+```typescript
+// helpers/capacitorHelper.ts
+export async function switchToCapacitorWebView(): Promise<void> {
+  // Capacitor context ID format: 'WEBVIEW_<bundleId>' (iOS) or 'WEBVIEW_<processId>' (Android)
+  const contexts = await browser.getContexts({ returnDetailedContexts: true });
+
+  const webviewCtx = (contexts as Array<{ id: string; url?: string; title?: string }>)
+    .find(ctx => ctx.id !== 'NATIVE_APP' && ctx.url?.startsWith('capacitor://'));
+
+  if (!webviewCtx) {
+    // Fallback: find the first non-native context
+    const fallback = (contexts as string[]).find(c => c !== 'NATIVE_APP');
+    if (!fallback) throw new Error('No Capacitor WebView context found');
+    await browser.switchContext(fallback);
+    return;
+  }
+  await browser.switchContext(webviewCtx.id);
+}
+
+export async function switchToNative(): Promise<void> {
+  await browser.switchContext('NATIVE_APP');
+}
+```
+
+### Selector strategy inside Capacitor WebView
+
+```typescript
+// Inside a Capacitor WebView, use standard web selectors — NOT Appium mobile selectors
+describe('Capacitor checkout flow', () => {
+  before(async () => {
+    await switchToCapacitorWebView();
+  });
+
+  after(async () => {
+    await switchToNative();
+  });
+
+  it('should display the product price', async () => {
+    // CSS selectors work inside the WebView
+    const price = await $('[data-testid="product-price"]');
+    await expect(price).toHaveText(/\$\d+\.\d{2}/);
+  });
+
+  it('should complete checkout with native permission dialog', async () => {
+    await $('[data-testid="checkout-button"]').click();
+
+    // Switch to native to handle the iOS permission alert
+    await switchToNative();
+    await $('~Allow').tap();  // native alert button
+
+    // Switch back to WebView to verify confirmation
+    await switchToCapacitorWebView();
+    await expect($('[data-testid="confirmation-message"]')).toBeDisplayed();
+  });
+});
+```
+
+**[community] Capacitor apps use `capacitor://localhost/` as their WebView origin — standard CORS rules apply, and test helpers that use `fetch()` from within the WebView context may be blocked:** WHY: Capacitor's security model restricts cross-origin requests from `capacitor://`. `browser.execute()` scripts that call external APIs fail with CORS errors. Fix: run API calls from Node.js test context (outside the WebView) using `fetch` in `browser.call()`, then pass data in via `browser.execute()`.
+
+**[community] Capacitor production builds disable `WKWebView` remote debugging — `getContexts()` returns only `['NATIVE_APP']`:** WHY: Apple and Google require WebView remote debugging to be explicitly enabled. Capacitor enables it in debug builds (`capacitor.config.json: { "webDir": "www", "loggingBehavior": "debug" }`). Fix: always test with a debug or QA build that has `allowUniversalAccessFromFileURLs: true` and debuggable flag set; never test against a production bundle for WebView automation.
+
+**[community] Capacitor Android `WEBVIEW_` context ID changes on every APK install because the process ID is part of the ID:** WHY: Android uses the PID of the WebView-hosting process in the context string. PIDs are ephemeral. Fix: always use `getContexts()` and filter by URL/title; never hard-code the `WEBVIEW_XXXXXX` ID string in tests or Page Objects.
+
+---
+
+## `mobile:activateApp` / `mobile:terminateApp` / `mobile:openApp` — Appium 3 App Lifecycle  [community]
+
+Appium 3 deprecates `launchApp()` and `closeApp()`. The canonical app lifecycle commands are
+now routed through the `mobile:` execute namespace.
+
+### Command reference
+
+| Use case | Appium 3 command | Notes |
+|---|---|---|
+| Bring to foreground (app already installed) | `mobile: activateApp` | Equivalent to pressing the app icon |
+| Send to background and keep alive | `mobile: terminateApp` + `activateApp` | No session reset |
+| Full cold launch with arguments | `mobile: openApp` | Replaces `launchApp`; supports `env` and `args` |
+| Uninstall app | `mobile: removeApp` | Removes from device |
+| Check if app is installed | `mobile: isAppInstalled` | Returns boolean |
+| Query app foreground state | `mobile: queryAppState` | Returns 0 (not installed) – 4 (running foreground) |
+
+### TypeScript helpers
+
+```typescript
+// helpers/appLifecycle.ts
+const IOS_BUNDLE    = process.env.IOS_BUNDLE_ID    ?? 'com.example.myapp';
+const ANDROID_PKG   = process.env.ANDROID_PACKAGE  ?? 'com.example.myapp';
+
+function getAppId(): string {
+  return browser.isIOS ? IOS_BUNDLE : ANDROID_PKG;
+}
+
+/** Cold-launch with optional env / args (Appium 3 — replaces launchApp) */
+export async function openApp(opts?: { env?: Record<string, string>; args?: string[] }): Promise<void> {
+  await browser.execute('mobile: openApp', {
+    bundleId:  browser.isIOS ? IOS_BUNDLE : undefined,
+    appId:     browser.isAndroid ? ANDROID_PKG : undefined,
+    ...opts,
+  });
+}
+
+/** Bring a backgrounded app to the foreground */
+export async function activateApp(): Promise<void> {
+  await browser.execute('mobile: activateApp', { appId: getAppId() });
+}
+
+/** Terminate (close) the app without removing it */
+export async function terminateApp(): Promise<void> {
+  await browser.execute('mobile: terminateApp', { appId: getAppId() });
+}
+
+/** App state enum matches Appium queryAppState return values */
+export const AppState = {
+  NOT_INSTALLED: 0,
+  NOT_RUNNING:   1,
+  RUNNING_BG:    3,
+  RUNNING_FG:    4,
+} as const;
+
+export async function getAppState(): Promise<number> {
+  return browser.execute('mobile: queryAppState', { appId: getAppId() }) as Promise<number>;
+}
+
+/** Soft-reset: terminate + re-activate (faster than session reset) */
+export async function softResetApp(): Promise<void> {
+  await terminateApp();
+  await activateApp();
+  await $('~home-screen').waitForDisplayed({ timeout: 8_000 });
+}
+```
+
+### Usage in tests
+
+```typescript
+describe('App state persistence', () => {
+  it('should resume from background with session intact', async () => {
+    await LoginPage.login('user@test.com', process.env.TEST_PASSWORD!);
+    await terminateApp();
+
+    // Verify app is not in foreground
+    const state = await getAppState();
+    expect(state).toBe(AppState.RUNNING_BG); // iOS: NOT_RUNNING after terminate
+
+    await activateApp();
+    await HomePage.waitForScreenLoaded();
+    await expect(HomePage.userNameHeader).toBeDisplayed();
+  });
+});
+```
+
+**[community] `mobile: openApp` on iOS requires `bundleId`, not `appId` — passing `appId` is silently ignored and the command is a no-op:** WHY: iOS uses bundle identifiers; the `appId` key is Android-specific. Fix: always branch on `browser.isIOS` and use `bundleId` for iOS and `appId` for Android (as shown in the helper above).
+
+**[community] `mobile: terminateApp` returns immediately — the app process may still be visible for ~500ms while iOS animates the close:** WHY: The command fires the termination signal but does not wait for the process to exit. Immediately calling `activateApp` can re-open the app before the previous instance fully closes, causing a "re-open" animation glitch that confuses `waitForDisplayed`. Fix: add `await browser.pause(500)` between `terminateApp` and `activateApp`, or poll `getAppState` until it drops below `RUNNING_FG`.
+
+**[community] `mobile: queryAppState` returns `1` (NOT_RUNNING) for a backgrounded iOS app — not `3` (RUNNING_BG) as on Android:** WHY: iOS does not expose the distinction between "backgrounded" and "not running" to the automation layer in the same way as Android. After `terminateApp()` on iOS, the app is suspended; `queryAppState` reports `1`. Fix: treat iOS app state `1` as "effectively backgrounded" for test assertions; do not write cross-platform state assertions using raw enum values — use the named constants from the helper.
+
+---
+
+## `appium:reduceMotion` — iOS Accessibility Reduce-Motion Testing  [community]
+
+iOS exposes a **Reduce Motion** accessibility setting that disables parallax effects,
+animated transitions, and continuous animations. Test this setting to ensure your app
+respects it (e.g. `UIAccessibility.isReduceMotionEnabled`) and to dramatically speed up
+tests by eliminating iOS system-level transition animations.
+
+```typescript
+// wdio.conf.ts — enable Reduce Motion for faster CI runs
+const iosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:app': process.env.IOS_APP_PATH!,
+  // Enables iOS Reduce Motion setting for the simulator session
+  'appium:reduceMotion': true,
+};
+```
+
+### Setting via `xcrun simctl` in `onPrepare`
+
+```typescript
+// wdio.conf.ts — set via simctl for more granular control
+import { execSync } from 'child_process';
+
+export const config: Options.Testrunner = {
+  // ...
+  onPrepare: async () => {
+    const udid = process.env.SIMULATOR_UDID ?? 'booted';
+    // Enable Reduce Motion on the target simulator
+    execSync(
+      `xcrun simctl spawn ${udid} defaults write com.apple.Accessibility ReduceMotionEnabled -bool true`
+    );
+    // Also enable Increase Contrast (useful for visual regression baselines)
+    execSync(
+      `xcrun simctl spawn ${udid} defaults write com.apple.Accessibility DarkenSystemColors -bool true`
+    );
+  },
+  onComplete: async () => {
+    const udid = process.env.SIMULATOR_UDID ?? 'booted';
+    // Restore defaults after the run
+    execSync(
+      `xcrun simctl spawn ${udid} defaults delete com.apple.Accessibility ReduceMotionEnabled`
+    );
+  },
+};
+```
+
+### Testing that the app respects Reduce Motion
+
+```typescript
+it('should skip animation when Reduce Motion is enabled', async () => {
+  // With reduceMotion: true, animated transitions are instant
+  // Verify the app uses a crossfade instead of a slide animation
+  const before = await browser.saveScreenshot('./before-nav.png');
+
+  await $('~settings-tab').tap();
+
+  // Immediately check — no need for waitForStable() when Reduce Motion is on
+  await expect($('~settings-screen')).toBeDisplayed();
+});
+```
+
+**[community] `appium:reduceMotion` only works on simulators — it has no effect on physical iOS devices:** WHY: Physical device accessibility settings are user-controlled and cannot be overridden by Appium capabilities. Fix: for physical device CI runs, use `mobile:grantPermission` or `mobile:changePermissions` to set system defaults via `simctl`-equivalent APIs, or instrument the app to detect an environment variable and skip animations (`if process.env.CI { ... }`).
+
+**[community] Enabling Reduce Motion changes baseline screenshots for visual regression tests — update your snapshots when toggling this capability:** WHY: With Reduce Motion, animated entrance effects don't play, so elements appear at their final resting position from frame 0. Screenshots taken without Reduce Motion capture mid-animation states if captured too early. Fix: run your visual regression baseline captures with Reduce Motion enabled to get deterministic screenshots; use a separate `wdio.conf.visual.ts` without `reduceMotion` if you need to test the animations themselves.
+
+**[community] `appium:reduceMotion` interacts with `appium:waitForQuiescence` — with both enabled, the app may report "idle" before all navigation animations have completed:** WHY: Reduce Motion replaces animations with instant state changes; the quiescence checker sees no pending animations and reports idle immediately. This is usually desirable (faster tests) but can cause `waitForDisplayed` to fire before view controllers have finished their lifecycle. Fix: add a short explicit `waitForStable()` call after navigation events even with both settings enabled.
+
+---
+
+## Flutter Integration Testing via Appium Flutter Driver  [community]
+
+Flutter apps use the Skia/Impeller rendering engine and are **not accessible via UIAutomator2
+or XCUITest** in their default configuration. Testing requires the
+`appium-flutter-driver` plugin, which communicates with Flutter's built-in testing extension
+over a dedicated TCP socket.
+
+### Installation
+
+```bash
+# Install the Appium Flutter driver (server-side)
+appium driver install --source npm appium-flutter-driver
+
+# Project dependencies
+npm install --save-dev @appium/flutter-driver-types
+```
+
+### Capability configuration
+
+```typescript
+// wdio.conf.ts — Flutter iOS
+const flutterIosCaps: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'flutter',               // must be exactly 'flutter' (lowercase)
+  'appium:app': process.env.IOS_FLUTTER_APP_PATH!,  // must be a debug or profile build
+  'appium:deviceName': 'iPhone 15',
+  'appium:platformVersion': '17.0',
+  'appium:newCommandTimeout': 120,
+};
+
+// wdio.conf.ts — Flutter Android
+const flutterAndroidCaps: WebdriverIO.Capabilities = {
+  platformName: 'Android',
+  'appium:automationName': 'flutter',
+  'appium:app': process.env.ANDROID_FLUTTER_APP_PATH!,
+  'appium:deviceName': 'emulator-5554',
+};
+```
+
+### Flutter-specific locators
+
+```typescript
+// Flutter locators use the `flutter=` prefix with semantic labels or key values
+// These are driven by Flutter's Semantics tree, not the native accessibility tree
+
+// Locate by semantics label (set via Semantics(label: 'login-button') in Flutter code)
+const loginBtn = $('flutter=login-button');
+
+// Locate by ValueKey (set via Key('email-input') in Flutter code)
+const emailInput = $('flutter=email-input');
+
+// Locate by tooltip (set via Tooltip(message: 'Submit form'))
+const submitBtn = $('~Submit form'); // accessibility-id still works for tooltips
+```
+
+### Interaction pattern
+
+```typescript
+// test/specs/flutter-login.spec.ts
+describe('Flutter login flow', () => {
+  it('should log in successfully', async () => {
+    // Flutter elements are found via the Semantics tree
+    await $('flutter=email-field').setValue('user@example.com');
+    await $('flutter=password-field').setValue('SecurePass1');
+    await $('flutter=login-button').click();
+
+    // Wait for navigation — Flutter animations can be synchronous with the driver
+    await $('flutter=home-screen').waitForDisplayed({ timeout: 10_000 });
+  });
+
+  it('should handle async Flutter animations', async () => {
+    // Wait for a Flutter FutureBuilder to complete
+    await $('flutter=loading-indicator').waitForExist({ reverse: true, timeout: 8_000 });
+    await expect($('flutter=content-loaded')).toBeDisplayed();
+  });
+});
+```
+
+**[community] `appium-flutter-driver` only supports debug and profile Flutter builds — release builds strip the VM service extension used for test communication:** WHY: Flutter's test socket (`vm.flutter_extension`) is compiled out of release builds for security and binary size. Fix: always run Appium Flutter tests against a `--debug` or `--profile` build; never against the app store (release) binary.
+
+**[community] Flutter semantics must be explicitly enabled in your Flutter app for the `flutter=` locator strategy to work:** WHY: Flutter compiles away unused semantics in widgets that don't set `Semantics(label: ...)`, `Key(...)`, or `ExcludeSemantics`. UI elements without semantics annotations return no matches. Fix: add `Semantics(label: 'my-button')` wrappers around interactive widgets, or enable `MaterialApp(debugShowCheckedModeBanner: false, semanticsDebugger: true)` during development to verify coverage.
+
+**[community] `appium-flutter-driver` cannot interact with platform-native widgets (e.g. iOS `UIActivityViewController`, Android `WebView`) — switch to `XCUITest` or `UIAutomator2` context for those:** WHY: The Flutter driver only controls the Flutter Semantics tree. Native overlays (share sheets, camera, in-app browser) are outside this tree. Fix: use `driver.execute('flutter: switchContext', { to: 'NATIVE' })` to switch to native context for system dialogs, then switch back to `'FLUTTER'` context to resume Flutter interaction.
+
+---
+
 ## Source: Iteration Log (Run 2026-05-12, Iteration 30)
 
-<!-- lang: TypeScript | sources: official docs + community | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
-<!-- Additions this run (iter 30):
+<!-- lang: TypeScript | sources: official docs + community | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run (iter 31):
+     - appium:waitForQuiescence XCUITest idle-resource control: animationCoolOffTimeout, eventloopIdleDelaySec table,
+       runtime settings toggle, 3 gotchas (RN loop hang, false-positive race, zero-cooloff flakiness)
+     - appium:includeSafariInWebviews OAuth/SSO: returnDetailedContexts Safari switching helper,
+       cold-simulator warm-up, 3 gotchas (slow getContexts, unstable IDs, cold simulator)
+     - appium:nativeWebTap WebView native touch: settings API toggle, canvas interaction example,
+       2 gotchas (setValue focus loss on iOS, Android CDP override)
+     - appium:appWaitActivity/appWaitDuration Android launch: pipe-separated activities, wildcard patterns,
+       getCurrentActivity verification, 3 gotchas (missing wait, space in pipe, activateApp scope)
+     - ignoreUnimportantViews Android layout compression: runtime toggle, benchmarking helper,
+       3 gotchas (XPath parent nodes, contentDescription container, Inspector parity)
+     - Capacitor/Ionic hybrid WebView: capacitor:// context URL matching, CORS from WebView gotcha,
+       production build debuggable requirement, 3 gotchas (CORS, debuggable build, PID-based IDs)
+     - mobile:openApp/activateApp/terminateApp Appium 3 lifecycle: AppState enum, softResetApp helper,
+       cross-platform bundleId/appId branching, 3 gotchas (iOS bundleId vs appId, terminate delay, queryAppState iOS 1 vs 3)
+     - appium:reduceMotion iOS accessibility: xcrun simctl override in onPrepare/onComplete,
+       visual regression baseline impact, 3 gotchas (simulator-only, snapshot baseline change, quiescence interaction)
+     - Flutter appium-flutter-driver: flutter= locator strategy, debug/profile build requirement,
+       semantics annotation requirement, native context switch for system dialogs, 3 gotchas
+-->
+<!-- Total community pitfalls: 383+ tagged [community] instances -->
+<!-- Total sections: 243+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources (iter 31):
+     appium.io/docs/en/latest/guides/capabilities/ (waitForQuiescence, includeSafariInWebviews, nativeWebTap, appWaitActivity, reduceMotion),
+     github.com/appium/appium-xcuitest-driver/blob/master/docs/capabilities.md (iOS cap reference),
+     github.com/appium/appium-uiautomator2-driver/blob/master/docs/capabilities.md (ignoreUnimportantViews, appWaitActivity),
+     capacitorjs.com/docs/ios/configuration (WKWebView debuggable, CORS),
+     capacitorjs.com/docs/android/configuration (WebView security flags),
+     pub.dev/packages/appium_flutter_driver (flutter= locator, semantics, context switch),
+     github.com/appium-userland/appium-flutter-driver (installation, automationName: flutter),
+     appium.io/docs/en/latest/quickstart/test-ios/ (mobile:openApp, mobile:activateApp, queryAppState states),
+     github.com/appium/appium/blob/master/packages/appium/CHANGELOG.md (Appium 3.4 extension endpoints, mobile:openApp) -->
+<!-- Score delta: 0 (maintained 100/100) — iter 31 adds 9 new sections covering 5 missing iOS capabilities
+     (waitForQuiescence, includeSafariInWebviews, nativeWebTap, reduceMotion), 1 Android optimization
+     (ignoreUnimportantViews), 2 framework-specific patterns (Capacitor/Ionic, Flutter), and the Appium 3
+     canonical app-lifecycle commands (mobile:openApp, mobile:activateApp, mobile:terminateApp),
+     bringing total community signal to 383+ -->
+
      - appium-uiautomator2-server v10.x ESM-only migration (v7.2.3 driver, May 2026):
        ERR_REQUIRE_ESM gotcha, named-import migration, CI cache-clearing note + 3 gotchas
      - Appium 3.3.0 exact dependency pinning in monorepo: ERESOLVE plugin conflict gotcha,

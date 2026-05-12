@@ -1,6 +1,7 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 54 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 55 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
+<!-- Iteration 55: Pattern 90 (Playwright v1.60 tracing.startHar()/stopHar() — HAR recording as first-class tracing API for network flakiness diagnosis); Pattern 91 (Playwright v1.60 toHaveCSS pseudo option — deterministic pseudo-element assertions replacing screenshot snapshots); Gotcha 47 (Playwright v1.60 BrowserContext lifecycle event mirroring — centralized event monitoring for multi-page flakiness); AP45 (Vitest 4.1 FixtureAccessError in suite hooks — accessing test-scoped fixture in beforeAll now throws explicitly); Quick Reference additions (iteration 55) -->
 <!-- Iteration 54: Pattern 88 (Vitest 5.0-beta sequential option removed — migrate to concurrent:false or test.describe.serial); Pattern 89 (Playwright v1.60 locator.drop() for drag-and-drop upload zone flakiness); Gotcha 46 (Vitest 5.0 merge reports for non-sharded multi-environment test runs); AP44 (Vitest 5.0 hardcoded .vitest-attachments path breaks on upgrade); Quick Reference additions (iteration 54) -->
 <!-- Iteration 53: Pattern 86 (Playwright testCase.outcome() === 'flaky' custom reporter — structured per-retry flakiness tracking); Pattern 87 (Playwright v1.50 updateSnapshots: 'changed' + updateSourceMethod: '3way' for snapshot flakiness review workflow); AP43 (updateSnapshots: 'all' in CI silently overwrites baselines); Quick Reference additions (iteration 53) -->
 <!-- Iteration 52: Pattern 82 (Vitest 4.1 vi.setTimerTickMode — nextTimerAsync/interval for async timer flakiness); Pattern 83 (Playwright v1.59 tracing.start({ live: true }) for real-time trace capture); Pattern 84 (Playwright v1.58 retain-on-failure-and-retries trace mode for multi-retry comparison); Pattern 85 (Vitest 4.1 agent/minimal reporter for AI agent token-efficient flakiness triage); AP42 (Vitest 4.1 beforeAll/afterAll hook signature breaking change — Suite arg removed); Quick Reference additions (iteration 52) -->
@@ -8170,4 +8171,518 @@ console.log(configDefaults.test?.attachmentsDir ?? '.vitest/attachments');
 | Playwright `locator.drop()` | Official | https://playwright.dev/docs/api/class-locator#locator-drop | Simulates external drag-and-drop of files onto an element; eliminates DataTransfer.files flakiness (v1.60) |
 | Vitest 5.0 Migration Guide | Official | https://vitest.dev/guide/migration | `sequential` removal, attachment path change, blob reporter path — required reading before upgrading from 4.x |
 | Vitest `configDefaults` | Official | https://vitest.dev/config/#configdefaults | Exposes current-version defaults programmatically; use in CI scripts to avoid hardcoding paths that change between versions |
+
+---
+
+## Pattern 90 — Playwright v1.60 `tracing.startHar()` / `tracing.stopHar()` for Network Flakiness Diagnosis  [official]
+
+Before Playwright v1.60, HAR recording was only available through `page.routeFromHAR()` (replay mode) or by configuring `recordHar` on a `BrowserContext` at creation time — both required knowing in advance that HAR recording was needed. There was no way to start HAR recording mid-test or scope it to a specific operation within a test.
+
+Playwright v1.60 introduces `tracing.startHar()` and `tracing.stopHar()` as first-class members of the `Tracing` API. They work independently from `tracing.start()/stop()`, so you can combine full trace capture (DOM snapshots, screenshots, action timeline) with dedicated network HAR recording — or use HAR alone for lightweight network-only logging on tests where full traces are too expensive.
+
+The key benefit for flakiness diagnosis is that HAR recording can be scoped to a specific step or flow using the `await using` Disposable pattern (TypeScript 5.2+ `using` keyword), ensuring the HAR is always written even if the test throws.
+
+```typescript
+// playwright.config.ts — enable retries so flaky tests produce multiple HAR files
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: process.env.CI ? 2 : 0,
+  use: {
+    // Full trace on first retry (DOM + screenshots + network)
+    trace: 'on-first-retry',
+    // HAR is recorded separately via tracing.startHar() in individual tests
+    // so we don't also set recordHar here — that would duplicate network capture
+  },
+});
+```
+
+```typescript
+// BAD: network request timing flakiness investigated with only a full trace
+// A full trace includes network, but it's interleaved with DOM snapshots and screenshots.
+// Finding a specific request's timing or response body in a 50MB trace zip is slow.
+import { test, expect } from '@playwright/test';
+
+test('dashboard loads with correct user data', async ({ page, context }) => {
+  await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+  await page.goto('/dashboard');
+  await expect(page.getByTestId('user-name')).toHaveText('Alice');
+  await context.tracing.stop({ path: 'trace.zip' });
+  // Debugging a network flakiness issue requires opening the full 50MB trace zip
+  // and filtering for the specific API request — tedious and slow
+});
+```
+
+```typescript
+// GOOD: scoped HAR recording for targeted network flakiness diagnosis (v1.60+)
+import { test, expect } from '@playwright/test';
+import path from 'path';
+
+test('dashboard loads with correct user data', async ({ page, context }) => {
+  const harPath = path.join(
+    test.info().outputDir,  // test-scoped output dir — unique per retry
+    'dashboard-network.har'
+  );
+
+  // startHar() begins capturing network traffic — lightweight (no DOM/screenshots)
+  // The HAR file is scoped to this context: every request made by any page in
+  // this context is recorded until stopHar() is called.
+  await context.tracing.startHar(harPath, {
+    content: 'embed',    // embed response bodies directly in the HAR (default: 'attach')
+    mode: 'full',        // record both request and response headers+bodies
+    urlFilter: /\/api\// // only capture API requests — reduces HAR size significantly
+  });
+
+  await page.goto('/dashboard');
+  await expect(page.getByTestId('user-name')).toHaveText('Alice');
+
+  // stopHar() finalizes and writes the HAR file to disk.
+  // Call explicitly — or use 'await using' for automatic cleanup (see below).
+  await context.tracing.stopHar();
+
+  // On failure, the HAR file is in testInfo.outputDir — automatically uploaded
+  // by Playwright as a test artifact. Open in browser devtools or Chrome HAR viewer.
+});
+```
+
+```typescript
+// BEST: use TypeScript 5.2+ 'await using' for automatic HAR cleanup
+// The Disposable returned by startHar() calls stopHar() automatically on scope exit —
+// even if the test throws. This prevents "incomplete HAR" from failed tests.
+import { test, expect } from '@playwright/test';
+import path from 'path';
+
+test('checkout flow completes and sends correct API requests', async ({ page, context }) => {
+  // 'await using' ensures stopHar() is called when the block exits — pass or fail
+  await using _har = await context.tracing.startHar(
+    path.join(test.info().outputDir, 'checkout.har'),
+    {
+      content: 'embed',
+      urlFilter: /\/(api|checkout)\//,
+    }
+  );
+
+  await page.goto('/cart');
+  await page.getByRole('button', { name: 'Proceed to Checkout' }).click();
+  await page.getByLabel('Card Number').fill('4111111111111111');
+  await page.getByRole('button', { name: 'Pay Now' }).click();
+
+  // If this assertion is flaky (sometimes the order isn't created):
+  // open checkout.har in testInfo.attachments — find the POST /api/orders request,
+  // check its response body and timing to distinguish network vs app vs assertion race.
+  await expect(page.getByTestId('order-confirmation')).toBeVisible({ timeout: 10_000 });
+});
+```
+
+```typescript
+// HAR-only recording in beforeEach for a whole describe block — useful for
+// integration test suites where every test touches the same API surface
+import { test, expect, type Page, type BrowserContext } from '@playwright/test';
+import path from 'path';
+
+const myTest = test.extend<{ harRecording: void }>({
+  harRecording: [
+    async ({ context }, use, testInfo) => {
+      // Start HAR before the test runs
+      await context.tracing.startHar(
+        path.join(testInfo.outputDir, `${testInfo.title.replace(/\s+/g, '-')}.har`),
+        { content: 'embed', urlFilter: /\/api\// }
+      );
+
+      await use();
+
+      // Stop HAR after the test — runs even if the test fails
+      await context.tracing.stopHar();
+    },
+    { auto: true }, // runs for every test in the suite automatically
+  ],
+});
+
+myTest('user list loads', async ({ page }) => {
+  await page.goto('/users');
+  await expect(page.getByRole('list')).toBeVisible();
+});
+
+myTest('user detail loads', async ({ page }) => {
+  await page.goto('/users/1');
+  await expect(page.getByTestId('user-name')).toBeVisible();
+});
+```
+
+**HAR vs full trace — when to use which:**
+
+| Scenario | Use full trace | Use HAR (`startHar`) | Use both |
+|----------|---------------|---------------------|----------|
+| UI interaction flakiness (timing, animation, DOM race) | Yes — DOM snapshots essential | No | Rarely |
+| Network flakiness (request ordering, response timing) | Overkill — 50MB+ for API tests | Yes — lightweight, easy to diff | If UI + network both flaky |
+| Debugging a flaky form submission | Yes | Yes (to see request body) | Yes |
+| CI storage budget is tight | No — use on-first-retry | Yes — HAR is compact | No |
+| Comparing two retries' network behaviour | Hard — two separate trace zips | Easy — two HAR files, diff in devtools | Yes |
+
+---
+
+## Pattern 91 — Playwright v1.60 `toHaveCSS({ pseudo })` for Deterministic Pseudo-Element Assertions  [official]
+
+CSS pseudo-elements (`::before`, `::after`) are widely used for decorative icons, status indicators, required-field markers, and validation states. Testing them historically required screenshot snapshots — which are pixel-sensitive, platform-dependent, and notoriously flaky across OS, font rendering, and CI image versions.
+
+Playwright v1.60 adds a `pseudo` option to `expect(locator).toHaveCSS()`, allowing direct assertion on computed CSS properties of `::before` and `::after` pseudo-elements. This eliminates an entire class of screenshot-based visual assertion flakiness.
+
+```typescript
+// BAD: screenshot snapshot to verify a required-field asterisk (CSS ::before)
+// Flaky due to: font rendering differences, sub-pixel antialiasing, DPI scaling,
+// CI image font package changes, OS-level rendering differences (Ubuntu vs macOS).
+import { test, expect } from '@playwright/test';
+
+test('required field shows asterisk', async ({ page }) => {
+  await page.goto('/signup');
+  // Screenshot comparison is ~20px region around the label — ANY pixel difference fails.
+  // One font package update in the CI image → dozens of snapshot failures.
+  await expect(page.getByLabel('Email').locator('..')).toMatchSnapshot('required-asterisk.png');
+});
+```
+
+```typescript
+// GOOD: assert the ::before content property directly (v1.60+)
+// This is a computed style assertion — not pixel-dependent. Same result on all platforms.
+import { test, expect } from '@playwright/test';
+
+test('required field label has asterisk via CSS ::before', async ({ page }) => {
+  await page.goto('/signup');
+
+  const emailLabel = page.getByText('Email address');
+
+  // Assert that the ::before pseudo-element has content: '"*"'
+  // Note: CSS content property value includes the outer quotes: '"*"' not '*'
+  await expect(emailLabel).toHaveCSS('content', '"*"', { pseudo: 'before' });
+
+  // Assert color of the asterisk (e.g. red for required fields)
+  await expect(emailLabel).toHaveCSS('color', 'rgb(220, 38, 38)', { pseudo: 'before' });
+});
+```
+
+```typescript
+// Asserting ::after pseudo-elements — common for validation error icons,
+// checkmark indicators, and clearfix patterns
+import { test, expect } from '@playwright/test';
+
+test('valid input shows checkmark via ::after', async ({ page }) => {
+  await page.goto('/signup');
+
+  const emailInput = page.getByLabel('Email');
+  await emailInput.fill('user@example.com');
+  await emailInput.blur();
+
+  // Wait for validation to complete (avoids timing flakiness)
+  await expect(emailInput).not.toHaveAttribute('aria-invalid', 'true');
+
+  // The ::after pseudo-element shows a green checkmark icon for valid fields
+  await expect(emailInput.locator('..')).toHaveCSS('content', '"✓"', { pseudo: 'after' });
+  await expect(emailInput.locator('..')).toHaveCSS('color', 'rgb(34, 197, 94)', { pseudo: 'after' });
+});
+```
+
+```typescript
+// Real-world: testing a CSS-only tooltip (::after with content from data-* attr)
+// Previously required screenshot; now assertable with toHaveCSS pseudo
+import { test, expect } from '@playwright/test';
+
+test('icon button shows tooltip text via ::after content', async ({ page }) => {
+  await page.goto('/dashboard');
+
+  const helpButton = page.getByRole('button', { name: 'Help' });
+
+  // CSS tooltip: [data-tooltip]::after { content: attr(data-tooltip); }
+  // The computed value of content will be the literal tooltip text
+  await expect(helpButton).toHaveCSS('content', '"Opens help panel"', { pseudo: 'after' });
+});
+```
+
+```typescript
+// TypeScript type reference — pseudo option signature (added v1.60):
+// toHaveCSS(
+//   name: string,
+//   value: string | RegExp,
+//   options?: {
+//     pseudo?: '::before' | '::after' | ':before' | ':after'; // both forms accepted
+//     timeout?: number;
+//   }
+// ): Promise<void>
+
+// Using RegExp for value — useful when colour is set dynamically by theming
+import { test, expect } from '@playwright/test';
+
+test('required asterisk is red in light theme', async ({ page }) => {
+  await page.goto('/signup?theme=light');
+  const label = page.getByText('Password');
+  // Match any rgb() red value — tolerates minor theme variable changes
+  await expect(label).toHaveCSS('color', /rgb\(2[01]\d, [0-3]\d,/, { pseudo: 'before' });
+});
+```
+
+**Migration from screenshot to `toHaveCSS` pseudo:**
+
+| What you're testing | Old approach (flaky) | New approach (stable) |
+|--------------------|---------------------|-----------------------|
+| Required field asterisk | Screenshot of label region | `toHaveCSS('content', '"*"', { pseudo: 'before' })` |
+| Validation checkmark/cross | Screenshot of input field | `toHaveCSS('content', '"✓"', { pseudo: 'after' })` |
+| CSS-only tooltip text | Screenshot of hovered element | `toHaveCSS('content', '"tooltip text"', { pseudo: 'after' })` |
+| Conditional styling (theme) | Screenshot per-theme variant | `toHaveCSS('color', /rgb\(...)/, { pseudo: 'before' })` |
+| Icon font character | Screenshot with font rendering risk | `toHaveCSS('content', '""', { pseudo: 'before' })` |
+
+---
+
+## Gotcha 47 — Playwright v1.60 BrowserContext Lifecycle Event Mirroring: Listener Registration Order  [official]
+
+Playwright v1.60 adds lifecycle event mirroring at two levels:
+
+- `browser.on('context')` — fires when a new `BrowserContext` is created from this browser instance
+- `browserContext.on('download')`, `browserContext.on('frameattached')`, `browserContext.on('framedetached')`, `browserContext.on('framenavigated')`, `browserContext.on('pageclose')`, `browserContext.on('pageload')` — mirror the equivalent page-level events for ALL pages within the context
+
+The flakiness risk is subtle: **listener registration order relative to context/page creation matters**. If a test attaches a `browserContext.on('framenavigated')` listener *after* a page has already navigated, it misses the event. This is the same registration-timing issue as `page.on('response')`, but now it occurs at a higher level and is easier to miss because the context often exists before the listener is attached.
+
+```typescript
+// BAD: listener registered after page creation — misses early events
+import { test, expect } from '@playwright/test';
+
+test('all frames navigated during page load are tracked', async ({ page, context }) => {
+  await page.goto('/multi-frame-dashboard');
+
+  // FLAKY: the framenavigated events for the initial load have already fired
+  // by the time this listener is attached. On fast machines, every event is missed.
+  // On slow CI, some frames are still loading when the listener attaches — intermittent.
+  const navigatedFrames: string[] = [];
+  context.on('framenavigated', (frame) => {
+    navigatedFrames.push(frame.url());
+  });
+
+  await page.waitForLoadState('networkidle');
+  expect(navigatedFrames.length).toBeGreaterThan(0); // flaky — may be 0
+});
+```
+
+```typescript
+// GOOD: register context-level listeners BEFORE any navigation
+// Best practice: attach listeners in a fixture that runs before the test body
+import { test as base, expect } from '@playwright/test';
+
+const test = base.extend<{ frameTracker: string[] }>({
+  frameTracker: async ({ context }, use) => {
+    const navigatedFrames: string[] = [];
+    // Register BEFORE any page is navigated — fixture runs before test body
+    context.on('framenavigated', (frame) => {
+      // Skip about:blank initial frame
+      if (frame.url() !== 'about:blank') {
+        navigatedFrames.push(frame.url());
+      }
+    });
+    await use(navigatedFrames);
+  },
+});
+
+test('all frames navigated during page load are tracked', async ({ page, frameTracker }) => {
+  await page.goto('/multi-frame-dashboard');
+  await page.waitForLoadState('networkidle');
+  // frameTracker captured all framenavigated events because listener was pre-registered
+  expect(frameTracker.length).toBeGreaterThan(0);
+  expect(frameTracker).toContain(expect.stringContaining('/api/widget'));
+});
+```
+
+```typescript
+// GOOD: using browser.on('context') to attach listeners to every context created
+// Useful in global setup or when multiple contexts are created within one test
+import { chromium, type BrowserContext } from '@playwright/test';
+
+// In globalSetup or a base fixture:
+const browser = await chromium.launch();
+
+// Register BEFORE any context is created
+browser.on('context', (ctx: BrowserContext) => {
+  // This fires synchronously when the context is created — before any navigation
+  ctx.on('framenavigated', (frame) => {
+    if (frame.url() !== 'about:blank') {
+      console.log(`[frame nav] ${frame.url()}`);
+    }
+  });
+
+  ctx.on('download', (download) => {
+    console.log(`[download started] ${download.suggestedFilename()}`);
+  });
+});
+
+// Now every context created from this browser will have listeners attached
+// before any pages navigate — eliminates the registration-timing race
+const context1 = await browser.newContext();
+const context2 = await browser.newContext(); // also gets listeners
+```
+
+```typescript
+// Gotcha: pageclose vs page.on('close') — ordering difference
+// browserContext.on('pageclose') fires when any page in the context closes.
+// The event fires AFTER page.on('close'). If your test depends on cleanup
+// order (e.g., closing a download listener before the page event fires),
+// use page.on('close') directly — not context-level mirroring.
+import { test, expect } from '@playwright/test';
+
+test('download listener is cleaned up before page closes', async ({ page, context }) => {
+  const downloadedFiles: string[] = [];
+
+  // Use context-level 'download' for broad tracking
+  context.on('download', (dl) => downloadedFiles.push(dl.suggestedFilename()));
+
+  await page.goto('/reports');
+  await page.getByRole('button', { name: 'Export CSV' }).click();
+
+  // Wait for the download event (context-level — works across all pages)
+  await page.waitForEvent('download'); // page-level is fine here too
+
+  expect(downloadedFiles[0]).toMatch(/report-\d+\.csv/);
+});
+```
+
+**Event mirroring reference (Playwright v1.60+):**
+
+| Context-level event | Equivalent page-level event | When to use context-level |
+|--------------------|----------------------------|--------------------------|
+| `context.on('framenavigated')` | `page.on('framenavigated')` | Multi-page tests, iframe navigation tracking |
+| `context.on('frameattached')` | `page.on('frameattached')` | Dynamic iframe injection detection |
+| `context.on('framedetached')` | `page.on('framedetached')` | Iframe cleanup verification |
+| `context.on('download')` | `page.on('download')` | Download tracking across all pages |
+| `context.on('pageclose')` | `page.on('close')` | Cleanup after any page closes (fires after page-level) |
+| `context.on('pageload')` | `page.on('load')` | Load state tracking across multiple pages |
+| `browser.on('context')` | n/a | Attach listeners to every context at creation time |
+
+---
+
+## Anti-Patterns (iteration 55)
+
+### AP45 — Vitest 4.1 `FixtureAccessError`: Accessing Test-Scoped Fixtures in `beforeAll` / `afterAll`  [official]
+
+**What:** Calling a test-scoped fixture (default scope `'test'`) from inside a `beforeAll` or `afterAll` hook.
+
+**New in Vitest 4.1:** Previously this silently returned `undefined` or threw an unrelated error. Vitest 4.1 introduces `FixtureAccessError` — a dedicated error that is thrown explicitly with a clear message identifying which fixture was accessed and from which hook.
+
+**Why harmful:** Test-scoped fixtures are created and destroyed per test. A `beforeAll` hook runs once for the whole describe block — it has no test context to attach a fixture to. Before 4.1, the silent failure meant test setup code often ran without the expected fixture value, producing confusing `Cannot read properties of undefined` errors deeper in the test body. The root cause (fixture scope mismatch) was hard to diagnose.
+
+```typescript
+// BAD: test-scoped fixture accessed in beforeAll — FixtureAccessError in Vitest 4.1
+import { describe, beforeAll, it, expect } from 'vitest';
+
+// This fixture has default scope 'test' — created fresh per test
+const myTest = test.extend<{ userToken: string }>({
+  userToken: async ({}, use) => {
+    const token = await createTestUser(); // per-test setup
+    await use(token);
+    await deleteTestUser(token);         // per-test teardown
+  },
+});
+
+myTest.describe('Admin API', () => {
+  let token: string;
+
+  // THROWS FixtureAccessError in Vitest 4.1:
+  // "Cannot access fixture 'userToken' from beforeAll — fixture scope is 'test' but hook scope is 'suite'"
+  beforeAll(async ({ userToken }) => { // ← FixtureAccessError here
+    token = userToken;
+  });
+
+  myTest('can list users', async ({ page }) => {
+    // token may be undefined — silent failure in Vitest < 4.1
+  });
+});
+```
+
+```typescript
+// GOOD option 1: change fixture scope to 'file' or 'suite' if sharing is safe
+import { test, describe, beforeAll, it, expect } from 'vitest';
+
+const myTest = test.extend<{ userToken: string }>({
+  userToken: [
+    async ({}, use) => {
+      const token = await createTestUser();
+      await use(token);
+      await deleteTestUser(token);
+    },
+    { scope: 'file' }, // created once per file — accessible in beforeAll
+  ],
+});
+
+myTest.describe('Admin API', () => {
+  let token: string;
+
+  // Works: fixture scope 'file' matches the suite-level hook
+  beforeAll(async ({ userToken }) => {
+    token = userToken;
+  });
+
+  myTest('can list users', async () => {
+    const res = await fetch('/api/admin/users', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+  });
+});
+```
+
+```typescript
+// GOOD option 2: move per-test setup out of beforeAll into the fixture itself
+// (preferred — keeps isolation tight, no shared mutable state)
+import { test, describe, it, expect } from 'vitest';
+
+const myTest = test.extend<{ userToken: string }>({
+  // Keep scope 'test' — each test gets its own token, no beforeAll needed
+  userToken: async ({}, use) => {
+    const token = await createTestUser();
+    await use(token);
+    await deleteTestUser(token); // always cleaned up — even if test fails
+  },
+});
+
+myTest.describe('Admin API', () => {
+  // No beforeAll — each test gets userToken via fixture injection
+  myTest('can list users', async ({ userToken }) => {
+    const res = await fetch('/api/admin/users', {
+      headers: { Authorization: `Bearer ${userToken}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  myTest('can create user', async ({ userToken }) => {
+    const res = await fetch('/api/admin/users', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${userToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Bob', email: 'bob@example.com' }),
+    });
+    expect(res.status).toBe(201);
+  });
+});
+```
+
+**Diagnosis:** When you see `FixtureAccessError` after upgrading to Vitest 4.1, it means a `beforeAll` or `afterAll` hook is accessing a fixture whose scope is narrower than `'file'`. Audit all `beforeAll`/`afterAll` calls in the failing describe block and either:
+
+- Widen the fixture scope to `'file'` if the fixture is safe to share across all tests in the file
+- Move the setup into the fixture body (option 2 above)
+- Use Vitest's `aroundAll` hook (Pattern 67) instead of `beforeAll`/`afterAll` when you need both setup and teardown with fixture access
+
+---
+
+## Quick Reference additions (iteration 55)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Network flakiness hard to debug — full trace zip is too large to navigate | Full trace mixes DOM/screenshots with network — tedious to filter | Pattern 90 (`tracing.startHar()` + `await using` for scoped HAR) | Using `recordHar` at context creation time — always-on, no scoping |
+| Screenshot snapshot fails only on CI due to font rendering / DPI differences | Pixel-sensitive screenshot comparing pseudo-element visual output | Pattern 91 (`toHaveCSS('content', '...', { pseudo: 'before' })`) | `toMatchSnapshot()` for `::before`/`::after` styling |
+| `context.on('framenavigated')` listener misses early frame navigation events | Listener registered after context already navigated | Gotcha 47 (register context listeners in fixture before test body runs) | Attaching context listeners mid-test after `page.goto()` |
+| Vitest 4.1 upgrade: `beforeAll` throws `FixtureAccessError` | Test-scoped fixture accessed in suite-level hook | AP45 (widen fixture scope to `'file'` or move setup into fixture body) | Casting to `any` to suppress the error — root cause unaddressed |
+
+---
+
+## Key Resources (iteration 55 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright `tracing.startHar()` | Official | https://playwright.dev/docs/api/class-tracing#tracing-start-har | HAR recording as first-class tracing API; `await using` Disposable pattern for automatic cleanup (v1.60) |
+| Playwright `toHaveCSS` | Official | https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-css | `pseudo` option (`'before'`/`'after'`) for deterministic pseudo-element CSS assertions; replaces screenshot snapshots (v1.60) |
+| Playwright BrowserContext events | Official | https://playwright.dev/docs/api/class-browsercontext | `browser.on('context')` and context-level lifecycle event mirroring (`framenavigated`, `download`, `pageclose`) — centralized multi-page event handling (v1.60) |
+| Vitest `FixtureAccessError` | Official | https://vitest.dev/guide/test-context#fixture-scope | Thrown in Vitest 4.1 when a test-scoped fixture is accessed from `beforeAll`/`afterAll`; scope mismatch now fails fast with clear message |
 | Vitest merge-report CLI | Official | https://vitest.dev/guide/reporters#merge-reporters | Merges blob reports from multiple shards or environments into a single result; enables cross-environment flakiness detection (v5.0) |

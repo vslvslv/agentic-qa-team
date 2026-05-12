@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 42 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes, playwright.dev/docs/api/class-websocketroute, playwright.dev/docs/test-global-setup-teardown, playwright.dev/docs/api/class-test#test-abort, github.com/mswjs/msw/releases); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
@@ -9,6 +9,7 @@
 <!-- iter-34: Playwright mergeTests() modular fixture composition; Playwright box fixture (box:true/box:'self') for clean test reports; Vitest 4.x singleThread also removed (not just singleFork); vi.resetModules() required with isolate:false; VITEST_MAX_WORKERS replaces VITEST_MAX_THREADS/MAX_FORKS; community gotcha #22; 2 new checklists (Playwright fixtures, Vitest 4.x config); 2 new Key Resources (2026-05-12) -->
 <!-- iter-35: Vitest 4.1 builder pattern for test.extend() (return-based, automatic TypeScript type inference); aroundEach hook (transaction-per-test pattern); test.override() per-suite fixture overrides; vi.defineHelper() for clean factory assertion stack traces; Vitest 4.x coverage.all/coverage.extensions removal + mandatory coverage.include; community gotcha #23; new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-41: Playwright 1.48 page.routeWebSocket() E2E WebSocket test data interception; Playwright 1.49 multiple globalSetup via project dependencies for composable DB seeding; Playwright 1.50 test.step.skip() for data-dependent step guarding; Playwright 1.60 test.abort() for fixture precondition enforcement; MSW v2.14 finalize() API for WS handler cleanup; faker v10.4 locale expansions (Norwegian, Japanese) for locale-sensitive test data; community gotcha #29 (Playwright WebSocket routes linger across tests without explicit teardown); updated checklists; 6 new Key Resources (2026-05-12) -->
+<!-- iter-42: MSW v2.14.0 ws.onUpgrade() API for HTTP-upgrade-based WebSocket connections in Node.js; community gotcha #30 (ws.onUpgrade vs ws.link — upgrade handler applies globally, not per-link; not available in browser/service worker context); new Key Resource (2026-05-12) -->
 <!-- iter-40: faker v10 new APIs for factory authors (word error strategy 'fail', BigInt number generation, book module, UPC barcodes, simple coordinate methods, generic sex type); Playwright 1.46 component testing router fixture for MSW test data injection; community gotcha #28 (faker.word default 'fail' error strategy breaks word-based factories); updated Key Resources (2026-05-12) -->
 <!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-37: Vitest 4.0 expect.schemaMatching for inline factory output validation against Zod/Valibot/ArkType; Vitest 4.0 getSeed() API for programmatic seed access; Vitest 4.1 experimental viteModuleRunner:false for native Node.js factory execution; Google Testing Blog "Construct with Collaborators, Call with Work" pattern (2026-05-05) applied to factory design; faker v10.4.0 latest stable (2026-03-23); fishery v2.4.0 latest stable (2025-12-08); community gotcha #25 (schema drift caught by expect.schemaMatching); updated Key Resources (2026-05-12) -->
@@ -8751,6 +8752,187 @@ orderUpdates.addEventListener('connection', ({ client }) => {
 
 ---
 
+## MSW v2.14.0 `ws.onUpgrade` — HTTP-Upgrade WebSocket Interception in Node.js  [community]
+
+MSW v2.14.0 (April 29, 2026) introduced `ws.onUpgrade`, a low-level hook that intercepts
+the HTTP upgrade request that establishes a WebSocket connection in Node.js environments.
+It is distinct from `ws.link()` — which intercepts at the WebSocket protocol level — and
+only applies to the `msw/node` server; it is **not available** in the service worker
+(browser) layer because browsers' `fetch` API marks the `Upgrade` header as forbidden.
+
+**Why it matters for test data:** Some WebSocket client libraries (e.g., the browser-native
+`WebSocket` constructor in Node.js via the `ws` npm package, or WebSocket clients that
+perform custom HTTP handshakes) negotiate the upgrade over plain HTTP before upgrading the
+protocol. When an integration test spins up an `msw/node` server against such a client,
+MSW needs to intercept the HTTP upgrade request *before* the WebSocket handshake is
+complete — otherwise the connection bypasses all `ws.link()` handlers because no WebSocket
+protocol frame is ever sent.
+
+`ws.onUpgrade` fills this gap: it fires at the HTTP layer (status `101 Switching Protocols`)
+before the WebSocket handshake, enabling tests to:
+- Inspect upgrade headers (e.g., custom `X-Auth-Token` headers set on the upgrade request)
+- Reject specific connections at the HTTP layer (return a non-101 response to simulate auth failures)
+- Apply global connection-level logic that runs once per WebSocket session, not per message
+
+**Key behavioural differences: `ws.link()` vs `ws.onUpgrade`:**
+
+| Concern | `ws.link(url)` | `ws.onUpgrade` |
+|---|---|---|
+| Layer | WebSocket protocol (after upgrade) | HTTP upgrade request (before handshake) |
+| Available in browser (service worker) | Yes | **No** — `Upgrade` header is forbidden in browser `fetch` |
+| Scope | Per-URL matcher | Global — applies to all WebSocket connections on the MSW server |
+| Default behaviour | Mocked connection (no real server) | Produces `101 Switching Protocols` response per spec |
+| Typical use case | Mock message sequences for specific endpoints | Inspect/reject upgrade headers; per-session global logic |
+| Works with `finalize()` | Yes | Not applicable (fires once per connection, not per handler) |
+
+**Basic usage — inspecting auth headers on WebSocket upgrade:**
+
+```typescript
+// mocks/handlers.ts — MSW v2.14.0+ ws.onUpgrade for upgrade-level interception
+import { ws } from 'msw';
+
+const chat = ws.link('wss://api.example.com/chat');
+
+export const handlers = [
+  // ws.onUpgrade fires at the HTTP 101 Upgrade layer — runs before any WS frames
+  ws.onUpgrade((upgrade) => {
+    // `upgrade.request` is the HTTP request that initiated the upgrade
+    const authToken = upgrade.request.headers.get('x-auth-token');
+
+    if (!authToken || authToken === 'invalid') {
+      // Return a 403 at the HTTP layer — the WS handshake never completes
+      // This simulates an authentication gateway rejecting the connection
+      return new Response('Unauthorized', { status: 403 });
+    }
+
+    // Return undefined (or nothing) to allow the upgrade to proceed normally
+    // The ws.link() handler will then take over for protocol-level mocking
+  }),
+
+  // ws.link() handler — processes messages after the upgrade succeeds
+  chat.addEventListener('connection', ({ client }) => {
+    client.addEventListener('message', ({ data }) => {
+      const parsed = JSON.parse(data as string);
+      client.send(JSON.stringify({
+        id: `msg-${Date.now()}`,
+        text: `Echo: ${parsed.text}`,
+        author: 'bot',
+      }));
+    });
+  }),
+];
+```
+
+**Integration test — testing auth rejection at the upgrade layer:**
+
+```typescript
+// tests/chat-auth.test.ts — Node.js integration test with ws.onUpgrade
+import { setupServer } from 'msw/node';
+import { handlers } from '../mocks/handlers';
+import WebSocket from 'ws';   // the 'ws' npm package, not the browser API
+
+const server = setupServer(...handlers);
+
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
+it('rejects WebSocket connection without auth token', async () => {
+  // Attempt upgrade without X-Auth-Token header
+  const ws = new WebSocket('wss://api.example.com/chat');
+
+  await expect(
+    new Promise<void>((_, reject) => {
+      ws.on('error', reject);
+      ws.on('open', () => reject(new Error('Connection should have been rejected')));
+    })
+  ).rejects.toThrow();
+});
+
+it('accepts WebSocket connection with valid auth token', async () => {
+  // Provide a valid token — upgrade succeeds, ws.link() handler takes over
+  const ws = new WebSocket('wss://api.example.com/chat', {
+    headers: { 'x-auth-token': 'valid-token-123' },
+  });
+
+  await expect(
+    new Promise<string>((resolve, reject) => {
+      ws.on('error', reject);
+      ws.on('message', (data) => resolve(data.toString()));
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ text: 'hello' }));
+      });
+    })
+  ).resolves.toContain('Echo: hello');
+
+  ws.close();
+});
+```
+
+**Using `ws.onUpgrade` to build a per-session factory context:**
+
+```typescript
+// mocks/session-factory-handler.ts — attach per-session factory data at the upgrade layer
+import { ws } from 'msw';
+import { faker } from '@faker-js/faker';
+
+// Per-session state: keyed by a session ID injected as an upgrade header
+const sessionData = new Map<string, { userId: string; role: string }>();
+
+export const sessionHandlers = [
+  ws.onUpgrade((upgrade) => {
+    const sessionId = upgrade.request.headers.get('x-session-id');
+    if (sessionId) {
+      // Seed per-session factory data at the HTTP layer, before any WS messages
+      sessionData.set(sessionId, {
+        userId: faker.string.uuid(),
+        role: faker.helpers.arrayElement(['admin', 'user', 'guest']),
+      });
+    }
+    // Allow upgrade to proceed — no return value = 101 Switching Protocols
+  }),
+
+  ws.link('wss://api.example.com/ws').addEventListener('connection', ({ client, request }) => {
+    const sessionId = request.headers.get('x-session-id') ?? 'unknown';
+    const session = sessionData.get(sessionId);
+
+    client.addEventListener('message', () => {
+      client.send(JSON.stringify({
+        type: 'session-info',
+        userId: session?.userId ?? 'anonymous',
+        role: session?.role ?? 'guest',
+      }));
+    });
+
+    client.addEventListener('close', () => {
+      // Clean up per-session factory state when the WS connection closes
+      if (sessionId) sessionData.delete(sessionId);
+    });
+  }),
+];
+```
+
+**`ws.onUpgrade` in the context of the MSW WebSocket architecture:**
+
+```
+HTTP client                MSW Node.js server
+   │
+   ├─ GET /chat ──────────────► ws.onUpgrade handler
+   │   (Upgrade: websocket)       ├─ inspect headers
+   │                              ├─ return 403 to reject
+   │                              └─ return undefined to allow ──► 101 Switching Protocols
+   │
+   ├─ WebSocket frames ─────────► ws.link('wss://...') handlers
+   │   (after upgrade)              ├─ addEventListener('connection')
+   │                                └─ addEventListener('message')
+```
+
+`ws.onUpgrade` is applied **globally** to the MSW server instance — there is no
+per-link variant. If you need per-endpoint upgrade logic, inspect
+`upgrade.request.url` inside the handler and branch manually.
+
+---
+
 ## `faker` v10.4 Locale Expansions — Locale-Sensitive Factory Test Data  [community]
 
 faker v10.4.0 (March 2025) added significant locale expansions for Norwegian (`nb_NO`) and
@@ -8950,6 +9132,65 @@ for (const { locale, address, label } of localeTestCases) {
 
 ---
 
+30. **[community] `ws.onUpgrade` in MSW v2.14.0 is a global hook — not scoped to a specific `ws.link()` URL — and does not exist in the browser service-worker layer. Attaching per-endpoint logic inside `ws.onUpgrade` without checking `upgrade.request.url` causes all WebSocket upgrade requests to run the same upgrade-layer logic, regardless of which endpoint they target.**
+
+    `ws.onUpgrade` fires at the HTTP 101 Upgrade layer before any WebSocket protocol frames are exchanged. Unlike `ws.link(url)`, which scopes its handler to a specific URL pattern, `ws.onUpgrade` receives every WebSocket upgrade request on the MSW Node.js server. This means:
+
+    1. **Global scope trap:** If two test suites each register a `ws.onUpgrade` handler (e.g., one for auth validation, one for session seeding) without filtering by URL, each handler runs for all WebSocket connections — including connections intended for other endpoints. The handlers are additive; later `server.use(ws.onUpgrade(...))` registrations stack on top of earlier ones until `server.resetHandlers()` is called.
+
+    2. **Browser unavailability trap:** Tests that pass in Node.js (Vitest integration tests) but fail in browser-environment E2E tests (Playwright with MSW injected via a service worker) will show confusing `ws.onUpgrade is not a function` errors because the service worker layer does not expose HTTP upgrade semantics.
+
+    ```typescript
+    // Anti-pattern: ws.onUpgrade without URL filtering — affects ALL WebSocket connections
+    ws.onUpgrade((upgrade) => {
+      const token = upgrade.request.headers.get('x-auth-token');
+      if (!token) return new Response('Unauthorized', { status: 403 });
+      // BUG: this rejects ALL WebSocket connections that lack this header,
+      // including /notifications, /metrics, and /health-check endpoints
+      // that are never expected to send an auth token
+    });
+
+    // Correct: always check upgrade.request.url before applying endpoint-specific logic
+    ws.onUpgrade((upgrade) => {
+      const url = new URL(upgrade.request.url);
+      if (!url.pathname.startsWith('/chat')) return; // skip non-chat endpoints
+
+      const token = upgrade.request.headers.get('x-auth-token');
+      if (!token) return new Response('Unauthorized', { status: 403 });
+    });
+    ```
+
+    ```typescript
+    // Anti-pattern: using ws.onUpgrade in a shared test helper without environment guard
+    export function setupAuthMock(server: SetupServer) {
+      server.use(
+        ws.onUpgrade((upgrade) => {
+          // BUG: this throws in browser (Playwright + MSW service worker) environments
+          // because ws.onUpgrade is not available outside Node.js
+        })
+      );
+    }
+
+    // Correct: guard with environment check or restrict to Node.js-only test files
+    // Use ws.link() handlers for logic that must work in both browser and Node.js
+    import { ws } from 'msw';
+    export function setupAuthMock(server: SetupServer | SetupWorker) {
+      // ws.link() handlers work in both environments
+      server.use(
+        ws.link('wss://api.example.com/chat').addEventListener('connection', ({ client }) => {
+          // Auth logic here works in browser service worker AND Node.js server
+        })
+      );
+    }
+    ```
+
+    The rule of thumb: use `ws.onUpgrade` only in Node.js integration tests where you need
+    upgrade-header inspection or HTTP-layer rejection. Use `ws.link()` for all logic that
+    must run in both browser and Node.js environments. Always filter by URL inside
+    `ws.onUpgrade` to avoid global side-effects across unrelated test fixtures.
+
+---
+
 ## Key Resources (iter-41 additions)
 
 | Name | Type | URL | Why useful |
@@ -8961,3 +9202,10 @@ for (const { locale, address, label } of localeTestCases) {
 | Playwright `test.step.skip()` docs | Official | https://playwright.dev/docs/api/class-test#test-step | Per-step conditional skip for data-dependent test steps (v1.50+) |
 | MSW v2.14 release notes | Official | https://github.com/mswjs/msw/releases/tag/v2.14.4 | `finalize()` API for WebSocket handler cleanup on `resetHandlers()` |
 | faker v10.4.0 release notes | Official | https://github.com/faker-js/faker/releases/tag/v10.4.0 | Norwegian locale additions (zodiac, sex defs, vehicles); Japanese animal breed data (cat/bird/fish) |
+
+## Key Resources (iter-42 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| MSW v2.14.0 release notes (`ws.onUpgrade`) | Official | https://github.com/mswjs/msw/releases/tag/v2.14.0 | `ws.onUpgrade` API for intercepting HTTP upgrade requests before WebSocket handshake (Node.js only) |
+| MSW PR #2732 (`ws.onUpgrade` implementation) | Community | https://github.com/mswjs/msw/pull/2732 | Design rationale: why `ws.onUpgrade` is global (not per-link), default 101 behaviour, Node.js restriction |

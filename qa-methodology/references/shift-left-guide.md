@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -6807,3 +6807,426 @@ describe('PII logger — shift-left tests', () => {
 | GitHub Agentic Detection Platform | Official | https://github.blog/security/application-security/github-expands-application-security-coverage-with-ai-powered-detections/ | CodeQL + AI-powered detection for Shell/Dockerfile/Terraform in same PR gate; 460k fixes in 2025 (Q2 2026 public preview) |
 | Node.js 26.0.0 Release Notes | Official | https://nodejs.org/en/blog/release/v26.0.0 | `--experimental-transform-types` removed; type stripping default for `.ts`; LTS October 2026 |
 | Node.js TypeScript docs (run natively) | Official | https://nodejs.org/en/learn/typescript/run-natively | Current recommended approach for running TypeScript in Node.js 22.18.0+/24/26 without build step |
+| TypeScript 6.0 new defaults | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `strict`, `module: esnext`, `target: es2025`, `types: []` now the defaults; `--stableTypeOrdering` for TS 7.0 bridge |
+| ES2025 TypeScript lib additions | Official | https://devblogs.microsoft.com/typescript/announcing-typescript-6-0/ | `RegExp.escape()`, Map upsert methods, Temporal built-in types via `esnext.temporal` — test these features safely |
+| Vitest 5.0 beta | Official | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2 | Inline `expect` package, `vitest list` static discovery, coverage for worker_threads/child_process, multi-env report merging |
+
+---
+
+## TypeScript 6.0 — New Defaults That Break Shift-Left Gates (2026)
+
+TypeScript 6.0's existing migration section (above) covers `types: []`, `rootDir`, and removed options. This section covers the **additional new defaults** that were not in the original migration section and have direct shift-left CI implications.
+
+### New Default: `module: esnext` and `target: es2025`
+
+TypeScript 6.0 changes three more defaults beyond `strict: true` and `types: []`:
+
+| Option | TypeScript 5.x default | TypeScript 6.0 default | Shift-Left Impact |
+|---|---|---|---|
+| `module` | `commonjs` | `esnext` | `require()` calls now fail type checks — must use `import` |
+| `target` | `es5` | `es2025` | Downleveled output code breaks in IE11/old Node — but type gaps open for modern APIs |
+| `rootDir` | inferred (common dir of inputs) | `.` (tsconfig.json directory) | `dist/src/index.js` may change to `dist/index.js` — breaks Docker `COPY dist/` paths |
+
+```json
+// tsconfig.json — TypeScript 6.0 complete migration: ALL changed defaults addressed
+// Run `tsc --noEmit --ignoreDeprecations 6.0` first to see all errors before fixing
+{
+  "compilerOptions": {
+    // Previously-implicit, now explicit in TS 6.0:
+    "strict": true,            // NEW DEFAULT: was false
+    "module": "NodeNext",      // OVERRIDE: TS 6.0 default is "esnext" — pick NodeNext for Node.js
+    "target": "ES2022",        // OVERRIDE: TS 6.0 default is "es2025" — ES2022 for broader Node LTS compat
+    "rootDir": "./src",        // OVERRIDE: TS 6.0 default is "." (tsconfig dir) — preserve existing output
+    "types": ["node"],         // OVERRIDE: TS 6.0 default is [] — must list @types packages explicitly
+
+    // DOM library: TS 6.0 merged dom.iterable into dom
+    "lib": ["ES2022", "DOM"],  // Remove "dom.iterable" — now causes TS error if listed separately
+
+    // These remain unchanged from TS 5.x — keep for strictness:
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true,
+
+    // Build output:
+    "outDir": "./dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  }
+}
+```
+
+```yaml
+# CI gate: detect TypeScript 6.0 default mismatch before it causes silent gate failures
+# Run this as a one-time PR job during TS 6.0 migration period
+name: TS6 Default Compliance Check
+on:
+  pull_request:
+    paths: ['tsconfig*.json', 'package.json']
+
+jobs:
+  ts6-defaults-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      # Check that TS 6.0 changed defaults are explicitly set (not relying on new defaults)
+      - name: Audit tsconfig for TS 6.0 implicit defaults
+        run: |
+          # module: esnext is now default — dangerous for Node.js projects if unintentional
+          if ! grep -q '"module"' tsconfig.json; then
+            echo "ERROR: tsconfig.json missing explicit 'module' — TS 6.0 default is esnext"
+            exit 1
+          fi
+          # target: es2025 is now default — may break Node 18/20 deployments
+          if ! grep -q '"target"' tsconfig.json; then
+            echo "WARNING: tsconfig.json missing explicit 'target' — TS 6.0 default is es2025"
+            exit 1
+          fi
+          # rootDir: now defaults to tsconfig.json directory, not src/
+          if ! grep -q '"rootDir"' tsconfig.json; then
+            echo "WARNING: tsconfig.json missing explicit 'rootDir' — output paths may change"
+            exit 1
+          fi
+          echo "All TS 6.0 default-sensitive options are explicitly set"
+```
+
+> **WHY `module: esnext` as a new default is dangerous for Node.js projects**: TypeScript 6.0 sets `module: esnext` as the default, but Node.js projects need `module: NodeNext` or `module: Node16` to correctly handle `.js` extensions in imports, `package.json` `"type": "module"`, and CommonJS interop. A project that silently inherits `module: esnext` from the TS 6.0 default may have `tsc --noEmit` pass while the compiled output fails at runtime with "require is not defined" or missing `.js` extension errors. **Always set `module` explicitly in tsconfig.json.**
+
+> [community] **Gotcha (TypeScript 6.0 `target: es2025` default + Node.js LTS)**: With `target: es2025` as the new default, TypeScript will no longer downlevel modern syntax like `using` declarations, top-level `await`, and `Array.prototype.at()` for older Node.js versions. Projects that deploy to Node.js 18 (ES2022 support) must explicitly set `"target": "ES2022"` to prevent emitting syntax that older Node versions cannot execute. This is a silent breakage: CI passes, the artifact builds, but the deployed binary crashes on startup.
+
+> [community] **Lesson (TypeScript 6.0 migration teams, 2026)**: The safest TS 6.0 migration strategy is: (1) add `"ignoreDeprecations": "6.0"` to tsconfig.json, (2) run `tsc --noEmit` to see all errors from the new `strict: true` default, (3) fix all errors, (4) remove `ignoreDeprecations`. Do not leave `"ignoreDeprecations": "6.0"` in production tsconfig — it will NOT be honored in TypeScript 7.0, which removes all deprecated options entirely.
+
+---
+
+## TypeScript 6.0 — ES2025 Library Additions (2026)
+
+TypeScript 6.0 adds built-in types for several ES2025 features. These are shift-left relevant because: (a) using them without the correct `lib`/`target` produces type errors that the CI type gate must catch, and (b) they offer new TypeScript-idiomatic ways to write simpler, safer code.
+
+### `RegExp.escape()` — Safe String Escaping at Compile Time
+
+```typescript
+// Available in TypeScript 6.0 with "lib": ["ES2025"] or "target": "es2025"
+// For Node.js 22+ (which ships V8 with RegExp.escape native support)
+
+// BEFORE: unsafe manual regex escaping (common anti-pattern)
+function searchPattern_UNSAFE(term: string): RegExp {
+  // Gotcha: user-controlled input creates regex injection vulnerability
+  return new RegExp(term, 'i');  // if term = "a+b[c" → throws SyntaxError
+}
+
+// AFTER: RegExp.escape() — safe, native, type-checked
+function searchPattern(term: string): RegExp {
+  // TypeScript 6.0: RegExp.escape() is typed — tsc validates it exists
+  return new RegExp(RegExp.escape(term), 'i');
+}
+
+// Shift-left benefit: the eslint-plugin-security 'detect-non-literal-regexp' rule
+// flags the BEFORE pattern but NOT the AFTER pattern — the fix is compiler-verified
+```
+
+```typescript
+// tsconfig.json target/lib for RegExp.escape availability:
+// Option A: "target": "es2025" or later (includes es2025 lib by default)
+// Option B: "target": "ES2022", "lib": ["ES2022", "ES2025"] (explicit lib inclusion)
+// Option C: "lib": ["ES2022", "esnext"] (include all esnext APIs — overkill for most projects)
+```
+
+### Map `getOrInsert()` / `getOrInsertComputed()` — Type-Safe Memoization
+
+```typescript
+// TypeScript 6.0: new Map upsert methods — eliminates the "check-then-set" anti-pattern
+// Available with "lib": ["ES2025"] or later
+
+// BEFORE: common but verbose map memoization pattern
+const cache = new Map<string, string[]>();
+
+function getOrCreate(key: string): string[] {
+  if (!cache.has(key)) {
+    cache.set(key, []);
+  }
+  return cache.get(key)!;  // Non-null assertion — type-unsafe
+}
+
+// AFTER: Map.getOrInsert() — atomic, no non-null assertion, typed
+function getOrCreateSafe(key: string): string[] {
+  // TypeScript 6.0: getOrInsert() returns T (not T | undefined) — no assertion needed
+  return cache.getOrInsert(key, []);
+}
+
+// AFTER: Map.getOrInsertComputed() — lazy initialization (only computes if key absent)
+const expensiveCache = new Map<string, ExpensiveObject>();
+
+function getOrCompute(key: string): ExpensiveObject {
+  // The factory function only runs if the key is absent — unlike a pre-computed default
+  return expensiveCache.getOrInsertComputed(key, (k) => computeExpensive(k));
+}
+```
+
+> **Shift-left benefit**: `getOrInsert()` eliminates the `cache.get(key)!` non-null assertion that bypasses TypeScript's null safety. `@typescript-eslint/no-non-null-assertion` flags the `!` operator as a warning. The `getOrInsert()` pattern is both safer and cleaner — TypeScript 6.0 makes the type-safe pattern also the idiomatic one.
+
+### Temporal API — Built-In TypeScript Types
+
+```typescript
+// TypeScript 6.0: Temporal API types available via "lib": ["esnext.temporal"]
+// Node.js 26+ ships Temporal natively (no polyfill needed)
+// Node.js 22/24: add @js-temporal/polyfill
+
+// tsconfig.json for Temporal:
+// "lib": ["ES2022", "esnext.temporal"]   ← targeted: only Temporal types, not all esnext
+// OR "target": "esnext"                 ← includes all esnext including Temporal
+
+// BEFORE: Date arithmetic — brittle, timezone-naive
+function addDays_UNSAFE(date: Date, days: number): Date {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);  // Breaks across DST transitions
+  return result;
+}
+
+// AFTER: Temporal — correct, timezone-aware, type-safe
+function addDays(date: Temporal.PlainDate, days: number): Temporal.PlainDate {
+  return date.add({ days });  // Correct across all calendar/timezone edge cases
+}
+
+// Shift-left: TypeScript 6.0 types Temporal.PlainDate, Temporal.Instant,
+// Temporal.ZonedDateTime etc. — wrong method calls are compile errors, not runtime errors
+const now: Temporal.Instant = Temporal.Now.instant();
+const today: Temporal.PlainDate = Temporal.Now.plainDateISO();
+```
+
+```typescript
+// Test: verify Temporal usage is typed correctly in unit tests
+// src/lib/date-utils.spec.ts
+import { describe, it, expect } from 'vitest';
+import { addDays } from './date-utils.js';
+
+describe('addDays — Temporal-based', () => {
+  it('correctly handles DST transition (March 13, 2026 — US DST changeover)', () => {
+    const preDST = Temporal.PlainDate.from('2026-03-12');
+    const postDST = addDays(preDST, 1);
+    // Temporal.PlainDate ignores timezone shifts — always +1 calendar day
+    expect(postDST.toString()).toBe('2026-03-13');
+  });
+
+  it('handles month-end roll correctly', () => {
+    const jan31 = Temporal.PlainDate.from('2026-01-31');
+    const feb1 = addDays(jan31, 1);
+    expect(feb1.toString()).toBe('2026-02-01');
+  });
+});
+```
+
+> [community] **Gotcha (Temporal + TypeScript 6.0 `lib` configuration)**: Using `"lib": ["esnext"]` to get Temporal types also includes unstaged TC39 proposals that may have unstable TypeScript type shapes. The targeted approach — `"lib": ["ES2025", "esnext.temporal"]` — includes only the Temporal types while keeping the rest of the lib at the stable ES2025 baseline. This prevents future esnext additions from affecting your type checking environment.
+
+> [community] **Lesson (teams migrating from @js-temporal/polyfill, 2026)**: Projects that used `@js-temporal/polyfill` before Node.js 26 and TypeScript 6.0 must audit two things: (1) remove the polyfill import in Node.js 26+ deployments (it conflicts with the native Temporal global), and (2) add `"lib": ["esnext.temporal"]` to tsconfig.json to enable native TypeScript types — the polyfill's `@types/temporal-spec` package uses different type names. Run `tsc --noEmit` after removing the polyfill to catch any type mismatches between the polyfill types and the native TypeScript lib.
+
+---
+
+## TypeScript → 7.0 Migration Readiness as Shift-Left (2026)
+
+TypeScript 6.0 is explicitly designed as a bridge to TypeScript 7.0, which will remove all deprecated options. The shift-left practice is to use CI gates to catch TypeScript 7.0 incompatibilities now, while still on TypeScript 6.0.
+
+### `--stableTypeOrdering` — TypeScript 7.0 Behavioral Preview
+
+```yaml
+# .github/workflows/ts7-readiness.yml — validate TypeScript 7.0 compatibility
+# Run as a non-blocking informational check on PRs (allow-failure: true)
+# Move to blocking check when TypeScript 7.0 is 3 months from release
+name: TypeScript 7.0 Readiness Check
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly Monday check
+  pull_request:
+    paths: ['src/**/*.ts', 'tsconfig*.json']
+
+jobs:
+  ts7-preview:
+    name: TypeScript 7.0 Preview (--stableTypeOrdering)
+    runs-on: ubuntu-latest
+    continue-on-error: true  # Non-blocking until TS7 release approaches
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      # --stableTypeOrdering: matches TypeScript 7.0 union type display order
+      # Catches: inline snapshot tests that embed TypeScript error messages
+      - name: Type check with TS 7.0 type ordering preview
+        run: npx tsc --noEmit --stableTypeOrdering 2>&1 | tee ts7-typecheck.log
+      # Report: any snapshot failures indicate tests that need updating for TS7
+      - name: Check for snapshot ordering differences
+        run: |
+          if grep -q "does not match" ts7-typecheck.log 2>/dev/null; then
+            echo "WARNING: snapshot tests will break on TypeScript 7.0 upgrade"
+            echo "Run: npx tsc --noEmit --stableTypeOrdering && vitest run --update to pre-fix"
+          fi
+
+  ts7-deprecated-options:
+    name: TypeScript 7.0 — No Deprecated Options
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TypeScript 7.0 will REMOVE these — fail now if present:
+      - name: Scan for deprecated TS 6.0 options (will error in TS 7.0)
+        run: |
+          DEPRECATED_OPTIONS=(
+            '"ignoreDeprecations"'
+            '"moduleResolution": "node"'
+            '"moduleResolution": "classic"'
+            '"module": "amd"'
+            '"module": "umd"'
+            '"module": "system"'
+            '"outFile"'
+            '"alwaysStrict".*false'
+          )
+          FOUND=0
+          for opt in "${DEPRECATED_OPTIONS[@]}"; do
+            if grep -rq "$opt" tsconfig*.json 2>/dev/null; then
+              echo "ERROR: Found deprecated option '$opt' — will not compile in TypeScript 7.0"
+              FOUND=1
+            fi
+          done
+          if [ $FOUND -eq 1 ]; then
+            echo "Fix these options before upgrading to TypeScript 7.0"
+            exit 1
+          fi
+          echo "No deprecated options found — TypeScript 7.0 ready"
+```
+
+> **WHY start the TypeScript 7.0 readiness gate now**: TypeScript 7.0 will not support `"ignoreDeprecations": "6.0"`. Teams that defer TS7 preparation until TS7.0 releases face a waterfall of type errors, removed options, and snapshot failures — exactly the scenario shift-left is designed to prevent. Running the weekly `--stableTypeOrdering` check costs near-zero CI time and surfaces 100% of the snapshot compatibility issues months before they block a release.
+
+> [community] **Lesson (TypeScript release cycle, 2026)**: TypeScript's release cadence is approximately every 3 months. TypeScript 6.0 was March 2026; TypeScript 7.0 is estimated Q1 2027. Teams should have TypeScript 7.0 compatibility gates passing (green, non-blocking) at least 2 months before the expected release — so any discovered issues have time to be fixed without blocking the TS7 upgrade sprint.
+
+---
+
+## Vitest 5.0 Beta — Shift-Left Impact Assessment (2026)
+
+Vitest 5.0.0-beta.2 (May 2026) introduces several changes with direct shift-left implications. This section documents what to evaluate NOW on beta, so the final 5.0 upgrade is non-disruptive.
+
+### Inline `expect` Package — Simplified Assertions Import
+
+```typescript
+// Vitest 5.0: `expect` is now bundled inline (no separate `@vitest/expect` package)
+// Migration: no code changes required — the import stays the same
+// BEFORE (4.x):
+import { expect } from 'vitest';  // still works in 5.0
+
+// NEW in 5.0: standalone expect import (for custom assertion libs)
+// Allows using Vitest's expect without the full test runner
+import { expect } from '@vitest/expect';  // 4.x: separate package with its own version
+// In 5.0: inline — always in sync with vitest core, no version mismatch possible
+
+// Shift-left benefit: version mismatch between vitest and @vitest/expect was a common
+// source of cryptic assertion failures when partial upgrades occurred
+```
+
+### `vitest list` — Static Test Discovery
+
+```bash
+# Vitest 5.0: `vitest list` discovers all tests without running them
+# Use in shift-left gates to validate test file structure before execution
+
+# List all tests matching a pattern (no execution):
+npx vitest list --reporter=json > test-manifest.json
+
+# CI use case: fail if no tests exist for a new feature file
+# (prevents "added feature, forgot to add tests" from reaching PR review)
+npx vitest list src/features/new-feature.ts 2>&1 | grep -c "test file" || \
+  (echo "ERROR: No test files found for new-feature.ts" && exit 1)
+```
+
+```typescript
+// vitest.config.ts — static test collection (Vitest 5.0 optimization)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Vitest 5.0: pre-collect test suites before executing
+    // Reduces "warm-up" overhead in CI where file system is cold
+    pool: 'forks',
+
+    // Vitest 5.0: concurrent: false option — explicit sequential per-file
+    // BEFORE 5.0: sequential had no explicit option (relied on absence of concurrent)
+    // AFTER 5.0: explicit — documents intent in config, not implicit behavior
+    sequence: {
+      concurrent: false,  // NEW in 5.0: explicitly sequential when order matters
+    },
+
+    // Vitest 5.0: coverage now tracks child_process and worker_threads
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      // NEW in 5.0: coverage instrumentation reaches code spawned in worker_threads
+      // Critical for: TypeScript services that use worker_threads for CPU-bound tasks
+      // Before 5.0: worker_threads code showed as uncovered even when tested
+    },
+  },
+});
+```
+
+### Multi-Environment Coverage Report Merging
+
+```yaml
+# .github/workflows/coverage-merge.yml
+# Vitest 5.0: merge coverage reports from different environments (Node vs Browser)
+name: Coverage — Multi-Environment
+on:
+  pull_request:
+
+jobs:
+  coverage-node:
+    name: Unit Test Coverage (Node.js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx vitest run --coverage --coverage.reportJsonSummary --reporter=junit
+        env: { VITEST_ENV: 'node' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-node
+          path: coverage/
+
+  coverage-browser:
+    name: Component Test Coverage (Browser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx vitest run --project browser --coverage
+        env: { VITEST_ENV: 'browser' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-browser
+          path: coverage/
+
+  coverage-merge:
+    name: Merge + Gate (Vitest 5.0 multi-env merge)
+    runs-on: ubuntu-latest
+    needs: [coverage-node, coverage-browser]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with: { name: coverage-node, path: coverage/node }
+      - uses: actions/download-artifact@v4
+        with: { name: coverage-browser, path: coverage/browser }
+      # Vitest 5.0: merge reports from non-sharded multi-environment runs
+      - run: npx vitest merge-coverage coverage/node coverage/browser --output coverage/merged
+      # Gate: combined coverage threshold
+      - run: npx vitest coverage-threshold --threshold.lines=80 coverage/merged/coverage-summary.json
+```
+
+> **WHY Vitest 5.0 `worker_threads` coverage matters for shift-left**: TypeScript services that offload CPU-intensive operations (image processing, PDF generation, heavy JSON parsing) to `worker_threads` had a systemic coverage blind spot in Vitest 4.x — the coverage instrumentation did not follow code into spawned workers. Unit tests that exercised this code showed 0% coverage even when fully tested. Vitest 5.0 closes this gap, enabling accurate coverage thresholds on services that use parallelism.
+
+> [community] **Gotcha (Vitest 5.0 beta: `sequential` option removed)**: Vitest 5.0 removes the `sequential` option on individual tests/suites in favor of `concurrent: false` on the `sequence` config. If your `vitest.config.ts` uses `test: { sequence: { shuffle: true } }` combined with `sequential: true` on individual tests, the `sequential` property is no longer recognized. Migrate to `sequence: { concurrent: false }` at the config level for tests that require sequential execution. The `concurrent: true` option on individual `describe` blocks is unaffected.
+
+> [community] **Lesson (Vitest 5.0 migration readiness, 2026)**: The safest strategy for Vitest 5.0 migration is to run the 5.0 beta in a separate CI job (`continue-on-error: true`) alongside the stable 4.1 job — same approach as the TypeScript 7.0 readiness gate pattern above. This surfaces 5.0 breaking changes before the final release while keeping the primary quality gate stable. Move to 5.0 stable as soon as the beta CI job is green.

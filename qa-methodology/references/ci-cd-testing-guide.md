@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: nodejs.org/blog/release/v24.0.0 (Node 24 LTS: --test-global-setup for zero-framework global setup/teardown, snapshot testing stable since Node 23.4, programmatic coverage thresholds lineCoverage/branchCoverage/functionCoverage in node:test run(), type stripping at RC status, npm 11 bundled: --ignore-scripts suppresses prepare, bulk audit endpoint fallback removed, requires Node ^20.17.0 || >=22.9.0) | prev: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 55 CI testing pillars covered in this guide:**
+**The 56 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -73,6 +73,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 53 | Jest 30 new assertion APIs | `expect.arrayOf`, `jest.advanceTimersToNextFrame()`, `jest.onGenerateMock()`, `using` keyword spy auto-cleanup, `test.each %$` case numbering |
 | 54 | GitHub Actions custom runner images | Pre-bake all tools + browsers into a VM image; eliminates cold-start install overhead (90–175s saved per job on cold runs); GA March 2026 |
 | 55 | Vitest 4.1 mock API improvements | `mockThrow()`/`mockThrowOnce()`, Chai-style mock assertions, `vi.defineHelper()` for stack-trace hygiene, Vite 8 peer dep consolidation, Agent Reporter for AI CI contexts |
+| 56 | Node.js 24 LTS native runner upgrades | `--test-global-setup` for zero-framework global setup/teardown; snapshot testing stable (since Node 23.4); programmatic coverage thresholds (`lineCoverage`, `branchCoverage`, `functionCoverage`); npm 11 `--ignore-scripts` suppresses `prepare`; type stripping at RC status |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -2184,6 +2185,159 @@ jobs:
 
 > [community] The `--experimental-strip-types` flag (Node 22.6+) removes TypeScript syntax without type-checking — it's equivalent to Babel's TypeScript preset. This means type errors will NOT cause CI failures unless `tsc --noEmit` is also a separate step. Teams that switch to native runner without adding a type-check step discover type errors in production within weeks. Always pair `--experimental-strip-types` with a `tsc --noEmit` gate.
 
+### Node.js 24 LTS Native Test Runner Upgrades [community]
+
+Node.js 24 (released April 2025, entering LTS in October 2025) upgrades the built-in `node:test` runner with three CI-significant additions: **`--test-global-setup`** for zero-framework global setup/teardown, **stable snapshot testing**, and **programmatic coverage thresholds**. It also bundles **npm 11** with several CI-impacting security hardening changes and marks type stripping as **Release Candidate (RC)** — closer to a stable `--strip-types` flag.
+
+> [community] Teams evaluating the native test runner in Node 22 frequently hit two blockers: no built-in global setup/teardown (requiring workarounds), and experimental snapshot support. Both are resolved in Node 24. Teams already using the native runner in Node 22 can adopt `--test-global-setup` with a drop-in migration: extract their `beforeAll`-based DB migration calls into a `setup-module.mjs` file and pass it via the flag — no test file changes required.
+
+**`--test-global-setup` — zero-framework global setup/teardown (Node 24+):**
+
+```typescript
+// test-global-setup.ts — runs once before all tests, once after (Node 24+)
+// Invoke with: node --experimental-strip-types --test-global-setup=test-global-setup.ts --test ...
+
+export async function setup(): Promise<void> {
+  // Runs once before all tests — start shared resources
+  process.env['TEST_DATABASE_URL'] = 'postgresql://test:test@localhost:5432/testdb';
+  console.log('[global-setup] Database URL configured');
+
+  // Perform DB migration synchronously before any test file loads
+  // (equivalent to Jest globalSetup or Vitest globalSetup)
+}
+
+export async function teardown(): Promise<void> {
+  // Runs once after all tests — clean up shared resources
+  console.log('[global-teardown] Cleaning up database connections');
+  // Close any shared pools, stop containers, etc.
+}
+```
+
+**GitHub Actions — Node 24 native runner with global setup:**
+
+```yaml
+# .github/workflows/ci-native-node24.yml — Node 24 native test runner
+name: CI (Node.js 24 native runner)
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+
+      # Type-check (required — strip-types does NOT check types, even in RC)
+      - run: npx tsc --noEmit --project tsconfig.json
+        name: TypeScript type-check
+
+      # Run tests with global setup, coverage thresholds, and JUnit reporter
+      - run: |
+          node --experimental-strip-types \
+               --experimental-test-coverage \
+               --test-global-setup=test-global-setup.ts \
+               --test-reporter=junit \
+               --test-reporter-destination=test-results/results.xml \
+               --test 'tests/**/*.test.ts'
+        name: Unit tests (Node 24 native runner)
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results/results.xml
+```
+
+**Stable snapshot testing (Node 24+, stable since Node 23.4):**
+
+```typescript
+// tests/unit/serializer.test.ts — stable snapshot testing in node:test
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { serializeOrder } from '../../src/serializer.ts';
+
+describe('serializeOrder', () => {
+  it('serializes a simple order to the expected shape', (t) => {
+    const order = { id: 'ord-1', items: [{ sku: 'SKU-A', qty: 2 }], total: 19.98 };
+    // Stable since Node 23.4 — no --experimental-test-snapshots flag needed in Node 24
+    t.assert.snapshot(serializeOrder(order));
+  });
+});
+```
+
+```bash
+# Generate snapshots on first run (update mode)
+node --experimental-strip-types --test --test-update-snapshots 'tests/**/*.test.ts'
+
+# Verify snapshots in CI (regular run — fails if serialized output changed)
+node --experimental-strip-types --test 'tests/**/*.test.ts'
+```
+
+**Programmatic coverage thresholds (Node 24+):**
+
+```typescript
+// run-tests.ts — programmatic test runner with coverage thresholds (Node 24+)
+import { run } from 'node:test';
+import { createWriteStream } from 'node:fs';
+import { spec as SpecReporter } from 'node:test/reporters';
+import { pipeline } from 'node:stream/promises';
+
+const results = run({
+  files: ['tests/unit'],
+  coverage: true,
+  coverageIncludeGlobs: ['src/**/*.ts'],
+  coverageExcludeGlobs: ['src/**/*.d.ts', 'src/**/__mocks__/**'],
+  // Coverage threshold options — exits with code 1 if below threshold
+  lineCoverage: 80,
+  branchCoverage: 75,
+  functionCoverage: 80,
+});
+
+// Pipe to spec reporter
+await pipeline(results.compose(new SpecReporter()), createWriteStream('/dev/stdout'));
+```
+
+**npm 11 CI-impacting changes (bundled with Node 24):**
+
+> [community] npm 11 ships as the default npm version with Node.js 24. Three changes affect CI pipelines specifically: (1) `--ignore-scripts` now suppresses the `prepare` script, which previously ran unconditionally — teams that use `prepare` to build TypeScript before publishing will see silent skips in `npm ci --ignore-scripts` builds; (2) the fallback audit endpoint is removed, so any CI runner with network restrictions that blocked only the bulk audit endpoint will now see hard audit failures instead of graceful fallback; (3) npm 11 requires Node `^20.17.0 || >=22.9.0` — runners pinned to Node 20.16 or earlier must upgrade.
+
+```yaml
+# .github/workflows/ci.yml — npm 11 compatibility checks
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        # npm 11 requires Node >=20.17.0 — use node-version-file to enforce
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: node --version && npm --version   # verify Node >=20.17.0 and npm 11.x
+      - run: npm ci
+      # npm 11: --ignore-scripts now suppresses 'prepare' — explicit build required
+      # if your project uses prepare to compile TypeScript before tests:
+      - run: npm run build
+        name: Build (explicit — npm 11 --ignore-scripts suppresses prepare)
+      # npm 11: no fallback audit endpoint — ensure network allows registry.npmjs.org/audits
+      - run: npm audit --audit-level=high
+```
+
+> [community] The npm 11 `prepare` suppression change catches teams using the pattern `"prepare": "tsc"` in `package.json` for pre-publish TypeScript compilation. In CI environments running `npm ci --ignore-scripts` for security hardening (a common practice to prevent supply-chain attacks via lifecycle scripts), the `prepare` script was silently skipped in npm 9/10 too — but npm 11 makes this explicit and removes the legacy fallback. Teams that never noticed the skip because their CI had a separate `npm run build` step are unaffected. Teams that relied on `prepare` running after `npm ci` should add an explicit build step.
+
+**Type stripping progression (Node 22 → 24):**
+
+```
+Node 22.6+:  --experimental-strip-types (experimental)
+Node 22 LTS: --experimental-strip-types (stable for production use, flag retained)
+Node 24.0:   --experimental-strip-types (Release Candidate — RC)
+             --experimental-transform-types still experimental (decorators, const enums)
+Node 24 LTS: Expect --strip-types (stable flag) — monitor nodejs/node#57705 for promotion
+```
+
+> [community] The RC status in Node 24 means the API surface is frozen — no breaking changes expected before promotion to stable. Teams adopting `--experimental-strip-types` in Node 22 CI pipelines should continue using it without changes when upgrading to Node 24; no migration work is needed. The flag name will change to `--strip-types` when stabilized, but the `--experimental-` prefix will remain valid as an alias for at least two major versions. Do NOT wait for Node 24 LTS to adopt type stripping — the RC guarantee means breakage risk is negligible.
+
 ### Performance Regression as a CI Gate [community]
 
 Performance regression gates catch API latency increases and memory leaks before they reach production. By benchmarking key operations in CI and comparing to a stored baseline, teams prevent the "how did our API go from 50ms to 300ms?" class of issue.
@@ -3634,6 +3788,10 @@ export default env;
 56. **OIDC `repo_property_*` claim matching without org-level designation** [community]: Repository custom properties appear in OIDC tokens ONLY if an organization administrator has explicitly designated the property for OIDC inclusion. A property that is set on a repository but not designated will not appear in the token — the trust policy condition silently never matches and the IAM role assumption fails with a generic "not authorized" error. Teams that configure the trust policy, set the repository property, and then see OIDC failures have almost always forgotten the org-level designation step. Add the `verify-oidc-claims.ts` debug script as a pre-test step to confirm claims are present before blaming the trust policy.
 
 57. **GitHub Actions workflow rerun limit of 50 reruns** [community]: As of April 2026, GitHub Actions enforces a hard limit of 50 reruns per workflow run (previously unlimited). Teams that rely on automated rerun loops — CI bots that requeue flaky test runs on every failure — will hit this limit and see reruns silently blocked. Any workflow that has been rerun 50 times can no longer be rerun; a new run must be triggered. This surfaces most severely in repos with chronic flakiness handled by rerun automation rather than root-cause fixes. The limit is a forcing function: teams at the 50-rerun boundary must either quarantine the flaky tests or fix the root cause. Budget 1–2 sprints for flakiness remediation if your daily rerun rate exceeds 40 per workflow.
+
+58. **npm 11 `prepare` script suppressed by `--ignore-scripts` in `npm ci`** [community]: npm 11 (bundled with Node.js 24) clarifies that `--ignore-scripts` suppresses ALL lifecycle scripts including `prepare`. In npm 9/10, `prepare` would run in some contexts even with `--ignore-scripts`. Teams that relied on `"prepare": "tsc"` to compile TypeScript before tests — using `npm ci --ignore-scripts` for supply-chain security hardening — find that compiled output is missing after upgrading to Node 24/npm 11. Fix: add an explicit `npm run build` step after `npm ci` in CI, decouple compilation from the `prepare` script, or add TypeScript compilation to a `prebuild` or `pretest` script that can be selectively enabled.
+
+59. **Node.js 24 native test runner `--test-global-setup` module must use ESM exports** [community]: The `--test-global-setup` module is loaded as a Node.js ESM module — it must use `export async function setup()` and `export async function teardown()` syntax. CommonJS modules (`module.exports = { setup, teardown }`) are not recognized and the global setup is silently skipped with no error. Teams migrating global setup from Jest (`globalSetup.js` using `module.exports`) to the Node 24 native runner must convert to ESM exports. If the project uses `"type": "commonjs"`, use a `.mts` or `.mjs` extension for the global setup file to force ESM parsing.
 
 
 |---|---|---|---|
@@ -6888,6 +7046,7 @@ export default defineConfig({
 | GitHub Actions larger runners | Official docs | https://docs.github.com/en/actions/using-github-hosted-runners/about-larger-runners | 4/8/16-core hosted runners for CI acceleration |
 | Node.js test runner (node:test) | Official docs | https://nodejs.org/api/test.html | Built-in test runner — no framework dependency |
 | Node.js --experimental-strip-types | Official docs | https://nodejs.org/en/blog/release/v22.6.0 | Run TypeScript directly in Node 22 without build step |
+| Node.js 24 LTS — test runner upgrades | Official docs | https://nodejs.org/en/blog/release/v24.0.0 | --test-global-setup, stable snapshots, programmatic coverage thresholds, npm 11, type stripping RC |
 | Vitest bench | Official docs | https://vitest.dev/guide/features.html#benchmarking | Performance benchmarking integrated with test runner |
 | Tracetest / Kubeshop | Official docs | https://docs.tracetest.io/ | Trace-based testing framework with OTEL integration |
 | Meta ACH: Mutation-Guided LLM Test Generation | Research | https://arxiv.org/abs/2501.12862 | Mutation-guided LLM test synthesis (arXiv:2501.12862) |
